@@ -17,6 +17,59 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.11.1
+
+Level: patch.
+
+### This release is a patch, though it adds a refusal
+
+- Level: patch. Each change since v0.11.0 is a fix. The one new user action, adding `--unpin` to move a pin you made yourself, follows from the pin promise `SECURITY.md` already makes, so the refusal that asks for it holds an existing promise rather than adding a demand.
+- Contract: none
+- User action: none beyond the entries below.
+- Pull request: #1686
+
+### A pin you made by hand and an installed v0.11.0 update copy
+
+- Level: patch, a one-time step for a release-channel user who pinned by hand.
+- Contract: none
+- User action: if you pinned with `deploy.py --at` and follow the release channel, the installed v0.11.0 copy of `update-coding-agent-skills` never passes `--unpin` there, so the v0.11.1 deployer refuses to move your pin and the old copy's advice to rerun with `--unpin` loops. Move the pin once from the clone with `python deploy.py --all --at refs/tags/v0.11.1 --unpin`, or switch to `main` for that run by starting `update-coding-agent-skills` with `--channel main --unpin`. From v0.11.1 on, the update skill's own `--unpin` works.
+- Pull request: #1686
+
+### A pin you make by hand over the update's own release pin is yours
+
+- Level: patch, a defect fix with no contract change.
+- Contract: none
+- User action: none. If you pin with `deploy.py --at <tag>` or `--at <commit>` at the commit the update's release pin already holds, your ref is recorded, and the next release stops at your pin until you pass `--unpin`.
+- Pull request: #1719
+
+### repo-cleanup's commands use a plan or sweep record only as the script last saved it
+
+- Level: patch, a defect fix that brings the confirmation commands in line with the skill's documented promise.
+- Contract: `repo-cleanup` `FAILED`. It now also ends `delete-local`, `force-delete`, `remove-directory`, `summary`, `report`, `sweep --record <dir>`, and `sweep --plans <dir>` over a directory that holds a sweep record, when the plan or record is not as the script last saved it, when a plan's repository root is no longer a Git repository or its worktree areas are not the ones a sweep derives, when a plan has a field missing or malformed (naming the field, where it ended in `FAILED KeyError` before), and when `--record` names a directory inside a skills directory.
+- User action: none. A plan made before this update is refused; run the sweep again for a new one.
+- Pull request: #1688
+
+### The Mutation gate mutates only the lines a pull request changes
+
+- Level: patch, since it changes a contributor's advisory check and no contract.
+- Contract: none
+- User action: none for a user who updates. A contributor's `Mutation gate` summary now counts only the mutants on the lines the pull request adds or changes, with each module's changed lines in its table, and it names each changed module whose changed lines yield no mutant.
+- Pull request: #1708
+
+### A user's pin stays theirs when an update deploys at its commit
+
+- Level: patch, a defect fix with no contract change.
+- Contract: none
+- User action: none. A pin you made with `deploy.py --at` keeps the ref you gave it when a deployment, the release update's included, lands on the pinned commit. The next release then stops at your pin until you pass `--unpin`. The refusal over a pin no longer suggests deploying another commit with `--at`, which is refused too.
+- Pull request: #1707
+
+### `deploy.py --at` and the update's release channel no longer replace a pin you made without `--unpin`
+
+- Level: patch, a defect fix that holds the update to the pin promise `SECURITY.md` makes; the only new demand is `--unpin` where a run would otherwise have replaced your pin.
+- Contract: `deploy.py` `--at`, `deploy.py` `--unpin`, `update-coding-agent-skills` `FAILED`, `update-coding-agent-skills` `DEPLOY_PINNED`. `--at` over a pin you made, at another commit, now refuses until `--unpin`, which `--at` now accepts. The update ends with `FAILED cannot read whether the installation is pinned: <reason>` when `deploy.py check` prints no deployed commit and pin it can read. `DEPLOY_PINNED` can now end the release channel too.
+- User action: none, unless you move a pin you made with `--at` by hand. Then add `--unpin`, as in `python deploy.py --all --at <ref> --unpin`. If the update stops with `FAILED cannot read whether the installation is pinned`, run `python deploy.py check` in the clone and fix what it reports. To deploy over a pin you made, start the update with `--unpin`.
+- Pull request: #1686
+
 ## v0.11.0
 
 Level: minor.
