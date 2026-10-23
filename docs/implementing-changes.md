@@ -87,9 +87,10 @@ the rules validation enforces.
 The `Mutation gate` job of the `Mutation` workflow runs on every pull request and is not a required check. It mutates
 the lines the pull request adds or changes in each Python module under `deployer/`, `tools/`, a skill's `scripts/`, or
 a repository skill's `scripts/`, suites and `conftest.py` left out, with mutmut's operators, and runs each mutant
-against the suites that executed its line unmutated, as coverage.py measured them, until one fails. A mutation anchored
-on an expression that starts on an unchanged line, such as removing an argument from a call that opens above the
-change, is left out. Its step summary gives each module's changed lines and kill ratio, names each changed module whose
+against the suites that executed the statement holding its line unmutated, as coverage.py measured them, until one
+fails, so a mutant on a continuation line of a multi-line statement is reached when that statement ran. A mutation
+anchored on an expression that starts on an unchanged line, such as removing an argument from a call that opens above
+the change, is left out. Its step summary gives each module's changed lines and kill ratio, names each changed module whose
 changed lines yield no mutant, and names each surviving mutant by its line, the mutation, and the suites it passed; a
 pull request that changes no such module gets one line saying so. The mutants run from one queue that takes one from
 each module in turn, the run is capped by `DEFAULT_MINUTES` in the gate, and the summary says which module the cap cut
