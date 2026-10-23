@@ -75,7 +75,7 @@ python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation -
 
 `RECORDED <tag> <area> <date>` confirms the entry it appended to `.claude/skills/audit-repository/references/rotation.json`. If the write fails, the `FAILED` line says the record is unchanged and names any copy left beside it to delete; fix the cause and run the command again.
 
-After a guidance audit, record the tag the same way, in the same kind of pull request, which also gives each moved page its new address in `.claude/skills/audit-repository/references/guidance.json`; `RECORDED_PAGES <tag> <count>` confirms the pages the tag was appended to:
+After a guidance audit, record the tag the same way, in the same kind of pull request, which also gives each moved page its new address in `.claude/skills/audit-repository/references/guidance.json` and moves each of its changelogs' `read_through` to the latest release whose entries the readers read; `RECORDED_PAGES <tag> <count>` confirms the pages the tag was appended to:
 
 ```bash
 python -B .claude/skills/audit-repository/scripts/audit_repository.py guidance --record '<tag>'

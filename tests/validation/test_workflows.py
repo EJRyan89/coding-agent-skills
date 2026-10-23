@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from workflows import (
     WorkflowSyntaxError,
+    changelog_job_problems,
     command_line_job_problems,
     copilot_auto_update_problems,
     deployable_linux_problems,
@@ -617,6 +618,36 @@ class CommandLineJobFixtures(unittest.TestCase):
         ):
             with self.subTest(problem=problem):
                 self.assertIn(problem, command_line_job_problems(drifted))
+
+
+CHANGELOG_JOB = (
+    "jobs:\n"
+    "  changelogs:\n    runs-on: ubuntu-latest\n    steps:\n"
+    "      - name: Watch\n        run: |\n"
+    '          python3 tools/runtime_changelogs.py --summary "$GITHUB_STEP_SUMMARY"\n'
+)
+
+
+class ChangelogJobFixtures(unittest.TestCase):
+    def test_each_departure_from_the_watch_fails(self) -> None:
+        self.assertEqual([], changelog_job_problems(CHANGELOG_JOB))
+        watch = 'python3 tools/runtime_changelogs.py --summary "$GITHUB_STEP_SUMMARY"'
+        must = f"the changelogs job must run {watch!r} once, as the last line of its step"
+        run = "        run: |\n"
+        for drifted, problem in (
+            (CHANGELOG_JOB.replace("ubuntu-latest", "windows-latest"), "the changelogs job runs on windows-latest"),
+            (CHANGELOG_JOB.replace(' --summary "$GITHUB_STEP_SUMMARY"', ""), must),
+            (CHANGELOG_JOB.replace(watch, watch + "\n          true"), must),
+            (CHANGELOG_JOB + f"          {watch}\n", must),
+            (CHANGELOG_JOB.replace(run, run + "          npm install --global x\n"), "installs a runtime"),
+            (
+                CHANGELOG_JOB.replace("    steps:\n", "    continue-on-error: true\n    steps:\n"),
+                "goes on after an error",
+            ),
+            (CHANGELOG_JOB.replace("  changelogs:", "  watch:"), "the jobs are ['watch'], not ['changelogs']"),
+        ):
+            with self.subTest(problem=problem):
+                self.assertTrue(any(problem in found for found in changelog_job_problems(drifted)), drifted)
 
 
 LINUX_VERIFY_LOGS = (

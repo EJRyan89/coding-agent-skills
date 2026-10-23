@@ -488,5 +488,25 @@
         "v0.10.0"
       ]
     }
+  ],
+  "changelogs": [
+    {
+      "subject": "claude-code",
+      "url": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md",
+      "format": "markdown",
+      "read_through": "2.1.302"
+    },
+    {
+      "subject": "codex",
+      "url": "https://api.github.com/repos/openai/codex/releases",
+      "format": "github-releases",
+      "read_through": "0.163.0"
+    },
+    {
+      "subject": "copilot-cli",
+      "url": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md",
+      "format": "markdown",
+      "read_through": "1.0.100"
+    }
   ]
 }

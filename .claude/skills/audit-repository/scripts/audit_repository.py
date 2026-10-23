@@ -15,7 +15,8 @@ the readers, confirms what they find, and files it.
                    the questions a reader answers for each page, for the guidance audit after tagging; refused while
                    the record names no page for a runtime
                    skills/ejryan89-skill-core/scripts/runtime_support.py lists. With --record TAG, append TAG to every
-                   page's reads instead, from a worktree as rotation --record does
+                   page's reads instead, from a worktree as rotation --record does, keeping the record's changelogs,
+                   whose read_through the maintainer moves forward by hand in the same pull request
     duplicates     search the open issues for each QUERY, so a finding already filed is not filed twice
     remove-briefs  delete a briefs directory a release or rotation run printed as BRIEFS, and nothing else: one
                    holding the BRIEFS_MARKER file the run wrote before its first brief, naming the directory
@@ -87,13 +88,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import guidance_record
 from atomic_file import UnfinishedCopyError, replace_text
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
+from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, GuidanceRecord, GuidanceRecordError, Page
 from release_tags import is_release_tag, last_release, release_order
-from typed_fields import FieldError, FieldReader
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
@@ -107,13 +109,9 @@ BRIEFS_PREFIX = "audit-repository-"
 # The file a run writes in its briefs directory before any brief, naming the directory; remove-briefs deletes only a
 # directory holding it, so a directory another program named with the prefix is left alone.
 BRIEFS_MARKER = ".audit-repository-briefs.json"
-# The guidance record, relative to the top of the repository it describes.
-GUIDANCE_PATH = ".claude/skills/audit-repository/references/guidance.json"
 # Where the deployer catalogues the runtimes it supports, read as literals so the audit runs no deployer code.
 RUNTIME_CATALOGUE = "skills/ejryan89-skill-core/scripts/runtime_support.py"
-PYTHON_SUBJECT = "python"
 PYTHON_TITLE = "Python"
-PAGE_SCHEME = "https://"
 # The most open issues one duplicate search lists, and one milestone's open issues the rotation brief names.
 SEARCH_LIMIT = 30
 CARRIED_LIMIT = 1000
@@ -555,19 +553,6 @@ def write_json(path: Path, document: object) -> None:
 # --- the guidance record --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Page:
-    """One page of a runtime's, or Python's, published guidance, and the release tags at which it was read."""
-
-    url: str
-    subject: str
-    governs: str
-    read: tuple[str, ...]
-
-
-READ = FieldReader()
-
-
 def supported_runtimes(top: Path) -> dict[str, str]:
     """The runtimes the deployer supports, with their titles, read as the literal RUNTIMES and RUNTIME_TITLES of its
     catalogue in the checkout."""
@@ -592,50 +577,22 @@ def supported_runtimes(top: Path) -> dict[str, str]:
     return {runtime: titles[runtime] for runtime in runtimes}
 
 
+def read_guidance_record(path: Path, subjects: Sequence[str]) -> GuidanceRecord:
+    """The guidance record's pages and changelogs, each about one of `subjects`, as ejryan89-skill-core's
+    guidance_record reads them, or AuditError naming what is wrong with it."""
+    try:
+        return guidance_record.read(path, subjects)
+    except GuidanceRecordError as exc:
+        raise AuditError(str(exc)) from exc
+
+
 def read_guidance(path: Path, subjects: Sequence[str]) -> list[Page]:
     """The guidance record's pages, each about one of `subjects`, or AuditError naming what is wrong with it."""
-    name = path.as_posix()
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise AuditError(f"no guidance record at {name}") from exc
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
-        raise AuditError(f"cannot read the guidance record {name}: {exc}") from exc
-    try:
-        items = READ.json_object(document, "$", required={"pages"})["pages"]
-        pages = READ.array(items, "$.pages", partial(guidance_page, subjects=subjects), nonempty=True)
-    except FieldError as exc:
-        raise AuditError(f"{name}: {exc}") from exc
-    urls = [page.url for page in pages]
-    repeated = sorted({url for url in urls if urls.count(url) > 1})
-    if repeated:
-        raise AuditError(f"{name} lists {', '.join(repeated)} more than once")
-    return pages
+    return read_guidance_record(path, subjects).pages
 
 
-def guidance_page(value: object, path: str, subjects: Sequence[str]) -> Page:
-    fields = READ.json_object(value, path, required={"url", "subject", "governs", "read"})
-    url = READ.string(fields["url"], f"{path}.url", single_line=True, trimmed=True)
-    if not url.startswith(PAGE_SCHEME) or any(character.isspace() for character in url):
-        raise READ.fail(f"{path}.url", f"a URL starting {PAGE_SCHEME} without whitespace", json.dumps(url))
-    subject = READ.one_of(fields["subject"], f"{path}.subject", subjects)
-    governs = READ.string(fields["governs"], f"{path}.governs", single_line=True, trimmed=True)
-    read = READ.array(fields["read"], f"{path}.read", read_tag)
-    if len(set(read)) != len(read):
-        raise READ.fail(f"{path}.read", "tags each named once", "a tag named twice")
-    return Page(url, subject, governs, tuple(read))
-
-
-def read_tag(value: object, path: str) -> str:
-    tag = READ.string(value, path, single_line=True, trimmed=True)
-    if not is_release_tag(tag):
-        raise READ.fail(path, "a release tag vX.Y.Z", json.dumps(tag))
-    return tag
-
-
-def write_guidance(path: Path, pages: Sequence[Page]) -> None:
-    pages_json = [{"url": p.url, "subject": p.subject, "governs": p.governs, "read": list(p.read)} for p in pages]
-    write_json(path, {"pages": pages_json})
+def write_guidance(path: Path, record: GuidanceRecord) -> None:
+    write_json(path, guidance_record.document(record))
 
 
 def unread_runtimes(pages: Sequence[Page], runtimes: Sequence[str]) -> list[str]:
@@ -979,7 +936,8 @@ def guidance(
     runtimes = supported_runtimes(top)
     titles = {**runtimes, PYTHON_SUBJECT: PYTHON_TITLE}
     path = top / GUIDANCE_PATH
-    pages = read_guidance(path, list(titles))
+    record_read = read_guidance_record(path, list(titles))
+    pages = record_read.pages
     unread = unread_runtimes(pages, list(runtimes))
     if unread:
         raise AuditError(
@@ -1001,7 +959,7 @@ def guidance(
                 f"{top.as_posix()} is the main checkout; record the guidance audit from a worktree, such as one "
                 "`python tools/worktrees.py new chore <name>` creates, and merge it through a pull request"
             )
-        return [*lines, record_reads(git, repository, path, pages, record)]
+        return [*lines, record_reads(git, repository, path, record_read, record)]
     released = released_tag(git, repository, head)
     milestones = open_milestones_after(github, released)
     following = milestones[0] if milestones else None
@@ -1018,15 +976,18 @@ def guidance(
     return lines + write_briefs(briefs)
 
 
-def record_reads(git: GitClient, repository: Path, path: Path, pages: list[Page], tag: str) -> str:
-    """Append `tag` to every page's reads, refusing a tag a page already holds or that names no tag."""
+def record_reads(git: GitClient, repository: Path, path: Path, record: GuidanceRecord, tag: str) -> str:
+    """Append `tag` to every page's reads, refusing a tag a page already holds or that names no tag, and keep the
+    record's changelogs as they are."""
+    pages = record.pages
     if not is_release_tag(tag):
         raise AuditError(f"{tag} is not a release tag vX.Y.Z")
     if any(tag in page.read for page in pages):
         raise AuditError(f"{tag} is already in the guidance record")
     commit_of(git, repository, f"refs/tags/{tag}")
     try:
-        write_guidance(path, [Page(page.url, page.subject, page.governs, (*page.read, tag)) for page in pages])
+        read = [Page(page.url, page.subject, page.governs, (*page.read, tag)) for page in pages]
+        write_guidance(path, GuidanceRecord(read, record.changelogs))
     except OSError as exc:
         raise AuditError(f"cannot write the guidance record {path.as_posix()}, which is unchanged: {exc}") from exc
     return f"RECORDED_PAGES {tag} {len(pages)}"
