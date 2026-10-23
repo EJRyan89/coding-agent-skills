@@ -54,6 +54,24 @@ class ConfigureTests(DeployerTestCase):
         self.assertIn("Configuration cancelled; existing config was not changed.", result.output)
         self.assertEqual(before, self.digest())
 
+    def test_an_input_that_ends_early_names_the_variable_it_needed(self) -> None:
+        self.make_source_json()
+        self.repos.mkdir()
+        answers = [f"{forward(self.repos)}\n", *["\n"] * (len(config.PROMPTS) - 1)]
+        for given, key in enumerate(config.PROMPTS):
+            with self.subTest(key=key):
+                result = self.configure(stdin="".join(answers[:given]))
+                self.assertEqual(130, result.code, result.output)
+                self.assertTrue(
+                    result.output.endswith(
+                        f"\nThe input ended before a value for {key}.\n"
+                        "Configuration cancelled; existing config was not changed.\n\n"
+                    ),
+                    result.output,
+                )
+                self.assertFalse(self.config_file().exists())
+        self.assertEqual(0, self.configure(stdin="".join(answers)).code)
+
     def test_validation_failure_preserves_the_existing_config(self) -> None:
         self.make_source_json()
         self.make_config()

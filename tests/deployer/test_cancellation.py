@@ -46,16 +46,23 @@ class CancellationTests(DeployerTestCase):
 
     def test_configure_cancels_at_ctrl_c_and_at_the_end_of_input(self) -> None:
         before = self.config_file().read_bytes()
-        for name, stdin in (("ctrl+c", interrupting()), ("end of input", io.StringIO(""))):
+        # Only the end of input names what the prompt waited for: a person who pressed Ctrl+C knows.
+        for name, stdin, ended in (
+            ("ctrl+c", interrupting(), ""),
+            ("end of input", io.StringIO(""), "The input ended before a value for REPOS_ROOT.\n"),
+        ):
             with self.subTest(cancelled_by=name):
-                self.assert_cancelled(self.run_cli("configure", stdin=stdin), CONFIGURE_CANCELLED)
+                self.assert_cancelled(self.run_cli("configure", stdin=stdin), f"{ended}{CONFIGURE_CANCELLED}")
                 self.assertEqual(before, self.config_file().read_bytes())
 
     def test_the_selection_prompt_cancels_at_ctrl_c_and_at_the_end_of_input(self) -> None:
         for arguments in ((), ("--dry-run",)):
-            for name, stdin in (("ctrl+c", interrupting()), ("end of input", io.StringIO(""))):
+            for name, stdin, ended in (
+                ("ctrl+c", interrupting(), ""),
+                ("end of input", io.StringIO(""), "The input ended before a selection.\n"),
+            ):
                 with self.subTest(arguments=arguments, cancelled_by=name):
-                    self.assert_cancelled(self.run_cli(*arguments, stdin=stdin), CANCELLED)
+                    self.assert_cancelled(self.run_cli(*arguments, stdin=stdin), f"{ended}{CANCELLED}")
                     self.assertFalse((self.skills_dir / "alpha").exists())
                     self.assertFalse(self.manifest_file.exists())
                     self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())

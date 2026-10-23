@@ -33,6 +33,12 @@ def see_recovery(section: str) -> str:
     return f'See "{section}" in {RECOVERY_GUIDE}.'
 
 
+def input_ended(awaited: str) -> str:
+    """The line before a cancellation at a prompt whose input ended, naming what the prompt waited for, so a caller
+    that pipes its answers learns which one it left out."""
+    return f"The input ended before {awaited}."
+
+
 class DeployError(Exception):
     """A fail-closed deployment error whose lines are printed to stderr verbatim."""
 
