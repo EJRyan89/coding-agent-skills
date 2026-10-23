@@ -240,14 +240,14 @@ commit_named() {
 DEPLOYED=$(commit_named "$DEPLOYED")
 # A commit that is neither a full name nor unknown, or a pin mark with no ref after it or a ref holding a space, which
 # no ref the deployer records can, is a line the update cannot read.
-if ! [[ "$DEPLOYED" =~ ^([0-9a-f]{40}|[0-9a-f]{64}|unknown)$ ]] ||
+DEPLOYED_COMMIT=
+if [[ "$DEPLOYED" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+  DEPLOYED_COMMIT=$DEPLOYED
+fi
+if { [ -z "$DEPLOYED_COMMIT" ] && [ "$DEPLOYED" != unknown ]; } ||
   { [[ "$DEPLOYED_LINE" == *"$PIN_MARK"* ]] && ! [[ "$PIN_REF" =~ ^[^[:space:]]+$ ]]; }; then
   echo "$PIN_UNKNOWN deploy.py check printed: $(one_line "$DEPLOYED_LINE")"
   exit 1
-fi
-DEPLOYED_COMMIT=
-if [ "$DEPLOYED" != unknown ]; then
-  DEPLOYED_COMMIT=$DEPLOYED
 fi
 
 # The release channel pins the installation at the release it deploys, naming the tag in full, as refs/tags/<tag>, so

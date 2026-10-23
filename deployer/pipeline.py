@@ -208,33 +208,25 @@ def _replaced_pin(context: Context) -> str | None:
 
 
 def _refuse_unpinning(context: Context, replaced_pin: str | None) -> None:
-    """Refuse a run that would replace a deployment made with --at, unless it passes --unpin.
+    """Refuse a run that would replace a deployment made with --at, unless it passes --unpin or uninstalls.
 
-    The deployer always runs from the checkout's HEAD, so this keeps a pin whichever commit's update-coding-agent-skills
-    started the run: one deployed from a commit before that skill stopped at a pin itself runs `--all` alone, or, on
-    the release channel, `--all --at refs/tags/<tag>`, even when it could not read the pin. So another --at is refused
-    too, except over update-coding-agent-skills' own pin at a release, which its release channel moves to each later
-    release. The uninstall removes the pinned deployment as asked, so it needs no --unpin.
+    The deployer runs from the checkout's HEAD, so this holds a pin whichever update-coding-agent-skills started the
+    run, even one that runs `--all`, or `--all --at refs/tags/<tag>`, over a pin it could not read; another --at may
+    move only that skill's own pin at a release (source_ref.is_release_pin).
     """
     if replaced_pin is None or context.options.unpin or context.selection.deselect_all:
         return
-    if context.pin is None:
-        advice = (
-            f"To move it to this checkout's HEAD, rerun with --unpin, as in '{PROG} --all --unpin'; to keep the pin, "
-            "change nothing, or deploy another commit with --at."
-        )
-    else:
-        ref = context.manifest.source_ref(context.source_id)
-        commit = context.manifest.source_commit(context.source_id)
-        if ref is not None and commit is not None and source_ref.is_release_pin(context.paths.source_dir, ref, commit):
-            return
-        advice = (
-            f"To move it to {context.pin.ref}, rerun with --unpin, as in '{PROG} --all --at {context.pin.ref} "
-            "--unpin'; to keep the pin, change nothing."
-        )
+    recorded = (context.manifest.source_ref(context.source_id), context.manifest.source_commit(context.source_id))
+    if context.pin is not None and source_ref.is_release_pin(context.paths.source_dir, *recorded):
+        return
+    move, rerun, keep = (
+        ("this checkout's HEAD", f"{PROG} --all --unpin", "change nothing, or deploy another commit with --at.")
+        if context.pin is None
+        else (context.pin.ref, f"{PROG} --all --at {context.pin.ref} --unpin", "change nothing.")
+    )
     raise DeployError(
         f"ERROR: Refusing to replace {replaced_pin} without --unpin.",
-        advice,
+        f"To move it to {move}, rerun with --unpin, as in '{rerun}'; to keep the pin, {keep}",
         see_recovery(source_ref.EARLIER_COMMIT),
     )
 
