@@ -1032,13 +1032,13 @@ COMPARISON = """\
 | **Total** | **2** | **2** |
 """
 FIRST_HISTORY = """\
-month,user,prs_authored,prs_merged,commits,prs_reviewed,reviews_submitted,is_partial,captured_at
-2026-03,mona,0,0,0,0,0,false,2026-05-20T08:00:00Z
-2026-03,octo,1,1,0,0,0,false,2026-05-20T08:00:00Z
-2026-04,mona,2,2,0,0,0,false,2026-05-20T08:00:00Z
-2026-04,octo,0,0,0,0,0,false,2026-05-20T08:00:00Z
-2026-05,mona,0,0,0,0,0,true,2026-05-20T08:00:00Z
-2026-05,octo,1,1,0,0,0,true,2026-05-20T08:00:00Z
+month,user,prs_authored,prs_merged,commits,prs_reviewed,reviews_submitted,is_partial,captured_at,capped
+2026-03,mona,0,0,0,0,0,false,2026-05-20T08:00:00Z,
+2026-03,octo,1,1,0,0,0,false,2026-05-20T08:00:00Z,
+2026-04,mona,2,2,0,0,0,false,2026-05-20T08:00:00Z,
+2026-04,octo,0,0,0,0,0,false,2026-05-20T08:00:00Z,
+2026-05,mona,0,0,0,0,0,true,2026-05-20T08:00:00Z,
+2026-05,octo,1,1,0,0,0,true,2026-05-20T08:00:00Z,
 """
 
 
@@ -1124,9 +1124,83 @@ def test_a_second_run_changes_only_the_partial_month(tmp_path: Path) -> None:
     second = history_lines(history)
     changed = {key for key in first if first[key] != second[key]}
     assert (changed, set(second) - set(first)) == ({"2026-05,mona", "2026-05,octo"}, set())
-    assert second["2026-05,octo"] == "2026-05,octo,2,2,0,0,0,true,2026-05-22T08:00:00Z"
+    assert second["2026-05,octo"] == "2026-05,octo,2,2,0,0,0,true,2026-05-22T08:00:00Z,"
     assert second["2026-04,octo"] == first["2026-04,octo"], "a closed month is not searched again"
     assert query_starts(github.queries) == {"2026-05-01"}
+    assert "WARNING" not in stdout, "an uncapped month read back from the history carries no warning"
+
+
+def capped_commits(github: GroupGitHub, day: date) -> None:
+    """More of octo's commits on `day` than one search returns, so the search for that day is capped."""
+    github.dated.setdefault(COMMITS, []).extend(
+        (day, commit(f"{index:040x}", f"{day}T00:00:00Z")) for index in range(1001)
+    )
+
+
+def test_a_capped_month_read_back_from_the_history_keeps_its_warning(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    github = group_github()
+    capped_commits(github, date(2026, 4, 2))
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert code == 0, stdout
+    assert "WARNING: for octo, Commits for 2026-04-02 exceeded GitHub's 1000-result Search API cap" in stdout
+    first = history_lines(history)
+    assert first["2026-04,octo"] == "2026-04,octo,0,0,1000,0,0,false,2026-05-20T08:00:00Z,commits"
+    assert first["2026-03,octo"].endswith(",false,2026-05-20T08:00:00Z,"), "a cap lowers only its own month"
+    github.queries.clear()
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 5, 22)))
+    assert code == 0, stdout
+    assert query_starts(github.queries) == {"2026-05-01"}, "the capped month is read back, not searched"
+    assert (
+        "- WARNING: for octo, 2026-04 is read from the history file, which records that GitHub's 1000-result "
+        "Search API cap truncated its Commits when it was captured; those counts are lower than the true totals.\n"
+    ) in stdout
+    assert stdout.count("WARNING") == 1, "no other month, and not mona, is warned about"
+    assert history_lines(history)["2026-04,octo"] == first["2026-04,octo"]
+
+
+def test_a_review_cap_is_recorded_for_every_month_up_to_the_capped_day(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    github = group_github()
+    github.dated[REVIEWED] = [
+        (date(2026, 4, 20), {"id": f"PR_{index}", "author": {"login": "someone"}}) for index in range(1001)
+    ]
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert code == 0, stdout
+    rows = history_lines(history)
+    assert rows["2026-03,octo"].endswith(",prs_reviewed reviews_submitted")
+    assert rows["2026-04,octo"].endswith(",prs_reviewed reviews_submitted")
+    assert rows["2026-05,octo"].endswith(",true,2026-05-20T08:00:00Z,"), "reviews of a later month are not lowered"
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 5, 22)))
+    assert code == 0, stdout
+    assert "for octo, 2026-03 is read from the history file" in stdout
+    assert "truncated its PRs reviewed, Reviews submitted when it was captured" in stdout
+
+
+def old_format(text: str) -> str:
+    """`text` as a history file written before the report recorded the cap: without the `capped` column."""
+    return "".join(line.rsplit(",", 1)[0] + "\n" for line in text.splitlines())
+
+
+def test_a_history_written_before_the_cap_was_recorded_is_read_and_searched_again(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    history.write_text(old_format(FIRST_HISTORY), encoding="utf-8", newline="\n")
+    github = group_github()
+    capped_commits(github, date(2026, 3, 9))
+    arguments = ["--org", "acme", "--user", "octo", "--months", "3", "--history", str(history)]
+    code, stdout, _ = run_group(arguments, github, at(date(2026, 5, 22)))
+    assert code == 0, stdout
+    assert query_starts(github.queries) >= {"2026-03-01"}, "months with no cap recorded are searched again"
+    assert "WARNING: for octo, Commits for 2026-03-09 exceeded GitHub's 1000-result Search API cap" in stdout
+    text = history.read_text(encoding="utf-8")
+    assert text.startswith(FIRST_HISTORY.splitlines()[0] + "\n"), "the file is rewritten in the current format"
+    rows = history_lines(history)
+    assert rows["2026-03,octo"] == "2026-03,octo,1,1,1000,0,0,false,2026-05-22T08:00:00Z,commits"
+    assert rows["2026-04,octo"] == "2026-04,octo,0,0,0,0,0,false,2026-05-22T08:00:00Z,"
+    assert rows["2026-04,mona"] == "2026-04,mona,2,2,0,0,0,false,2026-05-20T08:00:00Z,unknown", "kept as it was"
+    github.queries.clear()
+    assert run_group(arguments, github, at(date(2026, 5, 23)))[0] == 0
+    assert query_starts(github.queries) == {"2026-05-01"}, "once recorded, a closed month is not searched again"
 
 
 def test_the_first_run_after_a_month_ends_pulls_it_again(tmp_path: Path) -> None:
@@ -1138,8 +1212,8 @@ def test_the_first_run_after_a_month_ends_pulls_it_again(tmp_path: Path) -> None
     code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 6, 2)))
     assert code == 0, stdout
     rolled = history_lines(history)
-    assert rolled["2026-05,octo"] == "2026-05,octo,2,2,0,0,0,false,2026-06-02T08:00:00Z"
-    assert rolled["2026-06,octo"] == "2026-06,octo,0,0,0,0,0,true,2026-06-02T08:00:00Z"
+    assert rolled["2026-05,octo"] == "2026-05,octo,2,2,0,0,0,false,2026-06-02T08:00:00Z,"
+    assert rolled["2026-06,octo"] == "2026-06,octo,0,0,0,0,0,true,2026-06-02T08:00:00Z,"
     assert rolled["2026-04,octo"] == first["2026-04,octo"]
     assert rolled["2026-03,octo"] == first["2026-03,octo"], "a month that left the window keeps its row"
     github.add_pull_requests("octo", date(2026, 5, 30))
@@ -1203,8 +1277,13 @@ def test_a_history_in_a_folder_that_does_not_exist_is_refused(tmp_path: Path) ->
         pytest.param(FIRST_HISTORY.replace("2026-03,mona,0", "2026-13,mona,0"), "not YYYY-MM", id="a-bad-month"),
         pytest.param(FIRST_HISTORY.replace("octo,1,1", "octo,one,1", 1), "not a count", id="a-bad-count"),
         pytest.param(FIRST_HISTORY.replace(",true,", ",yes,", 1), "not true or false", id="a-bad-flag"),
-        pytest.param(FIRST_HISTORY.replace(",false,2026", ",2026", 1), "has 8 fields", id="a-short-row"),
+        pytest.param(FIRST_HISTORY.replace(",false,2026", ",2026", 1), "has 9 fields", id="a-short-row"),
         pytest.param(FIRST_HISTORY + FIRST_HISTORY.splitlines()[1] + "\n", "repeats 2026-03 for mona", id="a-repeat"),
+        pytest.param(FIRST_HISTORY.replace("Z,\n", "Z,stars\n", 1), "has capped 'stars'", id="an-unknown-metric"),
+        pytest.param(FIRST_HISTORY.replace("Z,\n", "Z,commits prs_merged\n", 1), "header's order", id="out-of-order"),
+        pytest.param(
+            old_format(FIRST_HISTORY).replace("Z\n", "Z,\n", 1), "has 10 fields, not 9", id="an-old-row-too-long"
+        ),
     ],
 )
 def test_a_history_the_report_did_not_write_is_refused_before_querying(tmp_path: Path, text: str, reason: str) -> None:
