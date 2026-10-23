@@ -1730,7 +1730,7 @@ class FormatContractTest(unittest.TestCase):
         listed = [name for row in rows for name in row]
         self.assertEqual(len(listed), len(set(listed)), "a file is named in two rows")
         parsed = {*review_analyzers.PARSED_BY_NAME, *review_analyzers.MSBUILD_SUFFIXES}
-        self.assertEqual(sorted({*parsed, f"*{review_analyzers.GLOBALCONFIG_SUFFIX}"}), sorted(listed))
+        self.assertEqual(sorted({*parsed, "*.globalconfig"}), sorted(listed))
         # Each row states one parser's guarantee, so the files it names are read by the same one; a suffix or a
         # pattern is probed with a file it names.
         for row in rows:
