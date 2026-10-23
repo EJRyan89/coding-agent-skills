@@ -46,6 +46,15 @@ class RefValidationTests(unittest.TestCase):
                 raised.exception.lines,
             )
 
+    def test_the_recorded_ref_is_kept_only_over_a_pin_at_the_same_commit_without_unpin(self) -> None:
+        same, other = "1" * 40, "2" * 40
+        pin = source_ref.Pin("refs/tags/v1.0.0", same)
+        self.assertEqual("v1.0.0", source_ref.recorded_ref(pin, "v1.0.0", same, unpin=False))
+        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, "v1.0.0", same, unpin=True))
+        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, "v1.0.0", other, unpin=False))
+        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, None, same, unpin=False))
+        self.assertIsNone(source_ref.recorded_ref(None, "v1.0.0", same, unpin=False))
+
     def test_git_is_asked_for_the_commit_with_the_options_ended_before_the_ref(self) -> None:
         commit = "0123456789abcdef0123456789abcdef01234567"
         with tempfile.TemporaryDirectory() as directory:

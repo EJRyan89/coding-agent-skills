@@ -116,32 +116,19 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
             case _:
                 assert_never(entry.action)
     data.data["last_run_id"] = run_id
+    pinned = (data.source_ref(context.source_id), data.source_commit(context.source_id))
     # An entry written before selected_skills was dropped loses it here: nothing reads it.
     data.sources[context.source_id] = source_entry(
         platform_support.normalize(context.paths.source_dir),
         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         commit=commit,
-        ref=_pinned_ref(context),
+        ref=source_ref.recorded_ref(context.pin, *pinned, unpin=context.options.unpin),
         requested_bundles=context.selection.bundles,
         requested_bundle_members={name: sorted(context.source.bundles[name]) for name in context.selection.bundles},
         requested_skills=context.selection.skills,
         items=recorded,
     )
     data.save()
-
-
-def _pinned_ref(context: Context) -> str | None:
-    """The ref the manifest records the deployment pinned with: the one --at names, or None without --at.
-
-    A deployment at the pinned commit keeps the recorded ref as it was written unless it passes --unpin, since the ref's
-    form tells update-coding-agent-skills' own pin from the user's (source_ref.is_release_pin): recording the update's
-    refs/tags/<tag> over a user's short name would let the next release move the user's pin without --unpin.
-    """
-    if context.pin is None:
-        return None
-    recorded = context.manifest.source_ref(context.source_id)
-    unchanged = context.pin.commit == context.manifest.source_commit(context.source_id)
-    return recorded if recorded is not None and unchanged and not context.options.unpin else context.pin.ref
 
 
 def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tuple[str, str]]:
@@ -211,8 +198,8 @@ def _summary(
 def _replaced_pin(context: Context) -> str | None:
     """The deployment made with --at that this one replaces, described, or None when it replaces none.
 
-    A deployment pinned to the same commit keeps the pin and its recorded ref (_pinned_ref); any other moves the
-    installation off it, which update-coding-agent-skills reports from the line this describes.
+    A deployment pinned to the same commit keeps the pin and its recorded ref (source_ref.recorded_ref); any other
+    moves the installation off it, which update-coding-agent-skills reports from the line this describes.
     """
     ref = context.manifest.source_ref(context.source_id)
     commit = context.manifest.source_commit(context.source_id)
