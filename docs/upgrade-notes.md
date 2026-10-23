@@ -17,6 +17,227 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.11.0
+
+Level: minor.
+
+### `review-prs` and `review-document` carry on past a reviewer result or run file the parser refuses
+
+- Level: patch, a defect fix with no contract change.
+- Contract: none
+- User action: none. A reviewer result nested past the recursion limit or holding an integer past the digit limit is now that role's `RETRY` line, and an unreadable run file that run's `FAILED` line. Before, either stopped `check --runs` for the whole list, on every retry. A result whose text spells a lone surrogate is now retried at `check` instead of failing the review at `finalize`.
+- Pull request: #1634
+
+### audit-ai-config reports a file past Python's integer-digit or nesting limit, and audit-skill keeps each value it prints on its line
+
+- Level: patch, a defect fix that brings two shipped skills' output in line with their documented contracts.
+- Contract: `audit-skill` `AGENT_HOOK`, `audit-skill` `PLUGIN_HOOK`, `audit-skill` `AGENT_TOOLS`, `audit-skill` `AGENT_MODEL`. A value these lines carry now has its whitespace and control characters removed.
+- User action: none.
+- Pull request: #1633
+
+### github-activity-report's history records the search cap, and an older history is searched again once
+
+- Level: minor, a new column in a shipped skill's history file format, before 1.0.0.
+- Contract: `github-activity-report` `--history`
+- User action: none required. The first run on a history file written before this change searches every month in the window again, as long as a first run, and rewrites the file with the new `capped` column. Rows of users that run does not report get `capped` set to `unknown`, and their months are searched again the next time those users are reported. Anything else that reads the file should expect the extra column.
+- Pull request: #1632
+
+### repo-cleanup's sweep runs under Windows PowerShell with empty cleanup settings
+
+- Level: patch, a defect fix in a shipped skill's rendered command with no contract change.
+- Contract: none
+- User action: none beyond deploying the update. Codex sessions on Windows that fall back to Windows PowerShell no longer fail the sweep with "expected one argument" when `REPO_CLEANUP_REGENERABLE` or `REPO_CLEANUP_PROTECTED` is empty, the default.
+- Pull request: #1631
+
+### configure and the deployment menu name what an ended input left out
+
+- Level: patch, a fix that adds one line to an existing cancellation message.
+- Contract: none.
+- User action: none.
+- Pull request: #1597
+
+### `github-activity-report` reports a group or a team, and can keep a history file
+
+- Level: minor, new arguments and new failure kinds for a shipped skill, before 1.0.0.
+- Contract: `github-activity-report` `--user` (now repeatable), `--team`, `--history`, `--metric`, `[scope]`, `[team]`, `[history]`
+- User action: none. One `--user` without `--history` behaves as before. To report a team, the `gh` token needs `read:org` (`gh auth refresh -s read:org`); keep any history file private.
+- Pull request: #1589
+
+### Validation fails a skill status line its Markdown never names, and a grant a step only implies
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user. A contributor who changes a skill names each line its scripts print in its Markdown, or says why the agent need not act on it. A contributor also names each granted tool other than a shell, such as `Read`, in the step that uses it. `skill_inventory.py scan <skill folder>` prints the lines validation fails on.
+- Pull request: #1586
+
+### repo-cleanup joins the Claude Code plugin
+
+- Level: minor, a skill added to the plugin and a new install-time option.
+- Contract: `repo-cleanup` `sweep`. It now ends with `FAILED --repos-root is empty; set the root directory for your git repositories` or `FAILED --repos-root <value> is not an absolute path` when the root is empty or relative.
+- User action: a plugin user who updates `coding-agent-skills@ejryan89` sets the `repos_root` option to the absolute path of the folder holding their git repositories, with `claude plugin configure coding-agent-skills@ejryan89` or from `/plugin`, then starts `/coding-agent-skills:repo-cleanup`. A deployer user does nothing.
+- Pull request: #1577
+
+### Copilot CLI no longer refuses every shell call in a trusted checkout of this repository on Windows
+
+- Level: patch, a fix to the contributor-facing hub guard hook with no change to what the guard refuses for Claude Code.
+- Contract: `.claude/settings.json` (its `PreToolUse` hook command now opens with `set \` and `exit 0`, which ends it under PowerShell, and reads the opt-in through `test` and `env -u`)
+- User action: none. A Claude Code session started before the update keeps the old command, which decides the same way. A Copilot CLI session in a trusted checkout picks up the new command at its next start.
+- Pull request: #1576
+
+### Copilot reviews start again on Copilot CLI 1.0.103
+
+- Level: patch, because it restores Copilot reviews and the canary on the Copilot CLI that updated itself to 1.0.103, and changes nothing on earlier versions.
+- Contract: none.
+- User action: none beyond updating and deploying. On Copilot CLI 1.0.103, a review through `review-prs` or `review-document` that failed at start with "--no-remote was removed" now runs.
+- Pull request: #1575
+
+### The review record's `reviewers` field is stated as written for a single reviewer too
+
+- Level: patch, a correction of the format's statement to what records already hold; no record changes.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none.
+- Pull request: #1570
+
+### audit-skill prints the description's first sentence
+
+- Level: minor, a new output line.
+- Contract: `audit-skill` `DESCRIPTION_LEAD`
+- User action: none.
+- Pull request: #1569
+
+### audit-ai-config documents a second cause of FAILED
+
+- Level: patch, documentation of existing behavior.
+- Contract: `audit-ai-config` `FAILED`
+- User action: none.
+- Pull request: #1569
+
+### The adapter-result schema states what `check` refuses
+
+- Level: patch, a published schema brought to the validator it describes; no result accepted before is refused.
+- Contract: `skills/ejryan89-code-review-core/references/review-adapter.schema.json`
+- User action: none. An entrypoint reviewer's author who checks results against the schema now sees there what `check` already refused: a head that is not 40 or 64 hexadecimal digits, a blank string, a repository that is not `owner/name`, and a finding path that leaves the repository. A `pull_number` of the wrong kind is now refused as `adapter-result.pull_number must be an integer of at least 1, found ...`, naming the schema's floor.
+- Pull request: #1568
+
+### Agent configuration in a nested `.github` folder stays out of the snapshot
+
+- Level: patch, a defect fix that brings the snapshot to its contract.
+- Contract: none
+- User action: none. Files under a nested `.github/agents`, `.github/instructions`, `.github/prompts`, or `.github/skills` folder, and `*.instructions.md` under any `.github` folder, are now `agent-instruction` exclusions, so reviewers judge them from the diff alone.
+- Pull request: #1568
+
+### audit-ai-config judges skills and agents by each runtime that reads them, and Codex's own project files
+
+- Level: minor, new checks that add findings, and a narrowed one: `.claude/agents` files leave Copilot's agent rules for Claude Code's.
+- Contract: `audit-ai-config` `agent-skill`, `audit-ai-config` `claude-skill`, `audit-ai-config` `claude-agent`, `audit-ai-config` `codex-skill`, `audit-ai-config` `codex-hook`, `audit-ai-config` `codex-agent`, `audit-ai-config` `codex-rule`, `audit-ai-config` `copilot-agent`, `audit-ai-config` `inventory`
+- User action: none. A repository with skills under `.claude/skills` or `.agents/skills`, agents under `.claude/agents`, or hooks, agents, or rules under `.codex` may meet new findings; a `.claude/agents` file that met a `copilot-agent` finding now meets Claude Code's rules instead.
+- Pull request: #1565
+
+### Validation runs pytest in strict mode, and CI installs the development locks as wheels only
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user who updates. A contributor's suites now run under pytest's `strict = true`, so a duplicate parametrization id is an error beside an unregistered marker or an unknown option. CI installs `requirements-dev.txt` and `requirements-mutation.txt` with `--only-binary :all:`, so a pin is raised only to a version with a wheel for every Python and platform CI runs.
+- Pull request: #1566
+
+### audit-ai-config judges a repository without a manifest, and Claude Code's own project files
+
+- Level: minor, a new scope status and new checks that add findings without changing an existing one's meaning.
+- Contract: `audit-ai-config` `scopeStatus` (`file-derived`), `audit-ai-config` `claude-settings`, `audit-ai-config` `claude-hook`, `audit-ai-config` `claude-memory`, `audit-ai-config` `inventory`, `audit-ai-config` `authority`, `audit-ai-config` `layering`
+- User action: none. A repository without `.github/ai-config-manifest.json` now gets layering findings for the runtimes its files show, and one with a `.claude/settings.json`, `.claude/rules`, or a long or importing `CLAUDE.md` gets findings about them; read the new warnings rather than expecting the earlier `COMPLIANT`.
+- Pull request: #1563
+
+### audit-skill audits a skill's plugin form and names the plugins that carry a skill
+
+- Level: minor, a new argument form and new lines in a shipped skill's commands, before 1.0.0.
+- Contract: `audit-skill` `locate`, `inventory`, `scan`. `locate` takes `[<plugin>:]<SkillName> [<plugin folder>]` and prints `SCOPE plugin` followed by `PLUGIN <name> <root>`, and its empty-name line is `STOP usage: audit-skill [<plugin>:]<SkillName> [<plugin folder>]`; `inventory` prints `CARRIED_BY <plugin>`, `PLUGIN_CARRIES skill|agent <name>`, `LEFT_OUT <item> <reason>`, and `PLUGINS_UNREADABLE <reason>`; `scan` prints `PLUGIN_HOOK <event> <matcher> <program> timeout=<seconds or default> on_failure=<value>` and names a plugin's agents as `<plugin>:<agent>`.
+- User action: none. To audit a plugin's copy, start `/audit-skill <plugin>:<skill>`, or give the folder `tools/plugin_build.py` printed after the name.
+- Pull request: #1562
+
+### update-pr-dashboard adds a repository to its set and names repositories it does not track
+
+- Level: minor, a new command and new status lines in a shipped skill's invocation contract.
+- Contract: `update-pr-dashboard` `repository`, `update-pr-dashboard` `ADDED_REPOSITORY`, `update-pr-dashboard` `ADDED_TO_SET`, `update-pr-dashboard` `UNTRACKED_REPOSITORY`, `update-pr-dashboard` `UNTRACKED_CHECK_FAILED`
+- User action: none. Any `UNTRACKED_REPOSITORY` line from the next `collect` of a set names a repository whose pull requests the dashboard has been missing. Ask the skill to track it rather than editing `config.json` by hand.
+- Pull request: #1560
+
+### `repo-cleanup` reads its deletion lists from a shipped data file, and you can add to them in `configure`
+
+- Level: minor, new configured variables and new `sweep` arguments and status lines, all additive.
+- Contract: `deploy-meta/repo-cleanup.json` (its `required_vars`, which now carry `REPO_CLEANUP_REGENERABLE` and `REPO_CLEANUP_PROTECTED`); the configured variables `REPO_CLEANUP_REGENERABLE` and `REPO_CLEANUP_PROTECTED` (new, empty by default); `repo-cleanup` `--regenerable` and `--protected` (new `sweep` arguments); `repo-cleanup` `POLICY`, `ADDED`, and `REFUSED_ENTRY` (new status lines, printed by `sweep` after `PLANS` and repeated first by `report`); `repo-cleanup` `SUMMARY` (its "Protected release worktrees" row is now "Protected worktrees").
+- User action: none to keep the shipped lists. To add regenerable directories or protected branch prefixes, run `python deploy.py configure`, answer the `REPO_CLEANUP_REGENERABLE` prompt with entries such as `.venv .tox=tox.ini,setup.cfg` and the `REPO_CLEANUP_PROTECTED` prompt with prefixes such as `hotfix/`, and deploy again; the next sweep prints each entry it used or refused.
+- Pull request: #1559
+
+### audit-skill reports the agents a skill starts, each subagent's model and effort, and the skill's runtime support
+
+- Level: minor, new status lines and findings from a shipped skill's commands, before 1.0.0.
+- Contract: `audit-skill` `DECLARED`, `audit-skill` `AGENT`, `audit-skill` `AGENT_TOOLS`, `audit-skill` `AGENT_MODEL`, `audit-skill` `AGENT_CLAUDE_MD`, `audit-skill` `AGENT_HOOK`, `audit-skill` `AGENT_UNREADABLE`, `audit-skill` `AGENT_UNDEFINED`, `audit-skill` `AGENT_UNDECLARED`, `audit-skill` `UNGUARDED_SUBAGENT`, `audit-skill` `SUBAGENT_MODEL`, `audit-skill` `SUBAGENT_EFFORT`, `audit-skill` `PINNED_SUBAGENT`, `audit-skill` `RUNTIME`, `audit-skill` `RUNTIME_NEEDS`, `audit-skill` `RUNTIME_UNDECLARED`, `audit-skill` `RUNTIME_UNREADABLE`, `audit-skill` `RUNTIME_OVERCLAIMED`. `DECLARED` gains the kinds `agent`, `tool`, and `optional-tool`, and `DECLARED agent <name> via <skill>`.
+- User action: none. A report's Scope now states Models, Subagents, and Runtime support where it stated the frontmatter model, and an audit can raise the new findings on a skill that passed before.
+- Pull request: #1558
+
+### audit-ai-config reports a .mcp.json server Claude Code skips
+
+- Level: patch, a defect fix: the audit now reports servers Claude Code never loads, which it passed before.
+- Contract: `audit-ai-config` `SKIPPED` (the handshake prints `transport=unknown`, not `transport=http`, for a JSON server with a `url` and no `type`)
+- User action: none; a repository the audit now fails needs `"type": "http"` (or `"sse"` / `"ws"`) on each remote `.mcp.json` server, no `"type": "sdk"` entry there, and no server with a reserved built-in name.
+- Pull request: #1553
+
+### `review-prs` and `review-document` carry on past a head settings file the analyzer inventory cannot parse
+
+- Level: patch, a defect fix with no contract change.
+- Contract: none
+- User action: none. A pull request whose head holds a `package.json`, `ruff.toml`, or `pyproject.toml` nested past the recursion limit, or holding an integer past the digit limit, is now reviewed with that file listed as unread. Before, it ended `prepare` for its whole group. A broken `pyproject.toml`, `package.json`, `setup.cfg`, or `tox.ini` now shows up in `analyzers.json` as unread instead of being left out.
+- Pull request: #1552
+
+### A deployment and `verify` say when COPILOT_HOME hides the adapters from Copilot CLI
+
+- Level: patch, a defect fix that adds a warning and an explanation, with no contract change.
+- Contract: none
+- User action: none, unless you set `COPILOT_HOME` or start Copilot CLI with `--config-dir`. Copilot then reads none of the deployed skills; the deployment now warns, and to use them in Copilot leave `COPILOT_HOME` unset or set it to the `.copilot` folder of your home as the warning prints it, and start Copilot without `--config-dir`.
+- Pull request: #1551
+
+### audit-skill reports a runtime prompt's shape and a skill's trigger scenario
+
+- Level: minor, since the skill prints new output lines and a user who updates needs to do nothing.
+- Contract: `audit-skill` `TRIGGER_SCENARIO`, `audit-skill` `NO_TRIGGER_SCENARIO`, and the `audit-skill` `CUE` cues `after-reply`, `untrusted-after-contract`, and `emphasis`
+- User action: none
+- Pull request: #1548
+
+### deploy.py verify names a failed `codex debug prompt-input` probe as that probe
+
+- Level: patch, a defect fix: a message that named the wrong probe now names the one that failed.
+- Contract: `deploy.py verify` (`Listed its skills, but cannot read which ones it offers the model (codex debug prompt-input): <reason>`, in place of `Cannot list its skills: <reason>` when only the catalog probe failed)
+- User action: none. When you see the new sentence, run `codex debug prompt-input` by itself to see why it fails. The listing worked.
+- Pull request: #1511
+
+### The RECORDED line names its counts: new, open, and addressed findings
+
+- Level: minor, a status line's field renamed and two fields added, before 1.0.0.
+- Contract: `review-prs` `RECORDED`, `review-document` `RECORDED`. The line is now `RECORDED <selector> verdict=<verdict> new=<n> open=<n> addressed=<n> <report>`: `new` replaces `findings` and counts the findings the review raised, `open` counts the finding ledger's open entries after it, and `addressed` its entries closed as addressed.
+- User action: anything that parses the `RECORDED` line outside the skills reads `new=` where it read `findings=`, and takes the report path after `addressed=<n>`.
+- Pull request: #1547
+
+### The update reads releases with the ejryan89-skill-core deployed beside it, not the clone's
+
+- Level: patch, a defect fix in a shipped skill: one new `FAILED` reason and a fuller existing one, with no change to arguments, status words, or exit codes.
+- Contract: `update-coding-agent-skills` `FAILED`. The new reason is `FAILED no ejryan89-skill-core release_tags.py deployed beside update.sh: <path>`, and `FAILED cannot read the commit of refs/tags/<tag>: <reason>` now ends with git's reason instead of nothing.
+- User action: none from a v0.10.0 installation. An installation deployed at v0.9.0 whose clone already holds v0.10.0 or later stops with `FAILED cannot read the release tags reaching ...: ... can't open file '.../skills/skill-core/scripts/release_tags.py'`. Deploy once by hand from the clone with `python deploy.py --all --at refs/tags/<latest release>`, or `python3` where the deployer runs under that name. The update skill works from then on.
+- Pull request: #1510
+
+### The hub guard reads `nice -n5` and `stdbuf -oL`, and env and the prefix programs in PowerShell
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, `nice -n5 git ...`, `stdbuf -oL git ...`, and other prefix options with their value attached are judged as the bare git call, allowed from a worktree, where before they were refused everywhere; a git call that `env`, `nohup`, `nice`, `timeout`, `stdbuf`, or the `time` program starts from the PowerShell tool is now refused in the hub where it was allowed; `git gitk` is no longer refused; and the guard's stderr notes begin `hub guard` rather than `worktrees guard`.
+- Pull request: #1512
+
+### audit-ai-config warns when Codex would read a root instruction file only in part
+
+- Level: patch, a fix in what the audit reports; the user does nothing after updating.
+- Contract: none.
+- User action: none.
+- Pull request: #1509
+
 ## v0.10.0
 
 Level: minor.
