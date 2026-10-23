@@ -4,10 +4,14 @@ suites with a stub generator and reach, since mutmut and coverage.py are install
 
 from __future__ import annotations
 
+import importlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
+import threading
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -45,6 +49,7 @@ from tools.mutation_gate import (
     kill_ratio,
     module_mutants,
     no_module_line,
+    queue_order,
     summary,
     try_mutant,
 )
@@ -74,8 +79,19 @@ def test_the_gate_mutates_modules_under_its_roots_and_never_a_suite(path: str, m
     assert mutated == is_gate_module(path)
 
 
-def mutant(line: int, module: str = "tools/calc.py", changed: bool = False) -> Mutant:
-    return Mutant(module, line, f"line {line}", f"mutated {line}", f"source {line}", changed)
+def mutant(line: int, module: str = "tools/calc.py") -> Mutant:
+    return Mutant(module, line, f"line {line}", f"mutated {line}", f"source {line}")
+
+
+def line_generator(module: str, source: str, lines: frozenset[int]) -> list[str]:
+    """A mutant of each given line that holds a digit, its first digit made 9, as mutmut's line filter would give."""
+    made = []
+    for number, text in enumerate(source.splitlines(keepends=True), start=1):
+        if number in lines and re.search(r"[0-8]", text):
+            rest = source.splitlines(keepends=True)
+            rest[number - 1] = re.sub(r"[0-8]", "9", text, count=1)
+            made.append("".join(rest))
+    return made
 
 
 class MutantFixtures(unittest.TestCase):
@@ -89,18 +105,43 @@ class MutantFixtures(unittest.TestCase):
         with self.assertRaises(ValueError):
             describe(original, original)
 
-    def test_mutants_on_changed_lines_come_first_and_duplicates_and_the_unchanged_module_are_dropped(self) -> None:
-        source = "a = 1\nb = 2\nc = 3\n"
-        made = ["a = 1\nb = 2\nc = 4\n", "a = 0\nb = 2\nc = 3\n", source, "a = 1\nb = 9\nc = 3\n", source]
-        made.append("a = 1\nb = 9\nc = 3\n")
-        found = module_mutants("tools/calc.py", source, {3}, lambda module, text: made)
-        self.assertEqual([(3, True), (1, False), (2, False)], [(item.line, item.changed) for item in found])
-        self.assertEqual(("c = 3", "c = 4"), (found[0].before, found[0].after))
+    def test_only_mutants_on_changed_lines_are_kept_in_line_order_and_duplicates_and_the_module_are_dropped(
+        self,
+    ) -> None:
+        source = "a = 1\nb = 2\nc = 3\nd = 4\n"
+        made = ["a = 1\nb = 2\nc = 3\nd = 5\n", "a = 0\nb = 2\nc = 3\nd = 4\n", source, "a = 1\nb = 9\nc = 3\nd = 4\n"]
+        made += [source, "a = 1\nb = 9\nc = 3\nd = 4\n"]
+        asked: list[frozenset[int]] = []
 
-    def test_a_generator_that_no_longer_makes_the_canary_mutant_is_refused(self) -> None:
-        self.assertIsNone(generator_problem(lambda module, text: [text.replace("+", "-"), text.replace("1", "2")]))
-        problem = generator_problem(lambda module, text: [text.replace("1", "2")])
+        def generate(module: str, text: str, lines: frozenset[int]) -> list[str]:
+            asked.append(lines)
+            return made
+
+        # A generator that ignores the lines it is given still has its mutants on unchanged lines 1 and 4 dropped.
+        found = module_mutants("tools/calc.py", source, frozenset({2, 3}), generate)
+        self.assertEqual([frozenset({2, 3})], asked)
+        self.assertEqual([(2, "b = 2", "b = 9")], [(item.line, item.before, item.after) for item in found])
+
+    def test_a_module_with_no_changed_line_makes_no_mutant_and_asks_the_generator_for_none(self) -> None:
+        def refuse(module: str, text: str, lines: frozenset[int]) -> list[str]:
+            raise AssertionError("no mutant is made of a module with no changed line")
+
+        self.assertEqual([], module_mutants("tools/calc.py", "a = 1\n", frozenset(), refuse))
+
+    def test_mutmut_is_asked_for_the_changed_lines_alone(self) -> None:
+        create = mock.Mock(return_value=(None, [], set(), set()))
+        fake = types.SimpleNamespace(create_mutations=create)
+        with mock.patch.object(importlib, "import_module", return_value=fake) as found:
+            self.assertEqual([], mutation_gate.mutmut_mutants("tools/calc.py", "a = 1\n", frozenset({6})))
+        found.assert_called_once_with("mutmut.mutation.file_mutation")
+        create.assert_called_once_with("tools/calc.py", "a = 1\n", covered_lines={6})
+
+    def test_a_generator_that_no_longer_makes_the_canary_mutant_or_ignores_the_lines_is_refused(self) -> None:
+        self.assertIsNone(generator_problem(lambda module, text, lines: [text.replace("+", "-")] if 2 in lines else []))
+        problem = generator_problem(lambda module, text, lines: [text.replace("1", "2")])
         self.assertIn("no longer turns", problem or "")
+        problem = generator_problem(lambda module, text, lines: [text.replace("+", "-")])
+        self.assertIn("no longer keeps to the changed lines", problem or "")
 
     def test_a_code_span_survives_backticks_in_the_source(self) -> None:
         self.assertEqual("`a + 1`", code("a + 1"))
@@ -194,9 +235,7 @@ class TryMutantFixtures(unittest.TestCase):
         (self.tree / "tools").mkdir(parents=True)
         self.original = b"def add(a, b):\r\n    return a + b\r\n"
         (self.tree / "tools" / "calc.py").write_bytes(self.original)
-        self.mutant = Mutant(
-            "tools/calc.py", 2, "return a + b", "return a - b", "def add(a, b):\n    return a - b\n", True
-        )
+        self.mutant = Mutant("tools/calc.py", 2, "return a + b", "return a - b", "def add(a, b):\n    return a - b\n")
         self.reach = {
             "tests/slow.py": Reach(30.0, {"tools/calc.py": frozenset({1, 2})}),
             "tests/fast.py": Reach(2.0, {"tools/calc.py": frozenset({2})}),
@@ -232,7 +271,7 @@ class TryMutantFixtures(unittest.TestCase):
         self.assertEqual(self.original, (self.tree / "tools" / "calc.py").read_bytes())
 
     def test_a_mutant_no_suite_executed_is_not_reached_and_runs_nothing(self) -> None:
-        unreached = Mutant("tools/calc.py", 7, "x", "y", "z", False)
+        unreached = Mutant("tools/calc.py", 7, "x", "y", "z")
         self.assertEqual(
             Outcome(unreached, NOT_REACHED),
             try_mutant(self.tree, unreached, self.reach, 100.0, self.runner({}), lambda: 0.0),
@@ -252,23 +291,26 @@ class TryMutantFixtures(unittest.TestCase):
         self.assertEqual(self.original, (self.tree / "tools" / "calc.py").read_bytes())
 
 
-def test_the_cap_gives_the_reach_pass_half_and_each_module_an_equal_share_of_what_is_left() -> None:
+def test_the_cap_gives_the_reach_pass_half_of_the_run() -> None:
     assert mutation_gate.run_deadline(100.0, 40) == 100.0 + 40 * 60
     assert mutation_gate.reach_deadline(100.0, 100.0 + 40 * 60) == 100.0 + 20 * 60
-    # Three modules left with 900 seconds to go: the first gets 300 of them, and the last whatever remains.
-    assert mutation_gate.module_deadline(1000.0, 1900.0, 3) == 1300.0
-    assert mutation_gate.module_deadline(1000.0, 1900.0, 1) == 1900.0
+
+
+def test_the_queue_takes_one_mutant_from_each_module_in_turn() -> None:
+    first = [mutant(1, "tools/a.py"), mutant(2, "tools/a.py"), mutant(3, "tools/a.py")]
+    second = [mutant(7, "tools/b.py")]
+    assert [first[0], second[0], first[1], first[2]] == queue_order([first, [], second])
 
 
 class SummaryFixtures(unittest.TestCase):
-    def report(self, outcomes: list[Outcome], cut_short: bool = False) -> Report:
+    def report(self, outcomes: list[Outcome], cut_short: bool = False, lines: int = 12) -> Report:
         return Report(
             "origin/main",
             40,
             600.0,
             4,
             "3.8.0",
-            [ModuleReport("tools/calc.py", outcomes, cut_short)],
+            [ModuleReport("tools/calc.py", outcomes, cut_short, lines)],
             {"tests/broken.py": "failed unmutated with exit code 1"},
             ["tests/late.py"],
         )
@@ -279,17 +321,14 @@ class SummaryFixtures(unittest.TestCase):
         self.assertEqual("none tested", kill_ratio(dict.fromkeys(found, 0) | {NOT_REACHED: 3}))
 
     def test_the_summary_tables_each_module_and_names_each_survivor_by_line_mutation_and_suites(self) -> None:
-        survivor = Outcome(mutant(4, changed=True), SURVIVED, ("tests/fast.py", "tests/slow.py"))
+        survivor = Outcome(mutant(4), SURVIVED, ("tests/fast.py", "tests/slow.py"))
         outcomes = [Outcome(mutant(1), KILLED, ("tests/fast.py",)), survivor, Outcome(mutant(9), NOT_REACHED)]
         text = summary(self.report(outcomes))
-        self.assertIn("| `tools/calc.py` | 3 | 1 | 0 | 1 | 1 | 0 | 50% (1 of 2) |", text)
+        self.assertIn("| `tools/calc.py` | 12 | 3 | 1 | 0 | 1 | 1 | 0 | 50% (1 of 2) |", text)
         self.assertIn("### `tools/calc.py`: 1 surviving mutant\n", text)
-        self.assertIn(
-            "- Line 4 (a line this pull request changed): `line 4` became `mutated 4`; passed `tests/fast.py`, "
-            "`tests/slow.py`",
-            text,
-        )
-        self.assertIn("mutants made by mutmut 3.8.0", text)
+        self.assertIn("- Line 4: `line 4` became `mutated 4`; passed `tests/fast.py`, `tests/slow.py`", text)
+        self.assertIn("mutants made by mutmut 3.8.0 on the lines the pull request changed", text)
+        self.assertNotIn("mutmut made no mutant", text)
         self.assertIn("4 workers ran for 10 of the 40 minutes", text)
         self.assertIn("`tests/broken.py` failed unmutated with exit code 1, so no mutant ran against it.", text)
         self.assertIn("left these suites' reach unmeasured, so no mutant ran against them: `tests/late.py`.", text)
@@ -299,14 +338,27 @@ class SummaryFixtures(unittest.TestCase):
         outcomes = [
             Outcome(mutant(1), KILLED, ("t",)),
             Outcome(mutant(2), KILLED, ("t",)),
-            Outcome(mutant(3, changed=True), SURVIVED, ("t",)),
+            Outcome(mutant(3), SURVIVED, ("t",)),
             Outcome(mutant(5), SURVIVED, ("t",)),
         ]
         self.assertEqual({KILLED: 2, TIMED_OUT: 0, SURVIVED: 2, NOT_REACHED: 0, NOT_RUN: 0}, counts(outcomes))
         text = summary(self.report(outcomes))
         self.assertIn("### `tools/calc.py`: 2 surviving mutants", text)
-        self.assertIn("- Line 3 (a line this pull request changed): `line 3`", text)
+        self.assertIn("- Line 3: `line 3` became `mutated 3`; passed `t`", text)
         self.assertIn("- Line 5: `line 5` became `mutated 5`; passed `t`", text)
+
+    def test_a_changed_module_with_no_mutant_is_named_and_never_left_silent(self) -> None:
+        text = summary(self.report([], lines=3))
+        self.assertIn("| `tools/calc.py` | 3 | 0 | 0 | 0 | 0 | 0 | 0 | none tested |", text)
+        self.assertIn(
+            "\n`tools/calc.py`: mutmut made no mutant on the 3 lines this pull request changed, so none ran.\n", text
+        )
+        one = summary(self.report([], lines=1))
+        self.assertIn("mutmut made no mutant on the 1 line this pull request changed, so none ran.", one)
+        deleted = summary(self.report([], lines=0))
+        self.assertIn(
+            "`tools/calc.py` keeps no line this pull request added or changed, so it has nothing to mutate.", deleted
+        )
 
     def test_the_summary_says_when_the_cap_cut_a_module_short(self) -> None:
         text = summary(self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN)], cut_short=True))
@@ -355,14 +407,29 @@ def fixture_repository(root: Path) -> None:
     git(root, "commit", "--quiet", "-m", "change")
 
 
-def stub_generator(module: str, source: str) -> list[str]:
-    """The fixture module's two mutants, and the canary's, which every run checks first."""
-    return [source.replace("a + b", "a - b"), source.replace("a * 2", "a * 3"), source.replace("a + 1", "a - 1")]
+def stub_generator(module: str, source: str, lines: frozenset[int]) -> list[str]:
+    """The fixture module's two mutants, and the canary's, which every run checks first, each made only when its line
+    is one asked for, as mutmut's line filter makes them."""
+    made = []
+    for before, after in (("a + b", "a - b"), ("a * 2", "a * 3"), ("a + 1", "a - 1")):
+        if before in source and source[: source.index(before)].count("\n") + 1 in lines:
+            made.append(source.replace(before, after))
+    return made
 
 
 def stub_reach(tree: Path, suite: str, modules: object, timeout: float) -> Reach:
     lines = frozenset(range(1, CALC.count("\n") + 1))
     return Reach(1.0, {"tools/calc.py": lines})
+
+
+def refuse_reach(tree: Path, suite: str, modules: object, timeout: float) -> Reach:
+    raise AssertionError("no suite's reach is measured when no changed line yields a mutant")
+
+
+def change_calc(root: Path, text: str) -> None:
+    """Change the fixture's calc.py to `text` in a new commit."""
+    (root / "tools" / "calc.py").write_text(text, encoding="utf-8")
+    git(root, "commit", "--quiet", "-am", "later change")
 
 
 class WholeRunFixtures(unittest.TestCase):
@@ -377,15 +444,48 @@ class WholeRunFixtures(unittest.TestCase):
             text = gate.report()
             worktrees = git(root, "worktree", "list", "--porcelain")
             status = git(root, "status", "--porcelain")
-        self.assertIn("| `tools/calc.py` | 2 | 1 | 0 | 1 | 0 | 0 | 50% (1 of 2) |", text)
+        self.assertIn("| `tools/calc.py` | 6 | 2 | 1 | 0 | 1 | 0 | 0 | 50% (1 of 2) |", text)
         self.assertIn(
-            "- Line 6 (a line this pull request changed): `return a * 2` became `return a * 3`; passed "
-            "`tests/tools/test_calc.py`",
+            "- Line 6: `return a * 2` became `return a * 3`; passed `tests/tools/test_calc.py`",
             text,
         )
         # The worktrees are gone and the checkout untouched.
         self.assertEqual(1, worktrees.count("worktree "))
         self.assertEqual("", status)
+
+    def test_a_mutant_on_a_line_the_pull_request_did_not_change_is_not_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            git(root, "switch", "--quiet", "-c", "only-double", "feature")
+            change_calc(root, CALC.replace("return a * 2", "return a * 2 + 0"))
+            asked: dict[str, frozenset[int]] = {}
+
+            def generate(module: str, source: str, lines: frozenset[int]) -> list[str]:
+                """Both of the module's mutants whatever lines are asked for, and the canary's as mutmut makes it."""
+                if module == "canary.py":
+                    return stub_generator(module, source, lines)
+                asked[module] = lines
+                return [source.replace("a + b", "a - b"), source.replace("a * 2", "a * 3")]
+
+            text = Gate(root, "feature", 5, 2, GitClient(), generate, stub_reach).report()
+        self.assertEqual({"tools/calc.py": frozenset({6})}, asked)
+        # The suite kills line 2's mutant, so it would count as killed had it run: only line 6's ran, and survived.
+        self.assertIn("| `tools/calc.py` | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
+        self.assertIn("- Line 6: `return a * 2 + 0` became `return a * 3 + 0`", text)
+        self.assertNotIn("Line 2", text)
+
+    def test_a_changed_module_with_no_mutant_is_named_and_no_suite_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            git(root, "switch", "--quiet", "-c", "comment", "feature")
+            change_calc(root, CALC + "# A comment, which mutmut does not mutate.\n")
+            text = Gate(root, "feature", 5, 2, GitClient(), stub_generator, refuse_reach).report()
+        self.assertIn("| `tools/calc.py` | 1 | 0 | 0 | 0 | 0 | 0 | 0 | none tested |", text)
+        self.assertIn(
+            "`tools/calc.py`: mutmut made no mutant on the 1 line this pull request changed, so none ran.", text
+        )
 
     def test_a_change_with_no_module_writes_one_line_and_makes_no_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -396,7 +496,7 @@ class WholeRunFixtures(unittest.TestCase):
             git(root, "add", ".")
             git(root, "commit", "--quiet", "-m", "docs")
 
-            def refuse(module: str, source: str) -> list[str]:
+            def refuse(module: str, source: str, lines: frozenset[int]) -> list[str]:
                 raise AssertionError("no mutant is made when no module changed")
 
             text = Gate(root, "main", 5, 2, GitClient(), refuse, stub_reach).report()
@@ -408,10 +508,45 @@ class WholeRunFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
             fixture_repository(root)
-            gate = Gate(root, "main", 5, 2, GitClient(), lambda module, source: [], stub_reach)
+            gate = Gate(root, "main", 5, 2, GitClient(), lambda module, source, lines: [], stub_reach)
             with self.assertRaisesRegex(RuntimeError, "no longer turns"):
                 gate.report()
             self.assertEqual(1, git(root, "worktree", "list", "--porcelain").count("worktree "))
+
+
+class QueueFixtures(unittest.TestCase):
+    """Two changed modules sharing one queue, with a suite run that takes the whole cap."""
+
+    def test_a_later_module_is_not_starved_when_an_earlier_modules_mutants_take_the_cap(self) -> None:
+        source = "x = 1\ny = 2\nz = 3\n"
+        modules = ["tools/a.py", "tools/b.py"]
+        now = [0.0]
+        both_started = threading.Barrier(2, timeout=30)
+
+        def run(tree: Path, suite: str, timeout: float) -> str:
+            # Both workers' first mutants start before either finishes, and the first to finish ends the cap.
+            both_started.wait()
+            now[0] = 10_000.0
+            return PASSED
+
+        def reach(tree: Path, suite: str, measured: object, timeout: float) -> Reach:
+            return Reach(1.0, dict.fromkeys(modules, frozenset({1, 2, 3})))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trees = [root / "tree-1", root / "tree-2"]
+            for tree in trees:
+                (tree / "tools").mkdir(parents=True)
+                for module in modules:
+                    (tree / module).write_text(source, encoding="utf-8")
+            git = mock.create_autospec(GitClient, instance=True)
+            git.output.return_value = "@@ -0,0 +1,3 @@\n+x = 1\n+y = 2\n+z = 3\n"
+            gate = Gate(root, "main", 1, 2, git, line_generator, reach, run, lambda: now[0])
+            with mock.patch.object(mutation_gate, "reached_suites", return_value=[root / "tests" / "test_x.py"]):
+                report = gate.mutate(trees, modules, 0.0)
+        tested = {module.module: counts(module.outcomes)[SURVIVED] for module in report.modules}
+        self.assertEqual({"tools/a.py": 1, "tools/b.py": 1}, tested)
+        self.assertTrue(all(module.cut_short for module in report.modules))
 
 
 def test_the_base_defaults_to_the_pull_requests_base_branch() -> None:
