@@ -18,9 +18,9 @@ When every changed file is documentation, it runs the policy checks and only the
 file, and, when a changed file is Markdown, the PowerShell analyzer and the ShellCheck check of Markdown Bash fences;
 anything else, or a change it cannot determine, runs everything. --full always runs everything.
 
---changed, the local check of a change, runs the policy checks, the static checks that read a changed file's kind,
-and the suites the change reaches: a changed suite, a suite that imports a changed module directly or through others,
-one that names a changed file or such an importer, one in the skill a changed file sits in, and the suites
+--changed, an optional local check of a change, runs the policy checks, the static checks that read a changed file's
+kind, and the suites the change reaches: a changed suite, a suite that imports a changed module directly or through
+others, one that names a changed file or such an importer, one in the skill a changed file sits in, and the suites
 job_selection.CHANGE_REACHES adds, such as the deployer's rendering suite for a shipped skill's files and the floor
 suites for a tool floor. A change it cannot determine runs everything.
 
