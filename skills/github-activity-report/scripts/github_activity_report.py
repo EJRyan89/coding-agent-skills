@@ -67,7 +67,15 @@ METRICS = {
     "reviews_submitted": ("reviews_submitted", "Reviews submitted"),
 }
 DEFAULT_METRIC = "prs_merged"
-HISTORY_COLUMNS = ("month", "user", *METRICS, "is_partial", "captured_at")
+# The columns of a history file written before it recorded the cap, which the report still reads.
+FIRST_HISTORY_COLUMNS = ("month", "user", *METRICS, "is_partial", "captured_at")
+HISTORY_COLUMNS = (*FIRST_HISTORY_COLUMNS, "capped")
+# The `capped` value of a row read from a file that did not record the cap; the report searches its month again.
+CAP_UNKNOWN = "unknown"
+# The metrics each search a cap can truncate counts: `_monthly` names a search by its metric's heading.
+CAPPED_METRICS = {heading: (metric,) for metric, (_, heading) in METRICS.items()} | {
+    "Reviews": ("prs_reviewed", "reviews_submitted")
+}
 MONTH_LABEL = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
 COUNT = re.compile(r"0|[1-9][0-9]*")
 PARTIAL = {"true": True, "false": False}
@@ -660,6 +668,7 @@ class HistoryRow:
     counts: dict[str, int]  # keyed by metric
     is_partial: bool
     captured_at: str
+    capped: tuple[str, ...] | None  # the metrics a search cap truncated, or None when the file did not record it
 
 
 History = dict[tuple[str, str], HistoryRow]  # keyed by month and casefolded login
@@ -669,15 +678,26 @@ def _history_key(month: str, user: str) -> tuple[str, str]:
     return month, user.casefold()
 
 
-def _history_row(fields: list[str], line: int, path: Path) -> HistoryRow:
-    """One data row of the history file, refusing any field that is not what the report writes."""
+def _capped_field(value: str) -> tuple[str, ...] | None:
+    """The metrics a row's `capped` field names, in METRICS order, or None for CAP_UNKNOWN; ValueError otherwise."""
+    if value == CAP_UNKNOWN:
+        return None
+    metrics = tuple(value.split(" ")) if value else ()
+    if metrics != tuple(metric for metric in METRICS if metric in metrics):
+        raise ValueError(value)
+    return metrics
+
+
+def _history_row(fields: list[str], line: int, path: Path, columns: tuple[str, ...]) -> HistoryRow:
+    """One data row of a history file with `columns`, refusing any field that is not what the report writes."""
 
     def refuse(what: str) -> ReportFailure:
         return ReportFailure(f"History file {path} line {line} {what}; fix or move the file and rerun", "history")
 
-    if len(fields) != len(HISTORY_COLUMNS):
-        raise refuse(f"has {len(fields)} fields, not {len(HISTORY_COLUMNS)}")
-    month, user, *counts, partial, captured_at = fields
+    if len(fields) != len(columns):
+        raise refuse(f"has {len(fields)} fields, not {len(columns)}")
+    capped_text = fields[-1] if columns == HISTORY_COLUMNS else CAP_UNKNOWN
+    month, user, *counts, partial, captured_at = fields[: len(FIRST_HISTORY_COLUMNS)]
     if not MONTH_LABEL.fullmatch(month):
         raise refuse(f"has month {month!r}, not YYYY-MM")
     if not is_login(user):
@@ -691,11 +711,19 @@ def _history_row(fields: list[str], line: int, path: Path) -> HistoryRow:
         _utc_date(captured_at, "captured_at")
     except FieldError:
         raise refuse(f"has captured_at {captured_at!r}, not a timestamp with a UTC offset") from None
-    return HistoryRow(month, user, dict(zip(METRICS, map(int, counts), strict=True)), PARTIAL[partial], captured_at)
+    try:
+        capped = _capped_field(capped_text)
+    except ValueError:
+        raise refuse(f"has capped {capped_text!r}, not {CAP_UNKNOWN} or metrics in the header's order") from None
+    counted = dict(zip(METRICS, map(int, counts), strict=True))
+    return HistoryRow(month, user, counted, PARTIAL[partial], captured_at, capped)
 
 
 def read_history(path: Path) -> History:
-    """The rows of the history file at `path`; a file that does not exist yet, or is empty, holds none."""
+    """The rows of the history file at `path`; a file that does not exist yet, or is empty, holds none.
+
+    A file written before the report recorded the cap has no `capped` column; its rows read with `capped` None.
+    """
     try:
         data = path.read_bytes()
     except FileNotFoundError:
@@ -712,7 +740,8 @@ def read_history(path: Path) -> History:
         raise ReportFailure(f"History file {path} is not CSV the report wrote: {exc}", "history") from exc
     if not records:
         return {}
-    if tuple(records[0]) != HISTORY_COLUMNS:
+    columns = tuple(records[0])
+    if columns not in (HISTORY_COLUMNS, FIRST_HISTORY_COLUMNS):
         raise ReportFailure(
             f"History file {path} does not start with the header {','.join(HISTORY_COLUMNS)}; name a history file "
             "this report wrote, or a new path",
@@ -720,7 +749,7 @@ def read_history(path: Path) -> History:
         )
     history: History = {}
     for line, fields in enumerate(records[1:], start=2):
-        row = _history_row(fields, line, path)
+        row = _history_row(fields, line, path, columns)
         key = _history_key(row.month, row.user)
         if key in history:
             raise ReportFailure(f"History file {path} line {line} repeats {row.month} for {row.user}", "history")
@@ -735,24 +764,43 @@ def render_history(history: History) -> str:
     writer.writerow(HISTORY_COLUMNS)
     for row in sorted(history.values(), key=lambda row: (row.month, row.user.casefold())):
         flag = "true" if row.is_partial else "false"
-        writer.writerow([row.month, row.user, *(row.counts[metric] for metric in METRICS), flag, row.captured_at])
+        capped = CAP_UNKNOWN if row.capped is None else " ".join(row.capped)
+        counts = (row.counts[metric] for metric in METRICS)
+        writer.writerow([row.month, row.user, *counts, flag, row.captured_at, capped])
     return buffer.getvalue()
 
 
 def months_to_pull(history: History, user: str, labels: list[str]) -> list[str]:
     """The months of `labels` to search for the user's activity: the last, which is the current, partial month, and
     each month the history lacks or captured while it was still partial, so the first run after a month ends pulls
-    it again. A closed month already in the history is never searched for again."""
+    it again, and each month a file written before the report recorded the cap holds, so its cap becomes known. A
+    closed month already in the history with its cap recorded is never searched for again."""
     pulled = []
     for label in labels:
         row = history.get(_history_key(label, user))
-        if label == labels[-1] or row is None or row.is_partial:
+        if label == labels[-1] or row is None or row.is_partial or row.capped is None:
             pulled.append(label)
     return pulled
 
 
+def capped_months(activity: Activity) -> dict[str, set[str]]:
+    """The metrics a search cap truncated in each of the activity's months.
+
+    A capped day lowers the counts of its own month, except for the review search, which is by the day a pull
+    request was last updated: its reviews fall on or before that day, so every month up to the day's is lowered.
+    """
+    capped: dict[str, set[str]] = {label: set() for label in activity.months}
+    for column, days in activity.capped.items():
+        for day in days:
+            for label in activity.months:
+                if label == day[:7] or (column == "Reviews" and label <= day[:7]):
+                    capped[label].update(CAPPED_METRICS[column])
+    return capped
+
+
 def _rows_of(activity: Activity, user: str, labels: list[str], current: str, captured_at: str) -> History:
     """History rows for the user's months in `labels`, from this run's activity."""
+    capped = capped_months(activity)
     return {
         _history_key(label, user): HistoryRow(
             label,
@@ -760,9 +808,25 @@ def _rows_of(activity: Activity, user: str, labels: list[str], current: str, cap
             {metric: getattr(activity, field)[label] for metric, (field, _) in METRICS.items()},
             label == current,
             captured_at,
+            tuple(metric for metric in METRICS if metric in capped[label]),
         )
         for label in labels
     }
+
+
+def _recorded_cap_warnings(history: History, user: str, labels: list[str]) -> list[str]:
+    """A WARNING note for each of `labels` read back from the history whose row records a capped search."""
+    lines: list[str] = []
+    for label in labels:
+        row = history[_history_key(label, user)]
+        if row.capped:
+            headings = ", ".join(METRICS[metric][1] for metric in row.capped)
+            lines.append(
+                f"- WARNING: for {user}, {label} is read from the history file, which records that GitHub's "
+                f"1000-result Search API cap truncated its {headings} when it was captured; those counts are lower "
+                "than the true totals."
+            )
+    return lines
 
 
 METRIC_NOTES = {
@@ -860,6 +924,7 @@ def compare(client: GitHubSearchClient, request: Request, history: History, now:
         except GitHubError as exc:
             raise GitHubError(f"{user}: {exc}", kind=exc.kind) from exc
         rows.update(_rows_of(activity, user, pulled, labels[-1], _captured_at(now)))
+        warnings += _recorded_cap_warnings(history, user, [label for label in labels if label not in pulled])
         warnings += _cap_warnings(activity.capped, f"for {user}, ")
     if history_path is not None:
         try:
