@@ -345,8 +345,9 @@ WORKFLOWS_DIRECTORY = ".github/workflows"
 # validate.yml takes no pull_request_target, so a pull request's code never runs with the base repository's token or
 # secrets. deployable.yml takes only dispatch and a weekly schedule, so it can never be a required status check or run
 # on a pull request, and its schedule is Tuesday's, the day after validate.yml's Monday run. runtime-command-lines.yml
-# likewise takes only dispatch and a weekly schedule, Wednesday's, the day after deployable.yml's. mutation.yml runs on
-# pull requests only, also without pull_request_target, and its job is not the required check.
+# likewise takes only dispatch and a weekly schedule, Wednesday's, the day after deployable.yml's, and
+# runtime-changelogs.yml Thursday's, the day after that. mutation.yml runs on pull requests only, also without
+# pull_request_target, and its job is not the required check.
 WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
     "deployable.yml": (
         ["workflow_dispatch", "schedule"],
@@ -358,6 +359,11 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
         ["workflow_dispatch", "schedule"],
         {"actions/checkout", "actions/setup-python", "actions/setup-node"},
         ("23 6 * * 3",),
+    ),
+    "runtime-changelogs.yml": (
+        ["workflow_dispatch", "schedule"],
+        {"actions/checkout", "actions/setup-python"},
+        ("23 6 * * 4",),
     ),
     "validate.yml": (
         ["pull_request", "push", "schedule", "workflow_dispatch"],
@@ -674,6 +680,34 @@ def command_line_job_problems(workflow: str) -> list[str]:
     return problems
 
 
+# What runtime-changelogs.yml's one job runs: the watch, on Ubuntu, whose findings go to the step summary and whose
+# own failure alone fails the job. It installs no runtime, since it reads changelogs and pages, not programs.
+CHANGELOG_JOB = ("changelogs", "ubuntu-latest", 'python3 tools/runtime_changelogs.py --summary "$GITHUB_STEP_SUMMARY"')
+
+
+def changelog_job_problems(workflow: str) -> list[str]:
+    """Report how runtime-changelogs.yml departs from its watch: one job on its runner, running the watch once as the
+    last line of its step, so its exit status is the step's, installing no runtime, and never told to go on after an
+    error."""
+    name, runner, watch = CHANGELOG_JOB
+    jobs = _mapping(read_workflow(workflow), "jobs")
+    if set(jobs) != {name}:
+        return [f"the jobs are {sorted(jobs)}, not [{name!r}]"]
+    job = _mapping(jobs, name)
+    problems = [] if job.get("runs-on") == runner else [f"the {name} job runs on {job.get('runs-on')}, not {runner}"]
+    steps = _steps(job)
+    scripts = [_script_lines(step) for step in steps if "run" in step]
+    if [lines[-1] for lines in scripts if watch in lines] != [watch] or sum(
+        lines.count(watch) for lines in scripts
+    ) != 1:
+        problems.append(f"the {name} job must run {watch!r} once, as the last line of its step")
+    if any("npm install" in line for lines in scripts for line in lines):
+        problems.append(f"the {name} job installs a runtime, which the watch never starts")
+    if "continue-on-error" in job or any("continue-on-error" in step for step in steps):
+        problems.append(f"the {name} job goes on after an error, so a watch that cannot run would not fail it")
+    return problems
+
+
 LINUX_VERIFY = re.compile(r"python3\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)")
 
 
@@ -869,7 +903,7 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
-        for name in ("deployable.yml", "mutation.yml", "runtime-command-lines.yml"):
+        for name in ("deployable.yml", "mutation.yml", "runtime-command-lines.yml", "runtime-changelogs.yml"):
             workflow = (workflows / name).read_text(encoding="utf-8")
             # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
             shared = {action for action, _, _ in action_pins(workflow)} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
@@ -884,6 +918,10 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_runtime_command_lines_workflow_checks_the_latest_runtimes_on_both_platforms(self) -> None:
         workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "runtime-command-lines.yml").read_text(encoding="utf-8")
         self.assertEqual([], command_line_job_problems(workflow))
+
+    def test_runtime_changelogs_workflow_runs_the_watch_whose_own_failure_alone_fails_it(self) -> None:
+        workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "runtime-changelogs.yml").read_text(encoding="utf-8")
+        self.assertEqual([], changelog_job_problems(workflow))
 
     def test_mutation_workflow_runs_the_gate_on_pull_requests_outside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "mutation.yml").read_text(encoding="utf-8")
