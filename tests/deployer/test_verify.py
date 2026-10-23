@@ -732,6 +732,50 @@ class VerifyCommandTests(DeployerTestCase):
         copilot_call = next(call for call in self.runtimes.calls if call[0][0] == EXECUTABLES["copilot"])
         self.assertEqual(str(copilot_home), copilot_call[2]["COPILOT_HOME"])
 
+    def test_copilot_home_is_named_when_copilot_lists_a_same_named_skill_in_place_of_any_adapter(self) -> None:
+        # With COPILOT_HOME set, a same-named skill under it is the copy Copilot lists, so the adapter is SHADOWED
+        # though Copilot read none of the adapters; the note explains every mix of SHADOWED and NOT FOUND lines.
+        copilot_home = self.root / "copilot home"
+        alpha = forward(copilot_home / "skills" / "alpha")
+        beta = forward(copilot_home / "skills" / "beta")
+        for copilot, expected in (
+            ([("alpha", alpha, True)], {"SHADOWED": [f"alpha (also {alpha})"], "NOT FOUND": ["beta"]}),
+            (
+                [("alpha", alpha, True), ("beta", beta, True)],
+                {"SHADOWED": [f"alpha (also {alpha})", f"beta (also {beta})"]},
+            ),
+        ):
+            with self.subTest(copilot=copilot), mock.patch.dict(os.environ, {"COPILOT_HOME": str(copilot_home)}):
+                self.answer(copilot=copilot)
+                result = self.verify()
+                self.assertEqual(1, result.code, result.output)
+                self.assertEqual(expected, self.groups(result.output, "COPILOT CLI"))
+                self.assertIn(self.copilot_home_note(copilot_home), " ".join(result.output.split()))
+
+    def test_copilot_home_is_not_named_when_copilot_lists_any_adapter_among_other_lines(self) -> None:
+        copilot_home = self.root / "copilot home"
+        alpha = forward(copilot_home / "skills" / "alpha")
+        for copilot, expected in (
+            (
+                [("alpha", alpha, True), ("beta", self.adapter("beta"), True)],
+                {"SHADOWED": [f"alpha (also {alpha})"], "FOUND": ["beta"]},
+            ),
+            (
+                [("beta", self.adapter("beta"), False)],
+                {"NOT FOUND": ["alpha"], "DISABLED": ["beta (turned off in the runtime's settings)"]},
+            ),
+            (
+                [("alpha", alpha, True), ("beta", self.adapter("beta"), False)],
+                {"SHADOWED": [f"alpha (also {alpha})"], "DISABLED": ["beta (turned off in the runtime's settings)"]},
+            ),
+        ):
+            with self.subTest(copilot=copilot), mock.patch.dict(os.environ, {"COPILOT_HOME": str(copilot_home)}):
+                self.answer(copilot=copilot)
+                result = self.verify()
+                self.assertEqual(1, result.code, result.output)
+                self.assertEqual(expected, self.groups(result.output, "COPILOT CLI"))
+                self.assertNotIn("COPILOT_HOME is set", result.output)
+
     def test_copilot_home_is_named_only_when_it_is_set_and_copilot_lists_no_adapter(self) -> None:
         copilot_home = self.root / "copilot home"
         for environment, copilot in (

@@ -24,7 +24,7 @@ After deployment, run the read-only discovery check:
 python deploy.py verify
 ```
 
-The verifier runs `copilot skill list --json` from an empty directory, so no repository skill takes part, and compares each manifest-owned adapter with the copy Copilot lists. Copilot lists one copy per name, the one it will use, so an adapter is `FOUND` only when that copy is the adapter and it is enabled. A same-named skill under Copilot's personal skills is reported as `SHADOWED`, with its path. When Copilot lists none of the adapters because `COPILOT_HOME` hides them, the report says so after its `NOT FOUND` lines. The command performs discovery only; it does not start an AI session or consume a model request. It reports Copilot CLI older than 1.0.88 as `OUTDATED` without starting it. It checks Codex the same way when Codex is installed; see [Codex support](codex-support.md#checking-discovery). On Linux, Copilot reads personal skills under `HOME`, where the deployer installs, and the check runs the same way, as `python3 deploy.py verify`; the [`deployable` workflow](../.github/workflows/deployable.yml) runs it on a fresh Ubuntu runner as it does on a fresh Windows one.
+The verifier runs `copilot skill list --json` from an empty directory, so no repository skill takes part, and compares each manifest-owned adapter with the copy Copilot lists. Copilot lists one copy per name, the one it will use, so an adapter is `FOUND` only when that copy is the adapter and it is enabled. A same-named skill under Copilot's personal skills is reported as `SHADOWED`, with its path. When Copilot lists none of the adapters because `COPILOT_HOME` hides them, the report says so after its `NOT FOUND` and `SHADOWED` lines. The command performs discovery only; it does not start an AI session or consume a model request. It reports Copilot CLI older than 1.0.88 as `OUTDATED` without starting it. It checks Codex the same way when Codex is installed; see [Codex support](codex-support.md#checking-discovery). On Linux, Copilot reads personal skills under `HOME`, where the deployer installs, and the check runs the same way, as `python3 deploy.py verify`; the [`deployable` workflow](../.github/workflows/deployable.yml) runs it on a fresh Ubuntu runner as it does on a fresh Windows one.
 
 ## Copilot's configuration directory
 
@@ -34,7 +34,7 @@ The deployer reads `COPILOT_HOME` but never writes into Copilot's configuration 
 
 - the shadow check looks for same-named skills in `$COPILOT_HOME/skills` while the variable is set;
 - a deployment warns when the variable names another directory than `~/.copilot`, printing the folder to set it to; and
-- `python deploy.py verify`, which starts Copilot with your environment, explains the `NOT FOUND` lines when the variable hides every adapter.
+- `python deploy.py verify`, which starts Copilot with your environment, explains the `NOT FOUND` and `SHADOWED` lines when the variable hides every adapter.
 
 The deployer cannot see `--config-dir`, an argument of one session, so a session started with it finds none of the adapters without a warning. To use the deployed skills in Copilot CLI, leave `COPILOT_HOME` unset, or set it to the `.copilot` folder of your home spelled as the warning prints it, and start Copilot without `--config-dir`. A `--canary-home` deployment ignores `COPILOT_HOME`, since its runtimes read the throwaway home.
 
