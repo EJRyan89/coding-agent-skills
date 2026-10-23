@@ -40,6 +40,12 @@ HAND_WRITTEN_INTERPRETER = re.compile(r"(?<![\w./{}-])python3?(?![\w./}-])")
 # then what it runs. A span naming the interpreter or an option alone, such as `python -c`, names no command.
 HAND_WRITTEN_SPAN_COMMAND = re.compile(r"\s*python3?(?:\s+-\S*)*\s+[^-\s]")
 INTERPRETER_DOC = '"Template values" in docs/adding-a-skill.md'
+# A token config.OPTIONAL_VARIABLES lets render empty, quoted as a word of its own. Windows PowerShell 5.1 drops an
+# empty argument, so the option before it takes the next one; joined to its option, as --name="{{TOKEN}}", the
+# word is never empty.
+LONE_OPTIONAL_TOKEN = re.compile(
+    r"(?<![^ \t\n;|&()])([\"'])\{\{(" + "|".join(config.OPTIONAL_VARIABLES) + r")\}\}\1(?![^ \t\n;|&()])"
+)
 
 
 def _shell_units(path: Path) -> list[tuple[str, int, str]]:
@@ -119,6 +125,11 @@ def _shell_tokens(text: str, context: str) -> list[tuple[int, str, bool]]:
         word_start = quote is None and char in SHELL_WORD_BREAKS
         index += 1
     return found
+
+
+def _lone_optional_tokens(text: str) -> list[tuple[int, str]]:
+    """Each token that may render empty quoted as a word of its own, as (line offset, name)."""
+    return [(text.count("\n", 0, lone.start()), lone.group(2)) for lone in LONE_OPTIONAL_TOKEN.finditer(text)]
 
 
 def _called(node: ast.AST) -> str:
@@ -206,7 +217,8 @@ def _executed_shell_tokens(root: Path, unreadable: list[str]) -> set[tuple[str, 
 
 
 def shell_token_problems(root: Path) -> list[str]:
-    """Report a token in shipped Bash or PowerShell outside quotes, or with no execution fixture in that language.
+    """Report a token in shipped Bash or PowerShell outside quotes, one that may render empty as an argument of its
+    own, or one with no execution fixture in that language.
 
     "Template values" in docs/adding-a-skill.md keeps tokens quoted in executable content, and CLAUDE.md asks for a
     rendered execution fixture with representative values containing spaces.
@@ -220,6 +232,12 @@ def shell_token_problems(root: Path) -> list[str]:
     for path in files:
         name = path.relative_to(root).as_posix()
         for context, start, text in _shell_units(path):
+            unquoted += [
+                f"{name}:{start + offset} passes {{{{{token}}}}} as an argument of its own in {SHELL_LABELS[context]}, "
+                "which Windows PowerShell drops when the value is empty; join it to its option, as "
+                f'--name="{{{{{token}}}}}"'
+                for offset, token in _lone_optional_tokens(text)
+            ]
             for offset, token, quoted in _shell_tokens(text, context):
                 line = start + offset
                 # An interpreter is a command word from a fixed set, so it renders unquoted, as a command must.

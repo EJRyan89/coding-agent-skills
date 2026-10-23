@@ -145,6 +145,39 @@ class ShellTargetsFixtures(unittest.TestCase):
             markdown_shell_check(REPOSITORY_ROOT, [])
         self.assertIn("ShellCheck was not found: winget install --id koalaman.shellcheck", str(raised.exception))
 
+    def test_a_token_that_may_render_empty_joins_its_option_rather_than_standing_as_an_argument(self) -> None:
+        # Windows PowerShell 5.1 drops an empty argument, so --protected "" lets --protected take the next word.
+        lone = '--protected "{{REPO_CLEANUP_PROTECTED}}" "t"'
+        joined = '--protected="{{REPO_CLEANUP_PROTECTED}}" --regenerable "x{{REPO_CLEANUP_REGENERABLE}}" "t"'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": f"```bash\nrun {lone}\n```\n\n```powershell\nrun {joined}\n"
+                    f"run {lone}\n```\n",
+                    "skills/alpha/scripts/run.ps1": "run '{{REPO_CLEANUP_REGENERABLE}}'\n",
+                },
+            )
+            problems = [problem for problem in shell_token_problems(root) if "*with_spaces*" not in problem]
+            self.assertEqual(
+                [
+                    f"skills/alpha/SKILL.md:{line} passes {{{{{token}}}}} as an argument of its own in {label}, which "
+                    "Windows PowerShell drops when the value is empty; join it to its option, as "
+                    f'--name="{{{{{token}}}}}"'
+                    for line, token, label in (
+                        (2, "REPO_CLEANUP_PROTECTED", "Bash"),
+                        (7, "REPO_CLEANUP_PROTECTED", "PowerShell"),
+                    )
+                ]
+                + [
+                    "skills/alpha/scripts/run.ps1:1 passes {{REPO_CLEANUP_REGENERABLE}} as an argument of its own in "
+                    "PowerShell, which Windows PowerShell drops when the value is empty; join it to its option, as "
+                    '--name="{{REPO_CLEANUP_REGENERABLE}}"'
+                ],
+                problems,
+            )
+
     def test_an_interpreter_token_stands_unquoted_as_a_command_word_but_still_needs_its_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
