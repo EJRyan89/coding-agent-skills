@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import audit_repository as audit
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import Backoff, CommandResult, GitHubClient
+from guidance_record import PYTHON_SUBJECT, Page
 
 SCRIPT = Path(__file__).resolve().parent / "audit_repository.py"
 REPOSITORY = Path(__file__).resolve().parents[4]
@@ -1258,6 +1259,16 @@ class GuidanceTests(Fixture):
         _, lines = self.run_main("guidance", repository=linked)
         self.assertIn("SUBJECT alpha 2 v0.2.0", lines)
 
+    def test_record_keeps_the_changelogs_as_they_are(self) -> None:
+        linked = self.linked_worktree()
+        changelogs = [changelog("alpha"), changelog("beta", format="github-releases", read_through="0.9")]
+        (linked / GUIDANCE).write_text(
+            json.dumps({"pages": FIXTURE_PAGES, "changelogs": changelogs}, indent=2) + "\n", encoding="utf-8"
+        )
+        code, lines = self.run_main("guidance", "--record", "v0.2.0", github=StubGitHub(), repository=linked)
+        self.assertEqual(0, code, lines)
+        self.assertEqual(changelogs, json.loads((linked / GUIDANCE).read_text(encoding="utf-8"))["changelogs"])
+
     def test_record_refuses_a_recorded_or_unknown_tag_and_the_main_checkout_and_leaves_the_record(self) -> None:
         linked = self.linked_worktree()
         cases = (
@@ -1316,6 +1327,16 @@ def test_a_malformed_guidance_record_fails_with_the_reason(
     assert reason in str(caught.value)
 
 
+def changelog(subject: str, **fields: str) -> dict[str, str]:
+    return {
+        "subject": subject,
+        "url": f"https://example.com/{subject}.md",
+        "format": "markdown",
+        "read_through": "1.2.3",
+        **fields,
+    }
+
+
 def test_a_missing_or_unreadable_guidance_record_fails_with_the_reason(tmp_path: Path) -> None:
     with pytest.raises(audit.AuditError) as missing:
         audit.read_guidance(tmp_path / "missing.json", ["alpha"])
@@ -1327,8 +1348,8 @@ def test_a_missing_or_unreadable_guidance_record_fails_with_the_reason(tmp_path:
 
 
 def test_the_oldest_read_is_never_while_a_page_is_unread_and_otherwise_the_earliest_last_read() -> None:
-    def pages(*reads: tuple[str, ...]) -> list[audit.Page]:
-        return [audit.Page(f"https://example.com/{n}", "alpha", "x", read) for n, read in enumerate(reads)]
+    def pages(*reads: tuple[str, ...]) -> list[Page]:
+        return [Page(f"https://example.com/{n}", "alpha", "x", read) for n, read in enumerate(reads)]
 
     assert audit.oldest_read(pages(("v0.1.0",), ())) == "never"
     assert audit.oldest_read(pages(("v0.1.0", "v0.2.0"), ("v0.1.0",))) == "v0.1.0"
@@ -1336,8 +1357,8 @@ def test_the_oldest_read_is_never_while_a_page_is_unread_and_otherwise_the_earli
 
 
 def test_the_oldest_read_follows_the_release_order_whatever_the_record_order() -> None:
-    def pages(*reads: tuple[str, ...]) -> list[audit.Page]:
-        return [audit.Page(f"https://example.com/{n}", "alpha", "x", read) for n, read in enumerate(reads)]
+    def pages(*reads: tuple[str, ...]) -> list[Page]:
+        return [Page(f"https://example.com/{n}", "alpha", "x", read) for n, read in enumerate(reads)]
 
     assert audit.oldest_read(pages(("v0.10.0",), ("v0.9.0",))) == "v0.9.0"
     assert audit.oldest_read(pages(("v0.9.0",), ("v0.10.0",))) == "v0.9.0"
@@ -1347,14 +1368,19 @@ def test_the_oldest_read_follows_the_release_order_whatever_the_record_order() -
 class RepositoryGuidanceTests(unittest.TestCase):
     """This repository's own guidance record."""
 
-    def pages(self) -> list[audit.Page]:
+    def pages(self) -> list[Page]:
         runtimes = audit.supported_runtimes(REPOSITORY)
-        return audit.read_guidance(REPOSITORY / GUIDANCE, [*runtimes, audit.PYTHON_SUBJECT])
+        return audit.read_guidance(REPOSITORY / GUIDANCE, [*runtimes, PYTHON_SUBJECT])
 
     def test_it_names_pages_for_every_supported_runtime_and_for_python(self) -> None:
         subjects = {found.subject for found in self.pages()}
         self.assertEqual({"claude-code", "codex", "copilot-cli", "python"}, subjects)
         self.assertEqual([], audit.unread_runtimes(self.pages(), list(audit.supported_runtimes(REPOSITORY))))
+
+    def test_it_names_a_changelog_for_every_supported_runtime_and_none_for_python(self) -> None:
+        runtimes = audit.supported_runtimes(REPOSITORY)
+        record = audit.read_guidance_record(REPOSITORY / GUIDANCE, [*runtimes, PYTHON_SUBJECT])
+        self.assertEqual({"claude-code", "codex", "copilot-cli"}, {found.subject for found in record.changelogs})
 
     def test_every_page_a_provenance_file_cites_is_in_the_record(self) -> None:
         recorded = {found.url for found in self.pages()}
@@ -1374,8 +1400,8 @@ class RepositoryGuidanceTests(unittest.TestCase):
     ) -> None:
         runtimes = audit.supported_runtimes(REPOSITORY)
         self.assertEqual(sorted(runtimes), sorted(audit.RUNTIME_FACTS))
-        for subject in (*runtimes, audit.PYTHON_SUBJECT):
-            facts = audit.PYTHON_FACTS if subject == audit.PYTHON_SUBJECT else audit.RUNTIME_FACTS[subject]
+        for subject in (*runtimes, PYTHON_SUBJECT):
+            facts = audit.PYTHON_FACTS if subject == PYTHON_SUBJECT else audit.RUNTIME_FACTS[subject]
             with self.subTest(subject=subject):
                 self.assertEqual([path for path, _ in facts], self.named(subject))
                 self.assertEqual(len(facts), len({path for path, _ in facts}))
