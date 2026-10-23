@@ -888,8 +888,9 @@ def load_manifest_from_commit(
     runner: Runner = subprocess_runner,
 ) -> dict[str, Any]:
     relative = _safe_relative_path(manifest_path, "manifest_path")
+    content = _read_git_file(checkout, commit, relative, runner)  # its own refusals are RuntimeContractErrors already
     try:
-        manifest = parse_json(_read_git_file(checkout, commit, relative, runner).decode("utf-8-sig"))
+        manifest = parse_json(content.decode("utf-8-sig"))
     except CONTENT_ERRORS as exc:
         raise RuntimeContractError(f"Adapter manifest is not valid UTF-8 JSON: {exc}") from exc
     return validate_adapter_manifest(manifest)
@@ -912,6 +913,8 @@ def load_manifest_from_file(path: Path) -> dict[str, Any]:
         if path.stat().st_size > MAX_LOCAL_MANIFEST_BYTES:
             raise RuntimeContractError(f"Local reviewer manifest is too large: {path}")
         value = parse_json(path.read_text(encoding="utf-8-sig"))
+    except RuntimeContractError:
+        raise
     except (OSError, *CONTENT_ERRORS) as exc:
         raise RuntimeContractError(f"Local reviewer manifest is not valid UTF-8 JSON: {path}: {exc}") from exc
     manifest = validate_adapter_manifest(value)

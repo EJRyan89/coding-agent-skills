@@ -2297,6 +2297,28 @@ class AdapterManifestValidationTests(unittest.TestCase):
                         self.assertIs(error, type(caught.exception))
                         self.assertEqual(message, str(caught.exception))
 
+    def test_manifest_loaders_keep_their_own_refusals_apart_from_a_parse_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            folder = root / "manifest folder"
+            folder.mkdir()
+            large = root / "large.json"
+            large.write_bytes(b" " * (review_runtime.MAX_LOCAL_MANIFEST_BYTES + 1))
+            for path, message in (
+                (folder, f"Local reviewer manifest is not a regular file: {folder}"),
+                (large, f"Local reviewer manifest is too large: {large}"),
+            ):
+                with self.subTest(message=message), self.assertRaises(RuntimeContractError) as caught:
+                    review_runtime.load_manifest_from_file(path)
+                self.assertEqual(message, str(caught.exception))
+            missing = RuntimeContractError("Declared reviewer file is missing: manifest.json")
+            with (
+                mock.patch.object(review_runtime, "_read_git_file", side_effect=missing),
+                self.assertRaises(RuntimeContractError) as caught,
+            ):
+                review_runtime.load_manifest_from_commit(root, HEAD, "manifest.json")
+            self.assertIs(missing, caught.exception)
+
     def test_manifest_loaders_refuse_content_the_parser_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
