@@ -123,7 +123,8 @@ EOF
 
 # The upstream carries a stand-in deploy.py that records its arguments, prints $FAKE_DEPLOY_STDERR to stderr when it is
 # set, and exits with $FAKE_DEPLOY_EXIT. A deployment that succeeds records the commit it ran from, or the commit --at
-# names and the ref as its pin, as the real one does, and check names that commit and the pin, or prints
+# names and the ref as its pin, keeping a recorded pin's ref at its own commit unless --unpin is given, as the real one
+# does, and check names that commit and the pin, or prints
 # $FAKE_CHECK_OUTPUT when it is set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
 # recorded pin without --unpin: with --at only a pin at another commit that is not the full name of the last release
 # its commit holds, and without --at any pin.
@@ -167,9 +168,10 @@ named = git_lines("rev-parse", "--verify", (at or "HEAD") + "^{commit}")[0] if c
 if code == 0 and pin and "--unpin" not in arguments and (at is None or (named != commit and not release_pin())):
     print(f"ERROR: Refusing to replace the deployment pinned with --at {pin} to {commit} without --unpin.", file=sys.stderr)
     code = 1
+ref = pin if at and pin and named == commit and "--unpin" not in arguments else at
 if code == 0:
     with open(record, "w", encoding="utf-8") as recorded:
-        recorded.write(named + ("\n" + at if at else ""))
+        recorded.write(named + ("\n" + ref if ref else ""))
 raise SystemExit(code)
 EOF
 printf '__pycache__/\n.fake-deployed\n' >"$SEED/.gitignore"
@@ -1185,15 +1187,15 @@ for PIN in "$V41 v4.1.0" "$LATEST_COMMIT refs/tags/latest" "$V41 main~5"; do
   expect_not_deployed "user pin ${PIN#* }"
 done
 
-# A user's pin at the release's own commit is the deployment the update makes, so it does not stop it, and the update
-# then pins the release under its full name.
+# A user's pin at the release's own commit is the deployment the update makes, so it does not stop it, and the pin
+# stays the user's, under the name the user gave it.
 begin_case 'user pin at the release'
 printf '%s\nv4.2.0\n' "$RELEASE_COMMIT" >"$CLONE/.fake-deployed"
 run_subject "$CLONE" release
 expect_status 0 "user pin at the release"
 expect_first_line "UP_TO_DATE v4.2.0" "user pin at the release"
 expect_deployed "user pin at the release" "--all --at refs/tags/v4.2.0"
-[ "$(recorded_line 2)" = "refs/tags/v4.2.0" ] || fail "user pin at the release: the pin is $(recorded_line 2)"
+[ "$(recorded_line 2)" = "v4.2.0" ] || fail "user pin at the release: the pin is $(recorded_line 2)"
 
 # A user's pin check cannot read stops the release channel too, before the fetch, and --cross-major does not move it:
 # without a deployed commit the update would otherwise stop only at the major release, and once accepted, deploy.
@@ -1252,6 +1254,33 @@ expect_status 0 "release major accepted"
 expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$RELEASE_COMMIT")..v5.0.0" "release major accepted"
 grep -qx "CROSSED v4.2.0..v5.0.0" <<<"$OUTPUT" || fail "release major accepted: crossing not named: $OUTPUT"
 expect_deployed "release major accepted" "--all --at refs/tags/v5.0.0"
+
+# A user's pin the update deployed its release over is still the user's at the next release: the release channel
+# stops at it, the deployer's refusal ends an update that could not read it with DEPLOY_PINNED, and only --unpin moves
+# it to the release.
+begin_case 'user pin at the release, then the next release'
+V5=$(git -C "$SEED" rev-parse "v5.0.0^{commit}")
+printf '%s\nv5.0.0\n' "$V5" >"$CLONE/.fake-deployed"
+run_subject "$CLONE" release
+expect_status 0 "user pin at the release before the next"
+expect_deployed "user pin at the release before the next" "--all --at refs/tags/v5.0.0"
+[ "$(recorded_line 2)" = "v5.0.0" ] || fail "user pin at the release before the next: the pin is $(recorded_line 2)"
+publish "five one"
+tag_upstream v5.1.0
+run_subject "$CLONE" release
+expect_status 1 "user pin at the next release"
+[ "$OUTPUT" = "PINNED v5.0.0 $V5" ] || fail "user pin at the next release: expected only the PINNED line, got: $OUTPUT"
+expect_not_deployed "user pin at the next release"
+FAKE_CHECK_OUTPUT="Deployed commit: v5.0.0 ($V5)" run_subject "$CLONE" release
+expect_status 1 "user pin at the next release unread"
+[ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_PINNED v5.0.0 $V5" ] ||
+  fail "user pin at the next release unread: expected DEPLOY_PINNED v5.0.0 $V5 last, got: $OUTPUT"
+[ "$(recorded_line 2)" = "v5.0.0" ] || fail "user pin at the next release unread: the pin is $(recorded_line 2)"
+run_subject "$CLONE" release --unpin
+expect_status 0 "user pin at the next release unpinned"
+expect_deployed "user pin at the next release unpinned" "--all --at refs/tags/v5.1.0 --unpin"
+[ "$(recorded_line 2)" = "refs/tags/v5.1.0" ] ||
+  fail "user pin at the next release unpinned: the pin is $(recorded_line 2)"
 
 # With no deployed commit to read, the release channel stops at any release, and once --cross-major accepts it the
 # update names the deployed commit unknown and lists the commits the release adds to local main, as the stop did.

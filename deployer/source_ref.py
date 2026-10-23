@@ -94,6 +94,18 @@ def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> boo
     return release is not None and ref == f"{TAGS}{release}"
 
 
+def recorded_ref(pin: Pin | None, ref: str | None, commit: str | None, *, unpin: bool) -> str | None:
+    """The ref the manifest records a deployment pinned with, given the pin it records now: --at's, or None without.
+
+    A deployment at the pinned commit keeps the recorded ref as it was written unless it passes --unpin, since the
+    ref's form tells update-coding-agent-skills' own pin from the user's (is_release_pin): recording the update's
+    refs/tags/<tag> over a user's short name would let the next release move the user's pin without --unpin.
+    """
+    if pin is None:
+        return None
+    return ref if ref is not None and pin.commit == commit and not unpin else pin.ref
+
+
 def export(source_dir: Path, commit: str) -> Path:
     """A fresh directory under the system temporary directory whose `tree` folder holds the commit's files.
 
