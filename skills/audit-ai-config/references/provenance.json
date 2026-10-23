@@ -182,7 +182,7 @@
         "passage": "The instruction files Copilot Chat, the cloud agent, code review, and Copilot CLI read differ by surface and by editor: in VS Code, Copilot Chat reads AGENTS.md as its only agent file and code review reads only repository-wide instructions."
       },
       {
-        "page": "https://code.visualstudio.com/docs/copilot/customization/custom-instructions",
+        "page": "https://code.visualstudio.com/docs/agent-customization/custom-instructions",
         "passage": "VS Code settings decide which instruction files its chat reads: chat.useAgentsMdFile for a root AGENTS.md, chat.useClaudeMdFile for CLAUDE.md, github.copilot.chat.codeGeneration.useInstructionFiles for .github/copilot-instructions.md, and chat.includeApplyingInstructions for applyTo instructions."
       },
       {
