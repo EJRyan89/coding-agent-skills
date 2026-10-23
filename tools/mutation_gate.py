@@ -23,13 +23,16 @@ process the suite starts imports it.
 
 Which suites run against a mutant is measured, not guessed. The suites that reach the changed modules, as
 `job_selection.reached_suites` selects them for `--changed`, each run once unmutated under coverage.py with its
-subprocess measurement on, which records the lines of the changed modules each suite executes, in its own process or in
-one it started with the environment passed on. A mutant then runs the suites that executed its line, fastest first,
-until one fails: the mutant is killed, or timed out when a suite runs past three times its unmutated time. A mutant
-every one of those suites passes survived. A mutant on a line no suite executed is not reached, and a suite that fails
-unmutated, or whose coverage data `coverage combine` or `coverage json` fails or times out on, is left out and named
-with the step and its output, never read as a suite that reached nothing. The Bash and PowerShell suites run no Python
-module and are not used.
+subprocess measurement on, which records the statements of the changed modules each suite executes, in its own process
+or in one it started with the environment passed on; the gate's own coverage steps and suite runs are never measured.
+coverage.py records a statement by its first line, and the lines its report names executed, missing, or excluded are the
+first lines of all the module's statements, so each line up to the next of them belongs to the statement above it, and a
+mutant on a continuation line of a multi-line statement is reached when that statement ran. A mutant then runs the
+suites that executed its statement, fastest first, until one fails: the mutant is killed, or timed out when a suite runs
+past three times its unmutated time. A mutant every one of those suites passes survived. A mutant in a statement no
+suite executed is not reached, and a suite that fails unmutated, or whose coverage data `coverage combine` or `coverage
+json` fails or times out on, is left out and named with the step and its output, never read as a suite that reached
+nothing. The Bash and PowerShell suites run no Python module and are not used.
 
 When no changed line yields a mutant, no suite runs. Otherwise the run is bounded by --minutes (DEFAULT_MINUTES): the
 reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
@@ -256,8 +259,10 @@ def generator_problem(generate: Generator) -> str | None:
 
 
 def suite_environment() -> dict[str, str]:
-    """This process's environment for a suite: no bytecode written, so a mutant the same size as the module and
-    written within the same second is never read from a stale cache, and no coverage measurement."""
+    """This process's environment for a suite or a coverage step: no bytecode written, so a mutant the same size as the
+    module and written within the same second is never read from a stale cache, and no coverage measurement, which a
+    process inheriting coverage.py's subprocess setting starts from coverage.py's .pth file, importing the installed
+    coverage.py before `-m coverage` is resolved."""
     environment = {key: value for key, value in os.environ.items() if not key.startswith("COVERAGE_PROCESS_")}
     return {**environment, "PYTHONDONTWRITEBYTECODE": "1"}
 
@@ -295,8 +300,24 @@ def coverage_settings(folder: Path, files: Iterable[Path]) -> str:
     )
 
 
+def statement_lines(entry: Mapping[str, Iterable[int]], last: int) -> frozenset[int]:
+    """Every line of each statement a coverage.py JSON report's entry for a module says ran, up to the module's last.
+
+    coverage.py records a statement by its first line alone, and the lines it reports executed, missing, or excluded
+    are the first lines of all its statements, so each line from an executed statement's first line up to the next
+    statement's belongs to it: a continuation line of a multi-line call, argument list, or literal among them."""
+    executed = {int(line) for line in entry.get("executed_lines", ())}
+    starts = executed | {int(line) for key in ("missing_lines", "excluded_lines") for line in entry.get(key, ())}
+    lines: set[int] = set()
+    for start, end in itertools.pairwise([*sorted(starts), max([last, *starts]) + 1]):
+        if start in executed:
+            lines.update(range(start, end))
+    return frozenset(lines)
+
+
 def executed_lines(report: Mapping[str, object], tree: Path, modules: Sequence[str]) -> dict[str, frozenset[int]]:
-    """The lines of each module a coverage.py JSON report says ran, its files named by any path into the worktree."""
+    """The lines of each module a coverage.py JSON report says ran, every line of a multi-line statement included, its
+    files named by any path into the worktree."""
     lines = {module: frozenset[int]() for module in modules}
     files = report.get("files")
     for name, entry in files.items() if isinstance(files, dict) else ():
@@ -306,7 +327,8 @@ def executed_lines(report: Mapping[str, object], tree: Path, modules: Sequence[s
         except ValueError:
             continue
         if module in lines and isinstance(entry, dict):
-            lines[module] = frozenset(int(line) for line in entry.get("executed_lines", ()))
+            last = len((tree / module).read_bytes().splitlines())
+            lines[module] = statement_lines(entry, last)
     return lines
 
 
@@ -338,7 +360,11 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
             step = f"coverage {command[0]}"
             try:
                 done = run_bounded(
-                    [*python, "coverage", *command], MINIMUM_SUITE_SECONDS, cwd=tree, output_limit=OUTPUT_LIMIT
+                    [*python, "coverage", *command],
+                    MINIMUM_SUITE_SECONDS,
+                    cwd=tree,
+                    env=suite_environment(),
+                    output_limit=OUTPUT_LIMIT,
                 )
             except subprocess.TimeoutExpired:
                 return f"timed out in {code(step)}"
@@ -537,7 +563,8 @@ def summary(report: Report) -> str:
         f"- Modules changed since `{report.base}`: {len(report.modules)}; mutants made by mutmut {report.mutmut} on "
         "the lines the pull request changed.",
         f"- {report.workers} workers ran for {report.seconds / 60:.0f} of the {report.minutes} minutes the gate is "
-        "capped at; a mutant ran against the suites that executed its line unmutated, fastest first, until one failed.",
+        "capped at; a mutant ran against the suites that executed its statement unmutated, fastest first, until one "
+        "failed.",
         "",
         "| Module | Changed lines | Mutants | Killed | Timed out | Survived | Not reached | Not run | Kill ratio |",
         "|---|---|---|---|---|---|---|---|---|",
@@ -615,8 +642,8 @@ class Gate:
             reach, failed, unmeasured = measure_reach(
                 workers, suites, mutated, reach_deadline(started, deadline), self.reach
             )
-        queue = queue_order(mutants for _, mutants in selected.values())
-        outcomes = try_mutants(workers, queue, reach, deadline, self.run)
+        ordered = queue_order(mutants for _, mutants in selected.values())
+        outcomes = try_mutants(workers, ordered, reach, deadline, self.run)
         reports = []
         for module, (lines, _) in selected.items():
             found = [outcome for outcome in outcomes if outcome.mutant.module == module]

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import tempfile
 import threading
 import types
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -94,6 +96,31 @@ def line_generator(module: str, source: str, lines: frozenset[int]) -> list[str]
     return made
 
 
+MULTILINE_CALC = (
+    "def add(a, b):\n"
+    "    return a + b\n"
+    "\n"
+    "\n"
+    "def scaled(a):\n"
+    "    return add(\n"
+    "        a,\n"
+    "        a * 2,\n"
+    "    )\n"
+    "\n"
+    "\n"
+    "def unused(a):\n"
+    "    return add(\n"
+    "        a,\n"
+    "        a - 1,\n"
+    "    )\n"
+)
+# What coverage.py 7.16.2's `coverage json` wrote for MULTILINE_CALC after a run that called scaled() alone, its other
+# fields left out: each statement by its first line, so the multi-line calls' continuation lines are in no list.
+MULTILINE_REPORT = {
+    "files": {"tools/calc.py": {"executed_lines": [1, 2, 5, 6, 12], "missing_lines": [13], "excluded_lines": []}}
+}
+
+
 class MutantFixtures(unittest.TestCase):
     def test_a_zero_context_diff_names_each_added_or_changed_line(self) -> None:
         diff = "@@ -3 +3 @@\n-a\n+b\n@@ -10,0 +11,2 @@\n+c\n+d\n@@ -20,2 +23,0 @@\n-e\n-f\n"
@@ -163,10 +190,13 @@ class ReachFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary) / "tree with spaces"
             (tree / "tools").mkdir(parents=True)
+            (tree / "deployer").mkdir()
+            (tree / "tools" / "calc.py").write_text("a\n" * 6, encoding="utf-8")
+            (tree / "deployer" / "a.py").write_text("a\n" * 3, encoding="utf-8")
             report = {
                 "files": {
-                    str(tree / "tools" / "calc.py"): {"executed_lines": [1, 2, 5]},
-                    "deployer/a.py": {"executed_lines": [3]},
+                    str(tree / "tools" / "calc.py"): {"executed_lines": [1, 2, 5], "missing_lines": [3, 6]},
+                    "deployer/a.py": {"executed_lines": [3], "missing_lines": [1]},
                     str(Path(temporary) / "elsewhere.py"): {"executed_lines": [9]},
                 }
             }
@@ -176,12 +206,31 @@ class ReachFixtures(unittest.TestCase):
             {module: set(found) for module, found in lines.items()},
         )
 
+    def test_a_continuation_line_is_reached_when_coverage_recorded_its_statement_by_its_first_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            (tree / "tools").mkdir()
+            (tree / "tools" / "calc.py").write_text(MULTILINE_CALC, encoding="utf-8")
+            lines = executed_lines(MULTILINE_REPORT, tree, ["tools/calc.py"])["tools/calc.py"]
+        # scaled()'s call opens on line 6 and runs to line 9; unused()'s opens on line 13 and never ran.
+        self.assertEqual({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, set(lines))
+
+    def test_an_excluded_statement_ends_the_one_before_it_and_the_last_statement_runs_to_the_modules_end(self) -> None:
+        entry = {"executed_lines": [1, 4], "missing_lines": [], "excluded_lines": [2]}
+        self.assertEqual({1, 4, 5, 6}, set(mutation_gate.statement_lines(entry, 6)))
+        self.assertEqual(frozenset(), mutation_gate.statement_lines({"executed_lines": []}, 6))
+
 
 class CoverageReachFixtures(unittest.TestCase):
     """The reach of a suite through a stub coverage.py in the tree, which `python -m coverage` finds first there."""
 
+    # A process that inherits coverage.py's subprocess setting starts the real coverage.py from its .pth file before
+    # `-m coverage` is resolved, which then runs instead of this stub, so the stub refuses to run measured.
     STUB = (
-        "import json, pathlib, sys, time\n"
+        "import json, os, pathlib, sys, time\n"
+        "if any(name.startswith('COVERAGE_PROCESS_') for name in os.environ):\n"
+        "    print('started measured', file=sys.stderr)\n"
+        "    sys.exit(9)\n"
         "step = sys.argv[1]\n"
         "action = json.loads(pathlib.Path('stub-actions.json').read_text()).get(step, 'ok')\n"
         "if action == 'sleep':\n"
@@ -225,6 +274,12 @@ class CoverageReachFixtures(unittest.TestCase):
 
     def test_a_suite_failed_unmutated_is_still_reported_by_its_exit_code(self) -> None:
         self.assertEqual("failed unmutated with exit code 4", self.reach({"run": "fail 4 a test failed"}))
+
+    def test_a_gate_measured_by_coverage_starts_every_coverage_step_unmeasured(self) -> None:
+        # The gate's own suite runs under the reach pass's `patch = subprocess`, which leaves this variable set.
+        with mock.patch.dict(os.environ, {"COVERAGE_PROCESS_CONFIG": "{}"}):
+            result = self.reach({})
+        self.assertIsInstance(result, Reach, result)
 
 
 class TryMutantFixtures(unittest.TestCase):
@@ -474,6 +529,30 @@ class WholeRunFixtures(unittest.TestCase):
         self.assertIn("| `tools/calc.py` | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
         self.assertIn("- Line 6: `return a * 2 + 0` became `return a * 3 + 0`", text)
         self.assertNotIn("Line 2", text)
+
+    def test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            change_calc(root, MULTILINE_CALC)
+            (root / "tests" / "tools" / "test_calc.py").write_text(
+                SUITE.replace("calc.add(2, 3)", "calc.scaled(1)").replace("5,", "3,"), encoding="utf-8"
+            )
+            git(root, "commit", "--quiet", "-am", "test scaled")
+            git(root, "switch", "--quiet", "-c", "continuation")
+            change_calc(root, MULTILINE_CALC.replace("a * 2,", "a * 2 + 0,"))
+
+            def generate(module: str, source: str, lines: frozenset[int]) -> list[str]:
+                if module == "canary.py":
+                    return stub_generator(module, source, lines)
+                return [source.replace("a * 2 + 0", "a * 3 + 0")] if 8 in lines else []
+
+            def recorded_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach:
+                return Reach(1.0, executed_lines(MULTILINE_REPORT, tree, modules))
+
+            text = Gate(root, "feature", 5, 2, GitClient(), generate, recorded_reach).report()
+        # Line 8 is a continuation of the call on line 6, the line coverage.py recorded, so the suite ran and killed it.
+        self.assertIn("| `tools/calc.py` | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 100% (1 of 1) |", text)
 
     def test_a_changed_module_with_no_mutant_is_named_and_no_suite_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
