@@ -598,6 +598,59 @@ class ReindexTests(unittest.TestCase):
         self.assertEqual("- [one](one.md) — one description\n", self.index.read_text(encoding="utf-8"))
         self.assertEqual(["MEMORY.md", "one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
 
+    def outside_memory(self) -> Path:
+        """A memory file beside the store, which no index entry may bring into it."""
+        return write(Path(self._temporary.name) / "outside" / "secret.md", memory("secret", "Secret body."))
+
+    def assert_target_never_read(self, target: str, reason: str) -> None:
+        """An entry linking `target` stays as written and is reported unreadable by reindex and audit alike."""
+        write(self.memory_dir / "kept.md", memory("kept", "Body."))
+        write(self.index, f"- [Secret]({target}) — hand hook\n- [Kept](kept.md) — stale hook\n")
+        lines = self.reindex("--write")
+        self.assertEqual(
+            f"- [Secret]({target}) — hand hook\n- [Kept](kept.md) — kept description\n",
+            self.index.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            [
+                f"INDEX_LINE {target}",
+                "INDEX_LINE kept.md",
+                f"UNREADABLE {target}: {reason}",
+                f"WROTE {self.index.as_posix()}",
+            ],
+            lines,
+        )
+        result = memory_audit.audit(self.memory_dir)
+        self.assertEqual([{"file": target, "reason": reason}], result["unreadable"])
+        self.assertEqual([], result["index"]["missing_files"])
+        self.assertEqual(["kept.md"], [entry["file"] for entry in result["memories"]])
+
+    def test_a_target_with_a_parent_segment_is_never_read(self) -> None:
+        self.outside_memory()
+        self.assert_target_never_read("../outside/secret.md", "not a file name directly inside the memory directory")
+
+    def test_an_absolute_target_is_never_read(self) -> None:
+        secret = self.outside_memory()
+        self.assert_target_never_read(secret.as_posix(), "not a file name directly inside the memory directory")
+
+    def test_a_target_through_a_link_or_junction_is_never_followed(self) -> None:
+        directory_link(self.memory_dir / "linked", self.outside_memory().parent)
+        self.assert_target_never_read("linked/secret.md", "not a file name directly inside the memory directory")
+
+    def test_a_target_that_is_no_markdown_file_is_never_read(self) -> None:
+        write(self.memory_dir / "notes.txt", memory("notes", "Body."))
+        self.assert_target_never_read("notes.txt", "not a .md file")
+
+    def test_a_target_directly_in_the_store_is_still_read(self) -> None:
+        write(self.memory_dir / "kept.md", memory("kept", "Body."))
+        write(self.memory_dir / "other.md", memory("other", "Body."))
+        write(self.index, "- [Kept](./kept.md) — stale hook\n- [Other](other.md) — stale hook\n")
+        self.reindex("--write")
+        self.assertEqual(
+            "- [Kept](./kept.md) — kept description\n- [Other](other.md) — other description\n",
+            self.index.read_text(encoding="utf-8"),
+        )
+
     def test_audit_and_reindex_agree_on_target_identity_and_preserve_the_surviving_link(self) -> None:
         write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
         before = self.snapshot()
