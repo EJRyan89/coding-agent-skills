@@ -1,0 +1,37 @@
+[
+  {
+    "name": "broken-skill",
+    "description": "No description.",
+    "source": "project",
+    "path": "<temp>\\home\\.agents\\skills\\broken-skill",
+    "enabled": true
+  },
+  {
+    "name": "sample-skill",
+    "description": "A sample skill for the captured listing.",
+    "source": "project",
+    "path": "<temp>\\home\\.agents\\skills\\sample-skill",
+    "enabled": true
+  },
+  {
+    "name": "user-only-skill",
+    "description": "A skill only the user starts.",
+    "source": "project",
+    "path": "<temp>\\home\\.agents\\skills\\user-only-skill",
+    "enabled": true
+  },
+  {
+    "name": "customize-cloud-agent",
+    "description": "Skill for customizing the Copilot cloud agent (formerly known as Copilot coding agent) environment, including copilot-setup-steps.yml configuration, preinstalling tools and dependencies, runners, and settings. Use when the user mentions copilot-setup-steps, copilot setup steps, or wants to configure the cloud agent environment.",
+    "source": "builtin",
+    "path": "<temp>\\home\\AppData\\Local\\copilot\\pkg\\win32-x64\\1.0.103\\builtin\\customize-cloud-agent",
+    "enabled": true
+  },
+  {
+    "name": "github-pr-media",
+    "description": "Upload an image or video to GitHub's user attachments API and embed it in a pull request description or comment. Use when asked to add screenshots, diagrams, recordings, or other media to a PR or GitHub comment.",
+    "source": "builtin",
+    "path": "<temp>\\home\\AppData\\Local\\copilot\\pkg\\win32-x64\\1.0.103\\builtin\\github-pr-media",
+    "enabled": true
+  }
+]

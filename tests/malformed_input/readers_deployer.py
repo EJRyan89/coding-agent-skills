@@ -81,7 +81,7 @@ READERS = [
     Reader(
         "deployer.discovery.parse_copilot",
         "json",
-        b'[{"name": "example", "source": "personal-agents", "enabled": true}]',
+        b'[{"name": "example", "source": "personal-agents", "path": "skills/example", "enabled": true}]',
         _copilot_listing,
         (discovery.ListingError,),
         accepts={"top_level_list": "an empty array is Copilot's listing of no skills, which verify reports as missing"},
