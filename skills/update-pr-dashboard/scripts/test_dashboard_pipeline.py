@@ -22,6 +22,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import dashboard_pipeline as tp
 import review_archive
+import review_config
 import test_review_fixture as review_fixture
 from github_client import CommandResult, GitHubError, GitHubErrorKind
 from pr_change import ChangeDetector
@@ -1016,6 +1017,36 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(0, code, err)
         self.assertNotIn("example/one/pull/1)", self.dashboard.read_text(encoding="utf-8"))
 
+    def test_without_a_configured_login_a_refusal_asks_github_at_most_for_the_login(self) -> None:
+        self.collect()
+        self.configure(login=None)
+        before = self.dashboard.read_bytes()
+        # A dashboard a replacement refuses is refused before GitHub is asked anything.
+        other = self.root / "other name.md"
+        os.link(self.dashboard, other)
+        calls = len(self.github.calls)
+        code, out, err = self.run_main("update", "--input", str(self.input), "--remove", "example/one#4")
+        self.assertEqual((1, ""), (code, err))
+        self.assertTrue(out.startswith(f"FAILED {self.dashboard} has another hard link"), out)
+        self.assertEqual([], self.github.calls[calls:])
+        other.unlink()
+        # A removal naming no tracked pull request needs the user, so only the login lookup runs before it.
+        calls = len(self.github.calls)
+        code, out, err = self.run_main("update", "--input", str(self.input), "--remove", "example/one#4")
+        self.assertEqual((1, ""), (code, err))
+        self.assertTrue(out.startswith("FAILED Removal example/one#4 names no collected pull request"), out)
+        self.assertEqual([["gh", "api", "user"]], self.github.calls[calls:])
+        self.assertEqual(before, self.dashboard.read_bytes())
+        self.assertFalse(self.record.exists())
+
+    def test_the_default_configuration_keeps_the_plain_tracker_record_name(self) -> None:
+        # Independent literals: review_config names the default file config.json, and its record is tracker.json.
+        with mock.patch.dict(os.environ, {"CODE_REVIEW_CONFIG": ""}):
+            default = review_config.default_config_path()
+        self.assertEqual("config.json", default.name)
+        self.assertEqual("tracker.json", tp.tracker_record_path(default).name)
+        self.assertEqual("other.tracker.json", tp.tracker_record_path(default.with_name("other.json")).name)
+
     def test_update_names_each_review_that_went_stale_since_the_last_update(self) -> None:
         # The last update showed example/one#1 with no review, example/one#2 reviewed at its head, and example/one#3
         # already stale.
@@ -1574,9 +1605,15 @@ class RepositoryTests(TrackerPipelineFixture):
         code, out, err = self.run_main("repository", "--add", "other/three")
         self.assertEqual((0, ""), (code, err))
         printed |= {line.split()[0] for line in out.splitlines()}
+        for change in ("--ignore", "--unignore", "--ignore"):
+            code, out, err = self.run_main("repository", change, "other/five")
+            self.assertEqual((0, ""), (code, err))
+            printed |= {line.split()[0] for line in out.splitlines()}
         self.serve_default_pages()
         self.github.pages["other/three"] = [page([])]
-        self.github.searches = {"is:pr is:open archived:false author:reviewer": [search_page(["other/four"])]}
+        self.github.searches = {
+            "is:pr is:open archived:false author:reviewer": [search_page(["other/four", "other/five"])]
+        }
         code, out, err = self.run_main("collect", "--output", str(self.input))
         self.assertEqual((0, ""), (code, err))
         printed |= {line.split()[0] for line in out.splitlines()}
@@ -1588,9 +1625,12 @@ class RepositoryTests(TrackerPipelineFixture):
             {
                 "ADDED_REPOSITORY",
                 "ADDED_TO_SET",
+                "IGNORED",
+                "UNIGNORED",
                 "WROTE",
                 "REPOSITORY",
                 "UNTRACKED_REPOSITORY",
+                "UNTRACKED_IGNORED",
                 "UNTRACKED_CHECK_FAILED",
                 "INPUT",
             },
@@ -1637,6 +1677,160 @@ class RepositoryTests(TrackerPipelineFixture):
                 self.assertTrue(out.startswith("FAILED "), out)
                 self.assertEqual(content, self.config_path.read_text(encoding="utf-8"))
         self.assertIn("Missing per-repository configuration for: example/three", out)
+
+    def test_ignore_and_unignore_change_only_the_ignored_list(self) -> None:
+        original = self.written()
+        code, out, err = self.run_main("repository", "--ignore", "Other/Three", "--ignore", "sandbox/*")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["IGNORED other/three", "IGNORED sandbox/*", f"WROTE {self.config_path}"], out.splitlines())
+        expected = json.loads(json.dumps(original))
+        expected["dashboard"]["ignored_repositories"] = ["other/three", "sandbox/*"]
+        self.assertEqual(expected, self.written())
+        code, out, err = self.run_main("repository", "--unignore", "OTHER/three")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["UNIGNORED other/three", f"WROTE {self.config_path}"], out.splitlines())
+        expected["dashboard"]["ignored_repositories"] = ["sandbox/*"]
+        self.assertEqual(expected, self.written())
+        self.assertEqual([], self.github.calls)
+
+    def test_collect_mutes_ignored_repositories_and_counts_them_without_changing_the_input(self) -> None:
+        self.serve_default_pages()
+        self.github.searches = {
+            "is:pr is:open archived:false author:reviewer": [
+                search_page(["example/one", "Other/Three", "sandbox/test-a", "sandbox/keep"])
+            ],
+            "is:pr is:open archived:false review-requested:reviewer": [search_page(["other/four"])],
+        }
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        unmuted = self.input.read_bytes()
+        self.assertEqual(
+            [
+                "UNTRACKED_REPOSITORY other/four",
+                "UNTRACKED_REPOSITORY other/three",
+                "UNTRACKED_REPOSITORY sandbox/keep",
+                "UNTRACKED_REPOSITORY sandbox/test-a",
+            ],
+            [line for line in out.splitlines() if line.startswith("UNTRACKED_")],
+        )
+        code, _, err = self.run_main("repository", "--ignore", "other/three", "--ignore", "Sandbox/Test-*")
+        self.assertEqual((0, ""), (code, err))
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            [
+                "REPOSITORY example/one pulls=3",
+                "REPOSITORY example/two pulls=1",
+                "UNTRACKED_REPOSITORY other/four",
+                "UNTRACKED_REPOSITORY sandbox/keep",
+                "UNTRACKED_IGNORED 2",
+                f"INPUT {self.input}",
+            ],
+            out.splitlines(),
+        )
+        self.assertEqual(unmuted, self.input.read_bytes(), "muting changes nothing collected")
+        # Nothing muted prints no count, and named repositories search for no untracked one at all.
+        code, _, err = self.run_main("repository", "--unignore", "other/three", "--unignore", "sandbox/test-*")
+        self.assertEqual((0, ""), (code, err))
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertNotIn("UNTRACKED_IGNORED", out)
+
+    def test_a_refused_ignore_or_unignore_writes_nothing(self) -> None:
+        code, _, err = self.run_main("repository", "--ignore", "other/three")
+        self.assertEqual((0, ""), (code, err))
+        original = self.config_path.read_bytes()
+        cases: list[tuple[list[str], str]] = [
+            (["--ignore", "Example/Two"], "Repository example/two in repository set tracked matches"),
+            (["--ignore", "example/*"], "entry example/*; a tracked repository cannot be ignored"),
+            (["--ignore", "Other/Three"], "Repository other/three is already ignored"),
+            (["--unignore", "other/four"], "Repository other/four is not ignored"),
+            (
+                ["--ignore", "other/four", "--ignore", "OTHER/four"],
+                "Ignored repository other/four is named more than once",
+            ),
+            (
+                ["--ignore", "other"],
+                "FAILED ignored repository must be an owner/repo identity, or a pattern of one using only * and ? "
+                'as wildcards, found string "other"',
+            ),
+            (["--ignore", "other/[ab]"], "an owner/repo identity, or a pattern"),
+            # A repository an ignored entry matches cannot be added to a set either.
+            (["--add", "other/three"], "Repository other/three in repository set tracked matches"),
+        ]
+        for arguments, reason in cases:
+            with self.subTest(arguments=arguments):
+                code, out, err = self.run_main("repository", *arguments)
+                self.assertEqual((1, ""), (code, err))
+                self.assertEqual(1, len(out.splitlines()), out)
+                self.assertTrue(out.startswith("FAILED "), out)
+                self.assertIn(reason, out)
+                self.assertEqual(original, self.config_path.read_bytes())
+        # Muting and adding are separate commands, and a set is named only for an addition.
+        for arguments in (
+            ["--ignore", "other/four", "--add", "other/five"],
+            ["--ignore", "other/four", "--unignore", "other/three"],
+            ["--ignore", "other/four", "--repository-set", "primary"],
+            [],
+        ):
+            with self.subTest(arguments=arguments):
+                with self.assertRaises(SystemExit) as raised:
+                    self.run_main("repository", *arguments)
+                self.assertEqual(2, raised.exception.code)
+                self.assertEqual(original, self.config_path.read_bytes())
+        self.assertEqual([], self.github.calls)
+
+    def test_a_set_named_beside_a_mute_is_a_usage_error_naming_why(self) -> None:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as raised:
+            tp.main(["--config", str(self.config_path), "repository", "--ignore", "o/x", "--repository-set", "primary"])
+        self.assertEqual(2, raised.exception.code)
+        self.assertTrue(err.getvalue().endswith(": error: --repository-set is taken only with --add\n"), err.getvalue())
+
+    def test_the_repository_help_names_each_option_with_its_argument_and_purpose(self) -> None:
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"COLUMNS": "200"}),
+            contextlib.redirect_stdout(out),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            tp.main(["repository", "--help"])
+        self.assertEqual(0, raised.exception.code)
+        text = " ".join(out.getvalue().split())
+        for line in (
+            "(--add OWNER/REPO | --ignore OWNER/REPO | --unignore OWNER/REPO)",
+            "--add OWNER/REPO repeatable",
+            "--ignore OWNER/REPO a repository or pattern; repeatable",
+            "--unignore OWNER/REPO an ignored entry; repeatable",
+        ):
+            with self.subTest(line=line):
+                self.assertIn(line, text)
+
+    def test_ignore_writes_a_dashboard_into_a_configuration_without_one(self) -> None:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        del raw["dashboard"]
+        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        code, _, err = self.run_main("repository", "--ignore", "Other/Three")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual({"ignored_repositories": ["other/three"]}, self.written()["dashboard"])
+        # A dashboard without the list gains it, and keeps what it held.
+        raw["dashboard"] = {"author_names": {"ada": "Ada"}}
+        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        code, _, err = self.run_main("repository", "--ignore", "other/four")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            {"author_names": {"ada": "Ada"}, "ignored_repositories": ["other/four"]}, self.written()["dashboard"]
+        )
+
+    def test_a_collection_that_mutes_nothing_counts_zero(self) -> None:
+        self.serve_default_pages()
+        named = tp.collect(
+            self.input, repositories=["example/one"], config_path=self.config_path, services=self.services
+        )
+        self.assertEqual((None, 0), (named.untracked, named.ignored))
+        self.github.search_failure = "HTTP 422: Validation Failed"
+        failed = tp.collect(self.input, config_path=self.config_path, services=self.services)
+        self.assertEqual((None, 0), (failed.untracked, failed.ignored))
 
 
 class ReviewArgumentsTests(TrackerPipelineFixture):

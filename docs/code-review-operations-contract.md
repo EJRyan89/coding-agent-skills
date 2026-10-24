@@ -199,6 +199,7 @@ The code-review configuration file, validated by `validate_config` in `review_co
 | `end_marker` | string | no | The line that closes it, different from `start_marker`; defaults to `<!-- code-review-pr-tracker:end -->`. |
 | `status_overrides` | object | no | Keyed by `owner/repo#number`. Each value is a non-empty status shown for that pull request, and may not be a computed one (`to review`, `awaiting response`, `my prs`, `my pull requests`, `drafts`, `missing`, `current`, `stale`, or `incomplete`, in any case). |
 | `author_names` | object | no | Keyed by GitHub login, unique ignoring case. Each value is the non-empty single-line name the Requestor column shows instead of the author's profile name. |
+| `ignored_repositories` | array | no | At most 1000 distinct entries, ignoring case, each an `owner/repo` identity or a pattern of one using `*` (any run of characters) and `?` (any one character), whose owner and name are matched separately, ignoring case. `update-pr-dashboard`'s `collect` never names a repository an entry matches as untracked. An entry a repository of any set matches is refused, so no repository is both tracked and ignored. |
 
 ### Reviewer manifests
 
