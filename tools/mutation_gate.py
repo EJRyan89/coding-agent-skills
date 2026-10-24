@@ -486,6 +486,14 @@ def suite_tests(tree: Path, suite: str, listing: Path) -> list[str]:
     return collected_tests(listing.read_text(encoding="utf-8", errors="replace"), suite)
 
 
+# The cleanup whose git results are left unread, with the reason.
+RESULT_DISCARD_ALLOWED = {
+    "worktrees": "removes the throwaway worktrees in a finally block, where a failure raised would replace the run's "
+    "own outcome; they lie in a temporary directory that is deleted afterwards, so any later git worktree prune drops "
+    "the record of one whose removal failed",
+}
+
+
 @contextlib.contextmanager
 def worktrees(root: Path, count: int, folder: Path, git: GitClient) -> Iterator[list[Path]]:
     """`count` throwaway worktrees of HEAD under `folder`, removed afterwards whatever a suite left in them."""

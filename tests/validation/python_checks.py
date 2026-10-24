@@ -1,7 +1,7 @@
 """The Python static checks: ruff format and lint, mypy and its mypy_path, the noqa and type: ignore rules, the rule
 against issue numbers in comments and docstrings, and the policies that hold the code's universal claims: every process
-starts without git's repository-selecting variables, link_probe is the one link test, and every ctypes foreign function
-a module calls is declared."""
+starts without git's repository-selecting variables, link_probe is the one link test, every ctypes foreign function a
+module calls is declared, and no process runner's result is discarded unchecked."""
 
 from __future__ import annotations
 
@@ -681,6 +681,106 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# A process runner returns a result whose exit status its caller must judge, so a call of one is never a bare
+# expression statement, which would read a failure as success. The runners are ejryan89-skill-core's run_bounded, the
+# deployer's run_tool, and GitClient.run; GitClient.output and every GitHubClient method raise on a failure, so they are
+# not among them. A call that is deliberately fire-and-forget states why in a module-level
+# RESULT_DISCARD_ALLOWED = {scope: reason}.
+RESULT_RUNNERS = ("bounded_process.run_bounded", "platform_support.run_tool")
+RESULT_CLIENT = "git_client.GitClient"
+RESULT_CLIENT_METHOD = "run"
+RESULT_DISCARD_ALLOWANCE = "RESULT_DISCARD_ALLOWED"
+
+
+class _GitClients:
+    """What a module binds to a GitClient, through its imports: each name assigned a GitClient(...) call or annotated
+    as one, a parameter's included, and each attribute name a class or an instance assigns or annotates so."""
+
+    def __init__(self, tree: ast.Module, resolver: CallableResolver) -> None:
+        self.resolver = resolver
+        self.names: set[str] = set()
+        self.attributes: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if self.constructed(node.value):
+                        self._bind(target)
+            elif isinstance(node, ast.AnnAssign) and (self.annotated(node.annotation) or self.constructed(node.value)):
+                self._bind(node.target)
+            elif isinstance(node, ast.arg) and node.annotation is not None and self.annotated(node.annotation):
+                self.names.add(node.arg)
+        # A name a class body binds, such as a dataclass field, is an attribute of its instances.
+        self.attributes |= {
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            for statement in node.body
+            if isinstance(statement, ast.AnnAssign)
+            and (self.annotated(statement.annotation) or self.constructed(statement.value))
+            and isinstance(target := statement.target, ast.Name)
+        }
+
+    def _bind(self, target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            self.names.add(target.id)
+        elif isinstance(target, ast.Attribute):
+            self.attributes.add(target.attr)
+
+    def constructed(self, node: ast.expr | None) -> bool:
+        """Whether an expression is a GitClient(...) call."""
+        return isinstance(node, ast.Call) and resolves_to(self.resolver.name(node.func), RESULT_CLIENT)
+
+    def annotated(self, annotation: ast.expr) -> bool:
+        """Whether an annotation names GitClient, alone or in a union or a subscript."""
+        return any(
+            isinstance(part, ast.Name | ast.Attribute) and resolves_to(self.resolver.name(part), RESULT_CLIENT)
+            for part in ast.walk(annotation)
+        )
+
+    def holds(self, node: ast.expr) -> bool:
+        """Whether an expression is a GitClient: one constructed in place, a name, or an attribute bound to one."""
+        if isinstance(node, ast.Name):
+            return node.id in self.names
+        if isinstance(node, ast.Attribute):
+            return node.attr in self.attributes
+        return self.constructed(node)
+
+
+def _discarded_runner(call: ast.Call, resolver: CallableResolver, clients: _GitClients) -> str | None:
+    """The runner a call discards the result of, or None for a call of no runner."""
+    called = resolver.name(call.func)
+    runner = next((runner for runner in RESULT_RUNNERS if resolves_to(called, runner)), None)
+    if runner is not None:
+        return runner
+    function = call.func
+    if isinstance(function, ast.Attribute) and function.attr == RESULT_CLIENT_METHOD and clients.holds(function.value):
+        return f"GitClient.{RESULT_CLIENT_METHOD}"
+    return None
+
+
+def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each expression statement that discards a process runner's result, which no RESULT_DISCARD_ALLOWED entry
+    sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        resolver = CallableResolver(tree)
+        clients = _GitClients(tree, resolver)
+        found = [
+            (
+                node.lineno,
+                scope,
+                f"discards the result of {runner}, whose exit status the caller must judge; check it, or state why "
+                f"in {RESULT_DISCARD_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and (runner := _discarded_runner(node.value, resolver, clients))
+        ]
+        problems += sanctioned_problems(name, tree, RESULT_DISCARD_ALLOWANCE, found)
+    return problems
+
+
 def ruff_format_check(root: Path, targets: list[str]) -> None:
     """Fail, naming each file, when ruff format would change any Python file under the targets in root."""
     ruff = find_ruff()
@@ -858,3 +958,6 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_every_ctypes_foreign_function_called_is_declared(self) -> None:
         self.assertEqual([], ctypes_declaration_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_no_process_runner_result_is_discarded_unchecked(self) -> None:
+        self.assertEqual([], discarded_result_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
