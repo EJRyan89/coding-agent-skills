@@ -636,11 +636,13 @@ class CrossSkillContractTests(unittest.TestCase):
                 (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_guard.py").read_bytes()
             )
             # The guard imports ejryan89-skill-core's runner, the flattener the runner imports, its typed-field reader,
-            # the locator that names Python's command, and the lookup that tells a plugin from the deployed home, from
-            # the sibling skill the deployer installs beside it.
+            # the locator that names Python's command, and the lookup that tells a plugin from the deployed home with
+            # the file probe it reads the plugin's manifest through, from the sibling skill the deployer installs beside
+            # it.
             core = profile / ".claude/skills/ejryan89-skill-core/scripts"
             core.mkdir(parents=True)
-            for module in ("console.py", "executable_locator.py", "flat_text.py", "skill_roots.py", "typed_fields.py"):
+            modules = ("console.py", "executable_locator.py", "file_presence.py", "flat_text.py", "skill_roots.py")
+            for module in (*modules, "typed_fields.py"):
                 (core / module).write_bytes(
                     (REPOSITORY_ROOT / "skills/ejryan89-skill-core/scripts" / module).read_bytes()
                 )
