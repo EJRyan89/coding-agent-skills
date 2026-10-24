@@ -12,7 +12,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "set \\\nexit 0\ntest \"$(env $(awk 'BEGIN { for (NAME in ENVIRON) if (toupper(NAME) ~ /^GIT_(DIR|WORK_TREE|COMMON_DIR|CONFIG)$/) print \"-u\", NAME }') git -C \"$CLAUDE_PROJECT_DIR\" config --local --type=bool --get coding-agent-skills.hubGuard)\" = true || exit 0; python -B \"$CLAUDE_PROJECT_DIR/tools/hub_guard.py\"",
+            "command": "set \\\nexit 0\nv=$(env $(awk 'BEGIN { for (NAME in ENVIRON) if (toupper(NAME) ~ /^GIT_(DIR|WORK_TREE|COMMON_DIR|CONFIG)$/) print \"-u\", NAME }') git -C \"$CLAUDE_PROJECT_DIR\" config --local --type=bool --get coding-agent-skills.hubGuard); s=$?\ntest \"$s\" -le 1 || { awk 'BEGIN { print \"hub guard skipped: the opt-in of \" ENVIRON[\"CLAUDE_PROJECT_DIR\"] \" could not be read: git config exited with \" ARGV[1] > \"/dev/stderr\" }' \"$s\"; exit 0; }\ntest \"$v\" = true || exit 0; python -B \"$CLAUDE_PROJECT_DIR/tools/hub_guard.py\"",
             "timeout": 30
           }
         ]

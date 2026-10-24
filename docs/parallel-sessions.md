@@ -150,7 +150,10 @@ The setting lives in the shared `.git/config`, so one command covers the hub and
 the setting is not tracked, someone who clones the repository and works in a single checkout is never blocked.
 
 The hook command reads the setting itself, in Bash, and exits before starting Python when the clone has not opted
-in. Elsewhere the hook is inert and costs one `awk`, one `env`, and one `git config` call per tool call: `python`
+in: when git reports the setting unset or false, it exits in silence, and when git cannot read it at all, as with a
+value that is no boolean or a configuration file git cannot parse, it lets git's own message through and adds a note
+on stderr that names git's exit status, so an opted-in clone left unguarded is never passed unseen. Elsewhere the hook
+is inert and costs one `awk`, one `env`, and one `git config` call per tool call: `python`
 never runs, so a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone
 it runs `tools/hub_guard.py` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again. Neither read can be
 pointed at another repository's setting or outranked: each reads only the repository's own file, with
@@ -165,9 +168,10 @@ The command is also written to end at once under PowerShell, for the runtime tha
 [Other runtimes](#other-runtimes)). Its first two lines are `set \` and `exit 0`: Bash, like any POSIX shell, joins
 them into `set exit 0`, which only sets the positional parameters, and goes on, while PowerShell reads `set \` as
 setting a variable named `\` and then exits with status 0. PowerShell parses a whole command before it runs any of
-it, so the rest is written in what both shells parse, `test` rather than `[` and `env -u` rather than a loop of
-`unset`. `HookCommandUnderPowerShellTests` in `tests/tools/test_hub_guard.py` runs the tracked command under `pwsh`,
-opted in and not, and holds that it exits 0 with no output and starts no program.
+it, so the rest is written in what both shells parse, `test` rather than `[`, `env -u` rather than a loop of
+`unset`, and `awk` printing to `/dev/stderr` rather than `>&2`, which PowerShell refuses to parse.
+`HookCommandUnderPowerShellTests` in `tests/tools/test_hub_guard.py` runs the tracked command under `pwsh`, opted in,
+not, and with an opt-in git cannot read, and holds that it exits 0 with no output and starts no program.
 
 With the guard enabled:
 
@@ -343,7 +347,7 @@ itself, once it has found a guarded hub in view, is refused the same way when th
 says nothing about where the call acts; a defect before that, such as an event it cannot decode, an event that names
 no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
 stderr, so that it cannot block every tool and is never passed unseen. The hook command reads the project's own opt-in
-before it starts the guard, and stops there, with no note, when git cannot read it.
+before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
 
 #### What it does not see
 
