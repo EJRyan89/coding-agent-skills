@@ -4042,6 +4042,29 @@ class UnreadableConfigurationTests(unittest.TestCase):
         self.assertEqual(["mcp"], [check for check, _ in errors])
         self.assertTrue(errors[0][1].startswith("Invalid TOML:"), errors)
 
+    def test_a_directory_in_a_configuration_file_place_is_an_error_never_no_file(self) -> None:
+        for rel, check, message in (
+            (".mcp.json", "mcp", "Could not read or parse:"),
+            (".claude/settings.json", "claude-settings", "Could not read or parse:"),
+            (".codex/config.toml", "mcp", "Error reading config:"),
+        ):
+            with self.subTest(rel=rel):
+                (self.root / rel).mkdir(parents=True)
+                errors = self._errors(rel)
+                self.assertEqual([check], [check for check, _ in errors])
+                self.assertTrue(errors[0][1].startswith(message), errors)
+                self.assertIn("not a file", errors[0][1])
+                (self.root / rel).rmdir()
+
+    def test_a_directory_in_the_manifest_place_is_a_malformed_manifest_never_none(self) -> None:
+        manifest = self.root / ".github/ai-config-manifest.json"
+        manifest.unlink()
+        manifest.mkdir()
+        self.assertEqual(
+            [("WARNING", "Manifest exists but is malformed")],
+            [(finding.severity, finding.message) for finding in audit._manifest_signal(self.root)[2]],
+        )
+
     def test_a_generator_with_a_null_byte_is_unreadable_scope(self) -> None:
         (self.root / ".github/scripts").mkdir(parents=True)
         (self.root / ".github/scripts/ai_config.py").write_text("CLAUDE.md\0\n", encoding="utf-8")

@@ -100,6 +100,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
+from file_presence import is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
@@ -825,10 +826,11 @@ def unresolved(notes: list[str]) -> dict[str, Any]:
 
 
 def read_settings(path: Path) -> dict[str, Any]:
-    """A settings file's top-level object, empty when the file is absent or holds another value."""
-    if not path.is_file():
-        return {}
+    """A settings file's top-level object, empty when the file is absent or holds another value; a directory or
+    anything else in the file's place raises UnreadableSettings, as a file that cannot be read does."""
     try:
+        if not is_present(path):
+            return {}
         settings = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise UnreadableSettings(f"Cannot read {path}: {exc}") from exc
@@ -1049,10 +1051,11 @@ def reindex_lines(memory_dir: Path, write: bool) -> tuple[int, list[str]]:
 def manifest_skill_files(home: Path, name: str) -> list[Path]:
     """The skills/<name>/SKILL.md of each source checkout the deployer's manifest records as deploying `name`.
 
-    Raises OSError or ValueError when the manifest exists but cannot be read as JSON.
+    Raises OSError or ValueError when the manifest exists but cannot be read as JSON, as when a directory stands in its
+    place.
     """
     manifest = home / ".claude" / "skills" / MANIFEST_NAME
-    if not manifest.is_file():
+    if not is_present(manifest):
         return []
     data = json.loads(manifest.read_text(encoding="utf-8"))
     sources = data.get("sources") if isinstance(data, dict) else None
