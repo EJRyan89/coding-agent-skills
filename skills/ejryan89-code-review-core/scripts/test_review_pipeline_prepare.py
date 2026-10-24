@@ -777,6 +777,23 @@ def source_contract(run: str, role: str) -> str:
     )
 
 
+def search_contract(run: str, role: str) -> str:
+    """The input contract's rule for a whole snapshot, naming the role's search command alone."""
+    script = "<core>/scripts/review_source.py"
+    return (
+        "- To search the code, run this command with an extended regular expression in place of\n"
+        "  <pattern>, rather than Grep or Glob over SOURCE_ROOT, which a runtime may not give you:\n"
+        f'  {PYTHON} -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"\n'
+        "  The pattern may not hold a double quote, backtick, dollar sign, or backslash; write [.] for\n"
+        "  a literal dot.\n"
+    )
+
+
+def self_check_count(lazy: bool) -> str:
+    """The self-check's count of the commands a role may run: a lazy snapshot's two source commands, or the search."""
+    return "one of the three commands you may run:\n" if lazy else "one of the two commands you may run:\n"
+
+
 def plan_prompt(
     intro: str,
     role: str,
@@ -828,11 +845,11 @@ def plan_prompt(
         "</open_review_comments>\n"
         "\n"
         + CONTRACT_INPUTS
-        + (source_contract(run, role) if lazy else "")
+        + (source_contract(run, role) if lazy else search_contract(run, role))
         + (CONTRACT_CHECKOUT if checkout else "")
         + CONTRACT_RULES
         + "Before replying, check RESULT_FILE with this command, "
-        + ("one of the three commands you may run:\n" if lazy else "the one command you may run:\n")
+        + self_check_count(lazy)
         + f'{PYTHON} -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}"\n'
         "It prints VALID, or INVALID with the reason. On INVALID, fix RESULT_FILE and run it again; stop\n"
         "after two fixes.\n"
@@ -892,7 +909,7 @@ def entrypoint_prompt(
         "  read that repository-relative path under REVIEWER_ROOT.\n"
         "- Wherever the entrypoint reads a source file, read that repository-relative path under\n"
         "  SOURCE_ROOT, and use SOURCE_ROOT for any path-existence check.\n"
-        + (source_contract(run, role) if lazy else "")
+        + (source_contract(run, role) if lazy else search_contract(run, role))
         + (CONTRACT_CHECKOUT if checkout else "")
         + "- PULL_REQUEST_BODY_FILE holds the pull request's description as its author wrote it, which\n"
         "  says what the author intends, not what the code does. Read it only when your instructions\n"
@@ -959,7 +976,7 @@ def entrypoint_prompt(
         "whose `rule` is a short lowercase kebab-case name of at most 60 characters. `tool` and `rule`\n"
         "never contain spaces.\n"
         "Before replying, check RESULT_FILE with this command, "
-        + ("one of the three commands you may run:\n" if lazy else "the one command you may run:\n")
+        + self_check_count(lazy)
         + f'{PYTHON} -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}"\n'
         "It prints VALID, or INVALID with the reason. On INVALID, fix RESULT_FILE and run it again; stop\n"
         "after two fixes.\n"

@@ -1,8 +1,10 @@
-"""A reviewer's way to the rest of the head commit when its run's source snapshot is lazy.
+"""A reviewer's way to search the head commit's source, and to the rest of it when its run's snapshot is lazy.
 
 On the checkout route, `prepare` writes only the changed files and the analyzer settings into the snapshot and lists
 every other path the snapshot can hold, with its blob id, in the snapshot's manifest. A reviewer whose prompt names
-these commands reads any other file, and searches the commit, through them:
+these commands reads any other file, and searches the commit, through them. A snapshot that holds every file already
+has only the search, over the snapshot's own files, which serves a reviewer the runtime gives no Grep or Glob, as
+Claude Code does not give a subagent that lists Bash on macOS, Linux, and WSL:
 
   python -B "<this script>" source-file --run "<run>" --role "<role>" --path="<path>"
       Writes the head file at <path> into the snapshot from the commit, by the blob id the manifest lists, and
@@ -14,7 +16,8 @@ these commands reads any other file, and searches the commit, through them:
 
 The reviewer guard allows exactly these two commands for a reviewer's own run and role (see review_guard.py). The
 blob is read from the repository the run names in `run.json` as `source_repository`: the configured checkout, or the
-copy of a fixture's repository in the run. Each command prints one fact per line and exits 0, or 1 after `FAILED`.
+copy of a fixture's repository in the run; a run that names none has a whole snapshot. Each command prints one fact
+per line and exits 0, or 1 after `FAILED`.
 """
 
 from __future__ import annotations
@@ -60,9 +63,9 @@ def source_commands(run: Path, role: str, *, script: Path | str = SCRIPT) -> tup
     )
 
 
-def _run(run: Path, role: str) -> tuple[Path, str, str, Path]:
-    """The run's source repository, its request's repository and head, and the role's read log, once the run is a
-    prepared review run with a lazy snapshot's repository and the role is one of its roles."""
+def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
+    """The run's source repository, None for a whole snapshot, its request's repository and head, and the role's read
+    log, once the run is a prepared review run and the role is one of its roles."""
     run = run.resolve()
     if not run.name.startswith(RUN_PREFIX) or not (run / RUN_FILE).is_file():
         raise SourceError(f"{run} is not a review run")
@@ -80,9 +83,9 @@ def _run(run: Path, role: str) -> tuple[Path, str, str, Path]:
         raise SourceError(f"the review run {run} could not be read: {exc}") from exc
     if not ROLE_ID.fullmatch(role) or role not in {item.get("id") for item in roles}:
         raise SourceError(f"the review run has no role {role}")
-    if repository is None or not Path(repository).is_dir():
-        raise SourceError("this run's snapshot holds every file already; read it under SOURCE_ROOT")
-    return Path(repository), name, head, read_log(run, role)
+    if repository is not None and not Path(repository).is_dir():
+        raise SourceError(f"the run's source repository {repository} is not a directory")
+    return (None if repository is None else Path(repository)), name, head, read_log(run, role)
 
 
 def _count(log: Path, relative: str) -> None:
@@ -97,6 +100,8 @@ def source_file(run: Path, role: str, relative: str) -> list[str]:
     """The file a reviewer asked for, counted by the snapshot path it prints, as the guard counts a Read of it: a
     document held as its extracted text, as a PDF is, is held beside the path the reviewer named."""
     repository, name, head, log = _run(run, role)
+    if repository is None:
+        raise SourceError("this run's snapshot holds every file already; read it under SOURCE_ROOT")
     source = run.resolve() / "source"
     found = fetch_source_file(repository, source, relative, repository=name, commit=head, staging=run.resolve())
     if isinstance(found, str):

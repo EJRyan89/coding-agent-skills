@@ -308,6 +308,13 @@ def _write_request(
     write_adapter_request(request_path, request)
 
 
+def _source_commands(run: Path, role: str, script: str, lazy: bool) -> tuple[str | None, str]:
+    """A role's `source-file` command, only for a lazy snapshot, which leaves files to fetch, and its `source-search`,
+    for every snapshot, so a reviewer searches the code where the runtime gives it no Grep or Glob."""
+    fetch, search = source_commands(run, role, script=script)
+    return (fetch if lazy else None), search
+
+
 def _write_roles(
     kind: str,
     run: Path,
@@ -326,8 +333,8 @@ def _write_roles(
     document_stage: str | None = None,
 ) -> tuple[list[RunRole], list[str]]:
     """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles
-    and the changed files the plan leaves unreviewed. A `lazy` snapshot's prompts name its source commands, and a
-    `document_stage` reaches the design-review specialist's."""
+    and the changed files the plan leaves unreviewed. Every prompt names the `source-search` command, and a `lazy`
+    snapshot's its `source-file` command too; a `document_stage` reaches the design-review specialist's."""
     script = command_script("review_source.py")
     if kind == "entrypoint":
         if reviewer_root is None or entrypoint is None:
@@ -345,7 +352,7 @@ def _write_roles(
                 self_check=self_check_command(run, adapter["name"]),
                 links=links,
                 local_checkout=checkout,
-                source_commands=source_commands(run, adapter["name"], script=script) if lazy else None,
+                source_commands=_source_commands(run, adapter["name"], script, lazy),
             ),
         )
         return [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}], []
@@ -357,7 +364,7 @@ def _write_roles(
         snapshot=manifest,
         local_checkout=checkout,
         review_files=review_files,
-        source_commands=(lambda identity: source_commands(run, identity, script=script)) if lazy else None,
+        source_commands=lambda identity: _source_commands(run, identity, script, lazy),
         document_stage=document_stage,
     )
     roles: list[RunRole] = [

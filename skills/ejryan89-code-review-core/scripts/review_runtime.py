@@ -2043,13 +2043,15 @@ def fetch_source_file(
 
 
 def search_source(
-    checkout: Path, root: Path, pattern: str, *, repository: str, commit: str
+    checkout: Path | None, root: Path, pattern: str, *, repository: str, commit: str
 ) -> tuple[list[tuple[str, str, str]], bool]:
     """Matches of an extended regular expression in the head commit's files, as (path, line number, text), in the
     paths the snapshot at `root` can hold only, and whether more than MAX_SEARCH_MATCHES were found.
 
-    `git grep` searches the commit's tree in `checkout`, so a lazy snapshot is searched whole. It treats every file as
-    text, so no attribute the checkout sets decides what is binary; the snapshot's own test does. A file the snapshot
+    `git grep` searches the commit's tree in `checkout`, so a lazy snapshot is searched whole. Without a checkout, the
+    snapshot holds every file, and `git grep --no-index` searches its files as written, each one the manifest hashes.
+    It treats every file as text, so no attribute the checkout sets decides what is binary; the snapshot's own test
+    does. A file the snapshot
     holds passed it when it was written, and a file it lists to fetch later is read by its blob id from one
     `git cat-file --batch` and tested the first time it matches. No textconv applies. Each line is read only as far
     as a match can show, so a long line of a binary file is never held whole, and its text is read as UTF-8 with
@@ -2058,19 +2060,23 @@ def search_source(
     that text: the commit holds the document's own bytes, not the text a reviewer reads.
     """
     metadata = _verify_snapshot(root, expected_repository=repository, expected_commit=commit, contents=False)[0]
-    fetchable: dict[str, str] = metadata.get(SNAPSHOT_FETCHABLE, {})
+    fetchable: dict[str, str] = metadata.get(SNAPSHOT_FETCHABLE, {}) if checkout is not None else {}
     text = dict.fromkeys(metadata["source_hashes"], True)  # path -> whether the snapshot's test finds it text
     text.update(dict.fromkeys(metadata.get(SNAPSHOT_EXTRACTED, {}), False))
-    prefix = f"{commit}:".encode("ascii")
+    prefix = f"{commit}:".encode("ascii") if checkout is not None else b""
     # The commit, the longest path, two NULs, a line number, and enough bytes of text to run past
     # MAX_MATCH_CHARACTERS however they decode.
     longest = max((len(path.encode("utf-8", "surrogateescape")) for path in [*text, *fetchable]), default=0)
     limit = len(prefix) + longest + 32 + 4 * (MAX_MATCH_CHARACTERS + 1)
-    arguments = ["grep", "--null", "--line-number", "-a", "-E", "--no-color", "--full-name", "-e", pattern, commit]
+    arguments = ["grep", "--null", "--line-number", "-a", "-E", "--no-color"]
+    if checkout is None:
+        arguments += ["--no-index", "-e", pattern]
+    else:
+        arguments += ["--full-name", "-e", pattern, commit]
     matches: list[tuple[str, str, str]] = []
     try:
         with ExitStack() as processes:
-            stream = processes.enter_context(GitClient().stream([*arguments, "--"], directory=checkout))
+            stream = processes.enter_context(GitClient().stream([*arguments, "--"], directory=checkout or root))
             stream.stdin.close()
             binary: Callable[[str], bool] | None = None
             while line := stream.readline(limit):
@@ -2081,7 +2087,7 @@ def search_source(
                 path = name.removeprefix(prefix).decode("utf-8", "surrogateescape")
                 if not cut or (path not in text and path not in fetchable):
                     continue  # a line cut before its text names a path longer than any the snapshot can hold
-                if path not in text:
+                if path not in text and checkout is not None:
                     binary = binary or processes.enter_context(_blob_binary_test(checkout))
                     text[path] = not binary(fetchable[path])
                 if not text[path]:
