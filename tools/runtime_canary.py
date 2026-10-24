@@ -994,7 +994,7 @@ class RuntimeChecks:
     talk: discovery.Converse | None = None
     declared: Declarations | None = None
     unadapted: Mapping[str, str] | None = None
-    attempts: int = DEFAULT_ATTEMPTS
+    attempts: int
 
 
 def check_runtime(
