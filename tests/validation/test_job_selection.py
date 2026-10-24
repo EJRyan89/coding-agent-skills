@@ -534,7 +534,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
         names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["conftest.py"])}
         python_suites = {relative(suite) for suite in regression_suites() if suite.suffix == ".py"}
         self.assertLessEqual(python_suites, names)
-        self.assertNotIn("skills/update-coding-agent-skills/scripts/test_update.sh", names)
+        self.assertNotIn("skills/update-coding-agent-skills/scripts/test_update_fixture.sh", names)
 
     def test_a_change_to_a_skills_metadata_selects_the_deployer_suites_that_read_it_in_this_repository(self) -> None:
         names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["deploy-meta/review-prs.json"])}

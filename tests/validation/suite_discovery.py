@@ -1053,7 +1053,13 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
             "tests/deployer/test_frontmatter.py",
             "tests/tools/test_worktrees.py",
             "tests/ai-config/test_cross_skill_contracts.py",
-            "skills/update-coding-agent-skills/scripts/test_update.sh",
+            "skills/update-coding-agent-skills/scripts/test_update_fixture.sh",
+            "skills/update-coding-agent-skills/scripts/test_update_main.sh",
+            "skills/update-coding-agent-skills/scripts/test_update_majors.sh",
+            "skills/update-coding-agent-skills/scripts/test_update_pins.sh",
+            "skills/update-coding-agent-skills/scripts/test_update_refs.sh",
+            "skills/update-coding-agent-skills/scripts/test_update_release.sh",
+            "skills/update-coding-agent-skills/scripts/test_update_installed.sh",
             "skills/ejryan89-code-review-core/scripts/test_review_pipeline.py",
         ):
             self.assertIn(expected, suites)
