@@ -69,7 +69,7 @@ deployer's rendering suite for a change under `skills/` and the suites that read
 floor. It earns its run when that reach is narrow; for a change to the deployer, ejryan89-skill-core, or the runner it
 selects most suites and comes close to a full run. A reach no file name or import shows goes in that table, never in a
 list a contributor keeps. `-k <pattern>` instead runs only the policies and suites whose name or path matches, as when
-rerunning one suite, and a pattern that matches nothing is refused.
+rerunning one suite, and a pattern that matches nothing, even beside one that matches, is refused.
 
 The runner decides what a documentation-only change needs. When every file changed since `origin/main` (the pull
 request's base in continuous integration), uncommitted or untracked, is under `docs/` or `.github/ISSUE_TEMPLATE/`, or
