@@ -236,6 +236,30 @@ class EndToEndTests(GuardTestCase):
                 self.assertEqual(expected, self.both(event, environment))
         self.assertIn("hub guard skipped", self.stderr)
 
+    def test_an_event_that_names_no_command_or_file_is_allowed_with_a_note_never_unseen(self) -> None:
+        # The contract allows an event the guard cannot read, so it cannot block every tool, but never in silence.
+        self.enable("true")
+        for event, note in (
+            ({"tool_name": "Bash", "tool_input": {}, "cwd": str(self.hub)}, "the Bash event names no command"),
+            ({"tool_name": "PowerShell", "cwd": str(self.hub)}, "the PowerShell event names no command"),
+            ({"tool_name": "Monitor", "tool_input": {"command": 7}, "cwd": str(self.hub)}, "the Monitor event names"),
+            ({"tool_name": "Edit", "tool_input": {}, "cwd": str(self.hub)}, "the Edit event names no file path"),
+            ({"tool_name": "NotebookEdit", "tool_input": {"notebook_path": None}}, "the NotebookEdit event names no"),
+        ):
+            with self.subTest(event=event):
+                self.assertIsNone(self.both(event))
+                self.assertIn(f"hub guard skipped: {note}", self.stderr)
+
+    def test_an_opt_in_git_cannot_read_is_allowed_with_a_note_never_read_as_unguarded_unseen(self) -> None:
+        self.enable("maybe")
+        event = {"tool_name": "Bash", "tool_input": {"command": "git switch feat/demo"}, "cwd": str(self.hub)}
+        self.assertIsNone(self.both(event))
+        self.assertIn(f"hub guard skipped: the opt-in of {self.hub}", self.stderr)
+        self.assertIn("could not be read: ", self.stderr)
+        self.enable(None)
+        self.assertIsNone(self.both(event))
+        self.assertEqual("", self.stderr, "a clone that has not opted in is unguarded, with nothing to note")
+
     def test_an_opt_in_changed_between_events_is_read_afresh_as_by_a_new_process(self) -> None:
         for event in (
             {"tool_name": "Bash", "tool_input": {"command": "git switch feat/demo"}, "cwd": str(self.hub)},

@@ -228,8 +228,14 @@ def same_place(left: Path | None, right: Path | None) -> bool:
 
 def guard_enabled(hub: Path) -> bool:
     """Reads the opt-in from the repository's own configuration file only: --local passes over command-line
-    configuration, which GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT carry and which would otherwise outrank it."""
-    return git(hub, "config", "--local", "--type=bool", "--get", GUARD_SETTING).stdout.strip() == "true"
+    configuration, which GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT carry and which would otherwise outrank it. git
+    exits 1 for a setting that is not there; any other failure, such as a value that is no boolean, is a hub it cannot
+    look up, allowed with a note rather than read as unguarded unseen."""
+    result = git(hub, "config", "--local", "--type=bool", "--get", GUARD_SETTING)
+    if result.returncode not in (0, 1):
+        said = " ".join(result.stderr.split()) or f"git config exited with {result.returncode}"
+        print(f"hub guard skipped: the opt-in of {hub} could not be read: {said}", file=sys.stderr)
+    return result.returncode == 0 and result.stdout.strip() == "true"
 
 
 @functools.cache
@@ -1921,9 +1927,13 @@ def guard(stream: str) -> int:
         refused: str | None = None
         if tool in FILE_TOOLS:
             target = tool_input.get("file_path") or tool_input.get("notebook_path")
-            if isinstance(target, str) and hub_protected(resolve(target, cwd)):
+            if not isinstance(target, str):
+                print(f"hub guard skipped: the {tool} event names no file path", file=sys.stderr)
+            elif hub_protected(resolve(target, cwd)):
                 refused = DENY_REASON
-        elif tool in SHELL_READERS and isinstance(tool_input.get("command"), str):
+        elif tool in SHELL_READERS and not isinstance(tool_input.get("command"), str):
+            print(f"hub guard skipped: the {tool} event names no command", file=sys.stderr)
+        elif tool in SHELL_READERS:
             reading = start_reading(tool_input["command"], cwd, os.environ)
             hubs = set(reading.context_hubs)
             in_view = (reading.text, hubs)
