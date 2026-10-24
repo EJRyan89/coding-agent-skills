@@ -666,6 +666,8 @@ def run_command(
     # The isolation of the Copilot review host in ejryan89-code-review-core, except --disallow-temp-dir, since the home
     # is a temporary directory, and with shell allowed only for the platform's Python command and Bash, which is what
     # the skills run. A Copilot whose version cannot be read is taken to be the latest, which it updates itself to.
+    # No --model: a -p run takes Copilot's default model, or, on an account where Auto selection is managed, the model
+    # Auto picks, which may differ from run to run (docs/copilot-support.md, "Bounded code-review host").
     return [
         executable,
         "--no-custom-instructions",

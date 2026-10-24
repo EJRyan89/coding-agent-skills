@@ -631,6 +631,26 @@ class ReportTests(InsightFixture):
         code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
         self.assertEqual(0, code, out + err)
 
+    def test_an_invalid_earlier_review_fails_as_a_pair_and_an_unlistable_history_as_the_skill_says(self) -> None:
+        # Every pair is validated before the ledgers read a pull request's history, so an invalid earlier review of
+        # an analyzed pull request fails as a pair; the history line is a pull request folder that cannot be listed.
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        [history] = re.findall(r"`FAILED (Invalid review history for )<repo>#<number>: <reason>`", skill)
+        self.commit("owner/repo", 7, ["Correctness"], reviewed_at="2025-06-01T12:00:00+00:00")
+        self.commit("owner/repo", 7, ["Correctness"], version=2)
+        earlier = self.archive / "owner" / "repo" / "pulls" / "7" / "review.json"
+        stored = earlier.read_bytes()
+        earlier.write_text(json.dumps({**json.loads(stored), "schema_version": 99}), encoding="utf-8")
+        self.assertFailed(
+            self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"), f"Invalid review pair {earlier}: "
+        )
+        earlier.write_bytes(stored)
+        with mock.patch.object(ri, "list_versions", side_effect=PermissionError("Access is denied")):
+            self.assertFailed(
+                self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                f"FAILED {history}owner/repo#7: Access is denied",
+            )
+
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # Windows pipes default to a legacy code page; RECOMMENDATION quotes a reviewer's category as written.
         self.commit("owner/repo", 7, ["Naming → clarity ✓"])
@@ -1374,6 +1394,48 @@ class AnalyzerTests(InsightFixture):
             json_path.write_text(json.dumps(tampered), encoding="utf-8")
             with self.assertRaisesRegex(ri.InsightError, message):
                 ri.load_report(json_path)
+
+    def test_a_report_missing_a_field_a_command_reads_fails_naming_it(self) -> None:
+        # Each field render, the report's own lines, and the synthesis input read, removed or of another kind: every
+        # command that loads the report ends with a FAILED line naming it, where it raised a KeyError before.
+        self.commit_covered()
+        json_path, _ = self.report()
+        original = json.loads(json_path.read_text(encoding="utf-8"))
+        change: Callable[[dict[str, Any]], object]
+        for change, message in (
+            (lambda report: report.pop("repository_set"), "repository_set is missing or not of its kind"),
+            (lambda report: report.update(repositories="owner/repo"), "repositories is missing or not of its kind"),
+            (lambda report: report.pop("start_date"), "start_date is missing or not of its kind"),
+            (lambda report: report.update(end_date="2026-13-01"), "end_date is missing or not of its kind"),
+            (lambda report: report.update(record_count=-1), "record_count is missing or not of its kind"),
+            (lambda report: report.update(finding_count=True), "finding_count is missing or not of its kind"),
+            (lambda report: report.pop("severity_counts"), "severity_counts is missing or not of its kind"),
+            (lambda report: report.update(category_counts={"Style": "1"}), "category_counts is missing or not"),
+            (lambda report: report["records"][0].pop("path"), r"records\[0\] must name a record's path"),
+            (lambda report: report["records"][0].update(payload_sha256="x"), r"records\[0\] must name"),
+            (lambda report: report["recommendations"][0].pop("finding_count"), "REC-001.finding_count must be"),
+            (lambda report: report["recommendations"][2].update(finding_count=-1), "REC-003.finding_count must be"),
+            (lambda report: report["recommendations"][0].pop("recommendation"), "REC-001.recommendation must be"),
+        ):
+            tampered = json.loads(json.dumps(original))
+            change(tampered)
+            json_path.write_text(json.dumps(tampered), encoding="utf-8")
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ri.InsightError, message):
+                    ri.load_report(json_path)
+                code, out, err = self.run_main(
+                    "decide",
+                    "--report",
+                    str(json_path),
+                    "REC-001",
+                    "--category",
+                    "Style",
+                    "--flags",
+                    "none",
+                    "accepted",
+                )
+                self.assertEqual((1, ""), (code, err))
+                self.assertRegex(out.splitlines()[-1], f"^FAILED .*{message}")
 
     def test_custom_candidates_decided_apart_print_a_mixed_decision(self) -> None:
         self.commit_covered()

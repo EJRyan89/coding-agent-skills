@@ -709,6 +709,8 @@ guidance and to the repositories' tooling. This file is your complete task.
 - `guidance-overlap`: two rules from two guidance files that share most of their words: a candidate `conflict` when
   they differ in force (must, should, never, a severity) or a number, which `differs` names, or a candidate
   `duplicate` when they agree. A script found them; judge each.
+- `guidance-search-stopped`: a repository whose overlap search stopped after `pairs_compared` pairs of rules, so the
+  pairs it never compared may hold overlaps the input has no line for; do not read its lack of one as agreement.
 - `guidance-unsupplied`: a Markdown file a reviewer's guidance names that the reviewer is not given.
 - `previous`: the previous period's categories, themes, and recommendations with their decisions, when there is one.
 

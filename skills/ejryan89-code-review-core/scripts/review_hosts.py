@@ -63,8 +63,8 @@ Runner = Callable[[Sequence[str], Path, Mapping[str, str], str], ProcessResult]
 Promote = Callable[[Path, Path], bool]
 
 MINIMUM_COPILOT_CLI_VERSION = (1, 0, 88)
-# The first Copilot CLI that refuses --no-remote and --no-remote-export and turns the session's export off with
-# --sync-session=off instead.
+# The first Copilot CLI that retires the --remote and --no-remote startup flags: its command reference marks
+# --no-remote removed and --no-remote-export renamed to --sync-session=off, which turns the session's export off.
 COPILOT_SYNC_SESSION_VERSION = (1, 0, 103)
 COPILOT_TIMEOUT_SECONDS = 1800
 # Bytes of each of Copilot CLI's output streams kept for its diagnostic; the rest is cut and the cut named.
@@ -349,9 +349,11 @@ def copilot_local_session(version: tuple[int, ...]) -> list[str]:
     """The flags that keep a Copilot CLI session of `version` local: not exported to the account's history on GitHub
     web and mobile, and not controlled from there. Before COPILOT_SYNC_SESSION_VERSION, --no-remote-export turns off
     the export and, with it, remote control, and --no-remote turns off remote control on its own. From that version
-    Copilot refuses both and names --sync-session=off as the export's replacement; remote control there starts only
-    from the /remote command in an interactive session or a hosting option such as --connect, and the session is given
-    neither."""
+    --no-remote is removed and --no-remote-export is renamed to --sync-session=off, which turns off the export and,
+    the reference says, enables no remote control. There remote control starts from the /remote command in an
+    interactive session, or from --remote only in a legacy SDK server started with --server or --headless, which
+    refuses it with -p or an interactive start; --connect joins another remote session rather than hosting this one.
+    The session is given none of them."""
     if version >= COPILOT_SYNC_SESSION_VERSION:
         return ["--sync-session=off"]
     return ["--no-remote", "--no-remote-export"]
@@ -367,7 +369,9 @@ def copilot_command(
     effort: str | None = None,
 ) -> list[str]:
     """The Copilot CLI command that reviews one run on the Copilot CLI `version` names, at `effort` when one is given,
-    else at the session's default."""
+    else at the session's default. It names no --model, since a reviewer profile names a Claude alias, so the review
+    runs on the model Copilot chooses for a prompt-mode run: its default, or the model Auto selection picks on an
+    account where Auto is managed, which prompt mode honors for piped stdin (docs/copilot-support.md)."""
     negotiate_capabilities("copilot-cli", ["isolated-added-root", "read-diff", "write-result"])
     if effort is not None and effort not in REVIEWER_EFFORTS:
         raise RuntimeContractError(f"Copilot reasoning effort must be one of {', '.join(sorted(REVIEWER_EFFORTS))}")

@@ -22,14 +22,15 @@ has no such file and the whole document is reviewed. A failure git reports readi
 build with git's reason.
 
 A pull request is named as owner/repo#number or by its URL, and validated as review-prs validates its --pull
-selectors. Its changed files are read from GitHub, through ejryan89-code-review-core's GitHubClient and with no
-checkout, and those the design reviewer reviews (DESIGN_SUFFIXES, or a document format) are kept, or the one
-`--document` names. Each one's head is its blob at the pull request's head commit, and its base its blob at the merge
-base GitHub diffs the pull request against, under its old path when it was renamed; a document the pull request adds has
-no base, and one GitHub answers as a symbolic link or a submodule is skipped. The fixture's pull.json names the real
-pull request, so the record's URL is its URL, and the commits; the pull request's title,
-description, branch names, and comments are never read into it, so the only text from GitHub a reviewer reads is the
-documents' own. Nothing is written to GitHub.
+selectors. It is read as review-prs reads one, so a pull request closed without being merged fails, with `FAILED Pull
+request is closed without being merged`, and an open or merged one is reviewed. Its changed files are read from
+GitHub, through ejryan89-code-review-core's GitHubClient and with no checkout, and those the design reviewer
+reviews (DESIGN_SUFFIXES, or a document format) are kept, or the one `--document` names. Each one's head is its
+blob at the pull request's head commit, and its base its blob at the merge base GitHub diffs the pull request
+against, under its old path when it was renamed; a document the pull request adds has no base, and one GitHub answers
+as a symbolic link or a submodule is skipped. The fixture's pull.json names the real pull request, so the record's URL
+is its URL, and the commits; the pull request's title, description, branch names, and comments are never read into
+it, so the only text from GitHub a reviewer reads is the documents' own. Nothing is written to GitHub.
 
 A Word document or a PDF, a format `review_documents.document_format` names, is written to the fixture as its exact
 bytes, so the fixture canary's snapshot extracts its text as it does a pull request's; one whose text would not be
@@ -37,8 +38,9 @@ extracted, or whose lines of text the change leaves as they were, labels aside, 
 plain-text, Word, or PDF document goes to the suite's design-review specialist, through a specialists manifest in the
 fixture's base tree, and pull.json records its `--stage`, one of ejryan89-code-review-core's DOCUMENT_STAGES and review
 by default, whose fixed sentence prepare puts in that specialist's prompt; any other text file goes to the generic
-reviewer, and a stage given for one is refused. Nothing is written to a checkout, and `--output`
-must name a new or empty directory, so nothing already there is mixed with the review's files or replaced.
+reviewer, and a stage given for one is refused. The default output is a new temporary directory, so nothing is
+written to a checkout unless `--output` names a folder inside one; `--output` must name a new or empty directory, so
+nothing already there is mixed with the review's files or replaced.
 """
 
 from __future__ import annotations

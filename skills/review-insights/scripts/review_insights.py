@@ -692,6 +692,11 @@ def _upgrade_recommendation(item: Any, version: int, path: Path) -> None:
     if version < 5:
         item.setdefault("kind", "category")
     _validate_subject(item, path)
+    count = item.get("finding_count")
+    if type(count) is not int or count < 0:
+        raise InsightError(f"{item['id']}.finding_count must be a count of findings")
+    if item["kind"] != "synthesized" and not isinstance(item.get("recommendation"), str):
+        raise InsightError(f"{item['id']}.recommendation must be its text")
     if item.get("decision") not in DECISIONS:
         raise InsightError(f"{item['id']} has an invalid decision")
     if version == 1:
@@ -713,6 +718,44 @@ def _upgrade_recommendation(item: Any, version: int, path: Path) -> None:
     _validate_reviewers(item.get("reviewers"), item["id"])
 
 
+def _validate_header(report: dict[str, Any], path: Path) -> None:
+    """The fields of a report the commands read beside its recommendations, each of the kind analyze and the report
+    writer give it, so a field missing or of another kind fails here, naming it, rather than where it is read."""
+
+    def counts(value: Any) -> bool:
+        return isinstance(value, dict) and all(
+            isinstance(key, str) and type(count) is int and count >= 0 for key, count in value.items()
+        )
+
+    def iso_date(value: Any) -> bool:
+        try:
+            return isinstance(value, str) and date.fromisoformat(value).isoformat() == value
+        except ValueError:
+            return False
+
+    checks = {
+        "repository_set": lambda value: isinstance(value, str) and bool(value),
+        "repositories": lambda value: isinstance(value, list) and all(isinstance(item, str) for item in value),
+        "start_date": iso_date,
+        "end_date": iso_date,
+        "record_count": lambda value: type(value) is int and value >= 0,
+        "finding_count": lambda value: type(value) is int and value >= 0,
+        "severity_counts": counts,
+        "category_counts": counts,
+    }
+    for field_name, valid in checks.items():
+        if not valid(report.get(field_name)):
+            raise InsightError(f"{path}.{field_name} is missing or not of its kind")
+    for index, record in enumerate(report["records"]):
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("path"), str)
+            or not isinstance(record.get("payload_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", record["payload_sha256"])
+        ):
+            raise InsightError(f"{path}.records[{index}] must name a record's path and payload_sha256")
+
+
 def load_report(path: Path) -> dict[str, Any]:
     """A report in the current schema; a version 1 report gains an empty history, a version 1 or 2 report's links
     are dropped because they may name a finding from another review, a report before version 4 gains an empty
@@ -732,6 +775,7 @@ def load_report(path: Path) -> dict[str, Any]:
     recommendations = report.get("recommendations")
     if not isinstance(recommendations, list) or not isinstance(report.get("records"), list):
         raise InsightError(f"{path} is not a supported insights report")
+    _validate_header(report, path)
     for item in recommendations:
         _upgrade_recommendation(item, report["schema_version"], path)
     if report["schema_version"] < 7:
@@ -858,8 +902,10 @@ def create_report(
         guidance = review_guidance.read_guidance(
             report["repositories"], pairs.validated, checkouts or {}, services.guidance_reader
         )
+        budget = review_guidance.CANDIDATE_BUDGET
         if notices is not None:
             notices += guidance.unreadable
+            notices += [f"GUIDANCE_SEARCH_STOPPED {repository} pairs={budget}" for repository in guidance.stopped]
         analyzed = synthesis_stage.Analyzed(
             report=report,
             records=[record for _, record in records],
@@ -876,7 +922,13 @@ def create_report(
                 "unsupplied_references": guidance.unsupplied,
             }
         )
-        analyzed.signal_lines = review_signals.input_lines(report["signals"])
+        analyzed.signal_lines = [
+            *review_signals.input_lines(report["signals"]),
+            *(
+                {"kind": "guidance-search-stopped", "repository": repository, "pairs_compared": budget}
+                for repository in guidance.stopped
+            ),
+        ]
         staged = synthesis_stage.prepare(
             json_path.parent,
             analyzed,
