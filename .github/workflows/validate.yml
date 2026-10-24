@@ -52,18 +52,14 @@ jobs:
           # cannot tell and runs every suite.
           fetch-depth: 0
 
-      # The file-heavy suites run many times slower here than on Linux, and real-time scanning of the checkout and the
-      # suites' temporary trees is a suspected cause. The runner is ephemeral and these folders hold only this
-      # repository and its tests' files, so they are excluded for this job alone.
-      - name: Exclude the runner's own folders from real-time scanning
+      # Real-time scanning was off on every leg, so it does not cause the file-heavy suites' slowness here. The reading
+      # costs seconds, so the weekly run alone shows whether the image has turned it on; a pull request does not wait.
+      - name: Show Defender's real-time protection state
+        if: github.event_name == 'schedule'
         shell: pwsh
         run: |
           $enabled = (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled
           Write-Host "Defender real-time protection enabled: $enabled"
-          if ($enabled) {
-            Add-MpPreference -ExclusionPath @($env:RUNNER_TEMP, $env:TEMP, $env:GITHUB_WORKSPACE) -ErrorAction Stop
-            Write-Host "Excluded from scanning: $((Get-MpPreference).ExclusionPath -join ', ')"
-          }
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -219,8 +215,20 @@ jobs:
           path: ${{ runner.temp }}/shellcheck
           key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
 
+      # The image ships PSScriptAnalyzer for all users, and Install-Module of a version already in use installs
+      # nothing, so the cache and the install run only when the image lacks the pin. The verify step checks the result
+      # either way.
+      - name: Find the pinned PSScriptAnalyzer on the image
+        id: psscriptanalyzer-image
+        shell: pwsh
+        run: |
+          $found = @(Get-Module -ListAvailable PSScriptAnalyzer | Where-Object { [string]$_.Version -eq $env:PSSCRIPTANALYZER_VERSION })
+          Write-Host "PSScriptAnalyzer $env:PSSCRIPTANALYZER_VERSION on the image: $($found.Count -gt 0)"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "installed=$(([string]($found.Count -gt 0)).ToLowerInvariant())"
+
       - name: Restore PSScriptAnalyzer
         id: psscriptanalyzer
+        if: steps.psscriptanalyzer-image.outputs.installed != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/powershell/Modules/PSScriptAnalyzer
@@ -245,7 +253,7 @@ jobs:
           echo "$shellcheck" >> "$GITHUB_PATH"
 
       - name: Install PSScriptAnalyzer
-        if: steps.psscriptanalyzer.outputs.cache-hit != 'true'
+        if: steps.psscriptanalyzer-image.outputs.installed != 'true' && steps.psscriptanalyzer.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Scope CurrentUser -Force -ErrorAction Stop
