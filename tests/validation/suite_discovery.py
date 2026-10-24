@@ -23,7 +23,7 @@ from typing import TypeGuard
 
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
-from shell_targets import run_git_bash, shell_quote
+from shell_targets import run_bash_suite
 from skill_scripts import ASSIGNMENT, STANDARD_STREAMS, split_operators
 from toolchain import find_powershell
 from validation_support import (
@@ -137,7 +137,7 @@ def run_test_script(path: Path) -> None:
     if suffix == ".py":
         run_process(pytest_command(target))
     elif suffix == ".sh":
-        run_git_bash(f"bash {shell_quote(target)}")
+        run_bash_suite(target)
     elif suffix == ".ps1":
         run_process([find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", target])
     else:
