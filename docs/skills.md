@@ -263,7 +263,7 @@ One user without a history gets the per-user table with every metric. A group, o
 
 The history holds per-person activity over time, so keep it private, outside any repository and any folder the deployer or a runtime reads. The report fails closed: a failure for any user prints the `FAILED` line and leaves the history file byte-identical.
 
-A 12-month report takes a few minutes per user, because searches are spaced to stay under GitHub's rate limits; with a history, later runs search only the months that can still change. `gh` must be signed in with a token that can read the organization's repositories, including SSO authorization where the organization enforces it.
+A 12-month report takes a few minutes per user, because searches are spaced to stay under GitHub's rate limits; with a history, later runs search only the months that can still change, and once each month of a file written before the report recorded the cap, though the review search, which finds pull requests by their last update, reads every one updated since the earliest of those months. `gh` must be signed in with a token that can read the organization's repositories, including SSO authorization where the organization enforces it.
 
 ```text
 /github-activity-report octo-org octocat --months 6

@@ -38,7 +38,8 @@ def shown(path: object) -> str:
 
 class ReaderTests(DeployerTestCase):
     def test_json_past_the_limits_or_not_json_reads_as_none_and_json_as_its_value(self) -> None:
-        for case, text in {**UNREADABLE, "not json": "{", "a lone surrogate": '"\\ud800'}.items():
+        refused = {"a repeated key": '{"a": 1, "a": 2}', "NaN": '{"a": NaN}', "Infinity": "[-Infinity]"}
+        for case, text in {**UNREADABLE, **refused, "not json": "{", "a lone surrogate": '"\\ud800'}.items():
             with self.subTest(case=case):
                 self.assertIsNone(state_files.parse_json(text))
         self.assertEqual({"a": [1, 2]}, state_files.parse_json('{"a": [1, 2]}'))
