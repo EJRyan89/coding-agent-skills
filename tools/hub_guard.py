@@ -1446,9 +1446,11 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
 
 
 def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], shell: Shell) -> list[Word] | None:
-    """The one word bash runs from -c, alone or in a bundle such as -lc, or, with no script file, the here-string or
-    here-document it reads; None for none of them."""
+    """The one word bash runs from -c, alone or in a bundle such as -lc, or, with no script file or with -s, the
+    here-string or here-document it reads; [None], a script the text does not hold, for one it reads from a pipe or
+    the standard input the command inherits; None for a script file, which the guard does not read."""
     index = 0
+    from_input = False
     while index < len(arguments):
         word = arguments[index]
         if word is None or not word.startswith(("-", "+")) or word == "--":
@@ -1456,10 +1458,12 @@ def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], sh
             break
         if not word.startswith("--") and "c" in word[1:]:
             return arguments[index + 1 : index + 2]
+        # -s reads the script from standard input and takes every operand as a positional parameter.
+        from_input = from_input or (word.startswith("-") and not word.startswith("--") and "s" in word[1:])
         index += 2 if word in BASH_OPTIONS_WITH_VALUE else 1
-    if index < len(arguments):
+    if index < len(arguments) and not from_input:
         return None  # a script file, which the guard does not read
-    script: list[Word] | None = None
+    script: list[Word] | None = [None]
     for redirect in redirects:
         if redirect.operator == "<<<" and redirect.target is not None:
             script = [word_value(redirect.target, shell, assignment=True)]

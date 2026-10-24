@@ -1203,6 +1203,23 @@ class CommandReadingTests(GuardTestCase):
                 self.read(command, tool=tool)
                 self.assertEqual(unread, self.unread)
 
+    def test_a_script_bash_or_sh_reads_from_its_standard_input_is_one_the_guard_cannot_read(self) -> None:
+        for tool, command, unread in (
+            ("Bash", "echo 'git commit -m x' | bash", ["could not read the command passed to bash"]),
+            ("Bash", "printf 'git commit -m x' | sh -s -- one two", ["could not read the command passed to sh"]),
+            ("PowerShell", "'git commit -m x' | bash", ["could not read the command passed to bash"]),
+            ("Bash", "bash -s one <<< 'git commit -m x'", []),
+            ("Bash", "bash script.sh; git status", []),
+            # Only -s, alone or in a bundle of short options, reads the script from standard input.
+            ("Bash", "bash -l script.sh; git status", []),
+            ("Bash", "bash --posix script.sh; git status", []),
+            ("Bash", "echo 'git commit -m x' | bash -ls one", ["could not read the command passed to bash"]),
+            ("Bash", "bash < script.sh; git status", []),
+        ):
+            with self.subTest(tool=tool, command=command):
+                self.read(command, tool=tool)
+                self.assertEqual(unread, self.unread)
+
     def test_both_readers_leave_unknown_what_a_name_they_cannot_settle_may_set(self) -> None:
         # Bash's export "$v"=x may set any variable, and so may a cmdlet writing a provider path the text does not
         # settle; a path whose last part is literal text names that variable alone, which git does not read.
