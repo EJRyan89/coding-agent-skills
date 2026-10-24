@@ -8,6 +8,7 @@ import unittest
 from collections.abc import Collection
 from pathlib import Path
 
+from python_checks import MYPY_CACHE_VARIABLE
 from validation_support import REPOSITORY_ROOT
 
 from deployer import config
@@ -554,6 +555,7 @@ def tool_cache_problems(workflow: str, caches: dict[str, str], job: str = "suite
         str(_mapping(step, "with").get("key"))
         for step in steps
         if str(step.get("uses", "")).startswith("actions/cache@")
+        and not str(_mapping(step, "with").get("key")).startswith(MYPY_CACHE_PREFIX)
     ]
     problems: list[str] = []
     if sorted(keys) != sorted(caches):
@@ -573,6 +575,50 @@ def tool_cache_problems(workflow: str, caches: dict[str, str], job: str = "suite
         {"cache": "pip", "path": "requirements-dev.txt"}
     ]:
         problems.append("setup-python does not cache pip keyed on requirements-dev.txt")
+    return problems
+
+
+# mypy's cache, which tool_cache_problems leaves to mypy_cache_problems: a folder the type checks write under, each in
+# a folder of its own, restored for the leg, since each leg's deal runs its own type checks, on the runner's platform
+# and the Python setup-python installed, which mypy writes its cache for, and requirements-dev.txt, which pins mypy. A
+# key is saved once, so the standard library's stubs, most of what mypy parses, stay cached until one of them changes,
+# while the repository's own modules are checked again as they change.
+MYPY_CACHE_PREFIX = "mypy-"
+MYPY_CACHE_KEY = (
+    f"{MYPY_CACHE_PREFIX}${{{{ runner.os }}}}-${{{{ steps.python.outputs.python-version }}}}-"
+    "${{ strategy.job-index }}-${{ hashFiles('requirements-dev.txt') }}"
+)
+MYPY_CACHE_PATH = "${{ runner.temp }}/mypy-cache"
+
+
+def mypy_cache_problems(workflow: str, job: str) -> list[str]:
+    """Report how validate.yml's `job` departs from restoring mypy's cache, keyed by MYPY_CACHE_KEY, before validation
+    runs, and from naming its folder in MYPY_CACHE_VARIABLE to every step that runs validation."""
+    steps = _steps(_mapping(read_workflow(workflow), "jobs", job))
+    caches = [
+        (index, _mapping(step, "with"))
+        for index, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith("actions/cache@")
+        and str(_mapping(step, "with").get("key")).startswith(MYPY_CACHE_PREFIX)
+    ]
+    expected = {"path": MYPY_CACHE_PATH, "key": MYPY_CACHE_KEY}
+    problems: list[str] = []
+    if [settings for _, settings in caches] != [expected]:
+        problems.append(
+            f"the {job} job restores mypy's cache as {[settings for _, settings in caches]}, not {expected}"
+        )
+    elif caches[0][0] > _validation_index(steps):
+        problems.append(f"the {job} job restores mypy's cache after validation runs")
+    if [step.get("id") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")] != [
+        "python"
+    ]:
+        problems.append(f"the {job} job's setup-python step is not the step `python` the cache key reads")
+    runs = [step for step in steps if "tests/run_validation.py" in str(step.get("run", ""))]
+    problems.extend(
+        f"the step {step.get('name')} does not name {MYPY_CACHE_PATH} in {MYPY_CACHE_VARIABLE}"
+        for step in runs
+        if _mapping(step, "env").get(MYPY_CACHE_VARIABLE) != MYPY_CACHE_PATH
+    )
     return problems
 
 
@@ -1191,6 +1237,7 @@ class WorkflowsPolicies(unittest.TestCase):
             ),
         )
         self.assertEqual([], pinned_tool_problems(workflow, "suite"))
+        self.assertEqual([], mypy_cache_problems(workflow, "suite"))
         # Real-time protection read off on every leg, so only the weekly run prints it, and nothing is excluded.
         self.assertEqual([], defender_problems(workflow))
 
@@ -1214,6 +1261,7 @@ class WorkflowsPolicies(unittest.TestCase):
             ),
         )
         self.assertEqual([], pinned_tool_problems(workflow, "linux"))
+        self.assertEqual([], mypy_cache_problems(workflow, "linux"))
         # The image ships the pinned analyzer, so the cache and the install run only on an image that lacks it.
         self.assertEqual([], image_module_problems(workflow, "linux"))
         # Every supported platform gates a merge through the one check branch protection requires.

@@ -210,6 +210,76 @@ class PythonChecksFixtures(unittest.TestCase):
             # No cache or other state is written into the checked tree.
             self.assertEqual([], sorted(path.name for path in root.iterdir() if path.name.startswith(".")))
 
+    def test_type_check_caches_in_a_folder_of_its_own_that_ends_with_it(self) -> None:
+        seen: list[tuple[Path, bool]] = []
+
+        def record(arguments: list[str], cwd: Path) -> None:
+            cache = Path(arguments[arguments.index("--cache-dir") + 1])
+            seen.append((cache, cache.is_dir()))
+
+        with (
+            mock.patch.dict("os.environ", {"VALIDATION_MYPY_CACHE": ""}),
+            mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
+            mock.patch.object(python_checks, "run_process", side_effect=record),
+        ):
+            for _ in range(2):
+                mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml")
+        # A real folder, never the null device, outside the tree, made for the check and removed after it.
+        self.assertEqual([True, True], [existed for _, existed in seen])
+        self.assertNotEqual(seen[0][0], seen[1][0])
+        for cache, _ in seen:
+            self.assertFalse(cache.is_relative_to(REPOSITORY_ROOT))
+            self.assertFalse(cache.exists())
+
+    def test_type_checks_cache_under_the_named_folder_one_folder_each(self) -> None:
+        commands: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "mypy cache"
+            with (
+                mock.patch.dict("os.environ", {"VALIDATION_MYPY_CACHE": str(root)}),
+                mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
+                mock.patch.object(
+                    python_checks, "run_process", side_effect=lambda arguments, cwd: commands.append(arguments)
+                ),
+            ):
+                checks = [job for job in all_jobs() if job.name.startswith("static type check (mypy")]
+                for _ in range(2):
+                    for job in checks:
+                        job.run()
+            caches = [Path(command[command.index("--cache-dir") + 1]) for command in commands]
+            first, second = caches[: len(checks)], caches[len(checks) :]
+            # Each check, the mypy processes the pool runs at once among them, has its own folder under the root,
+            # and finds the same one at the next run, which is how a restored cache is read again.
+            self.assertEqual(len(checks), len(set(first)))
+            self.assertEqual({root}, {cache.parent for cache in first})
+            self.assertEqual(first, second)
+            with (
+                mock.patch.dict("os.environ", {"VALIDATION_MYPY_CACHE": "relative/cache"}),
+                mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
+                self.assertRaises(AssertionError) as raised,
+            ):
+                mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml")
+            self.assertIn("VALIDATION_MYPY_CACHE must be an absolute path, not 'relative/cache'", str(raised.exception))
+
+    def test_a_warm_cache_names_the_same_errors_as_a_cold_one(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "tree"
+            root.mkdir()
+            configuration = root / "pyproject.toml"
+            configuration.write_text('[tool.mypy]\npython_version = "3.11"\n', encoding="utf-8")
+            (root / "module.py").write_text('def answer() -> int:\n    return "42"\n', encoding="utf-8")
+            cache = Path(directory) / "cache"
+            messages = []
+            with mock.patch.dict("os.environ", {"VALIDATION_MYPY_CACHE": str(cache)}):
+                for _ in range(2):
+                    with self.assertRaises(AssertionError) as raised:
+                        mypy_type_check(root, ["module.py"], configuration)
+                    messages.append(re.findall(r"(?m)^module\.py:.*$", str(raised.exception)))
+                    self.assertTrue(any(cache.iterdir()), "mypy wrote its cache under the named folder")
+            self.assertEqual(1, len(messages[0]))
+            self.assertEqual(messages[0], messages[1])
+            self.assertEqual(["module.py", "pyproject.toml"], sorted(path.name for path in root.iterdir()))
+
     def test_type_check_in_strict_mode_names_an_error_only_strict_mode_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
