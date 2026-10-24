@@ -87,6 +87,7 @@ from tools.runtime_canary import (
     environment,
     finish,
     forward,
+    inside,
     marked,
     placeholders,
     places,
@@ -196,6 +197,20 @@ def option_values(home: Path, plugin: plugin_build.Plugin) -> list[str]:
     return arguments
 
 
+def install_path(home: Path, entry: Mapping[str, Any]) -> tuple[str, str]:
+    """The installed copy's folder from its `claude plugin list --json` entry, and a reason to refuse it unless it is an
+    absolute path whose parent folder is inside the throwaway home, since the probe writes beside the copy."""
+    path = entry.get("installPath")
+    if not isinstance(path, str) or not path:
+        return "", "claude plugin list --json gives it no installPath"
+    installed = Path(path)
+    if not installed.is_absolute():
+        return "", f"claude plugin list --json gives it a relative installPath {path}"
+    if not inside(str(installed.parent), home):
+        return "", f"claude plugin list --json gives it an installPath outside the throwaway home {path}"
+    return path, ""
+
+
 def install(session: Session, executable: str, plugins: list[plugin_build.Plugin]) -> Iterator[str]:
     """Validate, install, and list each plugin in the throwaway configuration; the installed copies' paths are yielded
     last, as one `PATHS` line of JSON, for the sessions that load them."""
@@ -237,7 +252,11 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
         except (ValueError, StopIteration, AttributeError):
             yield f"INSTALL_FAILED claude {plugin.name} {quote('claude plugin list --json does not list it')}"
             continue
-        paths[plugin.name] = str(installed.get("installPath", ""))
+        path, refusal = install_path(session.home, installed)
+        if refusal:
+            yield f"INSTALL_FAILED claude {plugin.name} {quote(refusal)}"
+            continue
+        paths[plugin.name] = path
         yield f"INSTALLED claude {plugin.name} {installed.get('version', 'unknown')}"
         shown = session.runner(
             [executable, "plugin", "details", identifier], session.home, session.config, session.timeout
