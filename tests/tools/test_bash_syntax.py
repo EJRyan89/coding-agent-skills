@@ -250,6 +250,44 @@ def test_a_documented_limit_inside_double_brackets_text_bash_refuses_is_read(tex
     bash_syntax.parse(text)
 
 
+# Texts where reading a file and evaluating a string could part: an empty text, a comment, an unterminated
+# here-document, quote, or compound command, a stray closer, an exit before an error, an alias, and extended globs.
+EDGE_TEXTS = [
+    "",
+    "# only a comment",
+    "}",
+    "{",
+    "cat <<EOF\nno end",
+    "cat <<-EOF\n\tbody\n\tEOF",
+    "echo 'open",
+    'echo "open',
+    "exit 3\necho )",
+    "return 5",
+    "case x in",
+    "if true; then",
+    "fi",
+    "x=(1 2",
+    "echo \\",
+    "a |",
+    "@(a|b)",
+    "[[ a == @(a|b) ]]",
+    "echo $((1+))",
+    "echo ${x",
+    "alias e=echo\ne )",
+    "trap 'x' EXIT\n(",
+    "echo $(",
+    "echo `",
+    "git status\n",
+]
+
+
+def test_one_bash_reading_every_text_gives_the_verdicts_bash_n_gives_each_as_a_file() -> None:
+    batched = bash_agreement.bash_verdicts(EDGE_TEXTS)
+    verdicts = {text: bash_agreement.bash_n_verdict(text)[0] for text in EDGE_TEXTS}
+    assert {text: read for text, (read, _) in batched.items()} == verdicts
+    assert {True, False} == set(verdicts.values())
+
+
 class HereDocumentTests(unittest.TestCase):
     def test_a_here_document_body_is_data_never_commands(self) -> None:
         tree = parse("cat > run.sh <<EOF\ncd '/wt'\ngit status\nEOF\ngit add run.sh")

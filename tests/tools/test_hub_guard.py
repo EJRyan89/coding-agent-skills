@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -29,10 +31,42 @@ from deployer import platform_support
 from tools import hub_guard, worktrees
 
 
+def guard_in_process(stdin: str, cwd: Path, environment: Mapping[str, str]) -> tuple[int, str, str]:
+    """The guard's status, stdout, and stderr for one event, as its own process started in cwd with only environment
+    would give them: no answer an earlier event cached about a hub outlives the call."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    cached = (hub_guard.guarded_hub_at, hub_guard.guarded_hub_of_repository)
+    for function in cached:
+        function.cache_clear()
+    try:
+        with (
+            mock.patch.dict(os.environ, environment, clear=True),
+            contextlib.chdir(cwd),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            code = hub_guard.guard(stdin)
+    finally:
+        for function in cached:
+            function.cache_clear()
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
 class GuardTestCase(HubTestCase):
-    """A test that hands the hook one event, as Claude Code does, and reads the guard's decision."""
+    """A test that hands the hook one event, as Claude Code does, and reads the guard's decision.
+
+    The guard runs in this process unless the class sets `end_to_end`, which starts `tools/hub_guard.py` as the hook
+    does; `EndToEndTests` holds that both give the same decisions.
+    """
 
     script = GUARD_SCRIPT
+    end_to_end = False
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Bash checks every text a test hands the Bash reader at once, when the test ends, rather than one at a time.
+        self.bash_texts: list[str] = []
+        self.addCleanup(lambda: bash_agreement.assert_reader_agrees(self.bash_texts))
 
     def decision(self, event: Mapping[str, object] | str, environment: dict[str, str] | None = None) -> str | None:
         if (
@@ -41,15 +75,19 @@ class GuardTestCase(HubTestCase):
         ):
             tool_input = event.get("tool_input")
             if isinstance(tool_input, Mapping) and isinstance(tool_input.get("command"), str):
-                bash_agreement.assert_reader_agrees([tool_input["command"]])
+                self.bash_texts.append(tool_input["command"])
         stdin = event if isinstance(event, str) else json.dumps(event)
-        result = self.run_script([], cwd=self.root, stdin=stdin, environment=environment)
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.stderr = result.stderr
+        if self.end_to_end:
+            result = self.run_script([], cwd=self.root, stdin=stdin, environment=environment)
+            code, stdout, stderr = result.returncode, result.stdout, result.stderr
+        else:
+            code, stdout, stderr = guard_in_process(stdin, self.root, environment or self.environment)
+        self.assertEqual(0, code, stderr)
+        self.stderr = stderr
         self.reason = ""
-        if not result.stdout.strip():
+        if not stdout.strip():
             return None
-        output = json.loads(result.stdout)["hookSpecificOutput"]
+        output = json.loads(stdout)["hookSpecificOutput"]
         self.assertEqual("PreToolUse", output["hookEventName"])
         self.reason = output["permissionDecisionReason"]
         self.assertIn("tools/worktrees.py new", self.reason)
@@ -105,6 +143,8 @@ class PowerShellReaderStartTests(unittest.TestCase):
 
 
 class FileGuardTests(GuardTestCase):
+    end_to_end = True
+
     def test_edits_inside_the_hub_are_denied(self) -> None:
         for tool, path, cwd in (
             ("Edit", self.hub / "README.md", None),
@@ -147,6 +187,64 @@ class FileGuardTests(GuardTestCase):
                 self.enable(value)
                 self.assertIsNone(self.edit(self.hub / "README.md"))
                 self.assertIsNone(self.bash("git switch feat/demo", self.hub))
+
+
+class EndToEndTests(GuardTestCase):
+    """tools/hub_guard.py started as its own process, as the hook starts it, decides each kind of event as the
+    in-process call the other tests make does, with the same reason and the same notes."""
+
+    def both(self, event: Mapping[str, object] | str, environment: dict[str, str] | None = None) -> str | None:
+        decisions = []
+        for end_to_end in (True, False):
+            self.end_to_end = end_to_end
+            decisions.append((self.decision(event, environment), self.reason, self.stderr))
+        self.assertEqual(decisions[0], decisions[1])
+        return decisions[0][0]
+
+    def test_each_kind_of_event_is_decided_alike_in_its_own_process_and_in_this_one(self) -> None:
+        outside = self.root / "not-a-repository"
+        outside.mkdir()
+        for event, environment, expected in (
+            ({"tool_name": "Edit", "tool_input": {"file_path": str(self.hub / "README.md")}}, None, "deny"),
+            ({"tool_name": "Write", "tool_input": {"file_path": str(self.tree / "new.txt")}}, None, None),
+            # With no cwd in the event, a relative path is read from where the hook starts.
+            ({"tool_name": "Edit", "tool_input": {"file_path": f"{HUB}/README.md"}}, None, "deny"),
+            ({"tool_name": "Read", "tool_input": {"file_path": str(self.hub / "README.md")}}, None, None),
+            (
+                {"tool_name": "Bash", "tool_input": {"command": "git switch feat/demo"}, "cwd": str(self.hub)},
+                None,
+                "deny",
+            ),
+            ({"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": str(self.hub)}, None, None),
+            (
+                {"tool_name": "Bash", "tool_input": {"command": 'cd "$UNSET_HERE" && git commit'}, "cwd": str(outside)},
+                None,
+                None,
+            ),
+            # Only the environment the hook was given names the hub, as the work tree a worktree's reset writes.
+            (
+                {"tool_name": "Bash", "tool_input": {"command": "git reset --hard"}, "cwd": str(self.tree)},
+                {**self.environment, "GIT_WORK_TREE": str(self.hub)},
+                "deny",
+            ),
+            ({"tool_name": "Monitor", "tool_input": {"command": "git stash"}, "cwd": str(self.hub)}, None, "deny"),
+            ({"tool_name": "PowerShell", "tool_input": {"command": "git stash"}, "cwd": str(self.hub)}, None, "deny"),
+            ({"tool_name": "PowerShell", "tool_input": {"command": "git commit"}, "cwd": str(self.tree)}, None, None),
+            ("{not json", None, None),
+        ):
+            with self.subTest(event=event):
+                self.assertEqual(expected, self.both(event, environment))
+        self.assertIn("hub guard skipped", self.stderr)
+
+    def test_an_opt_in_changed_between_events_is_read_afresh_as_by_a_new_process(self) -> None:
+        for event in (
+            {"tool_name": "Bash", "tool_input": {"command": "git switch feat/demo"}, "cwd": str(self.hub)},
+            {"tool_name": "Edit", "tool_input": {"file_path": str(self.hub / "README.md")}},
+        ):
+            for value, expected in ((None, None), ("true", "deny"), ("false", None)):
+                with self.subTest(tool=event["tool_name"], value=value):
+                    self.enable(value)
+                    self.assertEqual(expected, self.both(event))
 
 
 class HookCommandTests(GuardTestCase):
@@ -629,7 +727,7 @@ class CommandReadingTests(GuardTestCase):
         self, command: str, cwd: Path | None = None, tool: str = "PowerShell", environment: dict[str, str] | None = None
     ) -> hub_guard.Reading:
         if hub_guard.SHELL_READERS.get(tool) is hub_guard.read_bash:
-            bash_agreement.assert_reader_agrees([command])
+            self.bash_texts.append(command)
         reading = hub_guard.read_command(tool, command, cwd or self.hub, environment or self.environment)
         self.notes, self.unread = reading.notes, reading.unread
         return reading
@@ -1065,6 +1163,8 @@ class CommandReadingTests(GuardTestCase):
 
 class PowerShellGuardTests(GuardTestCase):
     """End to end through the hook, which starts a real pwsh; the reading itself is covered by CommandReadingTests."""
+
+    end_to_end = True
 
     def test_the_hub_refuses_powershell_git_writes_but_allows_maintenance_and_work_in_a_worktree(self) -> None:
         self.assertEqual("deny", self.powershell("git switch feat/demo", self.hub))
