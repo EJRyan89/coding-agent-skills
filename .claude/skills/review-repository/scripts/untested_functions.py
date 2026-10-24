@@ -34,6 +34,10 @@ it through a caller, followed by that hunk, cut at MAX_HUNK_CHARACTERS; at most 
 It reads the diff through conditions.read_files, so a changed file whose path could name a file outside the snapshot
 is neither read nor listed, and gets a `REFUSED <path>: ...` line on stdout instead.
 
+A snapshot it cannot read its evidence from, one that is not a directory or lacks a changed script the diff leaves at
+the head, ends it with `FAILED MissingEvidence: <what is missing>`, so an
+absent snapshot never reads as every changed definition tested.
+
 Prints `UNTESTED <found> given=<n>`. Exit status 0 means it wrote entries, which opens the route; 1 that every
 changed definition is named by a test, or none changed, which closes it; 2 a usage error or a last line
 FAILED <reason>, which fails the review.
@@ -60,9 +64,11 @@ from conditions import (
     FAILURE_STATUS,
     OUTPUT_VARIABLE,
     SCRIPT_SUFFIXES,
+    MissingEvidence,
     is_suite,
     read_files,
     refusal_line,
+    require_snapshot,
     run_condition,
     unset_variables_line,
 )
@@ -500,13 +506,13 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
     changes = [
         change
         for change in files
-        if change.path.endswith(SCRIPT_SUFFIXES)
-        and not change.path.startswith(FIXTURES)
-        and not is_suite(change.path)
-        and change.head.is_file()
+        if change.path.endswith(SCRIPT_SUFFIXES) and not change.path.startswith(FIXTURES) and not is_suite(change.path)
     ]
     if not changes:
         return []
+    absent = [change.path for change in changes if not change.head.is_file()]
+    if absent:
+        raise MissingEvidence(f"the snapshot holds no {json.dumps(absent[0])}, which the diff leaves at the head")
     tests = Tests(suites(root), {} if unreadable is None else unreadable)
     blocks: list[str] = []
     for change in changes:
@@ -546,6 +552,7 @@ def _run() -> int:
     if unset:
         print(unset)
         return FAILURE_STATUS
+    require_snapshot(arguments.source_root)
     diff = Path(os.environ[DIFF_VARIABLE]).read_bytes().decode("utf-8", errors="replace")
     changes, refused = read_diff(diff, arguments.source_root)
     for path in refused:
