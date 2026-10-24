@@ -147,6 +147,9 @@ def _text(written: bytes | str | None) -> str:
 
 # The most workers a run starts unless VALIDATION_JOBS says otherwise. Most jobs wait on Git and other processes, so
 # on a 24-CPU machine 24 workers took a full run from a median of 105 s at 16 to 96 s (2026-10-08, three runs each).
+# Past one per CPU it depends on the platform: on CI's 4-vCPU runners 6 workers cut the Linux legs' summed seconds
+# from a median of 449 s to 357 s and left Windows' unchanged (2026-10-23, six runs at 4 and three at 6), so only
+# the Linux legs set VALIDATION_JOBS.
 MAXIMUM_WORKERS = 24
 
 
