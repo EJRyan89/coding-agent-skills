@@ -553,6 +553,38 @@ class BranchTipTests(GitFixture):
             branch_tips(str(self.clone), "missing")
 
 
+class BranchTipListingTests(unittest.TestCase):
+    """How branch_tips reads `git for-each-ref`'s upstream line, against a Git that answers from a table."""
+
+    def tips(self, listing: GitResult) -> tuple[tuple[str, str | None], list[list[str]]]:
+        calls: list[list[str]] = []
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            calls.append(list(command))
+            if "for-each-ref" in command:
+                return listing
+            return GitResult(0, f"{TIP}\n", "")
+
+        return branch_tips("/repos/example", "topic", GitClient(answering)), calls
+
+    def test_the_upstream_is_the_field_before_the_first_nul_and_the_rest_is_its_tracking_state(self) -> None:
+        (head, upstream), calls = self.tips(GitResult(0, "refs/remotes/origin/a|b\0[ahead 1]\0more\n", ""))
+        self.assertEqual((TIP, TIP), (head, upstream))
+        self.assertIn("refs/remotes/origin/a|b^{commit}", calls[-1])
+        (_, upstream), _ = self.tips(GitResult(0, "refs/remotes/origin/a\0[gone]\n", ""))
+        self.assertIsNone(upstream, "a gone upstream is absent")
+        (_, upstream), _ = self.tips(GitResult(0, "refs/remotes/origin/a\0[gone]\0x\n", ""))
+        self.assertIsNotNone(upstream, "the tracking state is everything after the first NUL")
+
+    def test_a_listing_that_failed_or_holds_no_nul_is_refused(self) -> None:
+        for name, listing in {
+            "a failed listing holding a NUL": GitResult(128, "refs/remotes/origin/a\0\n", "fatal: bad"),
+            "a listing with no NUL": GitResult(0, "refs/remotes/origin/a\n", ""),
+        }.items():
+            with self.subTest(name), self.assertRaisesRegex(QueryError, "cannot read the upstream of 'topic'"):
+                self.tips(listing)
+
+
 class BaseContainsTests(GitFixture):
     def test_reports_whether_a_commit_is_reachable_from_the_base(self) -> None:
         base = self.git("-C", str(self.clone), "rev-parse", "main")
