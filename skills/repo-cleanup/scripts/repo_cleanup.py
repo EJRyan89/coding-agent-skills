@@ -10,7 +10,6 @@
     remove-directory
                   remove detached worktrees reported CONFIRM_DETACHED and delete directories reported ORPHAN, after
                   the user confirmed
-    summary       print the repository's summary from the plan file
     report        print, from the directory a sweep printed and recorded its repositories in, each repository's
                   current summary and the closing count of the repositories processed and skipped, naming the dirty
                   repositories the user aborted
@@ -21,12 +20,13 @@ force-delete, and remove-directory also refuse a plan whose repository root is n
 worktree areas are not the ones a sweep derives from it, so they delete only what a sweep offered.
 
 Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned, or every
-confirmed deletion ran or was preserved because what it named changed since the plan: it moved, or its commit left
-the default and remote branches. 1 means something needs the agent: a repository that stopped (DIRTY_MAIN,
-FETCH_FAILED) or was skipped with an ERROR line, a deletion or removal Git refused, a confirmed worktree removal that
-did not happen because what the worktree holds kept it, a directory whose deletion failed, that no longer resolves
-inside its area, or in which Git now tracks a file, or a last line FAILED <reason> when the command could not run at
-all. report exits 0, or 1 with its FAILED line. 2 is a usage error.
+confirmed deletion ran, was done already by the plan, or was preserved because what it named changed since the plan:
+it moved, or its commit left the default and remote branches. 1 means something needs the agent: a repository that
+stopped (DIRTY_MAIN, FETCH_FAILED) or was skipped with an ERROR line, a branch or path confirmed that the plan never
+offered, a deletion or removal Git refused, a confirmed worktree removal that did not happen because what the worktree
+holds kept it, a directory whose deletion failed, that no longer resolves inside its area, or in which Git now tracks a
+file, or a last line FAILED <reason> when the command could not run at all. report exits 0, or 1 with its FAILED
+line. 2 is a usage error.
 """
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ from typing import Any, TypeVar
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import cleanup_policy
+import file_presence
 import git_client
 import git_worktrees
 import json_reader
@@ -73,10 +74,11 @@ PLAN_SCHEMA_VERSION = 1
 # named by the SHA-256 of its resolved path. Every command reads a plan or record only when its bytes match its seal, so
 # what the confirmation commands may delete is what a sweep offered and the later commands recorded: a file the caller
 # names that this script never saved there has no seal, and one changed since it saved it no longer matches. The seals
-# lie outside every plans directory, so no directory a plan sits in carries a seal for it.
+# lie outside every plans directory, so no directory a plan sits in carries a seal for it: a sweep's plans go to a new
+# directory mkdtemp makes, or one a sweep made and recorded, and save_plan refuses a path inside this folder.
 SEALS = Path(tempfile.gettempdir()) / "repo-cleanup-seals"
 # The fields a plan holds, as build_plan writes them, and those a plan built outside a sweep, or a command that never
-# stopped, leaves out.
+# stopped, leaves out: the sync a sweep adds, and the stopped marker of a command that failed partway.
 PLAN_FIELDS = (
     "schema_version",
     "repo_root",
@@ -87,11 +89,13 @@ PLAN_FIELDS = (
     "branches",
     "worktrees",
     "fastforward",
+    "fastforward_skipped",
     "diverged",
+    "policy",
     "applied",
     "events",
 )
-OPTIONAL_PLAN_FIELDS = ("fastforward_skipped", "policy", "sync", "stopped")
+OPTIONAL_PLAN_FIELDS = ("sync", "stopped")
 # How many fields after its kind each event a plan records carries, at least and at most.
 EVENT_FIELDS = {
     "DELETED": (1, 1),
@@ -770,15 +774,17 @@ def default_status(services: Services, root: str, default: str) -> str:
 
 
 def policy_of(plan: dict[str, Any]) -> Policy:
-    """The policy the plan was made under, rebuilt from the configured values it recorded, or the shipped lists
-    alone for a plan that recorded none."""
-    recorded = plan.get("policy") or {}
+    """The policy the plan was made under, rebuilt from the configured values it recorded."""
+    recorded = plan["policy"]
     return cleanup_policy.configured(*(recorded.get(field, "") for field in POLICY_FIELDS))
 
 
 def save_plan(path: str | Path, document: dict[str, Any]) -> None:
     """Write a plan, or a sweep record, in one step, so a reader sees the old or the new one, never part of either;
-    then its seal: the digest of the bytes written, which every command compares with the file before it reads it."""
+    then its seal: the digest of the bytes written, which every command compares with the file before it reads it.
+    A path inside the seals folder is refused, so no seal lies beside a plan."""
+    if strictly_inside(str(path), str(SEALS)):
+        raise CleanupError(f"{path} is inside the seals folder {SEALS}; {SWEEP_AGAIN}")
     data = (json.dumps(document, indent=2) + "\n").encode("utf-8")
     replace_bytes(Path(path), data)
     replace_text(seal_file(path), hashlib.sha256(data).hexdigest() + "\n")
@@ -794,18 +800,22 @@ def seal_file(path: str | Path) -> Path:
 def read_sealed(path: str | Path, what: str) -> bytes:
     """The bytes of the plan or record at `path`, named `what` in a refusal: refused unless they match the seal this
     script wrote when it last saved one there, so what they name is what a sweep recorded. A path with no seal, which
-    the script never saved one at, and one whose bytes changed since are refused apart."""
+    the script never saved one at, one whose bytes changed since, and one whose seal cannot be read are refused
+    apart."""
     try:
         data = Path(path).read_bytes()
     except OSError as exc:
         raise CleanupError(f"cannot read {what} {path}: {exc}") from exc
+    sealed = seal_file(path)
     try:
-        seal = seal_file(path).read_text(encoding="utf-8").strip()
-    except OSError as exc:
+        seal = sealed.read_text(encoding="utf-8").strip() if file_presence.is_present(sealed) else None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CleanupError(f"cannot read the seal of {what} {path}: {exc}") from exc
+    if seal is None:
         raise CleanupError(
             f"{path} is not a {what} repo-cleanup saved at this path, so it may name what no sweep offered; "
             f"{SWEEP_AGAIN}"
-        ) from exc
+        )
     if seal != hashlib.sha256(data).hexdigest():
         raise CleanupError(
             f"{path} changed since repo-cleanup last saved this {what} there, so it may name what no sweep offered; "
@@ -872,7 +882,7 @@ def read_plan_fields(plan: object) -> None:
     fields.array(document["worktrees"], "worktrees", lambda value, path: read_worktree_entry(fields, value, path))
     fields.array(document["fastforward"], "fastforward", lambda value, path: read_move(fields, value, path))
     fields.array(
-        document.get("fastforward_skipped", []),
+        document["fastforward_skipped"],
         "fastforward_skipped",
         lambda value, path: read_counted(fields, value, path, ("reason",), ("behind",)),
     )
@@ -883,7 +893,7 @@ def read_plan_fields(plan: object) -> None:
     )
     fields.boolean(document["applied"], "applied")
     fields.array(document["events"], "events", lambda value, path: read_event(fields, value, path))
-    if "policy" in document and not recorded_policy(document["policy"]):
+    if not recorded_policy(document["policy"]):
         raise fields.fail(
             "policy", "the configured values a sweep records, each a string", describe(document["policy"])
         )
@@ -955,10 +965,9 @@ def read_event(fields: FieldReader, value: object, path: str) -> None:
 
 def read_sync(fields: FieldReader, value: object) -> None:
     synced = fields.json_object(value, "sync", required=("default", "checkout", "fast_forward", "behind"))
-    default = fields.json_object(synced["default"], "sync.default", required=("name",), optional=("note",))
+    default = fields.json_object(synced["default"], "sync.default", required=("name", "note"))
     read_branch_name(fields, default["name"], "sync.default.name")
-    if "note" in default:
-        fields.string(default["note"], "sync.default.note", empty=True)
+    fields.string(default["note"], "sync.default.note", empty=True)
     fields.string(synced["checkout"], "sync.checkout")
     outcome = fields.array(synced["fast_forward"], "sync.fast_forward", fields.string, nonempty=True)
     if outcome[0] == "failed" and len(outcome) < 2:
@@ -1677,8 +1686,11 @@ def remove_directories(plan_path: str, paths: list[str], services: Services) -> 
         succeeded = True
         for path in dict.fromkeys(paths):
             offered = next((known for known in [*detached, *orphans] if same_path(known, path)), None)
-            if offered is None or any(same_path(offered, gone) for gone in done):
+            if offered is None:
                 record(plan, "PRESERVED", path, "not a detached worktree or orphan directory offered by this plan")
+                succeeded = False
+            elif any(same_path(offered, gone) for gone in done):
+                record(plan, "PRESERVED", path, "already removed by this plan")
             elif offered in detached:
                 succeeded = remove_detached(services, plan, offered, detached[offered]) and succeeded
             else:
@@ -1717,8 +1729,11 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
         located = checkouts(services, plan["repo_root"])
         succeeded = True
         for name in dict.fromkeys(names):
-            if name not in eligible or name in deleted(plan):
+            if name in deleted(plan):
+                record(plan, "PRESERVED", name, "already deleted by this plan")
+            elif name not in eligible:
                 record(plan, "PRESERVED", name, refusal)
+                succeeded = False
             elif unchanged(services, plan, name, eligible[name], located, worktrees.get(name)):
                 if force:
                     succeeded = force_delete(services, plan, name) and succeeded
@@ -1779,8 +1794,7 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
     unmatched = [branch["name"] for branch in plan["branches"] if branch["pr"] == "UNMATCHED"]
     synced = plan.get("sync") or {}  # absent from a plan built outside a sweep
     skipped = [
-        f"{entry['branch']} (behind {entry['behind']}; {entry['reason']})"
-        for entry in plan.get("fastforward_skipped", [])  # absent from a plan an earlier version wrote
+        f"{entry['branch']} (behind {entry['behind']}; {entry['reason']})" for entry in plan["fastforward_skipped"]
     ]
     if synced.get("fast_forward", [""])[0] == "failed":
         skipped.insert(0, f"{plan['default']['name']} (behind {synced['behind']}; {synced['fast_forward'][1]})")
@@ -1856,9 +1870,8 @@ def default_notes(plan: dict[str, Any]) -> str:
         notes.append("switched to it")
     elif synced.get("checkout") == "failed":
         notes.append("switch to it failed")
-    found = (synced.get("default") or {}).get("note")  # absent from a plan an earlier version wrote
-    if found:
-        notes.append(found)
+    if synced and synced["default"]["note"]:
+        notes.append(synced["default"]["note"])
     return "; ".join(notes)
 
 
@@ -1875,29 +1888,17 @@ def print_summary(plan: dict[str, Any]) -> None:
 # sweep ----------------------------------------------------------------------------------------------------------
 
 
-def plans_location(explicit: str | None) -> Path | None:
-    """The explicit directory for a sweep's plan files, or None for a new temporary directory.
-
-    A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so an
-    explicit directory inside any skills directory is refused before anything runs.
-    """
-    if explicit is None:
-        return None
-    root = skills_directory_holding(Path(explicit))
-    if root is not None:
-        raise ValueError(
-            f"{explicit} is inside the skills directory {root}; omit --plans to keep the plans in a new temporary "
-            "directory"
-        )
-    return Path(explicit)
+def new_plans_directory() -> Path:
+    """A new temporary directory for a sweep's plan files and record."""
+    return Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-"))
 
 
 def recorded_location(directory: str) -> Path:
     """The directory an earlier sweep printed and recorded its repositories in, for a sweep that adds to its record.
 
     Only a directory holding a sweep's record is accepted, so the agent can name no other place for a sweep to write,
-    and never one inside a skills directory, which plans_location refuses for --plans: a record copied there would
-    otherwise make it one.
+    and never one inside a skills directory: a file left inside a skill directory makes the deployer see that skill as
+    modified and stop updating it, and a record copied there would otherwise make it a place a sweep writes.
     """
     located = Path(directory)
     root = skills_directory_holding(located)
@@ -2006,8 +2007,8 @@ def sweep(
     """
     policy = policy or cleanup_policy.configured()
     repositories = discover(target, repos_root, services)
-    directory = plans or Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-"))
-    entries = read_record(directory)[0] if (directory / SWEEP_RECORD).exists() else []
+    directory = plans or new_plans_directory()
+    entries = read_record(directory)[0] if plans else []
     emit("PLANS", directory.as_posix())
     used = policy_lines(policy)
     for line in used:
@@ -2086,7 +2087,7 @@ def read_record(directory: Path) -> tuple[list[dict[str, Any]], list[str]]:
     """The recorded repositories, and the lines naming the lists the latest sweep used, from the record as a sweep
     last saved it."""
     path = directory / SWEEP_RECORD
-    if not path.is_file():
+    if not file_presence.is_present(path):
         raise CleanupError(f"{directory} holds no sweep record; name the directory a sweep printed as PLANS")
     data = read_sealed(path, "sweep record")
     try:
@@ -2099,12 +2100,12 @@ def read_record(directory: Path) -> tuple[list[dict[str, Any]], list[str]]:
         or record["schema_version"] != RECORD_SCHEMA_VERSION
         or not isinstance(record.get("repositories"), list)
         or not all(is_entry(entry) for entry in record["repositories"])
-        or not isinstance(record.get("policy", []), list)
-        or not all(isinstance(line, str) for line in record.get("policy", []))
+        or not isinstance(record.get("policy"), list)
+        or not all(isinstance(line, str) for line in record["policy"])
     ):
         raise CleanupError(f"{path} is not a repo-cleanup sweep record")
     repositories: list[dict[str, Any]] = record["repositories"]
-    return repositories, record.get("policy", [])
+    return repositories, record["policy"]
 
 
 def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[dict[str, Any]]:
@@ -2171,12 +2172,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     sweep_parser = commands.add_parser("sweep")
     sweep_parser.add_argument("--repos-root", required=True)
-    location = sweep_parser.add_mutually_exclusive_group()
-    location.add_argument(
-        "--plans", help="directory for each repository's plan file; defaults to a new temporary directory"
-    )
-    location.add_argument(
-        "--record", help="the directory an earlier sweep printed as PLANS, to keep this sweep's plans and record there"
+    sweep_parser.add_argument(
+        "--record",
+        help="the directory an earlier sweep printed as PLANS, to keep this sweep's plans and record there; without "
+        "it, a new temporary directory",
     )
     sweep_parser.add_argument(
         "--skip-checkout", action="store_true", help="clean a dirty main worktree without switching branches"
@@ -2191,7 +2190,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--protected", default="", help="branch prefixes to protect beside the shipped ones, separated by spaces"
     )
     sweep_parser.add_argument("target", nargs="?")
-    commands.add_parser("summary").add_argument("--plan", required=True)
     report_parser = commands.add_parser("report")
     report_parser.add_argument("--record", required=True, help="the directory a sweep printed as PLANS")
     report_parser.add_argument(
@@ -2213,13 +2211,11 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     try:
         if options.command == "sweep":
             policy = cleanup_policy.configured(options.regenerable, options.protected)
-            plans = recorded_location(options.record) if options.record else plans_location(options.plans)
+            plans = recorded_location(options.record) if options.record else None
             return sweep(options.target, options.repos_root, plans, services, options.skip_checkout, policy)
         if options.command == "report":
             return report(Path(options.record), options.aborted)
-        if options.command == "summary":
-            print_summary(load_plan(options.plan))
-        elif options.command == "remove-directory":
+        if options.command == "remove-directory":
             if not remove_directories(options.plan, options.paths, services):
                 return 1
         elif not confirm(options.plan, options.branches, services, force=options.command == "force-delete"):

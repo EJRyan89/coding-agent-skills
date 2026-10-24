@@ -62,9 +62,7 @@ class PlanSealTests(Fixture):
         self.outside = self.root / "outside" / "kept"
         self.outside.mkdir(parents=True)
         (self.outside / "precious.txt").write_text("the user's\n", encoding="utf-8")
-        code, lines = self.invoke(
-            "sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans"), "my repo"
-        )
+        code, lines = self.invoke("sweep", "--repos-root", str(self.repos), "my repo")
         self.assertEqual(0, code, lines)
         self.assertEqual([[self.plan_file.as_posix()]], facts(lines, "PLAN"))
         self.assertEqual([["scratch"]], facts(lines, "CONFIRM_LOCAL"))
@@ -91,14 +89,17 @@ class PlanSealTests(Fixture):
         ]
 
     def assert_refused(self, plan: Path, refusal: str, *, printing: bool = False) -> None:
-        """Each confirmation command, and with `printing` the summary, ends in `refusal` alone, deleting nothing."""
-        runs = self.confirmations(plan)
+        """Each confirmation command, and with `printing` the report of the sweep whose record names the plan, ends in
+        `refusal` alone, deleting nothing."""
+        runs = [(str(plan), run) for run in self.confirmations(plan)]
         if printing:
-            runs.append(self.invoke("summary", "--plan", str(plan)))
-        for code, lines in runs:
+            self.assertEqual(self.plan_file, plan, "the record names only the plan the sweep saved")
+            # The report names the plan as the sweep printed it.
+            runs.append((plan.as_posix(), self.invoke("report", "--record", str(plan.parent))))
+        for named, (code, lines) in runs:
             self.assertEqual(1, code, lines)
             self.assertEqual(1, len(lines), lines)
-            self.assertTrue(lines[0].startswith(f"FAILED\t{plan} {refusal}"), lines)
+            self.assertTrue(lines[0].startswith(f"FAILED\t{named} {refusal}"), lines)
         self.assert_untouched()
 
     def assert_untouched(self) -> None:
@@ -116,7 +117,7 @@ class PlanSealTests(Fixture):
         self.assertFalse(self.leftover.exists())
         code, lines = self.invoke("force-delete", "--plan", str(self.plan_file), "--branch", "open-work")
         self.assertEqual(
-            (0, [["open-work", "not reported UNMERGED by this plan"]]), (code, facts(lines, "PRESERVED")), lines
+            (1, [["open-work", "not reported UNMERGED by this plan"]]), (code, facts(lines, "PRESERVED")), lines
         )
         self.assertEqual(self.open_tip, self.tip("open-work"))
 
@@ -162,7 +163,7 @@ class PlanSealTests(Fixture):
         for copy in (self.clone / "plan.json", self.root / "plans" / "copy.json"):
             with self.subTest(copy=copy):
                 shutil.copyfile(self.plan_file, copy)
-                self.assert_refused(copy, NOT_SAVED, printing=True)
+                self.assert_refused(copy, NOT_SAVED)
 
     def test_a_resealed_plan_whose_areas_or_root_are_not_derived_from_its_repository_is_refused(self) -> None:
         # Saved through the script's own save, so the seal matches: the derived areas and the live repository are
@@ -232,7 +233,9 @@ class PlanSealTests(Fixture):
             "branches",
             "worktrees",
             "fastforward",
+            "fastforward_skipped",
             "diverged",
+            "policy",
             "applied",
             "events",
         ]
@@ -260,13 +263,13 @@ class PlanSealTests(Fixture):
                 plan = json.loads(self.swept)
                 change(plan)
                 rc.save_plan(self.plan_file, plan)
-                for code, lines in [
-                    *self.confirmations(self.plan_file),
-                    self.invoke("summary", "--plan", str(self.plan_file)),
-                ]:
+                runs = [(str(self.plan_file), run) for run in self.confirmations(self.plan_file)]
+                report = self.invoke("report", "--record", str(self.plan_file.parent))
+                runs.append((self.plan_file.as_posix(), report))
+                for named, (code, lines) in runs:
                     self.assertEqual(1, code, lines)
                     self.assertEqual(1, len(lines), lines)
-                    self.assertTrue(lines[0].startswith(f"FAILED\t{self.plan_file} {NOT_A_PLAN}{detail}"), lines)
+                    self.assertTrue(lines[0].startswith(f"FAILED\t{named} {NOT_A_PLAN}{detail}"), lines)
                 self.assert_untouched()
 
     def test_a_sweep_record_changed_after_the_sweep_saved_it_is_refused_by_the_report_and_a_later_sweep(self) -> None:
@@ -288,7 +291,6 @@ class PlanSealTests(Fixture):
                 for arguments in (
                     ["report", "--record", str(plans)],
                     ["sweep", "--repos-root", str(self.repos), "--record", str(plans), "--skip-checkout", "my repo"],
-                    ["sweep", "--repos-root", str(self.repos), "--plans", str(plans), "my repo"],
                 ):
                     code, lines = self.invoke(*arguments)
                     self.assertEqual(1, code, lines)
@@ -310,17 +312,13 @@ class PlanSealTests(Fixture):
         # Git accepts a name of a no-break space; its flattened form names nothing, so it is never offered.
         blank = "\u00a0"
         git(self.clone, "branch", blank, "main")
-        code, lines = self.invoke(
-            "sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "fresh"), "my repo"
-        )
+        code, lines = self.invoke("sweep", "--repos-root", str(self.repos), "my repo")
         self.assertEqual([[f"{self.repos.as_posix()}/my repo", "cleaned"]], facts(lines, "REPO"), lines)
         self.assertEqual([], facts(lines, "ERROR"), lines)
-        plan = rc.load_plan(self.root / "fresh" / "my repo.json")
+        plan = rc.load_plan(self.plan_file)
         self.assertIn(blank, [branch["name"] for branch in plan["branches"]])
         self.assertIn(["PRESERVED", "", UNNAMEABLE.format("")], plan["events"], "listed by its flattened form")
-        code, lines = self.invoke(
-            "delete-local", "--plan", str(self.root / "fresh" / "my repo.json"), "--branch", "scratch"
-        )
+        code, lines = self.invoke("delete-local", "--plan", str(self.plan_file), "--branch", "scratch")
         self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
         self.assertIsNotNone(self.tip(blank))
 
@@ -381,7 +379,12 @@ class PlanFieldTests(CleanupTestCase):
                     fastforward=[{"branch": blank, "sha": "a" * 40, "target": "b" * 40, "worktree": None}],
                     fastforward_skipped=[{"branch": blank, "behind": 1, "reason": "changes"}],
                     diverged=[{"branch": blank, "ahead": 1, "behind": 2}],
-                    sync={"default": {"name": blank}, "checkout": "current", "fast_forward": ["current"], "behind": 0},
+                    sync={
+                        "default": {"name": blank, "note": ""},
+                        "checkout": "current",
+                        "fast_forward": ["current"],
+                        "behind": 0,
+                    },
                 )
                 self.assertEqual(plan, self.read(plan))
 
@@ -405,8 +408,12 @@ class PlanFieldTests(CleanupTestCase):
                 {**synced, "default": {"name": "main", "note": 3}},
                 "sync.default.note must be a string",
             ),
+            "a default with no note": (
+                {**synced, "default": {"name": "main"}},
+                "sync.default must be an object with field note",
+            ),
             "an unknown default field": (
-                {**synced, "default": {"name": "main", "other": ""}},
+                {**synced, "default": {"name": "main", "note": "", "other": ""}},
                 "sync.default must be an object of known fields",
             ),
         }
@@ -538,7 +545,12 @@ class PlanFieldTests(CleanupTestCase):
         }
         tree = {"path": "/repos/Worktrees/my repo/wt", "branch": "topic", "action": "keep", "detail": ""}
         move = {"branch": "topic", "sha": "a" * 40, "target": "b" * 40, "worktree": None}
-        synced = {"default": {"name": "main"}, "checkout": "current", "fast_forward": ["current"], "behind": 0}
+        synced = {
+            "default": {"name": "main", "note": ""},
+            "checkout": "current",
+            "fast_forward": ["current"],
+            "behind": 0,
+        }
         cases: list[tuple[dict[str, Any], str]] = [
             (written_plan(branches=[{**branch, "name": 1}]), "branches[0].name must be a string, found integer 1"),
             (
@@ -576,7 +588,7 @@ class PlanFieldTests(CleanupTestCase):
                 "fastforward_skipped[0].reason must be a non-empty string, found integer 1",
             ),
             (
-                written_plan(sync={**synced, "default": {"name": 1}}),
+                written_plan(sync={**synced, "default": {"name": 1, "note": ""}}),
                 "sync.default.name must be a string, found integer 1",
             ),
             (written_plan(sync={**synced, "checkout": 1}), "sync.checkout must be a non-empty string, found integer 1"),
@@ -614,3 +626,107 @@ class PlanFieldTests(CleanupTestCase):
                 with self.assertRaises(rc.CleanupError) as raised:
                     rc.load_plan(self.plan)
                 self.assertEqual(f"{self.plan} {NOT_A_PLAN}{detail}", str(raised.exception))
+
+
+class SealReadingTests(CleanupTestCase):
+    """A seal repo-cleanup cannot read is refused as that, never as a plan changed since its save, and no plan or
+    record is saved where the seals lie."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root = Path(tempfile.mkdtemp(prefix="repo cleanup seal reading ")).resolve()
+        self.addCleanup(remove_tree, self.root)
+
+    def test_a_seal_that_is_not_utf_8_or_not_a_file_is_refused_as_unreadable(self) -> None:
+        plan = self.root / "plan.json"
+        record = self.root / rc.SWEEP_RECORD
+        rc.save_plan(plan, written_plan())
+        rc.save_plan(record, {"schema_version": rc.RECORD_SCHEMA_VERSION, "repositories": [], "policy": []})
+
+        def not_utf_8(seal: Path) -> None:
+            seal.write_bytes(b"\xff\xfe" + seal.read_bytes())
+
+        def a_directory(seal: Path) -> None:
+            seal.unlink()
+            seal.mkdir()
+
+        readers: list[tuple[Path, Callable[[], object], str]] = [
+            (plan, lambda: rc.load_plan(plan), "plan"),
+            (record, lambda: rc.read_record(self.root), "sweep record"),
+        ]
+        spoilers: dict[str, Callable[[Path], None]] = {"not UTF-8": not_utf_8, "a directory": a_directory}
+        for name, spoil in spoilers.items():
+            for path, read, what in readers:
+                with self.subTest(name, what=what):
+                    seal = rc.seal_file(path)
+                    spoil(seal)
+                    with self.assertRaises(rc.CleanupError) as raised:
+                        read()
+                    self.assertTrue(
+                        str(raised.exception).startswith(f"cannot read the seal of {what} {path}: "), raised.exception
+                    )
+                    if seal.is_dir():
+                        seal.rmdir()
+                    rc.save_plan(path, json.loads(path.read_bytes()))
+                    read()
+
+    def test_a_missing_seal_is_still_refused_as_a_file_the_script_never_saved(self) -> None:
+        plan = self.root / "plan.json"
+        rc.save_plan(plan, written_plan())
+        rc.seal_file(plan).unlink()
+        with self.assertRaises(rc.CleanupError) as raised:
+            rc.load_plan(plan)
+        self.assertTrue(str(raised.exception).startswith(f"{plan} {NOT_SAVED}"), raised.exception)
+
+    def test_no_plan_or_record_is_saved_inside_the_seals_folder(self) -> None:
+        for path in (rc.SEALS / "plan.json", rc.SEALS / "plans" / rc.SWEEP_RECORD):
+            with self.subTest(path=path):
+                with self.assertRaises(rc.CleanupError) as raised:
+                    rc.save_plan(path, written_plan())
+                self.assertEqual(
+                    f"{path} is inside the seals folder {rc.SEALS}; run the sweep again for a new plan",
+                    str(raised.exception),
+                )
+                self.assertFalse(path.exists())
+        self.assertEqual([], list(rc.SEALS.iterdir()), "no seal was written either")
+        rc.save_plan(self.root / "plan.json", written_plan())
+        rc.load_plan(self.root / "plan.json")
+
+    def test_a_record_naming_the_seals_folder_is_refused_before_a_sweep_writes_there(self) -> None:
+        with self.assertRaises(rc.CleanupError) as raised:
+            rc.recorded_location(str(rc.SEALS))
+        self.assertEqual(
+            f"{rc.SEALS} holds no sweep record; name the directory a sweep printed as PLANS", str(raised.exception)
+        )
+
+
+class PlanOutsideASweepTests(Fixture):
+    def test_a_plan_built_outside_a_sweep_leaves_out_only_sync_and_stopped_and_is_read(self) -> None:
+        git(self.clone, "branch", "scratch", "main")
+        plan = rc.build_plan(str(self.clone), str(self.repos), rc.Services(gh=self.github))
+        self.assertTrue({"sync", "stopped"}.isdisjoint(plan), plan)
+        path = self.root / "plan.json"
+        rc.save_plan(path, plan)
+        self.assertEqual(plan, rc.load_plan(path))
+        self.assertEqual("up to date", rc.default_notes(plan), "no sync, so nothing a sync did is noted")
+
+
+class SweepSealTests(Fixture):
+    def test_a_seal_that_is_not_utf_8_ends_one_repositorys_run_and_the_sweep_goes_on(self) -> None:
+        git(self.root, "clone", "--quiet", str(self.remote), str(self.repos / "other repo"))
+        saving = rc.save_plan
+
+        def spoiled(path: str | Path, document: dict[str, Any]) -> None:
+            saving(path, document)
+            if Path(path).name == "my repo.json":
+                rc.seal_file(path).write_bytes(b"\xff\xfe")
+
+        with mock.patch.object(rc, "save_plan", spoiled):
+            code, lines = self.invoke("sweep", "--repos-root", str(self.repos))
+        repos = self.repos.as_posix()
+        self.assertEqual(1, code, lines)
+        self.assertEqual([[f"{repos}/my repo", "error"], [f"{repos}/other repo", "quiet"]], facts(lines, "REPO"))
+        (error,) = facts(lines, "ERROR")
+        self.assertTrue(error[0].startswith(f"cannot read the seal of plan {self.plan_file}: "), error)
+        self.assertEqual([], facts(lines, "FAILED"), "the sweep finished and recorded both repositories")
+        self.assertEqual(2, len(rc.read_record(self.plan_file.parent)[0]))

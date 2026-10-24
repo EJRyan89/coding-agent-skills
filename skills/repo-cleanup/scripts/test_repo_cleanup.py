@@ -41,6 +41,8 @@ UNNAMEABLE = "not offered: the name {} holds a character a fact line cannot carr
 
 # The settings conftest.py adds to the global configuration of every home this suite's git runs in.
 git_config = GIT_CONFIG
+# The plans directory a sweep makes when it names no record, which Fixture replaces with one in the test's folder.
+NEW_PLANS_DIRECTORY = rc.new_plans_directory
 
 
 def setUpModule() -> None:
@@ -145,7 +147,9 @@ def written_plan(**fields: Any) -> dict[str, Any]:
         "branches": [],
         "worktrees": [],
         "fastforward": [],
+        "fastforward_skipped": [],
         "diverged": [],
+        "policy": {"regenerable": "", "protected": ""},
         "applied": True,
         "events": [],
         **fields,
@@ -263,6 +267,15 @@ class Fixture(CleanupTestCase):
         copy_fixture(self.root)
         self.github = FakeGitHub()
         self.plan_file = self.root / "plans" / "my repo.json"
+        # A sweep that names no record keeps its plans in the test's own folder, never the user's temporary directory.
+        patcher = mock.patch.object(rc, "new_plans_directory", self.plans_directory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def plans_directory(self) -> Path:
+        plans = self.root / "plans"
+        plans.mkdir(exist_ok=True)
+        return plans
 
     # Git scenarios
 
@@ -712,7 +725,7 @@ class PlanApplyTests(Fixture):
         )
 
         code, lines = self.confirm("force-delete", "abandoned-gone", "unproven-gone", "open-gone")
-        self.assertEqual(0, code, lines)
+        self.assertEqual(1, code, "a branch the plan never reported UNMERGED needs the agent")
         self.assertEqual([["abandoned-gone"], ["unproven-gone"]], facts(lines, "DELETED"))
         self.assertEqual([["open-gone", "not reported UNMERGED by this plan"]], facts(lines, "PRESERVED"))
         self.assertIsNone(self.tip("abandoned-gone"))
@@ -899,17 +912,21 @@ class PlanApplyTests(Fixture):
         )
 
         code, lines = self.confirm("force-delete", "local-work")
+        self.assertEqual(1, code, "a branch the plan never reported UNMERGED needs the agent")
         self.assertEqual([["local-work", "not reported UNMERGED by this plan"]], facts(lines, "PRESERVED"))
         code, lines = self.confirm("delete-local", "local-merged", "local-squashed", "local-work", "local-open")
-        self.assertEqual(0, code, lines)
+        self.assertEqual(1, code, "a branch the plan never offered needs the agent")
         self.assertEqual([["local-merged"], ["local-squashed"]], facts(lines, "DELETED"))
         self.assertEqual([["local-work", work]], facts(lines, "UNMERGED"))
         self.assertEqual(
             [["local-open", "not a local-only or closed branch offered by this plan"]], facts(lines, "PRESERVED")
         )
         code, lines = self.confirm("force-delete", "local-work")
-        self.assertEqual([["local-work"]], facts(lines, "DELETED"))
+        self.assertEqual((0, [["local-work"]]), (code, facts(lines, "DELETED")), lines)
         self.assertIsNone(self.tip("local-work"))
+        code, lines = self.confirm("delete-local", "local-merged")
+        self.assertEqual(0, code, "a branch the plan already deleted needs nothing more")
+        self.assertEqual([["local-merged", "already deleted by this plan"]], facts(lines, "PRESERVED"))
         self.assertIsNotNone(self.tip("local-open"))
 
     def test_apply_runs_once_and_confirmations_need_an_applied_plan(self) -> None:
@@ -1216,7 +1233,7 @@ class SweepTests(Fixture):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = rc.main(
-                ["sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans"), *extra],
+                ["sweep", "--repos-root", str(self.repos), *extra],
                 services or rc.Services(gh=self.github),
             )
         return code, output.getvalue().splitlines()
@@ -1300,7 +1317,11 @@ class SweepTests(Fixture):
         temporary = self.root / "tmp"
         temporary.mkdir()
         output = io.StringIO()
-        with mock.patch.object(tempfile, "tempdir", str(temporary)), contextlib.redirect_stdout(output):
+        with (
+            mock.patch.object(rc, "new_plans_directory", NEW_PLANS_DIRECTORY),
+            mock.patch.object(tempfile, "tempdir", str(temporary)),
+            contextlib.redirect_stdout(output),
+        ):
             code = rc.main(["sweep", "--repos-root", str(self.repos), "my repo"], rc.Services(gh=self.github))
         lines = output.getvalue().splitlines()
         self.assertEqual(0, code, lines)
@@ -1311,33 +1332,7 @@ class SweepTests(Fixture):
         self.assertEqual([[(plans / "my repo.json").as_posix()]], facts(lines, "PLAN"))
         self.assertTrue((plans / "my repo.json").is_file())
 
-    def test_sweep_refuses_a_plans_directory_inside_a_skill_tree(self) -> None:
-        skills_root = Path(rc.__file__).resolve().parents[2]
-        home = self.root / "home"
-        targets = [
-            skills_root / "repo-cleanup" / "plans-from-a-test",  # beside SKILL.md
-            skills_root / "review-prs" / "plans-from-a-test",
-            home / ".claude" / "skills" / "repo-cleanup" / "plans",
-            home / ".agents" / "skills" / "repo-cleanup" / "plans",
-        ]
-        with mock.patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
-            for target in targets:
-                self.addCleanup(shutil.rmtree, target, ignore_errors=True)  # if a regression wrote it
-                with self.subTest(target=target):
-                    output = io.StringIO()
-                    with contextlib.redirect_stdout(output):
-                        code = rc.main(
-                            ["sweep", "--repos-root", str(self.repos), "--plans", str(target)],
-                            rc.Services(gh=self.github),
-                        )
-                    lines = output.getvalue().splitlines()
-                    self.assertEqual(1, code)
-                    self.assertEqual(1, len(lines), lines)
-                    self.assertTrue(lines[0].startswith(f"FAILED\t{target} is inside the skills directory "), lines)
-                    self.assertFalse(target.exists())
-        self.assertEqual([], self.github.calls)
-
-    def test_an_explicit_plans_directory_outside_every_skill_tree_is_used_and_printed(self) -> None:
+    def test_the_plans_directory_a_fixture_sweep_makes_is_used_and_printed(self) -> None:
         code, lines = self.sweep(None, "my repo")
         self.assertEqual(0, code, lines)
         self.assertEqual([[(self.root / "plans").as_posix()]], facts(lines, "PLANS"))
@@ -1477,8 +1472,6 @@ class SweepTests(Fixture):
         self.sweep(rc.Services(git=GitClient(failing), gh=self.github), "my repo")
         plan = (self.root / "plans" / "my repo.json").as_posix()
         stopped = "my repo cleanup stopped partway (could not run git: git vanished); done before it:"
-        _, lines = self.invoke("summary", "--plan", plan)
-        self.assertEqual(stopped, self.summary(lines).splitlines()[0], "summary repeats the last run's summary")
         code, lines = self.report()
         self.assertEqual(0, code, lines)
         self.assertEqual([[f"{self.repos.as_posix()}/my repo", "git-failed"]], facts(lines, "REPO"))
@@ -1492,13 +1485,12 @@ class SweepTests(Fixture):
         code, lines = self.invoke("delete-local", "--plan", plan, "--branch", "scratch")
         self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
         self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
-        _, lines = self.invoke("summary", "--plan", plan)
-        self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
         self.assertNotIn("stopped", json.loads(Path(plan).read_text(encoding="utf-8")))
         code, reported = self.report()
         self.assertEqual(0, code, reported)
         self.assertEqual("POLICY", reported[0].split("\t")[0], "the lists the sweep used come first")
-        self.assertEqual(lines, reported[2:-1], "the report shows the last summary printed")
+        summary = [line for line in lines if line.startswith("SUMMARY\t")]
+        self.assertEqual(summary, reported[2:-1], "the report shows the last summary printed")
         self.assertEqual(
             [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error."]],
             facts(reported, "PROCESSED"),
@@ -1639,9 +1631,6 @@ class SweepTests(Fixture):
                 )
         self.assertEqual([], self.github.calls, "refused before anything ran")
         self.assertEqual(before, sorted(path.name for path in self.root.iterdir()), "nothing was created")
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            rc.main(["sweep", "--repos-root", str(self.repos), "--plans", "a", "--record", "b"])
-        self.assertEqual(2, raised.exception.code, "a sweep writes to a new directory or adds to a recorded one")
 
     def test_the_report_refuses_a_directory_no_sweep_wrote(self) -> None:
         for plans in (self.root / "missing", self.root):
@@ -1960,7 +1949,12 @@ class WorktreeTestCase(CleanupTestCase):
         self.repo.mkdir()
         git(self.repo, "init", "--quiet", "-b", "main")
         git(self.repo, "commit", "--quiet", "--allow-empty", "-m", "initial")
-        self.plan: dict[str, Any] = {"repo_root": str(self.repo), "default": {"name": "main"}, "events": []}
+        self.plan: dict[str, Any] = {
+            "repo_root": str(self.repo),
+            "default": {"name": "main"},
+            "policy": {"regenerable": "", "protected": ""},
+            "events": [],
+        }
 
     def tip(self, branch: str) -> str | None:
         result = subprocess.run(
@@ -2473,7 +2467,7 @@ class ConsoleTests(CleanupTestCase):
         plan = root / "plan → ✓.json"
         rc.save_plan(plan, written_plan(schema_version=0))
         result = subprocess.run(
-            [sys.executable, "-B", rc.__file__, "summary", "--plan", str(plan)],
+            [sys.executable, "-B", rc.__file__, "delete-local", "--plan", str(plan), "--branch", "scratch"],
             capture_output=True,
             env={**environment, "PYTHONIOENCODING": "cp1252"},
             check=False,
@@ -2490,8 +2484,11 @@ class ConsoleTests(CleanupTestCase):
         environment = self.sealed_in(root)
         plan = root / "plan.json"
         rc.save_plan(plan, written_plan(events=[["CONFIRM_LOCAL", "caf\udce9"]]))
+        entry = {"root": "/repos/my repo", "state": "cleaned", "plan": str(plan), "lines": []}
+        record = {"schema_version": rc.RECORD_SCHEMA_VERSION, "repositories": [entry], "policy": []}
+        rc.save_plan(root / rc.SWEEP_RECORD, record)
         result = subprocess.run(
-            [sys.executable, "-B", rc.__file__, "summary", "--plan", str(plan)],
+            [sys.executable, "-B", rc.__file__, "report", "--record", str(root)],
             capture_output=True,
             env=environment,
             check=False,
@@ -2515,7 +2512,7 @@ class PlanVersionTests(CleanupTestCase):
                     rc.load_plan(plan)
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
-                    code = rc.main(["summary", "--plan", str(plan)], rc.Services())
+                    code = rc.main(["delete-local", "--plan", str(plan), "--branch", "scratch"], rc.Services())
                 lines = out.getvalue().splitlines()
                 self.assertEqual(1, code, lines)
                 self.assertEqual(1, len(lines), lines)
@@ -2523,3 +2520,56 @@ class PlanVersionTests(CleanupTestCase):
                     lines[0].startswith(f"FAILED\t{plan} is not a repo-cleanup plan: schema_version must be one of 1"),
                     lines,
                 )
+
+
+class HeldStateTests(CleanupTestCase):
+    """held_state keeps a worktree when Git cannot say what its removal would lose, as its docstring says."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.worktree = Path(tempfile.mkdtemp(prefix="repo cleanup held ")).resolve()
+        self.addCleanup(remove_tree, self.worktree)
+        (self.worktree / "marked.txt").write_text("edited\n", encoding="utf-8")
+
+    def held(self, answers: Mapping[str, GitResult]) -> str:
+        """held_state against a Git that answers each subcommand from `answers`, by its name."""
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            return next(answer for name, answer in answers.items() if name in command)
+
+        return rc.held_state(rc.Services(git=GitClient(answering)), str(self.worktree))
+
+    def answers(self, **changed: GitResult) -> dict[str, GitResult]:
+        """What a worktree with no operation under way, no refs of its own, and one marked file answers."""
+        markers = "".join(f"{self.worktree / 'git' / marker}\n" for marker, _ in rc.OPERATION_MARKERS)
+        listed = f"S 100644 {'a' * 40} 0\tmarked.txt\0"
+        return {
+            "rev-parse": GitResult(0, markers, ""),
+            "for-each-ref": GitResult(0, "", ""),
+            "ls-files": GitResult(0, listed, ""),
+            "hash-object": GitResult(0, f"{'a' * 40}\n", ""),
+            **{name.replace("_", "-"): answer for name, answer in changed.items()},
+        }
+
+    def test_a_worktree_git_answers_for_in_full_holds_nothing(self) -> None:
+        self.assertEqual("", self.held(self.answers()))
+
+    def test_each_failure_of_git_to_say_keeps_the_worktree_with_why(self) -> None:
+        lost = "cannot be read for what its removal would lose: "
+        cases = {
+            "a failing git": (
+                {"rev_parse": GitResult(128, "", "fatal: not a git repository")},
+                f"git rev-parse failed in {self.worktree}: fatal: not a git repository",
+            ),
+            "a marker left unnamed": (
+                {"rev_parse": GitResult(0, f"{self.worktree / 'git' / 'BISECT_START'}\n", "")},
+                f"git rev-parse did not name each operation marker of worktree {self.worktree}",
+            ),
+            "a marked file left unhashed": (
+                {"hash_object": GitResult(0, "", "")},
+                f"git hash-object did not hash each marked file of worktree {self.worktree}",
+            ),
+        }
+        for name, (changed, why) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(lost + why, self.held(self.answers(**changed)))
