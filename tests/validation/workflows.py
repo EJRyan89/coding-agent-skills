@@ -1172,10 +1172,10 @@ class WorkflowsPolicies(unittest.TestCase):
         self.assertIn("[System.IO.File]::WriteAllText($titleFile, [string]$payload.pull_request.title)", workflow)
         self.assertIn("$arguments += @('--pr-title', $titleFile)", workflow)
 
-    def test_validate_workflow_runs_four_legs_and_restores_the_pinned_tools_from_caches(self) -> None:
+    def test_validate_workflow_runs_six_legs_and_restores_the_pinned_tools_from_caches(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         # Keep the leg count here and in the workflow synchronized.
-        self.assertEqual([], leg_problems(workflow, 4))
+        self.assertEqual([], leg_problems(workflow, 6))
         self.assertEqual(
             [],
             tool_cache_problems(
