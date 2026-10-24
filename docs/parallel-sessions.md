@@ -282,12 +282,16 @@ refused while a guarded hub is in view, and what they do not see at all is named
   literal text, `~`, and each `$NAME` the command sets or the environment holds, and `$PWD` is where the shell is; a
   substitution, arithmetic, a special parameter, a glob, a brace expansion, or a value that would split leaves the
   word unsettled. The guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
-  directory unknown), `pushd`, `popd`, and `env -C`, and runs a function's body where a command calls it.
+  directory unknown), `pushd`, `popd`, and `env -C`, whose last `-C` alone counts, read from where `env` starts, and
+  runs a function's body where a command calls it.
   Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, and `env`
-  are read as the commands they start, a short option's value read attached, as in `nice -n5` and `stdbuf -oL`, or
-  as the next word; `env`'s after every word holding `=`, which it takes as an assignment whatever the name; and
-  `eval` of fixed words is read as part of the shell. Every command or process substitution runs, as Bash runs it,
-  in a subshell before the command that holds it, and so does one in an unquoted here-document's body.
+  are read as the commands they start, a short option's value read attached, as in `nice -n5`, `stdbuf -oL`, and
+  `env -C<dir>`, or as the next word; `env`'s after every word holding `=`, which it takes as an assignment whatever
+  the name; and `eval` of fixed words is read as part of the shell. `tests/tools/test_prefix_programs.py` runs `env`
+  and each of those programs where the system installs it, on the option forms its own `--help` lists, and holds the
+  guard, form by form, to reading the command the program starts or refusing the form. Every command or process
+  substitution runs, as Bash runs it, in a subshell before the command that holds it, and so does one in an unquoted
+  here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
   parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
