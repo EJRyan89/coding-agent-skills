@@ -1459,3 +1459,40 @@ def test_a_team_member_whose_login_is_not_one_is_refused() -> None:
         1,
         "FAILED Team members response names 'not a login', which is not a GitHub login [malformed]\n",
     )
+
+
+def test_the_review_search_names_the_user_and_the_span_it_searches() -> None:
+    dates, calls = reviews_of({"hasNextPage": False}, [review("APPROVED", "2026-01-12T10:00:00Z")])
+    assert dates == {"PR_1": [date(2026, 1, 12)]}
+    assert "user=octo" in calls[0]
+    assert f"q={REVIEWED}2026-01-01..2026-01-31" in calls[0]
+
+
+@pytest.mark.parametrize(
+    ("count", "shown"),
+    [
+        pytest.param("one", "'one'", id="a-short-field-is-quoted"),
+        pytest.param("x" * 40, repr("x" * 40), id="a-field-of-forty-characters-is-quoted"),
+        pytest.param("x" * 41, "of 41 characters", id="a-longer-field-is-named-by-its-length"),
+    ],
+)
+def test_a_refused_count_is_quoted_up_to_forty_characters(tmp_path: Path, count: str, shown: str) -> None:
+    history = tmp_path / "activity.csv"
+    history.write_text(FIRST_HISTORY.replace("octo,1,1", f"octo,{count},1", 1), encoding="utf-8", newline="\n")
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
+    assert (code, stdout) == (
+        1,
+        f"FAILED History file {history} line 3 has prs_authored {shown}, not a count; fix or move the file and rerun "
+        "[history]\n",
+    )
+
+
+def test_a_comparison_with_a_history_says_which_months_it_searches_again(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
+    assert code == 0, stdout
+    assert (
+        "- Closed months already in the history file are read from it, not searched again, except once for each "
+        "month of a file written before the report recorded GitHub's search cap; the current month is searched on "
+        "every run, and a month the history captured while it was partial once more after it ends.\n"
+    ) in stdout
