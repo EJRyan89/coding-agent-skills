@@ -250,6 +250,25 @@ def test_a_documented_limit_inside_double_brackets_text_bash_refuses_is_read(tex
     bash_syntax.parse(text)
 
 
+# Deeper than the reader follows under Python's default recursion limit, and shallow enough for the Bash that checks
+# every fixture, which reads each text through `eval` and overflows its own stack a little deeper.
+DEPTH = 300
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$( " * DEPTH + "git commit" + " )" * DEPTH,
+        "( " * DEPTH + "git commit" + " )" * DEPTH,
+        "{ " * DEPTH + "git commit;" + " }" * DEPTH,
+    ],
+)
+def test_a_documented_limit_text_nested_past_the_recursion_limit_which_bash_reads_is_an_error(text: str) -> None:
+    assert bash_agreement.bash_verdicts([text])[text][0]
+    with pytest.raises(BashSyntaxError, match="nests deeper than the reader follows"):
+        bash_syntax.parse(text)
+
+
 # Texts where reading a file and evaluating a string could part: an empty text, a comment, an unterminated
 # here-document, quote, or compound command, a stray closer, an exit before an error, an alias, and extended globs.
 EDGE_TEXTS = [

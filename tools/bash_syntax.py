@@ -27,6 +27,8 @@ guard's suite does on every Bash command it reads and the deployer's rendering s
 checks for quoting. Where they differ is a limit stated here and pinned there:
 - Inside `[[ ]]` the expression's own grammar is not read, so text Bash refuses there, such as `[[ -n ]]`, is read;
   Bash runs none of a command it refuses.
+- Text nested deeper than Python's recursion limit, such as a few hundred `$( )` one inside another, which Bash reads,
+  raises BashSyntaxError.
 """
 
 from __future__ import annotations
@@ -971,8 +973,12 @@ COMPOUND_READERS: dict[str, Callable[[Parser], Command]] = {
 
 def parse(text: str) -> CommandList:
     """The command tree of text, read by Bash's grammar; raises BashSyntaxError where it cannot be read."""
-    parser = Parser(Lexer(text).run())
-    result = parser.command_list()
+    try:
+        parser = Parser(Lexer(text).run())
+        result = parser.command_list()
+    except RecursionError:
+        # The reader follows nesting by recursion, so nesting deeper than Python's limit is text it cannot read.
+        raise BashSyntaxError("it nests deeper than the reader follows") from None
     if parser.peek() is not None:
         raise BashSyntaxError("a `)` or `;;` closes nothing")
     return result
