@@ -2886,12 +2886,13 @@ def test_an_instruction_file_code_review_reads_over_its_length_is_a_warning() ->
             {
                 "AGENTS.md": long,
                 "CLAUDE.md": long,
-                "GEMINI.md": limit,
+                # The inventory reports an unreadable fixed file; the files after it are still measured.
+                "GEMINI.md": UNDECODABLE,
                 "REVIEW.md": long,
                 ".github/copilot-instructions.md": long,
                 ".github/instructions/api.instructions.md": long,
                 ".github/instructions/ui.instructions.md": limit,
-                ".github/instructions/zz.instructions.md": UNDECODABLE,
+                ".github/instructions/aa.instructions.md": UNDECODABLE,
             },
         )
         rows = [
@@ -2904,13 +2905,13 @@ def test_an_instruction_file_code_review_reads_over_its_length_is_a_warning() ->
         over("CLAUDE.md"),
         over("REVIEW.md"),
         over(".github/copilot-instructions.md"),
-        over(".github/instructions/api.instructions.md"),
         (
             "ERROR",
             "layering",
-            ".github/instructions/zz.instructions.md",
+            ".github/instructions/aa.instructions.md",
             "Could not read, so its length was not checked",
         ),
+        over(".github/instructions/api.instructions.md"),
     ]
 
 
@@ -4428,6 +4429,10 @@ class FileDerivedScopeTests(unittest.TestCase):
             [(f.severity, f.path, f.message) for f in result.findings if f.check == "scope"],
         )
 
+    def test_a_scope_no_file_shows_names_no_runtime(self) -> None:
+        status, findings = audit.check_scope_and_roles(self.root, {})
+        self.assertEqual(("no-declared-scope", ["scope"]), (status, [f.check for f in findings]))
+
     def test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run(self) -> None:
         self.assertEqual(
             (
@@ -4951,6 +4956,13 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
         # ID its file name gives.
         self.assertEqual(
             [
+                # .github/agents is read first, and its findings name its own file.
+                (
+                    "ERROR",
+                    "copilot-agent",
+                    ".github/agents/fields.agent.md",
+                    "modelPolicy must be 'preferred' or 'required'",
+                ),
                 (
                     "ERROR",
                     "collision",
@@ -4972,6 +4984,7 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
                     ".claude/agents/fields.md": (
                         "---\nname: fields\ndescription: Fields.\ninfer: sometimes\ntools:\nmodelPolicy: strict\n---\n"
                     ),
+                    ".github/agents/fields.agent.md": "---\ndescription: Fields.\nmodelPolicy: strict\n---\n",
                     ".claude/agents/clean.md": (
                         "---\nname: clean\ndescription: Clean.\ntools: Read, Grep\ninfer: false\n"
                         "modelPolicy: required\n---\n"
