@@ -145,6 +145,33 @@ class SkillShimsTestCase(unittest.TestCase):
         self.assertTrue(errors.getvalue().startswith("FAILED "), errors.getvalue())
         self.assertIn("not a file", errors.getvalue())
 
+    def test_a_non_ascii_skill_md_saved_with_a_byte_order_mark_gives_the_shim_its_text(self) -> None:
+        skill, shim = (text.replace("Check widgets", "Check café widgets") for text in (SKILL, SHIM))
+        (self.root / ".claude/skills/widget-check/SKILL.md").write_bytes(b"\xef\xbb\xbf" + skill.encode("utf-8"))
+        self.assertEqual((0, f"WROTE {SHIM_PATH.as_posix()}\n"), self.run_main("--write"))
+        self.assertEqual(shim.encode("utf-8"), (self.root / SHIM_PATH).read_bytes())
+        # Saved again with CRLF endings, it gives the same shim, which is still current.
+        crlf = skill.replace("\n", "\r\n").encode("utf-8")
+        (self.root / ".claude/skills/widget-check/SKILL.md").write_bytes(crlf)
+        self.assertEqual((0, ""), self.run_main())
+        (self.root / SHIM_PATH).unlink()
+        self.assertEqual((0, f"WROTE {SHIM_PATH.as_posix()}\n"), self.run_main("--write"))
+        self.assertEqual(shim.encode("utf-8"), (self.root / SHIM_PATH).read_bytes())
+
+    def test_a_skill_md_that_is_not_utf8_ends_the_run_as_failed_never_as_stale(self) -> None:
+        (self.root / ".claude/skills/widget-check/SKILL.md").write_bytes(b"---\nname: widget-check\n\xff\n---\n")
+        for argv in ((), ("--write",)):
+            with self.subTest(argv=argv):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors):
+                    code, output = self.run_main(*argv)
+                self.assertEqual((2, ""), (code, output))
+                self.assertTrue(
+                    errors.getvalue().startswith("FAILED .claude/skills/widget-check/SKILL.md is not UTF-8: "),
+                    errors.getvalue(),
+                )
+                self.assertFalse((self.root / SHIM_PATH).exists())
+
     def test_a_user_only_skill_gets_the_codex_policy_file_beside_its_shim(self) -> None:
         self.write(
             ".claude/skills/widget-check/SKILL.md",
