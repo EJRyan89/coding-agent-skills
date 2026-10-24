@@ -340,8 +340,10 @@ command names. While one is, the guard refuses:
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
 `cd <dir> &&`. With no guarded hub in view, the same calls are allowed with a note on stderr. A defect in the guard
 itself, once it has found a guarded hub in view, is refused the same way when the command names git, since a failure
-says nothing about where the call acts; a defect before that, such as an event it cannot decode or a hub it cannot
-look up, is allowed with a note, so that it cannot block every tool.
+says nothing about where the call acts; a defect before that, such as an event it cannot decode, an event that names
+no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
+stderr, so that it cannot block every tool and is never passed unseen. The hook command reads the project's own opt-in
+before it starts the guard, and stops there, with no note, when git cannot read it.
 
 #### What it does not see
 
