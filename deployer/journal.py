@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, TypeGuard, assert_never
 
-from . import fsops, hashing, manifest, platform_support
+from . import fsops, hashing, manifest, platform_support, state_files
 from .errors import DeployError, see_recovery
 from .names import BACKUP_SUFFIX, safe_name_problem, transient_name
 from .paths import Paths
@@ -454,11 +454,7 @@ def _read_entries(journal_file: Path, run_id: str) -> Entries:
     for line in lines:
         if not line:
             continue
-        entry: object
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            entry = None
+        entry = state_files.parse_json(line)
         if not valid_entry(entry, run_id):
             return Entries(entries, malformed=line)
         entries.append(entry)
@@ -475,13 +471,23 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
         )
         return False
     journal_file = run_dir / "journal.jsonl"
-    if not journal_file.is_file():
+    if not os.path.lexists(journal_file):
         fsops.remove(run_dir)
         return True
     run_id = run_dir.name
     committed = _committed_run_id(paths)
     if committed is None:
         print("  ERROR: Cannot read manifest during recovery.", file=sys.stderr)
+        return False
+    if not journal_file.is_file():
+        # A directory or anything else in the journal's place is no journal recovery can read, and deleting the run
+        # with it could delete what the run moved aside, so it is kept for the user like a malformed line.
+        print(
+            f"  ERROR: Run {run_id}'s journal is not a file. Retaining {platform_support.normalize(run_dir)} "
+            "for manual inspection.",
+            file=sys.stderr,
+        )
+        _print_manual_steps(run_dir, run_id, committed == run_id)
         return False
     read = _read_entries(journal_file, run_id)
     entries, malformed = read.entries, read.malformed
@@ -540,7 +546,10 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
             pending.append((run_dir.name, False))
             continue
         journal_file = run_dir / "journal.jsonl"
+        if not os.path.lexists(journal_file):
+            continue
         if not journal_file.is_file():
+            pending.append((run_dir.name, False))
             continue
         try:
             read = _read_entries(journal_file, run_dir.name)
@@ -566,7 +575,7 @@ def journaled_runs(paths: Paths) -> list[tuple[str, bool]] | None:
     try:
         if not paths.staging_root.is_dir():
             return []
-        run_dirs = sorted(path for path in paths.staging_root.iterdir() if (path / "journal.jsonl").is_file())
+        run_dirs = sorted(path for path in paths.staging_root.iterdir() if os.path.lexists(path / "journal.jsonl"))
     except OSError:
         return None
     return [(run_dir.name, run_dir.name == committed) for run_dir in run_dirs]

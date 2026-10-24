@@ -605,8 +605,14 @@ class SourceCheckoutTests(LinkedWorktreeTestCase):
         self.make_skill("alpha", "Submodule-style fixture")
         self.make_config()
         module = self.root / "modules" / "source"
-        module.mkdir(parents=True)
-        self.write(self.source / ".git", f"gitdir: {forward(module)}\n")
+        module.parent.mkdir(parents=True)
+        # A repository whose .git file names its git directory, as a submodule's does: one with no commondir. It holds
+        # a commit, since a deployment from a checkout whose commit git cannot name is refused.
+        git(self.source, "init", "-q", "-b", "main", "--separate-git-dir", forward(module))
+        git(self.source, "add", "-A")
+        git(self.source, "commit", "-q", "-m", "Fixture source")
+        self.assertTrue((self.source / ".git").is_file())
+        self.assertFalse((module / "commondir").exists())
         self.assertFalse(source.is_linked_worktree(self.source))
         self.deploy_ok("--all")
 

@@ -69,8 +69,6 @@ def _apply(
     context: Context, entries: list[PlanEntry], staged: render.Staged, run_id: str, replaced_pin: str | None
 ) -> None:
     paths = context.paths
-    # Read before anything moves, so git runs while no deployed item is half replaced.
-    commit = context.pin.commit if context.pin is not None else source_commit.head_commit(paths.source_dir)
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
     record = journal.Journal(staging_dir / "journal.jsonl", run_id)
@@ -79,7 +77,7 @@ def _apply(
         fsops.make_directories(journal.root_directory(paths, root))
     for entry in entries:
         plan.carry_out(record, paths, staging_dir, entry)
-    _commit_manifest(context, entries, run_id, commit)
+    _commit_manifest(context, entries, run_id, context.commit)
     backups = _finalize(context, record, run_id)
     fsops.remove(staging_dir)
     _summary(context, run_id, entries, backups, replaced_pin)
@@ -272,6 +270,9 @@ def _deploy(
         print("Rendered and validated in memory (dry run).")
     else:
         print("Rendered and validated.")
+    # Read once the checks have passed and before anything moves, by the dry run too, so a commit git cannot name is
+    # refused while nothing has changed, and git runs while no deployed item is half replaced.
+    context.commit = pin.commit if pin is not None else source_commit.head_commit(paths.source_dir)
     # Planned last, after the slow validation, so the destinations it read are the ones the deployment changes.
     entries = plan.build(context, wanted, staged)
     if run_id is None:

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 
-from . import fsops, platform_support
+from . import fsops, platform_support, state_files
 from .errors import DeployError, see_recovery
 from .paths import Paths
 
@@ -92,9 +92,10 @@ def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
 def _read_info(lock_dir: Path) -> dict[str, object]:
     """A lock's metadata, or an empty mapping when it cannot be read."""
     try:
-        info = json.loads((lock_dir / "info.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        text = (lock_dir / "info.json").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
         return {}
+    info = state_files.parse_json(text)
     return info if isinstance(info, dict) else {}
 
 

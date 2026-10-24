@@ -526,6 +526,7 @@ class RecoveryGuideTests(unittest.TestCase):
                 "Deploying from another checkout",
                 "Deploying an earlier commit",
                 "A tool that does not finish",
+                "A state file that does not read",
             ),
             errors.RECOVERY_SECTIONS,
         )
