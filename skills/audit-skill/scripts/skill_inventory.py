@@ -40,7 +40,9 @@ character of a helper script or data file is code. In Markdown, lines inside fen
 including the fence lines, are code and the rest is prose. A helper script or data file that is not UTF-8 text
 counts 0, since it is measured rather than loaded. A Markdown file the skill loads, its own or one it reads from
 outside its folder, that is not UTF-8 text prints UNREADABLE <path> <reason> instead of a cost, the path relative to
-the skill folder, and inventory exits 1 after it; tools and scan, which read the text itself, fail on one.
+the skill folder, and inventory exits 1 after it; tools and scan, which read the text itself, fail on one. scan fails
+too on a script whose status lines it compares that is not UTF-8 text or not valid Python, whose output it cannot
+measure.
 The estimate is a relative signal, not the active model's tokenizer.
 
 Structure: BODY_OVER_500_LINES <lines> counts SKILL.md lines after the frontmatter. DOC_NO_TOC <lines> <path> is
@@ -1940,19 +1942,18 @@ def shell_facts(text: str) -> ScriptFacts:
     return facts
 
 
-def script_facts(path: Path) -> ScriptFacts | None:
-    """What a script prints and exits with, or None for one that is not UTF-8 text or not valid Python."""
-    text = read_text(path)
-    if text is None:
-        return None
+def script_facts(path: Path) -> ScriptFacts:
+    """What a script prints and exits with. One that is not UTF-8 text or not valid Python fails: what it prints
+    cannot be measured, and reading it as printing nothing would compare the Markdown with less than the skill runs."""
+    text = require_text(path)
     if path.suffix.casefold() != ".py":
         return shell_facts(text)
     try:
         return python_facts(text)
     # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
     # limits
-    except (SyntaxError, ValueError, MemoryError, RecursionError):
-        return None
+    except (SyntaxError, ValueError, MemoryError, RecursionError) as exc:
+        raise InputError(f"cannot read {posix(path)}: not valid Python") from exc
 
 
 def repository_root(folder: Path) -> Path | None:
@@ -2059,8 +2060,6 @@ def status_lines(folder: Path) -> list[str]:
     first_lines: dict[str, tuple[Path, int]] = {}
     for path in dict.fromkeys(reading):
         found = script_facts(path)
-        if found is None:
-            continue
         facts.words |= found.words
         facts.prefixes |= found.prefixes
         facts.codes |= found.codes

@@ -864,6 +864,8 @@ def release(
         raise AuditError("no release tag is reachable from HEAD; pass --since <ref>")
     base_commit = commit_of(git, repository, base)
     found = changes(git, repository, base_commit, head)
+    if not found:
+        raise AuditError(f"no file changed since {base}, so a release audit would read nothing; pass --since <ref>")
     by_area = {area.name: [change for change in found if area_of(change.path) is area] for area in AREAS}
     milestones = open_milestones_after(github, released)
     lines = [f"BASE {base} {base_commit}", f"HEAD {head}", f"CHANGED {len(found)}"]
@@ -909,6 +911,8 @@ def rotation(
             )
         return [*lines, append_entry(git, repository, path, entries, Entry(today().isoformat(), record, area.name))]
     files = [file for file in tracked_files(git, repository, head) if area_of(file) is area]
+    if not files:
+        raise AuditError(f"HEAD tracks no file of the {area.name} area, so its reader would read nothing")
     released = released_tag(git, repository, head)
     milestones = open_milestones_after(github, released)
     following = milestones[0] if milestones else None

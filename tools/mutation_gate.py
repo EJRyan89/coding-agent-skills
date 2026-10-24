@@ -37,8 +37,9 @@ naming no collected test of the suite, or a test function name more than one col
 test method would be, and a suite pytest cannot list run whole as well. The mutant is killed, or timed out when a suite
 runs past three times its unmutated time. A mutant every one of those suites passes survived. A mutant in a statement no
 suite executed is not reached, and a suite that fails unmutated, or whose coverage data `coverage combine` or `coverage
-json` fails or times out on, is left out and named with the step and its output, never read as a suite that reached
-nothing. The Bash and PowerShell suites run no Python module and are not used.
+json` fails or times out on, or whose report holds no files object, is left out and named with the step and its
+output, never read as a suite that reached nothing. The Bash and PowerShell suites run no Python module and are not
+used.
 
 When no changed line yields a mutant, no suite runs. Otherwise the run is bounded by --minutes (DEFAULT_MINUTES): the
 reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
@@ -457,6 +458,8 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
         if not report.is_file():
             return f"failed in {code('coverage json')}, which wrote no report"
         recorded = json.loads(report.read_text(encoding="utf-8"))
+        if not isinstance(recorded, dict) or not isinstance(recorded.get("files"), dict):
+            return f"failed in {code('coverage json')}, whose report holds no files object"
         collected = suite_tests(tree, suite, folder / "collected.txt")
         return Reach(
             seconds,

@@ -906,3 +906,29 @@ class HookTests(GuardFixture):
         decision = json.loads(result.stdout.decode("utf-8"))["hookSpecificOutput"]
         self.assertEqual("deny", decision["permissionDecision"])
         self.assertIn(f"{outside}", decision["permissionDecisionReason"])
+
+
+class EvidenceAbsentTests(GuardFixture):
+    """Each call whose evidence never existed, no hook event, no tool input, or no run.json beside the prompt, is
+    denied, never allowed for want of a reason to deny it."""
+
+    def test_an_empty_hook_event_is_denied(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(0, guard.main(""))
+        self.assertEqual("deny", json.loads(stdout.getvalue())["hookSpecificOutput"]["permissionDecision"])
+
+    def test_a_hook_event_with_no_tool_input_is_denied(self) -> None:
+        self.claim()
+        for tool in ("Read", "Write", "Bash"):
+            with self.subTest(tool=tool):
+                self.assertEqual(
+                    "Code-review reviewer boundary: the tool input could not be read.",
+                    guard.decide({"tool_name": tool, "agent_id": AGENT, "cwd": str(self.outside_cwd)}),
+                )
+
+    def test_a_prompt_in_a_run_with_no_run_json_claims_nothing(self) -> None:
+        (self.run_directory / "run.json").unlink()
+        self.assert_denied(self.decide("Read", file_path=self.prompt()), "is not a reviewer prompt")
+        self.assertFalse(self.claims.exists(), "a denied read claims nothing")
+        self.assert_denied(self.decide("Write", file_path=self.result()), "read the prompt file your task names first")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 from . import platform_support
@@ -27,13 +28,25 @@ def tree_hash(files: dict[str, bytes]) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _refuse_unlisted(error: OSError) -> None:
+    """Refuse a folder os.walk cannot list, which it would otherwise skip: its files would be judged free of links
+    and left out of the hash, so a tree whose contents were never read would compare as unmodified. os.walk passes the
+    error os.scandir raised, which names the folder."""
+    folder = platform_support.normalize(Path(error.filename))
+    raise DeployError(f"ERROR: Cannot list {folder} to hash it or check it for links: {error.strerror or error}")
+
+
+def _walk(root: Path) -> Iterator[tuple[str, list[str], list[str]]]:
+    return os.walk(root, onerror=_refuse_unlisted, followlinks=False)
+
+
 def find_link(path: Path) -> Path | None:
     """Return the first symlink or junction at or beneath a path, without following any."""
     if platform_support.is_link_or_junction(path):
         return path
     if not path.is_dir():
         return None
-    for directory, subdirectories, names in os.walk(path, followlinks=False):
+    for directory, subdirectories, names in _walk(path):
         base = Path(directory)
         for name in [*subdirectories, *names]:
             if platform_support.is_link_or_junction(base / name):
@@ -42,7 +55,8 @@ def find_link(path: Path) -> Path | None:
 
 
 def read_tree(root: Path) -> dict[str, bytes]:
-    """Read every file beneath root; a symlink or junction anywhere is an error, never skipped.
+    """Read every file beneath root; a symlink or junction anywhere, or a folder that cannot be listed, is an error,
+    never skipped.
 
     Python bytecode caches are ignored: running a deployed script creates them, and they
     must not make an untouched skill look locally modified.
@@ -53,7 +67,7 @@ def read_tree(root: Path) -> dict[str, bytes]:
             f"ERROR: Refusing to hash content containing a symlink or junction: {platform_support.normalize(link)}"
         )
     files: dict[str, bytes] = {}
-    for directory, subdirectories, names in os.walk(root, followlinks=False):
+    for directory, subdirectories, names in _walk(root):
         subdirectories[:] = [name for name in subdirectories if name != "__pycache__"]
         base = Path(directory)
         for name in names:

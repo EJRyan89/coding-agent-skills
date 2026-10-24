@@ -2815,6 +2815,17 @@ class GuardClaimTests(PipelineFixture):
         self.assertTrue(guard.read_log(run, claimed["id"]).is_file(), "nothing was counted")
         self.assertEqual([], list_versions(pull_directory(self.archive, REPOSITORY, 12)))
 
+    def test_a_run_that_recorded_no_reads_or_dispatch_still_refuses_a_role_with_no_log(self) -> None:
+        # The evidence of a claim never existed: a run prepared before reads or the dispatch were recorded, and no log.
+        ready = self.prepare()
+        run, role = Path(ready["run"]), ready["roles"][0]
+        state = review_run.load_run(run)
+        state.pop("reads", None)
+        state.pop("dispatch", None)
+        self.assertFalse(guard.claimed(run, role["id"]))
+        self.assertEqual({role["id"]: UNGUARDED}, review_dispatch.unguarded_roles(run, state, [role["id"]]))
+        self.assertFalse(review_dispatch.count_reads(run, state, [role["id"]]), "nothing was there to count")
+
     def test_a_codex_subagent_runs_no_guard_and_needs_no_claim(self) -> None:
         # The Copilot CLI host, which runs no guard either, passes check with no claim in
         # CopilotHostTests.test_dispatch_starts_the_host_detached_and_returns_at_once.

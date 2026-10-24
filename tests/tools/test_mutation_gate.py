@@ -522,9 +522,11 @@ class CoverageReachFixtures(unittest.TestCase):
         "    pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_text(text)\n"
     )
 
-    def reach(self, actions: dict[str, str], recorded: bool = False, suite: str = "tests/test_calc.py") -> Reach | str:
+    def reach(
+        self, actions: dict[str, str], recorded: bool = False, suite: str = "tests/test_calc.py", report: object = None
+    ) -> Reach | str:
         """The reach of `suite` in a tree whose stub coverage.py reports nothing, or, when `recorded`, CONTEXT_REPORT
-        for the CONTEXT_SUITE the tree holds."""
+        for the CONTEXT_SUITE the tree holds, or else `report` when one is given."""
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary) / "tree with spaces"
             tree.mkdir()
@@ -533,6 +535,8 @@ class CoverageReachFixtures(unittest.TestCase):
             if recorded:
                 context_tree(tree)
                 (tree / "stub-report.json").write_text(json.dumps(CONTEXT_REPORT), encoding="utf-8")
+            elif report is not None:
+                (tree / "stub-report.json").write_text(json.dumps(report), encoding="utf-8")
             with mock.patch.object(mutation_gate, "MINIMUM_SUITE_SECONDS", 30.0 if recorded else 2.0):
                 return mutation_gate.coverage_reach(tree, suite, ["tools/calc.py"], 60.0)
 
@@ -557,6 +561,14 @@ class CoverageReachFixtures(unittest.TestCase):
         ):
             with self.subTest(actions=actions):
                 self.assertEqual(expected, self.reach(actions))
+
+    def test_a_report_with_no_files_object_is_a_failed_step_not_a_suite_that_reached_nothing(self) -> None:
+        reports: list[object] = [{}, {"meta": {"version": "7"}}, {"files": []}, []]
+        for report in reports:
+            with self.subTest(report=report):
+                self.assertEqual(
+                    "failed in `coverage json`, whose report holds no files object", self.reach({}, report=report)
+                )
 
     def test_the_report_names_each_line_the_tests_that_ran_it_from_pytests_listing_of_the_suite(self) -> None:
         result = self.reach({}, recorded=True, suite=CONTEXT_SUITE_PATH)

@@ -76,6 +76,13 @@ class RepositoryHygieneFixtures(unittest.TestCase):
             with self.subTest(settings=broken):
                 self.assertEqual(["no PreToolUse hook runs tools/hub_guard.py"], hub_guard_matcher_problems(broken))
 
+    def test_a_private_reference_scan_given_no_file_reports_that_it_measured_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(
+                ["no file was scanned, so the scan could not measure anything"],
+                private_references(Path(temporary), []),
+            )
+
     def test_private_reference_scan_detects_each_pattern(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

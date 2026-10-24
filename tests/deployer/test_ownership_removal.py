@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -20,7 +22,7 @@ from harness import (
     remove_directory_link,
 )
 
-from deployer import fsops, hashing, render
+from deployer import fsops, hashing, pipeline, render
 from deployer.errors import DeployError
 from deployer.paths import validate_managed_roots
 
@@ -596,6 +598,57 @@ class DestinationLinkTests(DeployerTestCase):
         self.remove_skill("alpha")
         self.deploy_fails("--all", pattern="Destination 'alpha' contains a symlink or junction")
         self.assertEqual("not managed\n", (outside / "SKILL.md").read_text(encoding="utf-8"))
+
+
+class UnlistedFolderTests(DeployerTestCase):
+    """A deployed folder the deployer cannot list is evidence that never existed: no check may judge it free of links
+    or its skill unmodified, so the deployment refuses it before changing anything."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.unlisted = self.skills_dir / "beta" / "local"
+        self.write(self.unlisted / "notes.txt", "kept by the user\n")
+
+    def unlisted_scandir(self) -> Any:
+        """os.scandir as a file system answers a folder this user may not list. On Linux, shutil.rmtree lists folders
+        by their file descriptor, which names no path."""
+        real = os.scandir
+
+        def scandir(path: Any = ".") -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == self.unlisted:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path)
+
+        return mock.patch.object(os, "scandir", side_effect=scandir)
+
+    def deploy_unlisted(self, *arguments: str, stdin: str = "") -> Any:
+        def run() -> int:
+            with self.unlisted_scandir():
+                return pipeline.run(list(arguments), self.paths, stdin=io.StringIO(stdin))
+
+        return self.run_command(run)
+
+    def test_a_folder_that_cannot_be_listed_is_never_judged_free_of_links(self) -> None:
+        with self.unlisted_scandir(), self.assertRaises(DeployError) as raised:
+            hashing.find_link(self.skills_dir / "beta")
+        self.assertEqual(
+            f"ERROR: Cannot list {forward(self.unlisted)} to hash it or check it for links: Permission denied",
+            raised.exception.lines[0],
+        )
+
+    def test_a_deselected_skill_holding_a_folder_that_cannot_be_listed_is_refused_not_removed(self) -> None:
+        for arguments in ((), ("--dry-run",)):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_unlisted(*arguments, stdin=self.selection_number("alpha") + "\n")
+                self.assertEqual(1, result.code, result.output)
+                self.assertIn(f"ERROR: Cannot list {forward(self.unlisted)}", result.output)
+                self.assertEqual("kept by the user\n", (self.unlisted / "notes.txt").read_text(encoding="utf-8"))
+                self.assertIn("beta", self.owned("skills"))
 
 
 class ManagedRootTests(DeployerTestCase):

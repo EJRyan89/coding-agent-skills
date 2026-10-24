@@ -26,10 +26,14 @@ PRIVATE_REFERENCE = re.compile(
     ),
     re.IGNORECASE,
 )
+NO_FILES_SCANNED = "no file was scanned, so the scan could not measure anything"
 
 
 def private_references(root: Path, files: list[Path]) -> list[str]:
-    """Report each line naming a real user profile, a synced drive folder, or an internal GitHub organization."""
+    """Report each line naming a real user profile, a synced drive folder, or an internal GitHub organization, or that
+    no file was given, since a scan that read nothing found nothing."""
+    if not files:
+        return [NO_FILES_SCANNED]
     found: list[str] = []
     for path in sorted(files):
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
