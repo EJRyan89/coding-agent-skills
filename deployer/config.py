@@ -32,9 +32,9 @@ PROMPTS: dict[str, str] = {
     "UPDATE_CHANNEL": "what update-coding-agent-skills deploys: release, the latest release, or main, the head of main",
     "REPO_CLEANUP_REGENERABLE": "ignored directories repo-cleanup may delete with a worktree, besides the ones it "
     "ships with, separated by spaces: a directory, or a directory, an equals sign, and the project files one of which "
-    "must sit beside it, such as .venv .tox=tox.ini,setup.cfg; empty for none",
+    "must sit beside it, such as .venv .tox=tox.ini,setup.cfg",
     "REPO_CLEANUP_PROTECTED": "branch prefixes repo-cleanup never deletes, besides the ones it ships with, separated "
-    "by spaces, such as hotfix/ support/; empty for none",
+    "by spaces, such as hotfix/ support/",
 }
 # Rendering escapes a value only for the contexts it knows, so derived values pass an allowlist as configured ones
 # do. Nobody chooses a home folder's name to suit the deployer, so letters of any script are allowed, but nothing a

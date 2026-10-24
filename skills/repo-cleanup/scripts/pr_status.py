@@ -83,12 +83,13 @@ def branch_tips(repository_root: str, branch: str, git: GitClient | None = None)
     head = local.stdout.strip()
     if local.returncode != 0 or not SHA_PATTERN.fullmatch(head):
         raise QueryError(f"cannot resolve local branch {branch!r}")
+    # NUL-separated: a ref name may hold a | or any other printable character, but never NUL.
     configured = _git_output(
-        git, repository_root, ["for-each-ref", "--format=%(upstream)|%(upstream:track)", f"refs/heads/{branch}"]
+        git, repository_root, ["for-each-ref", "--format=%(upstream)%00%(upstream:track)", f"refs/heads/{branch}"]
     )
-    if configured.returncode != 0 or "|" not in configured.stdout:
+    if configured.returncode != 0 or "\0" not in configured.stdout:
         raise QueryError(f"cannot read the upstream of {branch!r}: {(configured.stderr or '').strip()}")
-    upstream_ref, track = configured.stdout.strip().split("|", 1)
+    upstream_ref, track = configured.stdout.strip().split("\0", 1)
     if not upstream_ref or track == "[gone]":
         return head, None
     upstream = _git_output(git, repository_root, ["rev-parse", "--verify", "--quiet", f"{upstream_ref}^{{commit}}"])
