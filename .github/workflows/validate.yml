@@ -40,9 +40,9 @@ jobs:
         # The floor in deployer/tools.py on every run. The latest stable release runs on the weekly schedule only, so
         # a new interpreter is a signal there and never blocks a pull request through the required `Validation` check.
         python-version: ${{ github.event_name == 'schedule' && fromJSON('["3.11", "3.x"]') || fromJSON('["3.11"]') }}
-        # One run's jobs dealt across four runners, so a leg's four cores run a quarter of them; each interpreter runs
+        # One run's jobs dealt across six runners, so a leg's four cores run a sixth of them; each interpreter runs
         # every leg. The count is the second number of each entry.
-        shard: ['1/4', '2/4', '3/4', '4/4']
+        shard: ['1/6', '2/6', '3/6', '4/6', '5/6', '6/6']
 
     steps:
       - name: Check out source
