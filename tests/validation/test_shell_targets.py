@@ -526,7 +526,7 @@ class ProgramEndingFixtures(unittest.TestCase):
         self.assertIn("(status 0x80000004, ended after its output began)", str(raised.exception))
 
     # A Git Bash that Windows ends reaches a Bash above it as exit 0 or as the status's low byte, 4, which hid the
-    # endings #1355 recorded; this suite ends its own bash through Windows with the status a CI runner ended one with.
+    # endings CI legs met; this suite ends its own bash through Windows with the status a CI runner ended one with.
     @unittest.skipUnless(sys.platform == "win32", "only Windows ends a process with a status of its choosing")
     def test_a_bash_suite_that_windows_ends_is_named_with_the_status_windows_set(self) -> None:
         python = platform_support.to_shell_path(sys.executable)
