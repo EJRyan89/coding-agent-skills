@@ -145,6 +145,8 @@ jobs:
         shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
+          # Trial: more workers than the runner's four vCPUs, since most jobs wait on Git and other processes.
+          VALIDATION_JOBS: '6'
         run: |
           # Outside a pull request there is no base to compare with, so run every suite.
           $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)
@@ -287,6 +289,8 @@ jobs:
         shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
+          # Trial: more workers than the runner's four vCPUs, since most jobs wait on Git and other processes.
+          VALIDATION_JOBS: '6'
         run: |
           # The Windows legs' step: outside a pull request there is no base to compare with, so every suite runs, and
           # a pull request's body and title reach the checks as files written from the event payload.
