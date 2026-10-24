@@ -7,22 +7,27 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import executable_locator
 import silent_reverts
+from git_client import MISSING_GIT, GitError, GitResult
 from silent_reverts import Revert, declarations, find_reverts, silent_revert_problems
 from validation_support import REPOSITORY_ROOT
 
 from tests import run_validation
+from tools import release_notes
+from tools.release_notes import ReleaseNotesError
 
 # The audit's case: a pull request merged, and sixteen minutes later the next one's squash put five of its files
 # back as they were.
@@ -36,6 +41,20 @@ UNDONE_FILES = [
     "skills/review-document/scripts/review_document.py",
     "skills/review-document/scripts/test_review_document.py",
 ]
+
+
+@contextlib.contextmanager
+def git_not_on_path() -> Iterator[None]:
+    """PATH names a folder that does not exist and no link folder is searched, so the real locator finds no git and
+    the real client raises its own failure."""
+    nowhere = str(Path(__file__).resolve().parent / "no git here")
+    with mock.patch.dict(os.environ, {"PATH": nowhere}), mock.patch.object(executable_locator, "link_folders", list):
+        yield
+
+
+def timed_out(command: list[str], timeout: float) -> GitResult:
+    """The real runner's failure when git does not finish within the client's time limit."""
+    raise GitError(f"{' '.join(command)} did not finish within {timeout:g} seconds", kind="timeout")
 
 
 class SilentRevertFixture(unittest.TestCase):
@@ -196,6 +215,40 @@ class SilentRevertFixture(unittest.TestCase):
         self.commit(f"revert: a\n\n{self.declaring('a.txt', merged)}", {"a.txt": "one\n"})
         self.assertEqual([], silent_revert_problems(self.root))
         self.assertEqual(["a.txt"], [problem.split(":", 1)[0] for problem in silent_revert_problems(self.root, "")])
+
+    def test_a_subject_holding_the_old_separators_or_an_entrys_shape_names_its_commit(self) -> None:
+        # The bytes an earlier reader split commits and subjects on, and a subject that reads as a --raw entry.
+        for index, subject in enumerate(
+            ("feat: \x01 change a (#11)", "feat: \x02 change a (#11)", ":100644 100644 a b M (#11)")
+        ):
+            with self.subTest(subject=repr(subject)):
+                self.root = self.home / f"repository {index}"
+                self.root.mkdir()
+                self.git("init", "-q", "-b", "main")
+                self.commit("start (#1)", {"a.txt": "one\n", "b.txt": "bee\n"})
+                merged = self.commit(subject, {"a.txt": "two\n"})
+                self.publish()
+                self.git("checkout", "-q", "-b", "feat/branch")
+                self.commit("fix: unrelated, with a stale a.txt", {"a.txt": "one\n", "b.txt": "bees\n"})
+                [problem] = silent_revert_problems(self.root, "Closes #7\n")
+                self.assertIn(f"before {merged[:12]} (pull request #11: {subject})", problem)
+
+    def test_a_git_that_cannot_run_or_finish_is_a_problem_line(self) -> None:
+        # The real helper's git missing, or out of time: before and after the check finds origin/main.
+        self.history()
+        self.commit("fix: unrelated, with a stale a.txt", {"a.txt": "one\n"})
+        for failing, reason in (
+            (git_not_on_path(), MISSING_GIT),
+            (mock.patch.object(release_notes.CLIENT, "runner", timed_out), "did not finish within "),
+            (
+                mock.patch.object(silent_reverts, "find_reverts", side_effect=ReleaseNotesError("no history")),
+                "no history",
+            ),
+        ):
+            with self.subTest(reason=reason), failing:
+                [problem] = silent_revert_problems(self.root, "")
+                self.assertTrue(problem.startswith("the silent-revert check cannot read the history: "), problem)
+                self.assertIn(reason, problem)
 
     def test_without_origin_main_the_check_says_how_to_fetch_it(self) -> None:
         self.commit("start (#1)", {"a.txt": "one\n"})

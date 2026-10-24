@@ -5,11 +5,13 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
@@ -18,15 +20,31 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import executable_locator
 import pull_request_title
-from git_client import GitResult
+from git_client import GitError, GitResult
 from pull_request_title import head_branch, title_problems, title_types_problems
 
+from tools import release_notes
 from tools.worktrees import TITLE_TYPES
 
 
 def git(repository: Path, *arguments: str) -> None:
     subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, check=True)
+
+
+@contextlib.contextmanager
+def git_not_on_path() -> Iterator[None]:
+    """PATH names a folder that does not exist and no link folder is searched, so the real locator finds no git and
+    the real client raises its own failure."""
+    nowhere = str(Path(__file__).resolve().parent / "no git here")
+    with mock.patch.dict(os.environ, {"PATH": nowhere}), mock.patch.object(executable_locator, "link_folders", list):
+        yield
+
+
+def timed_out(command: list[str], timeout: float) -> GitResult:
+    """The real runner's failure when git does not finish within the client's time limit."""
+    raise GitError(f"{' '.join(command)} did not finish within {timeout:g} seconds", kind="timeout")
 
 
 class PullRequestTitlePolicy(unittest.TestCase):
@@ -145,6 +163,9 @@ class HeadBranch(unittest.TestCase):
         with mock.patch.object(pull_request_title, "git", return_value=failed) as run:
             self.assertIsNone(head_branch())
         self.assertEqual(1, run.call_count)
-        # Nor does a git that cannot run at all.
-        with mock.patch.object(pull_request_title, "git", side_effect=ValueError("git was not found")):
-            self.assertIsNone(head_branch())
+        # Nor does a git that cannot run at all: the real helper's git missing, or not finishing in its time limit.
+        self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository))
+        self.assertEqual("feat/local-branch", head_branch())
+        for failing in (git_not_on_path(), mock.patch.object(release_notes.CLIENT, "runner", timed_out)):
+            with self.subTest(failing=failing), failing:
+                self.assertIsNone(head_branch())

@@ -36,6 +36,7 @@ from tools.release_notes import (
     SourcedEntry,
     body_entries,
     git,
+    git_output,
     range_entries,
     release_reaching,
 )
@@ -79,20 +80,20 @@ class Snapshot:
 def last_release_tag(root: Path) -> tuple[str | None, str | None]:
     """The last release on origin/main, as ejryan89-skill-core's release_tags reads it, and a problem; no release tag
     reachable means nothing has been released yet."""
-    if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
-        return None, (
-            f"{RELEASE_BRANCH} is missing, so the upgrade-notes check cannot find the last tag; "
-            "fetch it with `git fetch origin main --tags`"
-        )
-    if git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
-        return None, (
-            "this clone is shallow, so the upgrade-notes check cannot see the last tag; "
-            "fetch the history with `git fetch --unshallow --tags`"
-        )
     try:
+        if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
+            return None, (
+                f"{RELEASE_BRANCH} is missing, so the upgrade-notes check cannot find the last tag; "
+                "fetch it with `git fetch origin main --tags`"
+            )
+        if git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+            return None, (
+                "this clone is shallow, so the upgrade-notes check cannot see the last tag; "
+                "fetch the history with `git fetch --unshallow --tags`"
+            )
         return release_reaching(root, RELEASE_BRANCH), None
     except ReleaseNotesError as error:
-        return None, f"the upgrade-notes check {error}"
+        return None, f"the upgrade-notes check cannot find the last tag: {error}"
 
 
 def working_snapshot(root: Path) -> Snapshot:
@@ -101,9 +102,10 @@ def working_snapshot(root: Path) -> Snapshot:
 
 
 def tag_snapshot(root: Path, tag: str) -> Snapshot:
-    listed = git(root, "ls-tree", "-r", "--name-only", "-z", tag).stdout
+    """The tag's tree; listing it, and reading a file from it, raise ReleaseNotesError when git cannot."""
+    listed = git_output(root, "ls-tree", "-r", "--name-only", "-z", tag)
     return Snapshot(
-        frozenset(name for name in listed.split("\0") if name), lambda name: git(root, "show", f"{tag}:{name}").stdout
+        frozenset(name for name in listed.split("\0") if name), lambda name: git_output(root, "show", f"{tag}:{name}")
     )
 
 
@@ -303,7 +305,10 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
     are HEAD's, so a local run reads the branch's commits. Each entry must give its level in the Versioning section's
     own words.
     """
-    current = working_snapshot(root)
+    try:
+        current = working_snapshot(root)
+    except ReleaseNotesError as error:
+        return [f"the upgrade-notes check cannot list the checkout's files: {error}"]
     problems = notes_layout_problems(current.text(UPGRADE_NOTES))
     tag, problem = last_release_tag(root)
     if problem is not None:
@@ -315,8 +320,9 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
         return [f"{RELEASING_DOC} has no **Levels** list under {VERSIONING_HEADING} for upgrade-notes entries to use"]
     try:
         sourced = range_entries(root, tag, RELEASE_BRANCH if body is not None else "HEAD")
+        changed = changed_contract_items(tag_snapshot(root, tag), current)
     except ReleaseNotesError as error:
-        return [*problems, f"the upgrade-notes check cannot read the commits since {tag}: {error}"]
+        return [*problems, f"the upgrade-notes check cannot read the commits and the tree since {tag}: {error}"]
     if body is not None:
         sourced += [
             SourcedEntry(entry, f"the pull request body's {BODY_HEADING}", None, from_notes=False)
@@ -329,7 +335,7 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
         f"{BODY_HEADING} in the pull request body naming `{item}` with its level ({listed(levels)}, per the "
         f"Versioning section of {RELEASING_DOC}) and the user action or none (a local run reads the body from "
         "--pr-body <file>, and otherwise the branch's commit messages)"
-        for item, description in changed_contract_items(tag_snapshot(root, tag), current)
+        for item, description in changed
         if item not in named
     ]
     return problems

@@ -35,6 +35,7 @@ from deployer import platform_support
 # ejryan89-skill-core's GitClient, so each reads the checkout it names whatever GIT_DIR or GIT_INDEX_FILE the shell or a
 # git hook exported.
 from tools.release_notes import git as git
+from tools.release_notes import git_output
 
 # The paths a repository skill's script also names: it runs from the checkout without the deployer, which every module
 # here imports, and validation imports no repository skill.
@@ -725,12 +726,10 @@ def fence_body_line(holder: Fence | None, index: int) -> bool:
 def repository_files(root: Path) -> list[Path]:
     """Tracked files plus untracked ones Git does not ignore, which is what a commit could include.
 
-    Raises ValueError when git cannot list them.
+    Raises ReleaseNotesError naming the command when git cannot run or cannot list them.
     """
-    listed = git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-    if listed.returncode != 0:
-        raise ValueError(f"git ls-files failed in {root}: {listed.stderr.strip()}")
-    return [root / name for name in listed.stdout.split("\0") if name and (root / name).is_file()]
+    listed = git_output(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    return [root / name for name in listed.split("\0") if name and (root / name).is_file()]
 
 
 # ejryan89-skill-core's lookup of a sibling skill's scripts directory, which a script puts on sys.path after the line

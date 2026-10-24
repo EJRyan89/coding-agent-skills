@@ -66,8 +66,10 @@ NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
 BLOCK_START = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)")
 FENCE = re.compile(r"^\s*(?:`{3,}|~{3,})")
 SQUASH_TITLE_NUMBER = re.compile(r"\(#(\d+)\)\s*$")
-# Separators git log writes between a commit's fields and between commits; neither occurs in a commit message.
-FIELD_END, RECORD_END = "\x1f", "\x1e"
+# What git log -z writes after each of a commit's name, subject, and message: NUL, which git refuses in a commit message
+# and cuts a message at, so no message text can end a field early.
+FIELD_END = "\0"
+COMMIT_FIELDS = 3
 
 
 @dataclass(frozen=True)
@@ -172,7 +174,9 @@ def git(root: Path, *arguments: str) -> GitResult:
         raise ReleaseNotesError(f"git {' '.join(arguments)} printed output that is not UTF-8: {error}") from error
 
 
-def _git_output(root: Path, *arguments: str) -> str:
+def git_output(root: Path, *arguments: str) -> str:
+    """git's output on the checkout at root, as `git` reads it; ReleaseNotesError naming the command when git cannot
+    run or exits nonzero."""
     completed = git(root, *arguments)
     if completed.returncode != 0:
         raise ReleaseNotesError(f"git {' '.join(arguments)} failed: {completed.stderr.strip()}")
@@ -180,16 +184,15 @@ def _git_output(root: Path, *arguments: str) -> str:
 
 
 def commits(root: Path, start: str, end: str) -> list[Commit]:
-    """The commits reachable from end and not from start, newest first, merge commits left out."""
-    listed = _git_output(
-        root, "log", "--no-merges", f"--format=%H{FIELD_END}%s{FIELD_END}%B{RECORD_END}", f"{start}..{end}"
-    )
-    found: list[Commit] = []
-    for record in listed.split(RECORD_END):
-        if record.strip():
-            sha, subject, message = record.lstrip("\n").split(FIELD_END, 2)
-            found.append(Commit(sha, subject, message))
-    return found
+    """The commits reachable from end and not from start, newest first, merge commits left out.
+
+    Raises ReleaseNotesError when git's listing is not whole commits of a name, a subject, and a message.
+    """
+    listed = git_output(root, "log", "-z", "--no-merges", "--format=%H%x00%s%x00%B", f"{start}..{end}")
+    fields = listed.split(FIELD_END)
+    if fields.pop() != "" or len(fields) % COMMIT_FIELDS:
+        raise ReleaseNotesError(f"git log {start}..{end} printed a listing that is not whole commits")
+    return [Commit(*fields[index : index + COMMIT_FIELDS]) for index in range(0, len(fields), COMMIT_FIELDS)]
 
 
 def _notes_at(root: Path, revision: str) -> str | None:
@@ -203,11 +206,14 @@ def added_unreleased_entries(root: Path, sha: str) -> list[NotesEntry]:
     return [entry for entry in unreleased_entries(_notes_at(root, sha)) if entry.text not in before]
 
 
+def notes_commits(root: Path, start: str, end: str) -> set[str]:
+    """The commits reachable from end and not from start that change the notes file, merge commits left out."""
+    return set(git_output(root, "log", "--no-merges", "--format=%H", f"{start}..{end}", "--", UPGRADE_NOTES).split())
+
+
 def range_entries(root: Path, start: str, end: str) -> list[SourcedEntry]:
     """Every entry the commits between two refs carry, newest first, each heading once."""
-    touched = set(
-        _git_output(root, "log", "--no-merges", "--format=%H", f"{start}..{end}", "--", UPGRADE_NOTES).split()
-    )
+    touched = notes_commits(root, start, end)
     found: list[SourcedEntry] = []
     seen: set[str] = set()
     for commit in commits(root, start, end):
