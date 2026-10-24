@@ -252,10 +252,30 @@ class EndToEndTests(GuardTestCase):
 
     def test_an_opt_in_git_cannot_read_is_allowed_with_a_note_never_read_as_unguarded_unseen(self) -> None:
         self.enable("maybe")
+        # git's own message for this value, on one line, is what the note names.
+        said = subprocess.run(
+            ["git", "-C", str(self.hub), "config", "--local", "--type=bool", "--get", "coding-agent-skills.hubGuard"],
+            env=self.environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotIn(said.returncode, (0, 1))
         event = {"tool_name": "Bash", "tool_input": {"command": "git switch feat/demo"}, "cwd": str(self.hub)}
         self.assertIsNone(self.both(event))
-        self.assertIn(f"hub guard skipped: the opt-in of {self.hub}", self.stderr)
-        self.assertIn("could not be read: ", self.stderr)
+        self.assertIn(
+            f"hub guard skipped: the opt-in of {self.hub} could not be read: {' '.join(said.stderr.split())}\n",
+            self.stderr,
+        )
+        with mock.patch.object(hub_guard, "git", return_value=git_client.GitResult(3, "", "")):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertFalse(hub_guard.guard_enabled(self.hub))
+        self.assertEqual(
+            f"hub guard skipped: the opt-in of {self.hub} could not be read: git config exited with 3\n",
+            stderr.getvalue(),
+            "a failure git explains nothing about still names its exit code",
+        )
         self.enable(None)
         self.assertIsNone(self.both(event))
         self.assertEqual("", self.stderr, "a clone that has not opted in is unguarded, with nothing to note")
