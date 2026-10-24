@@ -126,6 +126,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
+import json_reader
 import runtime_support
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
@@ -401,8 +402,8 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     records = []
     if path.is_file():
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            with contextlib.suppress(json.JSONDecodeError):
-                record = json.loads(line)
+            with contextlib.suppress(json.JSONDecodeError, json_reader.JsonRefused):
+                record = json_reader.loads(line)
                 if isinstance(record, dict):
                     records.append(record)
     return records

@@ -61,6 +61,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import json_reader
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
@@ -702,7 +703,7 @@ def json_object(path: Path) -> dict[str, Any] | None:
     """The JSON object in the file at `path`, or None when it holds none or cannot be read, as a directory in its
     place cannot."""
     try:
-        value = json.loads(path.read_bytes())
+        value = json_reader.loads(path.read_bytes())
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None

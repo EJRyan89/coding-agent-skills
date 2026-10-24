@@ -144,7 +144,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import json
 import os
 import re
 import sys
@@ -157,6 +156,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import check_provenance
 import frontmatter
 import git_client
+import json_reader
 import runtime_support
 import skill_menu
 from console import run_main
@@ -971,7 +971,7 @@ def plugin_roots(folder: Path, depth: int = PLUGIN_DEPTH) -> list[Path]:
 def manifest_name(root: Path) -> str | None:
     """A plugin's name, from its manifest, or None when the manifest names none."""
     try:
-        document = json.loads((root / skill_menu.PLUGIN_MANIFEST).read_text(encoding="utf-8"))
+        document = json_reader.loads((root / skill_menu.PLUGIN_MANIFEST).read_bytes().decode("utf-8"))
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError):
         return None
@@ -1283,7 +1283,7 @@ def source_root(directory: Path) -> Path | None:
 def read_metadata(root: Path, name: str) -> dict[str, object] | None:
     """A skill's deploy metadata in its source tree, or None when the file is missing or not a JSON object."""
     try:
-        metadata = json.loads((root / "deploy-meta" / f"{name}.json").read_text(encoding="utf-8"))
+        metadata = json_reader.loads((root / "deploy-meta" / f"{name}.json").read_bytes().decode("utf-8"))
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError):
         return None
@@ -1379,7 +1379,7 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
     output = []
     for spec_file in sorted(scenarios.glob("*/scenario.json")):
         try:
-            spec = json.loads(spec_file.read_text(encoding="utf-8"))
+            spec = json_reader.loads(spec_file.read_bytes().decode("utf-8"))
         # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
         except (OSError, ValueError, RecursionError):
             continue
@@ -2276,7 +2276,7 @@ def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
     except OSError as exc:
         raise InputError(f"cannot read {posix(path)}: {exc.strerror or exc}") from exc
     try:
-        document = json.loads(require_text(path))
+        document = json_reader.loads(require_text(path))
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (ValueError, RecursionError) as exc:
         raise InputError(f"{posix(path)} is not JSON: {exc}") from exc
@@ -2392,7 +2392,7 @@ def setting_kind(key: str, value: object) -> str | None:
 def json_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
     """Each model or effort a JSON data file sets, such as a manifest's per-role model or a configured effort."""
     try:
-        data = json.loads(text)
+        data = json_reader.loads(text)
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (ValueError, RecursionError):
         return []
