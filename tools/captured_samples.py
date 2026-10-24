@@ -48,7 +48,7 @@ class Sample:
 def read(top: Path, runtimes: tuple[str, ...]) -> list[Sample]:
     """Every sample the record at `top` names, each with a version of one or more of `runtimes`, or SampleError."""
     try:
-        record = json.loads((top / PROVENANCE).read_text(encoding="utf-8"))
+        record = json.loads((top / PROVENANCE).read_bytes().decode("utf-8"))
     except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise SampleError(f"cannot read {PROVENANCE.as_posix()}: {exc}") from exc
     samples = record.get("samples") if isinstance(record, dict) else None

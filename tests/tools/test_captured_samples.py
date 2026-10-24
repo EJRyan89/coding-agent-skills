@@ -103,6 +103,13 @@ def test_a_record_of_another_shape_is_refused(tmp_path: Path, record: object, re
         captured_samples.read(write_record(tmp_path, record), RUNTIMES)
 
 
+def test_a_record_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
+    top = write_record(tmp_path, {})
+    (top / "tests" / "fixtures" / "captured-output" / PROVENANCE).write_bytes(b'{"samples": "\xe9"}')
+    with pytest.raises(SampleError, match=re.escape("cannot read tests/fixtures/captured-output/provenance.json")):
+        captured_samples.read(top, RUNTIMES)
+
+
 def test_a_record_that_is_not_json_is_refused(tmp_path: Path) -> None:
     top = write_record(tmp_path, {})
     (top / "tests" / "fixtures" / "captured-output" / PROVENANCE).write_text("{", encoding="utf-8")
