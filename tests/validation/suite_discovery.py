@@ -58,8 +58,11 @@ from validation_support import (
 
 CONFTEST = "conftest.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
-# suite further, at the cost of one more process start and suite import each. A recorded test counts as its seconds.
-TESTS_PER_SHARD = 6
+# suite further, at the cost of one more process start and suite import each, about half a second on CI's Windows
+# runners, which at six tests a shard was more than many shards' tests took. A recorded test counts as its seconds,
+# and this stays below the least recorded test's seconds with room to grow, or recorded_shard_problems deals that test
+# beside others once its suite gains a test or two.
+TESTS_PER_SHARD = 8
 MAXIMUM_SHARDS = 8
 # The seconds a test takes run alone, recorded for a test that costs many times a typical one, by suite and then by
 # the test's name within the suite as pytest names it, `Class::test`, never a test `parametrize` expands, which pytest
