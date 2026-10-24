@@ -506,6 +506,46 @@ class ProgramEndingFixtures(unittest.TestCase):
             str(raised.exception),
         )
 
+    # A Bash suite is Git Bash's own program, so the status Windows ended it with is the one the runner reads.
+    @mock.patch.object(platform_support, "WINDOWS", True)
+    def test_a_bash_suite_starts_with_no_shell_above_it_and_its_ending_names_the_status(self) -> None:
+        bash = "C:/Program Files/Git/bin/bash.exe"
+        started: list[list[str]] = []
+
+        def ended(arguments: list[str], *_: object, **__: object) -> Finished:
+            started.append(arguments)
+            return Finished(2_147_483_652, b"START suite.sh 7\n", b"")
+
+        with (
+            mock.patch.object(shell_targets, "find_git_bash", return_value=bash),
+            mock.patch.object(job_pool, "run_bounded", side_effect=ended),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            shell_targets.run_bash_suite("skills/alpha/scripts/test_alpha.sh")
+        self.assertEqual([[bash, "skills/alpha/scripts/test_alpha.sh"]], started)
+        self.assertIn("(status 0x80000004, ended after its output began)", str(raised.exception))
+
+    # A Git Bash that Windows ends reaches a Bash above it as exit 0 or as the status's low byte, 4, which hid the
+    # endings CI legs met; this suite ends its own bash through Windows with the status a CI runner ended one with.
+    @unittest.skipUnless(sys.platform == "win32", "only Windows ends a process with a status of its choosing")
+    def test_a_bash_suite_that_windows_ends_is_named_with_the_status_windows_set(self) -> None:
+        python = platform_support.to_shell_path(sys.executable)
+        ending = (
+            "import ctypes, sys; k = ctypes.windll.kernel32; k.OpenProcess.restype = ctypes.c_void_p; "
+            "k.TerminateProcess(ctypes.c_void_p(k.OpenProcess(1, False, int(sys.argv[1]))), ctypes.c_uint(0x80000004))"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            suite = Path(temporary) / "test_ended.sh"
+            suite.write_text(
+                f"echo started\n'{python}' -c '{ending}' \"$(</proc/$$/winpid)\"\nsleep 5\necho 'not ended'\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(AssertionError) as raised:
+                shell_targets.run_bash_suite(platform_support.to_shell_path(str(suite)))
+        self.assertIn("(status 0x80000004, ended after its output began)", str(raised.exception))
+        self.assertIn("started", str(raised.exception))
+        self.assertNotIn("not ended", str(raised.exception))
+
     # The status is the one Windows set on Git Bash before it printed anything; the fixtures read it as Windows does, on
     # every platform, and test_platform_support holds how a signal ends a process elsewhere.
     @mock.patch.object(platform_support, "WINDOWS", True)
