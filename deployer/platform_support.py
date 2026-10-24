@@ -185,9 +185,11 @@ STARTING_VARIABLES = (
 
 
 def signed_out_environment(base: Mapping[str, str], home: Path) -> dict[str, str]:
-    """`base`'s STARTING_VARIABLES, matched as this platform matches a name, with every variable that names the user's
-    home or a per-user folder set inside `home`, so a program started with it finds no sign-in and no settings. The
-    folders are named, not made; a program makes the ones it writes."""
+    """`base`'s STARTING_VARIABLES, matched as this platform matches a name, with HOME and every variable that names
+    a per-user settings folder set inside `home`, so a program started with it finds no sign-in and no settings. The
+    temporary-folder variables among STARTING_VARIABLES, TEMP and TMP on Windows and TMPDIR elsewhere, keep `base`'s
+    value, which may still name a folder of the user's profile. The folders are named, not made; a program makes the
+    ones it writes."""
     starting = {name.casefold() if ENVIRONMENT_NAMES_FOLD_CASE else name for name in STARTING_VARIABLES}
     kept = {
         name: value

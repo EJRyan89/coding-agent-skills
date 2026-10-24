@@ -40,7 +40,9 @@ class RuntimePromptsTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-prompts-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
-        self.root.mkdir()
+        # What --root takes for a checkout of this repository.
+        (self.root / ".claude" / "skills").mkdir(parents=True)
+        (self.root / "source.json").write_text("{}\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self._temporary.cleanup()
@@ -92,6 +94,38 @@ class RuntimePromptsTestCase(unittest.TestCase):
             self.assertEqual(1, runtime_prompts.main(["--root", str(self.root)]))
             self.assertEqual(0, runtime_prompts.main(["--root", str(self.root), "--write"]))
         self.assertIn("does not exist", output.getvalue())
+
+    def test_the_samples_are_this_checkouts_unless_root_names_another(self) -> None:
+        roots: list[Path] = []
+
+        def checked(root: Path, renderers: object = None) -> list[str]:
+            roots.append(root)
+            return []
+
+        with mock.patch.object(runtime_prompts, "problems", side_effect=checked):
+            self.assertEqual(0, runtime_prompts.main([]))
+            self.assertEqual(0, runtime_prompts.main(["--root", str(self.root)]))
+        self.assertEqual([runtime_prompts.REPOSITORY_ROOT, self.root], roots)
+
+    def test_the_help_offers_write_and_keeps_root_for_the_suites_hidden(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            runtime_prompts.main(["--help"])
+        self.assertEqual(0, raised.exception.code)
+        self.assertIn("render every sample again and remove the extra ones", " ".join(output.getvalue().split()))
+        self.assertNotIn("--root", output.getvalue())
+
+    def test_a_root_that_is_not_a_checkout_is_refused_before_write_removes_anything(self) -> None:
+        other = self.root.parent / "Not A Checkout"
+        extra = other / "docs" / "runtime-prompts" / "alpha" / "kept.txt"
+        extra.parent.mkdir(parents=True)
+        extra.write_text("kept\n", encoding="utf-8")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+            runtime_prompts.main(["--write", "--root", str(other)])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn(f"argument --root: {other} is not a checkout of this repository", stderr.getvalue())
+        self.assertTrue(extra.is_file())
 
     def run_main(self, renderers: runtime_prompts.Renderers, *arguments: str) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()

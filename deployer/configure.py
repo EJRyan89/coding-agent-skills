@@ -17,19 +17,29 @@ CANCELLED = "Configuration cancelled; existing config was not changed."
 
 def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | None:
     """Ask for one value on stderr, which carries every prompt, so stdout holds only results; None at the end of
-    input."""
+    input.
+
+    An optional value, whose empty answer means none, is cleared with a lone `-`, since Enter keeps the current one.
+    """
     sys.stdout.flush()
     print("", file=sys.stderr)
     print(f"{key}: {description}", file=sys.stderr)
     if current:
         print(f"  Current: {current}", file=sys.stderr)
-    label = "New value (Enter keeps the current value, Ctrl+C cancels)" if current else "Value (Ctrl+C cancels)"
+    optional = key in config.OPTIONAL_VARIABLES
+    if current:
+        clears = ", - clears it" if optional else ""
+        label = f"New value (Enter keeps the current value{clears}, Ctrl+C cancels)"
+    else:
+        label = "Value (Enter for none, Ctrl+C cancels)" if optional else "Value (Ctrl+C cancels)"
     print(f"  {label}: ", end="", file=sys.stderr, flush=True)
     # Ctrl+C reaches execute as KeyboardInterrupt; only the end of input returns None.
     line = stdin.readline()
     if not line:
         return None
     value = line.rstrip("\r\n")
+    if optional and value.strip() == "-":
+        return ""
     return value if value else current
 
 

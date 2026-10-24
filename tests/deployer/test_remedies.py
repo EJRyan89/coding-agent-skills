@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -151,7 +152,99 @@ class UnreadableFileTests(RemedyTestCase):
         )
 
 
+class ManifestRemedyTests(RemedyTestCase):
+    """'A state file that does not read' in docs/recovery.md: a manifest the deployer cannot trust is refused by name,
+    with the step that puts it right, and its path in the forward-slash form."""
+
+    PUT_BACK = "Put back a copy you trust, or move it out of the skills folder and rerun with --dry-run."
+    SEE_STATE_FILE = 'See "A state file that does not read" in docs/recovery.md.'
+    NEWER = "Update this checkout with 'git pull', or deploy from the checkout that wrote the manifest."
+
+    def deployed(self) -> dict[str, Any]:
+        self.fixture()
+        self.deploy_ok("--all")
+        return self.manifest()
+
+    def assert_refused(self, data: dict[str, Any], message: str, *remedy: str) -> None:
+        self.write_manifest(data)
+        result = self.deploy_fails("--all", "--dry-run", pattern=re.escape(message))
+        self.assert_lines(result.output, message, *(remedy or (self.PUT_BACK, self.SEE_STATE_FILE)))
+
+    def test_a_malformed_manifest_names_its_path_with_forward_slashes(self) -> None:
+        self.fixture()
+        self.write(self.manifest_file, "[]\n")
+        result = self.deploy_fails("--all", "--dry-run", pattern="Manifest is malformed")
+        self.assert_lines(result.output, f"ERROR: Manifest is malformed: {forward(self.manifest_file)}", self.PUT_BACK)
+
+    def test_each_malformed_field_names_the_step_to_take(self) -> None:
+        source = "test/skills"
+
+        def entry(data: dict[str, Any]) -> dict[str, Any]:
+            found: dict[str, Any] = data["sources"][source]
+            return found
+
+        cases: list[tuple[Callable[[dict[str, Any]], None], str]] = [
+            (
+                lambda data: data.update(last_run_id="../run"),
+                f"ERROR: Manifest last_run_id is malformed: {forward(self.manifest_file)}",
+            ),
+            (lambda data: data["sources"].update({"Bad ID": {}}), "ERROR: Manifest source ID is malformed: 'Bad ID'"),
+            (lambda data: data["sources"].update({source: []}), f"ERROR: Manifest source '{source}' is malformed"),
+            (
+                lambda data: entry(data).update(source_commit="zz"),
+                f"ERROR: Manifest source '{source}' source_commit is malformed",
+            ),
+            (
+                lambda data: entry(data).update(source_ref="main"),
+                f"ERROR: Manifest source '{source}' source_ref is malformed",
+            ),
+            (lambda data: entry(data).update(requested_skills=[1]), "ERROR: Manifest selection fields are malformed"),
+            (
+                lambda data: entry(data).update(requested_bundle_members=[]),
+                "ERROR: Manifest selection fields are malformed",
+            ),
+            (lambda data: entry(data).update(skills=[]), "ERROR: Manifest selection fields are malformed"),
+            (
+                lambda data: entry(data)["skills"]["alpha"].update(hash="sha256:x"),
+                f"ERROR: Manifest entry is malformed: source '{source}' skills 'alpha'",
+            ),
+            (lambda data: data.update(manifest_version=1), "ERROR: Manifest has unsupported schema version '1'"),
+            (
+                lambda data: data["sources"].update({"other/skills": {"skills": entry(data)["skills"]}}),
+                f"ERROR: Skill 'alpha' is owned by both '{source}' and 'other/skills' in manifest",
+            ),
+            (
+                lambda data: entry(data).update(shared={"alpha": {"hash": ZERO_HASH}}),
+                f"ERROR: Destination name 'alpha' is owned as a skill by '{source}' "
+                f"and as a shared asset by '{source}' in manifest",
+            ),
+        ]
+        original = self.deployed()
+        for change, message in cases:
+            with self.subTest(message=message):
+                data = json.loads(json.dumps(original))
+                change(data)
+                self.assert_refused(data, message)
+
+    def test_a_manifest_a_newer_deployer_wrote_names_updating_the_checkout(self) -> None:
+        data = self.deployed()
+        data["manifest_version"] = 999
+        supported = self.manifest()["manifest_version"]
+        message = f"ERROR: Manifest schema version '999' is newer than supported version {supported}"
+        self.assert_refused(data, message, self.NEWER)
+
+
 class ConfigurationRemedyTests(RemedyTestCase):
+    def test_a_missing_config_names_its_path_with_forward_slashes_and_configure(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        result = self.deploy_fails("--all", pattern="No config found")
+        self.assert_lines(
+            result.output,
+            f"ERROR: No config found at {forward(self.config_file())}",
+            f"Run '{DEPLOY_COMMAND} configure' first.",
+        )
+
     def test_source_id_mismatch_names_configure_reset_which_clears_it(self) -> None:
         self.make_source_json("real/source")
         self.make_skill("alpha", "Test")
@@ -181,7 +274,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.fixture()
         self.config_file().write_bytes(b"_source_id=test/skills\nREPOS_ROOT=\xff\n")
         result = self.deploy_fails("--all", pattern="not valid UTF-8")
-        self.assert_lines(result.output, f"ERROR: Config file is not valid UTF-8: {self.config_file()}", RESET)
+        self.assert_lines(result.output, f"ERROR: Config file is not valid UTF-8: {forward(self.config_file())}", RESET)
 
     def canonical_directory_of_repos(self, canonical: Exception | str) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
         """Make the configured REPOS_ROOT canonicalize to canonical, or fail with it, leaving every other path alone."""
@@ -514,6 +607,12 @@ class LockRemedyTests(RemedyTestCase):
 
 
 class RecoveryGuideTests(unittest.TestCase):
+    def test_the_stopped_recovery_line_is_the_one_interrupted_deployments_quotes(self) -> None:
+        # The guide owns the wording a user reads, so the constant the deployer prints is held to it.
+        guide = (REPOSITORY_ROOT / "docs" / "recovery.md").read_text(encoding="utf-8")
+        section = guide.split("\n## Interrupted deployments\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(f"followed by `{errors.RECOVERY_STOPPED}`, and exits 1", section)
+
     def test_every_section_a_refusal_names_is_a_heading_of_the_guide(self) -> None:
         self.assertEqual("docs/recovery.md", errors.RECOVERY_GUIDE)
         self.assertEqual(

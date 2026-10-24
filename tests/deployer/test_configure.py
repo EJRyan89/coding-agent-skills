@@ -6,7 +6,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, forward
 
-from deployer import config, platform_support
+from deployer import config, configure, platform_support
 
 
 class ConfigureTests(DeployerTestCase):
@@ -51,7 +51,7 @@ class ConfigureTests(DeployerTestCase):
         before = self.digest()
         result = self.configure("--reset", stdin="")
         self.assertEqual(130, result.code)
-        self.assertIn("Configuration cancelled; existing config was not changed.", result.output)
+        self.assertIn(configure.CANCELLED, result.output)
         self.assertEqual(before, self.digest())
 
     def test_an_input_that_ends_early_names_the_variable_it_needed(self) -> None:
@@ -254,13 +254,13 @@ class ConfigureTests(DeployerTestCase):
         self.assertIn(
             "REPO_CLEANUP_REGENERABLE: ignored directories repo-cleanup may delete with a worktree, besides the ones "
             "it ships with, separated by spaces: a directory, or a directory, an equals sign, and the project files "
-            "one of which must sit beside it, such as .venv .tox=tox.ini,setup.cfg; empty for none\n"
-            "  Value (Ctrl+C cancels): ",
+            "one of which must sit beside it, such as .venv .tox=tox.ini,setup.cfg\n"
+            "  Value (Enter for none, Ctrl+C cancels): ",
             result.output,
         )
         self.assertIn(
             "REPO_CLEANUP_PROTECTED: branch prefixes repo-cleanup never deletes, besides the ones it ships with, "
-            "separated by spaces, such as hotfix/ support/; empty for none\n  Value (Ctrl+C cancels): ",
+            "separated by spaces, such as hotfix/ support/\n  Value (Enter for none, Ctrl+C cancels): ",
             result.output,
         )
         self.assertEqual(
@@ -274,6 +274,26 @@ class ConfigureTests(DeployerTestCase):
         self.assertEqual(0, result.code, result.output)
         self.assertIn("  Current: .venv .tox=tox.ini,setup.cfg *.csproj\n", result.output)
         self.assertIn("REPO_CLEANUP_PROTECTED=hotfix/ support/\n", self.config_file().read_text(encoding="utf-8"))
+
+    def test_a_lone_dash_clears_a_repo_cleanup_list_already_set_and_the_prompt_says_so(self) -> None:
+        self.make_source_json()
+        self.repos.mkdir()
+        set_both = f"{forward(self.repos)}\n\n.venv\nhotfix/\n"
+        self.assertEqual(0, self.configure(stdin=set_both).code)
+        result = self.configure(stdin="\n\n - \n-\n")
+        self.assertEqual(0, result.code, result.output)
+        for current in (".venv", "hotfix/"):
+            self.assertIn(
+                f"  Current: {current}\n  New value (Enter keeps the current value, - clears it, Ctrl+C cancels): ",
+                result.output,
+            )
+        self.assertIn(
+            "  New value (Enter keeps the current value, Ctrl+C cancels): ", result.output, "a required value has no -"
+        )
+        self.assertEqual(
+            f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\nUPDATE_CHANNEL=release\n".encode(),
+            self.config_file().read_bytes(),
+        )
 
     def test_a_repo_cleanup_addition_with_a_character_outside_its_allowlist_is_refused_and_the_config_kept(
         self,

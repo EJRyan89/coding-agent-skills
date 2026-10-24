@@ -20,9 +20,10 @@ ejryan89-skill-core's skill_menu, so audit-skill's script names the plugins that
 
 Each plugin is described by its entry in the source's marketplace file, .claude-plugin/marketplace.json, which names
 every plugin the source makes and nothing else. Its manifest, .claude-plugin/plugin.json, is that entry without its
-source, with the plugin's name and --version (0.0.0-dev unless given; a release passes its tag without the `v`),
-and, when a variable its skills take is answered by a plugin option, the userConfig declaring that option. Claude
-Code substitutes an option only below a file's frontmatter, so the frontmatter names it in words instead.
+source, with the plugin's name and --version in place of any the entry gives (0.0.0-dev unless given; a release
+passes its tag without the `v`), and, when a variable its skills take is answered by a plugin option, the userConfig
+declaring that option. Claude Code substitutes an option only below a file's frontmatter, so the frontmatter names
+it in words instead.
 Claude Code namespaces a plugin's agents under its name, so a skill's backticked mention of an agent the plugin
 carries names it as `<plugin>:<agent>`. A plugin agent's own hooks are ignored, so each agent's hooks move into the
 plugin's hooks/hooks.json, as tools/plugin_agents.py describes. The source's .claude-plugin/README.md, when it has one,
@@ -232,7 +233,8 @@ def _plugin(
             if relative == "SKILL.md":
                 rendered = namespaced(rendered, name, plugin.agents)
             plugin.files[f"skills/{skill}/{relative}"] = rendered
-    manifest = {"name": name, "version": version, **{key: value for key, value in entry.items() if key != "source"}}
+    kept = {key: value for key, value in entry.items() if key not in ("name", "version", "source")}
+    manifest = {"name": name, "version": version, **kept}
     options = plugin_options(source, plugin)
     if options:
         manifest["userConfig"] = options

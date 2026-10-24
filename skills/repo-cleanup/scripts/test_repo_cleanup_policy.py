@@ -8,6 +8,7 @@ import contextlib
 import io
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import cleanup_policy
 import repo_cleanup as rc
+from git_client import GitClient, GitResult
 from test_repo_cleanup import (
     GIT_CONFIG,
     CleanupTestCase,
@@ -35,6 +37,55 @@ git_config = GIT_CONFIG
 def setUpModule() -> None:
     """Build the repositories every Fixture test starts from, with Git isolated as each test isolates it."""
     build_template()
+
+
+class PolicyReadingFailureTests(CleanupTestCase):
+    """What a command reads of the lists fails closed: a record whose lists are not lines, and an added entry Git
+    cannot be asked about."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root = Path(tempfile.mkdtemp(prefix="repo cleanup policy reading ")).resolve()
+        self.addCleanup(remove_tree, self.root)
+
+    def test_a_sweep_record_whose_policy_is_not_a_list_of_lines_is_refused(self) -> None:
+        record = self.root / rc.SWEEP_RECORD
+        malformed_policies: list[object] = ["POLICY\tdefaults", [1], [None], {"lines": []}, [["POLICY"]]]
+        for policy in malformed_policies:
+            with self.subTest(policy=policy):
+                rc.save_plan(record, {"schema_version": rc.RECORD_SCHEMA_VERSION, "repositories": [], "policy": policy})
+                with self.assertRaises(rc.CleanupError) as raised:
+                    rc.read_record(self.root)
+                self.assertEqual(f"{record} is not a repo-cleanup sweep record", str(raised.exception))
+        rc.save_plan(record, {"schema_version": rc.RECORD_SCHEMA_VERSION, "repositories": [], "policy": ["POLICY"]})
+        self.assertEqual(([], ["POLICY"]), rc.read_record(self.root))
+
+    def test_an_added_entry_git_cannot_be_asked_about_fails_rather_than_counting_as_regenerable(self) -> None:
+        (self.root / ".venv").mkdir()
+
+        def failing(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(128, "", "fatal: not a git repository")
+
+        services = rc.Services(git=GitClient(failing))
+        with self.assertRaises(rc.CleanupError) as raised:
+            rc.regenerable_under(services, str(self.root), [".venv/"], cleanup_policy.configured(".venv"))
+        self.assertEqual(f"git ls-files failed in {self.root}: fatal: not a git repository", str(raised.exception))
+        shipped = cleanup_policy.configured()
+        (self.root / "__pycache__").mkdir()
+        self.assertEqual(
+            ({"__pycache__/"}, {}), rc.regenerable_under(services, str(self.root), ["__pycache__/"], shipped)
+        )
+
+
+class RegenerableHelpTests(CleanupTestCase):
+    def test_the_sweep_help_names_the_separator_an_added_entry_is_read_with(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            rc.main(["sweep", "--help"])
+        text = " ".join(output.getvalue().split())
+        self.assertIn("each <directory> or <directory>=<project file>,<project file>", text)
+        (entry,) = cleanup_policy.configured(".tox=tox.ini,setup.cfg").added_regenerable()
+        self.assertEqual(".tox=tox.ini,setup.cfg", entry, "the form the help shows is read as one entry with projects")
 
 
 class AddedRegenerableTests(WorktreeTestCase):
@@ -183,7 +234,7 @@ class PolicyLinesTests(Fixture):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = rc.main(
-                ["sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans"), *extra],
+                ["sweep", "--repos-root", str(self.repos), *extra],
                 rc.Services(gh=self.github),
             )
         return code, output.getvalue().splitlines()
@@ -236,7 +287,7 @@ class PolicyLinesTests(Fixture):
         output = io.StringIO()
         with mock.patch.object(cleanup_policy, "POLICY_FILE", broken), contextlib.redirect_stdout(output):
             code = rc.main(
-                ["sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans")],
+                ["sweep", "--repos-root", str(self.repos)],
                 rc.Services(gh=self.github),
             )
         self.assertEqual(1, code)
@@ -263,7 +314,11 @@ class RecordedPolicyTests(CleanupTestCase):
                 rc.save_plan(plan, {**recorded, "policy": malformed})
                 with self.assertRaisesRegex(rc.CleanupError, "is not a repo-cleanup plan"):
                     rc.load_plan(plan)
-        self.assertEqual(cleanup_policy.configured(), rc.policy_of({}), "a plan an earlier version wrote")
+        without = {field: value for field, value in recorded.items() if field != "policy"}
+        rc.save_plan(plan, without)
+        with self.assertRaisesRegex(rc.CleanupError, "plan must be an object with field policy"):
+            rc.load_plan(plan)
+        self.assertEqual(cleanup_policy.configured(), rc.policy_of({"policy": {}}), "no configured additions")
         self.assertEqual(
             cleanup_policy.configured(".venv", "hotfix/"),
             rc.policy_of({"policy": {"regenerable": ".venv", "protected": "hotfix/"}}),
