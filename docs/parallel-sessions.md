@@ -308,21 +308,18 @@ refused while a guarded hub is in view, and what they do not see at all is named
   refuses, or one given `-WhatIf`, runs nothing. `tools/hub_guard-powershell.ps1` only reports what the parser and
   binder found, in the order PowerShell would run it, and `tools/hub_guard.py` makes every decision. The guard
   follows `cd`, `chdir`, `sl`, and `Set-Location` (bare goes home, a leading `~` means home, `cd -` and `cd +` leave
-  the location unknown, and one on a provider other than the file system leaves it unknown), `Push-Location` and
-  `Pop-Location` with their stack, `$env:NAME` and strings whose only expansions are environment variables, and a
-  function's body where a command calls it. A variable's value is the one the session holds at that point, as in
-  Bash: the one the hook was given, or the word a plain assignment in the command gives it (`$env:NAME = <word>` or
-  `${env:NAME} = <word>`, on any path of the provider), while an empty value or `$null` removes it. A compound,
-  cast, parenthesized, or multiple assignment, a `foreach` loop's variable, `PSVariable.Set`,
+  the location unknown, and one on a provider other than the file system leaves it unknown),
+  `Push-Location` and `Pop-Location` with their stack, `$env:NAME` and strings whose only expansions are
+  environment variables, and a function's body where a command calls it. A variable's value is the one the session
+  holds at that point, as in Bash: the one the hook was given, or the word a plain assignment in the command gives it
+  (`$env:NAME = <word>` or `${env:NAME} = <word>`, on any path of the provider), while an empty value or `$null`
+  removes it. A compound, cast, parenthesized, or multiple assignment, a `foreach` loop's variable, `PSVariable.Set`,
   `[Environment]::SetEnvironmentVariable`, and a cmdlet that writes the provider leave its value unsettled, and a
-  variable the session does not hold is unsettled too. A cmdlet that writes, removes, or renames a variable at a
-  path or name the text does not settle may reach any variable, so every one is unsettled after it, as after Bash's
-  `export "$v"=x` or `unset "$v"`; a path whose last part is literal text, as in `"$dir\out.txt"`, can name only the
-  variable that part names, so it is passed over when git does not read that one. A command after the programs
-  `env`, `nohup`, `nice`, `timeout`, `stdbuf`, and `time` is read as in Bash, as the command it starts. A location
-  set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed
-  string is read as part of the same session. A command that does not parse is allowed: PowerShell parses a whole
-  script before it runs any of it, so none of it runs.
+  variable the session does not hold is unsettled too. A command after the programs `env`, `nohup`, `nice`,
+  `timeout`, `stdbuf`, and `time` is read as in Bash, as the command it starts. A location set inside a
+  script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed string is read
+  as part of the same session. A command that does not parse is allowed: PowerShell parses a whole script before it
+  runs any of it, so none of it runs.
 - **Paths that do not all run.** A command that runs only when another succeeds or fails, only in some branch, or
   any number of times in a loop or script block, is read as running, and afterwards the guard keeps only what every
   path agrees on: a directory or variable one path changes is unknown after it. A directory change whose target is
@@ -353,12 +350,9 @@ command names. While one is, the guard refuses:
 - a command with a part it cannot read that may start git, when the command names git: Bash its grammar cannot read
   (the lines before a syntax error do run, unlike PowerShell's), Bash nested deeper than its reader follows, a
   script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression` that the text does not settle or that nests more
-  than four deep, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
-  inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, or no
-  inline command, script file, or encoded command at all), every `env -S`, whatever follows it, an option of `env`
-  or of a prefix program above that the guard does not read, a PowerShell command when `pwsh` cannot be started or
-  does not finish reading it within 20 seconds, and a command either shell's reader fails on with an error of its
-  own;
+  than four deep, every `env -S`, whatever follows it, an option of `env` or of a prefix program above that the guard
+  does not read, a PowerShell command when `pwsh` cannot be started or does not finish reading it within 20 seconds,
+  and a command either shell's reader fails on with an error of its own;
 - an alias that cannot be read, as above.
 
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
@@ -375,9 +369,9 @@ opt-in before it starts the guard, and when git cannot read it, stops there with
 
 The hook sees the command text. It does not see:
 
-- git run indirectly: from a script or program (`bash script.sh`, `bash < script.sh`, `xargs`, `find -exec`, `make`,
-  a Python script), through `Start-Process`, `cmd /c`, `pwsh -File`, or `pwsh -EncodedCommand`, from a `trap`, or by
-  a program whose name is computed at run time;
+- git run indirectly: from a script or program (`bash script.sh`, `xargs`, `find -exec`, `make`, a Python script),
+  through `Start-Process`, `cmd /c`, `pwsh -File`, or `pwsh -EncodedCommand`, from a `trap`, or by a program whose
+  name is computed at run time;
 - shell redirection or other programs writing files;
 - what the shell's own startup files set, or a variable the Bash tool's shell holds that the hook's environment does
   not, or holds with another value;

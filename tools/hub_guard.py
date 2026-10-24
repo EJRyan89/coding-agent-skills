@@ -196,26 +196,6 @@ PREFIX_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
 BASH_OPTIONS_WITH_VALUE = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 POWERSHELL_COMMAND_SWITCH = re.compile(r"-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?", re.IGNORECASE)
 POWERSHELL_COMMAND_WITH_ARGUMENTS_SWITCH = re.compile(r"-cwa|-commandw(?:i(?:t(?:h(?:a(?:r(?:g(?:s)?)?)?)?)?)?)?", re.I)
-POWERSHELL_FILE_SWITCH = re.compile(r"-f(?:i(?:l(?:e)?)?)?", re.IGNORECASE)
-POWERSHELL_ENCODED_SWITCH = re.compile(
-    r"-ec|-e(?:n(?:c(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?)?)?)?)?)?)?)?", re.I
-)
-# pwsh's parameters that take the next word as their value, by name and the shortest form it accepts, and the aliases.
-POWERSHELL_VALUE_PARAMETERS = (
-    ("configurationfile", "configurationfile"),
-    ("configurationname", "config"),
-    ("custompipename", "custompipename"),
-    ("executionpolicy", "ex"),
-    ("ep", "ep"),
-    ("inputformat", "inp"),
-    ("if", "if"),
-    ("outputformat", "o"),
-    ("of", "of"),
-    ("settingsfile", "settings"),
-    ("windowstyle", "w"),
-    ("workingdirectory", "wo"),
-    ("wd", "wd"),
-)
 # How deep bash -c, pwsh -Command, eval, a function call, and Invoke-Expression are followed; the PowerShell reader is
 # handed what is left of it. Deeper nesting is a command the guard cannot read.
 NESTING_LIMIT = 4
@@ -1187,7 +1167,7 @@ class BashReader:
             script = bash_script(arguments, redirects, shell)
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read_bash)
         elif program in POWERSHELL_NAMES:
-            script = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
+            script = powershell_script(arguments)
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read_powershell)
         elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
             command = started_command(program, arguments, shell.cwd, variables, self.reading)
@@ -1474,11 +1454,9 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
 
 
 def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], shell: Shell) -> list[Word] | None:
-    """The one word bash runs from -c, alone or in a bundle such as -lc, or, with no script file or with -s, the
-    here-string or here-document it reads; [None], a script the text does not hold, for one it reads from a pipe or
-    the standard input the command inherits; None for a script file, which the guard does not read."""
+    """The one word bash runs from -c, alone or in a bundle such as -lc, or, with no script file, the here-string or
+    here-document it reads; None for none of them."""
     index = 0
-    from_input = False
     while index < len(arguments):
         word = arguments[index]
         if word is None or not word.startswith(("-", "+")) or word == "--":
@@ -1486,12 +1464,10 @@ def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], sh
             break
         if not word.startswith("--") and "c" in word[1:]:
             return arguments[index + 1 : index + 2]
-        # -s reads the script from standard input and takes every operand as a positional parameter.
-        from_input = from_input or (word.startswith("-") and not word.startswith("--") and "s" in word[1:])
         index += 2 if word in BASH_OPTIONS_WITH_VALUE else 1
-    if index < len(arguments) and not from_input:
+    if index < len(arguments):
         return None  # a script file, which the guard does not read
-    script: list[Word] | None = [None]
+    script: list[Word] | None = None
     for redirect in redirects:
         if redirect.operator == "<<<" and redirect.target is not None:
             script = [word_value(redirect.target, shell, assignment=True)]
@@ -1513,33 +1489,6 @@ def powershell_script(arguments: list[Word]) -> list[Word] | None:
         if word is not None and POWERSHELL_COMMAND_SWITCH.fullmatch(word):
             return arguments[index + 1 :]
     return None
-
-
-def powershell_reads_input(arguments: list[Word]) -> bool:
-    """Whether pwsh runs a script it reads from its standard input, which the text does not hold: -Command - or
-    -File -, or none of an inline command, a script file, or an encoded command. A word the text does not settle
-    before that is decided may be any of them, so it counts too."""
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        following = arguments[index + 1] if index + 1 < len(arguments) else None
-        if word is None:
-            return True
-        if POWERSHELL_COMMAND_WITH_ARGUMENTS_SWITCH.fullmatch(word) or POWERSHELL_ENCODED_SWITCH.fullmatch(word):
-            return False
-        if POWERSHELL_COMMAND_SWITCH.fullmatch(word) or POWERSHELL_FILE_SWITCH.fullmatch(word):
-            return following == "-"
-        if not word.startswith("-"):
-            return False  # a script file, named without -File
-        index += 2 if powershell_takes_value(word) else 1
-    return True
-
-
-def powershell_takes_value(word: str) -> bool:
-    """Whether a pwsh parameter takes the next word as its value: its name, or a prefix of it at least as long as
-    the shortest form pwsh accepts, or an alias."""
-    name = word[1:].lower()
-    return any(full.startswith(name) and name.startswith(shortest) for full, shortest in POWERSHELL_VALUE_PARAMETERS)
 
 
 def follow(
@@ -1826,12 +1775,6 @@ class PowerShellReader:
             name.lower(): [session.word(word) for word in values]
             for name, values in (event.get("parameters") or {}).items()
         }
-        # The parameters holding a path or name the text does not settle that may name a variable git reads.
-        unsettled = {
-            name.lower()
-            for name, values in (event.get("parameters") or {}).items()
-            if any(session.word(word) is None and may_name_tracked(word) for word in values)
-        }
         name, arguments = command_name(words[0]), words[1:]
         if event.get("failed") or event.get("whatIf"):
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
@@ -1841,13 +1784,8 @@ class PowerShellReader:
             return self.location(name, arguments, parameters, session)
         if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS:
             self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
-        elif name in POWERSHELL_NAMES:
-            # The reader follows a pwsh the session starts with an inline script; one it reads from its standard
-            # input, the text does not hold.
-            if powershell_reads_input(arguments):
-                self.reading.cannot_read(f"could not read the command passed to {name}")
         else:
-            self.environment_change(name, parameters, session, unsettled)
+            self.environment_change(name, parameters, session)
         return session
 
     def run_program(
@@ -1861,8 +1799,7 @@ class PowerShellReader:
             script = bash_script(arguments, [], Shell(None, {}, set()))
             follow(name, script, cwd, variables, self.reading, self.depth, read_bash)
         elif name in POWERSHELL_NAMES:
-            script = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
-            follow(name, script, cwd, variables, self.reading, self.depth, read_powershell)
+            follow(name, powershell_script(arguments), cwd, variables, self.reading, self.depth, read_powershell)
         elif name in ENV_NAMES or name in PREFIX_PROGRAMS:
             command = started_command(name, arguments, cwd, variables, self.reading)
             if command is not None:
@@ -1902,36 +1839,17 @@ class PowerShellReader:
             return moved_session
         return join_sessions(moved_session, session)
 
-    def environment_change(
-        self,
-        name: str | None,
-        parameters: Mapping[str, list[Word]],
-        session: Session,
-        unsettled: Iterable[str] = (),
-    ) -> None:
+    def environment_change(self, name: str | None, parameters: Mapping[str, list[Word]], session: Session) -> None:
         """Sets, removes, renames, or makes unknown the tracked variables a cmdlet reaches on the environment
-        provider, read from the parameters PowerShell binds.
-
-        A path or name the text does not settle, in a parameter that names the variable such a cmdlet writes or
-        removes, may name any variable, so the session's variables are unknown after it, as they are after Bash's
-        `export "$v"=...`; unsettled lists those parameters (see may_name_tracked)."""
-        literal = parameters.get("literalpath", [])
-        paths = parameters.get("path", []) + literal
-        reached = set(ENVIRONMENT_WRITERS.get(name or "", ()))
-        if name in ENVIRONMENT_REMOVERS or name in RENAME_ITEM_NAMES:
-            reached |= {"path", "literalpath"}
-        # -Name and -NewName name a variable only where the path may be on the environment provider.
-        if (name in NEW_ITEM_NAMES or name in RENAME_ITEM_NAMES) and any(
-            path is None or ENVIRONMENT_PATH.match(path) for path in paths
-        ):
-            reached |= {"name", "newname"}
-        if reached & set(unsettled):
-            session.opaque = True
+        provider, read from the parameters PowerShell binds. A path the text does not settle is passed over, as a
+        directory it does not settle is."""
         if name in NEW_DRIVE_NAMES:
             provider = (parameters.get("psprovider") or [None])[0]
             if provider is None or "environment" in provider.lower():
                 session.opaque = True
             return
+        literal = parameters.get("literalpath", [])
+        paths = parameters.get("path", []) + literal
         known = session.variables.keys()
         settled = environment_names(parameters.get("path", []), literal=False, known=known) or []
         settled += environment_names(literal, literal=True) or []
@@ -1954,19 +1872,6 @@ class PowerShellReader:
         for word in names:
             if word is not None:
                 session.variables[folded(word)] = None
-
-
-def may_name_tracked(word: Mapping[str, Any]) -> bool:
-    """Whether a provider path or name the reader reports, and the text does not settle, may name a variable git reads.
-
-    It may unless the part after its last separator is literal text naming none: `"$dir\\out.txt"` names the variable
-    out.txt wherever $dir points, and nothing else on the environment provider."""
-    text = str(word.get("text") or "")
-    last = re.split(r"[\\/]", text)[-1]
-    tokens = [str(expansion.get("token")) for expansion in word.get("expansions") or []]
-    if not last or any(token in last for token in tokens) or re.search(r"[$`*?\[\]:]", last):
-        return True
-    return is_tracked(last)
 
 
 def location_after(cwd: Path | None, named: bool, target: Word) -> Path | None:
