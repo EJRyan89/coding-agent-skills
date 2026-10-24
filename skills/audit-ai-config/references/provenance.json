@@ -97,6 +97,14 @@
         "passage": "Codex scans .agents/skills in a repository, and a skill's agents/openai.yaml sets policy.allow_implicit_invocation, true by default, to false so Codex does not invoke the skill implicitly from a prompt."
       },
       {
+        "page": "https://learn.chatgpt.com/docs/build-skills",
+        "passage": "Codex skills build on the open agent skills standard, and a SKILL.md must include name and description."
+      },
+      {
+        "page": "https://agentskills.io/specification",
+        "passage": "The required name field must match the parent directory name."
+      },
+      {
         "decision": "A skill under .agents/skills that stands for one under .claude/skills carries its description, so every runtime chooses it on the same words: check 8 of references/audit-policy.md."
       }
     ],
@@ -128,11 +136,11 @@
     "copilot-skill": [
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills",
-        "passage": "A skill's frontmatter gives a name, lowercase with hyphens and matching its folder, and a description of what it does and when to use it."
+        "passage": "A skill's frontmatter gives a name, which must be lowercase with hyphens for spaces and typically matches the skill's directory, and a description of what the skill does and when Copilot should use it."
       },
       {
-        "page": "https://docs.github.com/en/copilot/concepts/customizations/agent-skills",
-        "passage": "Copilot reads a repository's skills from folders under .github/skills, .claude/skills, and .agents/skills, each holding a SKILL.md."
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills",
+        "passage": "A repository's project skills live in a .github/skills, .claude/skills, or .agents/skills directory, and skill files must be named SKILL.md."
       }
     ],
     "inventory": [

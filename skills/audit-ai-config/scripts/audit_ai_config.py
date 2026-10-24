@@ -51,6 +51,8 @@ from check_provenance import Source
 from console import run_main
 from folder_walk import LINKED, SKIPPED_FOLDERS
 from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
+from frontmatter import split as split_frontmatter
+from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
 
 # ---------------------------------------------------------------------------
@@ -180,16 +182,57 @@ class AuditResult:
 # ---------------------------------------------------------------------------
 
 
-def read_text(path: Path) -> str:
+class OutsideLinkError(OSError):
+    """A read refused because its path is, or lies below, a link that leads out of the root. It is an OSError, so each
+    check that reports a file it could not read reports this one too, and none reads through the link."""
+
+
+def read_bytes(root: Path, path: Path) -> bytes:
+    """The bytes of `path`, a file below `root`; the one read of a file's contents, with read_text. Raises
+    OutsideLinkError for a path behind a link that leads out of the root, whether a walk found it or a check names it,
+    since a walk's check covers only the paths it finds."""
+    _refuse_outside_link(root, path)
+    return path.read_bytes()
+
+
+def read_text(root: Path, path: Path) -> str:
+    """The text of `path`, a file below `root`, refused as read_bytes refuses one."""
+    _refuse_outside_link(root, path)
     return path.read_text(encoding="utf-8-sig")
 
 
-def read_text_or_none(path: Path) -> str | None:
+def _refuse_outside_link(root: Path, path: Path) -> None:
+    link = outside_link(root, path)
+    if link is not None:
+        raise OutsideLinkError(
+            f"it lies behind {link.relative_to(root).as_posix()}, a link that leads out of the repository, which the "
+            "audit does not follow"
+        )
+
+
+def read_text_or_none(root: Path, path: Path) -> str | None:
     """The file's text, or None when it cannot be read or decoded; the caller has reported that, or ignores it."""
     try:
-        return read_text(path)
+        return read_text(root, path)
     except (OSError, UnicodeError):
         return None
+
+
+def outside_link(root: Path, path: Path) -> Path | None:
+    """The symbolic link or junction that leads out of `root` on the way to `path`, a path below it: `path` itself or a
+    folder above it, the first one, or None when there is none. Each step is judged by link_probe from its own
+    metadata, and a link by where it resolves to, so a link whose target stays inside the root is no such link; a
+    step that does not exist ends the search, since nothing behind it can be read."""
+    current = root
+    for part in path.relative_to(root).parts:
+        current = current / part
+        try:
+            linked = is_link_or_junction(current)
+        except OSError:
+            return None
+        if linked and leaves_root(root, current):
+            return current
+    return None
 
 
 def leaves_root(root: Path, path: Path) -> bool:
@@ -215,10 +258,11 @@ class Listing:
 
 def list_directory(root: Path, directory: Path, pattern: str | None = None) -> Listing:
     """The entries of `directory`, or those `pattern` matches, sorted, never listing or naming one through a link
-    that leads out of the root; raises OSError when the directory cannot be listed."""
+    that leads out of the root, which goes in `outside`, the directory's own link when it lies behind one; raises
+    OSError when the directory cannot be listed."""
     listing = Listing()
     if leaves_root(root, directory):
-        listing.outside.append(directory)
+        listing.outside.append(outside_link(root, directory) or directory)
         return listing
     for path in sorted(directory.iterdir() if pattern is None else directory.glob(pattern)):
         listing.add(root, path)
@@ -229,13 +273,14 @@ def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: f
     """Every file below `base` whose name `wanted` accepts, outside folders named in `skipped` and nested checkouts,
     in the order of ejryan89-skill-core's folder walk.
 
-    A folder or wanted file that leads out of the root is neither entered nor read: it goes in `outside`. A link that
+    A folder or wanted file that leads out of the root is neither entered nor read: the link it is, or lies behind when
+    `base` does, goes in `outside`. A link that
     stays inside the root is followed, but never back into a folder the walk is inside, and a folder that cannot be
     listed holds nothing.
     """
     listing = Listing()
     if leaves_root(root, base):
-        listing.outside.append(base)
+        listing.outside.append(outside_link(root, base) or base)
         return listing
     walk = folder_walk.walk_files(base, wanted, skipped=skipped, follow=lambda path: not leaves_root(root, path))
     listing.outside.extend(entry.path for entry in walk.not_entered if entry.kind == LINKED)
@@ -256,10 +301,12 @@ OUTSIDE_LINK = "Link leads out of the repository; the audit does not follow it"
 
 def outside_link_findings(root: Path, listing: Listing) -> list[Finding]:
     """One inventory WARNING per link a walk or listing did not follow; audit() keeps one per path."""
-    return [
-        Finding("WARNING", "inventory", path.relative_to(root).as_posix(), message=OUTSIDE_LINK)
-        for path in listing.outside
-    ]
+    return [outside_link_finding(root, path) for path in listing.outside]
+
+
+def outside_link_finding(root: Path, link: Path) -> Finding:
+    """The inventory WARNING for a link that leads out of the root, which a walk skips and a read refuses."""
+    return Finding("WARNING", "inventory", link.relative_to(root).as_posix(), message=OUTSIDE_LINK)
 
 
 def content_hash(content: str) -> str:
@@ -457,7 +504,7 @@ def _inventory_unreadable(root: Path, paths: list[Path]) -> list[Finding]:
         if not path.is_file():
             continue
         try:
-            read_text(path)
+            read_text(root, path)
         except (OSError, UnicodeError) as error:
             rel = path.relative_to(root).as_posix()
             message = f"Could not read, so the checks that read it did not run: {error}"
@@ -466,9 +513,20 @@ def _inventory_unreadable(root: Path, paths: list[Path]) -> list[Finding]:
 
 
 def _inventory_fixed_files(root: Path) -> list[Finding]:
-    return [
-        _inventory_finding(rel_path, f"Found {rel_path}") for rel_path in INVENTORY_FILES if (root / rel_path).is_file()
-    ]
+    return _fixed_files(root, INVENTORY_FILES, "Found {}")
+
+
+def _fixed_files(root: Path, rel_paths: list[str], found: str) -> list[Finding]:
+    """An INFO for each of these files found, or, in its place, the WARNING for the link that leads out of the root on
+    the way to it, which every read of the file refuses."""
+    findings: list[Finding] = []
+    for rel_path in rel_paths:
+        link = outside_link(root, root / rel_path)
+        if link is not None:
+            findings.append(outside_link_finding(root, link))
+        elif (root / rel_path).is_file():
+            findings.append(_inventory_finding(rel_path, found.format(rel_path)))
+    return findings
 
 
 def _inventory_recursive_files(root: Path) -> list[Finding]:
@@ -570,11 +628,7 @@ def _is_path_instructions(name: str) -> bool:
 
 
 def _inventory_generator_scripts(root: Path) -> list[Finding]:
-    return [
-        _inventory_finding(candidate, f"Generator script found: {candidate}")
-        for candidate in GENERATOR_CANDIDATES
-        if (root / candidate).is_file()
-    ]
+    return _fixed_files(root, GENERATOR_CANDIDATES, "Generator script found: {}")
 
 
 def _inventory_parity_workflows(root: Path) -> list[Finding]:
@@ -588,7 +642,7 @@ def _inventory_parity_workflows(root: Path) -> list[Finding]:
         listing = list_directory(root, workflows_dir, pattern)
         findings.extend(_inventory_unreadable(root, listing.paths))
         for wf in listing.paths:
-            wf_content = read_text_or_none(wf)
+            wf_content = read_text_or_none(root, wf)
             if wf_content is not None and ("ai-config" in wf_content.lower() or "ai_config" in wf_content.lower()):
                 rel = wf.relative_to(root).as_posix()
                 findings.append(_inventory_finding(rel, "AI config parity workflow found"))
@@ -620,7 +674,7 @@ UNREADABLE_ENTRY = "Frontmatter must use key: value entries, block scalars, bloc
 # it (references/known-limitations.md), and the two block scalar shapes the shared reader refuses rather than guess at
 # for the deployer (an explicit indentation indicator, and a folded scalar with more-indented lines), which are valid
 # YAML a repository's skills and agents may use.
-def _frontmatter(path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]]:
+def _frontmatter(root: Path, path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]]:
     """Read YAML frontmatter line by line without executing or loading YAML tags.
 
     A one-line plain value is kept as written, without the trailing comment YAML ends it at. A block scalar (| or >),
@@ -629,7 +683,7 @@ def _frontmatter(path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]
     """
     rel = path.as_posix()
     try:
-        lines = read_text(path).splitlines()
+        lines = read_text(root, path).splitlines()
     except (OSError, UnicodeError) as error:
         return {}, [Finding("ERROR", "copilot-config", rel, message=f"Could not read: {error}")]
     if not lines or lines[0] != "---":
@@ -830,19 +884,17 @@ def _identifier_from_agent_filename(path: Path) -> str:
 
 def _validate_skill(path: Path, root: Path) -> list[Finding]:
     rel = path.relative_to(root).as_posix()
-    values, findings = _frontmatter(path)
+    values, findings = _frontmatter(root, path)
     for finding in findings:
         finding.path = rel
     name = values.get("name", "")
     directory_name = path.parent.name
     if not name:
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires name"))
-    elif name != directory_name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", directory_name):
-        findings.append(
-            Finding(
-                "ERROR", "copilot-skill", rel, message="Skill name must be lowercase hyphenated and match its directory"
-            )
-        )
+    elif not isinstance(name, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+        # Copilot's add-skills page: the name must be lowercase with hyphens, and typically, not necessarily, matches
+        # its directory; Codex's rule that it match is _codex_skill_rules'.
+        findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill name must be lowercase hyphenated"))
     if not _text(values, "description").strip():
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires description"))
     if values.get("allowed-tools") in ("", []):
@@ -869,7 +921,7 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
         findings.append(
             Finding("ERROR", "copilot-agent", rel, message="Custom agent filename contains unsupported characters")
         )
-    values, frontmatter_findings = _frontmatter(path)
+    values, frontmatter_findings = _frontmatter(root, path)
     for finding in frontmatter_findings:
         finding.path = rel
     findings.extend(frontmatter_findings)
@@ -911,13 +963,13 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
     return findings
 
 
-def _provenance(path: Path, rel: str, kind: str, manifest_paths: set[str]) -> list[Finding]:
+def _provenance(root: Path, path: Path, rel: str, kind: str, manifest_paths: set[str]) -> list[Finding]:
     """A marker-bearing Copilot projection must be owned by the manifest.
 
     The converse, a manifest-owned projection without the marker, is check_ownership's finding. An unreadable file is
     skipped: it is an ERROR from its frontmatter check, and from parity when the manifest owns it.
     """
-    content = read_text_or_none(path)
+    content = read_text_or_none(root, path)
     if content is None or not has_ownership_marker(content) or rel in manifest_paths:
         return []
     return [
@@ -942,7 +994,7 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         for path in sorted(walk.paths):
             findings.extend(_validate_skill(path, root))
             if skill_dir == ".github/skills":
-                findings.extend(_provenance(path, path.relative_to(root).as_posix(), "skill", manifest_paths))
+                findings.extend(_provenance(root, path, path.relative_to(root).as_posix(), "skill", manifest_paths))
             else:
                 findings.extend(_agent_skill_rules(path, root, skill_dir))
     for agent_dir in (".github/agents", ".claude/agents"):
@@ -966,7 +1018,7 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
                 findings.extend(_validate_claude_agent(path, root))
             else:
                 findings.extend(_validate_agent(path, root))
-            findings.extend(_provenance(path, path.relative_to(root).as_posix(), "agent", manifest_paths))
+            findings.extend(_provenance(root, path, path.relative_to(root).as_posix(), "agent", manifest_paths))
     return findings
 
 
@@ -975,7 +1027,7 @@ def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
     besides Copilot: the Agent Skills field requirements for both, Claude Code's for .claude/skills, and Codex's for
     .agents/skills. The frontmatter's own problems are _validate_skill's findings."""
     rel = path.relative_to(root).as_posix()
-    values, _ = _frontmatter(path)
+    values, _ = _frontmatter(root, path)
     name = _text(values, "name")
     description = _text(values, "description").strip()
     findings: list[Finding] = []
@@ -1001,16 +1053,17 @@ def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
             )
         )
     if skill_dir == ".claude/skills":
-        findings.extend(_claude_skill_rules(path, rel, values))
+        findings.extend(_claude_skill_rules(root, path, rel, values))
     else:
         findings.extend(_codex_skill_rules(path, root, rel, values))
     return findings
 
 
-def _claude_skill_rules(path: Path, rel: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
+def _claude_skill_rules(root: Path, path: Path, rel: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
     """A skill that reads $ARGUMENTS without the argument-hint Claude Code shows during autocomplete."""
-    body = read_text_or_none(path) or ""
-    if "$ARGUMENTS" not in body.split("---", 2)[-1] or _text(values, "argument-hint").strip():
+    text = read_text_or_none(root, path)  # _validate_skill reports a skill it cannot read
+    reads_arguments = text is not None and any("$ARGUMENTS" in line for line in _skill_body(text))
+    if not reads_arguments or _text(values, "argument-hint").strip():
         return []
     return [
         Finding(
@@ -1023,22 +1076,49 @@ def _claude_skill_rules(path: Path, rel: str, values: dict[str, FrontmatterValue
     ]
 
 
+def _skill_body(text: str) -> list[str]:
+    """The lines after a skill's frontmatter, as ejryan89-skill-core's reader finds where it closes: all of them when
+    there is no frontmatter, and none when the frontmatter never closes, which _validate_skill reports."""
+    lines = text.splitlines()
+    try:
+        parts = split_frontmatter(lines)
+    except FrontmatterError:
+        return []
+    return lines if parts is None else lines[parts[1] :]
+
+
 def _is_true(value: FrontmatterValue | None) -> bool:
     return isinstance(value, str) and value.strip().lower() == "true"
 
 
 def _codex_skill_rules(path: Path, root: Path, rel: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
     """A skill Codex reads from .agents/skills: whether a user-only skill keeps Codex from invoking it, and whether a
-    shim says what the .claude/skills skill it stands for says."""
+    shim says what the .claude/skills skill it stands for says, and whether its name matches its folder, as the Agent
+    Skills specification Codex builds on requires."""
     findings: list[Finding] = []
+    name = _text(values, "name")
+    if name and name != path.parent.name:
+        findings.append(
+            Finding(
+                "ERROR",
+                "codex-skill",
+                rel,
+                message="Skill name must match its directory, as the Agent Skills specification Codex builds on "
+                "requires",
+            )
+        )
     canonical_path = root / ".claude/skills" / path.parent.name / "SKILL.md"
-    canonical: dict[str, FrontmatterValue] = _frontmatter(canonical_path)[0] if canonical_path.is_file() else {}
+    # Nothing when there is no such skill or it cannot be read; the .claude/skills checks report one they cannot read.
+    canonical = _frontmatter(root, canonical_path)[0]
     user_only = _is_true(values.get("disable-model-invocation")) or _is_true(canonical.get("disable-model-invocation"))
     if user_only:
-        implicit, problem = _codex_implicit_invocation(path.parent / CODEX_METADATA)
+        policy = path.parent / CODEX_METADATA
+        implicit, problem = _codex_implicit_invocation(root, policy)
         if problem:
-            policy_rel = (path.parent / CODEX_METADATA).relative_to(root).as_posix()
-            findings.append(Finding("ERROR", "codex-skill", policy_rel, message=problem))
+            findings.append(Finding("ERROR", "codex-skill", policy.relative_to(root).as_posix(), message=problem))
+            link = outside_link(root, policy)
+            if link is not None:
+                findings.append(outside_link_finding(root, link))
         elif implicit:
             findings.append(
                 Finding(
@@ -1070,12 +1150,12 @@ POLICY_FLOW = re.compile(r"^policy:[ \t]*\{([^}]*)\}", re.MULTILINE)
 IMPLICIT_FALSE = re.compile(r"(?:^|[\s,{])allow_implicit_invocation:[ \t]*false\b", re.MULTILINE)
 
 
-def _codex_implicit_invocation(policy: Path) -> tuple[bool, str | None]:
+def _codex_implicit_invocation(root: Path, policy: Path) -> tuple[bool, str | None]:
     """Whether Codex may invoke the skill on its own, which its skills page makes the default unless
     agents/openai.yaml sets policy.allow_implicit_invocation to false, and a problem reading that file."""
     if not policy.is_file():
         return True, None
-    text = read_text_or_none(policy)
+    text = read_text_or_none(root, policy)
     if text is None:
         return True, f"Could not read {CODEX_METADATA}, so the skill's invocation policy was not checked"
     blocks = [match.group(1) for match in (*POLICY_BLOCK.finditer(text), *POLICY_FLOW.finditer(text))]
@@ -1091,7 +1171,7 @@ def _validate_claude_agent(path: Path, root: Path) -> list[Finding]:
     """A Claude Code project agent, read with the fields Claude Code's sub-agents page gives it, and an INFO naming
     what it may do: its tools, model, and hooks."""
     rel = path.relative_to(root).as_posix()
-    values, findings = _frontmatter(path)
+    values, findings = _frontmatter(root, path)
     for finding in findings:
         finding.path, finding.check = rel, "claude-agent"
     if findings and not values:
@@ -1134,7 +1214,7 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
         if not path.is_file():
             continue
         try:
-            tree = ast.parse(read_text(path), filename=candidate)
+            tree = ast.parse(read_text(root, path), filename=candidate)
         # ValueError covers UnicodeError and, before 3.12, a null byte; MemoryError and RecursionError, source nested
         # past the parser's limits
         except (SyntaxError, ValueError, OSError, MemoryError, RecursionError):
@@ -1429,7 +1509,7 @@ def _manifest_signal(root: Path) -> tuple[str | None, dict[str, Any], list[Findi
     if not manifest_path.is_file():
         return None, {}, []
     try:
-        return _judge_manifest(root, json.loads(read_text(manifest_path)))
+        return _judge_manifest(root, json.loads(read_text(root, manifest_path)))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (KeyError, OSError, ValueError, RecursionError):
         return None, {}, [_manifest_authority_finding("WARNING", "Manifest exists but is malformed")]
@@ -1482,7 +1562,7 @@ def _has_claude_md(root: Path) -> bool:
 def claude_md_text(root: Path) -> tuple[str, str] | None:
     """The first CLAUDE.md Claude Code reads, as a path, and the text of every one it reads, or None when there is
     none it can read; the inventory reports one it cannot read as an ERROR."""
-    found = [(name, read_text_or_none(root / name)) for name in CLAUDE_MD_FILES if (root / name).is_file()]
+    found = [(name, read_text_or_none(root, root / name)) for name in CLAUDE_MD_FILES if (root / name).is_file()]
     texts = [text for _, text in found if text is not None]
     return (found[0][0], "\n".join(texts)) if texts else None
 
@@ -1501,7 +1581,7 @@ def _has_generator_script(root: Path) -> bool:
         if not gen_path.is_file():
             continue
         try:
-            if "CLAUDE.md" in read_text(gen_path):
+            if "CLAUDE.md" in read_text(root, gen_path):
                 return True
         except (OSError, UnicodeError):
             pass
@@ -1516,7 +1596,7 @@ def _has_ci_parity_workflow(root: Path) -> bool:
     for pattern in ("*.yml", "*.yaml"):
         for wf in list_directory(root, workflows_dir, pattern).paths:  # the inventory reports a link it skips
             try:
-                wf_content = read_text(wf)
+                wf_content = read_text(root, wf)
             except (OSError, UnicodeError):
                 continue
             if "ai_config" in wf_content and "--check" in wf_content:
@@ -1624,7 +1704,7 @@ def _expected_skill_shim(
     if not canonical.is_file():
         return None
     try:
-        lines = read_text(canonical).splitlines()
+        lines = read_text(root, canonical).splitlines()
     except (OSError, UnicodeError):
         return None
     if not lines or lines[0] != "---":
@@ -1659,7 +1739,7 @@ def _read_artifact(root: Path, path_str: str) -> tuple[str | None, str | None]:
     if not full_path.is_file():
         return None, f"Generated artifact missing: {path_str}"
     try:
-        return read_text(full_path), None
+        return read_text(root, full_path), None
     except (OSError, UnicodeError):
         return None, "Generated artifact exists but could not be read"
 
@@ -1678,7 +1758,7 @@ def _copilot_content_problem(root: Path, manifest: dict[str, Any], content: str)
     """
     if COPILOT_BANNER not in content:
         return "Copilot instructions missing banner"
-    claude_content = read_text_or_none(root / "CLAUDE.md")
+    claude_content = read_text_or_none(root, root / "CLAUDE.md")
     if claude_content is None:
         return None  # the inventory reports the canonical source it cannot read as an ERROR
     projected = _extract_sections(claude_content, manifest.get("copilot_sections", DEFAULT_COPILOT_SECTIONS))
@@ -1780,7 +1860,7 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
             if rel in listed or rel in orphan_shims or not path.is_file():
                 continue
             try:
-                generated = has_ownership_marker(read_text(path))
+                generated = has_ownership_marker(read_text(root, path))
             except (OSError, UnicodeError):
                 continue
             if generated:
@@ -1823,7 +1903,7 @@ def read_mcp_json(root: Path, rel_path: str) -> tuple[dict[str, Any], list[Findi
     if not path.is_file():
         return {}, findings
     try:
-        data = json.loads(read_text(path))
+        data = json.loads(read_text(root, path))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError) as e:
         findings.append(
@@ -1953,8 +2033,7 @@ def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding
     if not path.is_file():
         return {}, []
     try:
-        with path.open("rb") as handle:
-            config = tomllib.load(handle)
+        config = tomllib.loads(read_bytes(root, path).decode())
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (ValueError, RecursionError) as e:
         message = f"Invalid TOML: {e}"
@@ -2139,7 +2218,7 @@ def _instruction_sources(root: Path) -> InstructionSources:
     agents_redirects = False
     if agents_md:
         with contextlib.suppress(OSError, UnicodeError):
-            agents_redirects = is_redirecting_agents_md(read_text(root / "AGENTS.md"))
+            agents_redirects = is_redirecting_agents_md(read_text(root, root / "AGENTS.md"))
     instructions = root / ".github/instructions"
     return InstructionSources(
         claude_md=(root / "CLAUDE.md").is_file(),
@@ -2170,8 +2249,7 @@ CODEX_DEFAULT_MAX_BYTES = 32 * 1024
 def _codex_config(root: Path) -> dict[str, Any]:
     """The repository's .codex/config.toml, or nothing when it cannot be read; check_mcp reports that."""
     try:
-        with (root / CODEX_CONFIG).open("rb") as handle:
-            return tomllib.load(handle)
+        return tomllib.loads(read_bytes(root, root / CODEX_CONFIG).decode())
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError):
         return {}
@@ -2213,10 +2291,8 @@ def _codex_choice(root: Path, directory: Path, fallbacks: list[str]) -> tuple[st
         candidate = directory / name
         if not candidate.is_file():
             continue
-        if leaves_root(root, candidate):
-            return name, True
         try:
-            return name, bool(candidate.read_bytes().decode("utf-8", "replace").strip())
+            return name, bool(read_bytes(root, candidate).decode("utf-8", "replace").strip())
         except OSError:
             return name, True
     return None
@@ -2239,7 +2315,7 @@ def _codex_size(root: Path, name: str) -> list[Finding]:
     """A root file over the cap is read in part. A user's own Codex configuration may raise the cap, so the finding is
     a warning; a file behind a link that leads out of the root, or one that cannot be read, is not measured."""
     path = root / name
-    if leaves_root(root, path):
+    if outside_link(root, path) is not None:
         return []
     try:
         size = path.stat().st_size
@@ -2325,7 +2401,7 @@ def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[
         if (nested.parent / "AGENTS.override.md").is_file():
             continue  # Codex takes the override beside it, which the warning above names
         try:
-            if is_redirecting_agents_md(read_text(nested)):
+            if is_redirecting_agents_md(read_text(root, nested)):
                 continue
         except (OSError, UnicodeError):
             continue
@@ -2642,7 +2718,7 @@ def _claude_settings(root: Path) -> list[Finding]:
     if not path.is_file():
         return []
     try:
-        data = json.loads(read_text(path))
+        data = json.loads(read_text(root, path))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError) as error:
         return [Finding("ERROR", "claude-settings", CLAUDE_SETTINGS, message=f"Could not read or parse: {error}")]
@@ -2786,7 +2862,7 @@ def _claude_memory(root: Path) -> list[Finding]:
     load with it."""
     findings: list[Finding] = []
     for rel in (*CLAUDE_MD_FILES, CLAUDE_LOCAL_MD):
-        text = read_text_or_none(root / rel)  # the inventory reports a CLAUDE.md it cannot read as an ERROR
+        text = read_text_or_none(root, root / rel)  # the inventory reports a CLAUDE.md it cannot read as an ERROR
         if text is None:
             continue
         findings.extend(_length_finding(rel, text))
@@ -2846,23 +2922,23 @@ def _claude_rules(root: Path) -> list[Finding]:
     findings = outside_link_findings(root, walk)
     for path in sorted(walk.paths):
         rel = path.relative_to(root).as_posix()
-        text = read_text_or_none(path)
+        text = read_text_or_none(root, path)
         if text is None:
             findings.append(
                 Finding("ERROR", "claude-memory", rel, message="Could not read, so the rule was not checked")
             )
             continue
         findings.extend(_length_finding(rel, text))
-        findings.extend(_rule_scope(path, rel, text))
+        findings.extend(_rule_scope(root, path, rel, text))
     return findings
 
 
-def _rule_scope(path: Path, rel: str, text: str) -> list[Finding]:
+def _rule_scope(root: Path, path: Path, rel: str, text: str) -> list[Finding]:
     if not text.startswith("---"):
         values: dict[str, FrontmatterValue] = {}
         problems: list[Finding] = []
     else:
-        values, problems = _frontmatter(path)
+        values, problems = _frontmatter(root, path)
         for problem in problems:
             problem.path, problem.check = rel, "claude-memory"
     if "paths" not in values:
@@ -2932,7 +3008,7 @@ def _codex_hooks(root: Path) -> list[Finding]:
     file_hooks = None
     if path.is_file():
         try:
-            data = json.loads(read_text(path))
+            data = json.loads(read_text(root, path))
         # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
         except (OSError, ValueError, RecursionError) as error:
             return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message=f"Could not read or parse: {error}")]
@@ -2981,8 +3057,7 @@ def _codex_agents(root: Path) -> list[Finding]:
     for path in listing.paths:
         rel = path.relative_to(root).as_posix()
         try:
-            with path.open("rb") as handle:
-                agent = tomllib.load(handle)
+            agent = tomllib.loads(read_bytes(root, path).decode())
         # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
         except (OSError, ValueError, RecursionError) as error:
             findings.append(Finding("ERROR", "codex-agent", rel, message=f"Could not read or parse: {error}"))
@@ -3013,7 +3088,7 @@ def _codex_rules(root: Path) -> list[Finding]:
     for path in listing.paths:
         rel = path.relative_to(root).as_posix()
         try:
-            tree = ast.parse(read_text(path), filename=rel)
+            tree = ast.parse(read_text(root, path), filename=rel)
         # ValueError covers UnicodeError and, before 3.12, a null byte; MemoryError and RecursionError, source nested
         # past the parser's limits
         except (OSError, SyntaxError, ValueError, MemoryError, RecursionError) as error:
@@ -3150,7 +3225,7 @@ def check_ownership(
         path_str = artifact.get("path", "")
         if path_str.endswith(".json") or validate_manifest_path(path_str):
             continue
-        content = read_text_or_none(root / path_str)
+        content = read_text_or_none(root, root / path_str)
         if content is not None and not has_ownership_marker(content):
             findings.append(
                 Finding(
@@ -3177,7 +3252,7 @@ def check_collisions(
     findings: list[Finding] = []
     runtimes = manifest.get("runtimes", [])
 
-    content = read_text_or_none(root / "AGENTS.md")
+    content = read_text_or_none(root, root / "AGENTS.md")
     if "codex" in runtimes and content is not None and not has_ownership_marker(content):
         findings.append(
             Finding(
@@ -3189,7 +3264,7 @@ def check_collisions(
         )
 
     copilot_surfaces = {"vscode", "jetbrains", "copilot_app", "copilot_cli", "cloud_agent", "code_review"}
-    content = read_text_or_none(root / ".github/copilot-instructions.md")
+    content = read_text_or_none(root, root / ".github/copilot-instructions.md")
     if (
         copilot_surfaces & set(manifest.get("surfaces", []))
         and content is not None
@@ -3238,7 +3313,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
         for path in sorted(p for p in walk_files(root, base, lambda name: name.endswith(".md")).paths if p.is_file()):
             rel = path.relative_to(root).as_posix()
             try:
-                generated = has_ownership_marker(read_text(path))
+                generated = has_ownership_marker(read_text(root, path))
             except (OSError, UnicodeError):
                 generated = False
             if generated or rel in artifact_paths:
