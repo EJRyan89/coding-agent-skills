@@ -86,6 +86,7 @@ from tools.runtime_canary import (
     RUN_ID,
     STATE,
     Completed,
+    RecordRefused,
     Runner,
     claim_home,
     create_home,
@@ -102,6 +103,7 @@ from tools.runtime_canary import (
     remove_home,
     run_process,
     runtime_version,
+    unreadable,
 )
 
 MARKETPLACE = "canary"
@@ -407,10 +409,16 @@ def probe(session: Session, executable: str, paths: Mapping[str, str], fixture: 
     completed = session.runner(
         command, session.home, environment(session.base, script_log, session.home), session.timeout
     )
-    records = [record for record in marked(read_records(state / "probe.jsonl"), run) if record.get("script")]
     script = installed / "skills" / FIXTURE_SKILL / "scripts" / "canary_probe.py"
+    unread = ""
+    try:
+        records = [record for record in marked(read_records(state / "probe.jsonl"), run) if record.get("script")]
+    except (OSError, RecordRefused) as exc:
+        records, unread = [], unreadable(exc, state / "probe.jsonl")
     ran = [record for record in records if Path(record["script"]).resolve() == script.resolve()]
-    if ran:
+    if unread:
+        outcome = f"FAILED {quote(unread)}"
+    elif ran:
         outcome = f"RAN {quote(forward(ran[0]['script']))} {quote(forward(ran[0].get('cwd', '')))}"
     elif nothing := discovery_failure(completed.stdout):
         outcome = f"FAILED {quote(nothing)}"

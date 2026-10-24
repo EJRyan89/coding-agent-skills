@@ -643,6 +643,14 @@ class DeployableReportTests(unittest.TestCase):
                 self.assertEqual(2, raised.exception.code)
                 self.assertIn("the following arguments are required", errors.getvalue())
 
+    def test_pin_help_says_what_each_option_takes(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            report.main(["pin", "--help"])
+        flat = " ".join(output.getvalue().split())
+        self.assertIn("--program PROGRAM the runtime's command, such as claude", flat)
+        self.assertIn("--wanted WANTED the version the workflow installed, or latest", flat)
+
     def test_pin_compares_versions_as_numbers_never_as_text(self) -> None:
         # Each reported version holds the requested one as text.
         for wanted, reported in (("1.0.9", "1.0.98"), ("2.1.30", "2.1.302 (Claude Code)"), ("1.0", "1.0.0")):

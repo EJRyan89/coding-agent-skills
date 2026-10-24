@@ -225,3 +225,18 @@ def test_each_command_works_on_this_checkout_unless_root_names_another(checkout:
         assert run(["build", "v1.2.3"])[0] == 0
         assert run(["check", "--root", str(checkout)])[0] == 0
     assert roots == [plugin_release.REPOSITORY_ROOT, plugin_release.REPOSITORY_ROOT, checkout]
+
+
+def test_the_help_names_each_command_and_option_with_what_it_does() -> None:
+    for arguments, expected in (
+        (["--help"], ["build the tag's archives and pin them in the marketplace", "compare each pinned digest with"]),
+        (["build", "--help"], ["--root DIR", "a directory holding source.json and .claude/skills", "the release tag"]),
+        (["check", "--help"], ["--root DIR", "work on this checkout of the repository instead"]),
+    ):
+        output = io.StringIO()
+        with redirect_stdout(output), pytest.raises(SystemExit) as raised:
+            plugin_release.main(arguments)
+        assert raised.value.code == 0
+        flat = " ".join(output.getvalue().split())
+        for text in expected:
+            assert text in flat, (arguments, flat)

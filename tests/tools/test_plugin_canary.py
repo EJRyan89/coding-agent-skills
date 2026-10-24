@@ -315,6 +315,50 @@ def test_the_probe_runs_the_installed_copy_and_records_beside_it(tmp_path: Path)
     assert lines[1].startswith("TRANSCRIPT claude probe ")
 
 
+def test_a_probe_record_the_canary_will_not_read_fails_by_name_and_keeps_its_transcript(tmp_path: Path) -> None:
+    installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
+    installed.mkdir(parents=True)
+    (tmp_path / STATE).mkdir()
+    records = installed.parent / STATE / "probe.jsonl"
+
+    def oversized(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        records.write_text('{"run": ' + "1" * 5000 + "}\n", encoding="utf-8")
+        return Completed(0, "", "")
+
+    lines = canary.probe(
+        canary.Session(tmp_path, oversized, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
+    )
+    assert lines[0].startswith(
+        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "cannot read what the run recorded in '
+        f"{records.as_posix()}: line 1: Exceeds the limit"
+    )
+    assert lines[1].startswith("TRANSCRIPT claude probe ")
+
+
+def test_a_probe_record_error_naming_no_file_fails_naming_the_marker_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
+    installed.mkdir(parents=True)
+    (tmp_path / STATE).mkdir()
+
+    def nameless(path: Path) -> list[dict[str, Any]]:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(canary, "read_records", nameless)
+    lines = canary.probe(
+        canary.Session(tmp_path, lambda *_: Completed(0, "", ""), {}, 30),
+        "claude",
+        {"runtime-canary": str(installed)},
+        "runtime-canary",
+    )
+    records = (installed.parent / STATE / "probe.jsonl").as_posix()
+    assert lines[0] == (
+        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "cannot read what the run recorded in {records}: '
+        'Permission denied"'
+    )
+
+
 def test_a_probe_that_never_ran_the_installed_copy_fails(tmp_path: Path) -> None:
     installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
     installed.mkdir(parents=True)

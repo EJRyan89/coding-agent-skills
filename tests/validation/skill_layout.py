@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -162,23 +162,6 @@ def metadata_format_problems(root: Path) -> list[str]:
     return problems
 
 
-# A code span on a SKILL.md line that says "invoke", whose first word may name the skill the line starts.
-INVOKED_SPAN = re.compile(r"`([^`]+)`")
-
-
-def invoked_skills(text: str, names: Collection[str]) -> set[str]:
-    """The skills a SKILL.md's text invokes: each of `names` that is the first word of a code span on a line that
-    says "invoke", such as `review-prs` in "invoke `review-prs --re-review`". The runtime-support policy follows each
-    one's needs, and tests/ai-config/test_cross_skill_contracts.py holds that no invoked skill is user-only."""
-    return {
-        words[0]
-        for line in text.splitlines()
-        if "invoke" in line
-        for span in INVOKED_SPAN.findall(line)
-        if (words := span.split()) and words[0] in names
-    }
-
-
 def hooked_agents(root: Path) -> set[str]:
     """The agents under agents/ whose definition declares hooks, such as the code-review reviewer's guard."""
     return {path.stem for path in (root / "agents").glob("*.md") if "hooks" in frontmatter.read(path)}
@@ -189,13 +172,12 @@ def user_only(document: frontmatter.Frontmatter) -> bool:
     return (document.string("disable-model-invocation") or "").casefold() == "true"
 
 
-def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> set[str]:
-    """The runtime capabilities a skill's frontmatter shows it needs, with those of each skill it invokes.
+def own_needs(root: Path, name: str) -> set[str]:
+    """The runtime capabilities a skill's own frontmatter, metadata, and scripts show it needs.
 
     A skill that grants Agent and names, in backticks, an agent whose definition declares hooks starts that agent
     under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash scripts
-    runs a git subcommand that reaches a remote, needs network access. An invoked skill is what invoked_skills
-    reads; its limits reach the step that invokes it.
+    runs a git subcommand that reaches a remote, needs network access.
     """
     import runtime_support
 
@@ -217,13 +199,25 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
         if script.suffix in (".sh", ".bash") and not is_test_script(script)
         for subcommand in shell_git_subcommands(script.read_text(encoding="utf-8"))
     )
-    needs = runtime_support.frontmatter_needs(
+    return runtime_support.frontmatter_needs(
         granted if isinstance(granted, list) else [granted], user_only(document), starts_hooked, tools, git_subcommands
     )
-    invoked = {other for other in invoked_skills(text, skills) if other != name and other not in seen}
-    for other in sorted(invoked):
-        # Starting an invoked skill is the invoker's step, so only what the invoked skill does carries over.
-        needs |= derived_needs(root, other, seen | {name}) - {"user-only-start"}
+
+
+def derived_needs(root: Path, name: str) -> set[str]:
+    """The runtime capabilities a skill needs: its own_needs, and what each skill it invokes carries over, by
+    ejryan89-skill-core's runtime_support, the derivation audit-skill's script shares."""
+    import runtime_support
+
+    skills = skills_by_name(root)
+
+    def invokes(skill: str) -> set[str]:
+        path = skills[skill] / "SKILL.md" if skill in skills else None
+        return runtime_support.invoked_skills(path.read_text(encoding="utf-8-sig"), skills) if path else set()
+
+    needs = own_needs(root, name)
+    for carried in runtime_support.carried_needs(name, lambda skill: own_needs(root, skill), invokes).values():
+        needs |= carried
     return needs
 
 

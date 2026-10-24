@@ -107,6 +107,14 @@ class RuntimePromptsTestCase(unittest.TestCase):
             self.assertEqual(0, runtime_prompts.main(["--root", str(self.root)]))
         self.assertEqual([runtime_prompts.REPOSITORY_ROOT, self.root], roots)
 
+    def test_the_help_offers_write_and_keeps_root_for_the_suites_hidden(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            runtime_prompts.main(["--help"])
+        self.assertEqual(0, raised.exception.code)
+        self.assertIn("render every sample again and remove the extra ones", " ".join(output.getvalue().split()))
+        self.assertNotIn("--root", output.getvalue())
+
     def test_a_root_that_is_not_a_checkout_is_refused_before_write_removes_anything(self) -> None:
         other = self.root.parent / "Not A Checkout"
         extra = other / "docs" / "runtime-prompts" / "alpha" / "kept.txt"
