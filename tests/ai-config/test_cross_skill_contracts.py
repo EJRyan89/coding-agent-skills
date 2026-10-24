@@ -31,8 +31,8 @@ import review_guard
 import review_pipeline
 import review_run
 import review_source
+import runtime_support
 from review_config import COMPUTED_DASHBOARD_STATES
-from skill_layout import invoked_skills
 
 from deployer import platform_support
 
@@ -190,7 +190,11 @@ class CrossSkillContractTests(unittest.TestCase):
 
         skills = sorted((REPOSITORY_ROOT / "skills").glob("*/SKILL.md"))
         names = {path.parent.name for path in skills}
-        invoked = {name for path in skills for name in invoked_skills(path.read_text(encoding="utf-8-sig"), names)}
+        invoked = {
+            name
+            for path in skills
+            for name in runtime_support.invoked_skills(path.read_text(encoding="utf-8-sig"), names)
+        }
         self.assertEqual({"review-prs", "flag-review-finding"}, invoked)
         for name in sorted(invoked):
             with self.subTest(invoked=name):

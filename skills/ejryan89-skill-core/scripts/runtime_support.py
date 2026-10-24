@@ -3,14 +3,17 @@
 A skill's `deploy-meta/<name>.json` may declare `runtime_support`, one value per runtime in RUNTIMES: `"full"`, or
 an object whose `level` is `partial` or `none`, whose `reason` says in one line what the user loses, and whose `needs`
 names the capabilities from CAPABILITIES the runtime lacks for it. Repository validation derives each skill's needs
-from its frontmatter and holds the declaration to them; tools/skill_reference.py prints the matrix and
-tools/runtime_canary.py checks it against what each runtime ran. It lives in ejryan89-skill-core because audit-skill's
-script reads a declaration and derives the needs the same way, wherever the skill it audits comes from, and a skill's
+from its frontmatter, with those of each skill it invokes, and holds the declaration to them;
+tools/skill_reference.py prints the matrix and tools/runtime_canary.py checks it against what each runtime ran. It
+lives in ejryan89-skill-core because audit-skill's script reads a declaration and derives the needs the same way,
+through frontmatter_needs, invoked_skills, and carried_needs, wherever the skill it audits comes from, and a skill's
 script imports nothing from the deployer.
 """
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
@@ -134,6 +137,39 @@ def frontmatter_needs(
     if tools & NETWORK_TOOLS or git_subcommands & NETWORK_GIT_SUBCOMMANDS:
         needs.add("sandbox-network")
     return needs | {"user-only-start"} if user_only else needs
+
+
+def invoked_skills(text: str, names: Collection[str]) -> set[str]:
+    """The skills a SKILL.md's text invokes: each of `names` that is the first word of a code span on a line that
+    says "invoke", such as `review-prs` in "invoke `review-prs --re-review`".
+    tests/ai-config/test_cross_skill_contracts.py holds that no invoked skill is user-only."""
+    span = re.compile(r"`([^`]+)`")
+    return {
+        words[0]
+        for line in text.splitlines()
+        if "invoke" in line
+        for found in span.findall(line)
+        if (words := found.split()) and words[0] in names
+    }
+
+
+def carried_needs(
+    name: str,
+    own_needs: Callable[[str], set[str]],
+    invokes: Callable[[str], set[str]],
+    seen: frozenset[str] = frozenset(),
+) -> dict[str, set[str]]:
+    """What each skill `name` invokes carries over to it: the invoked skill's own needs and what its own invoked skills
+    carry, followed once each, without user-only-start, since starting an invoked skill is the invoker's step. A
+    skill's needs are its own_needs and every set this returns for it; repository validation and audit-skill's script
+    both derive them through it, each reading a skill's own needs and what it invokes from where the skill sits."""
+    carried: dict[str, set[str]] = {}
+    for other in sorted(invokes(name) - seen - {name}):
+        needs = set(own_needs(other))
+        for more in carried_needs(other, own_needs, invokes, seen | {name}).values():
+            needs |= more
+        carried[other] = needs - {"user-only-start"}
+    return carried
 
 
 def lacking(runtime: str, needs: set[str]) -> tuple[str, ...]:
