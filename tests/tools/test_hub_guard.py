@@ -1195,6 +1195,12 @@ class CommandReadingTests(GuardTestCase):
             ("Bash", "echo 'git commit -m x' | pwsh -Command -", ["could not read the command passed to pwsh"]),
             ("Bash", "echo 'git commit -m x' | pwsh -f -", ["could not read the command passed to pwsh"]),
             ("PowerShell", "'git commit -m x' | pwsh -NoProfile", ["could not read the command passed to pwsh"]),
+            # A pwsh that env or a prefix program starts is read as the one it starts.
+            ("PowerShell", "'git commit -m x' | env pwsh -Command -", ["could not read the command passed to pwsh"]),
+            ("PowerShell", "'git commit -m x' | nohup pwsh -File -", ["could not read the command passed to pwsh"]),
+            ("Bash", "echo 'git commit -m x' | env pwsh -Command -", ["could not read the command passed to pwsh"]),
+            ("Bash", "echo 'git commit -m x' | nice pwsh -File -", ["could not read the command passed to pwsh"]),
+            ("PowerShell", "env pwsh -c 'git status'; git commit -m x", []),
             ("Bash", "pwsh -File build.ps1; git status", []),
             ("Bash", "pwsh -ExecutionPolicy Bypass build.ps1; git status", []),
             ("PowerShell", "pwsh -NoProfile -c 'git status'; git commit -m x", []),
