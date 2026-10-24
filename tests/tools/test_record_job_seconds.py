@@ -25,8 +25,8 @@ LEG_2 = "Windows shard 2/4, Python 3.11\tUNKNOWN STEP\t2026-10-10T06:17:05.00000
 LEG_3 = "Windows shard 3/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:07.0000000Z "
 LEG_4 = "Windows shard 4/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:08.0000000Z "
 LATEST = "Windows shard 1/4, Python 3.x\tUNKNOWN STEP\t2026-10-10T06:17:06.0000000Z "
-LINUX_1 = "Validation on Linux, shard 1/2\tRun repository validation\t2026-10-10T06:17:09.0000000Z "
-LINUX_2 = "Validation on Linux, shard 2/2\tUNKNOWN STEP\t2026-10-10T06:17:09.5000000Z "
+LINUX_1 = "Linux shard 1/2, Python 3.11\tRun repository validation\t2026-10-10T06:17:09.0000000Z "
+LINUX_2 = "Linux shard 2/2, Python 3.11\tUNKNOWN STEP\t2026-10-10T06:17:09.5000000Z "
 # The job that ran every job on Linux unsharded before Linux was dealt: one leg of one.
 UNSHARDED = "Validation on Linux\tRun repository validation\t2026-10-09T06:17:09.0000000Z "
 # The job beside the legs, which runs none.
@@ -76,6 +76,11 @@ LINUX_SECONDS = {
 OLD_LEGS = tuple(
     f"Shard {index}/4 on Python 3.11\tRun repository validation\t2026-10-09T06:17:0{index}.0000000Z "
     for index in range(1, 5)
+)
+# The Linux legs as the workflow named them before they were named as the Windows legs are.
+OLD_LINUX_LEGS = tuple(
+    f"Validation on Linux, shard {index}/2\tRun repository validation\t2026-10-09T06:17:0{index}.0000000Z "
+    for index in range(1, 3)
 )
 
 
@@ -315,7 +320,19 @@ class ParseTests(unittest.TestCase):
         )
         self.assertEqual(("Windows", 2, 4), record_job_seconds.leg_of("Windows shard 2/4, Python 3.x"))
         self.assertEqual(("Windows", 3, 4), record_job_seconds.leg_of("Shard 3/4 on Python 3.11"))
+        self.assertEqual(("Linux", 2, 2), record_job_seconds.leg_of("Linux shard 2/2, Python 3.11"))
         self.assertEqual(("Linux", 2, 2), record_job_seconds.leg_of("Validation on Linux, shard 2/2"))
+
+    def test_a_linux_leg_under_the_name_it_had_before_its_rename_is_a_leg(self) -> None:
+        old = log_of({"tests/a.py": 40.0}, linux_legs=OLD_LINUX_LEGS)
+        linux = {leg for leg in record_job_seconds.legs_seen(old) if leg[0] == "Linux"}
+        self.assertEqual({("Linux", 1, 2), ("Linux", 2, 2)}, linux)
+        self.assertEqual("", record_job_seconds.leg_problem(old))
+        self.assertEqual(both({"tests/a.py": 40.0}), record_job_seconds.job_seconds_from_log(old))
+        self.assertEqual(
+            "lacks Linux leg 2/2",
+            record_job_seconds.leg_problem(log_of({"tests/a.py": 1.0}, linux_legs=OLD_LINUX_LEGS[:1])),
+        )
 
     def test_the_unsharded_linux_job_before_linux_was_dealt_is_its_one_leg(self) -> None:
         old = log_of({"tests/a.py": 40.0}, linux_legs=(UNSHARDED,), linux={"tests/a.py": 4.0})
@@ -407,6 +424,21 @@ class MainTests(unittest.TestCase):
             {
                 1: log_of({"tests/a.py": 10.0}, linux_legs=unsharded, linux={"tests/a.py": 1.0, "tests/gone.py": 1.0}),
                 2: log_of({"tests/a.py": 10.0}, linux_legs=unsharded, linux={"tests/a.py": 3.0}),
+                3: log_of({"tests/a.py": 10.0}, linux={"tests/a.py": 2.0}),
+            }
+        )
+        code, _, errors, table = self.run_main(["1", "2", "3"], stub)
+        self.assertEqual((0, ""), (code, errors))
+        self.assertEqual(
+            {"Linux": {"tests/a.py": 2.0}, "Windows": {"tests/a.py": 10.0}},
+            json.loads(table.read_text(encoding="utf-8"))["seconds"],
+        )
+
+    def test_runs_from_both_sides_of_the_linux_legs_rename_are_combined(self) -> None:
+        stub = runs_stub(
+            {
+                1: log_of({"tests/a.py": 10.0}, linux_legs=OLD_LINUX_LEGS, linux={"tests/a.py": 1.0}),
+                2: log_of({"tests/a.py": 10.0}, linux_legs=OLD_LINUX_LEGS, linux={"tests/a.py": 3.0}),
                 3: log_of({"tests/a.py": 10.0}, linux={"tests/a.py": 2.0}),
             }
         )
@@ -526,8 +558,10 @@ class MainTests(unittest.TestCase):
         "Shard 1/4, Python 3.11",
         "Windows shard 1/4 on Python 3.11",
         "windows shard 1/4, Python 3.11",
-        "Linux shard 1/4, Python 3.11",
+        "linux shard 1/2, Python 3.11",
         "Linux shard 1/2",
+        "Linux shard 1/2, Python",
+        "Linux shard 1/2 Python 3.11",
         "Validation on Linux shard 1/2",
         "validation on Linux, shard 1/2",
         "Linux shard 1/2 on Python 3.11",
@@ -560,6 +594,7 @@ def test_a_run_whose_log_names_no_leg_by_any_name_is_refused_for_that_cause(log:
     # The message names the shapes it looked for, and blames no missing -v.
     assert "`Windows shard <n>/<count>, Python <version>`" in errors
     assert "`Shard <n>/<count> on Python <version>`" in errors
+    assert "`Linux shard <n>/<count>, Python <version>`" in errors
     assert "`Validation on Linux, shard <n>/<count>`" in errors
     assert "`Validation on Linux`" in errors
     assert "-v" not in errors

@@ -453,9 +453,11 @@ def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
     return problems
 
 
-# The Linux legs' name, which says their platform beside the Windows legs' and from which tools/record_job_seconds.py
-# reads each Linux leg's shard index and count.
-LINUX_LEG_NAME = "Validation on Linux, shard ${{ matrix.shard }}"
+# The Linux legs' name, shaped as the Windows legs' is, from which tools/record_job_seconds.py reads each Linux leg's
+# shard index and count. Its Python is the matrix's, which setup-python installs, so the name says what runs.
+LINUX_LEG_NAME = "Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}"
+# The one Python the Linux legs run: the floor in deployer/tools.py.
+LINUX_PYTHON = ["3.11"]
 # What each Linux leg's validation step runs, as the Windows legs' step does: its own shard, every suite outside a pull
 # request, and a pull request's body and title as files written from the event payload.
 LINUX_VALIDATION_LINES = (
@@ -476,7 +478,8 @@ LINUX_SHELLCHECK_DIGEST_CHECK = 'echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha
 def linux_job_problems(workflow: str, legs: int) -> list[str]:
     """Report how validate.yml's `linux` job departs from one validation run on ubuntu-latest dealt across `legs` legs
     named as Linux legs, each running its own shard, every leg reporting rather than the first failure cancelling the
-    rest: the checkout's whole history, Python at the floor with pip's cache keyed on requirements-dev.txt, ShellCheck
+    rest: the checkout's whole history, the matrix's one Python, the floor, which its name reads and setup-python
+    installs, with pip's cache keyed on requirements-dev.txt, ShellCheck
     from the pinned release's archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, and
     the Windows legs' validation step. `required_check_problems` holds it inside the required check,
     `tool_cache_problems` its tool caches, and `pinned_tool_problems` its verify step."""
@@ -494,6 +497,9 @@ def linux_job_problems(workflow: str, legs: int) -> list[str]:
     shards = _mapping(strategy, "matrix").get("shard")
     if shards != expected:
         problems.append(f"the linux matrix's shards are {shards}, expected {expected}")
+    pythons = _mapping(strategy, "matrix").get("python-version")
+    if pythons != LINUX_PYTHON:
+        problems.append(f"the linux matrix's Python is {pythons}, expected {LINUX_PYTHON}")
     if strategy.get("fail-fast") != "false":
         problems.append("the linux matrix does not set fail-fast: false, so one red leg would cancel the other")
     steps = _steps(linux)
@@ -501,8 +507,15 @@ def linux_job_problems(workflow: str, legs: int) -> list[str]:
     if checkouts != [{"fetch-depth": "0"}]:
         problems.append(f"the linux job checks out {checkouts}, not the whole history with fetch-depth 0")
     python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
-    if python != [{"python-version": "3.11", "cache": "pip", "cache-dependency-path": "requirements-dev.txt"}]:
-        problems.append(f"the linux job sets up Python as {python}, not 3.11 with pip's cache on requirements-dev.txt")
+    setup = {
+        "python-version": "${{ matrix.python-version }}",
+        "cache": "pip",
+        "cache-dependency-path": "requirements-dev.txt",
+    }
+    if python != [setup]:
+        problems.append(
+            f"the linux job sets up Python as {python}, not the matrix's with pip's cache on requirements-dev.txt"
+        )
     scripts = [str(step.get("run", "")) for step in steps]
     problems.extend(
         f"no step of the linux job runs {install!r}"

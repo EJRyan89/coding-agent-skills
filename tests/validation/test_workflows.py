@@ -287,10 +287,12 @@ def test_a_tool_cache_off_its_workflow_pin_fails(drifted: str, problem: str) -> 
 
 LINUX = (
     "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n    runs-on: windows-latest\n"
-    "  linux:\n    name: Validation on Linux, shard ${{ matrix.shard }}\n    runs-on: ubuntu-latest\n"
-    "    strategy:\n      fail-fast: false\n      matrix:\n        shard: ['1/2', '2/2']\n    steps:\n"
+    "  linux:\n    name: Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n"
+    "    runs-on: ubuntu-latest\n    strategy:\n      fail-fast: false\n      matrix:\n"
+    "        python-version: ['3.11']\n        shard: ['1/2', '2/2']\n    steps:\n"
     "      - uses: actions/checkout@SHA # v1\n        with:\n          fetch-depth: 0\n"
-    "      - uses: actions/setup-python@SHA # v1\n        with:\n          python-version: '3.11'\n"
+    "      - uses: actions/setup-python@SHA # v1\n        with:\n"
+    "          python-version: ${{ matrix.python-version }}\n"
     "          cache: pip\n          cache-dependency-path: requirements-dev.txt\n"
     "      - uses: actions/cache@SHA # v1\n        with:\n          key: tool-${{ env.TOOL_VERSION }}\n"
     "      - run: |\n"
@@ -330,22 +332,33 @@ class LinuxJobFixtures(unittest.TestCase):
             LINUX.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-22.04"), "not ubuntu-latest", id="a pinned Ubuntu"
         ),
         pytest.param(
-            LINUX.replace("    name: Validation on Linux, ", "    name: Validation on Ubuntu, "),
-            "legs are named",
-            id="named for Ubuntu",
+            LINUX.replace("    name: Linux shard ", "    name: Ubuntu shard "), "legs are named", id="named for Ubuntu"
         ),
         pytest.param(
-            LINUX.replace("    name: Validation on Linux, shard ${{ matrix.shard }}\n", ""),
+            LINUX.replace("    name: Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n", ""),
             "legs are named",
             id="unnamed",
         ),
         # The name the seconds recorder reads, with each leg's shard.
         pytest.param(
-            LINUX.replace(
-                "    name: Validation on Linux, shard ${{ matrix.shard }}\n", "    name: Validation on Linux\n"
-            ),
+            LINUX.replace("    name: Linux shard ${{ matrix.shard }}, ", "    name: Linux, "),
             "legs are named",
             id="named without the shard",
+        ),
+        # The name before the Linux legs were named as the Windows legs are.
+        pytest.param(
+            LINUX.replace(
+                "    name: Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n",
+                "    name: Validation on Linux, shard ${{ matrix.shard }}\n",
+            ),
+            "legs are named",
+            id="the old name",
+        ),
+        # A typed version in the name could say another Python than the one set up.
+        pytest.param(
+            LINUX.replace("Python ${{ matrix.python-version }}\n", "Python 3.11\n"),
+            "legs are named",
+            id="a typed version in the name",
         ),
         pytest.param(LINUX, "expected ['1/3', '2/3', '3/3']", id="fewer legs than shards"),
         pytest.param(LINUX.replace("['1/2', '2/2']", "['1/2', '1/2']"), "shards", id="a shard twice"),
@@ -363,7 +376,17 @@ class LinuxJobFixtures(unittest.TestCase):
             "the whole history",
             id="a shallow checkout",
         ),
-        pytest.param(LINUX.replace("'3.11'", "'3.x'"), "sets up Python", id="another Python"),
+        pytest.param(LINUX.replace("['3.11']", "['3.x']"), "matrix's Python", id="another Python"),
+        pytest.param(LINUX.replace("['3.11']", "['3.11', '3.x']"), "matrix's Python", id="a second Python"),
+        pytest.param(
+            LINUX.replace("        python-version: ['3.11']\n", ""), "matrix's Python", id="no Python in the matrix"
+        ),
+        # The name reads the matrix, so setup-python must install what it says.
+        pytest.param(
+            LINUX.replace("python-version: ${{ matrix.python-version }}", "python-version: '3.11'"),
+            "sets up Python",
+            id="a typed version in setup-python",
+        ),
         pytest.param(LINUX.replace("          cache: pip\n", ""), "sets up Python", id="no pip cache"),
         pytest.param(
             LINUX.replace(" | sha256sum --check --strict", ""),
