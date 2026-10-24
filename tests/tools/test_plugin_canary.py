@@ -21,7 +21,7 @@ from review_dispatch import REVIEWER_TASK
 
 from tools import plugin_build
 from tools import plugin_canary as canary
-from tools.runtime_canary import FIXTURE_SKILL, FIXTURE_SOURCE, REPOSITORY_ROOT, RUN_ID, STATE, Completed
+from tools.runtime_canary import FIXTURE_SKILL, FIXTURE_SOURCE, REPOSITORY_ROOT, RUN_ID, STATE, Completed, quote
 
 MARKER = "PLUGIN-CANARY-OUTSIDE-1a2b"
 AGENT = "coding-agent-skills:code-review-reviewer"
@@ -119,9 +119,13 @@ def test_each_kind_of_line_passes_or_fails_the_run(line: str, fails: bool) -> No
 class FakeClaude:
     """Answers each plugin command as Claude Code does, recording the environment each one ran with."""
 
-    def __init__(self, home: Path, listed: dict[str, set[str]] | None = None) -> None:
+    def __init__(
+        self, home: Path, listed: dict[str, set[str]] | None = None, entries: dict[str, dict[str, Any]] | None = None
+    ) -> None:
         self.home = home
         self.listed = listed
+        # A plugin's `claude plugin list --json` entry in place of the one Claude Code writes.
+        self.entries = entries or {}
         self.plugins: list[plugin_build.Plugin] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
 
@@ -130,7 +134,10 @@ class FakeClaude:
         command = arguments[1:3]
         if command == ["plugin", "list"]:
             installed = [
-                {"id": f"{name}@canary", "version": "0.0.0-dev", "installPath": str(self.home / "cache" / name)}
+                self.entries.get(
+                    name,
+                    {"id": f"{name}@canary", "version": "0.0.0-dev", "installPath": str(self.home / "cache" / name)},
+                )
                 for name in ("coding-agent-skills", "coding-agent-skills-dotnet", "runtime-canary")
             ]
             return Completed(0, json.dumps(installed), "")
@@ -201,6 +208,76 @@ def test_a_plugin_that_fails_validation_or_install_is_reported(tmp_path: Path) -
         'INSTALL_FAILED claude runtime-canary "✘ Validation failed"',
         "PATHS {}",
     ]
+
+
+@pytest.mark.parametrize(
+    ("install_path", "reason"),
+    [
+        (None, "claude plugin list --json gives it no installPath"),
+        ("", "claude plugin list --json gives it no installPath"),
+        (7, "claude plugin list --json gives it no installPath"),
+        ("cache/runtime-canary", "claude plugin list --json gives it a relative installPath cache/runtime-canary"),
+        ("outside", "claude plugin list --json gives it an installPath outside the throwaway home {path}"),
+        ("home", "claude plugin list --json gives it an installPath outside the throwaway home {path}"),
+    ],
+)
+def test_an_installed_plugin_the_canary_cannot_place_in_the_home_is_refused_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, install_path: object, reason: str
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (tmp_path / "built").mkdir()
+    places = {"outside": str(tmp_path / "elsewhere" / "runtime-canary"), "home": str(home)}
+    path = places.get(install_path, install_path) if isinstance(install_path, str) else install_path
+    entry: dict[str, Any] = {"id": "runtime-canary@canary", "version": "0.0.0-dev"}
+    if path is not None:
+        entry["installPath"] = path
+    runner = FakeClaude(home, entries={"runtime-canary": entry})
+    # The runner answers `claude plugin details` from plugins built apart; checks() builds its own into the home.
+    runner.plugins = canary.build(tmp_path / "built", [REPOSITORY_ROOT, FIXTURE_SOURCE])
+    working = tmp_path / "working"
+    working.mkdir()
+    monkeypatch.chdir(working)
+    lines = list(canary.checks(canary.Session(home, runner, {}, 30), "claude", discovery_only=False))
+    refusal = reason.format(path=path)
+    assert f"INSTALL_FAILED claude runtime-canary {quote(refusal)}" in lines
+    assert not any(line.startswith("INSTALLED claude runtime-canary") for line in lines)
+    assert lines[-1] == (
+        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "a plugin the sessions load is not installed"'
+    )
+    # Nothing is written outside the throwaway home: not in the working directory, and not beside the home.
+    assert list(working.iterdir()) == []
+    assert sorted(item.name for item in tmp_path.iterdir()) == ["built", "home", "working"]
+
+
+def test_a_refused_install_path_gives_no_path_with_its_reason(tmp_path: Path) -> None:
+    outside = str(tmp_path / "elsewhere" / "runtime-canary")
+    assert canary.install_path(tmp_path, {}) == ("", "claude plugin list --json gives it no installPath")
+    assert canary.install_path(tmp_path, {"installPath": "cache/x"}) == (
+        "",
+        "claude plugin list --json gives it a relative installPath cache/x",
+    )
+    assert canary.install_path(tmp_path / "home", {"installPath": outside}) == (
+        "",
+        f"claude plugin list --json gives it an installPath outside the throwaway home {outside}",
+    )
+    placed = str(tmp_path / "cache" / "runtime-canary" / "0.0.0-dev")
+    assert canary.install_path(tmp_path, {"installPath": placed}) == (placed, "")
+
+
+def test_a_plugin_the_canary_cannot_place_leaves_the_later_plugins_checked(tmp_path: Path) -> None:
+    plugins = canary.build(tmp_path, [REPOSITORY_ROOT, FIXTURE_SOURCE])
+    entry = {"id": "coding-agent-skills@canary", "version": "0.0.0-dev"}
+    runner = FakeClaude(tmp_path, entries={"coding-agent-skills": entry})
+    runner.plugins = plugins
+    lines = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    refusal = quote("claude plugin list --json gives it no installPath")
+    assert f"INSTALL_FAILED claude coding-agent-skills {refusal}" in lines
+    assert "INSTALLED claude coding-agent-skills-dotnet 0.0.0-dev" in lines
+    assert "INSTALLED claude runtime-canary 0.0.0-dev" in lines
+    assert "DISCOVERED claude runtime-canary:runtime-canary-probe skill" in lines
+    paths = json.loads(lines[-1].removeprefix("PATHS "))
+    assert sorted(paths) == ["coding-agent-skills-dotnet", "runtime-canary"]
 
 
 def test_the_probe_runs_the_installed_copy_and_records_beside_it(tmp_path: Path) -> None:
