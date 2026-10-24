@@ -253,6 +253,17 @@ class DeployAtTests(DeployerTestCase):
         result = client.run(["rev-parse", "--verify", "--quiet", "nothing-by-this-name"], directory=self.source)
         self.assertEqual((1, "", ""), (result.returncode, result.stdout, result.stderr))
 
+    def test_the_release_tag_runner_holds_git_to_the_clients_time_limit(self) -> None:
+        # A hung git ends at the client's limit: the runner hands it to run_tool, which ends the process tree.
+        ran = platform_support.ToolResult(0, "listed\n")
+        with (
+            mock.patch.object(platform_support, "find_executable", return_value="git"),
+            mock.patch.object(platform_support, "run_tool", return_value=ran) as run_tool,
+        ):
+            result = source_ref._git_runner(["git", "-C", str(self.source), "for-each-ref"], 7.0)
+        run_tool.assert_called_once_with(["git", "-C", str(self.source), "for-each-ref"], timeout=7.0)
+        self.assertEqual((0, "listed\n", "listed\n"), (result.returncode, result.stdout, result.stderr))
+
     def tags_unreadable(self) -> Any:
         """Git fails, with its reason, every listing of the tags reaching a commit; every other git call runs."""
         real = source_ref._run_git
