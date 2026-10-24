@@ -27,6 +27,7 @@ from deployer.arguments import usage_error
 from deployer.context import Options
 from deployer.errors import Cancelled, DeployError
 from deployer.paths import Paths
+from deployer.pipeline import RECOVERY_CANCELLED, RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED
 
 SOURCE_ID = "test/skills"
 RUN_ID = "19700101-000000-beef"
@@ -560,14 +561,14 @@ class ExecuteTests(unittest.TestCase):
             (
                 KeyboardInterrupt(),
                 130,
-                ["Cancelled during recovery; the next deployment finishes recovering before it deploys."],
+                [RECOVERY_CANCELLED],
             ),
             (
                 RuntimeError("recovery defect"),
                 1,
                 [
                     "ERROR: Unexpected RuntimeError: recovery defect",
-                    "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
+                    RECOVERY_STOPPED,
                 ],
             ),
             (
@@ -575,7 +576,7 @@ class ExecuteTests(unittest.TestCase):
                 1,
                 [
                     f"ERROR: Could not finish recovery: {HELD_FILE}: Access is denied",
-                    "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
+                    RECOVERY_STOPPED,
                 ],
             ),
         ]
@@ -586,10 +587,8 @@ class ExecuteTests(unittest.TestCase):
             (
                 [("20260101-000000-done", True), ("20260101-000000-kill", False)],
                 [
-                    "Run 20260101-000000-done was committed to the manifest, so its changes are installed and the "
-                    "manifest holds them; the next deployment finishes its cleanup.",
-                    "Run 20260101-000000-kill was not committed to the manifest, so the manifest does not hold its "
-                    "changes; the next deployment rolls them back.",
+                    RUN_COMMITTED.format(run_id="20260101-000000-done"),
+                    RUN_NOT_COMMITTED.format(run_id="20260101-000000-kill"),
                 ],
             ),
             ([], []),

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,8 +80,15 @@ def remove_directory_link(link: Path) -> None:
 def tree_state(root: Path) -> dict[str, str]:
     """Each directory, file, and link under root by relative path: a file by a hash of its bytes, a link by its target.
 
-    A link, a junction included, is recorded and not followed, so a change through it is not counted twice.
+    A link, a junction included, whose target lies in the tree is recorded and not followed, so a change through it is
+    not counted twice. One whose target lies outside the tree is followed too, once, its target's state recorded under
+    the link's path, so a write made through it is seen.
     """
+    return _tree_state(root, {Path(os.path.realpath(root))})
+
+
+def _tree_state(root: Path, walked: set[Path]) -> dict[str, str]:
+    """tree_state of root, following each link whose target lies in none of the walked trees, which it adds to."""
     state: dict[str, str] = {}
     for directory, directories, files in os.walk(root):
         base = Path(directory)
@@ -89,7 +96,15 @@ def tree_state(root: Path) -> dict[str, str]:
         for name in sorted([*directories, *files]):
             path = base / name
             if platform_support.is_link_or_junction(path):
-                state[path.relative_to(root).as_posix()] = f"link {path.readlink()}"
+                relative = path.relative_to(root).as_posix()
+                state[relative] = f"link {path.readlink()}"
+                target = Path(os.path.realpath(path))
+                if target.exists() and not any(target == tree or tree in target.parents for tree in walked):
+                    walked.add(target)
+                    if target.is_dir():
+                        state.update({f"{relative}/{key}": value for key, value in _tree_state(target, walked).items()})
+                    else:
+                        state[relative] += f" file {hashlib.sha256(target.read_bytes()).hexdigest()}"
             elif name in files:
                 state[path.relative_to(root).as_posix()] = f"file {hashlib.sha256(path.read_bytes()).hexdigest()}"
             else:
@@ -424,12 +439,29 @@ class Deployment:
         self.assert_run_unchanged(result, source, source_before, home, home_before, changes_home)
         return result
 
+    def assert_child_home(self, environment: Mapping[str, str]) -> None:
+        """A child process starts only when its environment names the fixture home as the home the deployer reads,
+        the profile folder on Windows and HOME elsewhere, since the refusal guard compares that home alone."""
+        found = platform_support.home_directory(environment)
+        assert os.path.realpath(found) == os.path.realpath(self.home), (
+            f"the child's environment names {found} as its home, not the fixture home {self.home}"
+        )
+
+    def checkout_copy(self) -> Path:
+        """The copy of this checkout a test's child processes run from: the first run makes it, and later ones reuse
+        it."""
+        copied = self.root / "repository"
+        return copied if (copied / "deploy.py").is_file() else self.entry_point_source()
+
     def run_entry_point(self, *arguments: str, environment: dict[str, str], changes_home: str = "") -> Result:
         """Run deploy.py as a program, from a copy of this checkout, under the harness's source and refusal guards.
 
-        The copy is the source the program deploys and the tree compared; the checkout itself is never a fixture.
+        The copy is the source the program deploys and the tree compared; the checkout itself is never a fixture. A
+        test's later runs reuse the copy its first made. The child's environment must name the fixture home as the
+        home the deployer reads, so no run can reach the real one.
         """
-        checkout = self.entry_point_source()
+        self.assert_child_home(environment)
+        checkout = self.checkout_copy()
         program = [sys.executable, "-B", str(checkout / "deploy.py"), *arguments]
 
         def run() -> int:
@@ -445,10 +477,11 @@ class Deployment:
         """Run Python code in a child process against a copy of this checkout, under the harness's source and refusal
         guards, as run_entry_point runs deploy.py: the code takes the copy's path as its first argument, then the
         arguments given, and runs with exactly this environment and no input, its streams kept apart in the result.
-        A test's later runs reuse the copy its first made, which each run compares again.
+        A test's later runs reuse the copy its first made, which each run compares again, and the environment must
+        name the fixture home, as run_entry_point's does.
         """
-        copied = self.root / "repository"
-        checkout = copied if (copied / "deploy.py").is_file() else self.entry_point_source()
+        self.assert_child_home(environment)
+        checkout = self.checkout_copy()
 
         def run() -> int:
             completed = subprocess.run(

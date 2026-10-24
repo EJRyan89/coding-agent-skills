@@ -15,7 +15,7 @@ from pathlib import Path
 
 import frontmatter
 import runtime_support
-from agent_skills import RESERVED_WORDS, XML_TAG_PATTERN
+from agent_skills import MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from skill_menu import expand as expand
 from skill_menu import is_opt_in as is_opt_in
 from skill_menu import root_names as root_names
@@ -226,8 +226,8 @@ def _discover_directories(paths: Paths) -> dict[str, Path]:
 
 
 def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
-    if len(name) > 64:
-        raise DeployError(f"ERROR: Skill name '{name}' exceeds 64 characters", NAME_RULES)
+    if len(name) > MAX_NAME:
+        raise DeployError(f"ERROR: Skill name '{name}' exceeds {MAX_NAME} characters", NAME_RULES)
     if not SKILL_NAME_PATTERN.fullmatch(name):
         raise DeployError(f"ERROR: Skill name '{name}' does not match naming grammar", NAME_RULES)
     if platform_support.is_reserved_device_name(name):

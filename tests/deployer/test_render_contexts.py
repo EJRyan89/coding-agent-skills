@@ -285,6 +285,26 @@ class ShellCheckBatchTests(unittest.TestCase):
             raised.exception.lines,
         )
 
+    def test_a_line_naming_no_unit_is_reported_beside_an_attributed_finding(self) -> None:
+        units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
+        output = (
+            "C:/work/files/run.sh:2:1: error: Parsing stopped. [SC1073]\n"
+            "C:/work/files/gone.sh: openBinaryFile: does not exist (No such file or directory)\n"
+        )
+        with (
+            mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(1, output)),
+            self.assertRaises(DeployError) as raised,
+        ):
+            render._run_shellcheck(units, "shellcheck")
+        self.assertEqual(
+            (
+                "ERROR: ShellCheck failed for rendered content: s/scripts/run.sh",
+                "s/scripts/run.sh:2:1: error: Parsing stopped. [SC1073]",
+                "C:/work/files/gone.sh: openBinaryFile: does not exist (No such file or directory)",
+            ),
+            raised.exception.lines,
+        )
+
 
 class PowerShellExtensionTests(unittest.TestCase):
     def test_invalid_scripts_are_parsed_regardless_of_extension_case(self) -> None:

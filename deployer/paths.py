@@ -19,8 +19,9 @@ class Paths:
     # The tree the templates are read from, when it is not the checkout: a commit `--at` exported. The checkout stays
     # source_dir, the one the manifest records, the configuration reads, and SOURCE_ROOT names.
     tree_dir: Path | None = None
-    # Copilot CLI's configuration directory, when COPILOT_HOME names one: deploy.py reads it once, and a canary home
-    # clears it. None is the .copilot folder of the home.
+    # Copilot CLI's configuration directory, when COPILOT_HOME names one, as deploy.py read it at its start: a
+    # deployment's report reads this field, verify reads COPILOT_HOME again from the environment it starts Copilot CLI
+    # with, and a canary home clears it. None is the .copilot folder of the home.
     copilot_home: Path | None = None
 
     @property
