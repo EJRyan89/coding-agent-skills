@@ -11,14 +11,14 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 import audit_ai_config as audit
@@ -370,7 +370,7 @@ class ParityTests(unittest.TestCase):
         )
 
     def test_manifest_path_traversal_rejected(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "../outside/evil.md"})
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -379,7 +379,7 @@ class ParityTests(unittest.TestCase):
         )
 
     def test_manifest_absolute_path_rejected(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "/etc/passwd"})
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -388,7 +388,7 @@ class ParityTests(unittest.TestCase):
         )
 
     def test_manifest_backslash_traversal_rejected(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "..\\outside\\file.md"})
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -397,7 +397,7 @@ class ParityTests(unittest.TestCase):
         )
 
     def test_manifest_drive_qualified_rejected(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "C:/Windows/System32"})
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -406,7 +406,7 @@ class ParityTests(unittest.TestCase):
         )
 
     def test_manifest_path_outside_allowlist_rejected(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "src/main.py"})
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -487,11 +487,7 @@ class McpTests(unittest.TestCase):
         (self.root / ".codex").mkdir(exist_ok=True)
         (self.root / ".codex/config.toml").write_text("", encoding="utf-8")
 
-        with mock.patch.object(
-            tomllib,
-            "load",
-            side_effect=OSError("access denied"),
-        ):
+        with mock.patch.object(Path, "read_bytes", side_effect=OSError("access denied")):
             result = audit.audit(self.root)
 
         self.assertTrue(
@@ -581,7 +577,7 @@ class McpTests(unittest.TestCase):
         )
 
     def test_sse_codex_rejected(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["mcp_servers"] = [{"name": "bad", "transport": "sse", "targets": ["codex"]}]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -590,7 +586,7 @@ class McpTests(unittest.TestCase):
         )
 
     def test_local_claude_rejected(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["mcp_servers"] = [{"name": "bad", "transport": "local", "targets": ["claude"]}]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -610,7 +606,7 @@ class McpTests(unittest.TestCase):
         )
 
     def test_copilot_repository_emits_warning(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["copilot_repository"], "transport": "stdio"},
@@ -625,7 +621,7 @@ class McpTests(unittest.TestCase):
         )
 
     def test_code_review_repository_mcp_readonlyhint_warning(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["code_review"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["copilot_repository"], "transport": "stdio"},
@@ -637,7 +633,7 @@ class McpTests(unittest.TestCase):
         )
 
     def test_copilot_local_tools_allowlist_reported(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["claude", "copilot_local"], "transport": "stdio"},
@@ -716,7 +712,7 @@ class McpTests(unittest.TestCase):
 
     def test_mcp_json_omitted_tools_reported_unrestricted(self) -> None:
         """Server with omitted tools field is unrestricted for copilot_local."""
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["claude", "copilot_local"], "transport": "stdio"},
@@ -734,7 +730,7 @@ class McpTests(unittest.TestCase):
 
     def test_mcp_json_wildcard_tools_not_rejected(self) -> None:
         """tools: ["*"] is unrestricted — not a restricted allowlist."""
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["claude", "copilot_local"], "transport": "stdio"},
@@ -768,7 +764,7 @@ class InstructionLayeringTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_cloud_agent_adapter_redirects(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["cloud_agent"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -777,7 +773,7 @@ class InstructionLayeringTests(unittest.TestCase):
         )
 
     def test_cloud_agent_no_agents_md(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["cloud_agent"]
         manifest["runtimes"] = ["claude"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -788,7 +784,7 @@ class InstructionLayeringTests(unittest.TestCase):
         )
 
     def test_cloud_agent_non_redirecting_agents_md(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["cloud_agent"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / "AGENTS.md").write_text(
@@ -801,7 +797,7 @@ class InstructionLayeringTests(unittest.TestCase):
         )
 
     def test_nested_agents_md_warning(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["cloud_agent"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / "src").mkdir(exist_ok=True)
@@ -812,7 +808,7 @@ class InstructionLayeringTests(unittest.TestCase):
         )
 
     def test_code_review_emits_warning(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["code_review"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -821,7 +817,7 @@ class InstructionLayeringTests(unittest.TestCase):
         )
 
     def test_vscode_emits_settings_warning(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["vscode"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -831,7 +827,7 @@ class InstructionLayeringTests(unittest.TestCase):
 
     def test_the_folder_trust_warning_follows_the_copilot_cli_and_app_surfaces(self) -> None:
         # references/report-schema.md ties this warning to the Copilot CLI/app surfaces, not to an MCP target.
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         for surfaces, servers, warned in (
             (["copilot_cli"], [], True),
             (["copilot_app"], [], True),
@@ -884,7 +880,7 @@ class InstructionLayeringTests(unittest.TestCase):
         )
 
     def test_jetbrains_no_instructions_error(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["jetbrains"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / ".github/copilot-instructions.md").unlink()
@@ -931,7 +927,7 @@ class InstructionLayeringTests(unittest.TestCase):
     def test_parity_copilot_instructions_drift(self) -> None:
         """copilot-instructions.md with marker but wrong sections is flagged."""
         # Remove the hash so the deterministic content comparison is reached
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         for artifact in manifest["artifacts"]:
             if artifact["path"] == ".github/copilot-instructions.md":
                 artifact.pop("hash", None)
@@ -957,13 +953,13 @@ class InstructionLayeringTests(unittest.TestCase):
     def test_parity_copilot_instructions_custom_title_passes(self) -> None:
         """Custom title with correct sections should NOT trigger parity error."""
         # Remove the hash so the deterministic content comparison is reached
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         for artifact in manifest["artifacts"]:
             if artifact["path"] == ".github/copilot-instructions.md":
                 artifact.pop("hash", None)
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         # Rewrite with a custom title but keep the same sections from CLAUDE.md
-        claude_content = audit.read_text(self.root / "CLAUDE.md")
+        claude_content = audit.read_text(self.root, self.root / "CLAUDE.md")
         sections = audit._extract_sections(claude_content, audit.DEFAULT_COPILOT_SECTIONS)
         (self.root / ".github/copilot-instructions.md").write_text(
             f"# Totally Custom Title\n\n{audit.COPILOT_BANNER}\n\n{sections}\n",
@@ -979,14 +975,14 @@ class InstructionLayeringTests(unittest.TestCase):
 
     def test_parity_uses_manifest_declared_copilot_sections(self) -> None:
         manifest_path = self.root / ".github/ai-config-manifest.json"
-        manifest = json.loads(audit.read_text(manifest_path))
+        manifest = json.loads(audit.read_text(self.root, manifest_path))
         manifest["copilot_sections"] = ["Overview", "Maintaining AI Agent Config"]
         for artifact in manifest["artifacts"]:
             if artifact["path"] == ".github/copilot-instructions.md":
                 artifact.pop("hash", None)
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-        claude_content = audit.read_text(self.root / "CLAUDE.md")
+        claude_content = audit.read_text(self.root, self.root / "CLAUDE.md")
         sections = audit._extract_sections(claude_content, manifest["copilot_sections"])
         (self.root / ".github/copilot-instructions.md").write_text(
             f"# Custom Title\n\n{audit.COPILOT_BANNER}\n\n{sections}\n",
@@ -1147,6 +1143,37 @@ class CopilotConfigurationTests(unittest.TestCase):
         manifest: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
         return manifest
 
+    def _name_findings(self, name: str) -> dict[str, list[tuple[str, str, str]]]:
+        """The findings for a skill named `name` in a folder named review-helper, in each folder a runtime reads."""
+        folders = (".github/skills", ".claude/skills", ".agents/skills")
+        for folder in folders:
+            _write_fixture(self.root, {f"{folder}/review-helper/SKILL.md": f"---\nname: {name}\ndescription: d\n---\n"})
+        found = audit.check_copilot_configuration(self.root, {})
+        return {
+            folder: [(f.severity, f.check, f.message) for f in found if f.path == f"{folder}/review-helper/SKILL.md"]
+            for folder in folders
+        }
+
+    def test_a_name_that_differs_from_its_folder_is_an_error_only_where_codex_reads_it(self) -> None:
+        # Copilot's add-skills page: the name "typically" matches its directory; Claude Code's skills page defaults it
+        # to the directory's name; the Agent Skills specification, which Codex's skills page builds on, requires it.
+        codex = "Skill name must match its directory, as the Agent Skills specification Codex builds on requires"
+        self.assertEqual(
+            {".github/skills": [], ".claude/skills": [], ".agents/skills": [("ERROR", "codex-skill", codex)]},
+            self._name_findings("reviewer"),
+        )
+        self.assertEqual(
+            {".github/skills": [], ".claude/skills": [], ".agents/skills": []}, self._name_findings("review-helper")
+        )
+
+    def test_a_name_copilot_cannot_read_is_an_error_in_every_folder_it_reads(self) -> None:
+        # Copilot's add-skills page: the name "must be lowercase, using hyphens for spaces", whatever its folder.
+        lowercase = ("ERROR", "copilot-skill", "Skill name must be lowercase hyphenated")
+        found = self._name_findings("Review_Helper")
+        self.assertEqual([lowercase], found[".github/skills"])
+        self.assertEqual([lowercase], found[".claude/skills"])
+        self.assertIn(lowercase, found[".agents/skills"])
+
     def _write_manifest(self, manifest: dict[str, object]) -> None:
         (self.root / ".github/ai-config-manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
@@ -1220,7 +1247,7 @@ class CopilotConfigurationTests(unittest.TestCase):
         for text, expected in cases.items():
             with self.subTest(text=text):
                 skill.write_text(text, encoding="utf-8")
-                values, found = audit._frontmatter(skill)
+                values, found = audit._frontmatter(self.root, skill)
                 self.assertEqual(expected, values["name"])
                 self.assertEqual([], found)
         agent = self.root / ".github/agents/demo.agent.md"
@@ -1236,7 +1263,7 @@ class CopilotConfigurationTests(unittest.TestCase):
         # Pinned while _frontmatter keeps its own line walk beside ejryan89-skill-core's reader; see the comment above
         # it.
         unreadable = "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings"
-        mismatch = "Skill name must be lowercase hyphenated and match its directory"
+        mismatch = "Skill name must be lowercase hyphenated"
         cases = {
             '---\nname: "demo"\ndescription: d\n---\n': [],
             "---\nname: 'demo' # quoted\ndescription: 'it''s'\n---\n": [],
@@ -1314,7 +1341,7 @@ class CopilotConfigurationTests(unittest.TestCase):
         for text, expected in cases.items():
             with self.subTest(text=text):
                 skill.write_text(text, encoding="utf-8")
-                values, found = audit._frontmatter(skill)
+                values, found = audit._frontmatter(self.root, skill)
                 self.assertEqual(expected, values["name"])
                 self.assertEqual([], found)
 
@@ -1338,7 +1365,7 @@ class CopilotConfigurationTests(unittest.TestCase):
         for text, (description, expected) in cases.items():
             with self.subTest(text=text):
                 skill.write_text(text, encoding="utf-8")
-                values, found = audit._frontmatter(skill)
+                values, found = audit._frontmatter(self.root, skill)
                 self.assertEqual(description, values["description"])
                 self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
 
@@ -1629,7 +1656,7 @@ class VocabularyTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_unknown_surface_in_manifest_is_error(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_local"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -1641,7 +1668,7 @@ class VocabularyTests(unittest.TestCase):
         )
 
     def test_unknown_runtime_in_manifest_is_error(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["runtimes"] = ["claude", "unknown_runtime"]
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -1650,7 +1677,7 @@ class VocabularyTests(unittest.TestCase):
         )
 
     def test_unknown_mcp_target_in_manifest_is_error(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["bad_target"], "transport": "stdio"},
         ]
@@ -1823,7 +1850,7 @@ class SchemaVersionTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_schema_version_mismatch_not_conforming(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["schemaVersion"] = 999
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -1832,7 +1859,7 @@ class SchemaVersionTests(unittest.TestCase):
         )
 
     def test_artifact_non_string_path_caught(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": 42})
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -1869,7 +1896,7 @@ class SchemaVersionTests(unittest.TestCase):
 
     def test_manifest_artifact_non_string_path_no_crash(self) -> None:
         """Artifact with non-string path produces finding, not crash."""
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": 42})
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -1957,7 +1984,7 @@ class JsonHashAuthorityTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_hashless_json_artifact_blocks_authority(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": ".mcp.json"})
         (self.root / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -1976,7 +2003,7 @@ class BoolSchemaVersionTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_bool_schema_version_not_conforming(self) -> None:
-        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest = json.loads(audit.read_text(self.root, self.root / ".github/ai-config-manifest.json"))
         manifest["schemaVersion"] = True
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
@@ -5023,11 +5050,12 @@ class OutsideLinkTests(unittest.TestCase):
 
     def test_a_folder_whose_parent_links_out_is_neither_listed_nor_walked(self) -> None:
         _link_directory(self.outside, self.root / "linked")
+        # Each names the link the folder lies behind, so the inventory reports that link once, at its own path.
         nested = self.root / "linked/nested"
         listing = audit.list_directory(self.root, nested)
-        self.assertEqual(([], [nested]), (listing.paths, listing.outside))
+        self.assertEqual(([], [self.root / "linked"]), (listing.paths, listing.outside))
         walk = audit.walk_files(self.root, nested, lambda name: True)
-        self.assertEqual(([], [nested]), (walk.paths, walk.outside))
+        self.assertEqual(([], [self.root / "linked"]), (walk.paths, walk.outside))
 
     def test_a_link_that_stays_inside_the_repository_is_followed(self) -> None:
         _write_fixture(self.root, {"shared/agents/reviewer.md": "---\ndescription: Reviews.\n---\n"})
@@ -5057,6 +5085,153 @@ class OutsideLinkTests(unittest.TestCase):
         self.assertEqual(message, audit.OUTSIDE_LINK)
         policy = Path(audit.__file__).resolve().parent.parent / "references/audit-policy.md"
         self.assertIn(f"inventory `WARNING` at its path, `{message}`", policy.read_text(encoding="utf-8"))
+
+    def _audit_reading(self) -> tuple[audit.AuditResult, list[Path]]:
+        """The audit's result, and every file it read, resolved."""
+        read: list[Path] = []
+        read_text, read_bytes = Path.read_text, Path.read_bytes
+
+        def text(path: Path, *args: Any, **kwargs: Any) -> str:
+            read.append(path.resolve())
+            return read_text(path, *args, **kwargs)
+
+        def data(path: Path) -> bytes:
+            read.append(path.resolve())
+            return read_bytes(path)
+
+        with mock.patch.object(Path, "read_text", text), mock.patch.object(Path, "read_bytes", data):
+            result = audit.audit(self.root)
+        return result, read
+
+    # Each folder a fixed path passes through, and the files a check reads there by name, each holding text a finding
+    # would show if a check read it.
+    FIXED_PATH_FOLDERS: ClassVar[dict[str, dict[str, str | bytes]]] = {
+        ".claude": {
+            "settings.json": '{"permissions": {"allow": ["Bash(elsewhere)"]}, "hooks": {"Elsewhere": []}}\n',
+            "CLAUDE.md": "# Elsewhere\n\n@elsewhere/missing.md\n",
+        },
+        ".codex": {
+            "config.toml": '[mcp_servers.elsewhere]\nurl = "https://example.invalid"\nenv = {}\n',
+            "hooks.json": '{"hooks": {"Elsewhere": []}}\n',
+        },
+        ".vscode": {"mcp.json": '{"mcpServers": {"elsewhere": {}}}\n'},
+        ".github/scripts": {"ai_config.py": "TARGET_RUNTIMES = ['elsewhere']  # CLAUDE.md\n"},
+        "scripts": {"ai_config.py": "TARGET_RUNTIMES = ['elsewhere']  # CLAUDE.md\n"},
+        ".agents/skills/demo/agents": {"openai.yaml": "policy:\n  allow_implicit_invocation: elsewhere\n"},
+    }
+
+    def _fresh_repository(self, name: str) -> None:
+        """A conforming repository of its own as self.root, whose manifest lists the Codex and VS Code configuration
+        and whose skill is user-only, so the parity and Codex checks read those files too."""
+        self.root = Path(self.temp.name) / name / "repo"
+        _setup_conforming_repo(self.root)
+        manifest = json.loads((self.root / MANIFEST_PATH).read_text(encoding="utf-8"))
+        manifest["artifacts"].extend({"path": rel} for rel in (".codex/config.toml", ".vscode/mcp.json"))
+        (self.root / MANIFEST_PATH).write_text(json.dumps(manifest), encoding="utf-8")
+        canonical = self.root / ".claude/skills/demo/SKILL.md"
+        canonical.write_text(
+            canonical.read_text(encoding="utf-8").replace("---\n\n", "disable-model-invocation: true\n---\n\n", 1),
+            encoding="utf-8",
+        )
+
+    def test_no_check_reads_a_fixed_path_through_a_link_out_of_the_repository(self) -> None:
+        for folder, files in self.FIXED_PATH_FOLDERS.items():
+            with self.subTest(folder=folder):
+                self._fresh_repository(folder.replace("/", "-"))
+                target = self.outside / folder.replace("/", "-")
+                if (self.root / folder).is_dir():
+                    shutil.move(self.root / folder, target)  # what the folder held now lies behind the link
+                _write_fixture(target, files)
+                _link_directory(target, self.root / folder)
+                result, read = self._audit_reading()
+                self.assertEqual([], [path for path in read if path.is_relative_to(target.resolve())])
+                self.assertEqual([("WARNING", "inventory", folder)], self._outside_links(result))
+                for finding in result.findings:
+                    self.assertNotIn("elsewhere", finding.message.lower(), finding)
+
+    def test_a_canonical_source_behind_a_link_out_is_an_error_so_the_audit_is_not_compliant(self) -> None:
+        shutil.move(self.root / ".claude", self.outside / "claude")
+        _write_fixture(self.outside / "claude", {"CLAUDE.md": (self.root / "CLAUDE.md").read_text(encoding="utf-8")})
+        _link_directory(self.outside / "claude", self.root / ".claude")
+        result = audit.audit(self.root)
+        self.assertEqual("ERRORS", result.result)
+        not_followed = (
+            "it lies behind .claude, a link that leads out of the repository, which the audit does not follow"
+        )
+        self.assertIn(
+            ("ERROR", "inventory", ".claude/CLAUDE.md", UnreadInputTests.UNREAD + not_followed),
+            [(f.severity, f.check, f.path, f.message) for f in result.findings],
+        )
+        self.assertNotIn(".claude/CLAUDE.md", [f.path for f in result.findings if f.severity == "INFO"])
+
+    @unittest.skipIf(sys.platform == "win32", "Windows makes a file symbolic link only with a privilege tests lack")
+    def test_no_check_reads_a_root_file_that_is_a_link_out_of_the_repository(self) -> None:
+        for rel, text in {
+            "CLAUDE.md": "# Elsewhere\n",
+            "CLAUDE.local.md": "# Elsewhere\n",
+            "AGENTS.md": "# Elsewhere\n",
+            "GEMINI.md": "# Elsewhere\n",
+            ".mcp.json": '{"mcpServers": {"elsewhere": {}}}\n',
+        }.items():
+            with self.subTest(rel=rel):
+                target = self.outside / f"root-{rel}"
+                target.write_text(text, encoding="utf-8")
+                original = self.root / rel
+                kept = original.read_bytes() if original.is_file() else None
+                original.unlink(missing_ok=True)
+                original.symlink_to(target)
+                result, read = self._audit_reading()
+                self.assertNotIn(target.resolve(), read)
+                self.assertEqual([("WARNING", "inventory", rel)], self._outside_links(result))
+                self.assertNotIn(f"Found {rel}", [f.message for f in result.findings])
+                for finding in result.findings:
+                    self.assertNotIn("elsewhere", finding.message.lower(), finding)
+                original.unlink()
+                if kept is not None:
+                    original.write_bytes(kept)
+
+    def test_the_link_on_the_way_to_a_path_is_the_first_that_leads_out(self) -> None:
+        _write_fixture(self.root, {"inside/file.md": "x"})
+        _link_directory(self.root / "inside", self.root / "stays")
+        _link_directory(self.outside, self.root / "leaves")
+        self.assertIsNone(audit.outside_link(self.root, self.root / "inside/file.md"))
+        self.assertIsNone(audit.outside_link(self.root, self.root / "stays/file.md"))
+        self.assertIsNone(audit.outside_link(self.root, self.root / "absent/file.md"))
+        self.assertEqual(self.root / "leaves", audit.outside_link(self.root, self.root / "leaves"))
+        self.assertEqual(self.root / "leaves", audit.outside_link(self.root, self.root / "leaves/nested/SKILL.md"))
+        with self.assertRaisesRegex(OSError, "it lies behind leaves, a link that leads out of the repository"):
+            audit.read_text(self.root, self.root / "leaves/AGENTS.md")
+        self.assertEqual("x", audit.read_text(self.root, self.root / "stays/file.md"))
+
+    def test_every_file_read_goes_through_the_guarded_readers(self) -> None:
+        # read_text and read_bytes refuse a path behind a link out of the root, which no other read would.
+        for script in ("audit_ai_config.py", "mcp_handshake.py"):
+            tree = ast.parse((Path(audit.__file__).parent / script).read_text(encoding="utf-8"))
+            readers = {"read_bytes", "read_text"} if script == "audit_ai_config.py" else set()
+            allowed = {
+                id(node)
+                for function in ast.walk(tree)
+                if isinstance(function, ast.FunctionDef) and function.name in readers
+                for node in ast.walk(function)
+            }
+            reads = [
+                node.lineno
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and id(node) not in allowed
+                and (
+                    (isinstance(node.func, ast.Attribute) and node.func.attr in {"read_text", "read_bytes", "open"})
+                    or (isinstance(node.func, ast.Name) and node.func.id == "open")
+                    # A parser that reads a file handle; check_provenance.load reads the skill's own file.
+                    or (
+                        isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "load"
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in {"json", "tomllib"}
+                    )
+                )
+            ]
+            self.assertEqual([], reads, script)
 
     def test_a_path_leaves_the_root_through_dot_dot_and_stays_through_a_folder_that_returns(self) -> None:
         self.assertTrue(audit.leaves_root(self.root, self.root / ".." / "outside"))

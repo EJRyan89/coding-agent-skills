@@ -263,6 +263,12 @@
       ]
     },
     {
+      "url": "https://agentskills.io/specification",
+      "subject": "codex",
+      "governs": "Agent Skills: the open format Codex skills build on, and the rules for its fields",
+      "read": []
+    },
+    {
       "url": "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
       "subject": "codex",
       "governs": "instructions: AGENTS.md discovery, overrides, fallback names, and the size cap",
