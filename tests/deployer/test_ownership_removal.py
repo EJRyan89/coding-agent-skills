@@ -613,11 +613,12 @@ class UnlistedFolderTests(DeployerTestCase):
         self.write(self.unlisted / "notes.txt", "kept by the user\n")
 
     def unlisted_scandir(self) -> Any:
-        """os.scandir as a file system answers a folder this user may not list."""
+        """os.scandir as a file system answers a folder this user may not list. On Linux, shutil.rmtree lists folders
+        by their file descriptor, which names no path."""
         real = os.scandir
 
         def scandir(path: Any = ".") -> Any:
-            if Path(path) == self.unlisted:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == self.unlisted:
                 raise PermissionError(13, "Permission denied", str(path))
             return real(path)
 
