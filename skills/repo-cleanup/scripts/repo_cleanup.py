@@ -52,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import cleanup_policy
 import git_client
 import git_worktrees
+import json_reader
 import pr_status
 from atomic_file import replace_bytes, replace_text
 from cleanup_policy import Policy, Regenerable
@@ -818,7 +819,7 @@ def load_plan(path: str | Path) -> dict[str, Any]:
     build_plan writes it, so no command reads a missing or malformed field."""
     data = read_sealed(path, "plan")
     try:
-        plan = json.loads(data.decode("utf-8"))
+        plan = json_reader.loads(data.decode("utf-8"))
     except ValueError as exc:
         raise CleanupError(f"cannot read plan {path}: {exc}") from exc
     try:
@@ -2089,7 +2090,7 @@ def read_record(directory: Path) -> tuple[list[dict[str, Any]], list[str]]:
         raise CleanupError(f"{directory} holds no sweep record; name the directory a sweep printed as PLANS")
     data = read_sealed(path, "sweep record")
     try:
-        record = json.loads(data.decode("utf-8"))
+        record = json_reader.loads(data.decode("utf-8"))
     except ValueError as exc:
         raise CleanupError(f"cannot read the sweep record {path}: {exc}") from exc
     if (

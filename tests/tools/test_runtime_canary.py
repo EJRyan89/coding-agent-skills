@@ -1039,6 +1039,24 @@ class RunTests(RuntimeCanaryTestCase):
         )
         self.assertTrue([line for line in lines if line.startswith(f"RUNTIME copilot {FIXTURE} ")])
 
+    def test_a_directory_in_the_records_files_place_fails_that_run_rather_than_reading_as_no_record(self) -> None:
+        probe = self.home / ".runtime-canary" / "probe.jsonl"
+
+        def replaced(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
+            probe.unlink()
+            probe.mkdir()
+            return Completed(0, "", "")
+
+        runner = FakeRuntimes()
+        runner.actions["codex"] = replaced
+        code, lines = self.outcome(runner, runtimes=("codex",))
+        self.assertEqual(1, code, lines)
+        self.assertIn(
+            f'RUNTIME codex {FIXTURE} FAILED "cannot read what the run recorded in {forward(probe)}: '
+            f'not a file" {self.kept("codex")}',
+            lines,
+        )
+
     def test_a_run_without_any_script_is_a_never_ran_failure_with_its_cause(self) -> None:
         cases: tuple[tuple[Completed, list[str], str], ...] = (
             (Completed(0, "", ""), [], "never ran a script from the skill"),

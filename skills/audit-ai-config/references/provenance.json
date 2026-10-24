@@ -83,6 +83,14 @@
       {
         "page": "https://learn.chatgpt.com/docs/hooks",
         "passage": "Codex loads a trusted project's hooks from .codex/hooks.json or the [hooks] tables of .codex/config.toml, merging both with a warning, under the events PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact, UserPromptSubmit, SubagentStop, Stop, Interrupt, SessionStart, SubagentStart, and SessionEnd, and a hook without a timeout runs up to 600 seconds, or 1 second on SessionEnd and Interrupt."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/hooks",
+        "passage": "Codex supports command and mcp_tool handlers and parses prompt and agent handlers but skips them; an mcp_tool handler requires server and tool, its timeout defaults to 600 seconds, and a background hook, with async set, can't block, approve, rewrite, or otherwise control the operation that triggered it, so tool policies, permission decisions, prompt rejection, and turn continuation use synchronous hooks."
+      },
+      {
+        "page": "https://github.com/openai/codex/releases",
+        "passage": "Codex's release 0.164.0 adds observation-only model request lifecycle hooks, PreModelRequest and PostModelRequest (openai/codex#55144)."
       }
     ],
     "codex-rule": [
@@ -121,6 +129,10 @@
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli",
         "passage": "Copilot CLI reads a repository's custom agents from .github/agents and personal ones from ~/.copilot/agents."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference",
+        "passage": "Copilot CLI loads custom agents from ~/.copilot/agents, then a project's .github/agents, then its .claude/agents, and derives each agent's ID from its file name without the .agent.md or .md extension."
       }
     ],
     "copilot-config": [
@@ -200,6 +212,14 @@
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions",
         "passage": "Repository-wide instructions live in .github/copilot-instructions.md, and path-specific ones in .github/instructions/NAME.instructions.md, whose applyTo frontmatter names the files they cover."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference",
+        "passage": "Copilot CLI merges the custom instructions of CLAUDE.md, GEMINI.md, AGENTS.md, .github/instructions/**/*.instructions.md, .claude/rules/**/*.md, and .github/copilot-instructions.md, and reads the Claude Code rule files under .claude/rules the same way it reads .github/instructions files."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/tutorials/customize-code-review",
+        "passage": "Limit any single instruction file Copilot code review reads to a maximum of about 1,000 lines, beyond which the quality of its responses may deteriorate."
       }
     ],
     "limitation": [
@@ -259,7 +279,11 @@
         "decision": "The manifest is editable, so the scope it declares is compared with the literal targets of a recognized generator, read without running it: check 3 of references/audit-policy.md."
       },
       {
-        "decision": "Without a manifest or a generator, the scope is the runtimes and surfaces the repository's own files show it serves, a CLAUDE.md for Claude Code, a root AGENTS.md, .codex, or .agents/skills for Codex, and a .github folder for Copilot's CLI, app, and code review, which read those files with no setting of the repository's own: check 3 of references/audit-policy.md."
+        "decision": "Without a manifest or a generator, the scope is the runtimes and surfaces the repository's own files show it serves, a CLAUDE.md or a root AGENTS.md for Claude Code, a root AGENTS.md, .codex, or .agents/skills for Codex, and a .github folder for Copilot's CLI, app, and code review, which read those files with no setting of the repository's own: check 3 of references/audit-policy.md."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/memory",
+        "passage": "Claude Code reads a repository's AGENTS.md as its project instructions when there is no CLAUDE.md, .claude/CLAUDE.md, or CLAUDE.local.md in the working directory or above it, and reading AGENTS.md directly requires Claude Code v2.1.277 or later."
       },
       {
         "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",

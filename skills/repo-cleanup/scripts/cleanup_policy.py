@@ -26,12 +26,12 @@ skill.
 from __future__ import annotations
 
 import functools
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import json_reader
 from diff_paths import DRIVE
 from typed_fields import FieldError, FieldReader
 
@@ -144,7 +144,7 @@ def shipped(path: Path | None = None) -> tuple[tuple[Regenerable, ...], tuple[st
 @functools.cache
 def _read(path: Path) -> tuple[tuple[Regenerable, ...], tuple[str, ...]]:
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise PolicyError(f"cannot read the cleanup policy {path.as_posix()}: {exc}") from exc
     fields = READ.json_object(document, "$", required={"schema_version", "protected_prefixes", "regenerable"})
