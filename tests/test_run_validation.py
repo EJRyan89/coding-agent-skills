@@ -241,9 +241,9 @@ class PullRequestOnlySelection(unittest.TestCase):
     """--pr-title or --pr-body alone runs the checks that judge the pull request and no suite; with -k, --changed,
     --full, or --shard the run selects as it would without them, as CI's legs, which always pass --shard, do."""
 
-    PULL_REQUEST_CHECKS = {"PullRequestTitlePolicies", "SilentRevertPolicies", "UpgradeNotesPolicies"}
+    PULL_REQUEST_CHECKS = frozenset({"PullRequestTitlePolicies", "SilentRevertPolicies", "UpgradeNotesPolicies"})
     LIMITED = "Pull request checks only: PullRequestTitlePolicies, SilentRevertPolicies, UpgradeNotesPolicies, since"
-    EVERY = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
+    EVERY = (Job("tests/test_a.py", "tests/test_a.py", 1, print),)
 
     def run_main(self, argv: list[str], **patches: Any) -> tuple[set[str], list[list[Job]], str]:
         """The policy check classes main loaded, the jobs it gave the pool, and its output, with the tools held still,
@@ -263,7 +263,7 @@ class PullRequestOnlySelection(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(run_validation, "tool_versions", return_value={}))
             stack.enter_context(mock.patch.object(run_validation, "report_prerequisite_problems", return_value=False))
-            stack.enter_context(mock.patch.object(run_validation, "all_jobs", return_value=self.EVERY))
+            stack.enter_context(mock.patch.object(run_validation, "all_jobs", return_value=list(self.EVERY)))
             stack.enter_context(mock.patch.object(run_validation, "run_policies", side_effect=policies_run))
             stack.enter_context(mock.patch.object(run_validation, "run_beside", side_effect=pool_runs))
             for name, replacement in patches.items():
@@ -309,7 +309,7 @@ class PullRequestOnlySelection(unittest.TestCase):
                         [*option, *files], changed_paths=mock.Mock(return_value=["deployer/tools.py"]), **patches
                     )
                     self.assertLess(self.PULL_REQUEST_CHECKS, checks)
-                    self.assertEqual(jobs, started[0])
+                    self.assertEqual(list(jobs), started[0])
                     self.assertNotIn("Pull request checks only", printed)
 
 
