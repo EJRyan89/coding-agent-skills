@@ -24,8 +24,9 @@ class ShardTests(unittest.TestCase):
         self.assertEqual((1, 1), shard_of("1/1"))
         self.assertEqual((2, 4), shard_of("2/4"))
         self.assertEqual((4, 4), shard_of("4/4"))
-        for text in ("0/4", "5/4", "2/0", "2", "2/4/8", "-1/4", " 2/4", "a/b", "02/4"):
-            with self.subTest(text=text), self.assertRaises(ValueError) as raised:
+        # The last is a count past the interpreter's digit limit for converting text.
+        for text in ("0/4", "5/4", "2/0", "2", "2/4/8", "-1/4", " 2/4", "a/b", "02/4", f"1/{'9' * 5000}"):
+            with self.subTest(text=text[:20]), self.assertRaises(ValueError) as raised:
                 shard_of(text)
             self.assertEqual(f"<index>/<count> with 1 <= index <= count, found {text!r}", str(raised.exception))
 

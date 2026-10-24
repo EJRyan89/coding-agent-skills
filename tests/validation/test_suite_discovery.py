@@ -229,7 +229,14 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
             failing = run_pytest(suite, *shard_options(0, 3, {}))
             self.assertEqual(1, failing.returncode)
             self.assertIn("boom", failing.stdout)
-            for options in (["--suite-shard", "4/3"], ["--suite-shard", "0/3"], ["--suite-shard", "two"]):
+            # A count past the interpreter's digit limit for converting text is refused by the same expected form.
+            past_digit_limit = f"1/{'9' * 5000}"
+            for options in (
+                ["--suite-shard", "4/3"],
+                ["--suite-shard", "0/3"],
+                ["--suite-shard", "two"],
+                ["--suite-shard", past_digit_limit],
+            ):
                 with self.subTest(options=options):
                     refused = run_pytest(suite, *options)
                     self.assertEqual(4, refused.returncode, refused.stdout + refused.stderr)
@@ -295,9 +302,10 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
             self.assertEqual(sorted(f"test_{number}" for number in range(7)), ran)
             for recorded, refusal in (
                 ("Fixture::test_9=5", "the suite defines no test Fixture::test_9"),
-                ("Fixture::test_3", "--test-seconds expects <test>=<seconds> above 0"),
-                ("Fixture::test_3=many", "--test-seconds expects <test>=<seconds> above 0"),
-                ("Fixture::test_3=0", "--test-seconds expects <test>=<seconds> above 0"),
+                *(
+                    (f"Fixture::test_3{value}", "--test-seconds expects <test>=<seconds>, a finite number above 0")
+                    for value in ("", "=many", "=0", "=-1", "=nan", "=inf", "=Infinity", "=1e999")
+                ),
             ):
                 with self.subTest(recorded=recorded):
                     refused = run_pytest(suite, "--suite-shard", "1/3", "--test-seconds", recorded)

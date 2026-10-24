@@ -279,12 +279,27 @@ class JobSecondsFixtures(unittest.TestCase):
         '{"runs": [0], "seconds": {"tests/test_a.py": 1}}',
         '{"runs": [[7]], "seconds": {"tests/test_a.py": 1}}',
         '{"runs": [7, {"id": 9}], "seconds": {"tests/test_a.py": 1}}',
+        *(
+            f'{{"runs": [7], "seconds": {{"Linux": {{}}, "Windows": {{"tests/test_a.py": {value}}}}}}}'
+            for value in ("NaN", "Infinity", "-Infinity", "1e999")
+        ),
+        '{"runs": [NaN], "seconds": {"Linux": {}, "Windows": {}}}',
+        '{"runs": [' + "9" * 5000 + '], "seconds": {"Linux": {}, "Windows": {}}}',
+        "[" * 100_000 + "]" * 100_000,
     ],
+    ids=lambda text: text if len(text) <= 100 else f"{text[:20]}...({len(text)} characters)",
 )
 def test_a_malformed_table_is_refused(tmp_path: Path, text: str) -> None:
     path = tmp_path / "job_seconds.json"
     path.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=r"job_seconds.json"):
+        job_seconds(path)
+
+
+def test_a_table_that_is_not_utf8_is_refused_by_name(tmp_path: Path) -> None:
+    path = tmp_path / "job_seconds.json"
+    path.write_bytes(b'{"runs": [7], "seconds": {"Linux": {"\xff": 1}, "Windows": {}}}')
+    with pytest.raises(ValueError, match=r"\Ajob_seconds.json cannot be read as JSON: "):
         job_seconds(path)
 
 
@@ -492,7 +507,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
                 "tests/validation/test_toolchain.py",
                 "tests/validation/test_upgrade_notes.py",
             ],
-            self.selected(["requirements-dev.txt"]),
+            self.selected(["tests/validation/toolchain.py"]),
         )
         self.assertEqual(
             [
@@ -504,6 +519,17 @@ class ChangedSelectionFixtures(unittest.TestCase):
             self.selected(["deploy.py"]),
         )
         self.assertEqual([], self.selected(["LICENSE"]))
+
+    def test_a_development_dependency_bump_reaches_every_python_suite_and_no_shell_suite(self) -> None:
+        # The pins and their lock set the pytest every Python suite runs on, and the floors the floor suites read.
+        python_suites = sorted(
+            name
+            for name in CHANGED_TREE
+            if "/test_" in name and name.endswith(".py") and not name.startswith("tests/fixtures/")
+        )
+        for path in ("requirements-dev.in", "requirements-dev.txt"):
+            with self.subTest(path=path):
+                self.assertEqual(python_suites, self.selected([path]))
 
     def test_a_skill_metadata_change_reaches_the_suites_that_deploy_it(self) -> None:
         # No suite names the metadata file or imports it; the deployer reads it when it renders and resolves skills.
@@ -526,6 +552,11 @@ class ChangedSelectionFixtures(unittest.TestCase):
         self.assertEqual([SHELL_JOB, POWERSHELL_JOB], labels(["skills/a/scripts/run.sh", "tools/x.ps1"]))
         self.assertEqual([FORMAT_JOB, LINT_JOB, "type a", "type b"], labels(["skills/a/scripts/tool.py"]))
         self.assertEqual([FORMAT_JOB, LINT_JOB, "type a", "type b"], labels(["pyproject.toml"]))
+        # The development dependencies pin the ruff and mypy the format, lint, and type checks run.
+        for path in ("requirements-dev.in", "requirements-dev.txt"):
+            with self.subTest(path=path):
+                self.assertEqual([FORMAT_JOB, LINT_JOB, "type a", "type b"], labels([path]))
+        self.assertEqual([], labels(["docs/requirements-dev.txt"]))
 
     def test_a_reach_that_matches_nothing_is_reported(self) -> None:
         files = [
@@ -551,6 +582,8 @@ class ChangedSelectionFixtures(unittest.TestCase):
             [
                 "CHANGE_REACHES names requirements-dev.txt, which matches no repository file",
                 "CHANGE_REACHES adds tests/validation/test_toolchain.py, which matches no regression suite",
+                # The lock reaches the Python suites too, in the row beside the root conftest.py.
+                "CHANGE_REACHES names requirements-dev.txt, which matches no repository file",
             ],
             change_reach_problems(files[:-1], [suite for suite in suites if "toolchain" not in suite]),
         )
