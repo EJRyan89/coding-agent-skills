@@ -292,7 +292,7 @@ class TerminationFixtures(unittest.TestCase):
         )
         with contextlib.redirect_stdout(io.StringIO()) as printed:
             run_jobs([job], verbose=True, workers=1)
-        leg = "Validation on Linux, shard 1/2\tRun repository validation\t2026-10-23T06:17:04.0000000Z "
+        leg = "Linux shard 1/2, Python 3.11\tRun repository validation\t2026-10-23T06:17:04.0000000Z "
         log = "\n".join(f"{leg}{line}" for line in printed.getvalue().splitlines())
         self.assertIn("(retried after status", log)
         recorded = record_job_seconds.job_seconds_from_log(log)
