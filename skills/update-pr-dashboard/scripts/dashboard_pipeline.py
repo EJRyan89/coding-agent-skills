@@ -11,9 +11,9 @@
              override it does not, but it reads nothing from GitHub, so a closed pull request's override clears like
              any other
     repository
-             add a repository to the configuration and to a repository set, by default the one `collect` reads,
-             validating the whole configuration before it is written; a repository with no entry yet gets the
-             generic reviewer
+             add a repository to the configuration and to a repository set, by default the one `collect` reads, or
+             mute or unmute a repository or pattern `collect` names as untracked, validating the whole configuration
+             before it is written; a repository with no entry yet gets the generic reviewer
     review-arguments
              print the `review-prs` arguments for the candidates the user confirmed, read from that record and the
              configuration's overrides, or name the confirmed stale ones when the re-review scope is still to be asked
@@ -47,9 +47,12 @@ from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
 from review_config import (
     DASHBOARD_AI_REVIEW_MISSING,
+    DEFAULT_CONFIG_NAME,
     ConfigurationError,
     default_config_path,
+    ignored_repository_match,
     load_config,
+    normalize_ignored_repository,
     resolve_repositories,
     selected_repository_set,
     validate_config,
@@ -151,9 +154,8 @@ GENERIC_REPOSITORY_ENTRY: dict[str, Any] = {
     "checkout_path": None,
 }
 GHOST_LOGIN = "ghost"
+# The record beside the configuration; the default configuration, named `DEFAULT_CONFIG_NAME`, keeps this plain name.
 TRACKER_RECORD = "tracker.json"
-# The file name review_config gives the default configuration, whose record keeps the plain name `TRACKER_RECORD`.
-DEFAULT_CONFIG_NAME = "config.json"
 # Whether a repository's first commit is its second commit or an ancestor of it; None when that cannot be told.
 Ancestry = Callable[[str, str, str], "bool | None"]
 
@@ -325,11 +327,13 @@ def _since_review(ledger: list[LedgerEntry], baseline: int) -> dict[str, int]:
 @dataclass
 class Collection:
     """Each selected repository's open-pull count or its error, and, for a collection of a repository set, the
-    repositories outside it in which the user has an open pull request to track, or why they could not be found.
-    `untracked` is None for named repositories, which are not a set the user keeps."""
+    repositories outside it in which the user has an open pull request to track, except those
+    `dashboard.ignored_repositories` mutes, with how many it muted, or why they could not be found. `untracked` is
+    None for named repositories, which are not a set the user keeps."""
 
     results: dict[str, int | str]
     untracked: list[str] | None = None
+    ignored: int = 0
     untracked_error: str | None = None
 
 
@@ -411,9 +415,13 @@ def collect(
     collection = Collection(results)
     if repositories is None:
         try:
-            collection.untracked = untracked_repositories(services.github, login, selected)
+            found = untracked_repositories(services.github, login, selected)
         except (GitHubError, ConfigurationError) as exc:
             collection.untracked_error = str(exc)
+        else:
+            ignored = config["dashboard"]["ignored_repositories"]
+            collection.untracked = [name for name in found if ignored_repository_match(name, ignored) is None]
+            collection.ignored = len(found) - len(collection.untracked)
     return collection
 
 
@@ -426,7 +434,8 @@ def update(
 ) -> tuple[Path, list[Row], list[str]]:
     """Render the owned section with the configured dashboard, login, markers, overrides, author names, and
     home repositories, and return the dashboard, its rows, and the pull requests whose review went stale since the
-    update that wrote the tracker record (see `stale_since`)."""
+    update that wrote the tracker record (see `stale_since`). Without a configured login, GitHub is asked for it only
+    after the refusals `update_dashboard_rows` makes before asking anything."""
     services = services or Services()
     config_path = (config_path or default_config_path()).resolve()
     config = load_config(config_path)
@@ -436,7 +445,7 @@ def update(
     rows = update_dashboard_rows(
         input_path,
         dashboard,
-        configured_login(config, services.github),
+        lambda: configured_login(config, services.github),
         detector=ChangeDetector(services.github),
         start_marker=config["dashboard"]["start_marker"],
         end_marker=config["dashboard"]["end_marker"],
@@ -582,6 +591,37 @@ def add_repositories(
     return rewrite_config(edit, config_path), chosen, added
 
 
+def change_ignored(
+    ignores: list[str], unignores: list[str], *, config_path: Path | None = None
+) -> tuple[Path, list[tuple[str, bool]]]:
+    """Add each of `ignores` to `dashboard.ignored_repositories` and remove each of `unignores` from it, in one
+    `rewrite_config` write, and return the configuration and each entry, lowercase as the configuration holds it, with
+    whether it was added. A malformed entry, one named twice, adding one already there, removing one that is not, and
+    an entry a tracked repository matches are refused, writing nothing."""
+    changes = [
+        (normalize_ignored_repository(value, "ignored repository"), added)
+        for values, added in ((ignores, True), (unignores, False))
+        for value in values
+    ]
+    names = [entry for entry, _ in changes]
+    for index, entry in enumerate(names):
+        if entry in names[:index]:
+            raise ConfigurationError(f"Ignored repository {entry} is named more than once")
+
+    def edit(raw: dict[str, Any], config: dict[str, Any]) -> None:
+        current = config["dashboard"]["ignored_repositories"]
+        for entry, added in changes:
+            if added and entry in current:
+                raise ConfigurationError(f"Repository {entry} is already ignored")
+            if not added and entry not in current:
+                raise ConfigurationError(f"Repository {entry} is not ignored")
+        dashboard = raw.setdefault("dashboard", {})
+        kept = [value for value in dashboard.get("ignored_repositories", []) if value.lower() not in names]
+        dashboard["ignored_repositories"] = kept + [entry for entry, added in changes if added]
+
+    return rewrite_config(edit, config_path), changes
+
+
 def _refuse_untracked(keys: list[str], config_path: Path) -> None:
     """Refuse the first key naming no pull request the tracker holds, so a mistyped one never sits unmatched."""
     if not keys:
@@ -664,8 +704,13 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         "--clear", action="append", default=[], dest="clears", metavar="OWNER/REPO#N", help="repeatable"
     )
     repository_parser = commands.add_parser("repository")
-    repository_parser.add_argument(
-        "--add", action="append", required=True, dest="additions", metavar="OWNER/REPO", help="repeatable"
+    change = repository_parser.add_mutually_exclusive_group(required=True)
+    change.add_argument("--add", action="append", dest="additions", metavar="OWNER/REPO", help="repeatable")
+    change.add_argument(
+        "--ignore", action="append", dest="ignores", metavar="OWNER/REPO", help="a repository or pattern; repeatable"
+    )
+    change.add_argument(
+        "--unignore", action="append", dest="unignores", metavar="OWNER/REPO", help="an ignored entry; repeatable"
     )
     repository_parser.add_argument("--repository-set", help="defaults to the set collect reads without a scope")
     arguments_parser = commands.add_parser("review-arguments")
@@ -681,11 +726,15 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         "--scope", choices=RE_REVIEW_SCOPES, help="how review-prs re-reviews the stale ones; taken only when one is"
     )
     args = parser.parse_args(arguments)
+    if args.command == "repository" and args.repository_set is not None and args.additions is None:
+        repository_parser.error("--repository-set is taken only with --add")
     try:
         if args.command == "override":
             return _override(args.sets, args.clears, args.config)
         if args.command == "review-arguments":
             return _review_arguments(args.confirmed, args.scope, args.config)
+        if args.command == "repository" and args.additions is None:
+            return _ignore(args.ignores or [], args.unignores or [], args.config)
         if args.command == "repository":
             return _repository(args.additions, args.repository_set, args.config)
         if args.command == "collect":
@@ -728,6 +777,8 @@ def _collect(args: argparse.Namespace, services: Services) -> int:
         )
     for repository in collection.untracked or []:
         print(f"UNTRACKED_REPOSITORY {repository}")
+    if collection.ignored:
+        print(f"UNTRACKED_IGNORED {collection.ignored}")
     if collection.untracked_error is not None:
         print(f"UNTRACKED_CHECK_FAILED {flat_text(collection.untracked_error)}")
     failed = sum(1 for result in results.values() if not isinstance(result, int))
@@ -770,6 +821,14 @@ def _repository(additions: list[str], repository_set: str | None, config_path: P
         if entry:
             print(f"ADDED_REPOSITORY {repository} reviewer=generic")
         print(f"ADDED_TO_SET {chosen} {repository}")
+    print(f"WROTE {path}")
+    return 0
+
+
+def _ignore(ignores: list[str], unignores: list[str], config_path: Path | None) -> int:
+    path, changes = change_ignored(ignores, unignores, config_path=config_path)
+    for entry, added in changes:
+        print(f"{'IGNORED' if added else 'UNIGNORED'} {entry}")
     print(f"WROTE {path}")
     return 0
 
