@@ -141,6 +141,14 @@ no review of its own, and fails with that reason. The code-review configuration 
 counts for nothing either: the guard's claim starts a role's read log, so a reviewer the guard held has a count, if
 only 0, and null means the boundary was never exercised.
 
+A run vouches for the checkout it deploys: a scenario's fixture is trusted input, as review_canary.py says, since its
+manifest names the condition scripts a review runs, and the homes run this checkout's skills, in sessions signed in as
+the user. Before anything runs, the run therefore refuses a checkout that follows another repository's pull request:
+a branch whose upstream is a pull request's ref (refs/pull/...) or a remote other than origin, as `gh pr checkout`
+sets for one, and a detached HEAD at a commit no branch of origin holds. A branch with no upstream, or one that follows
+origin's branch or a local one, is the user's own. A pull request from another author is read in full, as its code
+is, before its scenarios run; "Skill evaluations" in docs/skill-evaluations.md states the rule.
+
 What still comes from the user's own setup: their sign-in, user CLAUDE.md and auto-memory, as for the runtime
 canary. Each session runs without --bare, which would skip the home's skills and agents and the sign-in, so a session
 whose init event lists no skill counts for nothing rather than being judged.
@@ -181,8 +189,10 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
                                                   whether that is every run (all, the pass^k of k runs), some, which
                                                   is an inconsistent result, or none
   FAILED "<reason>"                               nothing was run or judged: the scenarios could not be loaded,
-                                                  Claude Code is missing, or --write's existing results file
-                                                  cannot be read or its table cannot be read
+                                                  Claude Code is missing, the checkout follows another
+                                                  repository's pull request or its branch cannot be read, or
+                                                  --write's existing results file cannot be read or its table
+                                                  cannot be read
 A run then prints, between a `CITATION BEGIN` and a `CITATION END` line, the Markdown a pull request's Validation
 section cites it with: the command, a table with one row per scenario and one column per model, each cell the
 expectations passed of those checked over every run, followed over several runs by `(<passed>/<runs> runs)`, the
@@ -222,7 +232,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from bounded_process import without_repository_variables
 from console import run_main
-from git_client import GitClient
+from git_client import GitClient, GitError
 
 from deployer import fsops, platform_support
 from deployer.source import SKILL_NAME_PATTERN
@@ -330,6 +340,35 @@ def new_home() -> Path:
     return Path(tempfile.mkdtemp(prefix="skill-evals-")).resolve()
 
 
+# The upstreams of a branch that is the user's own: none, a local branch, or this repository's origin.
+OWN_REMOTES = frozenset({"", ".", "origin"})
+
+
+def foreign_checkout(git: GitClient, directory: Path) -> str | None:
+    """Why the checkout at `directory` follows another repository's pull request, or None when it does not: its
+    branch's upstream is a pull request's ref or a remote other than origin, or its HEAD is detached at a commit no
+    branch of origin holds. Raises GitError when git cannot read the checkout."""
+    branch = git.run(["symbolic-ref", "-q", "--short", "HEAD"], directory=directory)
+    if branch.returncode != 0:
+        held = git.output(
+            ["for-each-ref", "--contains", "HEAD", "--format=%(refname)", "refs/remotes/origin"], directory=directory
+        )
+        return None if held.strip() else "HEAD is detached at a commit no branch of origin holds"
+    name = branch.stdout.strip()
+    remote = git.run(["config", "--get", f"branch.{name}.remote"], directory=directory).stdout.strip()
+    merge = git.run(["config", "--get", f"branch.{name}.merge"], directory=directory).stdout.strip()
+    if merge.startswith("refs/pull/"):
+        return f"its branch {name} follows {merge}, a pull request's ref"
+    if remote not in OWN_REMOTES:
+        return f"its branch {name} follows {remote}, not origin"
+    return None
+
+
+def this_checkout() -> str | None:
+    """Why this checkout follows another repository's pull request, or None."""
+    return foreign_checkout(GitClient(), REPOSITORY_ROOT)
+
+
 @dataclass(frozen=True)
 class Seams:
     """What a run reaches outside this module, so tests can stand in for each."""
@@ -342,14 +381,21 @@ class Seams:
     today: Callable[[], datetime.date] = datetime.date.today
     results: Path = RESULTS
     git: GitClient = field(default_factory=GitClient)
+    checkout: Callable[[], str | None] = this_checkout
 
 
 def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
     """Claude Code's path and, with --write, the results file's text; raise ScenarioError before any run when
-    something a run needs is missing."""
+    something a run needs is missing or the checkout follows another repository's pull request."""
     executable = seams.which("claude")
     if executable is None:
         raise ScenarioError("Claude Code (claude) is not installed")
+    try:
+        foreign = seams.checkout()
+    except GitError as exc:
+        raise ScenarioError(f"cannot read the checkout's branch: {exc}") from exc
+    if foreign is not None:
+        raise ScenarioError(f"the checkout follows another repository's pull request: {foreign}")
     if not write:
         return executable, None
     try:

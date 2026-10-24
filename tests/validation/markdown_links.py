@@ -1,5 +1,5 @@
-"""Documents that point elsewhere keep pointing at something: relative Markdown links and their fragments, and the
-tests a document cites.
+"""Documents that point elsewhere keep pointing at something: relative Markdown links and their fragments, the
+tests a document cites, and the security-sensitive area SECURITY.md gives each boundary of docs/design.md's trust model.
 """
 
 from __future__ import annotations
@@ -281,6 +281,41 @@ def threat_model_test_problems(root: Path) -> list[str]:
     return problems
 
 
+TRUST_MODEL_DOC = "docs/design.md"
+TRUST_MODEL_HEADING = "## Trust model"
+SECURITY_DOC = "SECURITY.md"
+SECURITY_AREAS_HEADING = "## Security-sensitive areas"
+# A list item of the security-sensitive areas that opens with a bold name is a boundary's area, the name being the
+# boundary's as the trust model's first column gives it; an item with no bold opening names no boundary.
+SECURITY_AREA = re.compile(r"^- \*\*(.+?)\*\*")
+
+
+def trust_model_area_problems(root: Path) -> list[str]:
+    """Report each boundary of the trust model that no security-sensitive area of SECURITY.md names, and each area
+    whose bold name is no boundary of the trust model, so a reporter reading SECURITY.md alone is told of every
+    boundary the design places."""
+    section = markdown_section((root / TRUST_MODEL_DOC).read_text(encoding="utf-8"), TRUST_MODEL_HEADING)
+    rows = [line for line in (section or "").split("\n") if line.startswith("|")][2:]
+    if not rows:
+        return [f"{TRUST_MODEL_DOC} has no table under {TRUST_MODEL_HEADING!r}"]
+    boundaries = [row.split("|")[1].strip() for row in rows]
+    areas_section = markdown_section((root / SECURITY_DOC).read_text(encoding="utf-8"), SECURITY_AREAS_HEADING)
+    if areas_section is None:
+        return [f"{SECURITY_DOC} has no {SECURITY_AREAS_HEADING!r} section"]
+    areas = [match.group(1) for line in areas_section.split("\n") if (match := SECURITY_AREA.match(line))]
+    problems = [
+        f"{SECURITY_DOC}: no security-sensitive area names the trust-model boundary {boundary!r} of {TRUST_MODEL_DOC}"
+        for boundary in boundaries
+        if boundary not in areas
+    ]
+    problems += [
+        f"{SECURITY_DOC}: the security-sensitive area {area!r} names no trust-model boundary of {TRUST_MODEL_DOC}"
+        for area in areas
+        if area not in boundaries
+    ]
+    return problems
+
+
 class MarkdownLinksPolicies(unittest.TestCase):
     def test_repository_links_resolve(self) -> None:
         self.assertEqual([], markdown_link_problems(REPOSITORY_ROOT))
@@ -290,3 +325,6 @@ class MarkdownLinksPolicies(unittest.TestCase):
 
     def test_every_test_a_document_cites_exists(self) -> None:
         self.assertEqual([], cited_test_problems(REPOSITORY_ROOT))
+
+    def test_every_trust_model_boundary_has_a_security_sensitive_area(self) -> None:
+        self.assertEqual([], trust_model_area_problems(REPOSITORY_ROOT))

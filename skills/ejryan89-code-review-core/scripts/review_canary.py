@@ -9,8 +9,11 @@ A fixture directory holds a change as two trees and the pull request around them
 The suite's generic reviewer reviews a fixture, unless pull.json names a `manifest_path`: a specialists manifest in
 the base tree, which `prepare` reads from the base commit as it reads a configured repository's `manifest_path`.
 
-A fixture is trusted input, as the configuration is: it lives in the suite's source repository, outside anything that
-ships, and no pull request's author writes it. It still takes the real path from the commits on. `fixture_change`
+A fixture is trusted input, as the configuration is: pull.json, a prior record, and the reviewer manifest it names,
+which names the condition scripts a review runs. It is trusted because the user running the canary vouches for it as
+for the checkout that holds it, not because of where it lives: a fixture another author proposes by pull request is
+that author's input until the user has read it, as the pull request's code is, and a document copied into a fixture
+stays its author's input whatever the fixture says. It still takes the real path from the commits on. `fixture_change`
 commits both trees, byte for byte, to a throwaway repository whose origin names the fixture's repository, so `prepare`
 snapshots the head from that repository's objects as it snapshots a checkout's, with the same exclusions, and reads the
 diff git computes between the two commits as GitHub would serve it. Nothing here calls GitHub.

@@ -41,7 +41,7 @@ import review_run
 import review_source
 import review_specialists
 import skill_inventory
-from git_client import GitClient, GitResult
+from git_client import GitClient, GitError, GitResult
 from review_config import write_config
 from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
@@ -1337,6 +1337,67 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
 
 
+def unreadable_checkout() -> str | None:
+    raise GitError("fatal: not a git repository")
+
+
+class CheckoutTests(unittest.TestCase):
+    """A run refuses a checkout that follows another repository's pull request, read from the checkout's git."""
+
+    # The home conftest.py's git_home fixture gives the running test's git.
+    git_home: GitHome
+
+    def setUp(self) -> None:
+        self.root = temporary_root(self)
+        self.git = GitClient()
+        for arguments in (
+            ["init", "-q", "-b", "main"],
+            ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "one"],
+            ["update-ref", "refs/remotes/origin/main", "HEAD"],
+            ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "two"],
+        ):
+            self.git.output(arguments, directory=self.root)
+
+    def follow(self, remote: str, merge: str) -> None:
+        self.git.output(["config", "branch.main.remote", remote], directory=self.root)
+        self.git.output(["config", "branch.main.merge", merge], directory=self.root)
+
+    def foreign(self) -> str | None:
+        return skill_evals.foreign_checkout(self.git, self.root)
+
+    def test_a_branch_of_the_user_s_own_is_accepted(self) -> None:
+        self.assertIsNone(self.foreign())
+        for remote, merge in (("origin", "refs/heads/main"), (".", "refs/heads/other")):
+            with self.subTest(remote=remote):
+                self.follow(remote, merge)
+                self.assertIsNone(self.foreign())
+
+    def test_a_branch_following_a_pull_request_s_ref_or_another_remote_is_refused(self) -> None:
+        cases = {
+            ("origin", "refs/pull/7/head"): "its branch main follows refs/pull/7/head, a pull request's ref",
+            ("someone", "refs/heads/topic"): "its branch main follows someone, not origin",
+            ("https://github.com/someone/fork.git", "refs/heads/topic"): (
+                "its branch main follows https://github.com/someone/fork.git, not origin"
+            ),
+        }
+        for (remote, merge), reason in cases.items():
+            with self.subTest(remote=remote, merge=merge):
+                self.follow(remote, merge)
+                self.assertEqual(reason, self.foreign())
+
+    def test_a_detached_head_is_accepted_only_at_a_commit_a_branch_of_origin_holds(self) -> None:
+        self.git.output(["checkout", "-q", "--detach", "HEAD"], directory=self.root)
+        self.assertEqual("HEAD is detached at a commit no branch of origin holds", self.foreign())
+        self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/main"], directory=self.root)
+        self.assertIsNone(self.foreign())
+
+    def test_a_folder_git_cannot_read_raises(self) -> None:
+        outside = self.root.parent / "not a checkout"
+        outside.mkdir()
+        with self.assertRaises(GitError):
+            skill_evals.foreign_checkout(self.git, outside)
+
+
 class DocumentStagingTests(unittest.TestCase):
     """A document scenario's document is written into the run's folder for the skill to find by its path."""
 
@@ -2576,6 +2637,9 @@ class EvaluateTests(unittest.TestCase):
             "make_home": self.make_home,
             "today": lambda: datetime.date(2026, 10, 8),
             "results": self.results,
+            # The test's own checkout is a pull request's merge commit in CI, so each run here stands in for one of
+            # the user's own branches; CheckoutTests holds the real reading.
+            "checkout": lambda: None,
             **changes,
         }
         return skill_evals.Seams(**values)
@@ -2971,6 +3035,9 @@ class EvaluateTests(unittest.TestCase):
                 self.assertIn(told, self.cited)
                 self.assertFalse(any(line.startswith("FAIL ") for line in self.cited), self.cited)
 
+    def test_a_run_reads_this_checkout_s_branch_by_default(self) -> None:
+        self.assertIs(skill_evals.this_checkout, skill_evals.Seams().checkout)
+
     def test_claude_code_is_looked_up_where_check_looks_for_it(self) -> None:
         # ejryan89-skill-core's locator through the deployer, so a Claude Code only in WinGet's Links folder runs too.
         self.assertIs(platform_support.find_executable, skill_evals.Seams().which)
@@ -2984,6 +3051,14 @@ class EvaluateTests(unittest.TestCase):
             "Claude Code (claude) is not installed": ([], {"which": lambda _: None}),
             "needs one": (["--write"], {"results": no_table}),
             "is not a row": (["--write"], {"results": stray}),
+            "follows another repository's pull request: its branch x follows refs/pull/7/head": (
+                [],
+                {"checkout": lambda: "its branch x follows refs/pull/7/head, a pull request's ref"},
+            ),
+            "cannot read the checkout's branch: fatal: not a git repository": (
+                [],
+                {"checkout": unreadable_checkout},
+            ),
         }
         for reason, (argv, changes) in cases.items():
             with self.subTest(reason=reason):
