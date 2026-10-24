@@ -36,9 +36,10 @@
 #                    which deployed <commit>, that check did not name: the clone was updated, and nothing was
 #                    deployed
 #   FAILED <reason>  alone: the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside
-#                    this skill, `deploy.py check` named no deployed commit and pin the update can read, so whether
-#                    the installation is pinned is unknown, a step failed outright, or a release tag the stop compares
-#                    has a version component too long to compare
+#                    this skill, `deploy.py check` printed nothing, printed only its error, or named the deployed
+#                    commit or the pin in a form the update cannot read, so whether the installation is pinned is
+#                    unknown, a step failed outright, or a release tag the stop compares has a version component too
+#                    long to compare
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
 # switches it to main and leaves it there.
 # Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
@@ -86,9 +87,10 @@ for OPTION in "${@:3}"; do
 done
 [ -z "$CHANNEL_NEXT" ] || usage
 
-# A command's error output as one line, for a FAILED reason.
+# A command's error output as one line, for a FAILED reason: its lines joined by spaces, blank ones left out, as the
+# deployer prints its errors between blank lines.
 one_line() {
-  printf '%s' "$1" | tr -d '\r' | tr '\n' ' '
+  printf '%s\n' "$1" | tr -d '\r' | awk 'NF { printf "%s%s", separator, $0; separator = " " }'
 }
 
 # Bash keeps its script open while running, and Windows refuses to rename a directory holding an open

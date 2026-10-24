@@ -128,13 +128,25 @@ for NAME in origin/main main; do
   ! git -C "$CLONE" show-ref --verify --quiet "refs/tags/$NAME" || fail "remote tag $NAME: the tag was fetched"
   git_quiet -C "$SEED" push origin ":refs/tags/$NAME"
 done
+for NAME in origin/main main; do
+  new_clone
+  BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+  FETCHED=$(git -C "$CLONE" rev-parse refs/remotes/origin/main)
+  git_quiet -C "$CLONE" tag "$NAME" "$SIDE"
+  publish "change while the clone has a tag $NAME"
+  run_subject "$CLONE" main
+  expect_shadowed "refs/tags/$NAME in the clone" "local tag $NAME"
+done
+# Shadows on origin and in the clone at once are listed together, origin's first, one to a line.
 new_clone
 BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
 FETCHED=$(git -C "$CLONE" rev-parse refs/remotes/origin/main)
-git_quiet -C "$CLONE" tag main "$SIDE"
-publish "change while the clone has a tag main"
+git_quiet -C "$CLONE" tag origin/main "$SIDE"
+publish "change while origin and the clone both have a shadowing tag"
+git_quiet -C "$SEED" push origin "$SIDE:refs/tags/main"
 run_subject "$CLONE" main
-expect_shadowed "refs/tags/main in the clone" "local tag main"
+git_quiet -C "$SEED" push origin ":refs/tags/main"
+expect_shadowed "refs/tags/main on origin"$'\n'"refs/tags/origin/main in the clone" "remote and local tags"
 
 # A shadowing tag origin publishes after the check is not fetched, and the update follows origin's main. A Git wrapper
 # hides the tag from the check.

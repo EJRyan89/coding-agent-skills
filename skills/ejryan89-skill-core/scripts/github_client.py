@@ -25,6 +25,7 @@ from functools import partial
 from pathlib import Path
 from typing import IO, Any, Literal, NamedTuple, Protocol, TypeVar
 
+import json_reader
 from bounded_process import Finished, run_bounded
 from executable_locator import located_command
 from flat_text import flat_text
@@ -423,8 +424,8 @@ def json_body(result: CommandResult) -> Any:
     `GitHubClient.json` parses with it, and so does a caller's own parse passed to `request`.
     """
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
+        return json_reader.loads(result.stdout)
+    except (json.JSONDecodeError, json_reader.JsonRefused) as exc:
         raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
 
 
