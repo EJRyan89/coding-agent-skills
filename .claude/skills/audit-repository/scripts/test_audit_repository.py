@@ -405,11 +405,12 @@ class ReleaseTests(Fixture):
                 for field in fields:
                     self.assertIn(f"- **{field}**:", text)
 
-    def test_since_head_finds_no_changes_and_writes_no_brief(self) -> None:
+    def test_since_head_finds_no_changes_and_fails_rather_than_auditing_nothing(self) -> None:
         code, lines = self.run_main("release", "--since", "HEAD")
-        self.assertEqual(0, code)
-        self.assertIn("CHANGED 0", lines)
-        self.assertFalse([line for line in lines if line.startswith(("BRIEF", "BRIEFS"))])
+        self.assertEqual(
+            (1, ["FAILED no file changed since HEAD, so a release audit would read nothing; pass --since <ref>"]),
+            (code, lines),
+        )
 
     def test_a_committed_path_holding_a_line_break_is_listed_whole(self) -> None:
         # Git gives each path as one NUL-ended field, so a line break inside a path never splits it in two.
@@ -547,6 +548,15 @@ class RotationTests(Fixture):
         self.assertIn("# Rotation audit: the code review skills", briefs["code-review"])
         self.assertIn('- `"agents/code-review-reviewer.md"`', briefs["code-review"])
         self.assertNotIn("skill_evals_draft", briefs["code-review"])
+
+    def test_an_area_holding_no_tracked_file_fails_rather_than_briefing_a_reader_on_nothing(self) -> None:
+        with mock.patch.object(audit, "area_of", return_value=audit.AREAS[0]):
+            code, lines = self.run_main("rotation")
+        self.assertEqual(
+            (1, "FAILED HEAD tracks no file of the code-review area, so its reader would read nothing"),
+            (code, lines[-1]),
+        )
+        self.assertFalse([line for line in lines if line.startswith("BRIEF")])
 
     def test_record_appends_the_next_area_for_a_tag_and_writes_no_brief(self) -> None:
         linked = self.linked_worktree()

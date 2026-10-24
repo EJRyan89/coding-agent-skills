@@ -1545,6 +1545,22 @@ class StatusLineTests(TemporaryTestCase):
         )
         self.assertEqual([f"UNPRINTED {(folder / 'SKILL.md').as_posix()} 4 GONE"], self.status(folder))
 
+    def test_a_script_whose_output_cannot_be_measured_fails_the_scan_rather_than_printing_nothing(self) -> None:
+        for name, content, reason in (
+            ("tool.py", b"print('READY')\n\xff\n", "not UTF-8 text"),
+            ("tool.sh", b"echo READY\n\xff\n", "not UTF-8 text"),
+            ("binary.py", b"\xff\xfe\0", "not UTF-8 text"),
+            ("broken.py", b"def (:\n", "not valid Python"),
+        ):
+            with self.subTest(name=name):
+                folder = self.skill("It prints `READY` and then `DONE`.\n")
+                script = folder / "scripts" / name
+                script.parent.mkdir(parents=True, exist_ok=True)
+                script.write_bytes(content)
+                code, lines, _ = run("scan", str(folder))
+                self.assertEqual((1, f"FAILED cannot read {script.resolve().as_posix()}: {reason}"), (code, lines[-1]))
+                script.unlink()
+
     def test_a_document_and_its_script_that_agree_print_nothing(self) -> None:
         folder = self.skill(
             "Run it:\n\n```bash\n"
@@ -1674,14 +1690,12 @@ class StatusLineTests(TemporaryTestCase):
         folder = self.skill("It prints `NOWHERE <x>` and exits 9.\n")
         self.assertEqual([], self.status(folder))
 
-    def test_a_named_file_and_a_script_that_cannot_be_read_compare_nothing_more(self) -> None:
+    def test_a_script_named_outside_the_skill_compares_nothing_more(self) -> None:
         folder = self.skill(
-            '```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/broken.py"\npython -B "$HOME/x.py"\n```\n\n'
+            '```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/tool.py"\npython -B "$HOME/x.py"\n```\n\n'
             "It prints `BROKEN <x>`.\n",
-            "def (:\n",
-            name="broken.py",
+            "x = 1\n",
         )
-        write(folder / "scripts" / "binary.py", b"\xff\xfe\0")
         self.assertEqual([f"UNPRINTED {(folder / 'SKILL.md').as_posix()} 9 BROKEN"], self.status(folder))
 
     def test_scanning_files_compares_no_status_lines(self) -> None:
@@ -2085,16 +2099,26 @@ class AgentTests(SourceTreeTestCase):
                 self.assertEqual(0, code, error)
                 self.assertIn(f"DECLARED_UNREADABLE {metadata.as_posix()}", lines)
 
-    def test_unparseable_data_files_scripts_and_scenarios_are_passed_over(self) -> None:
+    def test_unparseable_data_files_and_scenarios_are_passed_over_and_an_unparseable_script_fails_the_scan(
+        self,
+    ) -> None:
         for shape in sorted({*UNPARSEABLE_JSON, *UNPARSEABLE_PYTHON}):
             with self.subTest(shape=shape):
                 skill = self.skill('```bash\npython "${CLAUDE_SKILL_DIR}/scripts/broken.py"\n```\n')
-                write(skill.parent / "scripts" / "broken.py", UNPARSEABLE_PYTHON.get(shape, "x = 1\n"))
+                script = write(skill.parent / "scripts" / "broken.py", UNPARSEABLE_PYTHON.get(shape, "x = 1\n"))
                 write(skill.parent / "references" / "settings.json", UNPARSEABLE_JSON.get(shape, "{}"))
                 scenario = self.root / "tests" / "fixtures" / "skill-evals" / "alpha" / "broken" / "scenario.json"
                 write(scenario, UNPARSEABLE_JSON.get(shape, "{}"))
                 for command, target in (("inventory", skill.parent), ("scan", skill.parent), ("tools", skill)):
                     code, lines, error = run(command, str(target))
+                    if command == "scan" and shape in UNPARSEABLE_PYTHON:
+                        # What the script prints cannot be measured, so the comparison never reads it as nothing.
+                        self.assertEqual(
+                            (1, f"FAILED cannot read {script.resolve().as_posix()}: not valid Python"),
+                            (code, lines[-1]),
+                            error,
+                        )
+                        continue
                     self.assertEqual(0, code, (command, lines, error))
                     self.assertEqual([], [line for line in lines if line.startswith("FAILED")], command)
 

@@ -9,6 +9,7 @@ Ask of each change:
 3. **The sentence and the policy agree.** The sentence names the forms the policy refuses, no more and no fewer, over the same roots (`deployer/`, `tools/`, `deploy.py`, `skills/`, `.claude/skills/`). A change to one changes the other.
 4. **No allowance without its reason.** `FSOPS_ALLOWED`, `PLATFORM_ALLOWED`, `DUPLICATION_ALLOWED`, `noqa`, and `type: ignore` state their reason, and the policy checks the condition the reason claims. Nothing turns a check off beyond one finding, and a ceiling in `pyproject.toml` only goes down.
 5. **Isolation.** A suite makes its own temporary home and fixtures and depends on no other test's order or state.
+6. **Evidence absent.** A new or changed policy, gate, count, or measurement has a test in which its evidence never existed (no file to read, no report, an empty set to iterate, a missing or unreadable path) that asserts a refusal, an inconclusive verdict, or a named "could not measure", never a pass or an empty success, as item 5 of TRUSTED_ROOT/docs/adding-a-skill.md "Validation" requires.
 
 The audit found this drift here: a console policy that scanned skills only while its sentence covered the deployer and tools; a `noqa` the sentence refused and the policy accepted; suppression comments and override files the sentence forbade and nothing refused; an entry-point check that matched a substring anywhere, comments included; a command reader that needed a literal `subprocess.` prefix and missed aliases, variables, and PowerShell.
 

@@ -82,6 +82,9 @@ suite, and so does `--full`, which the workflow passes on a push. Markdown under
 skill and agent behavior, not documentation. `DOCUMENTATION_FILES` and `DOCUMENTATION_DIRECTORIES` in
 `tests/run_validation.py` name only files no suite executes.
 
+A guard, gate, verdict, count, or measurement has a test in which its evidence never existed, as item 5 of
+[Validation](adding-a-skill.md#validation) in the skill contract states.
+
 A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
 expected wording from that document, or from the one constant the code and the document both use, never from a copy
 restated in the test, so the test cannot pin a change the document does not make.

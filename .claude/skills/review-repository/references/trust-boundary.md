@@ -9,6 +9,7 @@ Ask of each change:
 3. **The guard.** A reviewer still reads only its run and the references, writes only its own result under any spelling of the path, and runs only its role's commands with every value kept in quotes. A call the guard cannot evaluate is denied.
 4. **The contract matches the code.** Each threat-model sentence and format row the change touches is what the guard or validator does. Read the function it names.
 5. **Trusted input stays trusted.** Reviewer files, condition scripts, and suite profiles come only from the trusted commit or the configured local manifest, never the head.
+6. **Evidence absent.** A new or changed guard, check, or verdict has a test in which its evidence never existed (no log, no claim, no `run.json`, an empty set, a missing or unreadable path) that asserts a denial, a refusal, or `INCOMPLETE`, never a pass or an empty success, and fails if the guard is changed to pass on absence. Ask for the test by name when it is missing.
 
 The audit found this drift here: a row that named tests in other suites only; author-controlled values (review-comment bodies, the title, the branch name) with no row at all; a sentence that a manifest names no file twice while a shared profile was accepted; a read count that counted the snapshot's own manifest; a measurement that disagreed with the route `prepare` takes.
 
