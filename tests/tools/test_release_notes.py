@@ -515,6 +515,13 @@ class CheckTests(FixtureRepository):
             release_notes.main(["v0.2.0", "--check", "--write"], root=self.root)
         self.assertEqual(2, raised.exception.code)
 
+    def test_a_ref_git_cannot_read_exits_2_with_gits_reason_never_as_a_missing_section(self) -> None:
+        self.history()
+        code, printed, errors = self.run_main("v0.2.0", "--check", "--from", "v0.1.0", "--to", "no-such-ref")
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(errors.startswith(f"ERROR: git ls-tree --name-only no-such-ref -- {NOTES} failed: "), errors)
+        self.assertNotIn("has no ## v0.2.0 section", errors)
+
 
 class InsertSectionTests(unittest.TestCase):
     def test_a_file_with_no_version_gets_the_section_at_its_end(self) -> None:

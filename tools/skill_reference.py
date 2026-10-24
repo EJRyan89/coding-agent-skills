@@ -107,6 +107,17 @@ def _needs(source: deploy_source.Source, name: str) -> list[str]:
     return needs
 
 
+def _read(root: Path, path: Path) -> str:
+    """A file the reference is made from or checked against; one that is not UTF-8 is a SkillReferenceError naming it,
+    which ends the run as FAILED rather than as a stale reference."""
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeError as exc:
+        raise SkillReferenceError(f"{path.relative_to(root).as_posix()} is not UTF-8: {exc}") from exc
+    # A file saved with CRLF endings reads as one saved with LF, as read_text read it.
+    return text.replace("\r\n", "\n")
+
+
 def load_source(root: Path) -> deploy_source.Source:
     paths = Paths(root, root)
     try:
@@ -332,12 +343,13 @@ def problems(root: Path) -> list[str]:
     reference = root / REFERENCE
     if not reference.is_file():
         return [f"{REFERENCE.as_posix()} does not exist"]
-    document = reference.read_text(encoding="utf-8")
+    document = _read(root, reference)
     found: list[str] = []
     for entry in skills:
         skill_md = source.skills[entry.name].directory / "SKILL.md"
         name = skill_md.relative_to(root).as_posix()
-        if entry.argument_hint is None and "$ARGUMENTS" in skill_md.read_text(encoding="utf-8"):
+        # entries() has read this file whole as UTF-8 already, refusing it otherwise.
+        if entry.argument_hint is None and "$ARGUMENTS" in skill_md.read_bytes().decode("utf-8"):
             found.append(f"{name} reads $ARGUMENTS but declares no argument-hint")
         if not entry.user_only and not says_when(entry.description):
             found.append(f"{name}: the model may start it, so its description must {WHEN_RULE}")
@@ -365,13 +377,15 @@ def problems(root: Path) -> list[str]:
         found.append(f"{REFERENCE.as_posix()}: generated content is stale; run python tools/skill_reference.py --write")
     roots = sorted([*deploy_source.root_names(source), *source.bundles])
     readme = root / README
-    found.extend(readme_problems(readme.read_text(encoding="utf-8") if readme.is_file() else "", roots, sorted(names)))
+    if not readme.is_file():
+        return [*found, f"{README.as_posix()} does not exist"]
+    found.extend(readme_problems(_read(root, readme), roots, sorted(names)))
     return found
 
 
 def write(root: Path) -> None:
     reference = root / REFERENCE
-    document = reference.read_text(encoding="utf-8")
+    document = _read(root, reference)
     updated = regenerate(document, entries(load_source(root)))
     if updated != document:
         reference.write_text(updated, encoding="utf-8", newline="\n")

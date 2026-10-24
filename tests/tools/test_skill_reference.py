@@ -349,6 +349,45 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn("FAILED", stderr)
 
+    def test_non_ascii_text_reads_as_utf8_and_a_missing_readme_is_a_problem_not_a_failure(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            skill_reference.main(["--write", "--root", str(self.root)])
+        self.add_prose("alpha", "Alpha's flag explained, café included.")
+        self.add_prose("beta", "Beta explained.")
+        # Saved with CRLF endings, as an editor on Windows may, the files read as they do with LF.
+        readme = README.replace("Sweeps.", "Sweeps, café.").replace("\n", "\r\n")
+        (self.root / "README.md").write_bytes(readme.encode("utf-8"))
+        self.reference.write_bytes(self.reference.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        self.assertEqual([], skill_reference.problems(self.root))
+        (self.root / "README.md").unlink()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = skill_reference.main(["--root", str(self.root)])
+        self.assertEqual((1, "README.md does not exist\n"), (code, stdout.getvalue()))
+
+    def test_a_file_that_is_not_utf8_ends_the_run_as_failed_never_as_stale(self) -> None:
+        skill_reference.write(self.root)
+        self.add_prose("alpha", "Alpha's flag explained.")
+        self.add_prose("beta", "Beta explained.")
+        (self.root / "README.md").write_text(README, encoding="utf-8")
+        for relative in ("docs/skills.md", "skills/alpha/SKILL.md", "README.md", "deploy-meta/alpha.json"):
+            for arguments in ((), ("--write",)):
+                with self.subTest(file=relative, arguments=arguments):
+                    path = self.root / relative
+                    kept = path.read_bytes()
+                    path.write_bytes(kept + b"\xff\n")
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    try:
+                        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                            code = skill_reference.main(["--root", str(self.root), *arguments])
+                    finally:
+                        changed = path.read_bytes()
+                        path.write_bytes(kept)
+                    self.assertEqual((2, ""), (code, stdout.getvalue()), stderr.getvalue())
+                    self.assertTrue(stderr.getvalue().startswith("FAILED "), stderr.getvalue())
+                    self.assertIn(relative, stderr.getvalue().replace("\\", "/"))
+                    self.assertEqual(kept + b"\xff\n", changed)
+
 
 @pytest.mark.parametrize(
     ("description", "expected"),

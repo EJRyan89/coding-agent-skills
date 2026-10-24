@@ -916,6 +916,8 @@ HELPER_HOOKS = (
     "          timeout: 30\n"
     "          onFailure: block\n"
 )
+# The version each fixture plugin is built with.
+VERSION = "1.0.0"
 PLUGIN_SOURCES = {
     "skills/alpha/SKILL.md": "---\nname: alpha\n---\n\nRun {{PYTHON}} -B it, then start `helper`.\n",
     "skills/alpha/scripts/tool.py": "print('tool')\n",
@@ -951,7 +953,7 @@ def plugin_files() -> dict[str, bytes]:
 
 def test_plugin_policy_passes_a_plugin_that_holds_its_sources_with_the_pinned_answers(tmp_path: Path) -> None:
     write_plugin_sources(tmp_path, PLUGIN_SOURCES)
-    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}) == []
+    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}, VERSION) == []
 
 
 @pytest.mark.parametrize(
@@ -966,7 +968,7 @@ def test_plugin_policy_skips_bytecode_the_builder_never_reads_but_not_a_stray_fi
     stray: str, problems: list[str], tmp_path: Path
 ) -> None:
     write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, stray: "x"})
-    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}) == problems
+    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}, VERSION) == problems
 
 
 def test_plugin_policy_passes_an_agent_without_hooks_and_a_plugin_without_a_hooks_file(tmp_path: Path) -> None:
@@ -975,7 +977,7 @@ def test_plugin_policy_passes_an_agent_without_hooks_and_a_plugin_without_a_hook
     )
     files = plugin_files()
     del files["hooks/hooks.json"]
-    assert plugin_tree_problems(tmp_path, {"suite": files}) == []
+    assert plugin_tree_problems(tmp_path, {"suite": files}, VERSION) == []
 
 
 def other_hooks(**changes: object) -> bytes:
@@ -1009,7 +1011,19 @@ def other_hooks(**changes: object) -> bytes:
             {".claude-plugin/plugin.json": b'{"name": "suite", "description": "Other.", "version": "1"}'},
             "differs from its marketplace",
         ),
-        ({".claude-plugin/plugin.json": b'{"name": "suite", "description": "A suite."}'}, "is no manifest of a plugin"),
+        (
+            {".claude-plugin/plugin.json": b'{"name": "suite", "description": "A suite.", "version": "9.9.9"}'},
+            "differs from its marketplace",
+        ),
+        (
+            {".claude-plugin/plugin.json": b'{"name": "other", "description": "A suite.", "version": "1.0.0"}'},
+            "differs from its marketplace",
+        ),
+        (
+            {".claude-plugin/plugin.json": b'{"name": "suite", "description": "A suite."}'},
+            "differs from its marketplace",
+        ),
+        ({".claude-plugin/plugin.json": b"[]"}, "is no manifest of a plugin"),
         ({".claude-plugin/plugin.json": None}, "is no manifest of a plugin"),
         ({"hooks/hooks.json": None}, "its agents declare hooks, but it has no hooks/hooks.json"),
         ({"hooks/hooks.json": b"[]"}, "is not a hooks file of matchers and handlers"),
@@ -1031,7 +1045,7 @@ def test_plugin_policy_refuses_what_its_sources_do_not_hold(
             del files[path]
         else:
             files[path] = content
-    problems = plugin_tree_problems(tmp_path, {"suite": files})
+    problems = plugin_tree_problems(tmp_path, {"suite": files}, VERSION)
     assert len(problems) == 1, problems
     assert problem in problems[0]
 
@@ -1039,7 +1053,7 @@ def test_plugin_policy_refuses_what_its_sources_do_not_hold(
 def test_plugin_policy_refuses_a_token_the_source_left_with_no_pinned_answer(tmp_path: Path) -> None:
     write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, "skills/alpha/scripts/tool.py": "Root {{HOME}}.\n"})
     files = {**plugin_files(), "skills/alpha/scripts/tool.py": b"Root {{HOME}}.\n"}
-    assert plugin_tree_problems(tmp_path, {"suite": files}) == [
+    assert plugin_tree_problems(tmp_path, {"suite": files}, VERSION) == [
         "plugin suite: skills/alpha/scripts/tool.py keeps a template token"
     ]
 
@@ -1088,20 +1102,20 @@ def test_plugin_policy_holds_the_repositories_root_to_a_declared_option_and_word
 ) -> None:
     write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, "skills/alpha/SKILL.md": ROOTED_SOURCE})
     files = {**plugin_files(), "skills/alpha/SKILL.md": skill, ".claude-plugin/plugin.json": manifest}
-    assert plugin_tree_problems(tmp_path, {"suite": files}) == problems
+    assert plugin_tree_problems(tmp_path, {"suite": files}, VERSION) == problems
 
 
 def test_plugin_policy_refuses_an_option_no_carried_skill_reads(tmp_path: Path) -> None:
     write_plugin_sources(tmp_path, PLUGIN_SOURCES)
     files = {**plugin_files(), ".claude-plugin/plugin.json": rooted_manifest(userConfig=ROOTED_OPTIONS)}
-    assert plugin_tree_problems(tmp_path, {"suite": files}) == [
+    assert plugin_tree_problems(tmp_path, {"suite": files}, VERSION) == [
         "plugin suite: .claude-plugin/plugin.json must declare userConfig for no option"
     ]
 
 
 def test_plugin_policy_refuses_a_checkout_that_holds_a_plugin_manifest(tmp_path: Path) -> None:
     write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, ".claude-plugin/plugin.json": "{}"})
-    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}) == [
+    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}, VERSION) == [
         ".claude-plugin/plugin.json makes the checkout's skills read as a plugin's"
     ]
 
@@ -1121,13 +1135,13 @@ def test_plugin_policy_holds_each_plugins_readme_to_the_sources(
     files = plugin_files()
     if readme is not None:
         files["README.md"] = readme
-    assert plugin_tree_problems(tmp_path, {"suite": files}) == problems
+    assert plugin_tree_problems(tmp_path, {"suite": files}, VERSION) == problems
 
 
 def test_plugin_policy_refuses_a_readme_the_sources_do_not_hold(tmp_path: Path) -> None:
     write_plugin_sources(tmp_path, PLUGIN_SOURCES)
     files = {**plugin_files(), "README.md": b"# Suite\n"}
-    assert plugin_tree_problems(tmp_path, {"suite": files}) == [
+    assert plugin_tree_problems(tmp_path, {"suite": files}, VERSION) == [
         "plugin suite: README.md comes from no skill file or agent a deployment ships"
     ]
 
