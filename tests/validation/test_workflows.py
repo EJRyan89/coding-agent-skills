@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from workflows import (
     DEFENDER_LINES,
+    IMAGE_MODULE_LINES,
+    IMAGE_MODULE_STEP,
     PINNED_TOOL_LINES,
     WorkflowSyntaxError,
     changelog_job_problems,
@@ -25,6 +27,7 @@ from workflows import (
     copilot_auto_update_problems,
     defender_problems,
     deployable_linux_problems,
+    image_module_problems,
     leg_problems,
     linux_job_problems,
     linux_verify_log_problems,
@@ -510,32 +513,125 @@ def test_a_tool_off_its_pin_or_a_gallery_query_on_every_event_fails(drifted: str
     assert any(problem in found for found in problems), problems
 
 
-DEFENDER = _job("suite", _pwsh_step("Exclude", (*DEFENDER_LINES, "}")), VALIDATION_STEP)
+SCHEDULE = "github.event_name == 'schedule'"
+DEFENDER = _job("suite", _pwsh_step("Show", DEFENDER_LINES, SCHEDULE), VALIDATION_STEP)
+UNPRINTED = "no pwsh step of the suite job prints Defender's real-time protection state on the schedule"
 
 
 class DefenderFixtures(unittest.TestCase):
-    def test_the_windows_legs_read_real_time_protection_and_exclude_their_own_folders(self) -> None:
+    def test_the_weekly_run_alone_prints_real_time_protection(self) -> None:
         self.assertEqual([], defender_problems(DEFENDER))
 
 
 @pytest.mark.parametrize(
-    "drifted",
+    ("drifted", "problem"),
     [
-        pytest.param(_job("suite", VALIDATION_STEP, _pwsh_step("Exclude", DEFENDER_LINES)), id="after validation"),
-        pytest.param(DEFENDER.replace("Get-MpComputerStatus", "Get-MpPreference"), id="the state unread"),
+        pytest.param(DEFENDER.replace("Get-MpComputerStatus", "Get-MpPreference"), UNPRINTED, id="the state unread"),
         pytest.param(
-            DEFENDER.replace('          Write-Host "Defender', '          # "Defender'), id="the state unprinted"
+            DEFENDER.replace('          Write-Host "Defender', '          # "Defender'),
+            UNPRINTED,
+            id="the state unprinted",
         ),
-        pytest.param(DEFENDER.replace(", $env:TEMP", ""), id="the temporary folder scanned"),
-        pytest.param(DEFENDER.replace(", $env:GITHUB_WORKSPACE", ""), id="the workspace scanned"),
-        pytest.param(DEFENDER.replace("if ($enabled) {", "if ($true) {"), id="excluded whatever the state"),
-        pytest.param(_job("linux", _pwsh_step("Exclude", DEFENDER_LINES), VALIDATION_STEP), id="another job"),
+        pytest.param(
+            _job("linux", _pwsh_step("Show", DEFENDER_LINES, SCHEDULE), VALIDATION_STEP), UNPRINTED, id="another job"
+        ),
+        pytest.param(
+            DEFENDER.replace(f"        if: {SCHEDULE}\n", ""),
+            "reads Defender's real-time protection on every event",
+            id="read on every event",
+        ),
+        pytest.param(
+            DEFENDER.replace(SCHEDULE, "github.event_name != 'schedule'"),
+            "reads Defender's real-time protection on every event",
+            id="read off the schedule",
+        ),
+        pytest.param(
+            _job(
+                "suite",
+                _pwsh_step("Show", DEFENDER_LINES, SCHEDULE),
+                _pwsh_step("Exclude", ("Add-MpPreference -ExclusionPath $env:RUNNER_TEMP -ErrorAction Stop",)),
+                VALIDATION_STEP,
+            ),
+            "adds a Defender exclusion",
+            id="an exclusion added",
+        ),
     ],
 )
-def test_a_windows_leg_that_does_not_read_and_exclude_before_validation_fails(drifted: str) -> None:
-    assert defender_problems(drifted) == [
-        "no pwsh step of the suite job reads Defender's real-time protection and excludes the runner's folders"
-    ]
+def test_a_defender_reading_on_every_event_or_an_exclusion_fails(drifted: str, problem: str) -> None:
+    problems = defender_problems(drifted)
+    assert any(problem in found for found in problems), problems
+
+
+def _image_job(probe: str = "", cache: str = "", install: str = "", first: str = "") -> str:
+    """A Linux job that reads whether the image has the pinned analyzer and restores and installs it only if not, with
+    `first` as its first step and its validation step last unless `first` is that step."""
+    lines = "".join(f"          {line}\n" for line in IMAGE_MODULE_LINES)
+    cache_if = cache or f"steps.{IMAGE_MODULE_STEP}.outputs.installed != 'true'"
+    install_if = install or (
+        f"steps.{IMAGE_MODULE_STEP}.outputs.installed != 'true' && steps.analyzer.outputs.cache-hit != 'true'"
+    )
+    return _job(
+        "linux",
+        first,
+        f"      - name: Find\n        id: {IMAGE_MODULE_STEP}\n{probe}        shell: pwsh\n        run: |\n{lines}",
+        f"      - name: Restore\n        id: analyzer\n        if: {cache_if}\n        uses: actions/cache@SHA # v1\n"
+        "        with:\n          key: psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}\n",
+        f"      - name: Install\n        if: {install_if}\n        shell: pwsh\n"
+        "        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n",
+        "" if first == VALIDATION_STEP else VALIDATION_STEP,
+    )
+
+
+class ImageModuleFixtures(unittest.TestCase):
+    def test_the_analyzer_is_restored_and_installed_only_when_the_image_lacks_the_pin(self) -> None:
+        self.assertEqual([], image_module_problems(_image_job(), "linux"))
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        pytest.param(
+            _image_job().replace(f"        id: {IMAGE_MODULE_STEP}\n", ""),
+            f"steps with id {IMAGE_MODULE_STEP}, not one",
+            id="no image step",
+        ),
+        pytest.param(
+            _image_job().replace(
+                "Where-Object { [string]$_.Version -eq $env:PSSCRIPTANALYZER_VERSION }", "Select-Object -First 1"
+            ),
+            "does not record, on every event, whether the image has the pinned PSScriptAnalyzer",
+            id="any version counted",
+        ),
+        pytest.param(
+            _image_job(probe=f"        if: {SCHEDULE}\n"),
+            "does not record, on every event, whether the image has the pinned PSScriptAnalyzer",
+            id="the image read on the schedule only",
+        ),
+        pytest.param(
+            _image_job(cache="always()"),
+            "restores PSScriptAnalyzer's cache whether or not the image has the pin",
+            id="the cache restored whatever the image",
+        ),
+        pytest.param(
+            _image_job(install="steps.analyzer.outputs.cache-hit != 'true'"),
+            "installs PSScriptAnalyzer whether or not the image has the pin",
+            id="installed whatever the image",
+        ),
+        pytest.param(
+            _image_job(install=f"steps.{IMAGE_MODULE_STEP}.outputs.installed != 'true'"),
+            "installs PSScriptAnalyzer whether or not the image has the pin",
+            id="installed over a cache hit",
+        ),
+        pytest.param(
+            _image_job(first=VALIDATION_STEP),
+            "after validation",
+            id="read after validation",
+        ),
+    ],
+)
+def test_an_analyzer_restored_or_installed_whatever_the_image_has_fails(drifted: str, problem: str) -> None:
+    problems = image_module_problems(drifted, "linux")
+    assert any(problem in found for found in problems), problems
 
 
 REQUIRED_CHECK = (
