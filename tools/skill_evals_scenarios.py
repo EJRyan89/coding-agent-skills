@@ -422,6 +422,17 @@ def _listed_categories(expectations: Sequence[Mapping[str, Any]], categories: Se
             )
 
 
+def _clean_verdict(expectations: Sequence[Mapping[str, Any]], mode: str) -> None:
+    """Refuse an initial review's scenario that expects no finding and names no verdict, which an INCOMPLETE review
+    that raised nothing would pass."""
+    kinds = {item["kind"] for item in expectations}
+    if mode == "initial" and "finding" not in kinds and "verdict" not in kinds:
+        raise ScenarioError(
+            "a scenario that expects no finding names its verdict, "
+            "or an INCOMPLETE review that raised nothing passes it"
+        )
+
+
 def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str, ...]:
     """The files a run of a repository reviewer's scenario places from the checkout: the reviewer's SKILL.md, its
     folders, its manifest, at the fixture's pull.json manifest_path, and every file that manifest declares (its
@@ -605,6 +616,7 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
     if not isinstance(spec["expectations"], list) or not spec["expectations"]:
         raise ScenarioError("expectations must be a non-empty list")
     expectations = tuple(expectation(item, mode) for item in spec["expectations"])
+    _clean_verdict(spec["expectations"], mode)
     _listed_categories(spec["expectations"], finding_categories(spec, directory, checkout))
     return Scenario(
         skill=str(spec["skill"]),
