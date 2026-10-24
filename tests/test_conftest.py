@@ -387,6 +387,94 @@ class FixtureTests(unittest.TestCase):
         self.assertTrue(all(entry["config"] == os.environ["GIT_CONFIG_GLOBAL"] for entry in self.entries()))
 
 
+# A child suite that registers a cleanup and enters a context at each scope unittest offers, and records each as it
+# runs; its module cleanup fails when the suite names a failure.
+CLEANUP_SUITE = """
+from contextlib import contextmanager
+
+FAIL = {fail!r}
+
+
+@contextmanager
+def context(where):
+    record(where + " context entered")
+    yield
+    record(where + " context exited")
+
+
+def module_cleanup():
+    record("module cleanup")
+    if FAIL:
+        raise RuntimeError("the module cleanup failed")
+
+
+def setUpModule():
+    record("setUpModule")
+    unittest.addModuleCleanup(module_cleanup)
+    unittest.enterModuleContext(context("module"))
+
+
+def tearDownModule():
+    record("tearDownModule")
+
+
+class Case(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.addClassCleanup(record, "class cleanup")
+        cls.enterClassContext(context("class"))
+
+    def setUp(self):
+        self.addCleanup(record, "test cleanup")
+        self.enterContext(context("test"))
+
+    def test_one(self):
+        record("test")
+"""
+
+
+class CleanupTests(unittest.TestCase):
+    """pytest runs a test's and a class's cleanups but never unittest's module cleanups, so the root conftest.py runs
+    those at the module's teardown, after tearDownModule and in the module's isolated home, as unittest would."""
+
+    def run_suite(self, fail: bool) -> tuple[int, list[dict[str, Any]]]:
+        temporary = tempfile.TemporaryDirectory(prefix="conftest-cleanups.")
+        self.addCleanup(temporary.cleanup)
+        log = Path(temporary.name) / "log.jsonl"
+        suite = Path(temporary.name) / "test_child.py"
+        suite.write_text(CHILD_HEADER.format(log=str(log)) + CLEANUP_SUITE.format(fail=fail), encoding="utf-8")
+        exit_code = run_child(suite)
+        return exit_code, [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+    def test_every_scope_runs_its_cleanups_and_contexts_in_unittest_order(self) -> None:
+        exit_code, entries = self.run_suite(fail=False)
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [
+                "setUpModule",
+                "module context entered",
+                "class context entered",
+                "test context entered",
+                "test",
+                "test context exited",
+                "test cleanup",
+                "class context exited",
+                "class cleanup",
+                "tearDownModule",
+                "module context exited",
+                "module cleanup",
+            ],
+            [entry["where"] for entry in entries],
+        )
+        module = [entry["home"] for entry in entries if entry["where"].startswith(("setUpModule", "module", "tear"))]
+        self.assertEqual([module[0]] * 5, module)
+
+    def test_a_failing_module_cleanup_fails_the_run(self) -> None:
+        exit_code, entries = self.run_suite(fail=True)
+        self.assertEqual(1, exit_code)
+        self.assertEqual("module cleanup", entries[-1]["where"])
+
+
 # A suite that commits in a fixture repository and reads a bare clone of it without naming it explicitly.
 ACCEPTANCE_SUITE = """
 import subprocess
