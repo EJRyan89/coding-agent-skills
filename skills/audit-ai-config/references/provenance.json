@@ -14,7 +14,7 @@
     "behavioral": [
       {
         "page": "https://code.claude.com/docs/en/best-practices",
-        "passage": "Give Claude a way to verify its work, such as tests, a linter, or an expected output, because it does markedly better when it can check its own results."
+        "passage": "Give Claude a check it can run, such as tests, a build, a linter, or a screenshot to compare, because Claude stops when the work looks done, and without a check it can run, \"looks done\" is the only signal available."
       },
       {
         "decision": "An agent's instructions forbid disabling, suppressing, or working around a failing check and state a quality gate, as this source's own CLAUDE.md does under Required validation."
@@ -43,7 +43,7 @@
       },
       {
         "page": "https://code.claude.com/docs/en/memory",
-        "passage": "A CLAUDE.md imports a file with @path syntax outside code spans and fenced blocks, resolved relative to the importing file, and imports help organize a long file but don't reduce its context cost, because imported files also load at launch."
+        "passage": "A CLAUDE.md imports a file with @path syntax outside code spans and fenced blocks, resolved relative to the importing file, and imports help organize a long file but don't reduce its context cost, because imported files load together with the CLAUDE.md that imports them; a CLAUDE.md in a subdirectory loads on demand rather than at launch."
       },
       {
         "page": "https://code.claude.com/docs/en/memory",
@@ -178,7 +178,15 @@
       },
       {
         "page": "https://learn.chatgpt.com/docs/hooks",
-        "passage": "Besides .codex/config.toml, a trusted project's .codex holds hooks.json, custom agents as TOML files under agents, and Starlark rules under rules."
+        "passage": "Besides .codex/config.toml, a trusted project's .codex holds hooks.json."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+        "passage": "A project's custom agents are standalone TOML files under .codex/agents."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/agent-configuration/rules",
+        "passage": "A project's rules, written in Starlark, live under .codex/rules and load only when the project's .codex layer is trusted."
       }
     ],
     "layering": [
@@ -195,7 +203,7 @@
       },
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions",
-        "passage": "Copilot CLI combines AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md, and .github/copilot-instructions.md from the repository root, the working directory, and the directories between, and modular .github/instructions files from the same locations but not intermediate directories."
+        "passage": "Copilot CLI combines AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md, and .github/copilot-instructions.md from the repository root, the working directory, the directories between them, and any directory nested in the path of a file it is working on, and modular .github/instructions files from the same locations but not intermediate directories."
       },
       {
         "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
@@ -203,7 +211,7 @@
       },
       {
         "page": "https://code.visualstudio.com/docs/agent-customization/custom-instructions",
-        "passage": "VS Code settings decide which instruction files its chat reads: chat.useAgentsMdFile for a root AGENTS.md, chat.useClaudeMdFile for CLAUDE.md, github.copilot.chat.codeGeneration.useInstructionFiles for .github/copilot-instructions.md, and chat.includeApplyingInstructions for applyTo instructions."
+        "passage": "Instruction support depends on the agent harness a session selects: in VS Code's Local harness, settings decide which instruction files chat reads, chat.useAgentsMdFile for a workspace-root AGENTS.md, chat.useClaudeMdFile for CLAUDE.md, github.copilot.chat.codeGeneration.useInstructionFiles for .github/copilot-instructions.md, and chat.includeApplyingInstructions for applyTo instructions, while Copilot CLI and the Copilot app do not inherit editor settings."
       },
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review",

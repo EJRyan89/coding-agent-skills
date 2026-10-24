@@ -4715,7 +4715,7 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
                     "claude-memory",
                     "CLAUDE.md",
                     "Imports @docs/guide.md, @docs/present.md, @maintainer, @~/.claude/personal.md; imported files "
-                    "load at launch with this file, so they organize it without reducing its context cost",
+                    "load together with this file, so they organize it without reducing its context cost",
                 ),
                 (
                     "WARNING",
@@ -4730,8 +4730,8 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
     def test_an_import_resolves_from_the_file_that_holds_it(self) -> None:
         self.assertEqual(
             [
-                "Imports @rules.md; imported files load at launch with this file, so they organize it without reducing "
-                "its context cost"
+                "Imports @rules.md; imported files load together with this file, so they organize it without "
+                "reducing its context cost"
             ],
             [row[3] for row in claude_code_rows({".claude/CLAUDE.md": "@rules.md\n", ".claude/rules.md": "x"})],
         )

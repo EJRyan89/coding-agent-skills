@@ -2971,7 +2971,7 @@ def _claude_memory(root: Path) -> list[Finding]:
                     "INFO",
                     "claude-memory",
                     rel,
-                    message=f"Imports {', '.join('@' + name for name in imports)}; imported files load at launch with "
+                    message=f"Imports {', '.join('@' + name for name in imports)}; imported files load together with "
                     "this file, so they organize it without reducing its context cost",
                 )
             )
