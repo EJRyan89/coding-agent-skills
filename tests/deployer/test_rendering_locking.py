@@ -187,7 +187,7 @@ class RenderedExecutableTests(DeployerTestCase):
         repos = self.root / "Repos With Spaces"
         self.make_config(repos_root=repos)
         self.deploy_ok("--all")
-        python = "python" if platform_support.WINDOWS else "python3"
+        python = platform_support.PYTHON
         rendered = f'{python} -c "import sys; print(sys.argv[1])" "{forward(repos)}"'
         self.assertIn(f"```bash\n{rendered}\n```\n\n```powershell\n{rendered}\n```", self.skill_text("alpha"))
         assert_value_quoted(rendered_fragments(self.skills_dir / "alpha"), forward(repos))
@@ -341,7 +341,7 @@ class RenderedExecutableTests(DeployerTestCase):
         # The code-review bundle pulls in ejryan89-code-review-core, which ships the reviewer subagent, with its hook
         # naming Python as this platform does and every other byte as written.
         source = (REPOSITORY_ROOT / "agents" / "code-review-reviewer.md").read_bytes()
-        python = b"python" if platform_support.WINDOWS else b"python3"
+        python = platform_support.PYTHON.encode()
         self.assertEqual(
             source.replace(b"{{PYTHON}}", python), (self.claude_agents_dir / "code-review-reviewer.md").read_bytes()
         )

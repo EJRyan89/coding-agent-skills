@@ -1,0 +1,18 @@
+[
+  {
+    "tag_name": "rust-v0.149.1",
+    "name": "0.149.1",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-08-24T00:28:28Z",
+    "body": "\n\n## Changelog\n\nFull Changelog: https://github.com/openai/codex/compare/rust-v0.149.0...rust-v0.149.1\n\n\n\n"
+  },
+  {
+    "tag_name": "rust-v0.149.0",
+    "name": "0.149.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-08-20T21:04:55Z",
+    "body": "## New Features\n\n- Added an interactive `codex agents` dashboard for searching, starting, opening, renaming, and stopping tasks, with configurable shortcuts. (#39094, #39112, #39114, #39142)\n- Added `/cd`, `/pwd`, and `/cwd` commands for managing the working directory in TUI sessions. (#38894)"
+  }
+]

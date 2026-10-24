@@ -85,9 +85,9 @@ SELF_CHECK = re.compile(
     rf'^{re.escape(PYTHON)} -B "(?P<script>{QUOTED_VALUE})" validate-result --run "(?P<run>{QUOTED_VALUE})" '
     rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
 )
-# The two commands review_source.py gives a lazy snapshot's reviewer. The script and the run must be the known ones;
-# the path or pattern, the one value the reviewer chooses, holds no backslash at all, so it can never end up outside
-# its quotes.
+# The two commands review_source.py gives a reviewer: a lazy snapshot's both, or any other snapshot's search. The
+# script and the run must be the known ones; the path or pattern, the one value the reviewer chooses, holds no
+# backslash at all, so it can never end up outside its quotes.
 SOURCE_COMMAND = re.compile(
     rf'^{re.escape(PYTHON)} -B "(?P<script>{QUOTED_VALUE})" (?P<command>source-file|source-search) '
     rf'--run "(?P<run>{QUOTED_VALUE})" --role "(?P<role>[a-z0-9][a-z0-9-]*)" '

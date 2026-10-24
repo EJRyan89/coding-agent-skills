@@ -1576,7 +1576,45 @@ STRING_PROBES = (
     "a`b",
     "a|b",
     "<a>",
+    # Where ECMA-262 and Python part: U+FEFF is ECMA whitespace but not Python's, U+001C to U+001F and U+0085 are
+    # Python's but not ECMA's, and U+001C to U+001E and U+0085 end a line for Python but not for ECMA's `.`.
+    "﻿",
+    "\x1c",
+    "\x1f",
+    "\x85",
+    "a\x1cb",
+    "a\x1fb",
+    "a\x85b",
+    "﻿x",
+    "x﻿",
 )
+
+
+def engine_dependent_constructs(pattern: str) -> list[str]:
+    """The constructs in a schema pattern whose meaning ECMA-262 and Python's `re` do not share, so the suite's
+    evaluation in Python would not show how a JSON Schema validator reads them: the class escapes `\\s`, `\\S`, `\\w`,
+    `\\W`, `\\d`, `\\D`, `\\b`, and `\\B`, and `.` outside a class. `[\\s\\S]`, any character in both, is the one
+    exception."""
+    found: list[str] = []
+    text, index, in_class = pattern.replace(r"[\s\S]", ""), 0, False
+    while index < len(text):
+        character = text[index]
+        if character == "\\":
+            escaped = text[index + 1 : index + 2]
+            if escaped and escaped in "sSwWdDbB":
+                found.append(f"\\{escaped}")
+            index += 2
+            continue
+        if character == "[" and not in_class:
+            in_class = True
+        elif character == "]" and in_class:
+            in_class = False
+        elif character == "." and not in_class:
+            found.append(".")
+        index += 1
+    return found
+
+
 INTEGER_PROBES = (-1, 0, 1, 2)
 # The adapter-result fields the validator also checks against the request or the other findings, each of which says
 # so in its description: a candidate key must be unique, a repeats must name a finding, and a disposition must answer
@@ -1608,7 +1646,9 @@ def _meets(constraint: dict[str, Any], value: Any) -> bool:
     if isinstance(value, str):
         if len(value) < constraint.get("minLength", 0) or len(value) > constraint.get("maxLength", len(value)):
             return False
-        # The schema's patterns are ECMA-262, where `$` without the multiline flag is only the end of the string.
+        # The schema's patterns are ECMA-262, where `$` without the multiline flag is only the end of the string. They
+        # hold no construct whose meaning Python's `re` reads otherwise (engine_dependent_constructs), so `re` reads
+        # them as ECMA-262 does.
         if "pattern" in constraint and re.search(re.sub(r"(?<!\\)\$", r"\\Z", constraint["pattern"]), value) is None:
             return False
     return json_type(value) != "integer" or value >= constraint.get("minimum", value)
@@ -1764,6 +1804,32 @@ class FormatContractTest(unittest.TestCase):
             with self.subTest(path=path):
                 found = instances((path,), self.fixtures)
                 self.assertEqual([], schema_constraint_problems(path, described, found))
+
+    def test_adapter_schema_patterns_mean_the_same_in_ecma_262_and_python(self) -> None:
+        schema = json.loads((REFERENCES / "review-adapter.schema.json").read_text(encoding="utf-8"))
+        patterns: list[str] = []
+        pending: list[Any] = [schema]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, dict):
+                patterns += [item["pattern"]] if isinstance(item.get("pattern"), str) else []
+                pending += item.values()
+            elif isinstance(item, list):
+                pending += item
+        self.assertTrue(patterns)
+        found = {pattern: constructs for pattern in patterns if (constructs := engine_dependent_constructs(pattern))}
+        self.assertEqual({}, found)
+
+    def test_a_pattern_whose_meaning_depends_on_the_engine_is_named(self) -> None:
+        for pattern, expected in (
+            ("\\S", ["\\S"]),
+            ("^\\S(?:.*\\S)?$", ["\\S", ".", "\\S"]),
+            ("^[^\\s`|<>]{1,100}$", ["\\s"]),
+            ("\\w\\d\\b", ["\\w", "\\d", "\\b"]),
+            ("^(?=[\\s\\S]*x)[.]\\.\\\\S$", []),
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(expected, engine_dependent_constructs(pattern))
 
     def test_a_loosened_or_narrowed_adapter_schema_disagrees_with_the_adapter_validator(self) -> None:
         schema = json.loads((REFERENCES / "review-adapter.schema.json").read_text(encoding="utf-8"))

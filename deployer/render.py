@@ -443,7 +443,8 @@ def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
         first = failing[0]
         prefix = "ShellCheck failed for rendered " + ("Bash block" if first.is_block else "content")
         findings = (line for unit in failing for line in reported[platform_support.normalize(unit.path)])
-        raise DeployError(f"ERROR: {prefix}: {first.origin}", *findings)
+        # A line that names no unit, such as ShellCheck's own error, is reported beside the findings, never dropped.
+        raise DeployError(f"ERROR: {prefix}: {first.origin}", *findings, *unattributed)
     if failed:
         raise DeployError("ERROR: ShellCheck failed for rendered content", *unattributed)
 

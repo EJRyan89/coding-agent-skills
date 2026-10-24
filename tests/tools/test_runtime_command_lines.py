@@ -25,7 +25,7 @@ from review_hosts import COPILOT_SYNC_SESSION_VERSION
 
 from deployer import discovery, platform_support
 from deployer import tools as deployer_tools
-from tools import captured_samples, runtime_canary
+from tools import captured_samples, plugin_canary, runtime_canary
 from tools import runtime_command_lines as lines
 from tools.runtime_canary import Completed
 
@@ -145,6 +145,115 @@ class AcceptedTests(RuntimeCommandLinesTestCase):
         review = next(arguments for arguments in stdins if "--disallow-temp-dir" in arguments)
         self.assertEqual(lines.REQUEST, stdins[review])
         self.assertEqual({""}, {stdin for arguments, stdin in stdins.items() if arguments != review})
+
+
+def help_answering(answer: Completed) -> lines.Starter:
+    """A signed-out runtime whose every help answers `answer`."""
+    stub = StubRuntimes()
+
+    def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float, stdin: str) -> Completed:
+        return answer if arguments[-1] == "--help" else stub(arguments, cwd, environment, timeout, stdin)
+
+    return runner
+
+
+class HelpTests(RuntimeCommandLinesTestCase):
+    def test_a_help_that_could_not_be_read_fails_and_lists_no_flag_unlisted(self) -> None:
+        refused = "error: unrecognized subcommand 'exec'\n"
+        for index, (answer, reason) in enumerate(
+            (
+                (
+                    Completed(-1, "", "", error="cannot run codex: Access is denied"),
+                    "cannot run codex: Access is denied",
+                ),
+                (Completed(-1, "", "", timed_out=True), "its help did not finish within 5 seconds"),
+                (Completed(2, "", refused), "its help exited with status 2: error: unrecognized subcommand 'exec'"),
+            )
+        ):
+            with self.subTest(reason=reason):
+                found = lines.run(
+                    ("codex",),
+                    5,
+                    self.root / str(index),
+                    runner=help_answering(answer),
+                    which=lambda name: name,
+                    say=lambda line: None,
+                    samples=(),
+                )
+                failed = [line for line in found if line.startswith("HELP_FAILED codex ")]
+                self.assertEqual(len([line for line in found if line.startswith("ACCEPTED ")]), len(failed), found)
+                self.assertTrue(failed)
+                self.assertTrue(all(f' "{reason}' in line for line in failed), failed)
+                self.assertFalse(any("UNLISTED" in line for line in found), found)
+                self.assertTrue(lines.failed(found))
+                self.assertIn(f"{len(failed)} line(s) failed.", lines.summary(found))
+
+    def test_a_help_that_ran_fails_nothing(self) -> None:
+        self.assertEqual("", lines.help_failure(Completed(0, "Usage: codex exec", ""), 5))
+
+
+class StartTests(unittest.TestCase):
+    def test_a_start_is_the_runtime_canarys_run_with_its_stdin(self) -> None:
+        finished = Completed(0, "out", "")
+        with mock.patch.object(runtime_canary, "run_process", return_value=finished) as run_process:
+            self.assertIs(finished, lines.start(["copilot", "-p"], Path("here"), {"A": "1"}, 7.0, "the prompt"))
+        run_process.assert_called_once_with(["copilot", "-p"], Path("here"), {"A": "1"}, 7.0, b"the prompt")
+
+    def test_a_real_program_reads_only_the_stdin_it_is_given_where_it_is_started(self) -> None:
+        program = [sys.executable, "-B", "-c", "import os, sys; print(sys.stdin.read()[::-1]); print(os.getcwd())"]
+        with tempfile.TemporaryDirectory() as directory:
+            started = lines.start(program, Path(directory), dict(os.environ), 30.0, "abc")
+            nothing = lines.start(program, Path(directory), dict(os.environ), 30.0, "")
+            here = os.path.realpath(directory)
+        self.assertEqual(0, started.returncode)
+        read, cwd = started.stdout.splitlines()
+        self.assertEqual(("cba", here), (read, os.path.realpath(cwd)))
+        self.assertEqual("", nothing.stdout.splitlines()[0])
+
+
+class PluginCommandTests(RuntimeCommandLinesTestCase):
+    def test_every_plugin_command_the_plugin_canary_starts_is_built_and_started_in_its_order(self) -> None:
+        found = lines.command_lines("claude", "claude", self.root / "c", {}, None)
+        names = [line.name for line in found if line.arguments[1:2] == ["plugin"]]
+        self.assertEqual(
+            [
+                "plugin-canary-validate",
+                "plugin-canary-marketplace",
+                "plugin-canary-install",
+                "plugin-canary-list",
+                "plugin-canary-details",
+            ],
+            names,
+        )
+        built = {line.name: line for line in found}
+        marketplace = self.root / "c" / "marketplace"
+        self.assertEqual(
+            ["claude", "plugin", "validate", "--strict", str(marketplace / "coding-agent-skills")],
+            built["plugin-canary-validate"].arguments,
+        )
+        self.assertEqual(
+            ["claude", "plugin", "marketplace", "add", str(marketplace)], built["plugin-canary-marketplace"].arguments
+        )
+        install = built["plugin-canary-install"]
+        self.assertEqual(["plugin", "install", "coding-agent-skills@canary"], install.subcommand)
+        self.assertEqual(["--config"], install.flags)
+        self.assertIn("--strict", built["plugin-canary-validate"].flags)
+        self.assertEqual(["--json"], built["plugin-canary-list"].flags)
+        self.assertTrue((marketplace / ".claude-plugin" / "marketplace.json").is_file())
+
+    def test_each_plugin_command_is_the_one_its_builder_returns(self) -> None:
+        for builder, name in (
+            ("validate_command", "plugin-canary-validate"),
+            ("marketplace_command", "plugin-canary-marketplace"),
+            ("install_command", "plugin-canary-install"),
+            ("list_command", "plugin-canary-list"),
+            ("details_command", "plugin-canary-details"),
+        ):
+            with self.subTest(builder=builder):
+                sentinel = ["claude", "plugin", f"--from-{builder}"]
+                with mock.patch.object(plugin_canary, builder, return_value=sentinel):
+                    found = lines.command_lines("claude", "claude", self.root / builder, {}, None)
+                self.assertEqual(sentinel, next(line for line in found if line.name == name).arguments)
 
 
 class RefusedTests(RuntimeCommandLinesTestCase):
@@ -346,6 +455,19 @@ class SignedOutTests(unittest.TestCase):
         self.assertEqual(str(Path("home")), environment["HOME"])
         for name in platform_support.STARTING_VARIABLES:
             self.assertEqual("kept", environment[name])
+
+    def test_starting_variables_are_matched_as_this_platform_matches_a_name(self) -> None:
+        # Windows reports the system's variables upper-cased, as SYSTEMROOT, COMSPEC, and PROGRAMFILES, and matches a
+        # name in any case; elsewhere a name matches only as written.
+        folded = {name.upper(): "kept" for name in platform_support.STARTING_VARIABLES}
+        folded.update({name.lower(): "kept" for name in platform_support.STARTING_VARIABLES})
+        environment = platform_support.signed_out_environment(folded, Path("home"))
+        kept = {name for name in folded if name in environment}
+        if sys.platform == "win32":
+            self.assertLessEqual({"SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PROGRAMFILES", "PROGRAMFILES(X86)"}, kept)
+            self.assertEqual(set(folded), kept)
+        else:
+            self.assertEqual({"PATH", "TMPDIR", "LANG", "LC_ALL"}, kept)
 
     def test_github_cli_is_left_off_the_path_and_refused_beside_the_runtime(self) -> None:
         separator = os.pathsep

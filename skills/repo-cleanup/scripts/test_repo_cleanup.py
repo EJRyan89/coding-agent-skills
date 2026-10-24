@@ -156,6 +156,12 @@ def written_plan(**fields: Any) -> dict[str, Any]:
     }
 
 
+def is_regenerable(entry: str, tree: Path, policy: cleanup_policy.Policy) -> bool:
+    """Whether a worktree removal deletes the ignored `entry` of the worktree at `tree` with it under `policy`."""
+    regenerable, _ = rc.regenerable_under(rc.Services(), str(tree), [entry], policy)
+    return entry in regenerable
+
+
 def facts(lines: list[str], kind: str) -> list[list[str]]:
     return [line.split("\t")[1:] for line in lines if line.split("\t")[0] == kind]
 
@@ -2159,7 +2165,7 @@ class RemoveWorktreeTests(WorktreeTestCase):
 
     def test_an_ignored_path_is_regenerable_inside_a_shipped_directory_with_its_project_beside_it(self) -> None:
         # test_cleanup_policy.py holds the shipped list itself.
-        shipped = cleanup_policy.configured().regenerable
+        shipped = cleanup_policy.configured()
         tree = self.root / "layout"
         for name in ("App/App.csproj", "Lib/Lib.fsproj", "web/package.json"):
             (tree / name).parent.mkdir(parents=True, exist_ok=True)
@@ -2208,7 +2214,7 @@ class RemoveWorktreeTests(WorktreeTestCase):
             ("pytest_cache/", False),
         ):
             with self.subTest(entry=entry):
-                self.assertEqual(regenerable, rc.is_regenerable(entry, str(tree), shipped))
+                self.assertEqual(regenerable, is_regenerable(entry, tree, shipped))
 
     def test_a_projects_build_and_ide_output_is_removed_with_its_worktree_and_a_bin_without_one_keeps_it(self) -> None:
         for name in ("App/App.csproj", "web/package.json"):

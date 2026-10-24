@@ -147,7 +147,7 @@ class ConvertedTests(unittest.TestCase):
 
     def test_ctrl_c_is_a_cancellation_in_the_words_its_moment_gives(self) -> None:
         for given, lines in (
-            ((), ("Cancelled; nothing was changed.",)),
+            ((), (errors.CANCELLED,)),
             (
                 (errors.DEPLOYMENT_CANCELLED,),
                 ("Cancelled after the deployment began; its changes are reconciled before exit.",),

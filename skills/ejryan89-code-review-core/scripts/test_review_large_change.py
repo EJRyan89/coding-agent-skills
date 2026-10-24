@@ -7,15 +7,19 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import review_pipeline as rp
+import review_runtime
+import review_snapshot
 from github_client import CommandResult
 from review_github import GitHubClient, PullFiles
 from review_specialists import parse_unified_diff
@@ -347,3 +351,43 @@ class CheckoutDiffTests(LargeChangeFixture):
             self.normalize(self.main_prepare()),
         )
         self.assertFalse(self.run_dir.exists())
+
+
+def step_two_reasons() -> list[str]:
+    """The over-limit reason texts review-prs's SKILL.md step 2 quotes, in its order: the text every such reason
+    contains, the end of the one a checkout serves, and the two texts of a checkout's state."""
+    skill = (Path(__file__).resolve().parents[2] / "review-prs" / "SKILL.md").read_text(encoding="utf-8")
+    [sentence] = re.findall(r"of the reasons that contain .*? no route can serve\.", skill)
+    return re.findall(r"`([^`]+)`", sentence)
+
+
+class StepTwoReasonTests(LargeChangeFixture):
+    """Each reason text review-prs's step 2 tells apart is in the failure it names, so the step's wording cannot drift
+    from review_snapshot's."""
+
+    def reasons(self) -> list[str]:
+        filled = (reason.replace("<repository>", REPOSITORY) for reason in step_two_reasons())
+        return [reason.replace("<checkout>", "<root>/checkout") for reason in filled]
+
+    def test_the_reason_a_checkout_serves_contains_the_over_limit_text_and_ends_with_the_checkout_text(self) -> None:
+        self.configure(checkout=False)
+        self.over.changed = 3_512
+        over, checkout, _, _ = self.reasons()
+        failed = self.main_prepare().rstrip("\n")
+        self.assertIn(over, failed)
+        self.assertTrue(failed.endswith(checkout), failed)
+
+    def test_a_merge_base_the_checkout_lacks_is_a_checkout_state_reason(self) -> None:
+        compare = ("gh", "api", f"repos/{REPOSITORY}/compare/{self.base}...{self.head}?per_page=1")
+        self.over.served[compare] = CommandResult(0, json.dumps({"merge_base_commit": {"sha": "f" * 40}}), "")
+        over, _, missing, _ = self.reasons()
+        failed = self.normalize(self.main_prepare())
+        self.assertIn(over, failed)
+        self.assertIn(missing, failed)
+
+    def test_a_git_diff_that_fails_in_the_checkout_is_a_checkout_state_reason(self) -> None:
+        over, _, _, diff_failed = self.reasons()
+        with mock.patch.object(review_snapshot, "GIT_DIFF_OPTIONS", (*review_runtime.GIT_DIFF_OPTIONS, "--no-such")):
+            failed = self.normalize(self.main_prepare())
+        self.assertIn(over, failed)
+        self.assertIn(diff_failed, failed)

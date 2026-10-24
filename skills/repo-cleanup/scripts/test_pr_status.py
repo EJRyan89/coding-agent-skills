@@ -534,9 +534,55 @@ class BranchTipTests(GitFixture):
         self.git("-C", str(self.clone), "fetch", "--prune", "origin")
         self.assertEqual((tip, None), branch_tips(str(self.clone), "topic"))
 
+    def test_an_upstream_whose_name_holds_a_bar_is_read_whole(self) -> None:
+        # Git allows a | in a ref name, which Windows refuses in a file name, so the ref goes in packed-refs.
+        tip = self.tracking_branch()
+        main = self.git("-C", str(self.clone), "rev-parse", "main")
+        self.git("-C", str(self.clone), "update-ref", "refs/remotes/origin/a", main)
+        self.git("-C", str(self.clone), "pack-refs", "--all")
+        packed = self.clone / ".git" / "packed-refs"
+        refs = [line for line in packed.read_text(encoding="utf-8").splitlines() if not line.startswith("#")]
+        refs.append(f"{tip} refs/remotes/origin/a|b")
+        listed = "".join(f"{line}\n" for line in sorted(refs, key=lambda line: line.split()[1]))
+        packed.write_bytes(listed.encode("utf-8"))
+        self.git("-C", str(self.clone), "config", "branch.topic.merge", "refs/heads/a|b")
+        self.assertEqual((tip, tip), branch_tips(str(self.clone), "topic"), "not origin/a, at main")
+
     def test_missing_branch_fails_closed(self) -> None:
         with self.assertRaisesRegex(QueryError, "cannot resolve local branch"):
             branch_tips(str(self.clone), "missing")
+
+
+class BranchTipListingTests(unittest.TestCase):
+    """How branch_tips reads `git for-each-ref`'s upstream line, against a Git that answers from a table."""
+
+    def tips(self, listing: GitResult) -> tuple[tuple[str, str | None], list[list[str]]]:
+        calls: list[list[str]] = []
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            calls.append(list(command))
+            if "for-each-ref" in command:
+                return listing
+            return GitResult(0, f"{TIP}\n", "")
+
+        return branch_tips("/repos/example", "topic", GitClient(answering)), calls
+
+    def test_the_upstream_is_the_field_before_the_first_nul_and_the_rest_is_its_tracking_state(self) -> None:
+        (head, upstream), calls = self.tips(GitResult(0, "refs/remotes/origin/a|b\0[ahead 1]\0more\n", ""))
+        self.assertEqual((TIP, TIP), (head, upstream))
+        self.assertIn("refs/remotes/origin/a|b^{commit}", calls[-1])
+        (_, upstream), _ = self.tips(GitResult(0, "refs/remotes/origin/a\0[gone]\n", ""))
+        self.assertIsNone(upstream, "a gone upstream is absent")
+        (_, upstream), _ = self.tips(GitResult(0, "refs/remotes/origin/a\0[gone]\0x\n", ""))
+        self.assertIsNotNone(upstream, "the tracking state is everything after the first NUL")
+
+    def test_a_listing_that_failed_or_holds_no_nul_is_refused(self) -> None:
+        for name, listing in {
+            "a failed listing holding a NUL": GitResult(128, "refs/remotes/origin/a\0\n", "fatal: bad"),
+            "a listing with no NUL": GitResult(0, "refs/remotes/origin/a\n", ""),
+        }.items():
+            with self.subTest(name), self.assertRaisesRegex(QueryError, "cannot read the upstream of 'topic'"):
+                self.tips(listing)
 
 
 class BaseContainsTests(GitFixture):

@@ -21,10 +21,9 @@ from harness import (
 )
 
 from deployer import fsops, hashing, platform_support
-
-CANCELLED = "Cancelled; nothing was changed."
-RECOVERY_CANCELLED = "Cancelled during recovery; the next deployment finishes recovering before it deploys."
-CONFIGURE_CANCELLED = "Configuration cancelled; existing config was not changed."
+from deployer.configure import CANCELLED as CONFIGURE_CANCELLED
+from deployer.errors import CANCELLED, RUN_NOT_COMMITTED
+from deployer.pipeline import RECOVERY_CANCELLED
 
 
 def interrupt(*_arguments: Any, **_keywords: Any) -> Any:
@@ -97,8 +96,7 @@ class CancellationTests(DeployerTestCase):
         with mock.patch("deployer.fsops.move", side_effect=interrupted_restore):
             self.assert_cancelled(
                 self.run_cli("--all", changes_home=RECOVERS),
-                f"{RECOVERY_CANCELLED}\nRun 20260101-000000-kill was not committed to the manifest, so the manifest "
-                "does not hold its changes; the next deployment rolls them back.",
+                f"{RECOVERY_CANCELLED}\n{RUN_NOT_COMMITTED.format(run_id='20260101-000000-kill')}",
             )
         self.assertFalse(self.lock_dir.exists())
         self.assertTrue((run / "journal.jsonl").is_file())
