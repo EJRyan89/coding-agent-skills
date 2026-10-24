@@ -20,8 +20,9 @@ and its numbers. Two rules that share most of their words and differ in those ar
 share nearly all of them and agree in those are a candidate `duplicate`. Only rules that share one of their rarer
 words are compared, which two rules that alike always do (see _prefix), and a repository's search visits at most
 CANDIDATE_BUDGET such pairs, so files near READ_BYTES cannot stall the report; past it, the remaining pairs are not
-compared. A reference to a Markdown file a reviewer was not given is an `unsupplied` candidate. The synthesis judges
-each candidate; the script only finds them.
+compared, and the repository is named as one whose search stopped, so no candidate there is not read as no overlap.
+A reference to a Markdown file a reviewer was not given is an `unsupplied` candidate. The synthesis judges each
+candidate; the script only finds them.
 """
 
 from __future__ import annotations
@@ -133,6 +134,8 @@ class Guidance:
     unsupplied: list[dict[str, Any]] = field(default_factory=list)
     # A fact line for each prose file whose working-tree copy could not be read.
     unreadable: list[str] = field(default_factory=list)
+    # Each repository whose overlap search stopped at CANDIDATE_BUDGET with pairs it did not compare.
+    stopped: list[str] = field(default_factory=list)
 
 
 def reviewer_sources(
@@ -274,7 +277,9 @@ def read_guidance(
             f"{copies[path].unreadable}"
             for path, versions in found.items()
         ]
-        guidance.overlaps += overlaps(repository, texts, sources[repository])
+        candidates, stopped = overlaps(repository, texts, sources[repository])
+        guidance.overlaps += candidates
+        guidance.stopped += [repository] if stopped else []
         guidance.unsupplied += unsupplied(repository, texts, sources[repository])
     guidance.overlaps.sort(key=_overlap_rank)
     return guidance
@@ -404,16 +409,20 @@ def _visits(
                     seen.add(position)
 
 
-def overlaps(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
+def overlaps(
+    repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]
+) -> tuple[list[dict[str, Any]], bool]:
     """Every candidate pair of rules from two of a repository's files, each file at every version read, with the
     reviewers given both versions; a candidate two versions share is one, naming every reviewer given it. Only rules
-    that share one of their rarest words are compared, at most CANDIDATE_BUDGET visits in all."""
+    that share one of their rarest words are compared, at most CANDIDATE_BUDGET visits in all, and the second value
+    says whether the search stopped there with pairs left to visit."""
     by_version = [(key, rules(key[0], texts[key])) for key in sorted(texts)]
     frequency = Counter(word for _, found in by_version for rule in found for word in rule.words)
     order = {word: (count, word) for word, count in frequency.items()}
     found: dict[tuple[Any, ...], dict[str, Any]] = {}
     shared: dict[tuple[VersionKey, VersionKey], set[str]] = {}
-    for first_key, second_key, first, second in islice(_visits(by_version, order), CANDIDATE_BUDGET):
+    visits = _visits(by_version, order)
+    for first_key, second_key, first, second in islice(visits, CANDIDATE_BUDGET):
         candidate = None if second is None else compare(first, second)
         if candidate is None:
             continue
@@ -424,7 +433,7 @@ def overlaps(repository: str, texts: dict[VersionKey, str], sources: dict[str, S
         key = (candidate["relation"], *candidate["paths"], *candidate["lines"], *candidate["texts"])
         known = found.setdefault(key, {"repository": repository, **candidate, "reviewers": []})
         known["reviewers"] = sorted({*known["reviewers"], *given})
-    return list(found.values())
+    return list(found.values()), next(visits, None) is not None
 
 
 def _given(source: Source, *versions: VersionKey) -> bool:

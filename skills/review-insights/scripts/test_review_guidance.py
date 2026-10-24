@@ -3,9 +3,11 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import re
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -135,10 +137,11 @@ class OverlapBoundTests(unittest.TestCase):
         }
         compare = self.counted(100)
         with mock.patch.object(rg, "compare", compare):
-            found = rg.overlaps("owner/repo", texts, {})
+            found, stopped = rg.overlaps("owner/repo", texts, {})
         self.assertEqual(
             [("conflict", [1, 1], ["must", "should"])], [(i["relation"], i["lines"], i["differs"]) for i in found]
         )
+        self.assertFalse(stopped)
         self.assertGreater(len(rg.rules("docs/a.md", texts["docs/a.md", "1"])), 10_000, "the files hold many rules")
 
     def test_files_of_near_identical_rules_compare_at_most_the_budget(self) -> None:
@@ -146,9 +149,31 @@ class OverlapBoundTests(unittest.TestCase):
         texts = {("docs/a.md", "1"): rule * 300, ("docs/b.md", "2"): rule * 300}
         compare = self.counted(1_000)
         with mock.patch.object(rg, "CANDIDATE_BUDGET", 1_000), mock.patch.object(rg, "compare", compare):
-            found = rg.overlaps("owner/repo", texts, {})
+            found, stopped = rg.overlaps("owner/repo", texts, {})
         self.assertLessEqual(compare.call_count, 1_000)
         self.assertTrue(found and {"duplicate"} == {item["relation"] for item in found})
+        self.assertTrue(stopped, "pairs were left to compare")
+
+    def test_a_search_that_visits_exactly_the_budget_has_not_stopped(self) -> None:
+        # One rule in each file, visited once for each rare word they share. A budget of every visit leaves none
+        # unvisited; one fewer stops with one left.
+        texts = {
+            ("docs/a.md", "1"): "- Reviewers flag unchecked inputs in request handlers.\n",
+            ("docs/b.md", "2"): "- Reviewers flag unchecked inputs in request handlers.\n",
+        }
+        visits = len(
+            list(rg._visits([(key, rg.rules(key[0], text)) for key, text in texts.items()], self.order(texts)))
+        )
+        for budget, expected in ((visits, False), (visits - 1, True)):
+            with self.subTest(budget=budget), mock.patch.object(rg, "CANDIDATE_BUDGET", budget):
+                self.assertEqual(expected, rg.overlaps("owner/repo", texts, {})[1])
+
+    def order(self, texts: dict[tuple[str, str], str]) -> dict[str, tuple[int, str]]:
+        """The rarest-first order overlaps gives the words of these texts' rules."""
+        frequency = Counter(
+            word for key, text in texts.items() for rule in rg.rules(key[0], text) for word in rule.words
+        )
+        return {word: (count, word) for word, count in frequency.items()}
 
 
 class ReadTests(unittest.TestCase):
@@ -171,6 +196,25 @@ class ReadTests(unittest.TestCase):
         return rg.read_guidance(
             ["owner/repo"], self.records, {"owner/repo": self.checkout} if checkouts is None else checkouts
         )
+
+    def test_each_repository_s_candidates_and_stopped_search_are_kept_beside_the_others(self) -> None:
+        # Two repositories with the same guidance: the second's search adds to the first's, never replaces it.
+        both = {
+            **self.records,
+            **{Path(f"other-{path}"): {**record, "repository": "owner/other"} for path, record in self.records.items()},
+        }
+        checkouts = {"owner/other": self.checkout, "owner/repo": self.checkout}
+        alone = rg.read_guidance(["owner/repo"], self.records, {"owner/repo": self.checkout})
+        self.assertTrue(alone.overlaps)
+        guidance = rg.read_guidance(["owner/other", "owner/repo"], both, checkouts)
+        self.assertEqual(
+            {"owner/other": len(alone.overlaps), "owner/repo": len(alone.overlaps)},
+            dict(Counter(item["repository"] for item in guidance.overlaps)),
+        )
+        self.assertEqual([], guidance.stopped)
+        with mock.patch.object(rg, "CANDIDATE_BUDGET", 1):
+            stopped = rg.read_guidance(["owner/other", "owner/repo"], both, checkouts)
+        self.assertEqual(["owner/other", "owner/repo"], stopped.stopped)
 
     def read_at(self, commit: str) -> rg.Guidance:
         """The guidance of reviewers whose records were built at `commit`."""
@@ -574,6 +618,26 @@ class ReportTests(InsightFixture):
         self.assertIn(
             "### Guidance overlap candidates\n\n- O1 conflict (1.0) owner/repo: docs/checklist.md:7", markdown
         )
+
+    def test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input(self) -> None:
+        # The skill names the line; with a budget of one visit the search stops with pairs left, and without the line
+        # a report with no candidate past it would look like one whose guidance agrees.
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        [named] = re.findall(r"`(GUIDANCE_SEARCH_STOPPED) <repo> pairs=<n>`", skill)
+        self.reviewed_at(None)
+        with mock.patch.object(rg, "CANDIDATE_BUDGET", 1):
+            code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(f"{named} owner/repo pairs=1", lines[2])
+        directory = Path(lines[0].removeprefix("REPORT ")).parent
+        items = [json.loads(line) for line in (directory / rs.INPUT_NAME).read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            [{"kind": "guidance-search-stopped", "repository": "owner/repo", "pairs_compared": 1}],
+            [item for item in items if item["kind"] == "guidance-search-stopped"],
+        )
+        code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertNotIn(named, out, "a search that compared every pair names none")
 
     def test_an_unreadable_guidance_file_is_named_and_the_report_still_written(self) -> None:
         self.reviewed_at(None)

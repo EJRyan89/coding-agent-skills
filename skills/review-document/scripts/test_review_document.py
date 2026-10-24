@@ -9,7 +9,9 @@ import hashlib
 import io
 import json
 import os
+import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -1172,6 +1174,31 @@ class PullRequestTests(PipelineTestCase):
         self.assertEqual([f"docs/design/retention.md@{HEAD}"], stub.reads())
         self.assertFalse(self.output.exists())
 
+    def test_a_pull_request_closed_without_being_merged_is_refused_as_the_skill_says_and_a_merged_one_is_read(
+        self,
+    ) -> None:
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        [refusal] = re.findall(r"closed without being merged fails with `(FAILED [^`]+)`", skill)
+        for merged_at, expected in ((None, (1, [refusal])), ("2026-10-01T00:00:00Z", None)):
+            with self.subTest(merged_at=merged_at):
+                stub = self.stub()
+
+                def closed(
+                    endpoint: str, options: list[str], merged: str | None = merged_at, answer: Any = stub.answer
+                ) -> Any:
+                    payload = answer(endpoint, options)
+                    return {**payload, "state": "closed", "merged_at": merged} if endpoint == "pulls/7" else payload
+
+                with mock.patch.object(stub, "answer", closed):
+                    if expected is None:
+                        self.assertTrue(self.build_pull(stub)[0].startswith("PULL octo-org/widgets#7 base "))
+                        continue
+                    code, lines = run_main(
+                        "build", "octo-org/widgets#7", "--output", str(self.output), github=stub.client()
+                    )
+                self.assertEqual(expected, (code, lines))
+                self.assertFalse(self.output.exists())
+
     def test_a_pull_request_with_no_document_to_review_is_refused(self) -> None:
         for pages, sizes, reason in (
             ([[changed("src/app.py", "modified")]], None, NO_DOCUMENT),
@@ -1657,6 +1684,24 @@ class OutputTests(DocumentTestCase):
                     self.assertEqual(1, len(lines), lines)
                     self.assertTrue(lines[0].startswith(f"FAILED {target} is inside the skills directory "), lines)
                     self.assertFalse(target.exists())
+
+    def test_only_an_output_named_inside_the_checkout_changes_the_checkout(self) -> None:
+        # The skill's claim, scoped as SKILL.md states it: the default output leaves the checkout as it was, and an
+        # --output the user names inside it is written there.
+        checkout = self.checkout()
+        document = checkout / "docs" / "design" / "retention.md"
+        document.write_bytes(COMMITTED.replace(b"30 days", b"90 days"))
+        status = git(checkout, "status", "--porcelain", "--untracked-files=all")
+        code, lines = run_main("build", str(document))
+        self.assertEqual(0, code, lines)
+        default = Path(facts(lines)["OUTPUT"])
+        self.addCleanup(shutil.rmtree, default, ignore_errors=True)
+        self.assertFalse(default.is_relative_to(checkout))
+        self.assertEqual(status, git(checkout, "status", "--porcelain", "--untracked-files=all"))
+        inside = checkout / "review"
+        code, lines = run_main("build", str(document), "--output", str(inside))
+        self.assertEqual((0, str(inside / "fixture")), (code, facts(lines)["FIXTURE"]))
+        self.assertIn("?? review/", git(checkout, "status", "--porcelain"))
 
     def test_an_output_that_is_not_a_new_or_empty_directory_is_refused_before_anything_is_read(self) -> None:
         document = self.root / "plan.md"
