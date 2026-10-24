@@ -399,6 +399,48 @@ class ConfigurationTests(unittest.TestCase):
             validate_config(config)["dashboard"]["author_names"],
         )
 
+    def test_dashboard_ignored_repositories_default_to_empty_and_are_lowercased(self) -> None:
+        self.assertEqual([], validate_config(valid_config())["dashboard"]["ignored_repositories"])
+        config = valid_config()
+        config["dashboard"] = {"ignored_repositories": ["Other/Sandbox", "octo/test-*", "*/scratch?"]}
+        self.assertEqual(
+            ["other/sandbox", "octo/test-*", "*/scratch?"],
+            validate_config(config)["dashboard"]["ignored_repositories"],
+        )
+
+    def test_dashboard_ignored_repositories_are_validated(self) -> None:
+        for entries, message in (
+            ("other/sandbox", "must be an array"),
+            ([7], "must be a non-empty string"),
+            (["other"], "an owner/repo identity, or a pattern"),
+            (["other/one/two"], "an owner/repo identity, or a pattern"),
+            (["other/[ab]"], "an owner/repo identity, or a pattern"),
+            (["other/"], "an owner/repo identity, or a pattern"),
+            (["other/a b"], "an owner/repo identity, or a pattern"),
+            (["other/" + "a" * 101], "an owner/repo identity, or a pattern"),
+            (["other/one", "Other/One"], "distinct entries, ignoring case"),
+            ([f"other/r{index}" for index in range(1001)], "at most 1000 items"),
+            # A repository a set tracks, matched exactly or by a pattern, ignoring case.
+            (["EXAMPLE/one"], "Repository example/one in repository set primary matches"),
+            (["example/*"], "entry example/\\*; a tracked repository cannot be ignored"),
+            (["*/on?"], "matches config.dashboard.ignored_repositories entry \\*/on\\?"),
+        ):
+            with self.subTest(entries=entries):
+                config = valid_config()
+                config["dashboard"] = {"ignored_repositories": entries}
+                with self.assertRaisesRegex(ConfigurationError, message):
+                    validate_config(config)
+        # A pattern matches the owner and the name each on their own, so `*` never spans the slash.
+        config = valid_config()
+        config["dashboard"] = {"ignored_repositories": ["exam*one/*", "example/x*", "e*/one?"]}
+        validate_config(config)
+
+    def test_the_default_configuration_file_is_named_config_json(self) -> None:
+        # update-pr-dashboard names its tracker record after this name, so a rename would move the record.
+        self.assertEqual("config.json", review_config.DEFAULT_CONFIG_NAME)
+        with mock.patch.dict(os.environ, {"CODE_REVIEW_CONFIG": ""}):
+            self.assertEqual("config.json", review_config.default_config_path().name)
+
     def test_dashboard_author_names_are_validated(self) -> None:
         for names, message in (
             (["ada"], "must be an object"),
