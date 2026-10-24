@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -162,23 +162,6 @@ def metadata_format_problems(root: Path) -> list[str]:
     return problems
 
 
-# A code span on a SKILL.md line that says "invoke", whose first word may name the skill the line starts.
-INVOKED_SPAN = re.compile(r"`([^`]+)`")
-
-
-def invoked_skills(text: str, names: Collection[str]) -> set[str]:
-    """The skills a SKILL.md's text invokes: each of `names` that is the first word of a code span on a line that
-    says "invoke", such as `review-prs` in "invoke `review-prs --re-review`". The runtime-support policy follows each
-    one's needs, and tests/ai-config/test_cross_skill_contracts.py holds that no invoked skill is user-only."""
-    return {
-        words[0]
-        for line in text.splitlines()
-        if "invoke" in line
-        for span in INVOKED_SPAN.findall(line)
-        if (words := span.split()) and words[0] in names
-    }
-
-
 def hooked_agents(root: Path) -> set[str]:
     """The agents under agents/ whose definition declares hooks, such as the code-review reviewer's guard."""
     return {path.stem for path in (root / "agents").glob("*.md") if "hooks" in frontmatter.read(path)}
@@ -189,13 +172,12 @@ def user_only(document: frontmatter.Frontmatter) -> bool:
     return (document.string("disable-model-invocation") or "").casefold() == "true"
 
 
-def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> set[str]:
-    """The runtime capabilities a skill's frontmatter shows it needs, with those of each skill it invokes.
+def own_needs(root: Path, name: str) -> set[str]:
+    """The runtime capabilities a skill's own frontmatter, metadata, and scripts show it needs.
 
     A skill that grants Agent and names, in backticks, an agent whose definition declares hooks starts that agent
     under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash scripts
-    runs a git subcommand that reaches a remote, needs network access. An invoked skill is what invoked_skills
-    reads; its limits reach the step that invokes it.
+    runs a git subcommand that reaches a remote, needs network access.
     """
     import runtime_support
 
@@ -217,13 +199,25 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
         if script.suffix in (".sh", ".bash") and not is_test_script(script)
         for subcommand in shell_git_subcommands(script.read_text(encoding="utf-8"))
     )
-    needs = runtime_support.frontmatter_needs(
+    return runtime_support.frontmatter_needs(
         granted if isinstance(granted, list) else [granted], user_only(document), starts_hooked, tools, git_subcommands
     )
-    invoked = {other for other in invoked_skills(text, skills) if other != name and other not in seen}
-    for other in sorted(invoked):
-        # Starting an invoked skill is the invoker's step, so only what the invoked skill does carries over.
-        needs |= derived_needs(root, other, seen | {name}) - {"user-only-start"}
+
+
+def derived_needs(root: Path, name: str) -> set[str]:
+    """The runtime capabilities a skill needs: its own_needs, and what each skill it invokes carries over, by
+    ejryan89-skill-core's runtime_support, the derivation audit-skill's script shares."""
+    import runtime_support
+
+    skills = skills_by_name(root)
+
+    def invokes(skill: str) -> set[str]:
+        path = skills[skill] / "SKILL.md" if skill in skills else None
+        return runtime_support.invoked_skills(path.read_text(encoding="utf-8-sig"), skills) if path else set()
+
+    needs = own_needs(root, name)
+    for carried in runtime_support.carried_needs(name, lambda skill: own_needs(root, skill), invokes).values():
+        needs |= carried
     return needs
 
 
@@ -589,9 +583,9 @@ def _hook_problems(name: str, hooks: bytes, declared: str) -> list[str]:
     return found
 
 
-def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes]) -> list[str]:
-    """What a plugin's manifest holds but its marketplace entry, its name, a version, and the userConfig declaring each
-    plugin option a skill it carries reads do not."""
+def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes], version: str) -> list[str]:
+    """What a plugin's manifest holds but its marketplace entry, its name, the version it was built with, and the
+    userConfig declaring each plugin option a skill it carries reads do not."""
     manifest = files.get(PLUGIN_MANIFEST, b"")
     options = {
         option: skill_menu.PLUGIN_OPTIONS.get(option)
@@ -604,9 +598,10 @@ def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes]) -> lis
         document = json.loads(manifest)
     except ValueError:
         document = None
-    if entry is None or not isinstance(document, dict) or not isinstance(document.get("version"), str):
+    if entry is None or not isinstance(document, dict):
         return [f"plugin {name}: {PLUGIN_MANIFEST} is no manifest of a plugin the marketplace lists"]
-    expected = {**{key: value for key, value in entry.items() if key != "source"}, "version": document["version"]}
+    kept = {key: value for key, value in entry.items() if key not in ("name", "version", "source")}
+    expected = {**kept, "name": name, "version": version}
     if options:
         expected["userConfig"] = options
     if document == expected:
@@ -618,13 +613,13 @@ def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes]) -> lis
     return [f"plugin {name}: {PLUGIN_MANIFEST} differs from its marketplace entry"]
 
 
-def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]]) -> list[str]:
+def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]], version: str) -> list[str]:
     """Report what an assembled plugin holds that its sources do not: a file no skill or agent ships, bytes that
     differ from the source's but for the pinned token answers, an agent's hooks, which move to the plugin's hooks
     file, and each backticked mention of an agent the plugin carries, which names it as `<plugin>:<agent>`; a template
     token left; a file of a carried skill, as the builder reads it, that the plugin leaves out; a manifest that is not
-    its marketplace entry; and a hooks file that is not its agents' hooks. `plugins` maps each plugin's name to its
-    files, by path in the plugin."""
+    its marketplace entry with the plugin's name and `version`, the one it was built with; and a hooks file that is not
+    its agents' hooks. `plugins` maps each plugin's name to its files, by path in the plugin."""
     if (root / PLUGIN_MANIFEST).exists():
         return [f"{PLUGIN_MANIFEST} makes the checkout's skills read as a plugin's"]
     found: list[str] = []
@@ -655,7 +650,7 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]])
                 found.append(f"plugin {name}: {path} keeps a template token")
             elif content != expected:
                 found.append(f"plugin {name}: {path} differs from {source.relative_to(root).as_posix()}")
-        found += _manifest_problems(root, name, files)
+        found += _manifest_problems(root, name, files, version)
         if PLUGIN_HOOKS in files:
             found += _hook_problems(name, files[PLUGIN_HOOKS], declared)
         elif declared.strip():
@@ -990,7 +985,9 @@ class SkillLayoutPolicies(unittest.TestCase):
         self.assertLessEqual({"review-prs", "ejryan89-code-review-core", "repo-cleanup"}, carried)
         plugins = {plugin.name: plugin.files for plugin in assembly.plugins}
         self.assertIn(PLUGIN_HOOKS, plugins["coding-agent-skills"])
-        self.assertEqual([], plugin_tree_problems(REPOSITORY_ROOT, plugins), PLUGIN_DOC)
+        self.assertEqual(
+            [], plugin_tree_problems(REPOSITORY_ROOT, plugins, plugin_build.DEVELOPMENT_VERSION), PLUGIN_DOC
+        )
 
     def test_the_marketplace_names_each_plugins_release_asset(self) -> None:
         self.assertEqual([], marketplace_problems(REPOSITORY_ROOT), PLUGIN_DOC)

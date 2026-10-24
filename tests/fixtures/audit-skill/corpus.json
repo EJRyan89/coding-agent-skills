@@ -85,7 +85,7 @@
   "runtime-prompt-shape": {
     "generic-review": {
       "pull_request": 1410,
-      "commit": "90dae8b",
+      "commit": "666527fb7ca3072834a659a6e883dcdcfadadc45",
       "skill": "review-prs",
       "sample": "docs/runtime-prompts/review-prs/generic-review.txt",
       "cues": [

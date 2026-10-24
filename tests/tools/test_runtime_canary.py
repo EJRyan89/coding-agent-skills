@@ -301,7 +301,7 @@ class RuntimeCanaryTestCase(unittest.TestCase):
         installed: tuple[str, ...] = runtime_canary.RUNTIMES,
         discovery_only: bool = False,
         which: Callable[[str], str | None] | None = None,
-        **options: str,
+        **options: Any,
     ) -> list[str]:
         code, lines = self.outcome(
             runner, skills, runtimes, sources, environment, installed, discovery_only, which, **options
@@ -331,7 +331,7 @@ class RuntimeCanaryTestCase(unittest.TestCase):
         installed: tuple[str, ...] = runtime_canary.RUNTIMES,
         discovery_only: bool = False,
         which: Callable[[str], str | None] | None = None,
-        **options: str,
+        **options: Any,
     ) -> tuple[int, list[str]]:
         """The canary's exit code and printed lines, for a test that states the code it expects."""
         output = io.StringIO()
@@ -423,7 +423,6 @@ class DeploymentTests(RuntimeCanaryTestCase):
                 {
                     "script": forward(script),
                     "cwd": forward(elsewhere),
-                    "arguments": ["--help", "two words"],
                     "run": "run one",
                 }
             ],
@@ -699,7 +698,7 @@ class RunTests(RuntimeCanaryTestCase):
         installed = self.root / "profile" / ".claude" / "skills"
         script = forward(installed / "alpha" / "scripts" / "tool.py")
         self.assertEqual(
-            f'FAILED "ran the installed copy {script}, not the canary copy"',
+            f'UNCOUNTED "ran the installed copy {script}, not the canary copy"',
             runtime_canary.verdict(
                 "alpha",
                 self.home,
@@ -708,7 +707,7 @@ class RunTests(RuntimeCanaryTestCase):
                 completed=Completed(0, "", ""),
                 denials=[],
                 timeout=60,
-                installed=installed,
+                installed=[installed],
             ),
         )
 
@@ -740,6 +739,26 @@ class RunTests(RuntimeCanaryTestCase):
             f'FAILED "ran {self.skill_dir()}/scripts/canary_probe.py but it wrote no marker; was the write denied?"',
             reason,
         )
+
+    def test_a_fixture_that_exited_otherwise_than_0_without_a_marker_says_so_and_another_skill_still_ran(self) -> None:
+        for skill, status, expected in (
+            (FIXTURE, 1, 'FAILED "ran {script} but it exited with code 1"'),
+            (FIXTURE, 0, 'FAILED "ran {script} but it wrote no marker; was the write denied?"'),
+            ("alpha", 1, 'RAN "{script}" "{home}" exit=1'),
+        ):
+            with self.subTest(skill=skill, status=status):
+                script = f"{self.skill_dir(skill)}/scripts/tool.py"
+                start = {"argv": [script], "cwd": forward(self.home), "pid": 7}
+                reason = runtime_canary.verdict(
+                    skill,
+                    self.home,
+                    probes=[],
+                    started=[start, {**start, "exit": status}],
+                    completed=Completed(0, "", ""),
+                    denials=[],
+                    timeout=60,
+                )
+                self.assertEqual(expected.format(script=script, home=forward(self.home)), reason)
 
     def test_a_ran_line_carries_the_recorded_exit_and_a_timeout_and_still_passes(self) -> None:
         script = f"{self.skill_dir('alpha')}/scripts/tool.py"
@@ -1398,7 +1417,7 @@ class BashTests(RuntimeCanaryTestCase):
         start = {"argv": [forward(script)], "cwd": forward(self.home), "pid": started[0].get("pid")}
         self.assertEqual([start, {**start, "exit": 0}], started)
         self.assertEqual(
-            f'FAILED "ran the installed copy {forward(script)}, not the canary copy"',
+            f'UNCOUNTED "ran the installed copy {forward(script)}, not the canary copy"',
             runtime_canary.verdict(
                 "gamma",
                 self.home,
@@ -1407,7 +1426,7 @@ class BashTests(RuntimeCanaryTestCase):
                 completed=Completed(0, "", ""),
                 denials=[],
                 timeout=60,
-                installed=installed,
+                installed=[installed],
             ),
         )
 
@@ -2125,6 +2144,249 @@ class RecordTests(RuntimeCanaryTestCase):
         for line, expected in cases.items():
             with self.subTest(line=line):
                 self.assertEqual(expected, runtime_canary.placeholders(line, paths))
+
+
+class InstalledCopyTests(RuntimeCanaryTestCase):
+    """A run that starts the real profile's installed copy tests nothing, so it never counts toward the matrix."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.profile = self.root / "profile"
+        patcher = mock.patch.object(platform_support, "home_directory", return_value=self.profile)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def installed_script(self, folder: str) -> str:
+        """A copy of alpha's script under one of the profile's skill folders, which a runtime's shell can reach."""
+        script = self.profile / folder / "skills" / "alpha" / "scripts" / "tool.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("print('installed')\n", encoding="utf-8")
+        return forward(script)
+
+    def test_every_skill_folder_of_the_profile_holds_an_installed_copy(self) -> None:
+        self.assertEqual(
+            [
+                self.profile / ".claude" / "skills",
+                self.profile / ".agents" / "skills",
+                self.profile / ".codex" / "skills",
+                self.profile / ".copilot" / "skills",
+            ],
+            runtime_canary.installed_roots(self.profile),
+        )
+        for folder in (".claude", ".agents", ".codex", ".copilot"):
+            with self.subTest(folder=folder):
+                script = forward(self.profile / folder / "skills" / "alpha" / "scripts" / "tool.py")
+                self.assertEqual(
+                    f'UNCOUNTED "ran the installed copy {script}, not the canary copy"',
+                    runtime_canary.verdict(
+                        "alpha",
+                        self.home,
+                        probes=[],
+                        started=[{"argv": [script], "cwd": "x"}],
+                        completed=Completed(0, "", ""),
+                        denials=[],
+                        timeout=60,
+                    ),
+                )
+
+    def test_a_run_of_the_installed_copy_is_run_again_and_never_counts(self) -> None:
+        installed = self.installed_script(".codex")
+        runner = FakeRuntimes()
+        runner.actions["codex"] = run_python(installed, "--help")
+        code, lines = self.outcome(
+            runner, ["alpha"], sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()], attempts=2
+        )
+        self.assertEqual(1, code, lines)
+        uncounted = f'RUNTIME codex alpha UNCOUNTED "ran the installed copy {installed}, not the canary copy"'
+        self.assertEqual(
+            [f"{uncounted} {self.kept('codex')}"] * 2, [line for line in lines if line.startswith(uncounted)]
+        )
+        transcripts = self.home / ".runtime-canary" / "transcripts"
+        self.assertIn(f'TRANSCRIPT codex alpha "{forward(transcripts / "codex-alpha.jsonl")}"', lines)
+        self.assertIn(f'TRANSCRIPT codex alpha "{forward(transcripts / "codex-alpha-run2.jsonl")}"', lines)
+        self.assertEqual(2, len([call for call in runner.calls if call[0] == "run" and "$alpha " in call[1][-1]]))
+        self.assertIn('MATRIX codex alpha DISAGREES full "full expects RAN, but the run was UNCOUNTED"', lines)
+        self.assertIn(f"{uncounted} {self.kept('codex')}".replace(forward(self.profile), "<home>"), self.recorded)
+
+    def test_a_run_after_one_that_did_not_count_is_the_one_the_matrix_judges(self) -> None:
+        installed = self.installed_script(".agents")
+        canary_copy = f"{self.skill_dir('alpha')}/scripts/tool.py"
+        runs = iter([run_python(installed, "--help"), run_python(canary_copy, "--help")])
+        runner = FakeRuntimes()
+        fixture = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
+
+        def alternating(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
+            action = fixture if f"${FIXTURE} " in command[-1] else next(runs)
+            return action(command, cwd, environment)
+
+        runner.actions["codex"] = alternating
+        lines = self.canary(runner, ["alpha"], sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()])
+        outcomes = [line.split(" KEPT ")[0] for line in lines if line.startswith("RUNTIME codex alpha ")]
+        self.assertEqual(
+            [
+                f'RUNTIME codex alpha UNCOUNTED "ran the installed copy {installed}, not the canary copy"',
+                f'RUNTIME codex alpha RAN "{canary_copy}" "{forward(self.home)}"{PYTHON_EXIT}',
+            ],
+            outcomes,
+        )
+        self.assertEqual(["MATRIX codex alpha AGREES full"], [line for line in lines if "MATRIX codex alpha" in line])
+
+    def test_a_skill_runs_at_most_the_attempts_main_is_given(self) -> None:
+        output = io.StringIO()
+        with (
+            mock.patch.object(runtime_canary, "create_home", return_value=self.home),
+            mock.patch.object(runtime_canary, "canary", return_value=1) as canary,
+            mock.patch.object(runtime_canary, "finish", return_value=1),
+            contextlib.redirect_stdout(output),
+        ):
+            runtime_canary.main(["--attempts", "5"])
+            runtime_canary.main([])
+        attempts = [call.kwargs["attempts"] for call in canary.call_args_list]
+        self.assertEqual([5, runtime_canary.DEFAULT_ATTEMPTS], attempts)
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            runtime_canary.main(["--attempts", "0"])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("--attempts takes at least one run: 0", errors.getvalue())
+        with (
+            mock.patch.object(runtime_canary, "create_home", return_value=self.home),
+            mock.patch.object(runtime_canary, "canary", return_value=1) as one,
+            mock.patch.object(runtime_canary, "finish", return_value=1),
+            contextlib.redirect_stdout(output),
+        ):
+            runtime_canary.main(["--attempts", "1"])
+        self.assertEqual(1, one.call_args.kwargs["attempts"])
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown), self.assertRaises(SystemExit):
+            runtime_canary.main(["--help"])
+        # The runtime-canary skill names the option as `--attempts <runs>`.
+        self.assertIn("--attempts RUNS", shown.getvalue())
+        self.assertIn("while each starts the installed copy (default: 3)", " ".join(shown.getvalue().split()))
+
+    def test_by_default_a_skill_whose_every_run_starts_the_installed_copy_runs_three_times_each_within_the_limit(
+        self,
+    ) -> None:
+        installed = self.installed_script(".copilot")
+        runner = FakeRuntimes()
+        runner.actions["codex"] = run_python(installed, "--help")
+        limits: list[float] = []
+
+        def limited(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+            if arguments[1:] != ["--version"]:
+                limits.append(timeout)
+            return runner(arguments, cwd, environment, timeout)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = runtime_canary.canary(
+                [],
+                ["codex"],
+                self.home,
+                sources=[runtime_canary.FIXTURE_SOURCE],
+                runner=limited,
+                talk=runner.talk,
+                which=lambda name: forward(self.root / "bin" / name),
+                base_environment=dict(os.environ),
+                timeout=42,
+            )
+        self.assertEqual(1, code)
+        uncounted = [line for line in output.getvalue().splitlines() if f"codex {FIXTURE} UNCOUNTED " in line]
+        # Three lines in the run and their three copies in the record.
+        self.assertEqual(6, len(uncounted), output.getvalue())
+        self.assertEqual([42.0] * 3, limits)
+
+
+class KeptTests(unittest.TestCase):
+    def test_kept_names_what_each_runtimes_pages_say_it_still_loads(self) -> None:
+        # Codex's AGENTS.md page: every run reads the Codex home's AGENTS.override.md or AGENTS.md, and
+        # --ignore-user-config skips config.toml only. Copilot's hooks reference: user hooks load from ~/.copilot/hooks
+        # and the hooks key of ~/.copilot/settings.json without admission, and the canary keeps the real ~/.copilot.
+        for runtime, loaded in (
+            ("codex", "global AGENTS.override.md or AGENTS.md in ~/.codex"),
+            ("codex", "personal skills in ~/.agents/skills and ~/.codex/skills"),
+            ("copilot", "user hooks in ~/.copilot/hooks and the hooks key of ~/.copilot/settings.json"),
+            ("copilot", "personal skills in ~/.agents/skills and ~/.copilot/skills"),
+            ("claude", "user CLAUDE.md"),
+        ):
+            with self.subTest(runtime=runtime, loaded=loaded):
+                self.assertIn(loaded, runtime_canary.KEPT[runtime].split("; "))
+
+
+class RecordRefusalTests(RuntimeCanaryTestCase):
+    """A whole record line the canary will not read fails the run by the file's name, and the run still ends."""
+
+    def test_a_line_past_the_digit_limit_or_nested_past_the_recursion_limit_is_refused_by_name(self) -> None:
+        records = self.root / "probe.jsonl"
+        for line, reason in (
+            ('{"run": ' + "1" * 5000 + "}", "Exceeds the limit"),
+            ("[" * 200000 + "]" * 200000, "nests deeper than the parser can read"),
+            ('{"run": 1, "run": 2}', "repeats the key"),
+        ):
+            with self.subTest(reason=reason):
+                records.write_text('{"run": "kept"}\n{"incomplete\n' + line + "\n", encoding="utf-8")
+                with self.assertRaises(runtime_canary.RecordRefused) as raised:
+                    runtime_canary.read_records(records)
+                self.assertEqual(records, raised.exception.path)
+                self.assertTrue(raised.exception.reason.startswith("line 3: "), raised.exception.reason)
+                self.assertIn(reason, raised.exception.reason)
+                # Escaped, it says the same, as console.run_main prints it.
+                self.assertEqual(f"{records}: {raised.exception.reason}", str(raised.exception))
+        # A line a crashed writer left incomplete is still skipped, and a record is read as the UTF-8 it was written.
+        records.write_bytes('{"run": "kept é"}\n{"incomplete\n'.encode())
+        self.assertEqual([{"run": "kept é"}], runtime_canary.read_records(records))
+
+    def test_a_record_that_cannot_be_read_is_named_by_the_file_the_error_names_or_else_the_marker_file(self) -> None:
+        probe, script_log = self.root / "probe.jsonl", self.root / "scripts" / "codex-alpha.jsonl"
+        self.assertEqual(
+            f"cannot read what the run recorded in {forward(script_log)}: Permission denied",
+            runtime_canary.unreadable(PermissionError(13, "Permission denied", str(script_log)), probe),
+        )
+        self.assertEqual(
+            f"cannot read what the run recorded in {forward(probe)}: Permission denied",
+            runtime_canary.unreadable(PermissionError(13, "Permission denied"), probe),
+        )
+        refused = runtime_canary.RecordRefused(script_log, "line 2: the JSON repeats the key 'run' in one object")
+        self.assertEqual(
+            f"cannot read what the run recorded in {forward(script_log)}: line 2: the JSON repeats the key 'run' in "
+            "one object",
+            runtime_canary.unreadable(refused, probe),
+        )
+
+    def test_an_error_naming_no_file_fails_the_run_naming_the_marker_file(self) -> None:
+        runner = FakeRuntimes()
+
+        def nameless(path: Path) -> list[dict[str, Any]]:
+            raise PermissionError(13, "Permission denied")
+
+        with mock.patch.object(runtime_canary, "read_records", nameless):
+            code, lines = self.outcome(runner)
+        self.assertEqual(1, code, lines)
+        probe = forward(self.home / ".runtime-canary" / "probe.jsonl")
+        self.assertIn(
+            f'RUNTIME codex {FIXTURE} FAILED "cannot read what the run recorded in {probe}: Permission denied" '
+            f"{self.kept('codex')}",
+            lines,
+        )
+
+    def test_a_refused_record_fails_that_run_and_the_record_and_home_kept_still_print(self) -> None:
+        probe = self.home / ".runtime-canary" / "probe.jsonl"
+
+        def bad_record(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
+            probe.write_text('{"run": ' + "1" * 5000 + "}\n", encoding="utf-8")
+            return Completed(0, "", "")
+
+        runner = FakeRuntimes()
+        runner.actions["codex"] = bad_record
+        code, lines = self.outcome(runner)
+        self.assertEqual(1, code, lines)
+        failed = [line for line in lines if line.startswith(f"RUNTIME codex {FIXTURE} FAILED ")]
+        self.assertEqual(1, len(failed), lines)
+        self.assertIn(f'"cannot read what the run recorded in {forward(probe)}: line 1: Exceeds the limit', failed[0])
+        self.assertTrue([line for line in self.recorded if line.startswith(f"RUNTIME codex {FIXTURE} FAILED ")])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(1, runtime_canary.finish(self.home, code, keep=False))
+        self.assertTrue(output.getvalue().startswith(f'HOME_KEPT "{forward(self.home)}"'), output.getvalue())
 
 
 class FinishTests(unittest.TestCase):

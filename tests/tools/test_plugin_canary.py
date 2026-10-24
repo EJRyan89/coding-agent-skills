@@ -4,6 +4,8 @@ Claude Code listed and ran, with a fake runner in place of Claude Code."""
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,17 @@ from review_dispatch import REVIEWER_TASK
 
 from tools import plugin_build
 from tools import plugin_canary as canary
-from tools.runtime_canary import FIXTURE_SKILL, FIXTURE_SOURCE, REPOSITORY_ROOT, RUN_ID, STATE, Completed, quote
+from tools.runtime_canary import (
+    FIXTURE_SKILL,
+    FIXTURE_SOURCE,
+    REPOSITORY_ROOT,
+    RUN_ID,
+    STATE,
+    Completed,
+    claim_home,
+    create_home,
+    quote,
+)
 
 MARKER = "PLUGIN-CANARY-OUTSIDE-1a2b"
 AGENT = "coding-agent-skills:code-review-reviewer"
@@ -303,6 +315,50 @@ def test_the_probe_runs_the_installed_copy_and_records_beside_it(tmp_path: Path)
     assert lines[1].startswith("TRANSCRIPT claude probe ")
 
 
+def test_a_probe_record_the_canary_will_not_read_fails_by_name_and_keeps_its_transcript(tmp_path: Path) -> None:
+    installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
+    installed.mkdir(parents=True)
+    (tmp_path / STATE).mkdir()
+    records = installed.parent / STATE / "probe.jsonl"
+
+    def oversized(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        records.write_text('{"run": ' + "1" * 5000 + "}\n", encoding="utf-8")
+        return Completed(0, "", "")
+
+    lines = canary.probe(
+        canary.Session(tmp_path, oversized, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
+    )
+    assert lines[0].startswith(
+        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "cannot read what the run recorded in '
+        f"{records.as_posix()}: line 1: Exceeds the limit"
+    )
+    assert lines[1].startswith("TRANSCRIPT claude probe ")
+
+
+def test_a_probe_record_error_naming_no_file_fails_naming_the_marker_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
+    installed.mkdir(parents=True)
+    (tmp_path / STATE).mkdir()
+
+    def nameless(path: Path) -> list[dict[str, Any]]:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(canary, "read_records", nameless)
+    lines = canary.probe(
+        canary.Session(tmp_path, lambda *_: Completed(0, "", ""), {}, 30),
+        "claude",
+        {"runtime-canary": str(installed)},
+        "runtime-canary",
+    )
+    records = (installed.parent / STATE / "probe.jsonl").as_posix()
+    assert lines[0] == (
+        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "cannot read what the run recorded in {records}: '
+        'Permission denied"'
+    )
+
+
 def test_a_probe_that_never_ran_the_installed_copy_fails(tmp_path: Path) -> None:
     installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
     installed.mkdir(parents=True)
@@ -404,3 +460,174 @@ def test_a_result_the_guard_claimed_or_no_result_fails_the_check(tmp_path: Path)
     )
     assert canary.failed(claimed[0])
     assert canary.failed(silent[0])
+
+
+# -- canary() and main() ----------------------------------------------------------------------------------------
+
+
+def documented_kinds() -> set[str]:
+    """Each line kind the module's docstring lists under "It prints one fact per line"."""
+    doc = canary.__doc__ or ""
+    block = doc.split("It prints one fact per line:", 1)[1].split("\nIt exits", 1)[0]
+    return set(re.findall(r"\b[A-Z][A-Z_]{2,}\b", block))
+
+
+def kinds(output: str) -> set[str]:
+    return {line.split(" ", 1)[0] for line in output.splitlines() if line}
+
+
+def run_canary(
+    home: Path, capsys: pytest.CaptureFixture[str], runner: FakeClaude | None = None, **options: Any
+) -> tuple[int, str]:
+    home.mkdir(exist_ok=True)
+    runner = runner or FakeClaude(home)
+    code = canary.canary(home, runner=runner, which=lambda name: "claude", base={"PATH": "x"}, **options)
+    return code, capsys.readouterr().out
+
+
+def recorded(output: str) -> list[str]:
+    lines = output.splitlines()
+    return lines[lines.index("RECORD_BEGIN") + 1 : lines.index("RECORD_END")]
+
+
+def test_a_discovery_run_records_the_version_and_every_judged_line_with_paths_as_placeholders(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    runner = FakeClaude(home)
+    real_build = canary.build
+
+    def build(where: Path, sources: list[Path]) -> list[plugin_build.Plugin]:
+        runner.plugins = real_build(where, sources)
+        return runner.plugins
+
+    monkeypatch.setattr(canary, "build", build)
+    code, output = run_canary(home, capsys, runner, discovery_only=True)
+    assert code == 0, output
+    assert output.startswith(f"HOME {quote(home.as_posix())}\n")
+    assert (home / STATE).is_dir()
+    record = recorded(output)
+    assert record[0].startswith("VERSION claude ")
+    assert "INSTALLED claude coding-agent-skills 0.0.0-dev" in record
+    assert all(line.split(" ", 1)[0] in canary.RECORDED for line in record[1:])
+    assert not any(line.startswith(("BUILT", "HOME", "TRANSCRIPT")) for line in record)
+    assert not any(str(home) in line or home.as_posix() in line for line in record)
+    # No session started: every command the fake answered was a plugin command or the version.
+    assert {arguments[1] for arguments, _ in runner.calls} == {"plugin", "--version"}
+
+
+def test_nothing_checked_when_claude_is_not_installed_fails_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    code = canary.canary(home, runner=FakeClaude(home), which=lambda name: None, base={})
+    output = capsys.readouterr().out
+    assert code == 1
+    assert output.splitlines()[-1] == 'NOTHING_CHECKED "claude is not installed where deploy.py check looks"'
+
+
+@pytest.mark.parametrize(
+    ("said", "code"),
+    [
+        ([], 1),
+        (['BUILT a "x"', "VALIDATED claude a"], 0),
+        (["VALIDATED claude a", "UNDISCOVERED claude a:b skill"], 1),
+        (['RUNTIME claude a:b RAN "s" "c"', "GUARD claude main-session PASSED"], 0),
+        (["GUARD claude main-session PASSED", 'GUARD claude a:b DENIED "x"', 'UNGUARDED claude a:b REFUSED "x"'], 0),
+        (["GUARD claude a:b PASSED"], 1),
+        (['GUARD claude main-session DENIED "x"'], 1),
+    ],
+)
+def test_the_run_fails_when_nothing_was_said_or_any_line_fails(
+    said: list[str], code: int, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(canary, "checks", lambda session, executable, discovery_only: iter(said))
+    found, output = run_canary(tmp_path / "home", capsys)
+    assert found == code, output
+    assert recorded(output)[1:] == [line for line in said if line.split(" ", 1)[0] in canary.RECORDED]
+
+
+def test_main_keeps_the_home_of_a_failed_run_and_removes_one_that_passed(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    homes: list[Path] = []
+    real_create = create_home
+
+    def create() -> Path:
+        homes.append(real_create())
+        return homes[-1]
+
+    def passing(home: Path, **options: Any) -> int:
+        claim_home(home)
+        return 0
+
+    monkeypatch.setattr(canary, "create_home", create)
+    try:
+        monkeypatch.setattr(canary, "canary", passing)
+        assert canary.main([]) == 0
+        assert capsys.readouterr().out.splitlines()[-1] == f"REMOVED {quote(homes[0].as_posix())}"
+        assert not homes[0].exists()
+        monkeypatch.setattr(canary, "canary", lambda home, **options: 1)
+        assert canary.main([]) == 1
+        assert capsys.readouterr().out.splitlines()[-1].startswith(f"HOME_KEPT {quote(homes[1].as_posix())} ")
+        assert homes[1].is_dir()
+    finally:
+        for home in homes:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_main_reports_a_build_or_write_failure_on_one_line_and_keeps_the_home(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    homes: list[Path] = []
+    real_create = create_home
+
+    def create() -> Path:
+        homes.append(real_create())
+        return homes[-1]
+
+    monkeypatch.setattr(canary, "create_home", create)
+    try:
+        for error in (plugin_build.BuildError("no plugin"), PermissionError("denied")):
+
+            def failing(home: Path, error: Exception = error, **options: Any) -> int:
+                raise error
+
+            monkeypatch.setattr(canary, "canary", failing)
+            assert canary.main([]) == 1
+            lines = capsys.readouterr().out.splitlines()
+            assert lines[0] == f"FAILED {quote(str(error))}"
+            assert lines[1].startswith("HOME_KEPT ")
+    finally:
+        for home in homes:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def test_the_docstring_lists_every_kind_of_line_the_canary_prints(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    printed: set[str] = set()
+    home = tmp_path / "home"
+    runner = FakeClaude(home)
+    real_build = canary.build
+
+    def build(where: Path, sources: list[Path]) -> list[plugin_build.Plugin]:
+        runner.plugins = real_build(where, sources)
+        return runner.plugins
+
+    monkeypatch.setattr(canary, "build", build)
+    printed |= kinds(run_canary(home, capsys, runner, discovery_only=True)[1])
+    (tmp_path / "bare").mkdir()
+    canary.canary(tmp_path / "bare", runner=runner, which=lambda name: None, base={})
+    printed |= kinds(capsys.readouterr().out)
+
+    def failing(home: Path, **options: Any) -> int:
+        raise OSError("denied")
+
+    monkeypatch.setattr(canary, "create_home", lambda: tmp_path / "kept")
+    monkeypatch.setattr(canary, "canary", failing)
+    canary.main([])
+    printed |= kinds(capsys.readouterr().out)
+    assert {"HOME", "BUILT", "VALIDATED", "INSTALLED", "DISCOVERED", "VERSION", "NOTHING_CHECKED", "FAILED"} <= printed
+    assert printed - documented_kinds() == set()

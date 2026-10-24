@@ -57,7 +57,8 @@ user-invocable: false); DESCRIPTION_LEAD <sentence> is a model-invocable descrip
 shortening its listing keeps longest; INTERNAL_LISTED marks internal wording in a model-invocable skill. For a
 model-invocable skill in its source tree, TRIGGER_SCENARIO <path> <requests> <near misses> is each scenario.json of the
 skill's folder under TRIGGER_SCENARIOS, the source tree's evaluation scenarios, whose mode is trigger, which judges
-whether the description starts the skill, and NO_TRIGGER_SCENARIO <path> names that folder when it holds none.
+whether the description starts the skill, TRIGGER_SCENARIO_UNREADABLE <path> <reason> each scenario.json there that
+cannot be read or is not a JSON object, and NO_TRIGGER_SCENARIO <path> names that folder when it holds neither.
 
 Tool references: a tool counts as used on a line when its exact, case-sensitive name is
   - the start of an inline code span (`Read`, `Grep -l`, `Glob("*")`), outside fenced blocks;
@@ -138,6 +139,13 @@ it in as an example. EXIT_MISMATCH <file> <line> <code> is an exit code the pros
 UNEXPLAINED <script> <line> <word> is a line a script the Markdown runs starts with a word the Markdown never names,
 for a script in the skill's folder or outside every skills folder, such as a repository tool; a sibling skill's script
 is that skill's to explain. A skill with no script of its own that runs none prints none of these.
+SCRIPT_MISSING <file> <line> <script> is a command that runs, through ${CLAUDE_SKILL_DIR} or from the repository root,
+a script that does not exist, so nothing it would print is compared.
+
+Runtime needs: in a skill source tree, tools derives what the skill needs through ejryan89-skill-core's
+runtime_support, as repository validation does, and prints RUNTIME_NEEDS <capability> <evidence> for each: grant
+<tool>, user-only, agent <name>, tool <name>, git <subcommand> <script>, or skill <name> for a skill it invokes that
+needs it, without that skill's user-only start.
 """
 
 from __future__ import annotations
@@ -478,6 +486,7 @@ CHECK_LINES = frozenset(
         "RUNTIME_PROMPT",
         "RUNTIME_PROMPT_UNSAMPLED",
         "RUNTIME_OVERCLAIMED",
+        "SCRIPT_MISSING",
         "SIBLING_FOLDER_ALLOWED",
         "UNEXPLAINED",
         "UNGRANTED",
@@ -558,7 +567,6 @@ BLOCK_SCALAR = re.compile(r"[|>][+-]?")
 # A subagent's model or effort. A sentence that starts a subagent names a literal one as "on haiku" or "at low
 # effort", or relays a printed line's value as a code span whose status word holds MODEL or EFFORT. A data file sets
 # one under a key SETTING_KEYS names, to a model alias or ID or an effort level.
-SENTENCE_END = re.compile(r"(?<=[.!?;])\s+(?=[A-Z`*(])")
 START_VERB = re.compile(r"(?i)\b(?:start|starts|starting|spawn|spawns|launch|launches|run|runs)\b")
 LITERAL_MODEL = re.compile(r"(?i)\bon\s+(?:the\s+)?`?(haiku|sonnet|opus|fable)`?(?![\w-])")
 LITERAL_EFFORT = re.compile(
@@ -1371,7 +1379,8 @@ def plugin_lines(directory: Path) -> list[str]:
 
 def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
     """The trigger scenario a model-invocable skill's description is judged by, when the skill is audited from its
-    source tree, or NO_TRIGGER_SCENARIO when it has none."""
+    source tree, TRIGGER_SCENARIO_UNREADABLE for a scenario file it cannot read, or NO_TRIGGER_SCENARIO when it has
+    neither."""
     root = source_root(directory)
     if root is None or invocation != "model":
         return []
@@ -1380,10 +1389,16 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
     for spec_file in sorted(scenarios.glob("*/scenario.json")):
         try:
             spec = json_reader.read_file(spec_file)
-        # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-        except (OSError, ValueError, RecursionError):
+        except OSError as exc:
+            output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} {exc.strerror or exc}")
             continue
-        if isinstance(spec, dict) and spec.get("mode") == "trigger":
+        # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+        except (ValueError, RecursionError) as exc:
+            output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} not JSON: {exc}")
+            continue
+        if not isinstance(spec, dict):
+            output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} not a JSON object")
+        elif spec.get("mode") == "trigger":
             requests, near_misses = (spec.get(key) for key in ("requests", "near_misses"))
             counts = [len(value) if isinstance(value, list) else 0 for value in (requests, near_misses)]
             output.append(f"TRIGGER_SCENARIO {posix(spec_file)} {counts[0]} {counts[1]}")
@@ -1972,23 +1987,35 @@ def folder_scripts(folder: Path) -> list[Path]:
     ]
 
 
-def command_scripts(folder: Path, root: Path | None, bodies: list[list[str]]) -> list[Path]:
-    """The scripts the Markdown's commands run that exist: through the skill-directory variable, or from the
-    repository root, as a repository skill runs a tool."""
+def command_scripts(
+    folder: Path, root: Path | None, markdown: list[tuple[Path, list[str]]]
+) -> tuple[list[Path], list[str]]:
+    """The scripts the Markdown's commands run, through the skill-directory variable or from the repository root, as a
+    repository skill runs a tool: those that exist, and a SCRIPT_MISSING line for each command naming one that does
+    not. A directory in a script's place raises file_presence's NotAFile."""
     found: list[Path] = []
-    for body in bodies:
-        for _, command in fence_commands(body, 0) + span_commands(body, 0):
+    missing: list[str] = []
+    for path, lines in markdown:
+        start = body_start(lines)
+        body = lines[start:]
+        for line, command in fence_commands(body, start) + span_commands(body, start):
             for match in SCRIPT_FILE.finditer(command):
                 text = match.group(0).strip("\"'")
+                # A suffix that runs on, as .js in "<report.json>", names no script.
+                if re.match(r"[\w.-]", command[match.end() :]):
+                    continue
                 if text.startswith(SKILL_DIR_PREFIX):
-                    path = folder / text.removeprefix(SKILL_DIR_PREFIX)
+                    script = folder / text.removeprefix(SKILL_DIR_PREFIX)
                 elif root is not None and not text.startswith(("$", "~", "/")):
-                    path = root / text
+                    script = root / text
                 else:
                     continue
-                if path.is_file():
-                    found.append(path.resolve())
-    return list(dict.fromkeys(found))
+                if is_present(script):
+                    found.append(script.resolve())
+                # A bare name from the repository root, such as a value a span gives, names no tool's path.
+                elif text.startswith(SKILL_DIR_PREFIX) or "/" in text:
+                    missing.append(f"SCRIPT_MISSING {posix(path)} {line} {text}")
+    return list(dict.fromkeys(found)), list(dict.fromkeys(missing))
 
 
 def shown_path(folder: Path, path: Path) -> str:
@@ -2038,16 +2065,17 @@ def status_lines(folder: Path) -> list[str]:
     The scripts read are the skill's own, every script its commands run and the scripts beside it, and
     ejryan89-skill-core's. UNPRINTED is a status word a code span names on a prose line about output that none of them
     prints; EXIT_MISMATCH an exit code the prose states that none of them uses; UNEXPLAINED a line that a script the
-    skill runs, its own or a repository tool, starts with a status word the Markdown never names. A skill with no script
-    of its own that runs none has nothing to compare.
+    skill runs, its own or a repository tool, starts with a status word the Markdown never names; SCRIPT_MISSING a
+    command naming a script that does not exist. A skill with no script of its own that runs none has nothing else to
+    compare.
     """
     markdown = [(path, require_text(path).splitlines()) for path in scanned_files(folder)]
     root = repository_root(folder)
     bodies = [lines[body_start(lines) :] for _, lines in markdown]
-    commands = command_scripts(folder, root, bodies)
+    commands, missing = command_scripts(folder, root, markdown)
     own = folder_scripts(folder / "scripts")
     if not own and not commands:
-        return []
+        return missing
     cores = [
         folder.parent / "ejryan89-skill-core" / "scripts",
         *([root / "skills" / "ejryan89-skill-core" / "scripts"] if root else []),
@@ -2076,7 +2104,7 @@ def status_lines(folder: Path) -> list[str]:
         for word, (path, number) in first_lines.items()
         if not re.search(rf"(?<![\w-]){word}(?![\w-])", named)
     ]
-    return output + [f"UNEXPLAINED {path} {number} {word}" for path, number, word in sorted(unnamed)]
+    return missing + output + [f"UNEXPLAINED {path} {number} {word}" for path, number, word in sorted(unnamed)]
 
 
 # --- subagents ------------------------------------------------------------------------------------
@@ -2353,7 +2381,9 @@ def agent_lines(folder: Path) -> list[str]:
 
 
 def sentences(line: str) -> list[str]:
-    return SENTENCE_END.split(line)
+    """A prose line's sentences and clauses: split after a full stop, question or exclamation mark, or semicolon
+    before the next one's capital, code span, emphasis, or parenthesis."""
+    return re.split(r"(?<=[.!?;])\s+(?=[A-Z`*(])", line)
 
 
 def stated_settings(markdown: list[tuple[Path, list[str]]]) -> list[tuple[str, Path, int, str, bool]]:
@@ -2554,6 +2584,40 @@ def needs_evidence(folder: Path, granted: list[str], user_only: bool, tools: lis
     return list(dict.fromkeys(evidence))
 
 
+def own_needs(folder: Path) -> set[str]:
+    """The runtime capabilities a skill's own frontmatter, metadata, and scripts show it needs, as needs_evidence reads
+    them for the skill audited."""
+    path = folder / "SKILL.md"
+    try:
+        document = frontmatter.read(path)
+        granted = parse_allowed_tools(document.value("allowed-tools")) or []
+        listed = listing(document)
+    except (OSError, UnicodeError, frontmatter.FrontmatterError) as exc:
+        raise InputError(f"cannot read {posix(path)}: {exc}") from exc
+    metadata = read_metadata(folder.parent.parent, folder.name)
+    tools = names(metadata, "tools") + names(metadata, "optional_tools")
+    return {need for need, _ in needs_evidence(folder, granted, "INVOCATION model" not in listed, tools)}
+
+
+def invoked_evidence(folder: Path) -> list[tuple[str, str]]:
+    """Each runtime capability a skill the audited one invokes carries over to it, with that skill, by
+    ejryan89-skill-core's runtime_support derivation, which repository validation shares."""
+    skills = folder.parent
+    known = {path.parent.name for path in skills.glob("*/SKILL.md")}
+
+    def invokes(name: str) -> set[str]:
+        path = skills / name / "SKILL.md"
+        return runtime_support.invoked_skills(require_text(path), known) if name in known else set()
+
+    carried = runtime_support.carried_needs(folder.name, lambda name: own_needs(skills / name), invokes)
+    return [
+        (need, f"skill {name}")
+        for name, needs in carried.items()
+        for need in runtime_support.CAPABILITIES
+        if need in needs
+    ]
+
+
 def runtime_lines(folder: Path, granted: list[str], user_only: bool) -> list[str]:
     """In a source tree, each runtime's declared support, what the skill needs and why, and each runtime declared
     full that lacks a capability the skill needs."""
@@ -2568,6 +2632,7 @@ def runtime_lines(folder: Path, granted: list[str], user_only: bool) -> list[str
     except runtime_support.RuntimeSupportError as exc:
         return [f"RUNTIME_UNREADABLE {exc}"]
     evidence = needs_evidence(folder, granted, user_only, names(metadata, "tools") + names(metadata, "optional_tools"))
+    evidence += invoked_evidence(folder)
     needs = {need for need, _ in evidence}
     output = [
         f"RUNTIME {runtime} {support.level} needs={','.join(support.needs) or 'none'}"

@@ -51,6 +51,32 @@ def test_the_needs_follow_from_grants_start_hooks_tools_and_git() -> None:
     assert runtime_support.frontmatter_needs([], False, git_subcommands=frozenset({"fetch"})) == {"sandbox-network"}
 
 
+def test_an_invoked_skill_is_the_first_word_of_a_code_span_on_a_line_that_says_invoke() -> None:
+    text = (
+        "Then invoke `review-prs --re-review`, or invoke `flag-review-finding`.\n"
+        "Run `repo-cleanup` once.\n"
+        "Invoke `review-document` here.\n"
+        "invoke `unknown-skill` and `review-insights`\n"
+        "invoke ` ` and ``\n"
+    )
+    names = {"review-prs", "flag-review-finding", "repo-cleanup", "review-document", "review-insights"}
+    assert runtime_support.invoked_skills(text, names) == {"review-prs", "flag-review-finding", "review-insights"}
+
+
+def test_an_invoked_skill_carries_its_needs_and_its_own_invoked_skills_but_not_user_only_start() -> None:
+    own = {
+        "dashboard": {"sandbox-network"},
+        "review": {"agent-delegation", "user-only-start"},
+        "flag": {"workflow"},
+        "loop": set(),
+    }
+    invokes = {"dashboard": {"review", "dashboard"}, "review": {"flag", "dashboard"}, "flag": {"loop"}, "loop": set()}
+    carried = runtime_support.carried_needs("dashboard", own.__getitem__, invokes.__getitem__)
+    assert carried == {"review": {"agent-delegation", "workflow"}}
+    assert list(runtime_support.carried_needs("review", own.__getitem__, invokes.__getitem__)) == ["dashboard", "flag"]
+    assert runtime_support.carried_needs("loop", own.__getitem__, invokes.__getitem__) == {}
+
+
 def test_what_a_runtime_lacks_decides_its_declaration() -> None:
     needs = {"workflow", "sandbox-network"}
     assert runtime_support.lacking("claude-code", needs) == ()

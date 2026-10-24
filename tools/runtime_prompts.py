@@ -47,6 +47,7 @@ from executable_locator import PYTHON
 from git_client import GitClient
 
 from tools import skill_evals_runs
+from tools.checkout import checkout_root
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = Path("docs") / "runtime-prompts"
@@ -276,7 +277,7 @@ def write(root: Path, renderers: Renderers | None = None) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--write", action="store_true", help="render every sample again and remove the extra ones")
-    parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--root", type=checkout_root, default=REPOSITORY_ROOT, help=argparse.SUPPRESS)
     arguments = parser.parse_args(argv)
     try:
         if arguments.write:

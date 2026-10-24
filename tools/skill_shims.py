@@ -17,8 +17,8 @@ skill was renamed or removed, or a stray file; it reports them, and a person del
 
 --root DIR works on another checkout of this repository, as the regression suite does. It refuses, as a usage
 error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory, such as
-~/.agents/skills, whose adapters the deployer owns. A file it cannot read or write ends the run with a FAILED line
-and exit 2.
+~/.agents/skills, whose adapters the deployer owns. A file it cannot read or write, a skill's SKILL.md that is not
+UTF-8 included, ends the run with a FAILED line and exit 2.
 """
 
 from __future__ import annotations
@@ -113,18 +113,27 @@ def shim_files(name: str, skill_text: str) -> dict[str, str] | None:
     return files
 
 
+class ShimError(Exception):
+    """A skill's SKILL.md the shims cannot be written from, as one that is not UTF-8."""
+
+
 def _skills(root: Path) -> dict[str, Path]:
     return {path.parent.name: path for path in (root / SKILLS).glob(f"*/{SKILL_FILE}")}
 
 
 def _expected(root: Path) -> dict[str, dict[str, str] | str | None]:
     """Each skill's shim files; None for a skill with no closed frontmatter, and the reason for one whose frontmatter
-    cannot be read. Raises OSError, NotAFile for something other than a file, for a SKILL.md it cannot read."""
+    cannot be read. Raises OSError, NotAFile for something other than a file, for a SKILL.md it cannot read, and
+    ShimError for one that is not UTF-8."""
     expected: dict[str, dict[str, str] | str | None] = {}
     for name, path in _skills(root).items():
         is_present(path)  # a directory or anything else named SKILL.md raises NotAFile, ending the run as FAILED
         try:
-            expected[name] = shim_files(name, path.read_text(encoding="utf-8-sig"))
+            text = path.read_bytes().decode("utf-8-sig")
+        except UnicodeError as exc:
+            raise ShimError(f"{(SKILLS / name / SKILL_FILE).as_posix()} is not UTF-8: {exc}") from exc
+        try:
+            expected[name] = shim_files(name, text)
         except frontmatter.FrontmatterError as exc:
             expected[name] = str(exc)
     return expected
@@ -210,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         written = write(arguments.root) if arguments.write else []
         found = problems(arguments.root)
-    except OSError as exc:
+    except (OSError, ShimError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
         return 2
     for path in written:

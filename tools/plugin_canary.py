@@ -26,6 +26,7 @@ copies loaded through --plugin-dir for that session alone and project settings o
 Each check is judged from the session's stream, never from what the model reports. It prints one fact per line:
 
   HOME "<dir>"                                        the throwaway home
+  NOTHING_CHECKED "<reason>"                          Claude Code is not installed, so nothing ran; exit 1
   BUILT <plugin> "<path>"                             a plugin assembled into the home
   VALIDATED claude <plugin>                           or VALIDATION_FAILED claude <plugin> "<reason>"
   INSTALLED claude <plugin> <version>                 or INSTALL_FAILED claude <plugin> "<reason>"
@@ -36,11 +37,16 @@ Each check is judged from the session's stream, never from what the model report
   GUARD claude <plugin>:<agent> DENIED "<reason>"     or PASSED, which fails the run, or FAILED "<reason>"
   UNGUARDED claude <plugin>:<agent> REFUSED "<reason>"   or ACCEPTED, which fails the run, or FAILED "<reason>"
   TRANSCRIPT claude <check> "<path>"                  the session's stream
-  RECORD_BEGIN ... RECORD_END                         the lines a pull request records, paths as placeholders
+  RECORD_BEGIN ... RECORD_END                         the lines a pull request records, paths as placeholders:
+  VERSION claude <version>                            first, the version Claude Code reports, or unknown, then
+                                                      each line above from VALIDATED to UNGUARDED
+  FAILED "<reason>"                                   a plugin cannot be built or a file of the home written
   REMOVED "<dir>" or HOME_KEPT "<dir>" "<reason>"     as tools/runtime_canary.py ends
 
-It exits 1 when any check fails. This is a manual check, never part of tests/run_validation.py: each started session
-calls a model.
+It exits 1 when nothing was checked, when any check fails (a FAILED or *_FAILED line, an UNDISCOVERED line, a
+RUNTIME line that did not run, a main-session GUARD line that did not pass or a reviewer's that was not denied, an
+UNGUARDED line that was not refused), or when the home cannot be removed, and 0 otherwise. This is a manual check,
+never part of tests/run_validation.py: each started session calls a model.
 """
 
 from __future__ import annotations
@@ -80,6 +86,7 @@ from tools.runtime_canary import (
     RUN_ID,
     STATE,
     Completed,
+    RecordRefused,
     Runner,
     claim_home,
     create_home,
@@ -96,6 +103,7 @@ from tools.runtime_canary import (
     remove_home,
     run_process,
     runtime_version,
+    unreadable,
 )
 
 MARKETPLACE = "canary"
@@ -401,10 +409,16 @@ def probe(session: Session, executable: str, paths: Mapping[str, str], fixture: 
     completed = session.runner(
         command, session.home, environment(session.base, script_log, session.home), session.timeout
     )
-    records = [record for record in marked(read_records(state / "probe.jsonl"), run) if record.get("script")]
     script = installed / "skills" / FIXTURE_SKILL / "scripts" / "canary_probe.py"
+    unread = ""
+    try:
+        records = [record for record in marked(read_records(state / "probe.jsonl"), run) if record.get("script")]
+    except (OSError, RecordRefused) as exc:
+        records, unread = [], unreadable(exc, state / "probe.jsonl")
     ran = [record for record in records if Path(record["script"]).resolve() == script.resolve()]
-    if ran:
+    if unread:
+        outcome = f"FAILED {quote(unread)}"
+    elif ran:
         outcome = f"RAN {quote(forward(ran[0]['script']))} {quote(forward(ran[0].get('cwd', '')))}"
     elif nothing := discovery_failure(completed.stdout):
         outcome = f"FAILED {quote(nothing)}"

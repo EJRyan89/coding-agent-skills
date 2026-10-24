@@ -211,7 +211,7 @@ READERS = [
         "json-lines",
         b'{"runtime": "claude", "status": "PASS"}\n',
         _canary_records,
-        (Refused, NotAFile),
+        (Refused, NotAFile, runtime_canary.RecordRefused),
         accepts={
             "empty": "the canary creates each records file empty, so an empty one is a run that recorded nothing",
         },
@@ -256,7 +256,7 @@ READERS = [
         "frontmatter",
         FRONTMATTER,
         _shims,
-        (Refused, NotAFile),
+        (Refused, NotAFile, skill_shims.ShimError),
         filename=".claude/skills/example/SKILL.md",
         accepts={
             "bom": "each SKILL.md is decoded as UTF-8 with an optional byte-order mark",
