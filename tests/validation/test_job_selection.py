@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
@@ -20,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import executable_locator
 import job_selection
 from git_client import MISSING_GIT, GitError, GitResult
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
@@ -50,11 +52,13 @@ from tools import release_notes
 from tools.release_notes import ReleaseNotesError
 
 
-def git_not_on_path() -> contextlib.AbstractContextManager[object]:
-    """PATH and the link folders name a folder that does not exist, so the real locator finds no git and the real
-    client raises its own failure."""
+@contextlib.contextmanager
+def git_not_on_path() -> Iterator[None]:
+    """PATH names a folder that does not exist and no link folder is searched, so the real locator finds no git and
+    the real client raises its own failure."""
     nowhere = str(Path(__file__).resolve().parent / "no git here")
-    return mock.patch.dict(os.environ, {"PATH": nowhere, "LOCALAPPDATA": nowhere})
+    with mock.patch.dict(os.environ, {"PATH": nowhere}), mock.patch.object(executable_locator, "link_folders", list):
+        yield
 
 
 def timed_out(command: list[str], timeout: float) -> GitResult:

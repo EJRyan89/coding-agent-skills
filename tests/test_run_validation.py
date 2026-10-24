@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import executable_locator
 from git_client import MISSING_GIT
 from job_pool import Failure, Job, PoolResult, Retry
 from job_selection import flatten
@@ -26,6 +28,15 @@ from validation_support import REPOSITORY_ROOT, PullRequest, PullRequestChecks
 
 from tests import run_validation
 from tests.run_validation import documentation_only, is_documentation, main, parse_arguments, shard_option
+
+
+@contextlib.contextmanager
+def git_not_on_path() -> Iterator[None]:
+    """PATH names a folder that does not exist and no link folder is searched, so the real locator finds no git and
+    the real client raises its own failure."""
+    nowhere = str(Path(__file__).resolve().parent / "no git here")
+    with mock.patch.dict(os.environ, {"PATH": nowhere}), mock.patch.object(executable_locator, "link_folders", list):
+        yield
 
 
 class DocumentationDecision(unittest.TestCase):
@@ -214,13 +225,12 @@ class SelectionOptions(unittest.TestCase):
     def test_changed_runs_everything_when_the_changed_files_cannot_be_determined(self) -> None:
         # The real git, missing from PATH and the link folders, cannot tell; the run says why and runs every job.
         every = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
-        nowhere = str(Path(__file__).resolve().parent / "no git here")
         for argv, line in (
             (["--changed"], "the files changed since origin/main could not be determined"),
             ([], "the changed files could not be determined"),
         ):
             selection = mock.Mock()
-            with self.subTest(argv=argv), mock.patch.dict(os.environ, {"PATH": nowhere, "LOCALAPPDATA": nowhere}):
+            with self.subTest(argv=argv), git_not_on_path():
                 code, printed, _, started = self.run_main(
                     argv, changed_jobs=selection, documentation_jobs=selection, all_jobs=mock.Mock(return_value=every)
                 )
