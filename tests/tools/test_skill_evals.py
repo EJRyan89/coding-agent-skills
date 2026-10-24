@@ -1387,7 +1387,7 @@ class CheckoutTests(unittest.TestCase):
 
     def test_a_detached_head_is_accepted_only_at_a_commit_a_branch_of_origin_holds(self) -> None:
         self.git.output(["checkout", "-q", "--detach", "HEAD"], directory=self.root)
-        self.assertEqual("HEAD is detached at a commit no branch of origin holds", self.foreign())
+        self.assertEqual("its HEAD is detached at a commit no branch of origin holds", self.foreign())
         self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/main"], directory=self.root)
         self.assertIsNone(self.foreign())
 

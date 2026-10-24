@@ -353,7 +353,7 @@ def foreign_checkout(git: GitClient, directory: Path) -> str | None:
         held = git.output(
             ["for-each-ref", "--contains", "HEAD", "--format=%(refname)", "refs/remotes/origin"], directory=directory
         )
-        return None if held.strip() else "HEAD is detached at a commit no branch of origin holds"
+        return None if held.strip() else "its HEAD is detached at a commit no branch of origin holds"
     name = branch.stdout.strip()
     remote = git.run(["config", "--get", f"branch.{name}.remote"], directory=directory).stdout.strip()
     merge = git.run(["config", "--get", f"branch.{name}.merge"], directory=directory).stdout.strip()
