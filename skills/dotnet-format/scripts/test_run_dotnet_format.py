@@ -424,6 +424,44 @@ class MainTests(unittest.TestCase):
         self.assertEqual(["SUMMARY", "0", "0", "-"], lines[0])
         self.assertEqual(["LOG"], [fields[0] for fields in lines[1:]])
 
+    def test_an_entry_outside_the_root_is_refused_and_never_passed_to_the_formatter(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        outside = Path(directory.name).resolve()
+        if sys.platform == "win32":  # a junction needs no privilege
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(self.root / "Linked"))
+        else:
+            (self.root / "Linked").symlink_to(outside, target_is_directory=True)
+        entries = {
+            f"../{outside.name}/Outside.cs": "the path is outside the examined tree",
+            (outside / "Outside.cs").as_posix(): "the path is outside the examined tree",
+            "Linked/Outside.cs": "a symbolic link or junction leads it outside the repository root",
+        }
+        self.file_list.write_text("".join(f"{name}\n" for name in [*entries, *self.files]), encoding="utf-8")
+        for mode in ("check", "fix"):
+            with self.subTest(mode=mode):
+                runner = FakeRunner(0, "  Format complete in 10ms.\n")
+                status, lines, errors = self.run_formatter(mode, runner)
+                self.assertEqual((1, ""), (status, errors), "a refused entry is a finding, since it went unformatted")
+                self.assertEqual(list(entries), [fields[1] for fields in lines[:3]])
+                for (kind, entry, reason), expected in zip(lines[:3], entries.values(), strict=True):
+                    self.assertEqual("REFUSED", kind)
+                    self.assertTrue(reason.startswith(expected), (entry, reason))
+                self.assertEqual(["SUMMARY", "LOG"], [fields[0] for fields in lines[3:]])
+                ((arguments, _, _),) = runner.calls
+                self.assertEqual(self.files, arguments[arguments.index("--include") + 1 :])
+
+    def test_a_list_every_entry_of_which_is_refused_runs_nothing(self) -> None:
+        self.file_list.write_text("../Outside.cs\n", encoding="utf-8")
+        runner = FakeRunner(0, "")
+        status, lines, _ = self.run_formatter("check", runner)
+        self.assertEqual(1, status)
+        self.assertEqual(["REFUSED", "../Outside.cs"], lines[0][:2])
+        self.assertEqual([["SUMMARY", "0", "0", "-"]], lines[1:])
+        self.assertEqual([], runner.calls)
+
     def test_a_successful_fix_exits_0_and_reports_what_it_found(self) -> None:
         log = sample_log(self.root)
         runner = FakeRunner(0, log)
