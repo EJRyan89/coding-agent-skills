@@ -60,6 +60,9 @@ def catalog_answer(*skills: tuple[str, str]) -> str:
     return json.dumps([{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": text}]}])
 
 
+# verify's details, written out here rather than read from deployer/verify.py.
+EXPOSED_DETAIL = "Codex offers it to the model, though only the user starts it; check its agents/openai.yaml"
+OMITTED_DETAIL = "Codex lists it but leaves it out of the model's catalog; check its skills.max_context_tokens"
 # A skill Codex ships, which its catalog offers the model beside the deployed ones.
 SYSTEM_SKILL = ("skill-creator", "C:/Profiles/YourName/.codex/skills/.system/skill-creator/SKILL.md")
 
@@ -895,11 +898,42 @@ class VerifyCommandTests(DeployerTestCase):
                 result = self.verify()
                 self.assertEqual(1, result.code, result.output)
                 self.assertEqual(
-                    {"OMITTED": [f"beta ({verify.OMITTED_DETAIL})"], "FOUND": ["alpha"]},
+                    {"OMITTED": [f"beta ({OMITTED_DETAIL})"], "FOUND": ["alpha"]},
                     self.groups(result.output, "CODEX CLI"),
                 )
                 self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
                 self.assertIn("Verification failed for Codex CLI.\nSee docs/codex-support.md.\n", result.output)
+
+    def test_codex_reports_each_action_in_its_order_with_its_detail(self) -> None:
+        # The report's labels, their order, and their details are what a reader of verify's output meets.
+        for name in ("delta", "epsilon", "zeta"):
+            self.make_skill(name, name.title())
+        self.make_skill("gamma", "Gamma", user_only=True)
+        self.deploy_ok("--all")
+        other = "C:/Profiles/YourName/.codex/skills/delta"
+        listed = [
+            ("beta", self.adapter("beta"), False),
+            ("delta", self.adapter("delta"), True),
+            ("delta", other, True),
+            *((name, self.adapter(name), True) for name in ("epsilon", "gamma", "zeta")),
+        ]
+        self.answer(codex=listed)
+        offered = [(name, f"{self.adapter(name)}/SKILL.md") for name in ("gamma", "zeta")]
+        self.runtimes.answers["codex-catalog"] = [catalog_answer(*offered, SYSTEM_SKILL)]
+        result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        start = result.output.index("=== CODEX CLI ===")
+        section = result.output[start : result.output.index("=== COPILOT CLI ===")]
+        self.assertEqual(
+            "=== CODEX CLI === "
+            "NOT FOUND (1): alpha "
+            "DISABLED (1): beta (turned off in the runtime's settings) "
+            f"SHADOWED (1): delta (also {other}) "
+            f"EXPOSED (1): gamma ({EXPOSED_DETAIL}) "
+            f"OMITTED (1): epsilon ({OMITTED_DETAIL}) "
+            "FOUND (1): zeta",
+            " ".join(section.split()),
+        )
 
     def test_codex_reads_the_catalog_with_no_user_only_adapter_deployed(self) -> None:
         self.answer()
