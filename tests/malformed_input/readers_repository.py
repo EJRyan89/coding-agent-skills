@@ -256,7 +256,7 @@ READERS = [
         "frontmatter",
         FRONTMATTER,
         _shims,
-        (Refused, NotAFile),
+        (Refused, NotAFile, skill_shims.ShimError),
         filename=".claude/skills/example/SKILL.md",
         accepts={
             "bom": "each SKILL.md is decoded as UTF-8 with an optional byte-order mark",

@@ -246,6 +246,26 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
         ("hooks: none\n", "not a block mapping of event names"),
         ("hooks:\n  PreToolUse: {matcher: Read}\n", "agent guarded: hooks:"),
         ("hooks:\n  PreToolUse:\n    - matcher: Read\n    matcher: Bash\n", "share an indentation"),
+        # The home's Claude folder in each other spelling a command may give it.
+        *(
+            (GUARD_HOOK.replace("os.path.expanduser('~/.claude/skills/core/scripts/guard.py')", f"'{path}'"), "home's")
+            for path in (
+                "$HOME/.claude/skills/core/scripts/guard.py",
+                "${HOME}/.claude/settings.json",
+                "%USERPROFILE%\\\\.claude\\\\skills\\\\core\\\\scripts\\\\guard.py",
+                "$env:USERPROFILE/.claude/agents",
+            )
+        ),
+        (
+            GUARD_HOOK.replace(
+                "os.path.expanduser('~/.claude/skills/core/scripts/guard.py')",
+                "os.path.join(os.path.expanduser('~'), '.claude', 'skills', 'core', 'scripts', 'guard.py')",
+            ),
+            "home's",
+        ),
+        # A sequence of scalars is not the subset the hooks are read from.
+        ("hooks:\n  PreToolUse:\n    - Read\n", "not a key of its own: Read"),
+        (GUARD_HOOK.replace("timeout: 30", "timeout: ²"), "timeout is not a number of ASCII digits"),
     ],
 )
 def test_hooks_a_plugin_cannot_carry_as_written_are_refused(source: Source, hook: str, problem: str) -> None:
@@ -261,6 +281,15 @@ def test_the_manifest_is_the_marketplace_entry_with_the_name_and_version_and_no_
     assert manifest == {"name": "fixture-skills", "version": "1.2.3", "description": "The fixture-skills plugin."}
     default = json.loads(by_name(assembled(source))["fixture-skills"].files[skill_menu.PLUGIN_MANIFEST])
     assert default["version"] == "0.0.0-dev"
+
+
+def test_the_plugins_name_and_version_win_over_an_entry_that_sets_them(source: Source) -> None:
+    source.skill("alpha")
+    catalogue = plugin_build.load_catalogue(source.root)
+    catalogue["fixture-skills"] = {**catalogue["fixture-skills"], "name": "other", "version": "9.9.9"}
+    assembly = plugin_build.assemble(plugin_build.load_source(source.root), catalogue, "1.2.3")
+    manifest = json.loads(by_name(assembly)["fixture-skills"].files[skill_menu.PLUGIN_MANIFEST])
+    assert manifest == {"name": "fixture-skills", "version": "1.2.3", "description": "The fixture-skills plugin."}
 
 
 @pytest.mark.parametrize(

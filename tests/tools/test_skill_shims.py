@@ -145,6 +145,20 @@ class SkillShimsTestCase(unittest.TestCase):
         self.assertTrue(errors.getvalue().startswith("FAILED "), errors.getvalue())
         self.assertIn("not a file", errors.getvalue())
 
+    def test_a_skill_md_that_is_not_utf8_ends_the_run_as_failed_never_as_stale(self) -> None:
+        (self.root / ".claude/skills/widget-check/SKILL.md").write_bytes(b"---\nname: widget-check\n\xff\n---\n")
+        for argv in ((), ("--write",)):
+            with self.subTest(argv=argv):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors):
+                    code, output = self.run_main(*argv)
+                self.assertEqual((2, ""), (code, output))
+                self.assertTrue(
+                    errors.getvalue().startswith("FAILED .claude/skills/widget-check/SKILL.md is not UTF-8: "),
+                    errors.getvalue(),
+                )
+                self.assertFalse((self.root / SHIM_PATH).exists())
+
     def test_a_user_only_skill_gets_the_codex_policy_file_beside_its_shim(self) -> None:
         self.write(
             ".claude/skills/widget-check/SKILL.md",

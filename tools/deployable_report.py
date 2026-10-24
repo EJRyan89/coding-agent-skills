@@ -6,6 +6,7 @@ Usage:
   python tools/deployable_report.py layout --label NAME --results FILE
   python tools/deployable_report.py leftovers --results FILE
   python tools/deployable_report.py summary --results FILE [--note TEXT ...] [--summary FILE]
+  python tools/deployable_report.py pin --program NAME --wanted VERSION
 
 `verify` asks Codex CLI and Copilot CLI which skills they find, the way `python deploy.py verify` does, and judges
 each runtime: PASSED when it finds every adapter, SKIPPED when it refuses to list skills until someone signs in,
@@ -26,6 +27,11 @@ when it names any. It allows what the uninstall leaves by design: the manifest, 
 items, and each directory's retained backups. Every path the deployment owns is an entry of one of those directories,
 so the listing after the uninstall is the whole check and nothing is saved before it; the workflow's step before the
 uninstall is the layout check, which refuses a profile with nothing deployed.
+
+`pin` checks that a runtime the workflow installed is the version it asked for. It prints `NAME --version: TEXT`,
+what the program reported, and exits 0 when VERSION is `latest` or the version in that text is VERSION, compared as
+numbers part by part, so `1.0.9` does not match `1.0.98`. Otherwise it prints a `::error::` line saying why, a
+program that is not on PATH, that fails, or that reports no or another version, and exits 1.
 
 An absent results file starts an empty record. A results file that cannot be read, is not JSON, or does not hold a
 JSON array, and a results file that cannot be written are each an `ERROR:` line naming the file, and the command exits
@@ -51,6 +57,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
+import json_reader
 from console import run_main
 
 from deployer import discovery, journal, manifest, platform_support, tools, verify
@@ -276,17 +284,45 @@ def render_summary(passes: list[dict[str, Any]], versions: list[tuple[str, str]]
     return "\n".join(lines) + "\n"
 
 
+def _pass_problem(item: object) -> str | None:
+    """What makes one recorded pass other than this tool writes it, or None: an object whose `label` is a string, whose
+    `results` is an array of objects with string `runtime`, `status`, and `detail`, and whose `left` is an array of
+    strings, each when present."""
+    if not isinstance(item, dict):
+        return "a pass is not a JSON object"
+    if not isinstance(item.get("label", ""), str):
+        return "a pass's label is not a string"
+    results = item.get("results", [])
+    if not isinstance(results, list):
+        return "a pass's results are not a JSON array"
+    for result in results:
+        if not isinstance(result, dict):
+            return "a result is not a JSON object"
+        if not all(isinstance(result.get(key), str) for key in ("runtime", "status")):
+            return "a result's runtime or status is not a string"
+        if not isinstance(result.get("detail", ""), str):
+            return "a result's detail is not a string"
+    left = item.get("left", [])
+    if not isinstance(left, list) or not all(isinstance(entry, str) for entry in left):
+        return "a pass's left is not a JSON array of strings"
+    return None
+
+
 def _read_results(path: Path) -> list[dict[str, Any]]:
-    """The recorded passes, none when the file is absent; a file that cannot be read as a JSON array is an input
-    error, which leaves the file as it is."""
+    """The recorded passes, none when the file is absent; a file that cannot be read as a JSON array of passes as this
+    tool writes them is an input error, which leaves the file as it is."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return []
+        if not file_presence.is_present(path):
+            return []
+        data = json_reader.read_file(path)
     except (OSError, ValueError) as exc:
         raise DeployError(f"ERROR: Cannot read the results file: {path}: {exc}", exit_code=INPUT_ERROR) from exc
     if not isinstance(data, list):
         raise DeployError(f"ERROR: Results file is not a JSON array: {path}", exit_code=INPUT_ERROR)
+    for item in data:
+        problem = _pass_problem(item)
+        if problem is not None:
+            raise DeployError(f"ERROR: Results file is malformed: {path}: {problem}", exit_code=INPUT_ERROR)
     return data
 
 
@@ -366,6 +402,35 @@ def _leftovers(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def pin_problem(reported: str, wanted: str) -> str | None:
+    """Why a program that reported `reported` for `--version` is not the version `wanted`, or None when it is or when
+    `wanted` is `latest`; versions compare as numbers, never as text."""
+    if wanted == "latest":
+        return None
+    expected = tools.parse_version(wanted)
+    if expected is None or tools.format_version(expected) != wanted:
+        return f"is asked for {wanted}, which is not a version"
+    if tools.parse_version(reported) != expected:
+        return f"reports '{reported}', not the requested version {wanted}"
+    return None
+
+
+def _pin(arguments: argparse.Namespace) -> int:
+    program, wanted = arguments.program, arguments.wanted
+    path = platform_support.find_executable(program)
+    if path is None:
+        print(f"::error::{program} is not on PATH")
+        return 1
+    code, output = _run_version([path, "--version"])
+    reported = output.strip()
+    print(f"{program} --version: {reported}")
+    problem = f"exits {code}" if code != 0 else pin_problem(reported, wanted)
+    if problem is not None:
+        print(f"::error::{program} {problem}")
+        return 1
+    return 0
+
+
 def _summary(arguments: argparse.Namespace) -> int:
     try:
         passes = _read_results(Path(arguments.results))
@@ -399,8 +464,11 @@ def main(argv: list[str] | None = None) -> int:
     commands.choices["summary"].add_argument("--note", action="append", default=[])
     commands.choices["summary"].add_argument("--summary", default="")
     commands.choices["summary"].add_argument("--no-probe", action="store_true", help=argparse.SUPPRESS)
+    pin = commands.add_parser("pin")
+    pin.add_argument("--program", required=True, help="the runtime's command, such as claude")
+    pin.add_argument("--wanted", required=True, help="the version the workflow installed, or latest")
     arguments = parser.parse_args(argv)
-    handlers = {"verify": _verify, "layout": _layout, "leftovers": _leftovers, "summary": _summary}
+    handlers = {"verify": _verify, "layout": _layout, "leftovers": _leftovers, "summary": _summary, "pin": _pin}
     return handlers[arguments.command](arguments)
 
 

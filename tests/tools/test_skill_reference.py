@@ -349,6 +349,29 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn("FAILED", stderr)
 
+    def test_a_file_that_is_not_utf8_ends_the_run_as_failed_never_as_stale(self) -> None:
+        skill_reference.write(self.root)
+        self.add_prose("alpha", "Alpha's flag explained.")
+        self.add_prose("beta", "Beta explained.")
+        (self.root / "README.md").write_text(README, encoding="utf-8")
+        for relative in ("docs/skills.md", "skills/alpha/SKILL.md", "README.md", "deploy-meta/alpha.json"):
+            for arguments in ((), ("--write",)):
+                with self.subTest(file=relative, arguments=arguments):
+                    path = self.root / relative
+                    kept = path.read_bytes()
+                    path.write_bytes(kept + b"\xff\n")
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    try:
+                        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                            code = skill_reference.main(["--root", str(self.root), *arguments])
+                    finally:
+                        changed = path.read_bytes()
+                        path.write_bytes(kept)
+                    self.assertEqual((2, ""), (code, stdout.getvalue()), stderr.getvalue())
+                    self.assertTrue(stderr.getvalue().startswith("FAILED "), stderr.getvalue())
+                    self.assertIn(relative, stderr.getvalue().replace("\\", "/"))
+                    self.assertEqual(kept + b"\xff\n", changed)
+
 
 @pytest.mark.parametrize(
     ("description", "expected"),

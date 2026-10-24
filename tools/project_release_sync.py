@@ -9,11 +9,13 @@ item's milestone into the field: it sets the option named like the milestone, an
 milestone. It reads the board the current checkout's repository owner holds as project 1, through `gh api graphql`,
 which needs the `project` scope (`gh auth refresh -s project`).
 
-It prints SYNCED (exit 0) once every item's Release matches its milestone, after one line saying how many items it
-updated and cleared. It prints DRIFTED (exit 1), then one line per problem left, when a milestone has no option of its
-name, which is added in the field's settings, or when the options that name versions are not in version order. With
-`--check` it changes nothing and prints IN_SYNC (exit 0), or DRIFTED (exit 1) with one line per item whose Release
-does not match its milestone as well. It exits 2 when `gh` cannot read or change the board, or the board has no
+It prints SYNCED (exit 0) once every item's Release matches its milestone, then one line saying how many items it
+updated and cleared. It prints DRIFTED (exit 1), then that line, then one line per problem left, when a milestone has
+no option of its name, which is added in the field's settings, when the options that name versions are not in version
+order, or when the token in use cannot read an item, as one in a repository it has no access to: that line names each
+such item by its node id, since nothing here can say whether its Release matches. With `--check` it changes nothing
+and prints IN_SYNC (exit 0), or DRIFTED (exit 1) with one line per item whose Release does not match its milestone as
+well. It exits 2 when `gh` cannot read or change the board, or the board has no
 Release field; setting a value twice changes nothing, so a run cut short is rerun. CONTRIBUTING.md runs it after an
 issue is filed or moved between milestones, and the release procedure in docs/releasing.md runs it with `--check`.
 """
@@ -85,6 +87,7 @@ class Board:
     field: str
     options: dict[str, str]  # option name to option id, in the field's order
     items: list[Item]
+    unseen: list[str]  # the node id of each item whose content the token cannot read
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,7 @@ def read_board(client: GitHubClient) -> Board:
     project = field = None
     options: dict[str, str] = {}
     items: list[Item] = []
+    unseen: list[str] = []
     after: str | None = None
     while True:
         arguments = ["api", "graphql", "-f", f"query={ITEMS_QUERY}", "-F", "owner={owner}"]
@@ -138,9 +142,14 @@ def read_board(client: GitHubClient) -> Board:
         field = board["field"]["id"]
         options = {option["name"]: option["id"] for option in board["field"]["options"]}
         page = board["items"]
-        items += [item for node in page["nodes"] if (item := _item(node)) is not None]
+        for node in page["nodes"]:
+            item = _item(node)
+            if item is None:
+                unseen.append(str(node["id"]))
+            else:
+                items.append(item)
         if not page["pageInfo"]["hasNextPage"]:
-            return Board(project, field, options, items)
+            return Board(project, field, options, items, unseen)
         after = page["pageInfo"]["endCursor"]
 
 
@@ -172,6 +181,11 @@ def plan(board: Board) -> Plan:
         f"milestone {milestone} has no {FIELD_NAME} option ({count} item{'s' if count != 1 else ''})"
         for milestone, count in sorted(missing.items())
     ]
+    if board.unseen:
+        problems.append(
+            f"{len(board.unseen)} item{'s' if len(board.unseen) != 1 else ''} this token cannot read, so "
+            f"{'their' if len(board.unseen) != 1 else 'its'} {FIELD_NAME} is not checked: {', '.join(board.unseen)}"
+        )
     order = order_problem(list(board.options))
     return Plan(updates, clears, problems + ([order] if order else []))
 

@@ -8,11 +8,9 @@
   {"reader": "msbuild_reader.read_assets", "case": "deep_nesting", "issue": 1664},
   {"reader": "skill_menu.read_menu", "case": "deep_nesting", "issue": 1664},
   {"reader": "skill_roots.plugin_name", "case": "deep_nesting", "issue": 1664},
-  {"reader": "tools.deployable_report._read_results", "case": "deep_nesting", "issue": 1748},
   {"reader": "tools.runtime_canary.read_records", "case": "long_integer", "issue": 1766},
   {"reader": "tools.runtime_changelogs.read_record", "case": "deep_nesting", "issue": 1664},
   {"reader": "tools.skill_evals_scenarios.load_scenario", "case": "deep_nesting", "issue": 1747},
-  {"reader": "tools.skill_shims._expected", "case": "not_utf8", "issue": 1750},
   {"reader": "update_pr_dashboard.update_dashboard_rows", "case": "deep_nesting", "issue": 1664},
   {"reader": "update_pr_dashboard.update_dashboard_rows", "case": "long_integer", "issue": 1664}
 ]
