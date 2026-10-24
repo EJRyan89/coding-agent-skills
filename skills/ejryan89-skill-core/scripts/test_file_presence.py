@@ -11,6 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from file_presence import NotAFile, is_present
 
+# The errno values Python gives a directory and an invalid argument on Windows and on Linux alike, written out so the
+# refusal is held to them, not to the constants it uses.
+EISDIR = 21
+EINVAL = 22
+
 
 class FilePresenceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -32,6 +37,7 @@ class FilePresenceTests(unittest.TestCase):
         self.assertIsInstance(raised.exception, OSError)
         self.assertEqual(str(path), raised.exception.filename)
         self.assertEqual("not a file", raised.exception.strerror)
+        self.assertEqual(EISDIR, raised.exception.errno)
 
     def test_a_missing_folder_above_the_file_is_absent(self) -> None:
         self.assertFalse(is_present(self.root / "missing" / "settings.json"))
@@ -40,5 +46,6 @@ class FilePresenceTests(unittest.TestCase):
     def test_a_link_to_nothing_is_refused_not_read_as_absent(self) -> None:
         path = self.root / "settings.json"
         path.symlink_to(self.root / "gone.json")
-        with self.assertRaises(NotAFile):
+        with self.assertRaises(NotAFile) as raised:
             is_present(path)
+        self.assertEqual(EINVAL, raised.exception.errno)

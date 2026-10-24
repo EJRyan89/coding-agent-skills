@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -277,3 +278,9 @@ class DocumentTests(unittest.TestCase):
             path.mkdir()
             with self.assertRaisesRegex(FrontmatterError, "cannot be read"):
                 frontmatter.read(path)
+            with (
+                mock.patch.object(Path, "read_text", side_effect=PermissionError(13, "Permission denied")),
+                self.assertRaises(FrontmatterError) as raised,
+            ):
+                frontmatter.read(path)
+            self.assertEqual(f"{path} cannot be read: Permission denied", str(raised.exception))
