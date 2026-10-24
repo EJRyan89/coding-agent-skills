@@ -893,3 +893,55 @@ def test_ctypes_policy_refuses_a_foreign_function_called_undeclared() -> None:
     assert run_claim_policy(python_checks.ctypes_declaration_problems, "CTYPES_ALLOWED", undeclared, "tests/x.py")[
         0
     ] == (f"{alpha}:15 calls CloseHandle through ctypes with no argtypes or restype {passes}")
+
+
+DISCARD_SOURCE = """\
+from bounded_process import run_bounded
+from git_client import GitClient
+
+from deployer import platform_support
+
+
+class Services:
+    git: GitClient
+
+
+def discards(services, client: GitClient | None, tree):
+    run_bounded(["git", "status"], 60)
+    platform_support.run_tool(["git", "status"])
+    GitClient().run(["status"])
+    client.run(["status"])
+    services.git.run(["status"])
+    local = GitClient()
+    local.run(["status"])
+
+
+def checks(client: GitClient, other):
+    result = client.run(["status"])
+    client.output(["status"])
+    other.run(["status"])
+    return result.returncode, run_bounded(["git"], 60).returncode
+
+
+def sanctioned(client: GitClient):
+    client.run(["worktree", "prune"])
+
+
+RESULT_DISCARD_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_discarded_result_policy_refuses_a_runner_result_left_unread() -> None:
+    # output raises on a failure, and a run of what is no GitClient is no runner.
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.discarded_result_problems, "RESULT_DISCARD_ALLOWED", DISCARD_SOURCE, "tests/x.py"
+    )
+    judge = "whose exit status the caller must judge; check it, or state why in RESULT_DISCARD_ALLOWED"
+    assert found == [
+        f"{alpha}:12 discards the result of bounded_process.run_bounded, {judge}",
+        f"{alpha}:13 discards the result of platform_support.run_tool, {judge}",
+        *(f"{alpha}:{line} discards the result of GitClient.run, {judge}" for line in (14, 15, 16, 18)),
+        f"{alpha}: RESULT_DISCARD_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: RESULT_DISCARD_ALLOWED must map each function, class, or assignment to its reason",
+    ]
