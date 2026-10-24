@@ -621,27 +621,94 @@ def pinned_tool_problems(workflow: str, job: str) -> list[str]:
     return problems
 
 
-# The Windows legs' real-time protection reading, and the runner's own folders excluded when it is on.
+# The Windows legs' real-time protection reading. It read off on every leg, so no exclusion applies, and the reading
+# costs seconds, so only the weekly run waits on it.
 DEFENDER_LINES = (
     "$enabled = (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled",
     'Write-Host "Defender real-time protection enabled: $enabled"',
-    "if ($enabled) {",
-    "Add-MpPreference -ExclusionPath @($env:RUNNER_TEMP, $env:TEMP, $env:GITHUB_WORKSPACE) -ErrorAction Stop",
 )
+DEFENDER_READ = "Get-MpComputerStatus"
+DEFENDER_EXCLUSION = "Add-MpPreference"
 
 
 def defender_problems(workflow: str) -> list[str]:
-    """Report how validate.yml's Windows legs depart from printing Defender's real-time protection state and, when it
-    is on, excluding the ephemeral runner's temporary folders and workspace, in a pwsh step before validation runs."""
+    """Report how validate.yml's Windows legs depart from printing Defender's real-time protection state in a pwsh
+    step the weekly schedule alone runs, reading it in no other step, and adding no exclusion."""
     steps = _steps(_mapping(read_workflow(workflow), "jobs", "suite"))
-    before = steps[: _validation_index(steps)]
-    if any(
+    problems: list[str] = []
+    if not any(
         step.get("shell") == "pwsh"
+        and step.get("if") == SCHEDULE_ONLY
         and all(line in {raw.strip() for raw in str(step.get("run", "")).splitlines()} for line in DEFENDER_LINES)
-        for step in before
+        for step in steps
     ):
-        return []
-    return ["no pwsh step of the suite job reads Defender's real-time protection and excludes the runner's folders"]
+        problems.append("no pwsh step of the suite job prints Defender's real-time protection state on the schedule")
+    problems.extend(
+        f"the step {step.get('name')} of the suite job reads Defender's real-time protection on every event"
+        for step in steps
+        if DEFENDER_READ in str(step.get("run", "")) and step.get("if") != SCHEDULE_ONLY
+    )
+    problems.extend(
+        f"the step {step.get('name')} of the suite job adds a Defender exclusion, which never applied"
+        for step in steps
+        if DEFENDER_EXCLUSION in str(step.get("run", ""))
+    )
+    return problems
+
+
+# The Linux legs' reading of the image's PSScriptAnalyzer: the step of this id records whether the pinned version is
+# installed, and the module's cache and its install run only when it is not.
+IMAGE_MODULE_STEP = "psscriptanalyzer-image"
+IMAGE_MODULE_LINES = (
+    "$found = @(Get-Module -ListAvailable PSScriptAnalyzer | Where-Object { [string]$_.Version -eq "
+    "$env:PSSCRIPTANALYZER_VERSION })",
+    'Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "installed=$(([string]($found.Count -gt 0))'
+    '.ToLowerInvariant())"',
+)
+NOT_ON_IMAGE = f"steps.{IMAGE_MODULE_STEP}.outputs.installed != 'true'"
+MODULE_CACHE_KEY = "psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}"
+MODULE_INSTALL = "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION "
+
+
+def image_module_problems(workflow: str, job: str) -> list[str]:
+    """Report how validate.yml's `job` departs from restoring and installing PSScriptAnalyzer only when the image lacks
+    the pin: one pwsh step with id IMAGE_MODULE_STEP records on every event, before validation runs, whether the
+    pinned version is installed; the module's cache, after it, runs only when it is not; and each install, after it,
+    only when it is not and the cache missed. `pinned_tool_problems` holds the verify step that checks the result
+    either way, and `tool_cache_problems` the cache's key and install."""
+    steps = _steps(_mapping(read_workflow(workflow), "jobs", job))
+    probes = [index for index, step in enumerate(steps) if step.get("id") == IMAGE_MODULE_STEP]
+    if len(probes) != 1:
+        return [f"the {job} job has {len(probes)} steps with id {IMAGE_MODULE_STEP}, not one"]
+    first = probes[0]
+    probe = steps[first]
+    problems: list[str] = []
+    if first > _validation_index(steps):
+        problems.append(f"the step {probe.get('name')} of the {job} job reads the image after validation runs")
+    lines = {raw.strip() for raw in str(probe.get("run", "")).splitlines()}
+    if probe.get("shell") != "pwsh" or "if" in probe or not all(line in lines for line in IMAGE_MODULE_LINES):
+        problems.append(
+            f"the step {probe.get('name')} of the {job} job does not record, on every event, whether the image has "
+            "the pinned PSScriptAnalyzer"
+        )
+    caches = [
+        (index, step) for index, step in enumerate(steps) if _mapping(step, "with").get("key") == MODULE_CACHE_KEY
+    ]
+    problems.extend(
+        f"the step {step.get('name')} of the {job} job restores PSScriptAnalyzer's cache whether or not the image has "
+        "the pin"
+        for index, step in caches
+        if index < first or step.get("if") != NOT_ON_IMAGE
+    )
+    hits = " && ".join(f"steps.{step.get('id')}.outputs.cache-hit != 'true'" for _, step in caches)
+    expected = f"{NOT_ON_IMAGE} && {hits}" if hits else NOT_ON_IMAGE
+    problems.extend(
+        f"the step {step.get('name')} of the {job} job installs PSScriptAnalyzer whether or not the image has the pin, "
+        f"or over a cache hit: its condition is {step.get('if')!r}, not {expected!r}"
+        for index, step in enumerate(steps)
+        if MODULE_INSTALL in str(step.get("run", "")) and (index < first or step.get("if") != expected)
+    )
+    return problems
 
 
 def _verify_commands(script: str) -> list[list[str]]:
@@ -1124,7 +1191,7 @@ class WorkflowsPolicies(unittest.TestCase):
             ),
         )
         self.assertEqual([], pinned_tool_problems(workflow, "suite"))
-        # Real-time scanning of the runner's own folders, read and excluded before the file-heavy suites run.
+        # Real-time protection read off on every leg, so only the weekly run prints it, and nothing is excluded.
         self.assertEqual([], defender_problems(workflow))
 
     def test_validate_workflow_runs_the_whole_run_on_linux_inside_the_required_check(self) -> None:
@@ -1147,6 +1214,8 @@ class WorkflowsPolicies(unittest.TestCase):
             ),
         )
         self.assertEqual([], pinned_tool_problems(workflow, "linux"))
+        # The image ships the pinned analyzer, so the cache and the install run only on an image that lacks it.
+        self.assertEqual([], image_module_problems(workflow, "linux"))
         # Every supported platform gates a merge through the one check branch protection requires.
         self.assertEqual([], required_check_problems(workflow, ("suite", "linux")))
 
