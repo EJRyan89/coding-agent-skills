@@ -8,7 +8,6 @@ a process of its own; a Bash or PowerShell suite runs as a program.
 from __future__ import annotations
 
 import ast
-import fnmatch
 import functools
 import io
 import itertools
@@ -107,25 +106,27 @@ def _needs_a_test(name: str, scripts: list[str]) -> bool:
 
 
 def untested_module_problems(root: Path) -> list[str]:
-    """Report each module under skills/*/scripts/, deployer/, or tools/ that no test_*.py imports.
+    """Report each module under skills/*/scripts/, deployer/, or tools/ that no Python regression suite imports.
 
-    A test imports the module itself: an import statement, an importlib.import_module or __import__ of a literal name,
-    or a load of its file by path, each resolved to the file it loads as RepositoryModules resolves it, so another
-    skill's module of the same name, or a standard-library module, is not this one. Naming, mentioning, or running it
-    is not enough, and neither is a test file named after it. A package's __init__.py needs no test.
+    A suite is a file regression_suites finds, by ejryan89-skill-core's suite-name rule, since only a suite that runs
+    tests what it imports, and it imports the module itself: an import statement, an importlib.import_module or
+    __import__ of a literal name, or a load of its file by path, each resolved to the file it loads as
+    RepositoryModules resolves it, so another skill's module of the same name, or a standard-library module, is not
+    this one. Naming, mentioning, or running it is not enough, and neither is a test file named after it. A package's
+    __init__.py needs no test.
     """
     files = repository_files(root)
     modules = RepositoryModules(root)
     tested: set[Path] = set()
-    for path in files:
-        if fnmatch.fnmatchcase(path.name, "test_*.py"):
-            tested |= set(modules.imports(path, unique_loads=True))
+    for suite in regression_suites(root):
+        if suite.suffix == ".py":
+            tested |= set(modules.imports(suite, unique_loads=True))
     scripts = [directory.relative_to(root).as_posix() for directory in skill_script_directories(root)]
     problems: list[str] = []
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         if _needs_a_test(name, scripts) and path.resolve() not in tested:
-            problems.append(f"{name} is imported by no test_*.py; add a test that imports it")
+            problems.append(f"{name} is imported by no Python regression suite; add a test that imports it")
     return problems + modules.unreadable_problems()
 
 
@@ -733,8 +734,20 @@ PYTEST_CONFIGURATION = {
     "addopts": ["-p", "no:cacheprovider", "--capture=no"],
     "strict": True,
 }
-# The files pytest reads its configuration from ahead of pyproject.toml, none of which the repository holds.
-PYTEST_CONFIGURATION_FILES = ("pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg")
+# The files pytest reads its configuration from, in the order it tries them in each folder, from the folder of the
+# suite it is given up to the root; the first match wins. pytest.toml takes precedence even when empty, and so does
+# pytest.ini; pyproject.toml, tox.ini, and setup.cfg match only with a pytest table. The root holds pyproject.toml
+# alone, so the configuration stays in one file, and no folder below it holds any of them, since the runner starts
+# `python -B -m pytest <suite>` with no -c or --rootdir and pytest would read a nearer one instead.
+PYTEST_CONFIGURATION_FILES = (
+    "pytest.toml",
+    ".pytest.toml",
+    "pytest.ini",
+    ".pytest.ini",
+    "pyproject.toml",
+    "tox.ini",
+    "setup.cfg",
+)
 
 
 def _autouse_scope(function: ast.FunctionDef | ast.AsyncFunctionDef, aliases: dict[str, str]) -> str | None:
@@ -838,15 +851,28 @@ def git_isolation_problems(root: Path) -> list[str]:
 
 
 def pytest_configuration_problems(root: Path) -> list[str]:
-    """Report a pytest configuration other than PYTEST_CONFIGURATION, or a file pytest would read one from first.
+    """Report a pytest configuration other than PYTEST_CONFIGURATION, another configuration file at the root, or one
+    in a suite's folder or a folder between it and the root, which pytest would read instead.
 
     A configuration could select, deselect, or skip tests, or turn the conftest plugin off, for every suite at once,
     so it is pinned here rather than read.
     """
     problems = [
-        f"{name} holds pytest configuration ahead of pyproject.toml; keep it in [tool.pytest.ini_options] alone"
+        f"{name} is a pytest configuration file beside pyproject.toml; keep the configuration in "
+        "[tool.pytest.ini_options] alone"
         for name in PYTEST_CONFIGURATION_FILES
-        if (root / name).is_file()
+        if name != "pyproject.toml" and (root / name).is_file()
+    ]
+    below: dict[Path, Path] = {}
+    for suite in regression_suites(root):
+        for folder in suite.parents:
+            if folder == root:
+                break
+            below.update({folder / name: suite for name in PYTEST_CONFIGURATION_FILES if (folder / name).is_file()})
+    problems += [
+        f"{path.relative_to(root).as_posix()} is a pytest configuration file pytest reads for "
+        f"{suite.relative_to(root).as_posix()} instead of the root's pyproject.toml; keep the configuration there"
+        for path, suite in sorted(below.items())
     ]
     configuration = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     table = configuration.get("tool", {}).get("pytest", {})
