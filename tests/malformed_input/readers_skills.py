@@ -137,7 +137,9 @@ PLAN = {
     "branches": [],
     "worktrees": [],
     "fastforward": [],
+    "fastforward_skipped": [],
     "diverged": [],
+    "policy": {"regenerable": "", "protected": ""},
     "applied": True,
     "events": [],
 }
