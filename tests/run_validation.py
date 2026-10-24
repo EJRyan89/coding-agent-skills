@@ -64,6 +64,7 @@ import duplication
 import fsops_platform
 import job_selection
 import kinds_table
+import known_failures
 import markdown_links
 import pull_request_title
 import python_checks
@@ -113,6 +114,7 @@ POLICY_MODULES = (
     fsops_platform,
     job_selection,
     kinds_table,
+    known_failures,
     markdown_links,
     pull_request_title,
     python_checks,
@@ -141,8 +143,8 @@ DOCUMENTATION_FILES = {
     ".github/pull_request_template.md",
 }
 
-# The policy checks that judge the pull request, each policy module's own: the title, upgrade-note, and silent-revert
-# checks, which a run given only --pr-title or --pr-body limits itself to.
+# The policy checks that judge the pull request, each policy module's own: the title, upgrade-note, silent-revert, and
+# known-failure closing checks, which a run given only --pr-title or --pr-body limits itself to.
 PULL_REQUEST_POLICIES = tuple(
     check
     for module in POLICY_MODULES
