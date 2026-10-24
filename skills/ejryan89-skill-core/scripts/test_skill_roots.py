@@ -127,7 +127,9 @@ class SiblingScriptsTests(unittest.TestCase):
                 lines = result.stdout.decode("utf-8").splitlines()
                 self.assertEqual(1, len(lines))
                 self.assertTrue(
-                    lines[0].startswith(f"FAILED MissingSibling: skill shared-dep has no scripts under {deployed}; "),
+                    lines[0].startswith(
+                        f"FAILED MissingSibling: skill shared-dep has no scripts under {deployed.resolve()}; "
+                    ),
                     lines[0],
                 )
 

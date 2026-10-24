@@ -393,9 +393,10 @@ class SkillDependencyTestCase(FixtureRepositoryTestCase):
         (self.root / "skills" / "ejryan89-skill-core" / "scripts" / "skill_roots.py").write_bytes(
             skill_roots.read_bytes()
         )
-        (self.root / "skills" / "ejryan89-skill-core" / "scripts" / "file_presence.py").write_bytes(
-            skill_roots.with_name("file_presence.py").read_bytes()
-        )
+        for module in ("file_presence.py", "console.py", "flat_text.py"):
+            (self.root / "skills" / "ejryan89-skill-core" / "scripts" / module).write_bytes(
+                skill_roots.with_name(module).read_bytes()
+            )
         (self.root / "skills" / "alpha" / "scripts" / "alpha_values.py").write_text(
             'VALUE = "alpha found"\n', encoding="utf-8"
         )
