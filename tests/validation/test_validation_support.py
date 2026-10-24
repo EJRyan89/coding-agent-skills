@@ -48,6 +48,7 @@ from validation_support import (
     repository_files,
     scoped_nodes,
     scripts_entries,
+    skill_dependency_closure,
     statement_scope,
     write_fixture_tree,
 )
@@ -410,6 +411,26 @@ class SharedReaderFixtures(unittest.TestCase):
             [False, True], [fence_body_line(holder, index) for index, holder in enumerate(fence_holders(unclosed))]
         )
 
+    def test_the_dependency_closure_follows_skill_deps_through_each_other_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": '{"skill_deps": ["beta", "gamma"]}',
+                    "deploy-meta/beta.json": '{"skill_deps": ["delta", "alpha"]}',
+                    "deploy-meta/gamma.json": '{"skill_deps": ["delta"]}',
+                    "deploy-meta/delta.json": "{}",
+                    # A dependency with no metadata of its own is reached and depends on nothing.
+                    "deploy-meta/epsilon.json": '{"skill_deps": ["unlisted"]}',
+                },
+            )
+            self.assertEqual(["beta", "delta", "gamma"], skill_dependency_closure(root, "alpha"))
+            self.assertEqual(["delta", "alpha", "gamma"], skill_dependency_closure(root, "beta"))
+            self.assertEqual([], skill_dependency_closure(root, "delta"))
+            self.assertEqual(["unlisted"], skill_dependency_closure(root, "epsilon"))
+            self.assertEqual([], skill_dependency_closure(root, "missing"))
+
     def test_an_allowance_maps_each_name_to_a_reason(self) -> None:
         def allowance(source: str) -> dict[str, str] | None:
             return module_allowance(ast.parse(source), "ALLOWED")
@@ -429,7 +450,17 @@ class SharedReaderFixtures(unittest.TestCase):
 
 
 @pytest.mark.parametrize(
-    "invalid", ["ALLOWED = {'a': ''}", "ALLOWED = {'a': 1}", "ALLOWED = ['a']", "ALLOWED = make()"]
+    "invalid",
+    [
+        "ALLOWED = {'a': ''}",
+        "ALLOWED = {'a': 1}",
+        "ALLOWED = ['a']",
+        "ALLOWED = make()",
+        # A dictionary or a set with an unhashable key, which literal_eval cannot build.
+        "ALLOWED = {['a']: 'reason'}",
+        "ALLOWED = {('a', ['b']): 'reason'}",
+        "ALLOWED = {{'a': 1}}",
+    ],
 )
 def test_an_allowance_of_any_other_shape_is_unreadable(invalid: str) -> None:
     assert module_allowance(ast.parse(invalid), "ALLOWED") is None

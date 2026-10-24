@@ -192,10 +192,14 @@ def _required_variables(snapshot: Snapshot) -> dict[str, object]:
     for name in sorted(filter(DEPLOY_META.fullmatch, snapshot.names)):
         try:
             variables = json.loads(snapshot.text(name) or "").get("required_vars")
-        except (ValueError, AttributeError):
+        # ValueError covers a decode error and an over-long integer; AttributeError, a document that is no object;
+        # RecursionError, nesting too deep
+        except (ValueError, AttributeError, RecursionError):
             variables = "unreadable"
         if variables:
-            values[name] = sorted(variables) if isinstance(variables, list) else variables
+            # A list of names compares in any order; any other value, a mixed list included, compares as it is.
+            names = isinstance(variables, list) and all(isinstance(variable, str) for variable in variables)
+            values[name] = sorted(variables) if names else variables
     return values
 
 

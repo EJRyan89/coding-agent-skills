@@ -285,6 +285,15 @@ def _job_permission_problems(jobs: Node) -> list[str]:
     return problems
 
 
+def _expressions(path: str, text: str, is_key: bool) -> list[str]:
+    """The expressions GitHub evaluates in a key or value: each `${{ }}` in it, or for an `if:` value with none, the
+    whole value, which GitHub evaluates as an expression without the wrapping."""
+    wrapped = EXPRESSION.findall(text)
+    if not is_key and not wrapped and path.rsplit(".", 1)[-1] == "if":
+        return [text]
+    return wrapped
+
+
 def _string_problems(tree: Node) -> list[str]:
     """Secrets, the token, and author-written event data, in any expression anywhere, any key, and any value, run
     blocks included, and any expression the policy cannot read."""
@@ -292,7 +301,7 @@ def _string_problems(tree: Node) -> list[str]:
     for path, text, is_key in _strings(tree):
         if is_key and text == "secrets":
             problems.append(f"{path} passes the workflow's secrets on")
-        for expression in EXPRESSION.findall(text):
+        for expression in _expressions(path, text, is_key):
             if SECRET_REFERENCE.search(expression):
                 problems.append(f"{path} reads a secret: ${{{{{expression}}}}}")
             reason = github_context_problem(expression)

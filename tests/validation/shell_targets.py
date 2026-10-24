@@ -441,7 +441,8 @@ class BashFence:
 
 
 def markdown_shell_targets(root: Path, files: list[Path]) -> list[BashFence]:
-    """Every closed, non-empty Bash fence in Markdown outside MARKDOWN_SHELL_EXCLUDED_ROOTS."""
+    """Every non-empty Bash fence in Markdown outside MARKDOWN_SHELL_EXCLUDED_ROOTS, a fence left open included, which
+    runs to the end of its file as _shell_units reads it."""
     targets: list[BashFence] = []
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
