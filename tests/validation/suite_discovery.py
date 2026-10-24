@@ -87,6 +87,15 @@ RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
         # Starts a Python per entry point, which imports the entry point and runs its __main__ block twice.
         "EntryPointRunnerTests::test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130": 10,
     },
+    "tests/deployer/test_installed_update.py": {
+        # Each clones this repository twice, deploys the latest release with its configure and deployer, and runs that
+        # installed update.sh, which checks and redeploys every skill with this checkout's deployer. Measured on
+        # 2026-10-24 on the same kind of machine.
+        "test_an_update_with_no_later_release_redeploys_the_release": 43,
+        "test_a_patch_release_updates_to_it": 43,
+        "test_a_breaking_release_stops_until_crossed_then_deploys_moving_renamed_skills": 50,
+        "test_the_update_fails_when_a_commit_moves_a_path_the_release_reads": 26,
+    },
 }
 
 
@@ -169,17 +178,24 @@ def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
 def suite_cost(suite: Path, recorded: Mapping[str, float]) -> float:
     """A Python suite's cost in typical tests: one for each test, or its recorded seconds. A suite no policy can read
     costs one test; the policies that read it report it."""
+    return defined_test_count(suite) + sum(seconds - 1 for seconds in recorded.values())
+
+
+def defined_test_count(suite: Path) -> int:
+    """The tests a Python suite defines, or one for a suite no policy can read."""
     try:
-        tests = len(defined_tests(parse_python(suite)))
+        return len(defined_tests(parse_python(suite)))
     except UnreadablePython:
-        tests = 1
-    return tests + sum(seconds - 1 for seconds in recorded.values())
+        return 1
 
 
 def shard_count(suite: Path, recorded: Mapping[str, float] | None = None) -> int:
+    """A suite's shards: one per TESTS_PER_SHARD of its cost, up to MAXIMUM_SHARDS, and never more than its tests,
+    since a shard dealt no test collects none, which pytest fails."""
     if suite.suffix.casefold() != ".py":
         return 1
-    return max(1, min(MAXIMUM_SHARDS, int(suite_cost(suite, recorded or {})) // TESTS_PER_SHARD))
+    cost = int(suite_cost(suite, recorded or {})) // TESTS_PER_SHARD
+    return max(1, min(MAXIMUM_SHARDS, defined_test_count(suite), cost))
 
 
 def shard_options(index: int, count: int, recorded: Mapping[str, float]) -> list[str]:

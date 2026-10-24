@@ -318,6 +318,16 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
             self.assertEqual(shard_count(suite, {"T::test_4": 13}), len(jobs))
             self.assertEqual({(17 + 12) / len(jobs)}, {job.weight for job in jobs})
 
+    def test_a_suite_of_few_costly_tests_gets_no_more_shards_than_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            suite = Path(temporary) / "test_costly.py"
+            body = "".join(f"    def test_{number}(self): pass\n" for number in range(3))
+            suite.write_text(f"import unittest\nclass T(unittest.TestCase):\n{body}", encoding="utf-8")
+            recorded = {"T::test_0": 40, "T::test_1": 40, "T::test_2": 40}
+            self.assertEqual(3, shard_count(suite, recorded))
+            jobs = suite_jobs([suite], {"test_costly.py": recorded}, root=Path(temporary))
+            self.assertEqual(3, len(jobs))
+
     def test_a_recorded_test_shares_a_shard_once_the_suite_outgrows_the_shard_cap(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
