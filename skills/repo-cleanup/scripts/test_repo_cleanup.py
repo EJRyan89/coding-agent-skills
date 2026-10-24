@@ -279,16 +279,19 @@ class Fixture(CleanupTestCase):
         return result.stdout.strip() or None
 
     def push_branch(self, name: str) -> str:
-        git(self.clone, "switch", "--quiet", "-c", name, "main")
-        tip = self.commit(self.clone, f"work on {name}")
+        """A branch off main with one empty commit, pushed and tracking its remote branch; main stays checked out.
+        The commit is written without checking the branch out, which would cost two more git processes."""
+        tip = git(self.clone, "commit-tree", "main^{tree}", "-p", "main", "-m", f"work on {name}")
+        git(self.clone, "branch", "--quiet", name, tip)
         git(self.clone, "push", "--quiet", "-u", "origin", name)
-        git(self.clone, "switch", "--quiet", "main")
         return tip
 
-    def merge_remotely(self, name: str) -> None:
+    def merge_remotely(self, name: str, *, delete: bool = False) -> None:
+        """Merge the remote branch into main from the other clone, and delete the remote branch in the same push when
+        `delete` is set."""
         git(self.other, "fetch", "--quiet", "origin")
         git(self.other, "merge", "--quiet", "--no-ff", "-m", f"Merge {name}", f"origin/{name}")
-        git(self.other, "push", "--quiet", "origin", "main")
+        git(self.other, "push", "--quiet", "origin", "main", *([f":refs/heads/{name}"] if delete else []))
 
     def delete_remotely(self, name: str) -> None:
         git(self.other, "push", "--quiet", "origin", "--delete", name)
@@ -308,8 +311,9 @@ class Fixture(CleanupTestCase):
         """A branch whose pull request finished at its tip and whose remote branch was deleted."""
         tip = self.push_branch(name)
         if merged:
-            self.merge_remotely(name)
-        self.delete_remotely(name)
+            self.merge_remotely(name, delete=True)
+        else:
+            self.delete_remotely(name)
         if state:
             self.github.pull(name, state, tip)
         return tip
@@ -334,8 +338,7 @@ class Fixture(CleanupTestCase):
         git(self.other, "switch", "--quiet", "main")
         git(self.other, "branch", "--quiet", "-D", name)
         self.commit(self.other, f"Squash-merge {name}")
-        git(self.other, "push", "--quiet", "origin", "main")
-        self.delete_remotely(name)
+        git(self.other, "push", "--quiet", "origin", "main", f":refs/heads/{name}")
         self.github.pull(name, "MERGED", head, commits + "\n")
         return tip
 
@@ -352,8 +355,7 @@ class Fixture(CleanupTestCase):
         git(self.other, "merge", "--quiet", "--ff-only", "origin/main")
         git(self.other, "merge", "--quiet", "--squash", f"origin/{name}")
         squash = self.commit(self.other, f"Squash-merge {name}")
-        git(self.other, "push", "--quiet", "origin", "main")
-        self.delete_remotely(name)
+        git(self.other, "push", "--quiet", "origin", "main", f":refs/heads/{name}")
         rewritten = git(self.clone, "commit-tree", f"{name}^{{tree}}", "-p", f"{name}^", "-m", f"reworded {name}")
         git(self.clone, "update-ref", f"refs/heads/{name}", rewritten)
         if extra_work:
@@ -393,9 +395,8 @@ class Fixture(CleanupTestCase):
         git(self.other, "switch", "--quiet", base)
         git(self.other, "merge", "--quiet", "--squash", f"origin/{name}")
         squash = self.commit(self.other, f"Squash-merge {name}")
-        git(self.other, "push", "--quiet", "origin", base)
+        git(self.other, "push", "--quiet", "origin", base, f":refs/heads/{name}")
         git(self.other, "switch", "--quiet", "main")
-        self.delete_remotely(name)
         rewritten = git(self.clone, "commit-tree", f"{name}^{{tree}}", "-p", f"{name}^", "-m", f"reworded {name}")
         git(self.clone, "update-ref", f"refs/heads/{name}", rewritten)
         git(self.clone, "switch", "--quiet", "main")

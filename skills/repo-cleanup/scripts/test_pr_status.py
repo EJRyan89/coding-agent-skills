@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -437,18 +439,48 @@ class ClassifySequenceTests(unittest.TestCase):
         self.assertEqual(("UNMATCHED", [LIST_CALL]), outcome(pull("MERGED"), upstream=MAIN_NOW))
 
 
+# Each fixture's repositories as its build leaves them and the attributes the build set, by the build that made them:
+# building starts a git process per step, so each process builds a fixture once and every test gets a copy of it.
+_TEMPLATES: dict[Callable[..., None], tuple[Path, dict[str, Any]]] = {}
+
+
 class GitFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="pr-status.")
-        root = Path(self._temporary.name)
+        self.addCleanup(self._temporary.cleanup)
+        template, built = self.template()
+        root = Path(self._temporary.name) / "root"
+        shutil.copytree(template, root, symlinks=True)
+        self.place(root)
+        # Each clone names the bare remote by absolute path, so the copy's clones are pointed at the copy's remote.
+        for checkout in (self.clone, self.other):
+            if checkout.exists():
+                self.git("-C", str(checkout), "remote", "set-url", "origin", str(self.remote))
+        self.__dict__.update(copy.deepcopy(built))
+
+    def template(self) -> tuple[Path, dict[str, Any]]:
+        """The repositories this fixture's build leaves and the attributes it set, built on this process's first use."""
+        build = type(self).build
+        if build not in _TEMPLATES:
+            temporary = tempfile.TemporaryDirectory(prefix="pr-status-template.")
+            unittest.addModuleCleanup(temporary.cleanup)
+            root = Path(temporary.name) / "root"
+            self.place(root)
+            before = set(self.__dict__)
+            self.build()
+            _TEMPLATES[build] = root, {name: self.__dict__.pop(name) for name in set(self.__dict__) - before}
+        return _TEMPLATES[build]
+
+    def place(self, root: Path) -> None:
         self.remote, self.clone, self.other = root / "remote.git", root / "clone", root / "other"
+
+    def build(self) -> None:
+        """A bare remote whose main holds one commit, and a clone of it tracking main."""
+        self.remote.parent.mkdir(parents=True, exist_ok=True)
         self.git("init", "--bare", "-b", "main", str(self.remote))
         self.git("clone", str(self.remote), str(self.clone))
         self.commit(self.clone, "initial")
         self.git("-C", str(self.clone), "push", "-u", "origin", "main")
-
-    def tearDown(self) -> None:
-        self._temporary.cleanup()
 
     def git(self, *arguments: str) -> str:
         result = subprocess.run(
@@ -527,8 +559,8 @@ class SquashFixture(GitFixture):
 
     BASE_REF = "refs/remotes/origin/main"
 
-    def setUp(self) -> None:
-        super().setUp()
+    def build(self) -> None:
+        super().build()
         self.git("-C", str(self.clone), "checkout", "-b", "topic")
         self.tip = self.change(self.clone, "feature.txt", "the feature\n", "add the feature")
         self.git("-C", str(self.clone), "push", "-u", "origin", "topic")
@@ -541,8 +573,8 @@ class SquashFixture(GitFixture):
         self.git("-C", str(self.other), "fetch", "origin")
         self.git("-C", str(self.other), "merge", "--squash", "origin/topic")
         squash = self.commit(self.other, "Squash-merge topic")
-        self.git("-C", str(self.other), "push", "origin", "main")
-        self.git("-C", str(self.other), "push", "origin", "--delete", "topic")
+        # One push lands the squash on main and deletes the remote topic.
+        self.git("-C", str(self.other), "push", "origin", "main", ":refs/heads/topic")
         if fetch:
             self.git("-C", str(self.clone), "fetch", "--prune", "origin")
         return squash
@@ -562,6 +594,35 @@ class SquashFixture(GitFixture):
 
     def same_change(self, tip: str, merge_commit: str, base_ref: str = BASE_REF) -> bool:
         return change_match(str(self.clone), base_ref)(tip, merge_commit)
+
+
+class FixtureTemplateTests(SquashFixture):
+    def shape(self) -> dict[str, str]:
+        """Each repository's refs by name, tree, subject, and upstream, which a copy keeps and a rebuild repeats."""
+        refs = "--format=%(refname) %(tree) %(subject) %(upstream)"
+        return {
+            "remote": self.git(f"--git-dir={self.remote}", "for-each-ref", refs),
+            "clone": self.git("-C", str(self.clone), "for-each-ref", refs),
+            "other": self.git("-C", str(self.other), "for-each-ref", refs),
+            "clone status": self.git("-C", str(self.clone), "status", "--porcelain", "--untracked-files=all"),
+        }
+
+    def test_a_copied_fixture_matches_a_fresh_build_and_reaches_only_its_own_remote(self) -> None:
+        copied, copied_tip, root = self.shape(), self.tip, self.clone.parent
+        for checkout in (self.clone, self.other):
+            self.assertEqual(str(self.remote), self.git("-C", str(checkout), "remote", "get-url", "origin"))
+        self.assertEqual(
+            self.git("-C", str(self.clone), "rev-parse", "topic"), copied_tip, "the build's tip is the copy's"
+        )
+        with tempfile.TemporaryDirectory() as fresh:
+            self.place(Path(fresh) / "root")
+            self.build()
+            self.assertEqual(self.shape(), copied)
+        self.place(root)
+        template_remote = self.template()[0] / "remote.git"
+        before = self.git(f"--git-dir={template_remote}", "for-each-ref")
+        self.git("-C", str(self.clone), "push", "origin", "--delete", "topic")
+        self.assertEqual(before, self.git(f"--git-dir={template_remote}", "for-each-ref"), "copies share no remote")
 
 
 class PatchMatchTests(SquashFixture):
@@ -688,8 +749,8 @@ class WhitespaceFixture(SquashFixture):
     """The topic also adds a Python file and is squash-merged; a test then amends the topic's tip, as a later commit
     whose only change is whitespace leaves it."""
 
-    def setUp(self) -> None:
-        super().setUp()
+    def build(self) -> None:
+        super().build()
         self.git("-C", str(self.clone), "switch", "topic")
         self.tip = self.write_demo(DEMO)
         self.git("-C", str(self.clone), "push", "origin", "topic")
@@ -797,18 +858,17 @@ class MovedEditTests(SquashFixture):
         (self.clone / "module.py").write_bytes(before)
         self.git("-C", str(self.clone), "add", "module.py")
         self.commit(self.clone, "add the module")
-        self.git("-C", str(self.clone), "push", "origin", "main")
         self.git("-C", str(self.clone), "switch", "-c", "moved")
         (self.clone / "module.py").write_bytes(landed)
         self.git("-C", str(self.clone), "commit", "-am", "change the module")
         tip = self.git("-C", str(self.clone), "rev-parse", "HEAD")
-        self.git("-C", str(self.clone), "push", "-u", "origin", "moved")
+        # One push publishes main with the module and the branch that changes it.
+        self.git("-C", str(self.clone), "push", "-u", "origin", "main", "moved")
         self.git("-C", str(self.other), "fetch", "origin")
         self.git("-C", str(self.other), "merge", "--ff-only", "origin/main")
         self.git("-C", str(self.other), "merge", "--squash", "origin/moved")
         squash = self.commit(self.other, "Squash-merge moved")
-        self.git("-C", str(self.other), "push", "origin", "main")
-        self.git("-C", str(self.other), "push", "origin", "--delete", "moved")
+        self.git("-C", str(self.other), "push", "origin", "main", ":refs/heads/moved")
         self.git("-C", str(self.clone), "fetch", "--prune", "origin")
         self.git("-C", str(self.clone), "switch", "main")
         return tip, squash
@@ -895,8 +955,8 @@ class ReleaseBaseFixture(SquashFixture):
     """Beside the topic, a release branch with a release-only commit and another sharing no history with main, each
     with a fix squash-merged into it and the fix's local tip reworded; the clone has fetched every base."""
 
-    def setUp(self) -> None:
-        super().setUp()
+    def build(self) -> None:
+        super().build()
         self.git("-C", str(self.clone), "switch", "-c", "release/1.0", "main")
         self.change(self.clone, "notes.txt", "release only\n", "release-only notes")
         self.git("-C", str(self.clone), "push", "-u", "origin", "release/1.0")
@@ -923,8 +983,7 @@ class ReleaseBaseFixture(SquashFixture):
         self.git("-C", str(self.other), "switch", "-c", base, f"origin/{base}")
         self.git("-C", str(self.other), "merge", "--squash", f"origin/{branch}")
         squash = self.commit(self.other, f"Squash-merge {branch}")
-        self.git("-C", str(self.other), "push", "origin", base)
-        self.git("-C", str(self.other), "push", "origin", "--delete", branch)
+        self.git("-C", str(self.other), "push", "origin", base, f":refs/heads/{branch}")
         self.git("-C", str(self.clone), "fetch", "--prune", "origin")
         reworded = self.git("-C", str(self.clone), "commit-tree", f"{branch}^{{tree}}", "-p", f"{branch}^", "-m", "x")
         self.git("-C", str(self.clone), "update-ref", f"refs/heads/{branch}", reworded)
@@ -1078,8 +1137,8 @@ class TrackingBaseClassificationTests(SquashFixture):
     """A topic that merged main in after main moved on, was squash-merged into main, and tracks main itself, so its
     fetched upstream is main's tip: several commits ahead of main and behind it, with no work of its own left."""
 
-    def setUp(self) -> None:
-        super().setUp()
+    def build(self) -> None:
+        super().build()
         self.change(self.other, "elsewhere.txt", "unrelated\n", "main moves on")
         self.git("-C", str(self.other), "push", "origin", "main")
         self.git("-C", str(self.clone), "fetch", "origin")
