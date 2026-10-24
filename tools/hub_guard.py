@@ -796,7 +796,7 @@ class Judge:
             # git runs a shell alias at the top of the work tree, with the call's arguments after it.
             script = " ".join([expansion[1:], *map(shlex.quote, call.arguments)])
             reading.text = script
-            read_shell(read_bash, script, top, reading, depth + 1, inherited_variables(self.environment))
+            read_bash(script, top, reading, depth + 1, inherited_variables(self.environment))
         else:
             try:
                 words: list[Word] = list(shlex.split(expansion))
@@ -1883,22 +1883,16 @@ SHELL_READERS: dict[str, ShellReader] = {"Bash": read_bash, "Monitor": read_bash
 
 def read_command(tool: str, command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
     """Every git call a shell tool's command makes, with where each acts, and what could not be read."""
-    guarded_hub_at.cache_clear()
-    guarded_hub_of_repository.cache_clear()
-    reading = Reading(environment, command, context_hubs=hubs_in_view(cwd, environment))
-    read_shell(SHELL_READERS[tool], command, cwd, reading, 0, inherited_variables(environment))
+    reading = start_reading(command, cwd, environment)
+    SHELL_READERS[tool](command, cwd, reading, 0, inherited_variables(environment))
     return reading
 
 
-def read_shell(
-    read: ShellReader, command: str, cwd: Path | None, reading: Reading, depth: int, variables: Variables
-) -> None:
-    """Reads a command with a shell's reader; a reader that fails, on nesting past Python's recursion limit or on any
-    other error, leaves a command it cannot read, refused while a hub is guarded when the command names git."""
-    try:
-        read(command, cwd, reading, depth, variables)
-    except Exception as exc:  # noqa: BLE001 - a reader's failure is text the guard cannot read, refused when it names git
-        reading.cannot_read(f"the guard failed reading it ({type(exc).__name__}: {exc})")
+def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
+    """A reading of one command, with the guarded hubs in view of the session, before any of it is read."""
+    guarded_hub_at.cache_clear()
+    guarded_hub_of_repository.cache_clear()
+    return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment))
 
 
 def reached_hubs(reading: Reading) -> set[Path]:
@@ -1916,7 +1910,8 @@ def reached_hubs(reading: Reading) -> set[Path]:
 
 
 def guard(stream: str) -> int:
-    # The command and the guarded hubs in view once they are known, so a defect after that is judged as unread text.
+    # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
+    # fails leaves a command the guard cannot read.
     command, hubs = "", set[Path]()
     try:
         event = json.loads(stream)
@@ -1929,8 +1924,9 @@ def guard(stream: str) -> int:
             if isinstance(target, str) and hub_protected(resolve(target, cwd)):
                 refused = DENY_REASON
         elif tool in SHELL_READERS and isinstance(tool_input.get("command"), str):
-            reading = read_command(tool, tool_input["command"], cwd, os.environ)
+            reading = start_reading(tool_input["command"], cwd, os.environ)
             command, hubs = reading.text, set(reading.context_hubs)
+            SHELL_READERS[tool](command, cwd, reading, 0, inherited_variables(os.environ))
             hubs |= reached_hubs(reading)
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
@@ -1940,9 +1936,10 @@ def guard(stream: str) -> int:
         if not (hubs and mentions(MENTIONS_GIT, command)):
             print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 0
-        # Where a guarded hub is in view, a command naming git that the guard failed to judge is one it cannot read.
+        # Where a guarded hub is in view, a command naming git that the guard failed to read or judge is one it cannot
+        # read, whether a reader fails on nesting past Python's recursion limit or on any other error.
         refused = (
-            f"The guard failed judging this command ({type(exc).__name__}: {exc}), and it names git, so it is refused "
+            f"The guard failed reading this command ({type(exc).__name__}: {exc}), and it names git, so it is refused "
             f"while a hub is guarded. Rewrite it so each git command is written out. {DENY_REASON}"
         )
     if refused is not None:

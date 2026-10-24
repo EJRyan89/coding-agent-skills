@@ -282,27 +282,23 @@ class ReaderFailureTests(GuardTestCase):
                 mock.patch.object(target, name, side_effect=error),
             ):
                 self.assertEqual("deny", self.shell(tool, "git commit -m x", self.hub))
-                self.assertIn(f"the guard failed reading it ({type(error).__name__}: ", self.reason)
+                self.assertIn(f"The guard failed reading this command ({type(error).__name__}: ", self.reason)
                 self.assertIsNone(self.shell(tool, "echo done", self.hub))
                 self.assertIsNone(self.shell(tool, "git commit -m x", self.outside()))
-                self.assertIn("the guard failed reading it", self.stderr)
+                self.assertIn(f"hub guard skipped: {type(error).__name__}: ", self.stderr)
 
     def test_an_error_reading_a_shell_alias_is_a_part_of_the_command_the_guard_cannot_read(self) -> None:
         self.git(self.hub, "config", "alias.save", "!git commit -m x")
         with mock.patch.object(hub_guard, "read_bash", side_effect=RecursionError("maximum recursion depth exceeded")):
             self.assertEqual("deny", self.shell("Bash", "git save", self.tree))
-        self.assertIn(
-            "`git save` is an alias for `!git commit -m x`: The guard could not read part of this command (the guard "
-            "failed reading it (RecursionError: ",
-            self.reason,
-        )
+        self.assertIn("The guard failed reading this command (RecursionError: ", self.reason)
 
     def test_an_error_judging_a_command_is_refused_while_a_guarded_hub_is_in_view(self) -> None:
         with mock.patch.object(hub_guard, "denied", side_effect=RuntimeError("the judge broke")):
             for tool in ("Bash", "PowerShell"):
                 with self.subTest(tool=tool):
                     self.assertEqual("deny", self.shell(tool, "git commit -m x", self.hub))
-                    self.assertIn("The guard failed judging this command (RuntimeError: the judge broke)", self.reason)
+                    self.assertIn("The guard failed reading this command (RuntimeError: the judge broke)", self.reason)
                     self.assertIsNone(self.shell(tool, "echo done", self.hub))
                     self.assertIn("hub guard skipped: RuntimeError: the judge broke", self.stderr)
                     self.assertIsNone(self.shell(tool, "git commit -m x", self.outside()))
