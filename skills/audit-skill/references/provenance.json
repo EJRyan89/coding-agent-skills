@@ -231,6 +231,11 @@
         "decision": "A prompt a skill's script writes for a subagent at runtime is audited from a rendered sample kept in the source tree as docs/runtime-prompts/<skill>/<role>.txt: the runtime prompt decision in this source's docs/design.md."
       }
     ],
+    "SCRIPT_MISSING": [
+      {
+        "decision": "A skill's Markdown runs a script of its own through the skill-directory variable, or a repository tool from the repository root, so a command naming a script that does not exist fails on every run: Paths to a skill's own files in this source's docs/adding-a-skill.md."
+      }
+    ],
     "SIBLING_FOLDER_ALLOWED": [
       {
         "page": "https://code.claude.com/docs/en/permissions",

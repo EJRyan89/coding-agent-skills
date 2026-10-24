@@ -1031,6 +1031,9 @@ class ToolsTests(TemporaryTestCase):
             "description: Check a deployment's manifest. Use it when asked.": "DESCRIPTION_LEAD Check a deployment's"
             " manifest.",
             "description: check a manifest when asked": "DESCRIPTION_LEAD check a manifest when asked",
+            # A semicolon joins two clauses of one sentence; it ends no sentence.
+            "description: Audit a skill; Claude Code reads it. Use it when asked.": "DESCRIPTION_LEAD Audit a skill;"
+            " Claude Code reads it.",
         }
         for frontmatter, expected in cases.items():
             with self.subTest(frontmatter=frontmatter):
@@ -1049,11 +1052,17 @@ class ToolsTests(TemporaryTestCase):
             scenarios / "description" / "scenario.json",
             '{"mode": "trigger", "requests": ["a", "b", "c"], "near_misses": ["d", "e"]}',
         )
-        write(scenarios / "broken" / "scenario.json", "{")
+        broken = write(scenarios / "broken" / "scenario.json", "{")
         _, lines, _ = run("tools", str(skill))
+        found = [line for line in lines if line.startswith(("INVOCATION", "TRIGGER", "NO_"))]
         self.assertEqual(
-            ["INVOCATION model", f"TRIGGER_SCENARIO {spec.as_posix()} 3 2", "NO_ALLOWED_TOOLS"],
-            [line for line in lines if line.startswith(("INVOCATION", "TRIGGER", "NO_"))],
+            [
+                "INVOCATION model",
+                f"TRIGGER_SCENARIO_UNREADABLE {broken.as_posix()} not JSON:",
+                f"TRIGGER_SCENARIO {spec.as_posix()} 3 2",
+                "NO_ALLOWED_TOOLS",
+            ],
+            [found[0], found[1][: found[1].index(" not JSON:") + len(" not JSON:")], *found[2:]],
         )
 
     def test_a_user_only_repository_or_deployed_skill_names_no_trigger_scenario(self) -> None:
@@ -1561,6 +1570,28 @@ class StatusLineTests(TemporaryTestCase):
                 self.assertEqual((1, f"FAILED cannot read {script.resolve().as_posix()}: {reason}"), (code, lines[-1]))
                 script.unlink()
 
+    def test_a_command_naming_a_script_that_does_not_exist_is_named_on_its_own_line(self) -> None:
+        folder = self.skill(
+            "Run it:\n\n```bash\n"
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/missing_tool.py" run --report "<insights.json>"\n'  # 7
+            "```\n\nThen `python -B tools/gone.py check` from the repository, and `python $HOME/x.py`.\n"  # 10
+            "A manifest names `generatedBy: gone.py`, a value rather than a tool's path.\n"
+        )
+        code, lines, error = run("scan", str(folder))
+        self.assertEqual((0, ""), (code, error))
+        skill_md = (folder / "SKILL.md").as_posix()
+        self.assertEqual(
+            [
+                f"SCRIPT_MISSING {skill_md} 7 ${{CLAUDE_SKILL_DIR}}/scripts/missing_tool.py",
+                f"SCRIPT_MISSING {skill_md} 10 tools/gone.py",
+            ],
+            [line for line in lines if line.startswith("SCRIPT_MISSING ")],
+        )
+        write(folder / "scripts" / "missing_tool.py", 'print("RUN")\n')
+        write(self.root / "repo" / "tools" / "gone.py", 'print("RUN")\n')
+        code, lines, error = run("scan", str(folder))
+        self.assertEqual([], [line for line in lines if line.startswith("SCRIPT_MISSING ")], error)
+
     def test_a_document_and_its_script_that_agree_print_nothing(self) -> None:
         folder = self.skill(
             "Run it:\n\n```bash\n"
@@ -1906,6 +1937,7 @@ MEASUREMENT_LINES = frozenset(
         "SUBAGENT_MODEL",
         "TOTAL",
         "TRIGGER_SCENARIO",
+        "TRIGGER_SCENARIO_UNREADABLE",
         "UNREADABLE",
         "USED",
     }
@@ -2364,6 +2396,26 @@ class RuntimeSupportTests(SourceTreeTestCase):
             self.runtime(skill),
         )
 
+    def test_a_skill_needs_what_each_skill_it_invokes_needs_but_not_its_user_only_start(self) -> None:
+        skill = self.skill("Then invoke `beta --quick` for each one.\n", self.full())
+        self.skill(
+            "Run `gamma` once, then invoke `gamma`.\n",
+            {"tools": ["gh"]},
+            name="beta",
+            frontmatter='allowed-tools: ["Agent"]\ndisable-model-invocation: true\n',
+        )
+        self.skill("Then invoke `alpha` again.\n", name="gamma", frontmatter='allowed-tools: ["Workflow"]\n')
+        self.assertEqual(
+            [
+                "RUNTIME_NEEDS agent-delegation skill beta",
+                "RUNTIME_NEEDS workflow skill beta",
+                "RUNTIME_NEEDS sandbox-network skill beta",
+                "RUNTIME_OVERCLAIMED codex workflow,sandbox-network",
+                "RUNTIME_OVERCLAIMED copilot-cli workflow",
+            ],
+            [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
+        )
+
     def test_a_missing_or_malformed_declaration_and_a_skill_outside_a_source_tree(self) -> None:
         self.assertEqual(["RUNTIME_UNDECLARED"], self.runtime(self.skill("Body.\n")))
         broken = self.runtime(self.skill("Body.\n", {"runtime_support": {"codex": "full"}}, name="beta"))
@@ -2681,3 +2733,20 @@ class JsonFileDecodingTests(TemporaryTestCase):
             [f"TRIGGER_SCENARIO {scenario.as_posix()} 1 0"],
             skill_inventory.trigger_scenario_lines(self.root / "skills" / "example", "model"),
         )
+
+    def test_a_scenario_file_that_cannot_be_read_is_named_and_never_reads_as_missing(self) -> None:
+        self.write_json(self.root / "deploy-meta" / "example.json", {})
+        scenarios = self.root / skill_inventory.TRIGGER_SCENARIOS / "example"
+        write(scenarios / "broken" / "scenario.json", "{")
+        self.write_json(scenarios / "listed" / "scenario.json", ["trigger"])
+        (scenarios / "folder" / "scenario.json").mkdir(parents=True)
+        lines = skill_inventory.trigger_scenario_lines(self.root / "skills" / "example", "model")
+        self.assertEqual(
+            [
+                ("TRIGGER_SCENARIO_UNREADABLE", (scenarios / name / "scenario.json").as_posix())
+                for name in ("broken", "folder", "listed")
+            ],
+            [tuple(line.split()[:2]) for line in lines],
+        )
+        self.assertIn("not JSON", lines[0])
+        self.assertTrue(lines[2].endswith("not a JSON object"), lines[2])
