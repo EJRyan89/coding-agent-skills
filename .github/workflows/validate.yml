@@ -62,11 +62,21 @@ jobs:
           Write-Host "Defender real-time protection enabled: $enabled"
 
       - name: Set up Python
+        id: python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: requirements-dev.txt
+
+      # Each type check keeps mypy's cache in a folder of its own under this one, so the standard library's stubs are
+      # parsed once per leg, Python, and mypy pin rather than at every run; the leg's index keys it, since each leg's
+      # deal runs its own type checks.
+      - name: Restore mypy's cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mypy-cache
+          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements-dev.txt') }}
 
       # Each leg installs the same tools, so a leg after the first restores them; a raised pin changes the key.
       - name: Restore ShellCheck
@@ -145,6 +155,7 @@ jobs:
         shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
+          VALIDATION_MYPY_CACHE: ${{ runner.temp }}/mypy-cache
         run: |
           # Outside a pull request there is no base to compare with, so run every suite.
           $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)
@@ -169,6 +180,7 @@ jobs:
         shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
+          VALIDATION_MYPY_CACHE: ${{ runner.temp }}/mypy-cache
         run: |
           choco upgrade shellcheck --yes --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -201,11 +213,21 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python
+        id: python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: requirements-dev.txt
+
+      # Each type check keeps mypy's cache in a folder of its own under this one, so the standard library's stubs are
+      # parsed once per leg, Python, and mypy pin rather than at every run; the leg's index keys it, since each leg's
+      # deal runs its own type checks.
+      - name: Restore mypy's cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mypy-cache
+          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements-dev.txt') }}
 
       # As on the Windows legs, a leg after the first restores the pinned tools; a raised pin changes the key.
       - name: Restore ShellCheck
@@ -287,6 +309,7 @@ jobs:
         shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
+          VALIDATION_MYPY_CACHE: ${{ runner.temp }}/mypy-cache
           # More workers than the runner's four vCPUs, since most Linux jobs wait on Git and other processes: it cut the
           # legs' summed seconds by about a fifth with no retry or timeout, where the Windows legs gained nothing.
           VALIDATION_JOBS: '6'
