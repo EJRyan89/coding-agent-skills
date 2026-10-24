@@ -197,6 +197,25 @@ class ReadTests(unittest.TestCase):
             ["owner/repo"], self.records, {"owner/repo": self.checkout} if checkouts is None else checkouts
         )
 
+    def test_each_repository_s_candidates_and_stopped_search_are_kept_beside_the_others(self) -> None:
+        # Two repositories with the same guidance: the second's search adds to the first's, never replaces it.
+        both = {
+            **self.records,
+            **{Path(f"other-{path}"): {**record, "repository": "owner/other"} for path, record in self.records.items()},
+        }
+        checkouts = {"owner/other": self.checkout, "owner/repo": self.checkout}
+        alone = rg.read_guidance(["owner/repo"], self.records, {"owner/repo": self.checkout})
+        self.assertTrue(alone.overlaps)
+        guidance = rg.read_guidance(["owner/other", "owner/repo"], both, checkouts)
+        self.assertEqual(
+            {"owner/other": len(alone.overlaps), "owner/repo": len(alone.overlaps)},
+            dict(Counter(item["repository"] for item in guidance.overlaps)),
+        )
+        self.assertEqual([], guidance.stopped)
+        with mock.patch.object(rg, "CANDIDATE_BUDGET", 1):
+            stopped = rg.read_guidance(["owner/other", "owner/repo"], both, checkouts)
+        self.assertEqual(["owner/other", "owner/repo"], stopped.stopped)
+
     def read_at(self, commit: str) -> rg.Guidance:
         """The guidance of reviewers whose records were built at `commit`."""
         self.records = {

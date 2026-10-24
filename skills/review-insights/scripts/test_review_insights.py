@@ -1404,6 +1404,8 @@ class AnalyzerTests(InsightFixture):
         change: Callable[[dict[str, Any]], object]
         for change, message in (
             (lambda report: report.pop("repository_set"), "repository_set is missing or not of its kind"),
+            (lambda report: report.update(repository_set=""), "repository_set is missing or not of its kind"),
+            (lambda report: report.update(repository_set=5), "repository_set is missing or not of its kind"),
             (lambda report: report.update(repositories="owner/repo"), "repositories is missing or not of its kind"),
             (lambda report: report.pop("start_date"), "start_date is missing or not of its kind"),
             (lambda report: report.update(end_date="2026-13-01"), "end_date is missing or not of its kind"),
@@ -1421,8 +1423,10 @@ class AnalyzerTests(InsightFixture):
             change(tampered)
             json_path.write_text(json.dumps(tampered), encoding="utf-8")
             with self.subTest(message=message):
-                with self.assertRaisesRegex(ri.InsightError, message):
+                with self.assertRaisesRegex(ri.InsightError, message) as raised:
                     ri.load_report(json_path)
+                if not message.startswith("REC-"):
+                    self.assertTrue(str(raised.exception).startswith(f"{json_path}."), raised.exception)
                 code, out, err = self.run_main(
                     "decide",
                     "--report",
@@ -1436,6 +1440,12 @@ class AnalyzerTests(InsightFixture):
                 )
                 self.assertEqual((1, ""), (code, err))
                 self.assertRegex(out.splitlines()[-1], f"^FAILED .*{message}")
+        # A count of zero is a count: a range with no records, or a category that no longer has a finding.
+        zero = json.loads(json.dumps(original))
+        zero.update(record_count=0, finding_count=0, category_counts={"Style": 0}, severity_counts={"MUST_FIX": 0})
+        zero["recommendations"][0]["finding_count"] = 0
+        json_path.write_text(json.dumps(zero), encoding="utf-8")
+        self.assertEqual(0, ri.load_report(json_path)["category_counts"]["Style"])
 
     def test_custom_candidates_decided_apart_print_a_mixed_decision(self) -> None:
         self.commit_covered()
