@@ -4,7 +4,10 @@ suites with a stub generator and reach, since mutmut and coverage.py are install
 
 from __future__ import annotations
 
+import ast
 import importlib
+import io
+import itertools
 import json
 import os
 import re
@@ -53,11 +56,15 @@ from tools.mutation_gate import (
     is_gate_module,
     kill_ratio,
     module_mutants,
+    named_in,
     no_module_line,
     queue_order,
     run_suite,
+    suite_plan,
+    suite_selection,
     summary,
     try_mutant,
+    unfinished_line,
 )
 
 
@@ -654,6 +661,20 @@ class TryMutantFixtures(unittest.TestCase):
         # tests/slow.py names tests only for line 1, so line 2's mutant runs the whole of it.
         self.assertEqual([("a", "b"), ()], self.tests)
 
+    def test_a_table_mutant_runs_only_the_tests_that_read_the_table_and_skips_a_suite_that_only_imported_it(
+        self,
+    ) -> None:
+        table = Mutant("tools/calc.py", 1, "x", "y", "TABLE = 9\n", True, frozenset({2}))
+        reach = {
+            "tests/imports.py": Reach(1.0, {"tools/calc.py": frozenset({1})}),
+            "tests/reads.py": Reach(
+                30.0, {"tools/calc.py": frozenset({1, 2})}, {"tools/calc.py": {2: frozenset({"r"})}}
+            ),
+        }
+        outcome = try_mutant(self.tree, table, reach, 100.0, self.runner({}), lambda: 0.0)
+        self.assertEqual(Outcome(table, SURVIVED, ("tests/reads.py",), (1,)), outcome)
+        self.assertEqual([("r",)], self.tests)
+
     def test_a_mutant_no_suite_executed_is_not_reached_and_runs_nothing(self) -> None:
         unreached = Mutant("tools/calc.py", 7, "x", "y", "z")
         self.assertEqual(
@@ -673,6 +694,198 @@ class TryMutantFixtures(unittest.TestCase):
         with self.assertRaises(OSError):
             try_mutant(self.tree, self.mutant, self.reach, 100.0, broken, lambda: 0.0)
         self.assertEqual(self.original, (self.tree / "tools" / "calc.py").read_bytes())
+
+
+TABLE_MODULE = '''"""A table only a function reads."""
+
+import re
+
+TABLE = {"a": 1, "b": 2}
+PATTERN = re.compile(r"x{1,3}")
+BOUND = (1, 2)
+
+
+def lookup(key):
+    if key in TABLE:
+        return TABLE[key]
+    return None
+
+
+def matches(text):
+    return PATTERN.fullmatch(text) is not None
+
+
+def bounded(value, limits=BOUND):
+    return limits[0] <= value
+
+
+def scale(a):
+    return a * 2
+'''
+
+
+NESTED_MODULE = """import functools
+
+TABLE: dict[str, int] = {
+    "a": 1,
+    "b": 2,
+}
+
+
+def outer():
+    def inner():
+        return 0
+
+    return TABLE["a"] + inner()
+
+
+def keyed():
+    return sorted([0], key=lambda v: TABLE["b"])
+
+
+@functools.lru_cache(maxsize=3)
+def cached():
+    return 4
+"""
+
+
+def table_mutants(source: str, lines: frozenset[int], elsewhere: bool = False) -> list[Mutant]:
+    return module_mutants("tools/table.py", source, lines, line_generator, lambda name: elsewhere)
+
+
+class ImportTimeFixtures(unittest.TestCase):
+    """A mutant of a module-level assignment: which lines read what it binds, and when it runs every reaching suite
+    whole, as it did before."""
+
+    def test_a_table_only_functions_read_names_its_reading_lines_and_a_function_line_runs_no_reader_analysis(
+        self,
+    ) -> None:
+        mutants = {mutant.line: mutant for mutant in table_mutants(TABLE_MODULE, frozenset({5, 6, 25}))}
+        self.assertEqual((True, frozenset({11, 12})), (mutants[5].at_import, mutants[5].readers))
+        self.assertEqual((True, frozenset({17})), (mutants[6].at_import, mutants[6].readers))
+        self.assertEqual((False, None), (mutants[25].at_import, mutants[25].readers))
+
+    def test_a_name_read_at_import_or_named_in_another_file_or_by_default_runs_the_whole_suite(self) -> None:
+        # BOUND is read by a default, which runs at import.
+        self.assertIsNone(table_mutants(TABLE_MODULE, frozenset({7}))[0].readers)
+        self.assertIsNone(table_mutants(TABLE_MODULE, frozenset({5}), elsewhere=True)[0].readers)
+        default = module_mutants("tools/table.py", TABLE_MODULE, frozenset({5}), line_generator)
+        self.assertEqual((True, None), (default[0].at_import, default[0].readers))
+        read_at_import = TABLE_MODULE + "\nKEYS = sorted(TABLE)\n"
+        self.assertIsNone(table_mutants(read_at_import, frozenset({5}))[0].readers)
+
+    def test_a_name_reached_as_an_attribute_a_global_a_parameter_or_a_string_runs_the_whole_suite(self) -> None:
+        for extra in (
+            "\n\ndef reflect():\n    return globals()['TABLE']\n",
+            "\n\ndef attribute(module):\n    return module.TABLE\n",
+            "\n\ndef rebind():\n    global TABLE\n    TABLE = {}\n",
+            "\n\ndef shadow(TABLE):\n    return 1\n",
+        ):
+            with self.subTest(extra=extra):
+                self.assertIsNone(table_mutants(TABLE_MODULE + extra, frozenset({5}))[0].readers)
+        # The module's docstring naming the table is no reader.
+        documented = TABLE_MODULE.replace("A table only", "TABLE is a table only")
+        self.assertEqual(frozenset({11, 12}), table_mutants(documented, frozenset({5}))[0].readers)
+
+    def test_an_assignment_that_stores_into_an_object_or_a_statement_that_binds_nothing_runs_the_whole_suite(
+        self,
+    ) -> None:
+        source = "import os\n\nos.environ['X'] = '1'\nprint(2)\nA, B = 3, 4\n\n\ndef f():\n    return A + B\n"
+        mutants = {mutant.line: mutant for mutant in table_mutants(source, frozenset({3, 4, 5}))}
+        self.assertEqual((True, None), (mutants[3].at_import, mutants[3].readers))
+        self.assertEqual((True, None), (mutants[4].at_import, mutants[4].readers))
+        self.assertEqual(frozenset({9}), mutants[5].readers)
+
+    def test_a_functions_body_runs_from_its_first_statement_to_the_end_of_its_last_however_many_lines_it_takes(
+        self,
+    ) -> None:
+        source = "def f():\n    a = 1\n    b = 2\n    return (\n        a + b\n    )\n\n\nX = 1\n"
+        self.assertEqual(frozenset(range(2, 7)), mutation_gate.function_body_lines(ast.parse(source)))
+
+    def test_a_multi_line_annotated_table_read_after_a_nested_function_and_in_a_lambda_names_its_readers(self) -> None:
+        mutants = {mutant.line: mutant for mutant in table_mutants(NESTED_MODULE, frozenset({4, 5, 20, 22}))}
+        # Lines 4 and 5 continue the annotated assignment on line 3.
+        self.assertEqual((True, frozenset({13, 17})), (mutants[4].at_import, mutants[4].readers))
+        self.assertEqual(frozenset({13, 17}), mutants[5].readers)
+        # A decorator's line lies between the module's statements, and a function's body runs when it is called.
+        self.assertEqual((True, None), (mutants[20].at_import, mutants[20].readers))
+        self.assertEqual((False, None), (mutants[22].at_import, mutants[22].readers))
+
+    def test_a_name_read_in_a_decorator_or_a_return_annotation_is_read_at_import(self) -> None:
+        for reader in ("@functools.lru_cache(maxsize=len(TABLE))\ndef f():\n", "def f() -> type(TABLE):\n"):
+            with self.subTest(reader=reader):
+                source = f'import functools\n\nTABLE = {{"a": 1}}\n\n\n{reader}    return 2\n'
+                self.assertIsNone(table_mutants(source, frozenset({3}))[0].readers)
+
+    def test_any_of_the_names_an_assignment_binds_named_in_a_string_runs_the_whole_suite(self) -> None:
+        source = 'A, B = 1, 2\n\n\ndef f():\n    return globals()["A"] + B\n'
+        self.assertIsNone(table_mutants(source, frozenset({1}))[0].readers)
+
+    def test_other_sources_are_every_python_file_but_the_module_in_path_order_each_byte_decoded_or_replaced(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            for name, content in (
+                ("tools/m.py", b"NAME\n"),
+                ("tools/a.py", b"X\n"),
+                ("tests/b.py", "Y é\n".encode()),
+                ("tools/c.py", b"\xff\n"),
+                ("README.md", b"Z\n"),
+            ):
+                (tree / name).parent.mkdir(parents=True, exist_ok=True)
+                (tree / name).write_bytes(content)
+            self.assertEqual("Y é\n\nX\n\n�\n", mutation_gate.other_sources(tree, "tools/m.py"))
+
+    def test_selection_reads_the_other_files_of_the_worktree_for_the_names_a_table_binds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            (tree / "tools").mkdir()
+            (tree / "tools" / "table.py").write_text(TABLE_MODULE, encoding="utf-8")
+            (tree / "tools" / "other.py").write_text("UNRELATED = 1\n", encoding="utf-8")
+            git = mock.create_autospec(GitClient, instance=True)
+            git.output.return_value = "@@ -0,0 +5 @@\n"
+            gate = Gate(tree, "main", 1, 1, git, line_generator)
+            self.assertEqual(frozenset({11, 12}), gate.select(tree, ["tools/table.py"])["tools/table.py"][1][0].readers)
+            (tree / "tools" / "other.py").write_text("from table import TABLE\n", encoding="utf-8")
+            self.assertIsNone(gate.select(tree, ["tools/table.py"])["tools/table.py"][1][0].readers)
+
+    def test_a_name_is_named_in_a_text_only_as_a_whole_word(self) -> None:
+        self.assertTrue(named_in("from table import TABLE\n", "TABLE"))
+        self.assertFalse(named_in("TABLES = 1\nMY_TABLE = 2\n", "TABLE"))
+
+    def test_a_mutant_with_readers_runs_the_tests_that_read_the_name_and_leaves_out_a_suite_that_read_none(
+        self,
+    ) -> None:
+        table = Mutant("tools/table.py", 5, "x", "y", "z", True, frozenset({12, 13}))
+        reads = Reach(
+            30.0,
+            {"tools/table.py": frozenset({5, 12, 13})},
+            {"tools/table.py": {12: frozenset({"t::a"}), 13: frozenset({"t::b"})}},
+        )
+        imports = Reach(1.0, {"tools/table.py": frozenset({5})})
+        self.assertEqual(["t::a", "t::b"], suite_selection(table, reads))
+        self.assertIsNone(suite_selection(table, imports))
+        self.assertEqual(
+            [("tests/reads.py", ["t::a", "t::b"])],
+            suite_plan(table, {"tests/reads.py": reads, "tests/imports.py": imports}),
+        )
+
+    def test_a_reader_run_outside_a_test_function_or_no_reader_run_at_all_runs_every_suite_whole(self) -> None:
+        table = Mutant("tools/table.py", 5, "x", "y", "z", True, frozenset({12, 13}))
+        in_a_process = Reach(
+            30.0, {"tools/table.py": frozenset({5, 12, 13})}, {"tools/table.py": {12: frozenset({"t::a"})}}
+        )
+        self.assertEqual([], suite_selection(table, in_a_process))
+        imports = Reach(1.0, {"tools/table.py": frozenset({5})})
+        self.assertEqual(
+            [("tests/fast.py", []), ("tests/slow.py", [])],
+            suite_plan(table, {"tests/slow.py": Reach(9.0, imports.lines), "tests/fast.py": imports}),
+        )
+        # A mutant without readers keeps the selection by its own line.
+        plain = Mutant("tools/table.py", 12, "x", "y", "z")
+        self.assertEqual(["t::a"], suite_selection(plain, in_a_process))
+        self.assertEqual([], suite_selection(plain, imports))
 
 
 def test_the_cap_gives_the_reach_pass_half_of_the_run() -> None:
@@ -757,6 +970,42 @@ class SummaryFixtures(unittest.TestCase):
         text = summary(self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN)], cut_short=True))
         self.assertIn("The 40-minute cap cut `tools/calc.py` short: 1 mutants did not run.", text)
 
+    def test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts(self) -> None:
+        table = Mutant("tools/calc.py", 3, "a", "b", "c", True)
+        outcomes = [Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN), Outcome(table, NOT_RUN)]
+        report = self.report(outcomes, cut_short=True)
+        report.modules.append(ModuleReport("tools/other.py", [Outcome(mutant(4, "tools/other.py"), NOT_RUN)], True, 1))
+        first = summary(report).splitlines()[0]
+        self.assertEqual(
+            "**Unfinished, so not a verdict:** the 40-minute cap cut the run short: 2 of the 3 mutants of "
+            "`tools/calc.py` did not run (1 on lines that run at import); 1 of the 1 mutants of `tools/other.py` did "
+            "not run; the reach of 1 suite was not measured. Split the pull request, or move its module-level tables "
+            "into the functions that use them, until it finishes.",
+            first,
+        )
+        self.assertEqual(["", "## Mutation gate"], summary(report).splitlines()[1:3])
+
+    def test_a_reach_the_cap_left_unmeasured_alone_leaves_the_run_unfinished(self) -> None:
+        report = self.report([Outcome(mutant(1), KILLED, ("t",))])
+        report.unmeasured_suites.append("tests/later.py")
+        self.assertEqual(
+            "**Unfinished, so not a verdict:** the 40-minute cap cut the run short: the reach of 2 suites was not "
+            "measured. Split the pull request, or move its module-level tables into the functions that use them, "
+            "until it finishes.",
+            unfinished_line(report),
+        )
+
+    def test_a_finished_run_opens_on_its_heading_with_no_unfinished_line(self) -> None:
+        report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_REACHED)])
+        report.unmeasured_suites.clear()
+        self.assertIsNone(unfinished_line(report))
+        self.assertEqual("## Mutation gate", summary(report).splitlines()[0])
+
+    def test_a_survivor_with_readers_names_the_tests_that_ran_its_line_or_read_what_it_binds(self) -> None:
+        table = Mutant("tools/calc.py", 4, "line 4", "mutated 4", "s", True, frozenset({9}))
+        text = summary(self.report([Outcome(table, SURVIVED, ("tests/fast.py",), (2,))]))
+        self.assertIn("passed `tests/fast.py` (2 tests that ran the line or read a name it binds)", text)
+
     def test_a_change_with_no_module_to_mutate_is_one_line(self) -> None:
         line = no_module_line("origin/main")
         self.assertEqual(1, line.count("\n"))
@@ -834,9 +1083,14 @@ class WholeRunFixtures(unittest.TestCase):
             root = Path(temporary) / "repository with spaces"
             fixture_repository(root)
             gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach)
-            text = gate.report()
+            result = gate.report()
+            text = result.text
             worktrees = git(root, "worktree", "list", "--porcelain")
             status = git(root, "status", "--porcelain")
+        # A finished run is a verdict: its summary opens on its heading and says nothing of a cut.
+        self.assertTrue(result.finished)
+        self.assertEqual("## Mutation gate", text.splitlines()[0])
+        self.assertNotIn("Unfinished", text)
         self.assertIn("| `tools/calc.py` | 6 | 2 | 1 | 0 | 1 | 0 | 0 | 50% (1 of 2) |", text)
         self.assertIn(
             "- Line 6: `return a * 2` became `return a * 3`; passed `tests/tools/test_calc.py`",
@@ -845,6 +1099,19 @@ class WholeRunFixtures(unittest.TestCase):
         # The worktrees are gone and the checkout untouched.
         self.assertEqual(1, worktrees.count("worktree "))
         self.assertEqual("", status)
+
+    def test_a_run_the_cap_cuts_short_is_reported_unfinished(self) -> None:
+        times = itertools.chain([0.0], itertools.repeat(10_000.0))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            result = Gate(
+                root, "main", 5, 2, GitClient(), stub_generator, stub_reach, clock=lambda: next(times)
+            ).report()
+        self.assertFalse(result.finished)
+        self.assertTrue(
+            result.text.startswith("**Unfinished, so not a verdict:** the 5-minute cap cut the run short: 2")
+        )
 
     def test_a_mutant_on_a_line_the_pull_request_did_not_change_is_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -861,7 +1128,7 @@ class WholeRunFixtures(unittest.TestCase):
                 asked[module] = lines
                 return [source.replace("a + b", "a - b"), source.replace("a * 2", "a * 3")]
 
-            text = Gate(root, "feature", 5, 2, GitClient(), generate, stub_reach).report()
+            text = Gate(root, "feature", 5, 2, GitClient(), generate, stub_reach).report().text
         self.assertEqual({"tools/calc.py": frozenset({6})}, asked)
         # The suite kills line 2's mutant, so it would count as killed had it run: only line 6's ran, and survived.
         self.assertIn("| `tools/calc.py` | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
@@ -888,7 +1155,7 @@ class WholeRunFixtures(unittest.TestCase):
             def recorded_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach:
                 return Reach(1.0, executed_lines(MULTILINE_REPORT, tree, modules))
 
-            text = Gate(root, "feature", 5, 2, GitClient(), generate, recorded_reach).report()
+            text = Gate(root, "feature", 5, 2, GitClient(), generate, recorded_reach).report().text
         # Line 8 is a continuation of the call on line 6, the line coverage.py recorded, so the suite ran and killed it.
         self.assertIn("| `tools/calc.py` | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 100% (1 of 1) |", text)
 
@@ -923,7 +1190,7 @@ class WholeRunFixtures(unittest.TestCase):
             with mock.patch.object(
                 mutation_gate, "reached_suites", return_value=[root / "tests" / "tools" / "test_calc.py"]
             ):
-                text = gate.report()
+                text = gate.report().text
         # Line 11's mutant ran test_double() alone, which killed it; line 20's ran only in the process
         # test_square_in_a_process() starts, so it ran the whole suite, which killed it there.
         self.assertEqual(
@@ -941,7 +1208,7 @@ class WholeRunFixtures(unittest.TestCase):
             fixture_repository(root)
             git(root, "switch", "--quiet", "-c", "comment", "feature")
             change_calc(root, CALC + "# A comment, which mutmut does not mutate.\n")
-            text = Gate(root, "feature", 5, 2, GitClient(), stub_generator, refuse_reach).report()
+            text = Gate(root, "feature", 5, 2, GitClient(), stub_generator, refuse_reach).report().text
         self.assertIn("| `tools/calc.py` | 1 | 0 | 0 | 0 | 0 | 0 | 0 | none tested |", text)
         self.assertIn(
             "`tools/calc.py`: mutmut made no mutant on the 1 line this pull request changed, so none ran.", text
@@ -959,7 +1226,7 @@ class WholeRunFixtures(unittest.TestCase):
             def refuse(module: str, source: str, lines: frozenset[int]) -> list[str]:
                 raise AssertionError("no mutant is made when no module changed")
 
-            text = Gate(root, "main", 5, 2, GitClient(), refuse, stub_reach).report()
+            text = Gate(root, "main", 5, 2, GitClient(), refuse, stub_reach).report().text
             worktrees = git(root, "worktree", "list", "--porcelain")
         self.assertEqual(no_module_line("main"), text)
         self.assertEqual(1, worktrees.count("worktree "))
@@ -1007,6 +1274,44 @@ class QueueFixtures(unittest.TestCase):
         tested = {module.module: counts(module.outcomes)[SURVIVED] for module in report.modules}
         self.assertEqual({"tools/a.py": 1, "tools/b.py": 1}, tested)
         self.assertTrue(all(module.cut_short for module in report.modules))
+        self.assertTrue(summary(report).startswith("**Unfinished, so not a verdict:**"))
+
+
+class FlushRecorder(io.StringIO):
+    """A standard output that records what was written when each flush came."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushed: list[str] = []
+
+    def flush(self) -> None:
+        self.flushed.append(self.getvalue())
+
+
+@pytest.mark.parametrize(
+    ("result", "code", "annotation"),
+    [
+        (mutation_gate.Result("## Mutation gate\n\nall ran\n"), 0, None),
+        (
+            mutation_gate.Result("**Unfinished, so not a verdict:** cut\n\n## Mutation gate\n", False),
+            1,
+            "::error title=Mutation gate unfinished::**Unfinished, so not a verdict:** cut\n",
+        ),
+    ],
+)
+def test_an_unfinished_run_fails_the_job_with_an_annotation_after_writing_its_summary(
+    result: mutation_gate.Result, code: int, annotation: str | None, tmp_path: Path
+) -> None:
+    summary_file = tmp_path / "summary.md"
+    output = FlushRecorder()
+    with mock.patch.object(mutation_gate.Gate, "report", return_value=result), mock.patch("sys.stdout", output):
+        assert code == mutation_gate.main([], {"GITHUB_STEP_SUMMARY": str(summary_file), "VALIDATION_JOBS": "1"})
+    printed = output.getvalue()
+    assert printed.startswith(result.text)
+    assert printed.removeprefix(result.text) == (annotation or "")
+    # The summary, and then the annotation, each reach the log before anything printed after them.
+    assert output.flushed == [result.text, *([printed] if annotation else [])]
+    assert result.text in summary_file.read_text(encoding="utf-8")
 
 
 def test_the_base_defaults_to_the_pull_requests_base_branch() -> None:

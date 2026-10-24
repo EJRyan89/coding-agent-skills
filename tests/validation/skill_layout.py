@@ -583,9 +583,9 @@ def _hook_problems(name: str, hooks: bytes, declared: str) -> list[str]:
     return found
 
 
-def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes]) -> list[str]:
-    """What a plugin's manifest holds but its marketplace entry, its name, a version, and the userConfig declaring each
-    plugin option a skill it carries reads do not."""
+def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes], version: str) -> list[str]:
+    """What a plugin's manifest holds but its marketplace entry, its name, the version it was built with, and the
+    userConfig declaring each plugin option a skill it carries reads do not."""
     manifest = files.get(PLUGIN_MANIFEST, b"")
     options = {
         option: skill_menu.PLUGIN_OPTIONS.get(option)
@@ -598,9 +598,10 @@ def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes]) -> lis
         document = json.loads(manifest)
     except ValueError:
         document = None
-    if entry is None or not isinstance(document, dict) or not isinstance(document.get("version"), str):
+    if entry is None or not isinstance(document, dict):
         return [f"plugin {name}: {PLUGIN_MANIFEST} is no manifest of a plugin the marketplace lists"]
-    expected = {**{key: value for key, value in entry.items() if key != "source"}, "version": document["version"]}
+    kept = {key: value for key, value in entry.items() if key not in ("name", "version", "source")}
+    expected = {**kept, "name": name, "version": version}
     if options:
         expected["userConfig"] = options
     if document == expected:
@@ -612,13 +613,13 @@ def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes]) -> lis
     return [f"plugin {name}: {PLUGIN_MANIFEST} differs from its marketplace entry"]
 
 
-def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]]) -> list[str]:
+def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]], version: str) -> list[str]:
     """Report what an assembled plugin holds that its sources do not: a file no skill or agent ships, bytes that
     differ from the source's but for the pinned token answers, an agent's hooks, which move to the plugin's hooks
     file, and each backticked mention of an agent the plugin carries, which names it as `<plugin>:<agent>`; a template
     token left; a file of a carried skill, as the builder reads it, that the plugin leaves out; a manifest that is not
-    its marketplace entry; and a hooks file that is not its agents' hooks. `plugins` maps each plugin's name to its
-    files, by path in the plugin."""
+    its marketplace entry with the plugin's name and `version`, the one it was built with; and a hooks file that is not
+    its agents' hooks. `plugins` maps each plugin's name to its files, by path in the plugin."""
     if (root / PLUGIN_MANIFEST).exists():
         return [f"{PLUGIN_MANIFEST} makes the checkout's skills read as a plugin's"]
     found: list[str] = []
@@ -649,7 +650,7 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]])
                 found.append(f"plugin {name}: {path} keeps a template token")
             elif content != expected:
                 found.append(f"plugin {name}: {path} differs from {source.relative_to(root).as_posix()}")
-        found += _manifest_problems(root, name, files)
+        found += _manifest_problems(root, name, files, version)
         if PLUGIN_HOOKS in files:
             found += _hook_problems(name, files[PLUGIN_HOOKS], declared)
         elif declared.strip():
@@ -984,7 +985,9 @@ class SkillLayoutPolicies(unittest.TestCase):
         self.assertLessEqual({"review-prs", "ejryan89-code-review-core", "repo-cleanup"}, carried)
         plugins = {plugin.name: plugin.files for plugin in assembly.plugins}
         self.assertIn(PLUGIN_HOOKS, plugins["coding-agent-skills"])
-        self.assertEqual([], plugin_tree_problems(REPOSITORY_ROOT, plugins), PLUGIN_DOC)
+        self.assertEqual(
+            [], plugin_tree_problems(REPOSITORY_ROOT, plugins, plugin_build.DEVELOPMENT_VERSION), PLUGIN_DOC
+        )
 
     def test_the_marketplace_names_each_plugins_release_asset(self) -> None:
         self.assertEqual([], marketplace_problems(REPOSITORY_ROOT), PLUGIN_DOC)

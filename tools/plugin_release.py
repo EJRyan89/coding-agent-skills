@@ -23,7 +23,8 @@ compares the digests. It prints, for each plugin:
   UNPINNED <plugin> "<reason>"                     the entry names no release asset with a digest
 
 and exits 1 unless every plugin's pin matches. Either command prints `FAILED <reason>` and exits 1 when the tag is
-not a release tag the checkout holds, its tree cannot be assembled, or a file cannot be read or written.
+not a release tag the checkout holds, its tree cannot be assembled, the marketplace lists no plugin, or a file cannot
+be read or written; `build` refuses before it writes anything.
 """
 
 from __future__ import annotations
@@ -100,13 +101,16 @@ def build(root: Path, tag: str, output: Path | None) -> list[str]:
     document, entries = read_marketplace(root)
     if {entry.get("name") for entry in entries} != set(built):
         raise ReleaseError(f"the marketplace does not list exactly the plugins {tag} makes: {', '.join(built)}")
+    for entry in entries:
+        repository = entry.get("repository")
+        if not isinstance(repository, str) or not repository.startswith("https://"):
+            raise ReleaseError(
+                f"marketplace entry {entry['name']} names no https repository its release assets live under"
+            )
     folder = plugin_build.output_directory(output, root)
     lines = []
     for entry in entries:
-        name = str(entry["name"])
-        repository = entry.get("repository")
-        if not isinstance(repository, str) or not repository.startswith("https://"):
-            raise ReleaseError(f"marketplace entry {name} names no https repository its release assets live under")
+        name, repository = str(entry["name"]), str(entry["repository"])
         digest = hashlib.sha256(built[name]).hexdigest()
         path = folder / f"{name}.zip"
         path.write_bytes(built[name])
@@ -121,7 +125,10 @@ def check(root: Path) -> tuple[list[str], bool]:
     """Each pinned plugin's verdict against a rebuild from its tag, and whether every pin matches."""
     lines: list[str] = []
     rebuilt: dict[str, dict[str, bytes]] = {}
-    for entry in read_marketplace(root)[1]:
+    entries = read_marketplace(root)[1]
+    if not entries:
+        raise ReleaseError(f"{plugin_build.MARKETPLACE.as_posix()} lists no plugin, so there is no pin to check")
+    for entry in entries:
         name = str(entry.get("name"))
         source = entry.get("source")
         url = source.get("url") if isinstance(source, dict) else None
@@ -138,19 +145,23 @@ def check(root: Path) -> tuple[list[str], bool]:
             continue
         actual = hashlib.sha256(rebuilt[tag][name]).hexdigest()
         lines.append(f"PIN_MATCHES {name} {tag}" if actual == digest else f"PIN_DIFFERS {name} {tag} {digest} {actual}")
-    return lines, bool(lines) and all(line.startswith("PIN_MATCHES ") for line in lines)
+    return lines, all(line.startswith("PIN_MATCHES ") for line in lines)
 
 
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python tools/plugin_release.py", description="Build, pin, and check a release's plugin archives."
     )
-    parser.add_argument("--root", type=checkout_root, default=REPOSITORY_ROOT, metavar="DIR", help=ROOT_HELP)
+    # --root follows the command, as the usage shows it.
+    rooted = argparse.ArgumentParser(add_help=False)
+    rooted.add_argument("--root", type=checkout_root, default=REPOSITORY_ROOT, metavar="DIR", help=ROOT_HELP)
     commands = parser.add_subparsers(dest="command", required=True)
-    built = commands.add_parser("build", help="build the tag's archives and pin them in the marketplace")
+    built = commands.add_parser(
+        "build", parents=[rooted], help="build the tag's archives and pin them in the marketplace"
+    )
     built.add_argument("tag", help="the release tag, vMAJOR.MINOR.PATCH")
     built.add_argument("--output", type=Path, help="an absent or empty folder outside the checkout to write into")
-    commands.add_parser("check", help="compare each pinned digest with a rebuild from its tag")
+    commands.add_parser("check", parents=[rooted], help="compare each pinned digest with a rebuild from its tag")
     options = parser.parse_args(arguments)
     try:
         if options.command == "build":

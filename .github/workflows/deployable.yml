@@ -124,12 +124,8 @@ jobs:
           }
           foreach ($pin in @(@('claude', $env:CLAUDE_VERSION), @('codex', $env:CODEX_VERSION), @('copilot', $env:COPILOT_VERSION))) {
             $command, $wanted = $pin
-            $reported = (& $command --version | Out-String).Trim()
-            Write-Host "$command --version: $reported"
-            if ($wanted -ne 'latest' -and $reported -notmatch [regex]::Escape($wanted)) {
-              Write-Host "::error::$command reports '$reported', not the requested version $wanted"
-              exit 1
-            }
+            python tools/deployable_report.py pin --program $command --wanted $wanted
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
       # Codex CLI on Windows needs two machine settings before it can run a skill's scripts (docs/codex-support.md).
@@ -342,14 +338,7 @@ jobs:
             echo "$command -> $resolved"
           done
           for pin in "claude $CLAUDE_VERSION" "codex $CODEX_VERSION" "copilot $COPILOT_VERSION"; do
-            command="${pin%% *}"
-            wanted="${pin#* }"
-            reported="$("$command" --version)"
-            echo "$command --version: $reported"
-            if [ "$wanted" != latest ] && [[ "$reported" != *"$wanted"* ]]; then
-              echo "::error::$command reports '$reported', not the requested version $wanted"
-              exit 1
-            fi
+            python3 tools/deployable_report.py pin --program "${pin%% *}" --wanted "${pin#* }"
           done
 
       - name: Check the deployer's prerequisites

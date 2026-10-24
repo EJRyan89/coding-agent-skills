@@ -534,9 +534,29 @@ class DeployableReportTests(unittest.TestCase):
 
     def test_a_results_file_that_is_not_a_json_array_exits_2_naming_it_and_is_kept(self) -> None:
         self.use_fake_runtimes()
-        for content in (b"{not json", b"", b"\xff\xfe", b"{}"):
+        # Passes of the wrong shape, each a field the commands read, and nesting past the recursion limit.
+        malformed: tuple[list[object], ...] = (
+            [[]],
+            [{"label": ["first deploy"]}],
+            [{"label": "first deploy", "results": {}}],
+            [{"label": "first deploy", "results": [[]]}],
+            [{"label": "first deploy", "results": [{"status": "PASSED"}]}],
+            [{"label": "first deploy", "results": [{"runtime": "codex", "status": 1}]}],
+            [{"label": "first deploy", "results": [{"runtime": "codex", "status": "PASSED", "detail": 1}]}],
+            [{"label": "uninstall", "left": "alpha"}],
+            [{"label": "uninstall", "left": [1]}],
+        )
+        nested = b"[" * 100_000 + b"]" * 100_000
+        for content in (
+            b"{not json",
+            b"",
+            b"\xff\xfe",
+            b"{}",
+            nested,
+            *(json.dumps(item).encode() for item in malformed),
+        ):
             for command in ("verify", "layout", "leftovers", "summary"):
-                with self.subTest(content=content, command=command):
+                with self.subTest(content=content[:80], command=command):
                     self.results_file.write_bytes(content)
                     code, output = self.results_command(command)
                     self.assertEqual(2, code, output)
@@ -546,6 +566,32 @@ class DeployableReportTests(unittest.TestCase):
                     self.assertNotRegex(output, r"FAILED \w+(Error|Exception)")
                     self.assertEqual(content, self.results_file.read_bytes())
                     self.assertFalse(self.summary_file.exists())
+
+    def test_a_malformed_pass_is_named_by_what_is_wrong_with_it(self) -> None:
+        cases: tuple[tuple[list[object], str], ...] = (
+            ([[]], "a pass is not a JSON object"),
+            ([{"label": ["first deploy"]}], "a pass's label is not a string"),
+            ([{"results": {}}], "a pass's results are not a JSON array"),
+            ([{"results": [[]]}], "a result is not a JSON object"),
+            ([{"results": [{"status": "PASSED"}]}], "a result's runtime or status is not a string"),
+            ([{"results": [{"runtime": "codex", "status": 1}]}], "a result's runtime or status is not a string"),
+            (
+                [{"results": [{"runtime": "codex", "status": "PASSED", "detail": 1}]}],
+                "a result's detail is not a string",
+            ),
+            ([{"left": "alpha"}], "a pass's left is not a JSON array of strings"),
+            ([{"left": [1]}], "a pass's left is not a JSON array of strings"),
+        )
+        for passes, problem in cases:
+            with self.subTest(problem=problem, passes=passes):
+                self.results_file.write_text(json.dumps(passes), encoding="utf-8")
+                code, output = self.results_command("summary")
+                self.assertEqual(2, code, output)
+                self.assertIn(f"ERROR: Results file is malformed: {self.results_file}: {problem}\n", output)
+        # A pass of every field this tool writes is read.
+        whole = [{"label": "first deploy", "results": [{"runtime": "codex", "status": "PASSED", "detail": "ok"}]}]
+        self.results_file.write_text(json.dumps([*whole, {"label": "uninstall", "left": ["alpha"]}]), encoding="utf-8")
+        self.assertEqual(0, self.results_command("summary")[0])
 
     def test_a_results_file_that_cannot_be_read_or_written_exits_2_naming_it(self) -> None:
         self.use_fake_runtimes()
@@ -566,6 +612,65 @@ class DeployableReportTests(unittest.TestCase):
         code, output = self.run_main("summary", "--results", str(self.results_file), "--no-probe")
         self.assertEqual(0, code, output)
         self.assertIn("Deployability", output)
+
+    # -- pin ------------------------------------------------------------------------------------------------
+
+    def pin(self, wanted: str, reported: str, *, code: int = 0, installed: bool = True) -> tuple[int, str]:
+        """Run `pin` for a claude that reports `reported` and exits `code`, or is not on PATH."""
+        found = "/runtimes/claude" if installed else None
+        with (
+            mock.patch.object(platform_support, "find_executable", return_value=found) as find,
+            mock.patch.object(report, "_run_version", return_value=(code, reported)) as run,
+        ):
+            result = self.run_main("pin", "--program", "claude", "--wanted", wanted)
+        find.assert_called_once_with("claude")
+        if installed:
+            run.assert_called_once_with(["/runtimes/claude", "--version"])
+        return result
+
+    def test_pin_passes_the_requested_version_and_latest(self) -> None:
+        for wanted, reported in (("2.1.302", "2.1.302 (Claude Code)\n"), ("latest", "9.9.9"), ("1.0", "1.0 build")):
+            with self.subTest(wanted=wanted):
+                code, output = self.pin(wanted, reported)
+                self.assertEqual((0, f"claude --version: {reported.strip()}\n"), (code, output))
+
+    def test_pin_requires_the_program_and_the_version(self) -> None:
+        for arguments in (["pin", "--wanted", "1.0.0"], ["pin", "--program", "claude"]):
+            with self.subTest(arguments=arguments):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+                    report.main(arguments)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn("the following arguments are required", errors.getvalue())
+
+    def test_pin_help_says_what_each_option_takes(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            report.main(["pin", "--help"])
+        flat = " ".join(output.getvalue().split())
+        self.assertIn("--program PROGRAM the runtime's command, such as claude", flat)
+        self.assertIn("--wanted WANTED the version the workflow installed, or latest", flat)
+
+    def test_pin_compares_versions_as_numbers_never_as_text(self) -> None:
+        # Each reported version holds the requested one as text.
+        for wanted, reported in (("1.0.9", "1.0.98"), ("2.1.30", "2.1.302 (Claude Code)"), ("1.0", "1.0.0")):
+            with self.subTest(wanted=wanted, reported=reported):
+                code, output = self.pin(wanted, reported)
+                self.assertEqual(1, code, output)
+                self.assertIn(f"::error::claude reports '{reported}', not the requested version {wanted}\n", output)
+
+    def test_pin_fails_a_missing_failing_or_versionless_program_and_a_requested_text_that_is_no_version(self) -> None:
+        for kwargs, wanted, expected in (
+            ({"installed": False}, "2.1.302", "::error::claude is not on PATH\n"),
+            ({"code": 3}, "2.1.302", "::error::claude exits 3\n"),
+            ({}, "2.1.302", "::error::claude reports 'Claude Code', not the requested version 2.1.302\n"),
+            ({}, "v2.1.302", "::error::claude is asked for v2.1.302, which is not a version\n"),
+            ({}, "2.1.302-beta", "::error::claude is asked for 2.1.302-beta, which is not a version\n"),
+        ):
+            with self.subTest(wanted=wanted, kwargs=kwargs):
+                code, output = self.pin(wanted, "Claude Code", **kwargs)
+                self.assertEqual(1, code, output)
+                self.assertTrue(output.endswith(expected), output)
 
     # -- summary --------------------------------------------------------------------------------------------
 
