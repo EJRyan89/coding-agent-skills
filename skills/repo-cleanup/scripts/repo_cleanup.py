@@ -2087,7 +2087,11 @@ def read_record(directory: Path) -> tuple[list[dict[str, Any]], list[str]]:
     """The recorded repositories, and the lines naming the lists the latest sweep used, from the record as a sweep
     last saved it."""
     path = directory / SWEEP_RECORD
-    if not file_presence.is_present(path):
+    try:
+        present = file_presence.is_present(path)
+    except OSError as exc:
+        raise CleanupError(f"cannot read the sweep record {path}: {exc}") from exc
+    if not present:
         raise CleanupError(f"{directory} holds no sweep record; name the directory a sweep printed as PLANS")
     data = read_sealed(path, "sweep record")
     try:
