@@ -41,27 +41,42 @@ json` fails or times out on, or whose report holds no files object, is left out 
 output, never read as a suite that reached nothing. The Bash and PowerShell suites run no Python module and are not
 used.
 
+A line outside every function's body runs when the module is imported, which records no test function, so it would run
+every reaching suite whole. A mutant of a module-level assignment, such as a table or a compiled pattern, changes only
+the value its names are bound to, so when only the module's functions read those names (no read at import, in a
+decorator, a default, or an annotation, none as an attribute, a parameter, a `global`, or a string, and no other Python
+file of the checkout naming one), it runs, of each suite, the tests that ran a line reading one, when only the suite's
+own test functions ran each such line it ran, and the whole suite otherwise. A suite that ran no reading line cannot
+tell the mutant apart and is left out, unless no suite ran one, when every reaching suite runs whole, which still kills
+a mutant that breaks the import.
+
 When no changed line yields a mutant, no suite runs. Otherwise the run is bounded by --minutes (DEFAULT_MINUTES): the
 reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
 one queue that takes one mutant from each module in turn, each module's in line order, so a module late in the list
-starts as soon as the first. A mutant the cap leaves untested is counted as not run, and the summary says which module
-the cap cut short. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
+starts as soon as the first. A mutant the cap leaves untested is counted as not run, and a suite whose reach the cap left
+unmeasured is named. Either leaves the run unfinished, which is no verdict: the summary's first line says so, naming
+each module's mutants not run and how many of them lie on lines that run at import, and the count of unmeasured
+suites. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
 
 The report, each module's changed lines, counts, and kill ratio, each changed module with no mutant, and each surviving
 mutant by its line, the mutation, and the suites it ran against, each with the count of its tests that ran when not
 all of them did, goes to stdout and to the step summary
 GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line saying so. It exits 0 once the
-gate has run, whatever survived, and 1 when it cannot run: mutmut no longer makes the mutant its canary expects on the
+gate has run to its end, whatever survived, and 1 when the run was unfinished, after its summary and an error
+annotation repeating its first line, or when it cannot run: mutmut no longer makes the mutant its canary expects on the
 canary's line alone, or a git command fails.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import difflib
+import functools
 import importlib
 import importlib.metadata
+import io
 import itertools
 import json
 import os
@@ -72,6 +87,7 @@ import sys
 import tempfile
 import threading
 import time
+import tokenize
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -145,6 +161,11 @@ class Mutant:
     before: str
     after: str
     source: str
+    # Whether the mutant's line runs when the module is imported, outside every function's body.
+    at_import: bool = False
+    # For a mutant of a module-level assignment whose names only the module's functions read, the lines that read
+    # them; None when what the mutant changes is not bounded by such lines.
+    readers: frozenset[int] | None = None
 
 
 @dataclass(frozen=True)
@@ -238,17 +259,143 @@ def describe(original: str, mutated: str) -> tuple[int, str, str]:
     raise ValueError("the mutant is the module unchanged")
 
 
-def module_mutants(module: str, source: str, changed: frozenset[int], generate: Generator) -> list[Mutant]:
-    """Every distinct mutant of a module whose first changed line is one the pull request changed, in line order."""
+def function_body_lines(tree: ast.Module) -> frozenset[int]:
+    """The lines of every function's body, which run when the function is called rather than at import."""
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            lines.update(range(node.body[0].lineno, (node.body[-1].end_lineno or node.body[-1].lineno) + 1))
+    return frozenset(lines)
+
+
+def top_statement(tree: ast.Module, line: int) -> ast.stmt | None:
+    """The statement of the module's body that holds a line, its decorators included."""
+    for statement in tree.body:
+        decorators = getattr(statement, "decorator_list", ())
+        first = min([statement.lineno, *(decorator.lineno for decorator in decorators)])
+        if first <= line <= (statement.end_lineno or statement.lineno):
+            return statement
+    return None
+
+
+def bound_names(statement: ast.stmt) -> frozenset[str]:
+    """The names a module-level assignment binds, or none when it is not one or also stores into an attribute or an
+    item, which changes an object some other name holds."""
+    if isinstance(statement, ast.Assign):
+        targets = statement.targets
+    elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+        targets = [statement.target]
+    else:
+        return frozenset()
+    names = set()
+    for node in (node for target in targets for node in ast.walk(target)):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif not isinstance(node, ast.Tuple | ast.List | ast.Starred | ast.expr_context):
+            return frozenset()
+    return frozenset(names)
+
+
+class NameReaders(ast.NodeVisitor):
+    """The lines that load any of some names, and whether any load runs at import: outside a function's body, in a
+    decorator, a default, or an annotation."""
+
+    def __init__(self, names: frozenset[str]) -> None:
+        self.names = names
+        self.lines: set[int] = set()
+        self.at_import = False
+        self.depth = 0
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id in self.names and isinstance(node.ctx, ast.Load):
+            self.lines.add(node.lineno)
+            self.at_import = self.at_import or not self.depth
+
+    def visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
+        for part in [*getattr(node, "decorator_list", ()), node.args, getattr(node, "returns", None)]:
+            if part is not None:
+                self.visit(part)
+        self.depth += 1
+        for statement in node.body if isinstance(node.body, list) else [node.body]:
+            self.visit(statement)
+        self.depth -= 1
+
+    visit_FunctionDef = visit_AsyncFunctionDef = visit_Lambda = visit_function
+
+
+def docstrings(tree: ast.Module) -> set[int]:
+    """The ids of the module's, its classes', and its functions' docstring nodes, which no code reads by name."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                found.add(id(first.value))
+    return found
+
+
+def reached_otherwise(tree: ast.Module, source: str, names: frozenset[str]) -> bool:
+    """Whether the module may reach a name other than by loading it as a variable: as an attribute, a parameter, a
+    keyword, an import alias, a `global` statement, or a string, such as `globals()` or `getattr` would take."""
+    loaded = {(node.lineno, node.col_offset) for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.NAME and token.string in names and token.start not in loaded:
+            return True
+    words = re.compile(rf"\b(?:{'|'.join(map(re.escape, sorted(names)))})\b")
+    skipped = docstrings(tree)
+    return any(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in skipped
+        and words.search(node.value)
+        for node in ast.walk(tree)
+    )
+
+
+def name_readers(
+    tree: ast.Module, source: str, statement: ast.stmt | None, mentioned_elsewhere: Callable[[str], bool]
+) -> frozenset[int] | None:
+    """For a statement of the module's body that assigns, the lines that read a name it binds, when only the module's
+    functions read them: none at import, nothing reached any other way, and no other file of the repository naming
+    one, which an import of it or a test of the table would. None otherwise.
+
+    The mutant changes only the value the names are bound to, so only a line that reads one can tell it apart, and the
+    tests that ran those lines are the tests that can kill it."""
+    names = bound_names(statement) if statement else frozenset()
+    if not names or any(mentioned_elsewhere(name) for name in names) or reached_otherwise(tree, source, names):
+        return None
+    readers = NameReaders(names)
+    readers.visit(tree)
+    return None if readers.at_import else frozenset(readers.lines)
+
+
+def module_mutants(
+    module: str,
+    source: str,
+    changed: frozenset[int],
+    generate: Generator,
+    mentioned_elsewhere: Callable[[str], bool] = lambda name: True,
+) -> list[Mutant]:
+    """Every distinct mutant of a module whose first changed line is one the pull request changed, in line order, each
+    marked when its line runs at import, with the lines that read what a module-level assignment binds."""
     if not changed:
         return []
+    tree = ast.parse(source)
+    bodies = function_body_lines(tree)
+    # Each statement's readers, by its first line, since every mutant of a table shares them.
+    readers: dict[int, frozenset[int] | None] = {}
     mutants = []
     for text in dict.fromkeys(generate(module, source, changed)):
         if text == source:
             continue
         line, before, after = describe(source, text)
         if line in changed:
-            mutants.append(Mutant(module, line, before, after, text))
+            at_import = line not in bodies
+            statement = top_statement(tree, line) if at_import else None
+            if statement and statement.lineno not in readers:
+                readers[statement.lineno] = name_readers(tree, source, statement, mentioned_elsewhere)
+            found = readers[statement.lineno] if statement else None
+            mutants.append(Mutant(module, line, before, after, text, at_import, found))
     return sorted(mutants, key=lambda mutant: mutant.line)
 
 
@@ -573,13 +720,46 @@ def covering_suites(mutant: Mutant, reach: Mapping[str, Reach]) -> list[str]:
     return sorted(found, key=lambda suite: (reach[suite].seconds, suite))
 
 
+def suite_selection(mutant: Mutant, measured: Reach) -> list[str] | None:
+    """The node ids of a suite's tests to run against a mutant, none for the whole suite, or None when the suite ran
+    none of the lines that read what the mutant's module-level assignment binds.
+
+    The tests are those that ran the mutant's line when only the suite's own test functions did, else, for a mutant
+    with readers, those that ran a reading line, when only the suite's own test functions ran each reading line it
+    ran."""
+    tests = measured.tests.get(mutant.module, {})
+    if mutant.line in tests:
+        return sorted(tests[mutant.line])
+    if mutant.readers is None:
+        return []
+    executed = measured.lines.get(mutant.module, frozenset())
+    found: set[str] = set()
+    for line in sorted(mutant.readers & executed):
+        if line not in tests:
+            return []
+        found.update(tests[line])
+    return sorted(found) if found else None
+
+
+def suite_plan(mutant: Mutant, reach: Mapping[str, Reach]) -> list[tuple[str, list[str]]]:
+    """Each suite to run against a mutant, fastest first, with the tests of it to run, none for the whole suite.
+
+    A suite that ran no line reading what a module-level assignment binds cannot tell the mutant apart, so it is left
+    out when another suite ran one. When none did, every suite that reached the line runs whole, which still kills a
+    mutant that breaks the import."""
+    planned = [(suite, suite_selection(mutant, reach[suite])) for suite in covering_suites(mutant, reach)]
+    if any(tests is not None for _, tests in planned):
+        return [(suite, tests) for suite, tests in planned if tests is not None]
+    return [(suite, []) for suite, _ in planned]
+
+
 def try_mutant(
     tree: Path, mutant: Mutant, reach: Mapping[str, Reach], deadline: float, run: SuiteRunner, clock: Clock
 ) -> Outcome:
-    """Write a mutant into a worktree, run the suites that reach its line until one fails, each suite's tests that ran
-    the line when only its own test functions did and the whole suite otherwise, and put the module back."""
-    suites = covering_suites(mutant, reach)
-    if not suites:
+    """Write a mutant into a worktree, run the suites that reach its line until one fails, each with the tests
+    `suite_plan` selects, and put the module back."""
+    plan = suite_plan(mutant, reach)
+    if not plan:
         return Outcome(mutant, NOT_REACHED)
     path = tree / mutant.module
     original = path.read_bytes()
@@ -587,10 +767,9 @@ def try_mutant(
     ran: list[str] = []
     tests: list[int] = []
     try:
-        for suite in suites:
+        for suite, selected in plan:
             if clock() >= deadline:
                 return Outcome(mutant, NOT_RUN, tuple(ran), tuple(tests))
-            selected = sorted(reach[suite].tests.get(mutant.module, {}).get(mutant.line, ()))
             ran.append(suite)
             tests.append(len(selected))
             timeout = max(MINIMUM_SUITE_SECONDS, SUITE_TIME_FACTOR * reach[suite].seconds)
@@ -663,11 +842,12 @@ def survivor_lines(module: ModuleReport) -> list[str]:
     lines = ["", f"### `{module.module}`: {len(survivors)} surviving {noun}", ""]
     for outcome in survivors:
         mutant = outcome.mutant
+        which = "ran the line" if mutant.readers is None else "ran the line or read a name it binds"
         named = []
         for index, suite in enumerate(outcome.suites):
             count = outcome.tests[index] if index < len(outcome.tests) else 0
             noun = "test" if count == 1 else "tests"
-            named.append(f"`{suite}`" + (f" ({count} {noun} that ran the line)" if count else ""))
+            named.append(f"`{suite}`" + (f" ({count} {noun} that {which})" if count else ""))
         suites = ", ".join(named)
         lines.append(f"- Line {mutant.line}: {code(mutant.before)} became {code(mutant.after)}; passed {suites}")
     return lines
@@ -683,10 +863,35 @@ def empty_selection_line(module: ModuleReport) -> str:
     )
 
 
+def unfinished_line(report: Report) -> str | None:
+    """The line that leads the summary of a run the cap cut short, naming each module's mutants not run, how many of
+    them run at import, and the suites whose reach was not measured; None for a finished run."""
+    parts = []
+    for module in report.modules:
+        left = [outcome for outcome in module.outcomes if outcome.status == NOT_RUN]
+        if left:
+            at_import = sum(outcome.mutant.at_import for outcome in left)
+            parts.append(
+                f"{len(left)} of the {len(module.outcomes)} mutants of `{module.module}` did not run"
+                + (f" ({at_import} on lines that run at import)" if at_import else "")
+            )
+    if report.unmeasured_suites:
+        count = len(report.unmeasured_suites)
+        parts.append(f"the reach of {count} {'suite' if count == 1 else 'suites'} was not measured")
+    if not parts:
+        return None
+    return (
+        f"**Unfinished, so not a verdict:** the {report.minutes}-minute cap cut the run short: {'; '.join(parts)}. "
+        "Split the pull request, or move its module-level tables into the functions that use them, until it finishes."
+    )
+
+
 def summary(report: Report) -> str:
-    """The Markdown the run's summary page shows: each module's changed lines, counts, and kill ratio, each module
-    with no mutant, then each surviving mutant."""
+    """The Markdown the run's summary page shows: a first line saying so when the cap cut the run short, then each
+    module's changed lines, counts, and kill ratio, each module with no mutant, then each surviving mutant."""
+    unfinished = unfinished_line(report)
     lines = [
+        *([unfinished, ""] if unfinished else []),
         "## Mutation gate",
         "",
         f"- Modules changed since `{report.base}`: {len(report.modules)}; mutants made by mutmut {report.mutmut} on "
@@ -726,6 +931,26 @@ def no_module_line(base: str) -> str:
     )
 
 
+def other_sources(tree: Path, module: str) -> str:
+    """The text of every Python file in a worktree but one module, read so that a name the module binds can be looked
+    for in them; a byte that does not decode is replaced."""
+    files = sorted(path for path in tree.rglob("*.py") if path.relative_to(tree).as_posix() != module)
+    return "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in files)
+
+
+def named_in(text: str, name: str) -> bool:
+    """Whether text holds a name as a whole word."""
+    return re.search(rf"\b{re.escape(name)}\b", text) is not None
+
+
+@dataclass(frozen=True)
+class Result:
+    """A run's summary, and whether every mutant ran and every suite's reach was measured."""
+
+    text: str
+    finished: bool = True
+
+
 @dataclass
 class Gate:
     """One run's settings and the runners it calls, which a test replaces."""
@@ -749,7 +974,13 @@ class Gate:
             )
             lines = frozenset(changed_lines(diff))
             source = (tree / module).read_bytes().decode("utf-8")
-            selected[module] = (len(lines), module_mutants(module, source, lines, self.generate))
+            others = other_sources(tree, module)
+            selected[module] = (
+                len(lines),
+                module_mutants(
+                    module, source, lines, self.generate, functools.cache(functools.partial(named_in, others))
+                ),
+            )
         return selected
 
     def mutate(self, trees: Sequence[Path], modules: Sequence[str], started: float) -> Report:
@@ -780,11 +1011,12 @@ class Gate:
         version = importlib.metadata.version("mutmut") if self.generate is mutmut_mutants else "(a test's generator)"
         return Report(self.base, self.minutes, self.clock() - started, len(trees), version, reports, failed, unmeasured)
 
-    def report(self) -> str:
-        """The summary of one run: one line when no module changed, else every module's mutants tested."""
+    def report(self) -> Result:
+        """The summary of one run, one line when no module changed, else every module's mutants tested, and whether
+        the cap let it finish."""
         modules = changed_modules(self.root, self.base, self.git)
         if not modules:
-            return no_module_line(self.base)
+            return Result(no_module_line(self.base))
         problem = generator_problem(self.generate)
         if problem:
             raise RuntimeError(problem)
@@ -793,7 +1025,8 @@ class Gate:
             tempfile.TemporaryDirectory(prefix="mutation-gate-") as temporary,
             worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
         ):
-            return summary(self.mutate(trees, modules, started))
+            report = self.mutate(trees, modules, started)
+        return Result(summary(report), unfinished_line(report) is None)
 
 
 def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) -> argparse.Namespace:
@@ -815,10 +1048,14 @@ def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) 
 def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] = os.environ) -> int:
     arguments = parse_arguments(argv, environment)
     gate = Gate(REPOSITORY_ROOT, arguments.base, arguments.minutes, worker_count(environment), GitClient())
-    text = gate.report()
-    print(text, end="", flush=True)
-    append_step_summary(environment, text)
-    return 0
+    result = gate.report()
+    print(result.text, end="", flush=True)
+    append_step_summary(environment, result.text)
+    if result.finished:
+        return 0
+    # A workflow command, which puts the summary's first line on the run's annotations.
+    print(f"::error title=Mutation gate unfinished::{result.text.splitlines()[0]}", flush=True)
+    return 1
 
 
 if __name__ == "__main__":
