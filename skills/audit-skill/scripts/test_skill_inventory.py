@@ -1573,24 +1573,38 @@ class StatusLineTests(TemporaryTestCase):
     def test_a_command_naming_a_script_that_does_not_exist_is_named_on_its_own_line(self) -> None:
         folder = self.skill(
             "Run it:\n\n```bash\n"
-            'python -B "${CLAUDE_SKILL_DIR}/scripts/missing_tool.py" run --report "<insights.json>"\n'  # 7
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/missing_tool.py" run --report "<insights.json>"'
+            ' --data "${CLAUDE_SKILL_DIR}/references/data.json" --then "${CLAUDE_SKILL_DIR}/scripts/later.py"\n'  # 7
             "```\n\nThen `python -B tools/gone.py check` from the repository, and `python $HOME/x.py`.\n"  # 10
             "A manifest names `generatedBy: gone.py`, a value rather than a tool's path.\n"
         )
         code, lines, error = run("scan", str(folder))
         self.assertEqual((0, ""), (code, error))
         skill_md = (folder / "SKILL.md").as_posix()
+        prefix = skill_inventory.SKILL_DIR_PREFIX
         self.assertEqual(
             [
-                f"SCRIPT_MISSING {skill_md} 7 {skill_inventory.SKILL_DIR_PREFIX}scripts/missing_tool.py",
+                f"SCRIPT_MISSING {skill_md} 7 {prefix}scripts/missing_tool.py",
+                f"SCRIPT_MISSING {skill_md} 7 {prefix}scripts/later.py",
                 f"SCRIPT_MISSING {skill_md} 10 tools/gone.py",
             ],
             [line for line in lines if line.startswith("SCRIPT_MISSING ")],
         )
         write(folder / "scripts" / "missing_tool.py", 'print("RUN")\n')
+        write(folder / "scripts" / "later.py", 'print("RUN")\n')
         write(self.root / "repo" / "tools" / "gone.py", 'print("RUN")\n')
         code, lines, error = run("scan", str(folder))
         self.assertEqual([], [line for line in lines if line.startswith("SCRIPT_MISSING ")], error)
+
+    def test_frontmatter_names_no_command_whose_script_could_be_missing(self) -> None:
+        folder = self.skill("Body.\n")
+        write(
+            folder / "SKILL.md",
+            "---\nname: alpha\ndescription: Runs `python -B tools/absent.py` for you.\n---\nBody.\n",
+        )
+        code, lines, error = run("scan", str(folder))
+        self.assertEqual((0, ""), (code, error))
+        self.assertEqual([], [line for line in lines if line.startswith("SCRIPT_MISSING ")])
 
     def test_a_document_and_its_script_that_agree_print_nothing(self) -> None:
         folder = self.skill(
@@ -2416,6 +2430,30 @@ class RuntimeSupportTests(SourceTreeTestCase):
             [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
         )
 
+    def test_an_invoked_skill_s_required_and_optional_tools_each_carry_its_network_need(self) -> None:
+        for key in ("tools", "optional_tools"):
+            with self.subTest(key=key):
+                skill = self.skill("Then invoke `beta`.\n", self.full())
+                self.skill("Body.\n", {key: ["gh"]}, name="beta")
+                self.assertEqual(
+                    ["RUNTIME_NEEDS sandbox-network skill beta"],
+                    [line for line in self.runtime(skill) if line.startswith("RUNTIME_NEEDS")],
+                )
+
+    def test_a_lowercase_skill_md_audited_on_its_own_invokes_nothing_and_reads_no_other_file(self) -> None:
+        self.skill("Body.\n", self.full())
+        skill = self.root / "skills" / "alpha" / "SKILL.md"
+        lowered = skill.with_name("skill.md")
+        skill.rename(lowered)
+        self.assertEqual(
+            [
+                "RUNTIME claude-code full needs=none",
+                "RUNTIME codex full needs=none",
+                "RUNTIME copilot-cli full needs=none",
+            ],
+            self.runtime(lowered),
+        )
+
     def test_a_missing_or_malformed_declaration_and_a_skill_outside_a_source_tree(self) -> None:
         self.assertEqual(["RUNTIME_UNDECLARED"], self.runtime(self.skill("Body.\n")))
         broken = self.runtime(self.skill("Body.\n", {"runtime_support": {"codex": "full"}}, name="beta"))
@@ -2750,3 +2788,21 @@ class JsonFileDecodingTests(TemporaryTestCase):
         )
         self.assertIn("not JSON", lines[0])
         self.assertTrue(lines[2].endswith("not a JSON object"), lines[2])
+        # The reason is the operating system's own words, as the platform gives them for a folder read as a file.
+        try:
+            (scenarios / "folder" / "scenario.json").read_bytes()
+        except OSError as exc:
+            reason = exc.strerror
+        folder = (scenarios / "folder" / "scenario.json").as_posix()
+        self.assertEqual(f"TRIGGER_SCENARIO_UNREADABLE {folder} {reason}", lines[1])
+
+
+def test_a_line_splits_into_sentences_and_clauses_before_a_capital_span_emphasis_or_parenthesis() -> None:
+    line = "Read it. Then stop; `NEXT` runs! (Once) more? *Done* here, e.g. lower stays."
+    assert skill_inventory.sentences(line) == [
+        "Read it.",
+        "Then stop;",
+        "`NEXT` runs!",
+        "(Once) more?",
+        "*Done* here, e.g. lower stays.",
+    ]
