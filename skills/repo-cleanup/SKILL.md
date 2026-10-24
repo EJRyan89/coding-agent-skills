@@ -56,7 +56,7 @@ Ask only these questions, and only when the sweep or a later command printed the
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" force-delete --plan "<plan file>" --branch "<branch>"
 ```
 
-Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` (for a deletion Git refused, or a worktree its ignored files or the state it holds kept, its reason, and the command exits 1), `REMOVED` for a worktree removed with its branch, and `PRUNED_DIR <dir>` for each empty parent directory its removal left and the command removed, or a last line `FAILED <reason>` when the plan cannot be used, as when it is not the plan file a sweep printed or it changed since, or Git could not run; `SUMMARY` lines before it say what was done.
+Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` (for a deletion Git refused, a worktree its ignored files or the state it holds kept, or a branch the plan never offered, its reason, and the command exits 1), `REMOVED` for a worktree removed with its branch, and `PRUNED_DIR <dir>` for each empty parent directory its removal left and the command removed, or a last line `FAILED <reason>` when the plan cannot be used, as when it is not the plan file a sweep printed or it changed since, or Git could not run; `SUMMARY` lines before it say what was done.
 
 **Detached worktrees and leftover directories.** For `CONFIRM_DETACHED <path> <sha>` lines, call `AskUserQuestion` with question `"<REPO_NAME>: These worktrees have no branch checked out and no changes, and their commit is on <DEFAULT_BRANCH> or a remote branch. Remove or keep each?"` and header `"Detached"`. For `ORPHAN <path>` lines, call it with question `"<REPO_NAME>: These directories in the worktree area are no longer Git worktrees, and Git tracks none of their files. They cannot be recovered once deleted. Delete or keep each?"` and header `"Leftovers"`. Offer each list's options as for local branches. Then remove the chosen paths of both:
 
@@ -64,7 +64,7 @@ Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` (for a deleti
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" remove-directory --plan "<plan file>" --path "<path>" --path "<path>"
 ```
 
-It prints `REMOVED` for a worktree, `DELETED_DIR` for a directory, `PRUNED_DIR <dir>` for each empty parent directory either left and the command removed, or `PRESERVED <path> <reason>` for one that stays (when Git refused, the worktree's ignored files or the state it holds kept it, deleting failed, the directory resolves outside the worktree areas, or Git tracks files in it, the command exits 1), or a last line `FAILED <reason>`; `SUMMARY` lines before it say what was done.
+It prints `REMOVED` for a worktree, `DELETED_DIR` for a directory, `PRUNED_DIR <dir>` for each empty parent directory either left and the command removed, or `PRESERVED <path> <reason>` for one that stays (when Git refused, the worktree's ignored files or the state it holds kept it, deleting failed, the directory resolves outside the worktree areas, Git tracks files in it, or the plan never offered it, the command exits 1), or a last line `FAILED <reason>`; `SUMMARY` lines before it say what was done.
 
 ## 5. Summary
 
