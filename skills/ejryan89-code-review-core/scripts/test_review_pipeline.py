@@ -6152,3 +6152,14 @@ class StatsLineTests(unittest.TestCase):
                 self.assertEqual(
                     [f"snapshot source=tarball files=2 bytes=83{shown} {timing}"], review_reporting.stats_lines(review)
                 )
+
+
+def test_a_run_whose_repository_holds_read_only_files_is_removed(tmp_path: Path) -> None:
+    # git leaves its object files read-only, which Windows deletes only once they are writable again.
+    run = tmp_path / "run"
+    held = run / review_run.SOURCE_REPOSITORY / ".git" / "objects" / "ab" / "object"
+    held.parent.mkdir(parents=True)
+    held.write_bytes(b"object")
+    held.chmod(0o444)
+    review_run.remove_run(run)
+    assert not run.exists()

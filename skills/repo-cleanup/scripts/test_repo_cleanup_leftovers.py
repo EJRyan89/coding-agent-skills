@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -738,3 +739,34 @@ class LeftoverTests(Fixture):
         self.assertTrue(rc.is_regenerable("real/.venv/", str(tree), entries))
         self.assertFalse(rc.is_regenerable("linked/__pycache__/", str(tree), entries), "reached through a link")
         self.assertFalse(rc.is_regenerable("linked/.venv/", str(tree), entries), "an addition, through a link")
+
+
+def test_a_hidden_file_is_compared_only_when_its_index_mode_and_its_worktree_entry_are_both_regular(
+    tmp_path: Path,
+) -> None:
+    # Every hash matches its index entry, so only an entry left uncompared is reported as edited.
+    (tmp_path / "plain").write_text("x", encoding="utf-8")
+    (tmp_path / "folder").mkdir()
+    (tmp_path / "linked").write_text("x", encoding="utf-8")
+    (tmp_path / "linked-folder").mkdir()
+    listing = [
+        "S 100644 1111 0\tplain",
+        "S 100755 2222 0\tfolder",
+        "S 120000 3333 0\tlinked",
+        "S 160000 4444 0\tlinked-folder",
+    ]
+    hashed: list[list[str]] = []
+
+    def git_output(services: Any, path: str, *arguments: str) -> str:
+        if arguments[0] == "ls-files":
+            return "\0".join(listing)
+        names = list(arguments[arguments.index("--") + 1 :])
+        hashed.append(names)
+        return "\n".join(
+            {"plain": "1111", "folder": "2222", "linked": "3333", "linked-folder": "4444"}[n] for n in names
+        )
+
+    with mock.patch.object(rc, "git_output", side_effect=git_output):
+        edited = rc.hidden_edits(rc.Services(), str(tmp_path))
+    assert edited == ["folder", "linked", "linked-folder"]
+    assert hashed == [["plain"]]

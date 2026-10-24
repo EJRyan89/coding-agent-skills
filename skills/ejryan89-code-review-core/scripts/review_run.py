@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 from executable_locator import PYTHON
 from git_client import Runner, subprocess_runner
 from github_client import GitHubError
+from link_probe import is_plain_file
 from process_identity import ProcessStatus, process_status
 from review_archive import ArchiveError
 from review_canary import FixtureError
@@ -75,7 +76,7 @@ def remove_run(run: Path, *, ignore_errors: bool = False) -> None:
     will not delete until they are writable again."""
     with contextlib.suppress(OSError):
         for path in (run / SOURCE_REPOSITORY).rglob("*"):
-            if path.is_file() and not path.is_symlink():
+            if is_plain_file(path):
                 path.chmod(stat.S_IREAD | stat.S_IWRITE)
     shutil.rmtree(run, ignore_errors=ignore_errors)
 

@@ -151,6 +151,8 @@ def open_shared(path: Path) -> IO[bytes]:
         wintypes.DWORD,
         wintypes.HANDLE,
     ]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     generic_read = 0x80000000
     share_read_write_delete = 0x1 | 0x2 | 0x4
     open_existing = 3

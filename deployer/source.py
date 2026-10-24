@@ -183,12 +183,9 @@ def _reject_links(skills_src: Path) -> None:
             raise DeployError(f"ERROR: Could not validate reparse points in deployable source tree: {exc}") from exc
         for entry in entries:
             path = Path(entry.path)
-            if entry.is_symlink():
-                raise DeployError(f"ERROR: Symlink found in deployable source tree: {platform_support.normalize(path)}")
             if platform_support.is_link_or_junction(path):
-                raise DeployError(
-                    f"ERROR: Reparse point found in deployable source tree: {platform_support.normalize(path)}"
-                )
+                found = "Reparse point" if platform_support.is_junction(path) else "Symlink"
+                raise DeployError(f"ERROR: {found} found in deployable source tree: {platform_support.normalize(path)}")
             if entry.is_dir(follow_symlinks=False):
                 pending.append(path)
 

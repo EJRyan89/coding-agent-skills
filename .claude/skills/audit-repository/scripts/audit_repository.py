@@ -95,6 +95,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, GuidanceRecord, GuidanceRecordError, Page
+from link_probe import is_plain_directory, is_plain_file
 from release_tags import is_release_tag, last_release, release_order
 
 # The rotation record, relative to the top of the repository it describes.
@@ -1024,7 +1025,7 @@ def remove_briefs(directory: Path) -> list[str]:
     temporary = Path(tempfile.gettempdir()).resolve()
     resolved = directory.resolve()
     if (
-        directory.is_symlink()
+        not is_plain_directory(directory)
         or not resolved.is_dir()
         or resolved.parent != temporary
         or not resolved.name.startswith(BRIEFS_PREFIX)
@@ -1035,7 +1036,7 @@ def remove_briefs(directory: Path) -> list[str]:
         raise AuditError(f"{resolved.as_posix()} holds no {BRIEFS_MARKER} naming it, so this script did not make it")
     try:
         briefs = [entry for entry in resolved.iterdir() if entry != marker]
-        strays = [entry.name for entry in briefs if entry.is_symlink() or not entry.is_file() or entry.suffix != ".md"]
+        strays = [entry.name for entry in briefs if not is_plain_file(entry) or entry.suffix != ".md"]
         if strays:
             raise AuditError(
                 f"{resolved.as_posix()} holds more than briefs, such as {strays[0]}, so it is left as it is"
@@ -1051,7 +1052,7 @@ def remove_briefs(directory: Path) -> list[str]:
 
 def names_directory(marker: Path, directory: Path) -> bool:
     """Whether the marker is a file, reached through no link, whose record names the directory."""
-    if marker.is_symlink() or not marker.is_file():
+    if not is_plain_file(marker):
         return False
     try:
         record = json.loads(marker.read_text(encoding="utf-8"))
