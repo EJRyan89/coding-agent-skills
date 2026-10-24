@@ -311,6 +311,14 @@ def test_github_releases_are_read_past_an_older_backport_to_the_recorded_release
     assert len(fetcher.requested) == 2
 
 
+def test_a_quoted_reason_keeps_its_runs_of_spaces_in_the_summary() -> None:
+    lines = [
+        "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
+        'UNREAD copilot-cli 1.0.54 " no bullet  in its text:   Fixes  and changes "',
+    ]
+    assert "| 1.0.54 | none read |  no bullet  in its text:   Fixes  and changes  |\n" in watch.summary(lines)
+
+
 def test_the_summary_says_how_many_entries_it_read_and_tables_each_unread_release() -> None:
     lines = [
         "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
