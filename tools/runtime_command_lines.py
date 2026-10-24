@@ -5,10 +5,12 @@ Usage:
 
 Every command line comes from the function that builds it for a real run, never from a copy here: the Copilot CLI
 review host's `copilot_command` in ejryan89-code-review-core, `run_command` in tools/runtime_canary.py,
-`claude_command` and `trigger_command` in tools/skill_evals_runs.py, the plugin canary's sessions in
-tools/plugin_canary.py, the skill listings and the Codex catalog in deployer/discovery.py, and the Codex sandbox
-probe in deployer/tools.py. A builder that reads the runtime's version is given the version the installed runtime's
-`--version` prints, so the line checked is the one a real run would start there.
+`claude_command` and `trigger_command` in tools/skill_evals_runs.py, the plugin canary's sessions and its
+`claude plugin` validate, marketplace add, install, list, and details commands in tools/plugin_canary.py, the last
+started in its order on this checkout's plugins assembled as it assembles them, the skill listings and the Codex
+catalog in deployer/discovery.py, and the Codex sandbox probe in deployer/tools.py. A builder that reads the
+runtime's version is given the version the installed runtime's `--version` prints, so the line checked is the one a
+real run would start there.
 
 Each command line is checked twice. Each flag it passes is looked for in its runtime's help for the subcommand it
 starts, such as `codex exec --help`. Then it is started in a throwaway home with no stdin, signed out: its environment
@@ -27,6 +29,9 @@ It prints one fact per line:
   MISSING <runtime> "<reason>"                       it is not installed where deploy.py check looks; exit 1
   UNSAFE <runtime> "<reason>"                        it cannot be started signed out, so none of its command lines is
                                                      started; exit 1
+  HELP_FAILED <runtime> <command> "<reason>"         the help its flags are looked for in could not be read: it
+                                                     could not start, did not finish, or exited non-zero; the line
+                                                     is still started and judged, with no UNLISTED; exit 1
   ACCEPTED <runtime> <command>                       it got past its arguments: it ended at sign-in or at the
                                                      unreachable model, still ran at the time limit having started its
                                                      session, or finished with status 0
@@ -50,7 +55,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
@@ -60,7 +64,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from bounded_process import run_bounded
 from console import run_main
 from flat_text import single_line
 from runtime_support import RUNTIMES as RUNTIME_NAMES
@@ -73,7 +76,7 @@ from review_hosts import COPILOT_SYNC_SESSION_VERSION, copilot_command, isolated
 from deployer import discovery, platform_support
 from deployer import tools as deployer_tools
 from tools import captured_samples, plugin_canary, runtime_canary, skill_evals_runs
-from tools.runtime_canary import DECLARED_RUNTIME, RUNTIMES, Completed, quote, text
+from tools.runtime_canary import DECLARED_RUNTIME, RUNTIMES, Completed, quote
 
 DEFAULT_TIMEOUT = 30.0
 # A port nothing listens on, so a runtime that found a credential after all could still reach no model through it.
@@ -107,7 +110,7 @@ SESSION_STARTED = {
     "codex": re.compile(r'"type":"thread\.started"'),
     "copilot": re.compile(r"No authentication information found"),
 }
-FAILING = ("MISSING ", "UNSAFE ", "REMOVED ", "REFUSED ", "FAILED ")
+FAILING = ("MISSING ", "UNSAFE ", "HELP_FAILED ", "REMOVED ", "REFUSED ", "FAILED ")
 
 # Starts a program with its arguments, working directory, environment, time limit, and all it reads on stdin, and
 # returns what it did, a failure to start it included, never raising for the run itself.
@@ -115,23 +118,9 @@ Starter = Callable[[list[str], Path, dict[str, str], float, str], Completed]
 
 
 def start(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float, stdin: str) -> Completed:
-    """Run the program within `timeout` in its own process tree, which the limit ends with every process it started."""
-    try:
-        finished = run_bounded(
-            arguments,
-            timeout,
-            cwd=cwd,
-            env=environment,
-            input_bytes=stdin.encode("utf-8"),
-            tree=platform_support.process_tree(),
-        )
-    except subprocess.TimeoutExpired as exc:
-        return Completed(-1, text(exc.stdout), text(exc.stderr), timed_out=True)
-    except OSError as exc:
-        return Completed(
-            -1, "", "", error=f"cannot run {platform_support.normalize(arguments[0])}: {exc.strerror or exc}"
-        )
-    return Completed(finished.returncode, text(finished.stdout), text(finished.stderr))
+    """Run the program as the runtime canary runs a runtime, within `timeout` in its own process tree, which the limit
+    ends with every process it started, with `stdin` all it reads there."""
+    return runtime_canary.run_process(arguments, cwd, environment, timeout, stdin.encode("utf-8"))
 
 
 @dataclass(frozen=True)
@@ -209,7 +198,9 @@ def signed_out(home: Path, executable: str) -> dict[str, str]:
 
 
 def claude_lines(executable: str, root: Path, environment: dict[str, str]) -> list[CommandLine]:
-    """The canary's, the skill evaluations', and the plugin canary's Claude Code sessions."""
+    """The canary's, the skill evaluations', and the plugin canary's Claude Code sessions, then the plugin canary's
+    `claude plugin` commands, in the order it starts them, on this checkout's plugins assembled as it assembles them:
+    the plugin with options is the one validated and installed, so its install passes --config."""
     home = root / "home"
     agents = home / skill_evals_runs.STATE / skill_evals_runs.AGENTS
     agents.parent.mkdir(parents=True, exist_ok=True)
@@ -217,6 +208,11 @@ def claude_lines(executable: str, root: Path, environment: dict[str, str]) -> li
     plugin = root / "plugin"
     plugin.mkdir(exist_ok=True)
     paths = {PLUGIN: str(plugin)}
+    marketplace = root / "marketplace"
+    marketplace.mkdir(exist_ok=True)
+    built_plugins = plugin_canary.build(marketplace, [runtime_canary.REPOSITORY_ROOT])
+    configured = next(item for item in built_plugins if plugin_canary.option_values(marketplace, item))
+    identifier = f"{configured.name}@{plugin_canary.MARKETPLACE}"
     built = {
         "runtime-canary": runtime_canary.run_command("claude", executable, runtime_canary.FIXTURE_SKILL, home),
         "skill-evals-review": skill_evals_runs.claude_command(executable, REQUEST, home, REVIEWED_SKILL),
@@ -224,6 +220,13 @@ def claude_lines(executable: str, root: Path, environment: dict[str, str]) -> li
         "plugin-canary-probe": plugin_canary.session_command(executable, REQUEST, paths),
         "plugin-canary-guard": plugin_canary.guard_command(executable, REQUEST, paths),
         "plugin-canary-unguarded": plugin_canary.unguarded_command(executable, REQUEST, paths),
+        "plugin-canary-validate": plugin_canary.validate_command(executable, marketplace / configured.name),
+        "plugin-canary-marketplace": plugin_canary.marketplace_command(executable, marketplace),
+        "plugin-canary-install": plugin_canary.install_command(
+            executable, identifier, plugin_canary.option_values(marketplace, configured)
+        ),
+        "plugin-canary-list": plugin_canary.list_command(executable),
+        "plugin-canary-details": plugin_canary.details_command(executable, identifier),
     }
     return [CommandLine("claude", name, arguments, home, environment) for name, arguments in built.items()]
 
@@ -341,14 +344,28 @@ def check(
     yield f"VERSION {runtime} {runtime_canary.version_text(version)}"
     if version:
         yield from captured_samples.behind(list(samples), DECLARED_RUNTIME[runtime], version, runtime)
-    helps: dict[tuple[str, ...], str] = {}
+    helps: dict[tuple[str, ...], tuple[str, str]] = {}
     for line in command_lines(runtime, executable, root, environment, version):
         words = tuple(line.subcommand)
         if words not in helps:
             shown = runner([executable, *words, "--help"], line.cwd, line.environment, timeout, "")
-            helps[words] = f"{shown.stdout}\n{shown.stderr}"
-        unlisted = [flag for flag in line.flags if not listed(flag, helps[words])]
+            helps[words] = (f"{shown.stdout}\n{shown.stderr}", help_failure(shown, timeout))
+        help_text, failure = helps[words]
+        if failure:
+            yield f"HELP_FAILED {line.runtime} {line.name} {quote(failure)}"
+        unlisted = [] if failure else [flag for flag in line.flags if not listed(flag, help_text)]
         yield judge(line, runner(line.arguments, line.cwd, line.environment, timeout, line.stdin), unlisted, timeout)
+
+
+def help_failure(shown: Completed, timeout: float) -> str:
+    """Why a runtime's help could not be read, so its flags cannot be looked for there, or "" when it was."""
+    if shown.error:
+        return shown.error
+    if shown.timed_out:
+        return f"its help did not finish within {timeout:g} seconds"
+    if shown.returncode != 0:
+        return f"its help exited with status {shown.returncode}: {own_message(shown)}"
+    return ""
 
 
 def runtime_lines(

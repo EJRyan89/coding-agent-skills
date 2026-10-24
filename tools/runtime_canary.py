@@ -364,15 +364,25 @@ def text(value: bytes | None) -> str:
     return (value or b"").decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def run_process(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
-    """Run a runtime for at most `timeout` seconds with no stdin, which Codex exec would read a prompt addition from.
+def run_process(
+    arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float, input_bytes: bytes | None = None
+) -> Completed:
+    """Run a runtime for at most `timeout` seconds with no stdin but `input_bytes`, since Codex exec would read a prompt
+    addition there.
 
     The run is ejryan89-skill-core's bounded one in a process tree, so its limit and an interrupt end every process it
     started, such as the runtime a launcher script like npm's codex.cmd starts, which a kill of the launcher alone would
     leave running with its model session, and its output goes to files, which nothing waits on such a process to close.
     """
     try:
-        finished = run_bounded(arguments, timeout, cwd=cwd, env=environment, tree=platform_support.process_tree())
+        finished = run_bounded(
+            arguments,
+            timeout,
+            cwd=cwd,
+            env=environment,
+            input_bytes=input_bytes,
+            tree=platform_support.process_tree(),
+        )
     except subprocess.TimeoutExpired as exc:
         return Completed(-1, text(exc.stdout), text(exc.stderr), timed_out=True)
     except OSError as exc:

@@ -36,8 +36,13 @@ page is reported only when it redirects or is gone.
 It prints one fact per line:
 
   TERMS <kind> <count>                                   the terms of each kind read from the code
-  CHANGELOG <subject> <read_through> <latest> <count>    the releases newer than the recorded one, the latest of
-                                                         them or the recorded one, and the entries kept
+  CHANGELOG <subject> <read_through> <latest> <read> <kept>
+                                                         the releases newer than the recorded one, the latest of
+                                                         them or the recorded one, the entries read from them, and
+                                                         the entries kept
+  UNREAD <subject> <release> "<reason>"                  a newer release of which the watch read no entry, since its
+                                                         text is empty or holds no bullet, quoting its first line, so
+                                                         the readers read that release themselves
   ENTRY <subject> <release> "<terms>" "<entry>"          one kept entry, with the terms it mentions
   SAMPLE_BEHIND <subject> <sample> <recorded> <latest>   a sample of the runtime's output captured under
                                                          tests/fixtures/captured-output records a version older
@@ -48,8 +53,9 @@ It prints one fact per line:
   UNREADABLE <page> "<reason>"                           the page answers another error or cannot be reached
   FAILED <reason>                                        the watch could not run: the record cannot be read, names no
                                                          changelog for a runtime the deployer supports, a changelog
-                                                         cannot be fetched or read, or the samples' provenance
-                                                         cannot be read; exit 1
+                                                         cannot be fetched or read or does not name the release its
+                                                         read_through records, the code its terms come from cannot be
+                                                         read, or the samples' provenance cannot be read; exit 1
 
 With --summary FILE it also appends the findings to FILE as Markdown, as the workflow does with its step summary. A
 finding is never a failure: the run exits 0 whatever it lists, and 1 only on FAILED. A usage error exits 2.
@@ -286,7 +292,10 @@ def variable_terms(top: Path) -> list[Term]:
         names |= module_variables(tree, {**constants, **module_constants(tree)})
     for pattern in MARKDOWN_GLOBS:
         for path in top.glob(pattern):
-            names.update(PLACEHOLDER.findall(path.read_text(encoding="utf-8")))
+            try:
+                names.update(PLACEHOLDER.findall(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError) as exc:
+                raise WatchError(f"cannot read {path.relative_to(top).as_posix()}: {exc}") from exc
     return [Term("variable", name) for name in sorted(names)]
 
 
@@ -335,6 +344,8 @@ def terms(top: Path, versions: Mapping[str, Sequence[tuple[int, ...]]] | None = 
 class Release:
     release: tuple[int, ...]
     entries: tuple[str, ...]
+    # Why the watch read no entry of a release, quoting its first line of text, or "" when it read one.
+    unread: str = ""
 
     @property
     def name(self) -> str:
@@ -361,6 +372,16 @@ def bullet_entries(lines: Iterable[str]) -> list[str]:
     return [text for text in (single_line(" ".join(parts)) for parts in entries) if text]
 
 
+def read_release(release: tuple[int, ...], lines: Sequence[str]) -> Release:
+    """A release with the entries of its text, and why none was read when its text holds no bullet: an empty text,
+    or one in a shape bullet_entries does not read, such as prose or a numbered list."""
+    entries = tuple(bullet_entries(lines))
+    if entries:
+        return Release(release, entries)
+    text = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    return Release(release, entries, f"no bullet in its text: {single_line(text[0])}" if text else "its text is empty")
+
+
 def markdown_releases(text: str) -> list[Release]:
     """The releases of a Markdown changelog, prereleases aside, each with its entries."""
     releases: list[Release] = []
@@ -369,7 +390,7 @@ def markdown_releases(text: str) -> list[Release]:
 
     def close() -> None:
         if current is not None:
-            releases.append(Release(current, tuple(bullet_entries(body))))
+            releases.append(read_release(current, body))
 
     for line in text.splitlines():
         heading = RELEASE_HEADING.match(line)
@@ -393,14 +414,24 @@ def github_releases(payload: object, url: str) -> list[Release]:
             continue
         found = re.search(r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.]|-)", str(item.get("tag_name", "")))
         if found:
-            releases.append(
-                Release(release_number(found.group(1)), tuple(bullet_entries(str(item.get("body") or "").splitlines())))
-            )
+            releases.append(read_release(release_number(found.group(1)), str(item.get("body") or "").splitlines()))
     return releases
 
 
+def named(changelog: Changelog, releases: Sequence[Release], where: str) -> None:
+    """WatchError unless `releases` holds the changelog's read_through: one it never names would keep every release
+    up to it unread, and the watch would report none of them."""
+    since = release_number(changelog.read_through)
+    if not any(release.release == since for release in releases):
+        raise WatchError(
+            f"{where} names no release {changelog.read_through}, the read_through {GUIDANCE_PATH} records for "
+            f"{changelog.subject}"
+        )
+
+
 def changelog_releases(changelog: Changelog, fetcher: Fetcher, timeout: float) -> list[Release]:
-    """Every release `changelog` lists newer than its read_through, or WatchError when it cannot be read."""
+    """Every release `changelog` lists newer than its read_through, or WatchError when it cannot be read or does not
+    name its read_through."""
     since = release_number(changelog.read_through)
     if changelog.format == "markdown":
         fetched = fetcher(changelog.url, timeout)
@@ -411,6 +442,7 @@ def changelog_releases(changelog: Changelog, fetcher: Fetcher, timeout: float) -
         releases = markdown_releases(fetched.body.decode("utf-8", errors="replace"))
         if not releases:
             raise WatchError(f"the {changelog.subject} changelog {changelog.url} names no release")
+        named(changelog, releases, f"the {changelog.subject} changelog {changelog.url}")
         return [release for release in releases if release.release > since]
     newer: list[Release] = []
     for page in range(1, MAX_RELEASE_PAGES + 1):
@@ -424,10 +456,14 @@ def changelog_releases(changelog: Changelog, fetcher: Fetcher, timeout: float) -
             raise WatchError(f"{url} did not return JSON: {exc}") from exc
         releases = github_releases(payload, url)
         newer += [release for release in releases if release.release > since]
-        if not payload or any(release.release <= since for release in releases):
+        # Read on to the read_through itself, past an older release published after it, such as a backported fix.
+        if any(release.release == since for release in releases):
             return newer
+        if not payload:
+            break
     raise WatchError(
-        f"the {changelog.subject} releases name no release up to {changelog.read_through} in {MAX_RELEASE_PAGES} pages"
+        f"the {changelog.subject} releases name no release {changelog.read_through}, the read_through "
+        f"{GUIDANCE_PATH} records, in the pages read, at most {MAX_RELEASE_PAGES}"
     )
 
 
@@ -448,14 +484,19 @@ def latest_release(changelog: Changelog, releases: Sequence[Release]) -> tuple[i
 
 def changelog_lines(changelog: Changelog, releases: Sequence[Release], watched: Sequence[Term]) -> list[str]:
     latest = latest_release(changelog, releases)
+    ordered = sorted(releases, key=lambda release: release.release)
+    unread = [
+        f"UNREAD {changelog.subject} {release.name} {quote(release.unread)}" for release in ordered if release.unread
+    ]
     entries: list[str] = []
-    for release in sorted(releases, key=lambda release: release.release):
+    for release in ordered:
         for entry in release.entries:
             found = matching(entry, changelog.subject, watched)
             if found:
                 entries.append(f"ENTRY {changelog.subject} {release.name} {quote(' '.join(found))} {quote(entry)}")
-    head = f"CHANGELOG {changelog.subject} {changelog.read_through} {'.'.join(map(str, latest))} {len(entries)}"
-    return [head, *entries]
+    read = sum(len(release.entries) for release in releases)
+    head = f"CHANGELOG {changelog.subject} {changelog.read_through} {'.'.join(map(str, latest))} {read} {len(entries)}"
+    return [head, *unread, *entries]
 
 
 # --- the pages ----------------------------------------------------------------------------------------------------
@@ -521,15 +562,17 @@ def markdown_cell(text: str) -> str:
 def summary(lines: Sequence[str]) -> str:
     """The findings as Markdown: each runtime's kept entries, then the pages that moved or are gone."""
     rows = ["## Runtime changelogs and guidance pages", ""]
+    unread = {line.split(" ")[1] for line in lines if line.startswith("UNREAD ")}
     for line in lines:
         if line.startswith("CHANGELOG "):
-            _, subject, since, latest, count = line.split(" ")
-            rows += ["", f"### {subject}: releases after {since}, up to {latest}", ""]
-            rows += (
-                ["| Release | Terms | Entry |", "| --- | --- | --- |"]
-                if count != "0"
-                else ["No entry mentions a watched term."]
-            )
+            _, subject, since, latest, read, kept = line.split(" ")
+            rows += ["", f"### {subject}: releases after {since}, up to {latest}", "", f"Entries read: {read}.", ""]
+            rows += ["No entry read mentions a watched term.", ""] if kept == "0" else []
+            if kept != "0" or subject in unread:
+                rows += ["| Release | Terms | Entry |", "| --- | --- | --- |"]
+        elif line.startswith("UNREAD "):
+            _, _, release, reason = line.split(" ", 3)
+            rows.append(f"| {release} | none read | {markdown_cell(json.loads(reason))} |")
         elif line.startswith("ENTRY "):
             _, _, release, rest = line.split(" ", 3)
             decoder = json.JSONDecoder()

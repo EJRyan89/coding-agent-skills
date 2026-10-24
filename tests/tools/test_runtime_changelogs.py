@@ -11,6 +11,7 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -126,7 +127,7 @@ class ChangelogTests(unittest.TestCase):
         claude = watch.changelog_lines(CLAUDE, watch.changelog_releases(CLAUDE, StubFetcher(answers()), 1.0), WATCHED)
         self.assertEqual(
             [
-                "CHANGELOG claude-code 2.1.302 2.1.305 3",
+                "CHANGELOG claude-code 2.1.302 2.1.305 5 3",
                 'ENTRY claude-code 2.1.303 "CLAUDE_CONFIG_DIR .claude/skills" '
                 '"Fixed `CLAUDE_CONFIG_DIR` being ignored under ~/.claude/skills"',
                 'ENTRY claude-code 2.1.305 "--allowedTools" "Added `--allowedTools` patterns for PowerShell"',
@@ -138,7 +139,7 @@ class ChangelogTests(unittest.TestCase):
         codex = watch.changelog_lines(CODEX, watch.changelog_releases(CODEX, StubFetcher(answers()), 1.0), WATCHED)
         self.assertEqual(
             [
-                "CHANGELOG codex 0.163.0 0.164.0 2",
+                "CHANGELOG codex 0.163.0 0.164.0 3 2",
                 'ENTRY codex 0.163.1 "--sandbox allow_implicit_invocation" '
                 '"The `--sandbox` flag reads `allow_implicit_invocation`"',
                 'ENTRY codex 0.164.0 "--ephemeral" "`codex exec --ephemeral` keeps no session"',
@@ -150,7 +151,7 @@ class ChangelogTests(unittest.TestCase):
         recorded = Changelog(CLAUDE.subject, CLAUDE.url, CLAUDE.format, "2.1.305")
         releases = watch.changelog_releases(recorded, StubFetcher(answers()), 1.0)
         self.assertEqual(
-            ["CHANGELOG claude-code 2.1.305 2.1.305 0"], watch.changelog_lines(recorded, releases, WATCHED)
+            ["CHANGELOG claude-code 2.1.305 2.1.305 0 0"], watch.changelog_lines(recorded, releases, WATCHED)
         )
 
     def test_a_changelog_that_cannot_be_fetched_or_read_stops_the_watch(self) -> None:
@@ -171,7 +172,7 @@ class ChangelogTests(unittest.TestCase):
         table = {f"{CODEX.url}?per_page=100&page={n}": Fetched(200, CODEX.url, page) for n in range(1, 11)}
         with self.assertRaises(watch.WatchError) as caught:
             watch.changelog_releases(CODEX, StubFetcher(table), 1.0)
-        self.assertIn("name no release up to 0.163.0", str(caught.exception))
+        self.assertIn("name no release 0.163.0, the read_through", str(caught.exception))
 
 
 # Real changelog entries, captured with their provenance, one for each way an entry writes a term.
@@ -239,6 +240,129 @@ def test_a_real_codex_releases_page_is_read_by_release_with_its_prerelease_left_
 )
 def test_a_one_word_variable_matches_in_a_windows_shells_form(entry: str) -> None:
     assert watch.matching(entry, "codex", [Term("variable", "PATH")]) == ["PATH"]
+
+
+def test_a_real_copilot_release_without_a_bullet_is_listed_as_unread_beside_the_count_read() -> None:
+    changelog = Changelog("copilot-cli", "https://example.com/copilot.md", "markdown", "1.0.53")
+    text = (CAPTURED / "copilot-cli-release-without-entries.md").read_bytes()
+    releases = watch.changelog_releases(changelog, StubFetcher({changelog.url: Fetched(200, changelog.url, text)}), 1.0)
+    assert watch.changelog_lines(changelog, releases, WATCHED) == [
+        "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
+        'UNREAD copilot-cli 1.0.54 "no bullet in its text: Fixes and changes"',
+    ]
+
+
+def test_a_real_codex_release_without_a_bullet_is_listed_as_unread_and_its_neighbour_is_read() -> None:
+    page = json.loads((CAPTURED / "codex-release-without-entries.json").read_text(encoding="utf-8"))
+    changelog = Changelog("codex", "https://example.com/releases", "github-releases", "0.148.0")
+    url = f"{changelog.url}?per_page=100&page=1"
+    later = [*page, release("rust-v0.148.0", "- read before")]
+    releases = watch.changelog_releases(
+        changelog, StubFetcher({url: Fetched(200, url, json.dumps(later).encode())}), 1.0
+    )
+    full = "https://github.com/openai/codex/compare/rust-v0.149.0...rust-v0.149.1"
+    assert watch.changelog_lines(changelog, releases, [Term("path", ".claude/skills")]) == [
+        "CHANGELOG codex 0.148.0 0.149.1 2 0",
+        f'UNREAD codex 0.149.1 "no bullet in its text: Full Changelog: {full}"',
+    ]
+
+
+def test_a_release_whose_entries_are_a_numbered_list_or_which_is_empty_is_unread_never_a_silent_zero() -> None:
+    # The issue's reproduction: no captured changelog numbers its entries, so this one is written here.
+    text = "## 2.1.303\n\n1. Removed the `--allowedTools` flag\n\n## 2.1.302.5\n\n## 2.1.302\n\n- Already read\n"
+    releases = watch.changelog_releases(CLAUDE, StubFetcher({CLAUDE.url: Fetched(200, CLAUDE.url, text.encode())}), 1.0)
+    assert watch.changelog_lines(CLAUDE, releases, WATCHED) == [
+        "CHANGELOG claude-code 2.1.302 2.1.303 0 0",
+        'UNREAD claude-code 2.1.302.5 "its text is empty"',
+        'UNREAD claude-code 2.1.303 "no bullet in its text: 1. Removed the `--allowedTools` flag"',
+    ]
+
+
+def test_a_read_through_the_changelog_never_names_stops_the_watch() -> None:
+    typo = Changelog(CLAUDE.subject, CLAUDE.url, CLAUDE.format, "2.1.3020")
+    with pytest.raises(watch.WatchError) as caught:
+        watch.changelog_releases(typo, StubFetcher(answers()), 1.0)
+    assert str(caught.value) == (
+        f"the claude-code changelog {CLAUDE.url} names no release 2.1.3020, the read_through {GUIDANCE_PATH} "
+        "records for claude-code"
+    )
+    pages = {f"{CODEX.url}?per_page=100&page=1": Fetched(200, CODEX.url, json.dumps(CODEX_PAGES[0]).encode())}
+    pages[f"{CODEX.url}?per_page=100&page=2"] = Fetched(200, CODEX.url, b"[]")
+    with pytest.raises(watch.WatchError) as caught:
+        watch.changelog_releases(CODEX, StubFetcher(pages), 1.0)
+    assert "name no release 0.163.0, the read_through" in str(caught.value)
+
+
+def test_github_releases_are_read_past_an_older_backport_to_the_recorded_release() -> None:
+    backport = [release("rust-v0.164.0", "- newer"), release("rust-v0.162.1", "- a backported fix")]
+    pages = [backport, [release("rust-v0.163.1", "- also newer"), release("rust-v0.163.0", "- read")]]
+    table = {
+        f"{CODEX.url}?per_page=100&page={number}": Fetched(200, CODEX.url, json.dumps(page).encode())
+        for number, page in enumerate(pages, start=1)
+    }
+    fetcher = StubFetcher(table)
+    assert [found.name for found in watch.changelog_releases(CODEX, fetcher, 1.0)] == ["0.164.0", "0.163.1"]
+    assert len(fetcher.requested) == 2
+
+
+def test_the_summary_says_how_many_entries_it_read_and_tables_each_unread_release() -> None:
+    lines = [
+        "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
+        'UNREAD copilot-cli 1.0.54 "no bullet in its text: Fixes | changes"',
+        "CHANGELOG claude-code 2.1.302 2.1.303 4 0",
+    ]
+    text = watch.summary(lines)
+    assert (
+        "### copilot-cli: releases after 1.0.53, up to 1.0.54\n\nEntries read: 0.\n\n"
+        "No entry read mentions a watched term.\n\n| Release | Terms | Entry |\n| --- | --- | --- |\n"
+        "| 1.0.54 | none read | no bullet in its text: Fixes &#124; changes |\n"
+    ) in text
+    assert (
+        "### claude-code: releases after 2.1.302, up to 2.1.303\n\nEntries read: 4.\n\n"
+        "No entry read mentions a watched term.\n\n\n### Captured samples"
+    ) in text
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "read", "reason"),
+    [
+        pytest.param(
+            "tools/module.py", b"x = '\xff'\n", watch.variable_terms, "cannot read tools/module.py", id="python"
+        ),
+        pytest.param(
+            "tools/module.py", b"def broken(:\n", watch.variable_terms, "cannot read tools/module.py", id="syntax"
+        ),
+        pytest.param(
+            "skills/example/SKILL.md",
+            b"---\nname: example\n---\n\n\xff ${CLAUDE_SKILL_DIR}\n",
+            watch.variable_terms,
+            "cannot read skills/example/SKILL.md",
+            id="markdown",
+        ),
+        pytest.param(
+            "skills/example/SKILL.md",
+            b"# No frontmatter\n",
+            watch.frontmatter_terms,
+            "cannot read the frontmatter of skills/example/SKILL.md",
+            id="frontmatter",
+        ),
+        pytest.param(
+            "agents/example.md",
+            b"---\nname: \xff\n---\n",
+            watch.frontmatter_terms,
+            "cannot read the frontmatter of agents/example.md",
+            id="frontmatter-not-utf-8",
+        ),
+    ],
+)
+def test_code_the_terms_cannot_be_read_from_stops_the_watch_naming_the_file(
+    tmp_path: Path, path: str, content: bytes, read: Callable[[Path], object], reason: str
+) -> None:
+    (tmp_path / path).parent.mkdir(parents=True)
+    (tmp_path / path).write_bytes(content)
+    with pytest.raises(watch.WatchError) as caught:
+        read(tmp_path)
+    assert str(caught.value).startswith(f"{reason}: ")
 
 
 def test_the_versions_a_changelog_is_read_across_are_its_recorded_one_and_each_newer_release() -> None:
@@ -381,7 +505,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(0, code, lines)
         self.assertEqual([f"TERMS {kind}" for kind in watch.KINDS], [line.rsplit(" ", 1)[0] for line in lines[:4]])
         codex = next(changelog for changelog in record.changelogs if changelog.subject == "codex")
-        self.assertIn(f"CHANGELOG codex {codex.read_through} 99.0.0 0", lines)
+        self.assertIn(f"CHANGELOG codex {codex.read_through} 99.0.0 1 0", lines)
         self.assertIn(
             'ENTRY claude-code 99.0.0 "--allowedTools allowed-tools" "Changed --allowedTools and `allowed-tools`"',
             lines,
@@ -391,7 +515,7 @@ class MainTests(unittest.TestCase):
         text = summary.read_text(encoding="utf-8")
         self.assertIn("| 99.0.0 | --allowedTools allowed-tools | Changed --allowedTools and `allowed-tools` |", text)
         self.assertIn(f"- MOVED {record.pages[0].url} https://example.com/moved", text)
-        self.assertIn("No entry mentions a watched term.", text)
+        self.assertIn("No entry read mentions a watched term.", text)
         # Every runtime's latest release is 99.0.0 here, so every captured sample is behind it.
         samples = json.loads((REPOSITORY / PROVENANCE).read_text(encoding="utf-8"))["samples"]
         recorded = samples["changelogs/copilot-cli-changelog.md"]["versions"]["copilot-cli"]
@@ -447,7 +571,7 @@ class MainTests(unittest.TestCase):
 
     def test_a_blank_line_ends_the_releases_table_before_the_samples_heading(self) -> None:
         # A line that is not blank there would join the releases table and break its rendering in the step summary.
-        lines = ["CHANGELOG codex 0.163.0 0.164.0 1", 'ENTRY codex 0.164.0 "-c" "Read -c twice"']
+        lines = ["CHANGELOG codex 0.163.0 0.164.0 1 1", 'ENTRY codex 0.164.0 "-c" "Read -c twice"']
         self.assertIn("| 0.164.0 | -c | Read -c twice |\n\n### Captured samples\n", watch.summary(lines))
 
     def test_a_flag_the_code_passes_only_before_a_release_it_reads_is_watched(self) -> None:

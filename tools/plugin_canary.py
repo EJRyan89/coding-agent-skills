@@ -211,15 +211,37 @@ def install_path(home: Path, entry: Mapping[str, Any]) -> tuple[str, str]:
     return path, ""
 
 
+def validate_command(executable: str, plugin: Path) -> list[str]:
+    """`claude plugin validate --strict` of a plugin assembled at `plugin`."""
+    return [executable, "plugin", "validate", "--strict", str(plugin)]
+
+
+def marketplace_command(executable: str, marketplace: Path) -> list[str]:
+    """`claude plugin marketplace add` of the marketplace folder build writes."""
+    return [executable, "plugin", "marketplace", "add", str(marketplace)]
+
+
+def install_command(executable: str, identifier: str, options: list[str]) -> list[str]:
+    """`claude plugin install` of `<plugin>@<marketplace>`, with option_values' --config arguments."""
+    return [executable, "plugin", "install", identifier, *options]
+
+
+def list_command(executable: str) -> list[str]:
+    """`claude plugin list --json`, which names each installed plugin's install path."""
+    return [executable, "plugin", "list", "--json"]
+
+
+def details_command(executable: str, identifier: str) -> list[str]:
+    """`claude plugin details`, which lists an installed plugin's skills, agents, and hooks."""
+    return [executable, "plugin", "details", identifier]
+
+
 def install(session: Session, executable: str, plugins: list[plugin_build.Plugin]) -> Iterator[str]:
     """Validate, install, and list each plugin in the throwaway configuration; the installed copies' paths are yielded
     last, as one `PATHS` line of JSON, for the sessions that load them."""
     for plugin in plugins:
         result = session.runner(
-            [executable, "plugin", "validate", "--strict", str(session.home / plugin.name)],
-            session.home,
-            session.config,
-            session.timeout,
+            validate_command(executable, session.home / plugin.name), session.home, session.config, session.timeout
         )
         ok = result.returncode == 0 and not result.error
         yield (
@@ -227,16 +249,14 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
             if ok
             else f"VALIDATION_FAILED claude {plugin.name} {quote(last_line(result))}"
         )
-    added = session.runner(
-        [executable, "plugin", "marketplace", "add", str(session.home)], session.home, session.config, session.timeout
-    )
+    added = session.runner(marketplace_command(executable, session.home), session.home, session.config, session.timeout)
     paths: dict[str, str] = {}
     for plugin in plugins:
         identifier = f"{plugin.name}@{MARKETPLACE}"
         result = added
         if added.returncode == 0 and not added.error:
             result = session.runner(
-                [executable, "plugin", "install", identifier, *option_values(session.home, plugin)],
+                install_command(executable, identifier, option_values(session.home, plugin)),
                 session.home,
                 session.config,
                 session.timeout,
@@ -244,9 +264,7 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
         if result.returncode != 0 or result.error:
             yield f"INSTALL_FAILED claude {plugin.name} {quote(last_line(result))}"
             continue
-        listing = session.runner(
-            [executable, "plugin", "list", "--json"], session.home, session.config, session.timeout
-        )
+        listing = session.runner(list_command(executable), session.home, session.config, session.timeout)
         try:
             installed = next(item for item in json.loads(listing.stdout) if item.get("id") == identifier)
         except (ValueError, StopIteration, AttributeError):
@@ -258,9 +276,7 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
             continue
         paths[plugin.name] = path
         yield f"INSTALLED claude {plugin.name} {installed.get('version', 'unknown')}"
-        shown = session.runner(
-            [executable, "plugin", "details", identifier], session.home, session.config, session.timeout
-        )
+        shown = session.runner(details_command(executable, identifier), session.home, session.config, session.timeout)
         listed = details(shown.stdout)
         for kind, names in expected(plugin).items():
             for name in sorted(names):
