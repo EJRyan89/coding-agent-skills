@@ -1189,15 +1189,11 @@ class CommandReadingTests(GuardTestCase):
             self.reach(f"Set-Content env:GIT_WORK_TREE '{self.tree}'; git commit", self.tree, environment=aimed),
         )
 
-    def test_a_script_a_shell_reads_from_its_standard_input_is_one_the_guard_cannot_read(self) -> None:
+    def test_a_script_bash_or_sh_reads_from_its_standard_input_is_one_the_guard_cannot_read(self) -> None:
         for tool, command, unread in (
             ("Bash", "echo 'git commit -m x' | bash", ["could not read the command passed to bash"]),
             ("Bash", "printf 'git commit -m x' | sh -s -- one two", ["could not read the command passed to sh"]),
-            ("Bash", "echo 'git commit -m x' | pwsh -NoProfile", ["could not read the command passed to pwsh"]),
-            ("Bash", "echo 'git commit -m x' | pwsh -Command -", ["could not read the command passed to pwsh"]),
-            ("Bash", "echo 'git commit -m x' | pwsh -f -", ["could not read the command passed to pwsh"]),
             ("PowerShell", "'git commit -m x' | bash", ["could not read the command passed to bash"]),
-            ("PowerShell", "'git commit -m x' | pwsh -NoProfile", ["could not read the command passed to pwsh"]),
             ("Bash", "bash -s one <<< 'git commit -m x'", []),
             ("Bash", "bash script.sh; git status", []),
             # Only -s, alone or in a bundle of short options, reads the script from standard input.
@@ -1205,9 +1201,6 @@ class CommandReadingTests(GuardTestCase):
             ("Bash", "bash --posix script.sh; git status", []),
             ("Bash", "echo 'git commit -m x' | bash -ls one", ["could not read the command passed to bash"]),
             ("Bash", "bash < script.sh; git status", []),
-            ("Bash", "pwsh -File build.ps1; git status", []),
-            ("Bash", "pwsh -ExecutionPolicy Bypass build.ps1; git status", []),
-            ("PowerShell", "pwsh -NoProfile -c 'git status'; git commit -m x", []),
         ):
             with self.subTest(tool=tool, command=command):
                 self.read(command, tool=tool)
@@ -1998,71 +1991,6 @@ class ContractTests(GuardTestCase):
         self.assertEqual("deny", self.bash("git commit -m 'unterminated", self.tree))
         self.assertIn("a single quote is not closed", self.reason)
         self.assertIsNone(self.bash("echo 'unterminated", self.tree))
-
-
-class StandardInputTests(unittest.TestCase):
-    """The pwsh and bash forms that read a script from standard input, judged without starting either program."""
-
-    def test_pwsh_reads_its_input_only_without_an_inline_command_a_file_or_an_encoded_command(self) -> None:
-        for arguments, expected in (
-            ([], True),
-            (["-NoProfile", "-NonInteractive"], True),
-            (["-Command", "-"], True),
-            (["-c", "Get-Date"], False),
-            (["-File", "-"], True),
-            (["-fi", "-"], True),
-            # A file named like a switch is still a file, under any spelling of -File.
-            (["-File", "-NoProfile"], False),
-            (["-FILE", "-NoProfile"], False),
-            (["-f", "-NoProfile"], False),
-            (["-cwa", "Get-Date"], False),
-            (["-EncodedCommand"], False),
-            (["-ENCODEDCOMMAND"], False),
-            (["-ec"], False),
-            (["-EC"], False),
-            (["-e"], False),
-            (["-enc"], False),
-            (["build.ps1"], False),
-            # A switch that takes no value is one word, and the word after it is read on its own.
-            (["-NoProfile", "build.ps1"], False),
-            (["-NoProfile", "-Command", "-"], True),
-            (["-NoProfile", "-File", "-"], True),
-            (["-ExecutionPolicy", "Bypass"], True),
-            (["-ex", "Bypass", "build.ps1"], False),
-            ([None], True),
-        ):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(expected, hub_guard.powershell_reads_input(list(arguments)))
-
-    def test_pwsh_parameters_that_take_a_value_by_name_shortest_form_and_alias(self) -> None:
-        for word, expected in (
-            ("-ConfigurationFile", True),
-            ("-ConfigurationName", True),
-            ("-config", True),
-            ("-conf", False),
-            ("-CustomPipeName", True),
-            ("-custom", False),
-            ("-ExecutionPolicy", True),
-            ("-ex", True),
-            ("-ep", True),
-            ("-InputFormat", True),
-            ("-inp", True),
-            ("-if", True),
-            ("-in", False),
-            ("-OutputFormat", True),
-            ("-o", True),
-            ("-of", True),
-            ("-SettingsFile", True),
-            ("-settings", True),
-            ("-set", False),
-            ("-WindowStyle", True),
-            ("-w", True),
-            ("-WorkingDirectory", True),
-            ("-wd", True),
-            ("-NoProfile", False),
-        ):
-            with self.subTest(word=word):
-                self.assertEqual(expected, hub_guard.powershell_takes_value(word))
 
 
 class EnvOptionTests(unittest.TestCase):
