@@ -93,7 +93,7 @@ def _setting_lines() -> list[ReportLine]:
             lines.append(_pwsh_command_line(pwsh))
     if platform_support.CODEX_NEEDS_SANDBOX_SETTING:
         codex = tools.probe(tools.CODEX)
-        if codex.path is not None and not codex.outdated:
+        if codex.path is not None and codex.refusal is None and not codex.outdated:
             lines.append(_codex_sandbox_line(codex.path))
     return lines
 
