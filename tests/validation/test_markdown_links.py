@@ -16,11 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from markdown_links import (
+    SECURITY_DOC,
     THREAT_MODEL_DOC,
     THREAT_MODEL_SUITES,
+    TRUST_MODEL_DOC,
     cited_test_problems,
     markdown_link_problems,
     threat_model_test_problems,
+    trust_model_area_problems,
 )
 from validation_support import write_fixture_tree
 
@@ -232,4 +235,52 @@ class ThreatModelPolicy(unittest.TestCase):
         self.assertEqual(
             [f"{THREAT_MODEL_DOC} has no table under '## Threat model'"],
             self.problems({THREAT_MODEL_DOC: "# Contract\n\n## Formats\n"}),
+        )
+
+
+class TrustModelAreaPolicy(unittest.TestCase):
+    DESIGN = (
+        "# Design\n\n## Trust model\n\n"
+        "| Boundary | What it holds | Why | Where |\n| --- | --- | --- | --- |\n"
+        "| The deployer | Writes skills. | Runtimes load them. | Recovery. |\n"
+        "| A grant | Restricts nothing. | Approval only. | Granting tools. |\n\n"
+        "## Invariants\n\n| Not a boundary | x | y | z |\n"
+    )
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, files)
+            return trust_model_area_problems(root)
+
+    def security(self, *items: str) -> str:
+        listed = "".join(f"{item}\n" for item in items)
+        return f"# Security policy\n\n## Security-sensitive areas\n\n{listed}\n## Other\n\n- **Not a boundary**: x.\n"
+
+    def test_every_boundary_with_an_area_and_unnamed_items_pass(self) -> None:
+        security = self.security(
+            "- **The deployer**: writes outside a root.", "- **A grant**: too broad.", "- secrets."
+        )
+        self.assertEqual([], self.problems({TRUST_MODEL_DOC: self.DESIGN, SECURITY_DOC: security}))
+
+    def test_a_boundary_with_no_area_and_an_area_with_no_boundary_fail(self) -> None:
+        security = self.security("- **The deployer**: writes outside a root.", "- **A grants**: too broad.")
+        self.assertEqual(
+            [
+                f"{SECURITY_DOC}: no security-sensitive area names the trust-model boundary 'A grant' of "
+                f"{TRUST_MODEL_DOC}",
+                f"{SECURITY_DOC}: the security-sensitive area 'A grants' names no trust-model boundary of "
+                f"{TRUST_MODEL_DOC}",
+            ],
+            self.problems({TRUST_MODEL_DOC: self.DESIGN, SECURITY_DOC: security}),
+        )
+
+    def test_a_design_without_the_table_or_a_policy_without_the_section_fails(self) -> None:
+        self.assertEqual(
+            [f"{TRUST_MODEL_DOC} has no table under '## Trust model'"],
+            self.problems({TRUST_MODEL_DOC: "# Design\n\n## Trust model\n\nProse.\n", SECURITY_DOC: "# S\n"}),
+        )
+        self.assertEqual(
+            [f"{SECURITY_DOC} has no '## Security-sensitive areas' section"],
+            self.problems({TRUST_MODEL_DOC: self.DESIGN, SECURITY_DOC: "# Security policy\n"}),
         )
