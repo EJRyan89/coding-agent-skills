@@ -274,7 +274,7 @@ def codex_requests(cwd: Path) -> list[str]:
             "id": 0,
             "params": {"clientInfo": {"name": "coding-agent-skills", "title": "coding-agent-skills", "version": "1"}},
         },
-        {"method": "initialized"},
+        {"method": "initialized", "params": {}},
         {"method": "skills/list", "id": CODEX_LIST_ID, "params": {"cwds": [str(cwd)]}},
     ]
     return [json.dumps(message) for message in messages]
@@ -349,28 +349,34 @@ def parse_codex_catalog(lines: list[str]) -> Listing:
     """The skills `codex debug prompt-input` offers the model, by the directories of their SKILL.md files.
 
     Its output is a JSON list of the messages Codex would send. The skills message names each root as
-    "- `r0` = `<directory>`" and each skill as "- <name>: <description> (file: r0/<name>/SKILL.md)".
+    "- `r0` = `<directory>`" and each skill as "- <name>: <description> (file: r0/<name>/SKILL.md)", or, without a
+    roots table, by the file's absolute path. Output without that message, or whose message lists no skill, is
+    refused: Codex lists its own system skills there, so either says Codex wrote its prompt in a shape this reader does
+    not know, and an empty catalog read from it would pass every user-only adapter as kept out.
     """
     try:
         messages = json.loads("\n".join(lines))
         texts = _strings(messages)
     except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
         raise ListingError(f"its prompt input is not JSON: {exc}") from None
+    skills = [text for text in texts if CODEX_CATALOG_SKILLS in text]
+    if not skills:
+        raise ListingError(f"its prompt input has no skills message, which lists them under {CODEX_CATALOG_SKILLS}")
     found: Listing = {}
-    for text in texts:
+    for text in skills:
         roots = dict(CODEX_CATALOG_ROOT.findall(text))
         for name, file in _catalog_skills(text):
             alias, _, rest = file.partition("/")
             path = f"{roots[alias]}/{rest}" if alias in roots else file
             found.setdefault(name, []).append(Listed(_directory(str(Path(path).parent)), True))
+    if not found:
+        raise ListingError(f"its prompt input lists no skill under {CODEX_CATALOG_SKILLS}")
     return found
 
 
 def _catalog_skills(text: str) -> list[tuple[str, str]]:
     """Each skill a skills message lists, as its name and file; a list item under its "### Available skills" that
     is not of that shape is refused, since passing over it would report the skill out of the model's catalog."""
-    if CODEX_CATALOG_SKILLS not in text:
-        return CODEX_CATALOG_SKILL.findall(text)
     skills: list[tuple[str, str]] = []
     for line in text.split(CODEX_CATALOG_SKILLS, 1)[1].splitlines():
         if line.startswith(("#", "<")):
