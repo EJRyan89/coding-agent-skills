@@ -435,6 +435,15 @@ class ConfigurationTests(unittest.TestCase):
         config["dashboard"] = {"ignored_repositories": ["exam*one/*", "example/x*", "e*/one?"]}
         validate_config(config)
 
+    def test_an_ignored_entry_splits_owner_from_name_at_the_first_slash(self) -> None:
+        match = review_config.ignored_repository_match
+        self.assertEqual("octo/*", match("Octo/Sandbox", ["other/*", "octo/*"]))
+        self.assertIsNone(match("octo/sandbox", ["octo/test-*", "sandbox/*"]))
+        # Everything after the first slash is the name, in the identity and in the entry alike.
+        self.assertEqual("a/*", match("a/b/c", ["a/*"]))
+        self.assertEqual("a/b/*", match("a/b/c", ["a/b/*"]))
+        self.assertIsNone(match("a/b/c", ["a/b"]))
+
     def test_each_ignored_repositories_refusal_names_the_field_and_what_it_found(self) -> None:
         field = "config.dashboard.ignored_repositories"
         for entries, message in (

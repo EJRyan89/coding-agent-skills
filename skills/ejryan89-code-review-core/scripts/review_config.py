@@ -524,8 +524,8 @@ def normalize_ignored_repositories(value: Any) -> list[str]:
 
 
 def ignored_repository_match(identity: str, entries: Iterable[str]) -> str | None:
-    """The first ignored repository entry that `identity` matches, its owner and name each matched on their own and
-    ignoring case, or None."""
+    """The first ignored repository entry that `identity` matches, its owner and name, everything after the first
+    slash, each matched on their own and ignoring case, or None."""
     owner, name = identity.lower().split("/", 1)
     for entry in entries:
         owner_pattern, name_pattern = entry.lower().split("/", 1)
