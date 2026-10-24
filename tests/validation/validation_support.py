@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import builtins
 import codecs
+import json
 import re
 import sys
 import unittest
@@ -25,6 +26,7 @@ from markdown_sections import Fence as Fence
 from markdown_sections import find_fences as find_fences
 from markdown_sections import markdown_section as markdown_section
 from markdown_sections import prose_code_spans as prose_code_spans
+from skill_menu import MenuEntry, SourceMenu, expand
 from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
 from suite_names import is_suite_name
@@ -853,6 +855,21 @@ def is_shell_script(path: Path) -> bool:
     return path.suffix.casefold() in {".sh", ".bash"}
 
 
+def skill_dependency_closure(root: Path, skill: str) -> list[str]:
+    """The skills a skill's skill_deps reach, directly or through each other, as ejryan89-skill-core's skill_menu
+    expands them for the deployer's selection; none for a skill with no metadata.
+
+    The menu is read from deploy-meta alone, since a policy's fixture tree may hold no source.json, and a dependency
+    with no metadata of its own is reached and depends on nothing; the metadata policies report both."""
+    menu = SourceMenu("")
+    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+        declared = json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", [])
+        menu.skills[metadata.stem] = MenuEntry(skill_deps=tuple(declared))
+    for entry in list(menu.skills.values()):
+        menu.skills.update({name: MenuEntry() for name in entry.skill_deps if name not in menu.skills})
+    return [name for name in expand(menu, [], [skill]) if name != skill] if skill in menu.skills else []
+
+
 def is_test_script(path: PurePath) -> bool:
     """Whether a file is a regression suite, by ejryan89-skill-core's rule for one, which the review conditions also
     read."""
@@ -926,7 +943,9 @@ def module_allowance(tree: ast.Module, name: str) -> dict[str, str] | None:
         if any(isinstance(target, ast.Name) and target.id == name for target in targets):
             try:
                 allowance = ast.literal_eval(node.value)
-            except ValueError:
+            # A value that is not a literal raises ValueError, a literal set or dictionary of an unhashable key
+            # TypeError, and one nested past the parser's depth MemoryError or RecursionError.
+            except (ValueError, TypeError, MemoryError, RecursionError):
                 return None
             valid = isinstance(allowance, dict) and all(
                 isinstance(token, str) and isinstance(reason, str) and reason.strip()

@@ -27,6 +27,7 @@ from skill_layout import (
     embedded_program_problems,
     find_executable_fences,
     fixture_source_problems,
+    invoked_skills,
     marketplace_problems,
     metadata_format_problems,
     output_placeholder_problems,
@@ -256,6 +257,16 @@ class SkillLayoutFixtures(unittest.TestCase):
                 output_placeholder_problems(root, REPOSITORY_SKILLS),
             )
 
+    def test_an_invoked_skill_is_the_first_word_of_a_code_span_on_a_line_that_says_invoke(self) -> None:
+        text = (
+            "Then invoke `review-prs --re-review`, or invoke `flag-review-finding`.\n"
+            "Run `repo-cleanup` once.\n"
+            "Invoke `review-document` here.\n"
+            "invoke `unknown-skill` and `review-insights`\n"
+        )
+        names = {"review-prs", "flag-review-finding", "repo-cleanup", "review-document", "review-insights"}
+        self.assertEqual({"review-prs", "flag-review-finding", "review-insights"}, invoked_skills(text, names))
+
     def test_fixture_source_policy_detects_each_problem(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -285,6 +296,29 @@ class SkillLayoutFixtures(unittest.TestCase):
                 ],
                 fixture_source_problems(root),
             )
+
+    def test_fixture_source_policy_refuses_a_source_it_cannot_read_by_name(self) -> None:
+        for text, problem in (
+            ("[]", "is not a JSON object"),
+            ('"owner/shipped"', "is not a JSON object"),
+            ("{not json", "cannot be read: Expecting property name enclosed in double quotes"),
+            # The interpreter words the depth error by its version, as a recursion limit or a stack overflow.
+            ("[" * 100_000 + "]" * 100_000, "cannot be read: "),
+        ):
+            with self.subTest(text=text[:20]), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(
+                    root,
+                    {
+                        "source.json": json.dumps({"id": "owner/shipped"}),
+                        "deploy-meta/alpha.json": "{}",
+                        "skills/alpha/SKILL.md": "# alpha\n",
+                        "tests/fixtures/odd/source.json": text,
+                    },
+                )
+                problems = fixture_source_problems(root)
+                self.assertEqual(1, len(problems), problems)
+                self.assertTrue(problems[0].startswith(f"tests/fixtures/odd/source.json {problem}"), problems)
 
     def test_unsupported_script_policy_rejects_javascript_and_typescript_anywhere_in_a_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -867,6 +901,13 @@ def test_trigger_scenario_policy_refuses_a_missing_or_unloadable_scenario(
 ) -> None:
     trigger_tree(tmp_path, scenarios)
     assert trigger_scenario_problems(tmp_path) == problems
+
+
+def test_trigger_scenario_policy_refuses_a_scenario_nested_past_the_parser_s_depth(tmp_path: Path) -> None:
+    trigger_tree(tmp_path, {"alpha/description": trigger_spec("alpha"), "alpha/deep": "[" * 100_000 + "]" * 100_000})
+    problems = trigger_scenario_problems(tmp_path)
+    assert len(problems) == 1, problems
+    assert problems[0].startswith("tests/fixtures/skill-evals/alpha/deep/scenario.json cannot be read: "), problems
 
 
 GUARD_PATH = "~/.claude/skills/ejryan89-code-review-core/scripts/review_guard.py"

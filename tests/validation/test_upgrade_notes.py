@@ -59,6 +59,20 @@ def changed(module: str, before: str, after: str) -> list[str]:
 class ContractValueReaders(unittest.TestCase):
     """Each contract value is read however it is written, so a raised floor or a new manifest version is named."""
 
+    def test_required_variables_of_any_shape_compare_and_a_change_is_named(self) -> None:
+        metadata = "deploy-meta/alpha.json"
+        for before, after in (
+            ('{"required_vars": ["ALPHA", 1]}', '{"required_vars": ["ALPHA", 2]}'),
+            ('{"required_vars": ["ALPHA", {"a": 1}]}', '{"required_vars": ["ALPHA"]}'),
+            ('{"required_vars": ["ALPHA"]}', "[" * 100_000 + "]" * 100_000),
+            ('{"required_vars": ["ALPHA"]}', '["ALPHA"]'),
+        ):
+            with self.subTest(before=before, after=after[:20]):
+                self.assertEqual([metadata], changed(metadata, before, after))
+        # A list of names compares in any order, a mixed one as it is.
+        self.assertEqual([], changed(metadata, '{"required_vars": ["B", "A"]}', '{"required_vars": ["A", "B"]}'))
+        self.assertEqual([], changed(metadata, '{"required_vars": ["A", 1]}', '{"required_vars": ["A", 1]}'))
+
     def test_a_floor_written_another_way_with_the_same_value_is_no_change(self) -> None:
         self.assertEqual(
             [],

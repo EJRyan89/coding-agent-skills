@@ -279,16 +279,31 @@ def lock_problems(lock: str, inputs: str, shared: Mapping[str, Locked] | None = 
     return problems
 
 
+# A word that runs pip: pip, pip3, or pip3.11, as a name or the last part of a path, with or without .exe, as in
+# `python -m pip`, `pip3`, or `uv pip`.
+PIP_PROGRAM = re.compile(r"(?:.*[/\\])?pip(?:3(?:\.\d+)*)?(?:\.exe)?", re.IGNORECASE)
+
+
+def pip_installs(workflow: str) -> list[tuple[int, list[str], str]]:
+    """Each line of a workflow that runs pip with an install among its words after it, as its number, the words after
+    the pip, and the line, however its options and spacing fall."""
+    found: list[tuple[int, list[str], str]] = []
+    for number, line in enumerate(workflow.splitlines(), start=1):
+        words = line.split()
+        for index, word in enumerate(words):
+            if PIP_PROGRAM.fullmatch(word.strip("'\"")) and "install" in words[index + 1 :]:
+                found.append((number, words[index + 1 :], line))
+                break
+    return found
+
+
 def hash_install_problems(workflow: str, locks: tuple[str, ...]) -> list[str]:
     """Report each line of a workflow whose pip install does not check hashes, may build a source distribution, or
-    installs anything but a lock: it must read `pip install --require-hashes --only-binary :all:` followed only by
-    `-r <lock>` for one of `locks`."""
+    installs anything but a lock: pip must be followed by `install --require-hashes --only-binary :all:` and then only
+    `-r <lock>` for one of `locks`, so a workflow with no locks may run no pip install at all."""
     problems: list[str] = []
-    for number, line in enumerate(workflow.splitlines(), start=1):
-        if "pip install" not in line:
-            continue
-        words = line.split("pip install", 1)[1].split()
-        flags = HASH_CHECKED_INSTALL.split()
+    flags = ["install", *HASH_CHECKED_INSTALL.split()]
+    for number, words, line in pip_installs(workflow):
         files = words[len(flags) :]
         pairs = list(zip(files[::2], files[1::2], strict=False))
         if (
@@ -417,13 +432,15 @@ class ToolchainPolicies(unittest.TestCase):
         mutation = (REPOSITORY_ROOT / MUTATION_INPUT).read_text(encoding="utf-8")
         mutation_lock = (REPOSITORY_ROOT / MUTATION_LOCK).read_text(encoding="utf-8")
         self.assertEqual([], lock_problems(mutation_lock, development + mutation, locked))
-        for workflow, locks, installs in (
-            ("validate.yml", ("requirements-dev.txt",), 2),
-            ("mutation.yml", ("requirements-mutation.txt",), 1),
-        ):
-            with self.subTest(workflow=workflow):
-                text = (REPOSITORY_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-                self.assertEqual(installs, text.count("pip install"))
+        # Every workflow is read, and one that installs no lock may run no pip install.
+        expected = {"validate.yml": (("requirements-dev.txt",), 2), "mutation.yml": (("requirements-mutation.txt",), 1)}
+        workflows = sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.y*ml"))
+        self.assertLessEqual(set(expected), {workflow.name for workflow in workflows})
+        for workflow in workflows:
+            locks, installs = expected.get(workflow.name, ((), 0))
+            with self.subTest(workflow=workflow.name):
+                text = workflow.read_text(encoding="utf-8")
+                self.assertEqual(installs, len(pip_installs(text)))
                 self.assertEqual([], hash_install_problems(text, locks))
 
     def test_ci_exercises_each_floor(self) -> None:
