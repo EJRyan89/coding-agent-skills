@@ -21,8 +21,11 @@ python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.p
 
 The second form lists and judges and writes nothing. From anywhere else, such as a worktree, run only that one; its `HUB` line says the hub is left to the hub's own session. Never rebase or force-push a pull request's branch.
 
+The tick admits only pull requests whose head branch is in this repository. One from any other repository, such as a fork, is never armed, judged, updated, or rerun, and holds no other pull request's update; merging it stays the maintainer's call. Never arm one by hand either.
+
 ## 2. Act on the lines
 
+- `NOT_ADMITTED #<number> <branch> head <commit> from another repository`: a pull request the tick does not admit. Tell the user once per head, naming the pull request; never message a session about it or act on it.
 - `DEFECT #<number> <branch> leg "<leg>" check "<check>"`: a failure of the change. Message the session whose worktree holds `<branch>`, naming the pull request, the leg, and the check, once per head; it fixes the cause. When no session holds the branch, tell the user. Never fix it here.
 - `OUT_OF_STEP #<number> <branch>`: GitHub missed a push to `<branch>`, so the pull request records an older head and can be neither judged nor updated. Message the session whose worktree holds `<branch>` to merge `origin/main` and push, once per head; when no session holds it, tell the user, since closing and reopening the pull request is the maintainer's call.
 - `CONFLICT #<number> <branch>`: the pull request conflicts with `main`, which only its owner can resolve. Message the session whose worktree holds `<branch>` to merge `origin/main`, resolve the conflict, and push, once per head; when no session holds it, tell the user.
