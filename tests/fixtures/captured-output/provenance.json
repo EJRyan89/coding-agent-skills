@@ -65,6 +65,16 @@
       "captured": "2026-10-24",
       "how": "The stdout of `codex debug prompt-input` in the same home: its first message alone, with its first content item, the skills instructions, cut to the same skills as codex/app-server-skills-list.jsonl, and its id as zeros; the other messages and items are Codex's own instructions and the machine's environment, which no reader here reads."
     },
+    "codex/debug-prompt-input-over-budget.json": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-10-24",
+      "how": "The stdout of `codex debug prompt-input`, started signed out as claude/version.txt was with HOME and USERPROFILE also set to the throwaway home, in a working folder whose .agents/skills held sample-skill-0 to sample-skill-5, each with a description of some 250 characters, and with the throwaway CODEX_HOME's config.toml setting [skills] max_context_tokens = 120. Codex dropped every description, kept sample-skill-0 to sample-skill-2, and left sample-skill-3 to sample-skill-5 and every skill of the profile's own .agents/skills out. Cut as codex/debug-prompt-input.json is, with its metadata passthrough left out; the throwaway folder is written <temp> and the profile folder <home>."
+    },
+    "codex/debug-prompt-input-absolute-paths.json": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-10-24",
+      "how": "The same start as codex/debug-prompt-input-over-budget.json with max_context_tokens = 40: Codex then wrote its skills message without a skill roots table, naming each skill's file by its absolute path, and kept only imagegen. Cut and written as that sample is."
+    },
     "copilot/version.txt": {
       "versions": {"copilot-cli": "1.0.103"},
       "captured": "2026-10-24",
