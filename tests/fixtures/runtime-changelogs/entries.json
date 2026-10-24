@@ -1,0 +1,97 @@
+{
+  "provenance": {
+    "claude-code": {
+      "source": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md",
+      "latest_release": "2.1.310",
+      "captured": "2026-10-23"
+    },
+    "copilot-cli": {
+      "source": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md",
+      "latest_release": "1.0.103",
+      "captured": "2026-10-23"
+    },
+    "how": "Each changelog was downloaded whole; each entry is one of its bullets byte for byte without the leading '- ', and copilot-cli-changelog.md is its text from the 1.0.103 heading up to the 1.0.100 heading."
+  },
+  "entries": {
+    "flag-after-a-slash": {
+      "changelog": "copilot-cli",
+      "release": "1.0.103",
+      "entry": "Improve remote launch options with clearer hosting/connection flags and retire legacy --remote/--no-remote startup flags"
+    },
+    "short-flag-after-a-slash": {
+      "changelog": "claude-code",
+      "release": "1.0.51",
+      "entry": "`--append-system-prompt` can now be used in interactive mode, not just --print/-p."
+    },
+    "flag-in-parentheses-and-flag-with-a-value": {
+      "changelog": "claude-code",
+      "release": "0.2.66",
+      "entry": "Print mode (-p) now supports streaming output via --output-format=stream-json"
+    },
+    "flag-in-a-code-span": {
+      "changelog": "claude-code",
+      "release": "2.1.309",
+      "entry": "Fixed sandboxed commands and auto-accepted edits being able to modify the MCP config file passed with `--mcp-config`"
+    },
+    "flag-with-a-value-in-a-code-span": {
+      "changelog": "copilot-cli",
+      "release": "1.0.83",
+      "entry": "A relative `--add-dir` or `--plugin-dir` path now resolves against the session's working directory under `--resume=<id>` and `--worktree`, instead of the directory the CLI was launched from. Relative values are also resolved after `-C` is applied, so `-C` no longer has to precede either option on the command line"
+    },
+    "flag-inside-a-longer-flag": {
+      "changelog": "copilot-cli",
+      "release": "1.0.97",
+      "entry": "Skills and custom agents from --plugin-dir plugins now reach autocomplete and invocation instead of going missing."
+    },
+    "variables-as-words": {
+      "changelog": "copilot-cli",
+      "release": "1.0.102",
+      "entry": "Sandboxed network traffic now honors NO_PROXY and ALL_PROXY when inheriting host proxy settings"
+    },
+    "variable-and-path-as-words": {
+      "changelog": "copilot-cli",
+      "release": "1.0.66",
+      "entry": "COPILOT_HOME and --config-dir stop loading skills from ~/.agents/skills"
+    },
+    "one-word-variable-in-a-code-span": {
+      "changelog": "claude-code",
+      "release": "2.1.305",
+      "entry": "Self-hosted runner: Fixed a start script that shares only its stdout with the runner or orchestrator failing with `Resource temporarily unavailable` when `TERM` is set (a 2.1.300 regression)"
+    },
+    "one-word-variable-after-a-dollar": {
+      "changelog": "claude-code",
+      "release": "2.1.289",
+      "entry": "Fixed Bash deny and ask rules missing a command behind an environment variable prefix with an expanded value (e.g. `TZ=\"$HOME\" rm -rf build`) when the sandbox auto-allows commands"
+    },
+    "one-word-variable-in-braces": {
+      "changelog": "claude-code",
+      "release": "2.1.274",
+      "entry": "Fixed MCP connection errors and the MCP login tool's description showing secrets resolved from `${VAR}` placeholders in MCP configs"
+    },
+    "path-in-a-code-span": {
+      "changelog": "claude-code",
+      "release": "2.1.277",
+      "entry": "Fixed project skills from the main repository not loading in `--worktree` sessions when `.claude/skills` is untracked"
+    },
+    "path-split-by-a-parenthesis": {
+      "changelog": "copilot-cli",
+      "release": "1.0.55",
+      "entry": "--plugin-dir skills now take precedence over personal-home (~/.copilot, ~/.agents) skills with the same name. Order is now project > plugin-dir > personal > custom."
+    },
+    "hyphenated-key-in-a-code-span": {
+      "changelog": "copilot-cli",
+      "release": "1.0.100",
+      "entry": "A skill `allowed-tools` rule keeps commas inside its arguments instead of being split apart. Where a list's structure is ambiguous, its unscoped rules now prompt instead of being granted."
+    },
+    "one-word-key-in-a-code-span": {
+      "changelog": "claude-code",
+      "release": "2.1.300",
+      "entry": "Fixed agent hooks ignoring their `model`: aliases like `haiku` now resolve, a subagent's model no longer overrides it, and an unavailable model falls back to the caller's instead of allowing the action"
+    },
+    "one-word-key-as-a-word": {
+      "changelog": "copilot-cli",
+      "release": "1.0.101",
+      "entry": "Model picker marks your administrator-managed model as the default when it is available"
+    }
+  }
+}

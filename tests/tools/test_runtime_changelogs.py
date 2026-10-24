@@ -172,27 +172,60 @@ class ChangelogTests(unittest.TestCase):
         self.assertIn("name no release up to 0.163.0", str(caught.exception))
 
 
+# Real changelog entries, captured with their provenance, one for each way an entry writes a term.
+CAPTURED = REPOSITORY / "tests" / "fixtures" / "runtime-changelogs"
+ENTRIES: dict[str, dict[str, str]] = json.loads((CAPTURED / "entries.json").read_text(encoding="utf-8"))["entries"]
+COPILOT_CHANGELOG = (CAPTURED / "copilot-cli-changelog.md").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     ("term", "entry", "matched"),
     [
-        pytest.param(Term("flag", "-p"), "runs started with -p and piped stdin", True, id="short-flag"),
-        pytest.param(Term("flag", "-p"), "a --plugin-dir change", False, id="short-flag-inside-a-longer-one"),
-        pytest.param(Term("flag", "--json"), "the --json-schema flag", False, id="flag-prefix"),
-        pytest.param(Term("variable", "HOME"), "COPILOT_HOME now moves the folder", False, id="variable-suffix"),
-        pytest.param(Term("variable", "COPILOT_HOME"), "COPILOT_HOME now moves the folder", True, id="variable"),
-        pytest.param(Term("variable", "OS"), "left to VS Code and the OS", False, id="one-word-variable-as-a-word"),
-        pytest.param(Term("variable", "HOME"), "when `HOME` is unset", True, id="one-word-variable-in-code"),
-        pytest.param(Term("variable", "HOME"), "expands $HOME and ${HOME}", True, id="one-word-variable-reference"),
-        pytest.param(Term("variable", "PATH"), "reads $env:PATH on Windows", True, id="powershell-reference"),
-        pytest.param(Term("path", ".claude/skills"), "reads ~/.claude/skills/<name>", True, id="path"),
-        pytest.param(Term("path", ".claude/skills"), "reads .claude/skills-extra", False, id="path-prefix"),
-        pytest.param(Term("frontmatter", "model"), "the model picker", False, id="plain-key-as-a-word"),
-        pytest.param(Term("frontmatter", "model"), "the `model:` key", True, id="plain-key-in-code"),
-        pytest.param(Term("frontmatter", "allowed-tools"), "skills ignore allowed-tools", True, id="hyphenated-key"),
+        pytest.param(Term("flag", "--no-remote"), "flag-after-a-slash", True, id="flag-after-a-slash"),
+        pytest.param(Term("flag", "-p"), "short-flag-after-a-slash", True, id="short-flag-after-a-slash"),
+        pytest.param(Term("flag", "-p"), "flag-in-parentheses-and-flag-with-a-value", True, id="flag-in-parentheses"),
+        pytest.param(
+            Term("flag", "--output-format"), "flag-in-parentheses-and-flag-with-a-value", True, id="flag-with-a-value"
+        ),
+        pytest.param(Term("flag", "--mcp-config"), "flag-in-a-code-span", True, id="flag-in-a-code-span"),
+        pytest.param(Term("flag", "--resume"), "flag-with-a-value-in-a-code-span", True, id="flag-value-in-code"),
+        pytest.param(Term("flag", "-C"), "flag-with-a-value-in-a-code-span", True, id="short-flag-in-code"),
+        pytest.param(Term("flag", "--plugin-dir"), "flag-inside-a-longer-flag", True, id="flag"),
+        pytest.param(Term("flag", "--plugin"), "flag-inside-a-longer-flag", False, id="flag-prefix"),
+        pytest.param(Term("flag", "-p"), "flag-inside-a-longer-flag", False, id="short-flag-inside-a-longer-one"),
+        pytest.param(Term("variable", "NO_PROXY"), "variables-as-words", True, id="variable"),
+        pytest.param(Term("variable", "ALL_PROXY"), "variables-as-words", True, id="variable-ending-the-entry"),
+        pytest.param(Term("variable", "COPILOT_HOME"), "variable-and-path-as-words", True, id="variable-first"),
+        pytest.param(Term("variable", "HOME"), "variable-and-path-as-words", False, id="variable-suffix"),
+        pytest.param(Term("variable", "TERM"), "one-word-variable-in-a-code-span", True, id="one-word-variable-code"),
+        pytest.param(Term("variable", "HOME"), "one-word-variable-after-a-dollar", True, id="one-word-variable-dollar"),
+        pytest.param(Term("variable", "VAR"), "one-word-variable-in-braces", True, id="one-word-variable-braces"),
+        pytest.param(Term("path", ".claude/skills"), "path-in-a-code-span", True, id="path-in-a-code-span"),
+        pytest.param(Term("path", ".agents/skills"), "variable-and-path-as-words", True, id="path-under-the-home"),
+        pytest.param(Term("path", ".agents/skills"), "path-split-by-a-parenthesis", False, id="path-split"),
+        pytest.param(Term("frontmatter", "allowed-tools"), "hyphenated-key-in-a-code-span", True, id="hyphenated-key"),
+        pytest.param(Term("frontmatter", "model"), "one-word-key-in-a-code-span", True, id="plain-key-in-code"),
+        pytest.param(Term("frontmatter", "model"), "one-word-key-as-a-word", False, id="plain-key-as-a-word"),
     ],
 )
-def test_a_term_matches_only_where_the_entry_names_it(term: Term, entry: str, matched: bool) -> None:
-    assert (watch.matching(entry, "claude-code", [term]) == [term.text]) is matched
+def test_a_term_matches_only_where_a_real_entry_names_it(term: Term, entry: str, matched: bool) -> None:
+    captured = ENTRIES[entry]
+    assert (watch.matching(captured["entry"], captured["changelog"], [term]) == [term.text]) is matched
+
+
+# No captured changelog writes a variable in PowerShell's or cmd's form, so these two entries are written here.
+@pytest.mark.parametrize(
+    "entry", [pytest.param("reads $env:PATH on Windows", id="powershell"), pytest.param("%PATH% is read", id="cmd")]
+)
+def test_a_one_word_variable_matches_in_a_windows_shells_form(entry: str) -> None:
+    assert watch.matching(entry, "codex", [Term("variable", "PATH")]) == ["PATH"]
+
+
+def test_the_versions_a_changelog_is_read_across_are_its_recorded_one_and_each_newer_release() -> None:
+    changelog = Changelog("copilot-cli", "https://example.com/copilot.md", "markdown", "1.0.100")
+    fetcher = StubFetcher({changelog.url: Fetched(200, changelog.url, COPILOT_CHANGELOG.encode("utf-8"))})
+    releases = watch.changelog_releases(changelog, fetcher, 1.0)
+    assert watch.versions_read(changelog, releases) == [(1, 0, 100), (1, 0, 103), (1, 0, 102), (1, 0, 101)]
 
 
 def test_a_flag_is_matched_only_in_its_own_runtimes_changelog() -> None:
@@ -339,6 +372,23 @@ class MainTests(unittest.TestCase):
         self.assertIn("| 99.0.0 | --allowedTools allowed-tools | Changed --allowedTools and `allowed-tools` |", text)
         self.assertIn(f"- MOVED {record.pages[0].url} https://example.com/moved", text)
         self.assertIn("No entry mentions a watched term.", text)
+
+    def test_a_flag_the_code_passes_only_before_a_release_it_reads_is_watched(self) -> None:
+        # Copilot CLI 1.0.103 retired --no-remote, which the code still passes to the releases before it.
+        top = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        record = json.loads((REPOSITORY / GUIDANCE_PATH).read_text(encoding="utf-8"))
+        copilot = next(changelog for changelog in record["changelogs"] if changelog["subject"] == "copilot-cli")
+        copilot["read_through"] = "1.0.100"
+        (top / GUIDANCE_PATH).parent.mkdir(parents=True)
+        (top / GUIDANCE_PATH).write_text(json.dumps(record), encoding="utf-8")
+        table = {**self.table(), copilot["url"]: Fetched(200, copilot["url"], COPILOT_CHANGELOG.encode("utf-8"))}
+        with pytest.MonkeyPatch.context() as patch:
+            printed: list[str] = []
+            patch.setattr("builtins.print", lambda line: printed.append(line))
+            code = watch.main([], fetcher=StubFetcher(table), top=top)
+        self.assertEqual(0, code, printed)
+        retired = ENTRIES["flag-after-a-slash"]["entry"]
+        self.assertIn(f'ENTRY copilot-cli 1.0.103 "--no-remote" "{retired}"', printed)
 
     def test_a_watch_that_cannot_run_prints_one_failed_line_and_exits_1(self) -> None:
         record = watch.read_record(REPOSITORY)
