@@ -9,7 +9,9 @@ Git takes configuration, hooks, and even the repository it works on from the env
 `GIT_CONFIG_COUNT` outranks every file, a global `core.hooksPath` runs the user's hooks on a fixture's commit, and
 `GIT_DIR` or `GIT_INDEX_FILE`, which a git hook exports, points every command at another repository. The autouse
 fixtures below give git a temporary home of its own instead, for each module, each class, and each test, so a test,
-its setUp, tearDown, and cleanups, a setUpClass, and a setUpModule all run isolated, whatever they build:
+its setUp, tearDown, and cleanups, a setUpClass and its class's cleanups, and a setUpModule and its module's cleanups
+all run isolated, whatever they build. pytest runs unittest's test and class cleanups but never its module cleanups,
+those `unittest.addModuleCleanup` and `unittest.enterModuleContext` register, so the module fixture runs them:
 
 - `HOME` names that home, where git looks for the user's files when nothing else names them;
 - `GIT_CONFIG_GLOBAL` names a `.gitconfig` in it holding the fixture identity, `core.hooksPath` set to an empty
@@ -40,6 +42,7 @@ import os
 import re
 import sys
 import tempfile
+import unittest
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -180,9 +183,14 @@ def git_settings(*owners: Any) -> Mapping[str, str]:
 
 @pytest.fixture(autouse=True, scope="module")
 def isolated_git_module(request: pytest.FixtureRequest) -> Iterator[GitHome]:
-    """Isolate git for a suite module's setUpModule, its module fixtures, and its cleanups."""
+    """Isolate git for a suite module's setUpModule, its module fixtures, and its cleanups, and run unittest's module
+    cleanups at the module's teardown, which pytest never calls: it runs a test's and a class's, not a module's. The
+    xunit fixture that runs setUpModule and tearDownModule is set up after this one, so the cleanups run after
+    tearDownModule, newest first, still isolated, as unittest runs them, and a failing one fails the module's
+    teardown."""
     with isolated_git(git_settings(request.module)) as home:
         yield home
+        unittest.doModuleCleanups()
 
 
 @pytest.fixture(autouse=True, scope="class")
