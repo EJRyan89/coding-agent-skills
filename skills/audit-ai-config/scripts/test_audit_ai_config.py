@@ -4886,6 +4886,13 @@ class CodexConfigurationTests(unittest.TestCase):
             codex_rows({".codex/rules/broken.rules": "prefix_rule(\n", ".codex/rules/bytes.rules": UNDECODABLE}),
         )
 
+    def test_a_parse_failure_names_the_rules_file_and_line_python_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_fixture(root, {".codex/rules/broken.rules": "prefix_rule(\n"})
+            (finding,) = audit.check_codex(root)
+        self.assertRegex(finding.message, r"^Could not read or parse: .+ \(\.codex/rules/broken\.rules, line 1\)$")
+
 
 def markdown_row(path: str, message: str) -> str:
     result = audit.AuditResult(
