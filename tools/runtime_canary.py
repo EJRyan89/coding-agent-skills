@@ -431,7 +431,7 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     Python's digit limit, raises RecordRefused, naming the file and the line."""
     records = []
     if is_present(path):
-        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        for number, line in enumerate(path.read_bytes().decode("utf-8", "replace").splitlines(), 1):
             try:
                 record = json_reader.loads(line)
             except json.JSONDecodeError:
