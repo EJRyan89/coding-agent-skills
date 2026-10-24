@@ -293,7 +293,7 @@ def variable_terms(top: Path) -> list[Term]:
     for pattern in MARKDOWN_GLOBS:
         for path in top.glob(pattern):
             try:
-                names.update(PLACEHOLDER.findall(path.read_text(encoding="utf-8")))
+                names.update(PLACEHOLDER.findall(path.read_bytes().decode("utf-8")))
             except (OSError, UnicodeDecodeError) as exc:
                 raise WatchError(f"cannot read {path.relative_to(top).as_posix()}: {exc}") from exc
     return [Term("variable", name) for name in sorted(names)]

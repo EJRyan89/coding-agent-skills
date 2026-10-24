@@ -376,6 +376,13 @@ def test_code_the_terms_cannot_be_read_from_stops_the_watch_naming_the_file(
     assert str(caught.value).startswith(f"{reason}: ")
 
 
+def test_markdown_is_read_as_utf_8_whatever_the_platforms_codec(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "example" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes("---\nname: example\n---\n\nRésumé ${CAFÉ_VARIABLE} and ${CLAUDE_SKILL_DIR}\n".encode())
+    assert watch.variable_terms(tmp_path) == [Term("variable", "CLAUDE_SKILL_DIR")]
+
+
 def test_the_versions_a_changelog_is_read_across_are_its_recorded_one_and_each_newer_release() -> None:
     changelog = Changelog("copilot-cli", "https://example.com/copilot.md", "markdown", "1.0.100")
     fetcher = StubFetcher({changelog.url: Fetched(200, changelog.url, COPILOT_CHANGELOG.encode("utf-8"))})

@@ -2334,6 +2334,9 @@ class RecordRefusalTests(RuntimeCanaryTestCase):
         # A line a crashed writer left incomplete is still skipped, and a record is read as the UTF-8 it was written.
         records.write_bytes('{"run": "kept é"}\n{"incomplete\n'.encode())
         self.assertEqual([{"run": "kept é"}], runtime_canary.read_records(records))
+        # A byte that is not UTF-8 is replaced, never a reason to lose the record.
+        records.write_bytes(b'{"run": "kept \xff"}\n')
+        self.assertEqual([{"run": "kept �"}], runtime_canary.read_records(records))
 
     def test_a_record_that_cannot_be_read_is_named_by_the_file_the_error_names_or_else_the_marker_file(self) -> None:
         probe, script_log = self.root / "probe.jsonl", self.root / "scripts" / "codex-alpha.jsonl"
