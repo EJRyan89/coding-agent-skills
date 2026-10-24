@@ -42,16 +42,19 @@ from tools.mutation_gate import (
     SuiteRunner,
     changed_lines,
     code,
+    context_tests,
     counts,
     coverage_settings,
     describe,
     executed_lines,
+    executed_tests,
     generator_problem,
     is_gate_module,
     kill_ratio,
     module_mutants,
     no_module_line,
     queue_order,
+    run_suite,
     summary,
     try_mutant,
 )
@@ -121,6 +124,116 @@ MULTILINE_REPORT = {
 }
 
 
+# A module and its suite, as tests/tools/test_calc.py of a fixture repository, whose lines coverage.py records with the
+# test functions that ran them: add() runs in a set-up too, Base's test_negate() is inherited, so it runs as both
+# Base's and CalcTests' test, and square() runs only in a process a test starts.
+CONTEXT_CALC = """import sys
+
+
+def add(a, b):
+    return a + b
+
+
+def double(a):
+    return add(
+        a,
+        a,
+    )
+
+
+def negate(a):
+    return -a
+
+
+def square(a):
+    return a * a
+
+
+if __name__ == "__main__":
+    print(square(int(sys.argv[1])))
+"""
+CONTEXT_SUITE = """import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+CALC = Path(__file__).resolve().parents[2] / "tools" / "calc.py"
+sys.path.insert(0, str(CALC.parent))
+
+import calc
+
+
+class Base(unittest.TestCase):
+    def test_negate(self) -> None:
+        self.assertEqual(-2, calc.negate(2))
+
+
+class CalcTests(Base):
+    def setUp(self) -> None:
+        self.four = calc.add(2, 2)
+
+    def test_double(self) -> None:
+        self.assertEqual(4, calc.double(2))
+
+    def test_square_in_a_process(self) -> None:
+        done = subprocess.run([sys.executable, str(CALC), "3"], capture_output=True, text=True, check=True)
+        self.assertEqual("9", done.stdout.strip())
+
+
+def test_add() -> None:
+    assert calc.add(1, 2) == 3
+"""
+CONTEXT_SUITE_PATH = "tests/tools/test_calc.py"
+# What coverage.py 7.16.2's `coverage json --show-contexts` wrote for CONTEXT_CALC after `coverage run` of
+# CONTEXT_SUITE with `dynamic_context = test_function` and `patch = subprocess`, its other fields left out. The empty
+# context is code that ran outside every test function: at import, in setUp(), and in the process that
+# test_square_in_a_process() started; the inherited test_negate() is named by Base, the class that defines it.
+CONTEXT_REPORT = {
+    "files": {
+        "tools/calc.py": {
+            "executed_lines": [1, 4, 5, 8, 9, 15, 16, 19, 20, 23, 24],
+            "missing_lines": [],
+            "excluded_lines": [],
+            "contexts": {
+                "1": [""],
+                "4": [""],
+                "5": ["", "test_calc.CalcTests.test_double", "test_calc.test_add"],
+                "8": [""],
+                "15": [""],
+                "19": [""],
+                "20": [""],
+                "23": [""],
+                "24": [""],
+                "16": ["test_calc.Base.test_negate"],
+                "9": ["test_calc.CalcTests.test_double"],
+                "10": ["test_calc.CalcTests.test_double"],
+                "11": ["test_calc.CalcTests.test_double"],
+            },
+        }
+    }
+}
+# What `pytest tests/tools/test_calc.py --collect-only -q` listed for CONTEXT_SUITE.
+CONTEXT_COLLECTED = [
+    "tests/tools/test_calc.py::Base::test_negate",
+    "tests/tools/test_calc.py::CalcTests::test_double",
+    "tests/tools/test_calc.py::CalcTests::test_negate",
+    "tests/tools/test_calc.py::CalcTests::test_square_in_a_process",
+    "tests/tools/test_calc.py::test_add",
+]
+# double()'s statement, lines 9 to 14, is the one only a test function ran: every other line runs the whole suite.
+CONTEXT_TESTS = {
+    "tools/calc.py": dict.fromkeys(range(9, 15), frozenset({"tests/tools/test_calc.py::CalcTests::test_double"}))
+}
+
+
+def context_tree(root: Path) -> None:
+    """CONTEXT_CALC and CONTEXT_SUITE in a tree, as tools/calc.py and tests/tools/test_calc.py."""
+    (root / "tools").mkdir(parents=True, exist_ok=True)
+    (root / "tests" / "tools").mkdir(parents=True, exist_ok=True)
+    (root / "tools" / "calc.py").write_text(CONTEXT_CALC, encoding="utf-8")
+    (root / CONTEXT_SUITE_PATH).write_text(CONTEXT_SUITE, encoding="utf-8")
+
+
 class MutantFixtures(unittest.TestCase):
     def test_a_zero_context_diff_names_each_added_or_changed_line(self) -> None:
         diff = "@@ -3 +3 @@\n-a\n+b\n@@ -10,0 +11,2 @@\n+c\n+d\n@@ -20,2 +23,0 @@\n-e\n-f\n"
@@ -182,6 +295,7 @@ class ReachFixtures(unittest.TestCase):
     def test_coverage_measures_the_suites_subprocesses_and_only_the_changed_modules(self) -> None:
         settings = coverage_settings(Path("data folder"), [Path("tree/tools/calc.py"), Path("tree/deployer/a.py")])
         self.assertIn("patch = subprocess", settings)
+        self.assertIn("dynamic_context = test_function", settings)
         self.assertIn("parallel = true", settings)
         self.assertIn(f"    {Path('tree/tools/calc.py')}\n    {Path('tree/deployer/a.py')}\n", settings)
         self.assertIn("disable_warnings = no-data-collected,", settings)
@@ -221,6 +335,75 @@ class ReachFixtures(unittest.TestCase):
         self.assertEqual(frozenset(), mutation_gate.statement_lines({"executed_lines": []}, 6))
 
 
+class ContextFixtures(unittest.TestCase):
+    """The tests a mutant's line runs, read from coverage.py's recorded contexts and pytest's listing of the suite."""
+
+    def test_only_a_statement_its_own_test_functions_alone_ran_names_tests_and_every_other_runs_the_whole_suite(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary) / "tree with spaces"
+            context_tree(tree)
+            tests = executed_tests(CONTEXT_REPORT, tree, ["tools/calc.py"], CONTEXT_SUITE_PATH, CONTEXT_COLLECTED)
+            lines = executed_lines(CONTEXT_REPORT, tree, ["tools/calc.py"])["tools/calc.py"]
+        self.assertEqual(CONTEXT_TESTS, tests)
+        # add() also ran in setUp(), negate() in an inherited test, and square() only in a process the suite started:
+        # each line is reached, and runs the whole suite.
+        for line in (5, 16, 20):
+            with self.subTest(line=line):
+                self.assertIn(line, lines)
+                self.assertNotIn(line, tests["tools/calc.py"])
+
+    def test_a_context_names_a_test_by_its_modules_import_name_and_every_parametrized_case_runs(self) -> None:
+        suite = "tests/tools/test_calc.py"
+        collected = [f"{suite}::test_add[1]", f"{suite}::test_add[2]", f"{suite}::CalcTests::test_double"]
+        self.assertEqual(
+            frozenset(collected[:2]), context_tests(["test_calc.test_add"], suite, collected), "the pytest module name"
+        )
+        self.assertEqual(
+            frozenset(collected),
+            context_tests(["tests.tools.test_calc.test_add", "test_calc.CalcTests.test_double"], suite, collected),
+        )
+
+    def test_a_context_that_names_no_collected_test_of_the_suite_alone_runs_the_whole_suite(self) -> None:
+        suite = "tests/tools/test_calc.py"
+        collected = [f"{suite}::CalcTests::test_double", f"{suite}::test_add"]
+        for contexts in (
+            [],
+            [""],
+            ["test_calc.test_add", ""],
+            ["test_other.CalcTests.test_double"],
+            ["not_test_calc.test_add"],
+            ["test_calc.Helper.test_double"],
+            ["test_calc.test_gone"],
+        ):
+            with self.subTest(contexts=contexts):
+                self.assertIsNone(context_tests(contexts, suite, collected))
+
+    def test_a_suite_pytest_cannot_list_names_no_test_and_its_listing_keeps_only_its_node_ids(self) -> None:
+        self.assertIsNone(context_tests(["test_calc.test_add"], "tests/tools/test_calc.py", []))
+        listing = "tests/a.py::T::test_x\ntests/a.py::test_y[1]\n\n2 tests collected in 0.01s\n"
+        self.assertEqual(
+            ["tests/a.py::T::test_x", "tests/a.py::test_y[1]"], mutation_gate.collected_tests(listing, "tests/a.py")
+        )
+
+
+class RunSuiteFixtures(unittest.TestCase):
+    """The real suite runner, over a suite with a test that fails and one that passes."""
+
+    def test_named_tests_run_alone_and_without_names_the_whole_suite_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary) / "tree with spaces"
+            (tree / "tests").mkdir(parents=True)
+            (tree / "tests" / "test_x.py").write_text(
+                "def test_passes():\n    pass\n\n\ndef test_fails():\n    raise AssertionError\n", encoding="utf-8"
+            )
+            alone = run_suite(tree, "tests/test_x.py", 60.0, ["tests/test_x.py::test_passes"])
+            whole = run_suite(tree, "tests/test_x.py", 60.0)
+            failing = run_suite(tree, "tests/test_x.py", 60.0, ["tests/test_x.py::test_fails"])
+        self.assertEqual((PASSED, KILLED, KILLED), (alone, whole, failing))
+
+
 class CoverageReachFixtures(unittest.TestCase):
     """The reach of a suite through a stub coverage.py in the tree, which `python -m coverage` finds first there."""
 
@@ -239,18 +422,27 @@ class CoverageReachFixtures(unittest.TestCase):
         "    _, code, message = action.split(' ', 2)\n"
         "    print(message, file=sys.stderr)\n"
         "    sys.exit(int(code))\n"
+        "if step == 'json' and '--show-contexts' not in sys.argv:\n"
+        "    sys.exit(7)\n"
         "if step == 'json' and action == 'ok':\n"
-        "    pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_text(json.dumps({'files': {}}))\n"
+        "    report = pathlib.Path('stub-report.json')\n"
+        "    text = report.read_text() if report.is_file() else json.dumps({'files': {}})\n"
+        "    pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_text(text)\n"
     )
 
-    def reach(self, actions: dict[str, str]) -> Reach | str:
+    def reach(self, actions: dict[str, str], recorded: bool = False, suite: str = "tests/test_calc.py") -> Reach | str:
+        """The reach of `suite` in a tree whose stub coverage.py reports nothing, or, when `recorded`, CONTEXT_REPORT
+        for the CONTEXT_SUITE the tree holds."""
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary) / "tree with spaces"
             tree.mkdir()
             (tree / "coverage.py").write_text(self.STUB, encoding="utf-8")
             (tree / "stub-actions.json").write_text(json.dumps(actions), encoding="utf-8")
-            with mock.patch.object(mutation_gate, "MINIMUM_SUITE_SECONDS", 2.0):
-                return mutation_gate.coverage_reach(tree, "tests/test_calc.py", ["tools/calc.py"], 60.0)
+            if recorded:
+                context_tree(tree)
+                (tree / "stub-report.json").write_text(json.dumps(CONTEXT_REPORT), encoding="utf-8")
+            with mock.patch.object(mutation_gate, "MINIMUM_SUITE_SECONDS", 30.0 if recorded else 2.0):
+                return mutation_gate.coverage_reach(tree, suite, ["tools/calc.py"], 60.0)
 
     def test_a_suite_whose_coverage_data_is_combined_and_reported_is_measured(self) -> None:
         result = self.reach({})
@@ -271,6 +463,21 @@ class CoverageReachFixtures(unittest.TestCase):
         ):
             with self.subTest(actions=actions):
                 self.assertEqual(expected, self.reach(actions))
+
+    def test_the_report_names_each_line_the_tests_that_ran_it_from_pytests_listing_of_the_suite(self) -> None:
+        result = self.reach({}, recorded=True, suite=CONTEXT_SUITE_PATH)
+        if not isinstance(result, Reach):
+            self.fail(f"the reach was not measured: {result}")
+        self.assertEqual(CONTEXT_TESTS, {module: dict(lines) for module, lines in result.tests.items()})
+        self.assertIn(20, result.lines["tools/calc.py"])
+
+    def test_a_suite_pytest_cannot_list_is_measured_and_runs_whole_against_every_mutant(self) -> None:
+        # The stub reports CONTEXT_REPORT, but the suite named is not in the tree, so pytest lists no test of it.
+        result = self.reach({}, recorded=True, suite="tests/tools/test_gone.py")
+        if not isinstance(result, Reach):
+            self.fail(f"the reach was not measured: {result}")
+        self.assertEqual({}, dict(result.tests))
+        self.assertIn(9, result.lines["tools/calc.py"])
 
     def test_a_suite_failed_unmutated_is_still_reported_by_its_exit_code(self) -> None:
         self.assertEqual("failed unmutated with exit code 4", self.reach({"run": "fail 4 a test failed"}))
@@ -297,10 +504,12 @@ class TryMutantFixtures(unittest.TestCase):
             "tests/other.py": Reach(1.0, {"tools/calc.py": frozenset({1})}),
         }
         self.calls: list[tuple[str, float, str]] = []
+        self.tests: list[tuple[str, ...]] = []
 
     def runner(self, results: dict[str, str]) -> SuiteRunner:
-        def run(tree: Path, suite: str, timeout: float) -> str:
+        def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
             self.calls.append((suite, timeout, (tree / "tools" / "calc.py").read_text(encoding="utf-8")))
+            self.tests.append(tuple(tests))
             return results.get(suite, PASSED)
 
         return run
@@ -309,7 +518,7 @@ class TryMutantFixtures(unittest.TestCase):
         outcome = try_mutant(
             self.tree, self.mutant, self.reach, 100.0, self.runner({"tests/slow.py": KILLED}), lambda: 0.0
         )
-        self.assertEqual(Outcome(self.mutant, KILLED, ("tests/fast.py", "tests/slow.py")), outcome)
+        self.assertEqual(Outcome(self.mutant, KILLED, ("tests/fast.py", "tests/slow.py"), (0, 0)), outcome)
         # Each suite ran against the mutant, with three times its unmutated seconds and never under the floor.
         self.assertEqual(
             [("tests/fast.py", 60.0, self.mutant.source), ("tests/slow.py", 90.0, self.mutant.source)], self.calls
@@ -325,6 +534,20 @@ class TryMutantFixtures(unittest.TestCase):
         self.assertEqual((TIMED_OUT, ("tests/fast.py",)), (timed.status, timed.suites))
         self.assertEqual(self.original, (self.tree / "tools" / "calc.py").read_bytes())
 
+    def test_a_suite_runs_only_the_tests_that_ran_the_line_when_it_names_them_and_whole_otherwise(self) -> None:
+        reach = {
+            "tests/fast.py": Reach(
+                2.0, {"tools/calc.py": frozenset({2})}, {"tools/calc.py": {2: frozenset({"b", "a"})}}
+            ),
+            "tests/slow.py": Reach(
+                30.0, {"tools/calc.py": frozenset({1, 2})}, {"tools/calc.py": {1: frozenset({"c"})}}
+            ),
+        }
+        outcome = try_mutant(self.tree, self.mutant, reach, 100.0, self.runner({}), lambda: 0.0)
+        self.assertEqual(Outcome(self.mutant, SURVIVED, ("tests/fast.py", "tests/slow.py"), (2, 0)), outcome)
+        # tests/slow.py names tests only for line 1, so line 2's mutant runs the whole of it.
+        self.assertEqual([("a", "b"), ()], self.tests)
+
     def test_a_mutant_no_suite_executed_is_not_reached_and_runs_nothing(self) -> None:
         unreached = Mutant("tools/calc.py", 7, "x", "y", "z")
         self.assertEqual(
@@ -338,7 +561,7 @@ class TryMutantFixtures(unittest.TestCase):
         outcome = try_mutant(self.tree, self.mutant, self.reach, 100.0, self.runner({}), lambda: next(times))
         self.assertEqual((NOT_RUN, ("tests/fast.py",)), (outcome.status, outcome.suites))
 
-        def broken(tree: Path, suite: str, timeout: float) -> str:
+        def broken(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
             raise OSError("the suite could not start")
 
         with self.assertRaises(OSError):
@@ -388,6 +611,15 @@ class SummaryFixtures(unittest.TestCase):
         self.assertIn("`tests/broken.py` failed unmutated with exit code 1, so no mutant ran against it.", text)
         self.assertIn("left these suites' reach unmeasured, so no mutant ran against them: `tests/late.py`.", text)
         self.assertNotIn("cut", text.split("Kill ratio")[1].split("###")[0].replace("unmutated", ""))
+
+    def test_a_survivor_names_how_many_of_a_suites_tests_it_ran_against_when_not_all_of_them(self) -> None:
+        survivor = Outcome(mutant(4), SURVIVED, ("tests/fast.py", "tests/slow.py", "tests/one.py"), (3, 0, 1))
+        text = summary(self.report([survivor]))
+        self.assertIn(
+            "- Line 4: `line 4` became `mutated 4`; passed `tests/fast.py` (3 tests that ran the line), "
+            "`tests/slow.py`, `tests/one.py` (1 test that ran the line)",
+            text,
+        )
 
     def test_every_outcome_is_counted_and_survivors_are_counted_and_marked_one_by_one(self) -> None:
         outcomes = [
@@ -554,6 +786,49 @@ class WholeRunFixtures(unittest.TestCase):
         # Line 8 is a continuation of the call on line 6, the line coverage.py recorded, so the suite ran and killed it.
         self.assertIn("| `tools/calc.py` | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 100% (1 of 1) |", text)
 
+    def test_a_mutant_runs_the_tests_that_ran_its_line_and_the_whole_suite_for_a_line_run_in_a_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            context_tree(root)
+            git(root, "add", ".")
+            git(root, "commit", "--quiet", "-m", "contexts")
+            git(root, "switch", "--quiet", "-c", "per-test")
+            change_calc(
+                root, CONTEXT_CALC.replace("        a,\n    )", "        a + 0,\n    )").replace("a * a", "a * a + 0")
+            )
+            calls: list[tuple[str, tuple[str, ...], str]] = []
+
+            def generate(module: str, source: str, lines: frozenset[int]) -> list[str]:
+                if module == "canary.py":
+                    return stub_generator(module, source, lines)
+                return [source.replace("a + 0,", "a + 1,"), source.replace("a * a + 0", "a * a + 1")]
+
+            def recorded_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach:
+                lines = executed_lines(CONTEXT_REPORT, tree, modules)
+                return Reach(1.0, lines, executed_tests(CONTEXT_REPORT, tree, modules, suite, CONTEXT_COLLECTED))
+
+            def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+                result = run_suite(tree, suite, timeout, tests)
+                calls.append((suite, tuple(tests), result))
+                return result
+
+            gate = Gate(root, "feature", 5, 1, GitClient(), generate, recorded_reach, run)
+            with mock.patch.object(
+                mutation_gate, "reached_suites", return_value=[root / "tests" / "tools" / "test_calc.py"]
+            ):
+                text = gate.report()
+        # Line 11's mutant ran test_double() alone, which killed it; line 20's ran only in the process
+        # test_square_in_a_process() starts, so it ran the whole suite, which killed it there.
+        self.assertEqual(
+            [
+                (CONTEXT_SUITE_PATH, ("tests/tools/test_calc.py::CalcTests::test_double",), KILLED),
+                (CONTEXT_SUITE_PATH, (), KILLED),
+            ],
+            calls,
+        )
+        self.assertIn("| `tools/calc.py` | 2 | 2 | 2 | 0 | 0 | 0 | 0 | 100% (2 of 2) |", text)
+
     def test_a_changed_module_with_no_mutant_is_named_and_no_suite_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
@@ -602,7 +877,7 @@ class QueueFixtures(unittest.TestCase):
         now = [0.0]
         both_started = threading.Barrier(2, timeout=30)
 
-        def run(tree: Path, suite: str, timeout: float) -> str:
+        def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
             # Both workers' first mutants start before either finishes, and the first to finish ends the cap.
             both_started.wait()
             now[0] = 10_000.0

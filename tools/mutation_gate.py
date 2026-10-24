@@ -27,9 +27,15 @@ subprocess measurement on, which records the statements of the changed modules e
 or in one it started with the environment passed on; the gate's own coverage steps and suite runs are never measured.
 coverage.py records a statement by its first line, and the lines its report names executed, missing, or excluded are the
 first lines of all the module's statements, so each line up to the next of them belongs to the statement above it, and a
-mutant on a continuation line of a multi-line statement is reached when that statement ran. A mutant then runs the
-suites that executed its statement, fastest first, until one fails: the mutant is killed, or timed out when a suite runs
-past three times its unmutated time. A mutant every one of those suites passes survived. A mutant in a statement no
+mutant on a continuation line of a multi-line statement is reached when that statement ran. coverage.py's
+`test_function` dynamic context records, too, which test functions ran each statement, and `coverage json
+--show-contexts` reports them, which the gate matches to the node ids `pytest --collect-only` lists for the suite. A
+mutant then runs the suites that executed its statement, fastest first, until one fails: of each suite, only the tests
+that ran the statement, when its own test functions alone did, and the whole suite when code outside any test function
+ran it too, since a process the suite started, a set-up, a fixture, or an import records no test function; a context
+naming no collected test of the suite, or a test function name more than one collected class holds, which an inherited
+test method would be, and a suite pytest cannot list run whole as well. The mutant is killed, or timed out when a suite
+runs past three times its unmutated time. A mutant every one of those suites passes survived. A mutant in a statement no
 suite executed is not reached, and a suite that fails unmutated, or whose coverage data `coverage combine` or `coverage
 json` fails or times out on, is left out and named with the step and its output, never read as a suite that reached
 nothing. The Bash and PowerShell suites run no Python module and are not used.
@@ -41,7 +47,8 @@ starts as soon as the first. A mutant the cap leaves untested is counted as not 
 the cap cut short. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
 
 The report, each module's changed lines, counts, and kill ratio, each changed module with no mutant, and each surviving
-mutant by its line, the mutation, and the suites it ran against, goes to stdout and to the step summary
+mutant by its line, the mutation, and the suites it ran against, each with the count of its tests that ran when not
+all of them did, goes to stdout and to the step summary
 GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line saying so. It exits 0 once the
 gate has run, whatever survived, and 1 when it cannot run: mutmut no longer makes the mutant its canary expects on the
 canary's line alone, or a git command fails.
@@ -64,11 +71,12 @@ import sys
 import tempfile
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import TypeVar
+from typing import Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "validation"))
@@ -140,10 +148,13 @@ class Mutant:
 
 @dataclass(frozen=True)
 class Reach:
-    """A suite's unmutated run: its seconds, and the lines of each changed module it executed."""
+    """A suite's unmutated run: its seconds, the lines of each changed module it executed, and, for each line only
+    the suite's own test functions executed, those tests' node ids; a line it executed that `tests` leaves out runs the
+    whole suite."""
 
     seconds: float
     lines: Mapping[str, frozenset[int]]
+    tests: Mapping[str, Mapping[int, frozenset[str]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -151,6 +162,8 @@ class Outcome:
     mutant: Mutant
     status: str
     suites: tuple[str, ...] = ()
+    # How many of each suite's tests ran, in the order of `suites`, 0 for a whole suite; a suite past the end ran whole.
+    tests: tuple[int, ...] = ()
 
 
 @dataclass
@@ -176,8 +189,9 @@ class Report:
 
 # Makes a module's mutants, each as the module's whole text, of the nodes that start on the given lines.
 Generator = Callable[[str, str, frozenset[int]], list[str]]
-# Runs a suite in a worktree within a time limit and says whether it passed, failed (KILLED), or timed out.
-SuiteRunner = Callable[[Path, str, float], str]
+# Runs a suite in a worktree within a time limit, only the tests whose node ids it is given when it is given any, and
+# says whether they passed, failed (KILLED), or timed out.
+SuiteRunner = Callable[[Path, str, float, Sequence[str]], str]
 # Runs a suite unmutated in a worktree, measuring the changed modules, and gives its Reach or why it has none.
 ReachRunner = Callable[[Path, str, Sequence[str], float], "Reach | str"]
 Clock = Callable[[], float]
@@ -267,31 +281,40 @@ def suite_environment() -> dict[str, str]:
     return {**environment, "PYTHONDONTWRITEBYTECODE": "1"}
 
 
-def run_suite(tree: Path, suite: str, timeout: float) -> str:
-    """Run one suite in a worktree, stopping at its first failure, with every process it starts ended after it."""
-    try:
-        finished = run_bounded(
-            pytest_command(suite, "-x", "-q"),
-            timeout,
-            cwd=tree,
-            env=suite_environment(),
-            output_limit=OUTPUT_LIMIT,
-            tree=platform_support.process_tree(),
-        )
-    except subprocess.TimeoutExpired:
-        return TIMED_OUT
+def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ()) -> str:
+    """Run one suite in a worktree, or only its tests named by node id, stopping at the first failure, with every
+    process it starts ended after it. The node ids go to pytest in an argument file, which no command line's length
+    limits."""
+    with tempfile.TemporaryDirectory(prefix="mutation-tests-") as temporary:
+        target = suite
+        if tests:
+            listed = Path(temporary) / "tests.txt"
+            listed.write_text("".join(f"{test}\n" for test in tests), encoding="utf-8")
+            target = f"@{listed}"
+        try:
+            finished = run_bounded(
+                pytest_command(target, "-x", "-q"),
+                timeout,
+                cwd=tree,
+                env=suite_environment(),
+                output_limit=OUTPUT_LIMIT,
+                tree=platform_support.process_tree(),
+            )
+        except subprocess.TimeoutExpired:
+            return TIMED_OUT
     return PASSED if finished.returncode == 0 else KILLED
 
 
 def coverage_settings(folder: Path, files: Iterable[Path]) -> str:
-    """coverage.py's configuration for one reach run: data in its own folder, one file per measured process, and the
-    processes the suite starts measured too."""
+    """coverage.py's configuration for one reach run: data in its own folder, one file per measured process, the
+    processes the suite starts measured too, and each line recorded with the test function that ran it."""
     return "\n".join(
         [
             "[run]",
             f"data_file = {folder / 'data'}",
             "parallel = true",
             "patch = subprocess",
+            "dynamic_context = test_function",
             "include =",
             *(f"    {file}" for file in files),
             f"disable_warnings = {', '.join(COVERAGE_WARNINGS)}",
@@ -300,25 +323,30 @@ def coverage_settings(folder: Path, files: Iterable[Path]) -> str:
     )
 
 
-def statement_lines(entry: Mapping[str, Iterable[int]], last: int) -> frozenset[int]:
-    """Every line of each statement a coverage.py JSON report's entry for a module says ran, up to the module's last.
+def executed_statements(entry: Mapping[str, Iterable[int]], last: int) -> Iterator[tuple[int, range]]:
+    """Each statement a coverage.py JSON report's entry for a module says ran, as its first line and all its lines, up
+    to the module's last.
 
     coverage.py records a statement by its first line alone, and the lines it reports executed, missing, or excluded
     are the first lines of all its statements, so each line from an executed statement's first line up to the next
     statement's belongs to it: a continuation line of a multi-line call, argument list, or literal among them."""
     executed = {int(line) for line in entry.get("executed_lines", ())}
     starts = executed | {int(line) for key in ("missing_lines", "excluded_lines") for line in entry.get(key, ())}
-    lines: set[int] = set()
     for start, end in itertools.pairwise([*sorted(starts), max([last, *starts]) + 1]):
         if start in executed:
-            lines.update(range(start, end))
-    return frozenset(lines)
+            yield start, range(start, end)
 
 
-def executed_lines(report: Mapping[str, object], tree: Path, modules: Sequence[str]) -> dict[str, frozenset[int]]:
-    """The lines of each module a coverage.py JSON report says ran, every line of a multi-line statement included, its
-    files named by any path into the worktree."""
-    lines = {module: frozenset[int]() for module in modules}
+def statement_lines(entry: Mapping[str, Iterable[int]], last: int) -> frozenset[int]:
+    """Every line of each statement a coverage.py JSON report's entry for a module says ran, up to the module's last."""
+    return frozenset(line for _, lines in executed_statements(entry, last) for line in lines)
+
+
+def module_entries(
+    report: Mapping[str, object], tree: Path, modules: Sequence[str]
+) -> Iterator[tuple[str, Mapping[str, Any], int]]:
+    """Each changed module's entry in a coverage.py JSON report and the module's line count, its file named by any
+    path into the worktree."""
     files = report.get("files")
     for name, entry in files.items() if isinstance(files, dict) else ():
         path = Path(name) if Path(name).is_absolute() else tree / name
@@ -326,14 +354,67 @@ def executed_lines(report: Mapping[str, object], tree: Path, modules: Sequence[s
             module = path.resolve().relative_to(tree.resolve()).as_posix()
         except ValueError:
             continue
-        if module in lines and isinstance(entry, dict):
-            last = len((tree / module).read_bytes().splitlines())
-            lines[module] = statement_lines(entry, last)
+        if module in modules and isinstance(entry, dict):
+            yield module, entry, len((tree / module).read_bytes().splitlines())
+
+
+def executed_lines(report: Mapping[str, object], tree: Path, modules: Sequence[str]) -> dict[str, frozenset[int]]:
+    """The lines of each module a coverage.py JSON report says ran, every line of a multi-line statement included."""
+    lines = {module: frozenset[int]() for module in modules}
+    for module, entry, last in module_entries(report, tree, modules):
+        lines[module] = statement_lines(entry, last)
     return lines
 
 
+def collected_tests(listing: str, suite: str) -> list[str]:
+    """The node ids of a suite's tests that `pytest <suite> --collect-only -q` lists."""
+    return [line for line in listing.splitlines() if line.startswith(f"{suite}::")]
+
+
+def context_tests(contexts: Iterable[str], suite: str, collected: Sequence[str]) -> frozenset[str] | None:
+    """The node ids of the suite's tests that coverage.py's `test_function` contexts for a statement name, or None
+    when the statement must run the whole suite.
+
+    A context names a test function by its module's import name and its qualified name. The empty context is code that
+    ran outside every test function: at import, in a set-up or a fixture, or in a process the suite started, which
+    records no test function, and only the whole suite repeats it. A test method a class inherits is named by the class
+    that defines it, so a context whose function name more than one collected class holds, or one that names no
+    collected test of this suite, runs the whole suite too."""
+    stem = PurePosixPath(suite).stem
+    named: dict[str, list[str]] = {}
+    for test in collected:
+        named.setdefault(test.removeprefix(f"{suite}::").split("[", 1)[0].replace("::", "."), []).append(test)
+    functions = Counter(name.rpartition(".")[2] for name in named)
+    found: set[str] = set()
+    for context in contexts:
+        module, _, name = context.partition(f"{stem}.")
+        if module and not module.endswith("."):
+            return None
+        if name not in named or functions[name.rpartition(".")[2]] != 1:
+            return None
+        found.update(named[name])
+    return frozenset(found) or None
+
+
+def executed_tests(
+    report: Mapping[str, object], tree: Path, modules: Sequence[str], suite: str, collected: Sequence[str]
+) -> dict[str, dict[int, frozenset[str]]]:
+    """For each line of each module whose statement a `coverage json --show-contexts` report says only the suite's own
+    test functions ran, those tests' node ids."""
+    tests: dict[str, dict[int, frozenset[str]]] = {module: {} for module in modules}
+    for module, entry, last in module_entries(report, tree, modules):
+        contexts = entry.get("contexts")
+        recorded = contexts if isinstance(contexts, dict) else {}
+        for start, lines in executed_statements(entry, last):
+            found = context_tests(recorded.get(str(start), ()), suite, collected)
+            if found is not None:
+                tests[module].update(dict.fromkeys(lines, found))
+    return tests
+
+
 def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach | str:
-    """Run a suite unmutated under coverage.py and give the lines of the changed modules it executed, or why not."""
+    """Run a suite unmutated under coverage.py and give the lines of the changed modules it executed and the tests that
+    ran each, or why not."""
     python = [sys.executable, "-B", "-m"]
     with tempfile.TemporaryDirectory(prefix="mutation-reach-") as temporary:
         folder = Path(temporary)
@@ -356,7 +437,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
         if finished.returncode != 0:
             return f"failed unmutated with exit code {finished.returncode}"
         report = folder / "report.json"
-        for command in (["combine", rcfile, "-q"], ["json", rcfile, "-q", "-o", str(report)]):
+        for command in (["combine", rcfile, "-q"], ["json", rcfile, "-q", "--show-contexts", "-o", str(report)]):
             step = f"coverage {command[0]}"
             try:
                 done = run_bounded(
@@ -375,7 +456,34 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 )
         if not report.is_file():
             return f"failed in {code('coverage json')}, which wrote no report"
-        return Reach(seconds, executed_lines(json.loads(report.read_text(encoding="utf-8")), tree, modules))
+        recorded = json.loads(report.read_text(encoding="utf-8"))
+        collected = suite_tests(tree, suite, folder / "collected.txt")
+        return Reach(
+            seconds,
+            executed_lines(recorded, tree, modules),
+            executed_tests(recorded, tree, modules, suite, collected) if collected else {},
+        )
+
+
+def suite_tests(tree: Path, suite: str, listing: Path) -> list[str]:
+    """The node ids of a suite's tests, or none when pytest cannot list them, which runs the whole suite against every
+    mutant. The listing is written to a file, so no output limit cuts it short."""
+    try:
+        with listing.open("wb") as output:
+            finished = run_bounded(
+                pytest_command(suite, "--collect-only", "-q"),
+                MINIMUM_SUITE_SECONDS,
+                stdout=output,
+                cwd=tree,
+                env=suite_environment(),
+                output_limit=OUTPUT_LIMIT,
+                tree=platform_support.process_tree(),
+            )
+    except subprocess.TimeoutExpired:
+        return []
+    if finished.returncode != 0:
+        return []
+    return collected_tests(listing.read_text(encoding="utf-8", errors="replace"), suite)
 
 
 @contextlib.contextmanager
@@ -457,7 +565,8 @@ def covering_suites(mutant: Mutant, reach: Mapping[str, Reach]) -> list[str]:
 def try_mutant(
     tree: Path, mutant: Mutant, reach: Mapping[str, Reach], deadline: float, run: SuiteRunner, clock: Clock
 ) -> Outcome:
-    """Write a mutant into a worktree, run the suites that reach its line until one fails, and put the module back."""
+    """Write a mutant into a worktree, run the suites that reach its line until one fails, each suite's tests that ran
+    the line when only its own test functions did and the whole suite otherwise, and put the module back."""
     suites = covering_suites(mutant, reach)
     if not suites:
         return Outcome(mutant, NOT_REACHED)
@@ -465,15 +574,19 @@ def try_mutant(
     original = path.read_bytes()
     path.write_text(mutant.source, encoding="utf-8", newline="")
     ran: list[str] = []
+    tests: list[int] = []
     try:
         for suite in suites:
             if clock() >= deadline:
-                return Outcome(mutant, NOT_RUN, tuple(ran))
+                return Outcome(mutant, NOT_RUN, tuple(ran), tuple(tests))
+            selected = sorted(reach[suite].tests.get(mutant.module, {}).get(mutant.line, ()))
             ran.append(suite)
-            result = run(tree, suite, max(MINIMUM_SUITE_SECONDS, SUITE_TIME_FACTOR * reach[suite].seconds))
+            tests.append(len(selected))
+            timeout = max(MINIMUM_SUITE_SECONDS, SUITE_TIME_FACTOR * reach[suite].seconds)
+            result = run(tree, suite, timeout, selected)
             if result != PASSED:
-                return Outcome(mutant, result, tuple(ran))
-        return Outcome(mutant, SURVIVED, tuple(ran))
+                return Outcome(mutant, result, tuple(ran), tuple(tests))
+        return Outcome(mutant, SURVIVED, tuple(ran), tuple(tests))
     finally:
         path.write_bytes(original)
 
@@ -539,7 +652,10 @@ def survivor_lines(module: ModuleReport) -> list[str]:
     lines = ["", f"### `{module.module}`: {len(survivors)} surviving {noun}", ""]
     for outcome in survivors:
         mutant = outcome.mutant
-        suites = ", ".join(f"`{suite}`" for suite in outcome.suites)
+        suites = ", ".join(
+            f"`{suite}`" + (f" ({count} {'test' if count == 1 else 'tests'} that ran the line)" if count else "")
+            for suite, count in zip(outcome.suites, [*outcome.tests, *[0] * len(outcome.suites)], strict=False)
+        )
         lines.append(f"- Line {mutant.line}: {code(mutant.before)} became {code(mutant.after)}; passed {suites}")
     return lines
 
