@@ -19,7 +19,7 @@ python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.p
 python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py --dry-run
 ```
 
-The second form lists and judges and writes nothing. From anywhere else, such as a worktree, run only that one; its `HUB` line says the hub is left to the hub's own session. Never rebase or force-push a pull request's branch.
+The second form lists and judges and writes nothing. From anywhere else, such as a worktree, run only that one; its `HUB` line says the hub is left to the hub's own session. Never rebase or force-push a pull request's branch, and never update a behind pull request the tick left `next-tick`: it updates one at a time, since an update cancels the run in flight on the branch it updates.
 
 The tick admits only pull requests whose head branch is in this repository. One from any other repository, such as a fork, is never armed, judged, updated, or rerun, and holds no other pull request's update; merging it stays the maintainer's call. Never arm one by hand either.
 
@@ -31,10 +31,12 @@ The tick admits only pull requests whose head branch is in this repository. One 
 - `CONFLICT #<number> <branch>`: the pull request conflicts with `main`, which only its owner can resolve. Message the session whose worktree holds `<branch>` to merge `origin/main`, resolve the conflict, and push, once per head; when no session holds it, tell the user.
 - `RERUN_SPENT`: a rerun case on a head already rerun once. Read the run's failed log, `gh run view <run> --log-failed`, and decide: when the failure is plainly the runner's or a service's, not the change's, rerun it with `gh run rerun <run> --failed`; otherwise treat it as a defect. A `DEFECT` whose log shows such a failure is the same call.
 - `HOLD #<number> changes <path>`: every other pull request's update waits until that one merges. Say so when you report.
+- `HELD #<number> <branch> "<reason>"`: a `Shepherd-hold: <reason>` line in the pull request's body keeps it unarmed. Say so when you report; deleting the line releases it, as "An orchestrator and a shepherd" in `docs/parallel-sessions.md` says.
+- `HUB "<path>" not fast-forwarded: <reason>` from a tick in the hub: the hub is off `main`, has a tracked change, diverged, or could not fetch. Tell the user the reason; the next tick tries again.
 - `PR_FAILED`, `MERGED_FAILED`, or a last line `FAILED <reason>`: report the reason; the next tick tries again.
 - `REMAINING 0`: no pull request is open. Stop whatever repeats the tick, such as a scheduled prompt.
 
-`JUDGED`, `RERUN`, `PR`, and `HUB` lines need nothing from you, nor do `REPOSITORY <owner>/<name>`, the repository the tick reads, and `DRY_RUN`, which opens a `--dry-run` tick.
+`JUDGED`, `RERUN`, `PR`, and any other `HUB` lines, such as one from a linked worktree, need nothing from you, nor do `REPOSITORY <owner>/<name>`, the repository the tick reads, and `DRY_RUN`, which opens a `--dry-run` tick.
 
 ## 3. Hand off each merge
 

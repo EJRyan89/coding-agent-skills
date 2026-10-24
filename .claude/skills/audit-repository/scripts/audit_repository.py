@@ -51,6 +51,8 @@ Every line is one fact:
     PROVENANCE "<sentence>"            the sentence that opens each filed issue's body: the audit, its scope, its date
     DRIFT <kind> <what it is>          each kind of drift the briefs ask the readers to look for, which for guidance
                                        are the guidance kinds
+    QUESTION <name> <what it asks>     release and rotation: each question the briefs ask of every file, which a
+                                       finding names in its question field when it found the finding
     TEMPLATE <field> <what it holds>   each field of a finding the briefs ask for
     SECTION <name> <what it holds>     each section of the report, in order
     READERS <area> <count>             the briefs, one per reader, an area's files are split into
@@ -59,6 +61,7 @@ Every line is one fact:
                                        area, <area>-<part> for one part of it, <subject> for a guidance brief
     MATCHES <query> <count>            duplicates: how many open issues the query numbered <query>, from 1, found
     MATCH <query> <number> "<title>"   duplicates: one of them
+    MATCHES_CUT <query> <limit>        duplicates: the query found more open issues than the <limit> listed
     REMOVED "<directory>"              remove-briefs: the briefs directory deleted
 
 A title is printed as a JSON string, flattened to one line. A git or gh command that fails is reported with its own
@@ -89,6 +92,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import guidance_record
+import json_reader
 from atomic_file import UnfinishedCopyError, replace_text
 from console import run_main
 from flat_text import flat_text
@@ -212,6 +216,29 @@ FINDING_FIELDS = (
     ("title", "a one-line issue title"),
     ("template", "bug, documentation, or enhancement; advisory for a trust-boundary finding"),
 )
+# The questions every release and rotation brief asks beside the kinds of drift, each drawn from defects that kept
+# shipping past the briefs' own question; a finding names the one that found it, so later audits can count them.
+AUDIT_QUESTIONS = (
+    (
+        "absence",
+        "what each guard, gate, count, or measurement reports when its evidence was never produced, and whether its "
+        'output tells "nothing found" from "nothing looked at"',
+    ),
+    (
+        "universal-claim",
+        'for each "every", "each", "the one", "never", or "always" a docstring, contract, or design row makes, the '
+        "instance that breaks it",
+    ),
+    (
+        "malformed-input",
+        "for each reader of a file or record it did not just write: a wrong type at the top level and at field level, "
+        "a key indexed but never validated, nesting past the recursion limit, an integer past the digit limit, "
+        "invalid UTF-8, and a directory in the file's place",
+    ),
+    ("sibling", "for each fix that touched these files since their last audit, the fixed construct's twin elsewhere"),
+)
+# A release or rotation finding's fields: the shared ones, and the question that found it.
+AUDIT_FINDING_FIELDS = (*FINDING_FIELDS, ("question", "the question that found it, by its name, or none"))
 # The report's sections, in order; Findings holds one entry of the fields above per finding.
 REPORT_SECTIONS = (
     ("findings", "each finding confirmed against both sides, as the TEMPLATE fields"),
@@ -455,8 +482,13 @@ def open_milestones_after(github: GitHubClient, released: str | None) -> list[st
 
 
 def carried_issues(github: GitHubClient, milestone: str) -> list[Issue]:
-    arguments = ["issue", "list", "--state", "open", f"--milestone={milestone}", f"--limit={CARRIED_LIMIT}"]
-    return issues_of(gh_json(github, [*arguments, "--json", "number,title"]), f"the open issues of {milestone}")
+    """The next milestone's open issues, or AuditError when it holds more than CARRIED_LIMIT, which every brief could
+    not then name."""
+    arguments = ["issue", "list", "--state", "open", f"--milestone={milestone}", f"--limit={CARRIED_LIMIT + 1}"]
+    found = issues_of(gh_json(github, [*arguments, "--json", "number,title"]), f"the open issues of {milestone}")
+    if len(found) > CARRIED_LIMIT:
+        raise AuditError(f"{milestone} holds more than {CARRIED_LIMIT} open issues, more than a brief names")
+    return found
 
 
 def json_text(text: str) -> str:
@@ -480,10 +512,11 @@ def read_record(path: Path) -> list[Entry]:
     """The record's entries, in the order it lists them, or AuditError naming what is wrong with it."""
     name = path.as_posix()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.read_file(path)
     except FileNotFoundError as exc:
         raise AuditError(f"no rotation record at {name}") from exc
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+    # ValueError covers the decode errors, a repeated key, nesting too deep, and an over-long integer.
+    except (OSError, ValueError) as exc:
         raise AuditError(f"cannot read the rotation record {name}: {exc}") from exc
     audits = document.get("audits") if isinstance(document, dict) else None
     if not isinstance(audits, list):
@@ -639,6 +672,8 @@ def common_sections(area: Area) -> list[str]:
     lines = ["", "## Read beside them", "", *(f"- {code_literal(path)}" for path in area.consult)]
     lines += ["", "## Kinds of drift", ""]
     lines += [f"- **{kind}**: {what}." for kind, what in DRIFT_KINDS]
+    lines += ["", "## Questions to ask of every file", ""]
+    lines += [f"- **{name}**: {what}." for name, what in AUDIT_QUESTIONS]
     lines += [
         "",
         "## Before you report a finding",
@@ -655,7 +690,7 @@ def common_sections(area: Area) -> list[str]:
         "",
         "Give each finding these fields:",
         "",
-        *(f"- **{field}**: {what}." for field, what in FINDING_FIELDS),
+        *(f"- **{field}**: {what}." for field, what in AUDIT_FINDING_FIELDS),
     ]
     return lines
 
@@ -740,12 +775,13 @@ def split_for_readers(paths: list[str]) -> list[list[str]]:
     if len(paths) <= MAX_FILES_PER_READER:
         return [paths]
     size = -(-len(paths) // -(-len(paths) // MAX_FILES_PER_READER))
-    groups: list[list[str]] = []
+    # Grouped by directory before packing, since a subdirectory's files can sort between its parent's.
+    by_directory: dict[str, list[str]] = {}
     for path in sorted(paths):
-        if groups and parent_of(groups[-1][0]) == parent_of(path) and len(groups[-1]) < size:
-            groups[-1].append(path)
-        else:
-            groups.append([path])
+        by_directory.setdefault(parent_of(path), []).append(path)
+    groups = [
+        files[start : start + size] for _, files in sorted(by_directory.items()) for start in range(0, len(files), size)
+    ]
     parts: list[list[str]] = []
     for group in groups:
         if parts and len(parts[-1]) + len(group) <= size:
@@ -838,9 +874,14 @@ def subject_facts(subject: str, tracked: set[str]) -> list[tuple[str, str]]:
     ]
 
 
-def guidance_lines(kinds: Sequence[tuple[str, str]] = DRIFT_KINDS) -> list[str]:
+def guidance_lines(kinds: Sequence[tuple[str, str]] = DRIFT_KINDS, *, guidance_audit: bool = False) -> list[str]:
+    """What the briefs ask for: a release or rotation brief's kinds of drift, questions, and fields, or with
+    `guidance_audit` the guidance kinds and the shared fields, then the report's sections."""
     lines = [f"DRIFT {kind} {what}" for kind, what in kinds]
-    lines += [f"TEMPLATE {field} {what}" for field, what in FINDING_FIELDS]
+    if not guidance_audit:
+        lines += [f"QUESTION {name} {what}" for name, what in AUDIT_QUESTIONS]
+    fields = FINDING_FIELDS if guidance_audit else AUDIT_FINDING_FIELDS
+    lines += [f"TEMPLATE {field} {what}" for field, what in fields]
     return lines + [f"SECTION {section} {what}" for section, what in REPORT_SECTIONS]
 
 
@@ -971,7 +1012,7 @@ def guidance(
     after = f" after {released}" if released is not None else ""
     sentence = f"Found by the guidance audit{after}, read against commit {short(head)}, on {today()}."
     lines += [*milestone_lines(following, following), f"PROVENANCE {json_text(sentence)}"]
-    lines += guidance_lines(GUIDANCE_KINDS)
+    lines += guidance_lines(GUIDANCE_KINDS, guidance_audit=True)
     tracked = set(tracked_files(git, repository, head))
     briefs = [
         (subject, guidance_brief(subject, titles[subject], found, subject_facts(subject, tracked), head))
@@ -1015,10 +1056,13 @@ def duplicates(github: GitHubClient, queries: Sequence[str]) -> list[str]:
     """Each query's open issues, as GitHub's issue search finds them."""
     lines = []
     for number, query in enumerate(queries, start=1):
-        arguments = ["issue", "list", "--state", "open", f"--search={query}", f"--limit={SEARCH_LIMIT}"]
+        # One more than is listed, so a search that finds more says so.
+        arguments = ["issue", "list", "--state", "open", f"--search={query}", f"--limit={SEARCH_LIMIT + 1}"]
         found = issues_of(gh_json(github, [*arguments, "--json", "number,title"]), f"for query {number}")
-        lines.append(f"MATCHES {number} {len(found)}")
-        lines += [f"MATCH {number} {issue.number} {json_text(issue.title)}" for issue in found]
+        lines.append(f"MATCHES {number} {min(len(found), SEARCH_LIMIT)}")
+        lines += [f"MATCH {number} {issue.number} {json_text(issue.title)}" for issue in found[:SEARCH_LIMIT]]
+        if len(found) > SEARCH_LIMIT:
+            lines.append(f"MATCHES_CUT {number} {SEARCH_LIMIT}")
     return lines
 
 
@@ -1059,7 +1103,7 @@ def names_directory(marker: Path, directory: Path) -> bool:
     if not is_plain_file(marker):
         return False
     try:
-        record = json.loads(marker.read_text(encoding="utf-8"))
+        record = json_reader.read_file(marker)
     except (OSError, ValueError):
         return False
     return isinstance(record, dict) and record.get("directory") == directory.as_posix()

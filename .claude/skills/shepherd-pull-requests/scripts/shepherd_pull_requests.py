@@ -4,13 +4,17 @@ messages the sessions that own them, judges what the script cannot, and hands ea
 Run it from the hub on main. One tick:
 
 - fast-forwards the hub to origin's main, when it runs in the hub itself, on main, with no tracked change; from a
-  linked worktree it leaves the hub to the hub's own session;
+  linked worktree it leaves the hub to the hub's own session; a hub it runs in and cannot fast-forward, because the
+  fetch failed or the hub is off main, has a tracked change, or diverged, is named for the shepherd's judgment;
 - lists the open pull requests that are not drafts, with their merge state, auto-merge, head, and the state of the
   required check Validation on that head;
+- holds each admitted pull request whose body has a line `Shepherd-hold: <reason>`: it neither arms it nor lets it
+  merge, turning off an auto-merge already armed, and names it with the reason, while it still names, judges, and
+  reruns for it as for any other; deleting the line releases it;
 - admits only the pull requests whose head branch is in this repository, and names every other one, such as one
   opened from a fork, as not admitted: it arms, judges, updates, and reruns nothing for it, and it holds no other
   pull request's update;
-- arms squash auto-merge on each admitted one that has none;
+- arms squash auto-merge on each admitted one that has none and is not held;
 - names each pull request whose recorded head is not the commit its branch on origin holds, because GitHub missed a
   push, and neither judges nor updates it, since GitHub refuses to update a stale head;
 - names each pull request in conflict with main (GitHub's merge state DIRTY), which only its owner can resolve, and
@@ -20,15 +24,20 @@ Run it from the hub on main. One tick:
   on the same head replaced, is no failure; then it reruns the failed legs, once per head, when every failure is a
   program's termination, a cancellation, a service failure, or a suite that exited with no output, and names any
   other failure as a defect;
-- merges main into at most two pull requests behind main whose check is green or pending, oldest first, through
-  GitHub's update-branch merge, never a rebase or a force-push; a pull request is behind when GitHub's merge state is
+- merges main into one armed pull request behind main whose check is green or pending, through GitHub's
+  update-branch merge, never a rebase or a force-push, and only while no armed pull request is up to date with main
+  and green or pending, since that one merges next; it takes the one furthest along in Validation, the share of the
+  newest run's legs that finished, and otherwise the oldest, and leaves every other one alone, even behind, because
+  an update cancels the Validation run in flight on it; a pull request is behind when GitHub's merge state is
   BEHIND, or, while GitHub has not computed it (UNKNOWN), when origin's main is not an ancestor of its head; while a
   pull request that changes the validation policies or the runner's selection is open, every other pull request's
   update waits for it;
-- names each worktree a merged pull request carried, for repo-cleanup to retire: one whose checked-out branch is the
-  pull request's head branch, or whose HEAD is the pull request's head commit or a commit that head reaches and main
-  does not, as when a session pushed its branch's commits under another name; a head commit git does not hold, as
-  when it was never fetched, is matched by its branch's name alone.
+- names each worktree a merged pull request carried and no open pull request, a draft included, still carries, for
+  repo-cleanup to retire: one whose checked-out branch is the pull request's head branch, or whose HEAD is the pull
+  request's head commit or a commit that head reaches and origin's main does not, as when a session pushed its
+  branch's commits under another name; a head commit git does not hold, as when it was never fetched, is matched by
+  its branch's name alone, and while git does not hold origin's main, which leaves each merged head's own commits
+  unknown, it names none.
 
 With --dry-run it lists and judges the same way and writes nothing: it reads origin's main instead of fetching, and
 prints what it would arm, update, and rerun. Either way it reads origin's branches with ls-remote.
@@ -38,14 +47,17 @@ Every line is one fact:
     DRY_RUN <what is not written>      --dry-run: the first line
     REPOSITORY <owner/name>            the GitHub repository origin names
     HUB "<path>" <what happened>       fast-forwarded <old> to <new>, current at <commit>, would fast-forward <old>
-                                       to <new>, or not fast-forwarded: <reason>
+                                       to <new>, or not fast-forwarded: <reason>; the last is for the shepherd's
+                                       judgment unless the tick runs in a linked worktree
     HOLD #<number> changes <path>      an admitted pull request that holds every other one's update while it is open
+    HELD #<number> <branch> "<reason>" an admitted pull request whose body holds it from arming and merging
     PR #<number> <branch> <merge state> auto-merge <on|off> head <commit> Validation <state> <actions>
                                        one per pull request, oldest first; <merge state> is GitHub's, <state> is a
                                        conclusion of the newest run on the head, such as SUCCESS or FAILURE,
                                        PENDING, or MISSING, and <actions> is none or a comma-separated
-                                       list of armed, updated, rerun (would-arm, would-update, and would-rerun with
-                                       --dry-run), held, and next-tick, a BEHIND pull request past this tick's limit
+                                       list of armed, disarmed, updated, rerun (would-arm, would-disarm,
+                                       would-update, and would-rerun with --dry-run), held, an update a HOLD line
+                                       holds, and next-tick, a behind pull request left for a later tick
     NOT_ADMITTED #<number> <branch> head <commit> from another repository
                                        a pull request whose head branch is not in this repository, left to the
                                        maintainer: never armed, judged, updated, or rerun
@@ -78,9 +90,9 @@ Every line is one fact:
 
 Every branch, path, state, leg, step, and check name that GitHub returned is flattened onto its line.
 
-Exit status 0 means the tick ran with nothing left for the shepherd's judgment; 1 that it printed a NOT_ADMITTED,
-OUT_OF_STEP, CONFLICT, DEFECT, RERUN_SPENT, PR_FAILED, or MERGED_FAILED line, or a last line FAILED <reason>; 2 a
-usage error.
+Exit status 0 means the tick ran with nothing left for the shepherd's judgment; 1 that it printed a HUB line naming
+a hub it ran in and did not fast-forward, a NOT_ADMITTED, OUT_OF_STEP, CONFLICT, DEFECT, RERUN_SPENT, PR_FAILED, or
+MERGED_FAILED line, or a last line FAILED <reason>; 2 a usage error.
 """
 
 from __future__ import annotations
@@ -107,7 +119,6 @@ REMOTE = "origin"
 BASE = "main"
 # The required check branch protection names, which is also the name of the workflow that runs it and its legs.
 REQUIRED_CHECK = "Validation"
-UPDATES_PER_TICK = 2
 RERUNS_PER_HEAD = 1
 # The paths whose change holds every other pull request's update while it is open: the validation policies, which
 # hold the job selection, and the runner that selects what a pull request runs.
@@ -118,8 +129,11 @@ VALIDATION_STEPS = frozenset({"Run repository validation", "Validate with the la
 OPEN_LISTED = 100
 MERGED_LISTED = 100
 PULL_FIELDS = (
-    "number,headRefName,headRefOid,isCrossRepository,isDraft,mergeStateStatus,autoMergeRequest,files,statusCheckRollup"
+    "number,headRefName,headRefOid,isCrossRepository,isDraft,mergeStateStatus,autoMergeRequest,files,statusCheckRollup,"
+    "body"
 )
+# The line in a pull request's body that holds it from arming and merging, with its reason; deleting it releases it.
+HOLD_LINE = re.compile(r"^Shepherd-hold:[ 	]*(.*?)[ 	]*$", re.MULTILINE)
 RUN_FIELDS = "headSha,attempt,conclusion,status,jobs"
 # GitHub's merge state of a pull request whose merge commit cannot be made cleanly: a conflict with main.
 CONFLICTED = "DIRTY"
@@ -133,7 +147,9 @@ RUN_URL = re.compile(r"/actions/runs/(\d+)")
 # What GitHub puts before each log line: a timestamp, and with --log-failed the job's and step's names before it.
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?")
 ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-# The validation runner's report: each failed job between rules, then one closing line.
+# The validation runner's report, tests/run_validation.py's report_run: each failed job between rules, then one
+# closing line. The shepherd's suite pins these against the runner's own report, and VALIDATION_STEPS against the
+# step names in .github/workflows/validate.yml.
 RULE = "=" * 70
 FAILED_HEADER = "FAILED "
 CLOSING = re.compile(r"policy checks and \d+ suite jobs in ")
@@ -178,6 +194,7 @@ class Merged:
 class Check:
     state: str
     run: int | None
+    progress: float = 0.0  # the share of the newest run's legs that finished
 
 
 @dataclass(frozen=True)
@@ -189,7 +206,9 @@ class Pull:
     armed: bool
     check: Check
     files: tuple[str, ...]
-    cross_repository: bool = False
+    cross_repository: bool
+    draft: bool
+    hold: str | None  # the reason a Shepherd-hold line gives, or None when none holds it
 
 
 @dataclass
@@ -247,17 +266,20 @@ def locate(git: GitClient, directory: Path) -> Place:
     return Place(top, Path(worktrees[0].path), worktrees, repository)
 
 
-def hub_line(git: GitClient, place: Place, dry_run: bool) -> str:
+def hub_line(git: GitClient, place: Place, dry_run: bool) -> tuple[str, bool]:
+    """The HUB line, and whether it names a hub this tick runs in and could not bring to origin's main."""
     where = f'HUB "{place.hub.as_posix()}"'
     if not same_path(place.top, place.hub):
-        return (
+        line = (
             f'{where} not fast-forwarded: this tick runs in the linked worktree "{place.top.as_posix()}", so the '
             "hub's own session fast-forwards it"
         )
+        return line, False
     try:
-        return f"{where} {fast_forward(git, place.hub, dry_run)}"
+        happened = fast_forward(git, place.hub, dry_run)
     except GitError as exc:
-        return f"{where} not fast-forwarded: {flat_text(str(exc))}"
+        happened = f"not fast-forwarded: {flat_text(str(exc))}"
+    return f"{where} {happened}", happened.startswith("not fast-forwarded")
 
 
 def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
@@ -298,7 +320,8 @@ def run_of(entry: dict[str, Any]) -> int | None:
 
 def required_check(rollup: Any) -> Check:
     """The required check's state in the newest run on the head, PENDING while that run's legs run before it starts,
-    and MISSING without it. An older run on the same head, such as one a newer run cancelled, is not read."""
+    and MISSING without it, with the share of that run's legs that finished. An older run on the same head, such as
+    one a newer run cancelled, is not read."""
     entries = [
         entry
         for entry in (rollup if isinstance(rollup, list) else [])
@@ -307,14 +330,24 @@ def required_check(rollup: Any) -> Check:
     newest = max((run_of(entry) or 0 for entry in entries), default=0)
     entries = [entry for entry in entries if (run_of(entry) or 0) == newest]
     named = [entry for entry in entries if entry.get("name") == REQUIRED_CHECK]
+    legs = [entry for entry in entries if entry.get("name") != REQUIRED_CHECK]
+    progress = sum(entry.get("status") == "COMPLETED" for entry in legs) / len(legs) if legs else 0.0
     if named:
         entry = max(named, key=lambda item: str(item.get("startedAt") or ""))
         if entry.get("status") != "COMPLETED":
-            return Check("PENDING", run_of(entry))
-        return Check(str(entry.get("conclusion") or "UNKNOWN").upper(), run_of(entry))
+            return Check("PENDING", run_of(entry), progress)
+        return Check(str(entry.get("conclusion") or "UNKNOWN").upper(), run_of(entry), 1.0)
     if entries:
-        return Check("PENDING", run_of(entries[0]))
+        return Check("PENDING", run_of(entries[0]), progress)
     return Check("MISSING", None)
+
+
+def hold_of(body: Any) -> str | None:
+    """The reason the first Shepherd-hold line in a pull request's body gives, or None when no line holds it."""
+    match = HOLD_LINE.search(body) if isinstance(body, str) else None
+    if match is None:
+        return None
+    return flat_text(match.group(1)) or "no reason given"
 
 
 def pull_of(item: Any) -> Pull:
@@ -335,17 +368,18 @@ def pull_of(item: Any) -> Pull:
         required_check(item.get("statusCheckRollup")),
         paths,
         bool(item.get("isCrossRepository")),
+        bool(item.get("isDraft")),
+        hold_of(item.get("body")),
     )
 
 
 def read_pulls(client: GitHubClient, repository: str) -> list[Pull]:
-    """The open pull requests that are not drafts, oldest first."""
+    """The open pull requests, drafts included, oldest first."""
     arguments = ["pr", "list", "--repo", repository, "--state", "open", "--limit", str(OPEN_LISTED)]
     payload = client.json([*arguments, "--json", PULL_FIELDS])
     if not isinstance(payload, list):
         raise malformed("a pull request listing that is not a list")
-    pulls = [pull_of(item) for item in payload if not (isinstance(item, dict) and item.get("isDraft"))]
-    return sorted(pulls, key=lambda pull: pull.number)
+    return sorted((pull_of(item) for item in payload), key=lambda pull: pull.number)
 
 
 def branch_heads(git: GitClient, top: Path) -> dict[str, str]:
@@ -566,50 +600,72 @@ def rerun(
 
 
 def arm(client: GitHubClient, repository: str, pull: Pull, outcome: Outcome, dry_run: bool) -> None:
-    if pull.armed:
+    """Arm squash auto-merge on `pull`, or, when a Shepherd-hold line holds it, turn off an auto-merge already armed."""
+    if pull.hold is not None:
+        outcome.lines.append(f'HELD #{pull.number} {flat_text(pull.branch)} "{pull.hold}"')
+        if pull.armed:
+            merge_option(client, repository, pull, outcome, ("disarm", "disarmed", "--disable-auto"), dry_run)
         return
+    if not pull.armed:
+        merge_option(client, repository, pull, outcome, ("arm", "armed", "--auto", "--squash"), dry_run)
+
+
+def merge_option(
+    client: GitHubClient, repository: str, pull: Pull, outcome: Outcome, step: tuple[str, ...], dry_run: bool
+) -> None:
+    """Run `gh pr merge` on `pull` with the options after `step`'s step and action, and add the action, or the
+    step's would- form with `dry_run`."""
+    name, action, *options = step
     if dry_run:
-        outcome.actions.append("would-arm")
+        outcome.actions.append(f"would-{name}")
         return
     try:
-        client.run(["pr", "merge", str(pull.number), "--repo", repository, "--auto", "--squash"])
+        client.run(["pr", "merge", str(pull.number), "--repo", repository, *options])
     except GitHubError as exc:
-        outcome.failed(pull.number, "arm", exc)
+        outcome.failed(pull.number, name, exc)
         return
-    outcome.actions.append("armed")
+    outcome.actions.append(action)
+
+
+def armed(pull: Pull, outcome: Outcome) -> bool:
+    """Whether `pull` is armed once this tick's writes are made: armed before and not held, or armed now."""
+    return (pull.armed and pull.hold is None) or bool({"armed", "would-arm"} & set(outcome.actions))
 
 
 def update(
     client: GitHubClient,
     repository: str,
     pulls: Sequence[Pull],
-    behind: set[int],
+    places: tuple[set[int], set[int]],
     holds: dict[int, str],
     outcomes: dict[int, Outcome],
     dry_run: bool,
 ) -> None:
-    """Merge main into the oldest pull requests in `behind` whose check is green or pending, up to the tick's limit."""
-    started = 0
-    for pull in pulls:
+    """Merge main into the one armed pull request that is behind, green or pending, and furthest along in Validation,
+    the oldest among equals, while no armed one that is current, green or pending, and not blocked merges first.
+    `places` holds the numbers of the pull requests behind main and of those blocked: out of step or in conflict."""
+    behind, blocked = places
+    ready = [pull for pull in pulls if pull.check.state in UPDATABLE and armed(pull, outcomes[pull.number])]
+    merging = any(pull.number not in behind and pull.number not in blocked for pull in ready)
+    candidates = [pull for pull in ready if pull.number in behind and (not holds or pull.number in holds)]
+    due = None if merging else min(candidates, key=lambda pull: (-pull.check.progress, pull.number), default=None)
+    for pull in ready:
         outcome = outcomes[pull.number]
-        if pull.number not in behind or pull.check.state not in UPDATABLE:
+        if pull.number not in behind:
             continue
         if holds and pull.number not in holds:
             outcome.actions.append("held")
-            continue
-        if started == UPDATES_PER_TICK:
+        elif pull is not due:
             outcome.actions.append("next-tick")
-            continue
-        started += 1
-        if dry_run:
+        elif dry_run:
             outcome.actions.append("would-update")
-            continue
-        try:
-            client.run(["pr", "update-branch", str(pull.number), "--repo", repository])
-        except GitHubError as exc:
-            outcome.failed(pull.number, "update", exc)
-            continue
-        outcome.actions.append("updated")
+        else:
+            try:
+                client.run(["pr", "update-branch", str(pull.number), "--repo", repository])
+            except GitHubError as exc:
+                outcome.failed(pull.number, "update", exc)
+                continue
+            outcome.actions.append("updated")
 
 
 def read_merged(client: GitHubClient, repository: str) -> list[Merged]:
@@ -626,13 +682,20 @@ def read_merged(client: GitHubClient, repository: str) -> list[Merged]:
 
 
 def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | None) -> dict[str, list[str]]:
-    """The parents of each commit `heads` reach that main does not, by the commit; empty when git holds no main to
-    leave out, since every commit would then count. A head git does not hold is passed over."""
-    tracking = f"refs/remotes/{REMOTE}/{BASE}"
-    if not heads or git.run(["rev-parse", "--verify", "--quiet", f"{tracking}^{{commit}}"], directory=top).returncode:
+    """The parents of each commit `heads` reach that origin's main, `base`, does not, by the commit. A head git does
+    not hold is passed over. Raises ShepherdError when origin has no main, or git does not hold `base`, as when the hub
+    was not fetched since main moved, since every commit main gained since the last fetch would then count as a head's
+    own."""
+    if not heads:
         return {}
-    excluded = [tracking, *([base] if base else [])]
-    listing = git.output(["rev-list", "--parents", "--ignore-missing", *heads, "--not", *excluded], directory=top)
+    if base is None:
+        raise ShepherdError(f"{REMOTE} has no {BASE}, so a merged head's own commits cannot be told from {BASE}'s")
+    if git.run(["cat-file", "-e", f"{base}^{{commit}}"], directory=top).returncode:
+        raise ShepherdError(
+            f"git does not hold {REMOTE}'s {BASE} {short(base)}, so a merged head's own commits cannot be told "
+            f"from {BASE}'s; fetch {REMOTE} in the hub"
+        )
+    listing = git.output(["rev-list", "--parents", "--ignore-missing", *heads, "--not", base], directory=top)
     return {commit: parents for commit, *parents in (line.split() for line in listing.splitlines() if line)}
 
 
@@ -659,7 +722,8 @@ def local_branches(git: GitClient, top: Path) -> set[str]:
 def merged_lines(
     git: GitClient, client: GitHubClient, place: Place, pulls: Sequence[Pull], base: str | None
 ) -> list[str]:
-    """A MERGED line for each worktree but the hub that a merged pull request carried and no open one does."""
+    """A MERGED line for each worktree but the hub that a merged pull request carried and no open one, a draft
+    included, does."""
     merged = read_merged(client, place.repository)
     open_branches = {pull.branch for pull in pulls}
     open_heads = {pull.head for pull in pulls}
@@ -728,19 +792,43 @@ def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool
         emit(f"FAILED {flat_text(str(exc))}")
         return 1
     if dry_run:
-        emit("DRY_RUN the hub is not fetched, and nothing is armed, updated, or rerun")
+        emit("DRY_RUN the hub is not fetched, and nothing is armed, disarmed, updated, or rerun")
     emit(f"REPOSITORY {place.repository}")
-    emit(hub_line(git, place, dry_run))
+    hub, flagged = hub_line(git, place, dry_run)
+    emit(hub)
     try:
-        pulls = read_pulls(client, place.repository)
+        listed = read_pulls(client, place.repository)
     except GitHubError as exc:
         emit(f"FAILED cannot list the open pull requests: {flat_text(str(exc))}")
         return 1
     try:
-        heads = branch_heads(git, place.top) if pulls else {}
+        heads = branch_heads(git, place.top)
     except GitError as exc:
         emit(f"FAILED cannot read {REMOTE}'s branches: {flat_text(str(exc))}")
         return 1
+    pulls = [pull for pull in listed if not pull.draft]
+    flagged = shepherd_pulls(git, client, place, pulls, heads, dry_run, emit) or flagged
+    try:
+        for line in merged_lines(git, client, place, listed, heads.get(BASE)):
+            emit(line)
+    except (GitError, GitHubError, ShepherdError) as exc:
+        emit(f"MERGED_FAILED {flat_text(str(exc))}")
+        flagged = True
+    emit(f"REMAINING {len(pulls)}")
+    return 1 if flagged else 0
+
+
+def shepherd_pulls(
+    git: GitClient,
+    client: GitHubClient,
+    place: Place,
+    pulls: Sequence[Pull],
+    heads: dict[str, str],
+    dry_run: bool,
+    emit: Callable[[str], None],
+) -> bool:
+    """Arm, hold, name, judge, and update the open pull requests that are not drafts, print their lines through
+    `emit`, and return whether any line is for the shepherd's judgment."""
     admitted = [pull for pull in pulls if not pull.cross_repository]
     holds = {pull.number: path for pull in admitted if (path := holding_path(pull.files)) is not None}
     for number, path in holds.items():
@@ -752,23 +840,15 @@ def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool
         for pull in admitted
         if pull.number not in stale and is_behind(git, place.top, pull, heads.get(BASE))
     }
+    blocked = set(stale) | {pull.number for pull in pulls if pull.merge_state == CONFLICTED}
     for pull in pulls:
         act(client, place.repository, pull, outcomes[pull.number], stale.get(pull.number), dry_run)
-    update(client, place.repository, pulls, behind, holds, outcomes, dry_run)
-    flagged = False
+    update(client, place.repository, pulls, (behind, blocked), holds, outcomes, dry_run)
     for pull in pulls:
         emit(pull_line(pull, outcomes[pull.number]))
         for line in outcomes[pull.number].lines:
             emit(line)
-        flagged = flagged or outcomes[pull.number].flagged
-    try:
-        for line in merged_lines(git, client, place, pulls, heads.get(BASE)):
-            emit(line)
-    except (GitError, GitHubError) as exc:
-        emit(f"MERGED_FAILED {flat_text(str(exc))}")
-        flagged = True
-    emit(f"REMAINING {len(pulls)}")
-    return 1 if flagged else 0
+    return any(outcome.flagged for outcome in outcomes.values())
 
 
 def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:

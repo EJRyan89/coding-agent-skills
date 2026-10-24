@@ -322,6 +322,31 @@ class ConditionTests(unittest.TestCase):
                 code, out, written = self.run_condition({}, {}, extra=section)
                 self.assertEqual((1, "UNTESTED 0 given=0\n", ""), (code, out.splitlines()[-1] + "\n", written))
 
+    def test_a_snapshot_it_cannot_read_fails_the_review_rather_than_closing_the_route(self) -> None:
+        before = {"app/service.py": SERVICE}
+        after = {"app/service.py": SERVICE.replace("check=False", "check=True")}
+        # The diff leaves app/service.py at the head, but the snapshot does not hold it.
+        diff = diff_of(before, after)
+        self.diff.write_bytes(diff.encode("utf-8"))
+        environment = {"CODE_REVIEW_DIFF_FILE": str(self.diff), "CODE_REVIEW_CONDITION_OUTPUT": str(self.output)}
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("CODE_REVIEW_")}
+        for root, reason in (
+            (self.root, 'the snapshot holds no "app/service.py", which the diff leaves at the head'),
+            (self.root / "absent", f"the snapshot {json.dumps((self.root / 'absent').as_posix())} is not a directory"),
+        ):
+            with self.subTest(reason=reason):
+                finished = subprocess.run(
+                    [sys.executable, "-B", str(SCRIPT), "--source-root", str(root)],
+                    env={**clean, **environment},
+                    capture_output=True,
+                    check=False,
+                    timeout=120,
+                )
+                self.assertEqual(
+                    (2, f"FAILED MissingEvidence: {reason}\n"), (finished.returncode, finished.stdout.decode("utf-8"))
+                )
+                self.assertFalse(self.output.exists())
+
     def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
         self.assertEqual(
             (

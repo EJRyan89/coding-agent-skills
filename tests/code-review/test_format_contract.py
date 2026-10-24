@@ -729,6 +729,7 @@ def config_fixtures() -> list[dict[str, Any]]:
             "end_marker": "<!-- tracker:end -->",
             "status_overrides": {"example/one#12": "blocked on design"},
             "author_names": {"octocat": "Mona Lisa"},
+            "ignored_repositories": ["octocat/sandbox", "octocat/test-*"],
         },
     }
     minimal = {

@@ -311,6 +311,23 @@ class ConditionTests(unittest.TestCase):
                     self.run_condition(section + changed("tools/report_tool.py", ("", ["+y = 2"])))[:2],
                 )
 
+    def test_a_snapshot_it_cannot_read_fails_the_review_rather_than_closing_the_route(self) -> None:
+        diff = changed("tools/skill_evals.py", ("def judge(record):", ["-    return 1", "+    return 2"]))
+        # No document at all: the evidence is absent, not silent.
+        code, out, written = self.run_condition(diff)
+        self.assertEqual(
+            (2, "FAILED MissingEvidence: the snapshot holds none of the documents the route searches\n", ""),
+            (code, out, written),
+        )
+        # A diff that gives no name needs no document.
+        self.assertEqual((1, "PASSAGES 0 given=0\n", ""), self.run_condition(changed("data.json", ("", ["+{}"]))))
+        self.root.rmdir()
+        code, out, _ = self.run_condition(diff)
+        self.assertEqual(2, code)
+        self.assertEqual(
+            f"FAILED MissingEvidence: the snapshot {json.dumps(self.root.as_posix())} is not a directory\n", out
+        )
+
     def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
         code, out, written = self.run_condition("", environment={})
         self.assertEqual(

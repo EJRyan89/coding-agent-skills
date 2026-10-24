@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 from console import run_main
+from file_presence import is_present
 
 from deployer.render import CODEX_METADATA, CODEX_USER_ONLY
 from tools.checkout import ROOT_HELP, checkout_root
@@ -48,6 +49,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILLS = Path(".claude") / "skills"
 SHIMS = Path(".agents") / "skills"
 SKILL_FILE = "SKILL.md"
+# The keys a runtime reads from a shim to choose the skill, each read through the shared reader before it is copied.
+RUNTIME_KEYS = ("name", "description")
 WRITE_COMMAND = "python tools/skill_shims.py --write"
 # A repository skill writes its commands and paths from the repository root, never from its own folder.
 ROOT_RELATIVE = (
@@ -96,10 +99,14 @@ def user_only(skill_text: str) -> bool:
 
 def shim_files(name: str, skill_text: str) -> dict[str, str] | None:
     """Every file of the skill's shim folder, by its path inside the folder, or None when the skill has no closed
-    frontmatter. Raises FrontmatterError when the frontmatter cannot be read."""
+    frontmatter. Raises FrontmatterError when the frontmatter cannot be read, or the name or description a runtime
+    reads from the shim is not a value the shared reader reads, as when a key repeats or holds a nested mapping."""
     text = shim_text(name, skill_text)
     if text is None:
         return None
+    parsed = frontmatter.parse(skill_text)
+    for key in RUNTIME_KEYS:
+        parsed.string(key)
     files = {SKILL_FILE: text}
     if user_only(skill_text):
         files[CODEX_METADATA] = CODEX_USER_ONLY.decode("utf-8")
@@ -112,9 +119,10 @@ def _skills(root: Path) -> dict[str, Path]:
 
 def _expected(root: Path) -> dict[str, dict[str, str] | str | None]:
     """Each skill's shim files; None for a skill with no closed frontmatter, and the reason for one whose frontmatter
-    cannot be read."""
+    cannot be read. Raises OSError, NotAFile for something other than a file, for a SKILL.md it cannot read."""
     expected: dict[str, dict[str, str] | str | None] = {}
     for name, path in _skills(root).items():
+        is_present(path)  # a directory or anything else named SKILL.md raises NotAFile, ending the run as FAILED
         try:
             expected[name] = shim_files(name, path.read_text(encoding="utf-8-sig"))
         except frontmatter.FrontmatterError as exc:

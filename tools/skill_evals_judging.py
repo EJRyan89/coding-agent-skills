@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -78,7 +78,7 @@ def records_in(directory: Path) -> RecordSource:
     def source(scenario: Scenario, model: str, index: Index) -> Record:
         path = directory / scenario.name / record_name(model, index)
         try:
-            record: Record = json.loads(path.read_text(encoding="utf-8"))
+            record: Record = json_reader.read_file(path)
         except FileNotFoundError as exc:
             raise RecordError(f"no record at {path}") from exc
         except (OSError, ValueError) as exc:

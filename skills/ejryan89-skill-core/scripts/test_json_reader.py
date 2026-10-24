@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from json_reader import JsonRefused, loads
+from json_reader import JsonRefused, loads, read_file
 
 
 class RefusalTests(unittest.TestCase):
@@ -34,12 +35,44 @@ class RefusalTests(unittest.TestCase):
                     f"the JSON holds {name}, which JSON does not define", self.refusal(f'{{"value": {name}}}')
                 )
 
+    def test_nesting_past_the_recursion_limit_is_refused(self) -> None:
+        for text in ("[" * 100_000 + "]" * 100_000, '{"a": ' * 100_000 + "1" + "}" * 100_000):
+            with self.subTest(opening=text[:6]):
+                self.assertEqual("the JSON nests deeper than the parser can read", self.refusal(text))
+
     def test_a_refusal_is_a_value_error(self) -> None:
         self.assertTrue(issubclass(JsonRefused, ValueError))
 
     def test_malformed_json_raises_what_json_raises(self) -> None:
         with self.assertRaises(json.JSONDecodeError):
             loads("{")
+
+
+class ReadFileTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "value.json"
+
+    def test_a_utf8_file_reads_its_non_ascii_text_on_every_platform(self) -> None:
+        self.path.write_bytes('{"title": "café 設計"}'.encode())
+        self.assertEqual({"title": "café 設計"}, read_file(self.path))
+
+    def test_a_file_that_is_not_utf8_or_starts_with_a_byte_order_mark_is_a_value_error(self) -> None:
+        for content in ('{"title": "café"}'.encode("cp1252"), b'\xef\xbb\xbf{"title": "x"}'):
+            with self.subTest(content=content):
+                self.path.write_bytes(content)
+                with self.assertRaises(ValueError):
+                    read_file(self.path)
+
+    def test_a_refused_shape_is_refused_as_loads_refuses_it(self) -> None:
+        self.path.write_bytes(b'{"k": 1, "k": 2}')
+        with self.assertRaises(JsonRefused):
+            read_file(self.path)
+
+    def test_a_missing_file_is_an_os_error(self) -> None:
+        with self.assertRaises(OSError):
+            read_file(self.path)
 
 
 class AcceptanceTests(unittest.TestCase):
