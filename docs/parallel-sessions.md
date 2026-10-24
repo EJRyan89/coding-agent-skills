@@ -315,9 +315,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
   (`$env:NAME = <word>` or `${env:NAME} = <word>`, on any path of the provider), while an empty value or `$null`
   removes it. A compound, cast, parenthesized, or multiple assignment, a `foreach` loop's variable, `PSVariable.Set`,
   `[Environment]::SetEnvironmentVariable`, and a cmdlet that writes the provider leave its value unsettled, and a
-  variable the session does not hold is unsettled too. A command after the programs `env`, `nohup`, `nice`,
-  `timeout`, `stdbuf`, and `time` is read as in Bash, as the command it starts. A location set inside a
-  script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed string is read
+  variable the session does not hold is unsettled too. A cmdlet that writes, removes, or renames a variable at a
+  path or name the text does not settle may reach any variable, so every one is unsettled after it, as after Bash's
+  `export "$v"=x` or `unset "$v"`; a path whose last part is literal text, as in `"$dir\out.txt"`, can name only the
+  variable that part names, so it is passed over when git does not read that one. A command after the programs
+  `env`, `nohup`, `nice`, `timeout`, `stdbuf`, and `time` is read as in Bash, as the command it starts. A location
+  set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed string is read
   as part of the same session. A command that does not parse is allowed: PowerShell parses a whole script before it
   runs any of it, so none of it runs.
 - **Paths that do not all run.** A command that runs only when another succeeds or fails, only in some branch, or

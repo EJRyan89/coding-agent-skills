@@ -1757,6 +1757,8 @@ class PowerShellReader:
             name.lower(): [session.word(word) for word in values]
             for name, values in (event.get("parameters") or {}).items()
         }
+        # The words the reader reports for each parameter, from which a path the text does not settle is judged.
+        reported = {name.lower(): values for name, values in (event.get("parameters") or {}).items()}
         name, arguments = command_name(words[0]), words[1:]
         if event.get("failed") or event.get("whatIf"):
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
@@ -1767,7 +1769,7 @@ class PowerShellReader:
         if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS:
             self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
         else:
-            self.environment_change(name, parameters, session)
+            self.environment_change(name, parameters, session, reported)
         return session
 
     def run_program(
@@ -1821,17 +1823,38 @@ class PowerShellReader:
             return moved_session
         return join_sessions(moved_session, session)
 
-    def environment_change(self, name: str | None, parameters: Mapping[str, list[Word]], session: Session) -> None:
+    def environment_change(
+        self,
+        name: str | None,
+        parameters: Mapping[str, list[Word]],
+        session: Session,
+        reported: Mapping[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
         """Sets, removes, renames, or makes unknown the tracked variables a cmdlet reaches on the environment
-        provider, read from the parameters PowerShell binds. A path the text does not settle is passed over, as a
-        directory it does not settle is."""
+        provider, read from the parameters PowerShell binds.
+
+        A path or name the text does not settle, in a parameter that names the variable such a cmdlet writes or
+        removes, may name any variable, so the session's variables are unknown after it, as they are after Bash's
+        `export "$v"=...`, unless may_name_tracked passes it over. reported holds the words the reader reports for each
+        parameter."""
+        literal = parameters.get("literalpath", [])
+        paths = parameters.get("path", []) + literal
+        reached = set(ENVIRONMENT_WRITERS.get(name or "", ()))
+        if name in ENVIRONMENT_REMOVERS or name in RENAME_ITEM_NAMES:
+            reached |= {"path", "literalpath"}
+        # -Name and -NewName name a variable only where the path may be on the environment provider.
+        if (name in NEW_ITEM_NAMES or name in RENAME_ITEM_NAMES) and any(
+            path is None or ENVIRONMENT_PATH.match(path) for path in paths
+        ):
+            reached |= {"name", "newname"}
+        words = [word for parameter in sorted(reached) for word in (reported or {}).get(parameter, [])]
+        if any(session.word(word) is None and may_name_tracked(word) for word in words):
+            session.opaque = True
         if name in NEW_DRIVE_NAMES:
             provider = (parameters.get("psprovider") or [None])[0]
             if provider is None or "environment" in provider.lower():
                 session.opaque = True
             return
-        literal = parameters.get("literalpath", [])
-        paths = parameters.get("path", []) + literal
         known = session.variables.keys()
         settled = environment_names(parameters.get("path", []), literal=False, known=known) or []
         settled += environment_names(literal, literal=True) or []
@@ -1854,6 +1877,19 @@ class PowerShellReader:
         for word in names:
             if word is not None:
                 session.variables[folded(word)] = None
+
+
+def may_name_tracked(word: Mapping[str, Any]) -> bool:
+    """Whether a provider path or name the reader reports, and the text does not settle, may name a variable git reads.
+
+    It may unless the part after its last separator is literal text naming none: `"$dir\\out.txt"` names the variable
+    out.txt wherever $dir points, and nothing else on the environment provider."""
+    text = str(word.get("text") or "")
+    last = re.split(r"[\\/]", text)[-1]
+    tokens = [str(expansion.get("token")) for expansion in word.get("expansions") or []]
+    if not last or any(token in last for token in tokens) or re.search(r"[$`*?\[\]:]", last):
+        return True
+    return is_tracked(last)
 
 
 def location_after(cwd: Path | None, named: bool, target: Word) -> Path | None:
