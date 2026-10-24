@@ -971,7 +971,7 @@ def plugin_roots(folder: Path, depth: int = PLUGIN_DEPTH) -> list[Path]:
 def manifest_name(root: Path) -> str | None:
     """A plugin's name, from its manifest, or None when the manifest names none."""
     try:
-        document = json_reader.loads((root / skill_menu.PLUGIN_MANIFEST).read_text(encoding="utf-8"))
+        document = json_reader.loads((root / skill_menu.PLUGIN_MANIFEST).read_bytes().decode("utf-8"))
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError):
         return None
@@ -1283,7 +1283,7 @@ def source_root(directory: Path) -> Path | None:
 def read_metadata(root: Path, name: str) -> dict[str, object] | None:
     """A skill's deploy metadata in its source tree, or None when the file is missing or not a JSON object."""
     try:
-        metadata = json_reader.loads((root / "deploy-meta" / f"{name}.json").read_text(encoding="utf-8"))
+        metadata = json_reader.loads((root / "deploy-meta" / f"{name}.json").read_bytes().decode("utf-8"))
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError):
         return None
@@ -1379,7 +1379,7 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
     output = []
     for spec_file in sorted(scenarios.glob("*/scenario.json")):
         try:
-            spec = json_reader.loads(spec_file.read_text(encoding="utf-8"))
+            spec = json_reader.loads(spec_file.read_bytes().decode("utf-8"))
         # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
         except (OSError, ValueError, RecursionError):
             continue

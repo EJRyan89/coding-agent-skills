@@ -832,7 +832,7 @@ def read_settings(path: Path) -> dict[str, Any]:
     try:
         if not is_present(path):
             return {}
-        settings = json_reader.loads(path.read_text(encoding="utf-8-sig"))
+        settings = json_reader.loads(path.read_bytes().decode("utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError, json_reader.JsonRefused) as exc:
         raise UnreadableSettings(f"Cannot read {path}: {exc}") from exc
     return settings if isinstance(settings, dict) else {}
@@ -1058,7 +1058,7 @@ def manifest_skill_files(home: Path, name: str) -> list[Path]:
     manifest = home / ".claude" / "skills" / MANIFEST_NAME
     if not is_present(manifest):
         return []
-    data = json_reader.loads(manifest.read_text(encoding="utf-8"))
+    data = json_reader.loads(manifest.read_bytes().decode("utf-8"))
     sources = data.get("sources") if isinstance(data, dict) else None
     entries = sources.values() if isinstance(sources, dict) else []
     return [
