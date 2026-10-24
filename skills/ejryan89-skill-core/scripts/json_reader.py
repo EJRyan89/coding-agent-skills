@@ -4,12 +4,15 @@ Python's reader keeps the last value of a key an object repeats, which RFC 8259 
 reader of the same file may read the first; and it reads `NaN`, `Infinity`, and `-Infinity`, which JSON does not
 define and other readers refuse, and which then reach code that compares numbers. `loads` refuses both as
 `JsonRefused`, a `ValueError`, so a reader that already turns a `ValueError` from its parse into its own refusal
-refuses these alike. It bounds nothing else: what `json.loads` raises, it raises.
+refuses these alike. Nesting past the interpreter's recursion limit, which `json.loads` raises as a `RecursionError`
+that such a reader lets escape, is refused the same way. It bounds nothing else: whatever else `json.loads` raises,
+such as its `JSONDecodeError` or the `ValueError` of an integer past the digit limit, it raises.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 
@@ -32,5 +35,15 @@ def _constant(name: str) -> Any:
 
 def loads(text: str | bytes) -> Any:
     """The value `text` holds, as `json.loads` reads it, or `JsonRefused` when an object repeats a key or a number is
-    `NaN`, `Infinity`, or `-Infinity`."""
-    return json.loads(text, object_pairs_hook=_object, parse_constant=_constant)
+    `NaN`, `Infinity`, or `-Infinity`, or the value nests past the recursion limit."""
+    try:
+        return json.loads(text, object_pairs_hook=_object, parse_constant=_constant)
+    except RecursionError as error:
+        raise JsonRefused("the JSON nests deeper than the parser can read") from error
+
+
+def read_file(path: Path) -> Any:
+    """The value the UTF-8 file at `path` holds, as `loads` reads it, whatever the platform's own codec: an `OSError`
+    when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, which includes a
+    byte-order mark that the caller does not expect."""
+    return loads(path.read_bytes().decode("utf-8"))

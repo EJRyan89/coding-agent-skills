@@ -120,6 +120,31 @@ class SkillShimsTestCase(unittest.TestCase):
         )
         self.assertFalse((self.root / SHIM_PATH).exists())
 
+    def test_a_name_or_description_the_shared_reader_refuses_gets_no_shim(self) -> None:
+        nested = "name:\n" + "".join(" " * depth + "a:\n" for depth in range(1, 50))
+        for key, frontmatter_lines in (
+            ("name", "name: widget-check\nname: widget-other\n"),
+            ("description", "name: widget-check\ndescription: One.\ndescription: Two.\n"),
+            ("name", nested),
+        ):
+            with self.subTest(frontmatter=frontmatter_lines[:40]):
+                self.write(".claude/skills/widget-check/SKILL.md", f"---\n{frontmatter_lines}---\n\n# Widget\n")
+                code, output = self.run_main("--write")
+                self.assertEqual(1, code)
+                prefix = ".claude/skills/widget-check/SKILL.md has frontmatter its shim cannot carry: "
+                self.assertTrue(output.startswith(prefix + key), output)
+                self.assertFalse((self.root / SHIM_PATH).exists())
+
+    def test_a_directory_in_a_skills_place_ends_the_run_as_failed(self) -> None:
+        (self.root / ".claude/skills/widget-check/SKILL.md").unlink()
+        (self.root / ".claude/skills/widget-check/SKILL.md").mkdir()
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            code, output = self.run_main()
+        self.assertEqual((2, ""), (code, output))
+        self.assertTrue(errors.getvalue().startswith("FAILED "), errors.getvalue())
+        self.assertIn("not a file", errors.getvalue())
+
     def test_a_user_only_skill_gets_the_codex_policy_file_beside_its_shim(self) -> None:
         self.write(
             ".claude/skills/widget-check/SKILL.md",

@@ -78,6 +78,8 @@ CAPPED_METRICS = {heading: (metric,) for metric, (_, heading) in METRICS.items()
 }
 MONTH_LABEL = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
 COUNT = re.compile(r"0|[1-9][0-9]*")
+# The longest history field a refusal quotes; a longer one is named by its length.
+QUOTED_FIELD = 40
 PARTIAL = {"true": True, "false": False}
 
 REVIEW_SEARCH_QUERY = """
@@ -472,18 +474,21 @@ def _monthly(
     client: GitHubSearchClient,
     endpoint: str,
     template: str,
-    window: list[date],
-    today: date,
+    spans: list[tuple[date, date]],
+    labels: list[str],
     date_path: tuple[str, ...],
     key: tuple[str, ...],
     column: str,
     capped: dict[str, list[str]],
 ) -> dict[str, int]:
-    """Count search results per UTC month of the timestamp at `date_path`, searching the whole window at once."""
-    counts = {month_label(first): 0 for first in window}
-    items, truncated = client.search_range(endpoint, template, window[0], today, key)
-    if truncated:
-        capped.setdefault(column, []).extend(truncated)
+    """Count search results per UTC month of `labels` by the timestamp at `date_path`, searching each span once."""
+    counts = dict.fromkeys(labels, 0)
+    items: list[dict[str, Any]] = []
+    for start, end in spans:
+        found, truncated = client.search_range(endpoint, template, start, end, key)
+        items += found
+        if truncated:
+            capped.setdefault(column, []).extend(truncated)
     for item in items:
         with _shape_of(f"{column} result {_field(item, key)}"):
             label = month_label(_utc_date(_field(item, date_path), ".".join(date_path)))
@@ -525,11 +530,12 @@ def _author_login(node: dict[str, Any], node_id: str) -> str | None:
 
 
 def _review_dates(
-    client: GitHubSearchClient, org: str, user: str, window: list[date], today: date, capped: dict[str, list[str]]
+    client: GitHubSearchClient, org: str, user: str, start: date, today: date, capped: dict[str, list[str]]
 ) -> dict[str, list[date]]:
-    """Submission dates of the user's non-pending reviews, per pull request someone else authored."""
+    """Submission dates of the user's non-pending reviews, per pull request someone else authored and updated from
+    `start` through `today`."""
     template = f"org:{org} reviewed-by:{user} -author:{user} is:pr updated:{{span}}"
-    nodes, truncated = client.graphql_search_range(template, user, window[0], today)
+    nodes, truncated = client.graphql_search_range(template, user, start, today)
     if truncated:
         capped.setdefault("Reviews", []).extend(truncated)
     dates: dict[str, list[date]] = {}
@@ -554,16 +560,37 @@ def _review_dates(
     return dates
 
 
-def collect_activity(client: GitHubSearchClient, org: str, user: str, months: int, today: date) -> Activity:
+def month_spans(firsts: list[date], today: date) -> list[tuple[date, date]]:
+    """Each run of consecutive months among `firsts`, the first days of months in order, as its first day and its
+    last, which is today for the current month."""
+    spans: list[tuple[date, date]] = []
+    for first in firsts:
+        following = date(first.year + first.month // 12, first.month % 12 + 1, 1)
+        last = min(following - timedelta(days=1), today)
+        if spans and spans[-1][1] + timedelta(days=1) == first:
+            spans[-1] = (spans[-1][0], last)
+        else:
+            spans.append((first, last))
+    return spans
+
+
+def collect_activity(
+    client: GitHubSearchClient, org: str, user: str, months: int, today: date, pulled: list[str] | None = None
+) -> Activity:
+    """The user's activity in each of the last `months` months, or only in those of them `pulled` names. The searches
+    by a date cover only those months, one range for each run of consecutive ones. The review search finds pull
+    requests by their last update, which can follow a review's month, so it covers every pull request updated from
+    the first of those months through today, and counts only the reviews submitted in those months."""
     window = months_window(today, months)
-    labels = [month_label(first) for first in window]
+    labels = [month_label(first) for first in window if pulled is None or month_label(first) in pulled]
+    spans = month_spans([first for first in window if month_label(first) in labels], today)
     capped: dict[str, list[str]] = {}
     authored = _monthly(
         client,
         "search/issues",
         f"org:{org} author:{user} is:pr created:{{span}}",
-        window,
-        today,
+        spans,
+        labels,
         ("created_at",),
         ("node_id",),
         "PRs authored",
@@ -573,8 +600,8 @@ def collect_activity(client: GitHubSearchClient, org: str, user: str, months: in
         client,
         "search/issues",
         f"org:{org} author:{user} is:pr is:merged merged:{{span}}",
-        window,
-        today,
+        spans,
+        labels,
         ("pull_request", "merged_at"),
         ("node_id",),
         "PRs merged",
@@ -584,8 +611,8 @@ def collect_activity(client: GitHubSearchClient, org: str, user: str, months: in
         client,
         "search/commits",
         f"org:{org} author:{user} author-date:{{span}}",
-        window,
-        today,
+        spans,
+        labels,
         ("commit", "author", "date"),
         ("sha",),
         "Commits",
@@ -594,7 +621,7 @@ def collect_activity(client: GitHubSearchClient, org: str, user: str, months: in
     prs_reviewed = dict.fromkeys(labels, 0)
     reviews_submitted = dict.fromkeys(labels, 0)
     reviewed_in_window: set[str] = set()
-    for node_id, dates in _review_dates(client, org, user, window, today, capped).items():
+    for node_id, dates in _review_dates(client, org, user, spans[0][0], today, capped).items():
         months_touched: set[str] = set()
         for value in dates:
             label = month_label(value)
@@ -702,9 +729,14 @@ def _history_row(fields: list[str], line: int, path: Path, columns: tuple[str, .
         raise refuse(f"has month {month!r}, not YYYY-MM")
     if not is_login(user):
         raise refuse(f"has user {user!r}, not a GitHub login")
+    counted: dict[str, int] = {}
     for metric, count in zip(METRICS, counts, strict=True):
         if not COUNT.fullmatch(count):
-            raise refuse(f"has {metric} {count!r}, not a count")
+            raise refuse(f"has {metric} {_quoted(count)}, not a count")
+        try:
+            counted[metric] = int(count)
+        except ValueError:  # more digits than Python's integer-digit limit converts
+            raise refuse(f"has {metric} {_quoted(count)}, not a count") from None
     if partial not in PARTIAL:
         raise refuse(f"has is_partial {partial!r}, not true or false")
     try:
@@ -715,8 +747,12 @@ def _history_row(fields: list[str], line: int, path: Path, columns: tuple[str, .
         capped = _capped_field(capped_text)
     except ValueError:
         raise refuse(f"has capped {capped_text!r}, not {CAP_UNKNOWN} or metrics in the header's order") from None
-    counted = dict(zip(METRICS, map(int, counts), strict=True))
     return HistoryRow(month, user, counted, PARTIAL[partial], captured_at, capped)
+
+
+def _quoted(field: str) -> str:
+    """A history field as a refusal names it: quoted when it is short, else by its length."""
+    return repr(field) if len(field) <= QUOTED_FIELD else f"of {len(field)} characters"
 
 
 def read_history(path: Path) -> History:
@@ -884,8 +920,9 @@ def render_comparison(comparison: Comparison, today: date) -> str:
     ]
     if comparison.from_history:
         lines.append(
-            "- Closed months already in the history file are read from it, not searched again; the current month "
-            "is searched on every run, and a month the history captured while it was partial once more after it ends."
+            "- Closed months already in the history file are read from it, not searched again, except once for each "
+            "month of a file written before the report recorded GitHub's search cap; the current month is searched "
+            "on every run, and a month the history captured while it was partial once more after it ends."
         )
     lines += comparison.warnings
     return "\n".join(lines) + "\n"
@@ -917,10 +954,9 @@ def compare(client: GitHubSearchClient, request: Request, history: History, now:
     warnings: list[str] = []
     for index, user in enumerate(users, start=1):
         pulled = months_to_pull(history, user, labels)
-        span = len(labels) - labels.index(pulled[0])
-        print(f"Querying GitHub for {user} ({index} of {len(users)}): {span} month(s).", file=sys.stderr)
+        print(f"Querying GitHub for {user} ({index} of {len(users)}): {len(pulled)} month(s).", file=sys.stderr)
         try:
-            activity = collect_activity(client, org, user, span, today)
+            activity = collect_activity(client, org, user, request.months, today, pulled)
         except GitHubError as exc:
             raise GitHubError(f"{user}: {exc}", kind=exc.kind) from exc
         rows.update(_rows_of(activity, user, pulled, labels[-1], _captured_at(now)))

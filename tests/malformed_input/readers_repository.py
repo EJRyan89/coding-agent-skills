@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPOSITORY))
 sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "validation"))
 
+from file_presence import NotAFile
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT
 from job_selection import job_seconds
 from known_failures import KnownFailuresUnreadable, read_known_failures
@@ -209,7 +210,10 @@ READERS = [
         "json-lines",
         b'{"runtime": "claude", "status": "PASS"}\n',
         _canary_records,
-        (Refused,),
+        (Refused, NotAFile),
+        accepts={
+            "empty": "the canary creates each records file empty, so an empty one is a run that recorded nothing",
+        },
     ),
     Reader(
         "tools.runtime_changelogs.read_record",
@@ -251,7 +255,7 @@ READERS = [
         "frontmatter",
         FRONTMATTER,
         _shims,
-        (Refused,),
+        (Refused, NotAFile),
         filename=".claude/skills/example/SKILL.md",
         accepts={
             "bom": "each SKILL.md is decoded as UTF-8 with an optional byte-order mark",

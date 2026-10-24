@@ -11,7 +11,7 @@ allowed-tools: ["Bash(python -B skills/ejryan89-code-review-core/scripts/review_
 
 # This repository's reviewer
 
-`review-prs` reviews a pull request of this repository with the specialists manifest `.claude/skills/review-repository/references/specialists.json`, read at the pull request's base as every repository reviewer is. This skill does not review: it sets the reviewer up, checks it, and tunes it. "Specialist reviewers" in `docs/code-review-operations.md` describes the mechanism. Each route's profile, under `references/`, names the invariant or decision in `docs/design.md` it holds and the drift the v0.4.0 audit found there:
+`review-prs` reviews a pull request of this repository with the specialists manifest `.claude/skills/review-repository/references/specialists.json`, read at the pull request's base as every repository reviewer is. This skill does not review: it sets the reviewer up, checks it, and tunes it. "Specialist reviewers" in `docs/code-review-operations.md` describes the mechanism. Each route's profile, under `references/`, names the invariant or decision in `docs/design.md` it holds and the drift an audit found there:
 
 | Route | Files | Holds |
 | --- | --- | --- |
@@ -19,13 +19,13 @@ allowed-tools: ["Bash(python -B skills/ejryan89-code-review-core/scripts/review_
 | `skill-contract` | skills' `SKILL.md`, `agents/`, `deploy-meta/`, `source.json`, repository skills and shims | Grants that match what runs, script over prose, metadata, cost |
 | `skill-scripts` | skills' and repository skills' scripts but their suites, beside the reviewers above, with the `skill-contract` profile | Grants that still match what a changed script runs |
 | `validation-policy` | `tests/validation/`, the runner, the root `conftest.py`, `pyproject.toml` | Each policy holds the sentence that cites it, with a fixture, read through `ast` |
-| `trust-boundary` | the code-review contract and the scripts the route's patterns match, each named in `references/trust-boundary.md` | A threat-model row and its adversarial test for what an author reaches |
+| `trust-boundary` | the code-review contract and the scripts the route's patterns match, which `references/trust-boundary.md` describes by kind | A threat-model row and its adversarial test for what an author reaches |
 | `documentation` | `docs/`, top-level Markdown, the templates | Each sentence true of the code and of its owner |
 | `documentation-drift` | scripts, beside the reviewers above, when a document names what changed | Each passage that names changed code still true of it |
 | `untested-changes` | scripts, beside the reviewers above, when a changed function, method, or class has no test naming it | A test for each changed definition, or the body's reason none applies |
 | `upgrade-notes` | contract files, skills' `SKILL.md`, `deployer/arguments.py`, `pdf_tool.py` | The body's upgrade-note entry for each contract change, at the level and with the user action it asks for |
 
-The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every pattern matches without regard to case, as a checkout on a case-insensitive file system places a path. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `review-prs` gives every reviewer the pull request's body as untrusted data, `PULL_REQUEST_BODY_FILE`, so `upgrade-notes` reads its `## Upgrade note`. Validation requires coverage of changed contract values and makes syntactic checks: non-empty `Level`, `Contract`, and `User action` fields, a `Level` whose first word is from Versioning's allowed levels, and a `Contract` naming backticked items or `none`. The reviewer judges whether the level and user action fit the actual change and migration, and detects a contract with no file. `documentation-drift` and `untested-changes` open only when their conditions find something; they and `skill-scripts` share their files, so the generic reviewer still reviews those files.
+The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every pattern matches without regard to case, as a checkout on a case-insensitive file system places a path. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `review-prs` gives every reviewer the pull request's body as untrusted data, `PULL_REQUEST_BODY_FILE`, so `upgrade-notes` reads its `## Upgrade note`. `documentation-drift` and `untested-changes` open only when their conditions find something; they and `skill-scripts` share their files, so the generic reviewer still reviews those files.
 
 ## 1. Configure
 

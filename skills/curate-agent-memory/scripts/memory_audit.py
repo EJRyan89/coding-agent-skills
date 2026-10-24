@@ -1058,7 +1058,7 @@ def manifest_skill_files(home: Path, name: str) -> list[Path]:
     manifest = home / ".claude" / "skills" / MANIFEST_NAME
     if not is_present(manifest):
         return []
-    data = json_reader.loads(manifest.read_bytes().decode("utf-8"))
+    data = json_reader.read_file(manifest)
     sources = data.get("sources") if isinstance(data, dict) else None
     entries = sources.values() if isinstance(sources, dict) else []
     return [

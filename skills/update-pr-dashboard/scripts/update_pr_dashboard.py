@@ -7,7 +7,7 @@ import json
 import re
 import stat
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -675,7 +675,7 @@ def _read_dashboard(dashboard: Path) -> str:
 def update_dashboard_rows(
     input_path: Path,
     dashboard: Path,
-    login: str,
+    login: str | Callable[[], str],
     *,
     detector: BatchDetector | None = None,
     start_marker: str = START_MARKER,
@@ -688,9 +688,11 @@ def update_dashboard_rows(
     record: Path | None = None,
 ) -> list[Row]:
     """Update the owned section and return the rendered rows, then, given a `record` path, write there the pull
-    requests the tracker holds and each shown row's AI review. A removal naming no pull request the tracker holds, and
-    a dashboard or record `replacement` refuses, are refused before GitHub is asked anything. Each write replaces the
-    file its path leads to, through any symbolic link, and keeps that file's mode."""
+    requests the tracker holds and each shown row's AI review. `login` is the configured user, or what finds it, called
+    only once the dashboard and record are known to be writable. A dashboard or record `replacement` refuses is refused
+    before GitHub is asked anything, and a removal naming no pull request the tracker holds before anything but that
+    call asks it. Each write replaces the file its path leads to, through any symbolic link, and keeps that file's
+    mode."""
     try:
         items = validate_items(json.loads(input_path.read_text(encoding="utf-8-sig")))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -701,6 +703,8 @@ def update_dashboard_rows(
     _owned_span(_read_dashboard(dashboard), start_marker, end_marker)
     dashboard_file, dashboard_mode = replacement(dashboard)
     record_file, record_mode = (None, NEW_FILE_MODE) if record is None else replacement(record)
+    if callable(login):
+        login = login()
     if not login:
         raise TrackerError("GitHub login is required")
     excluded = normalize_pull_keys(removals or [], "removal")
