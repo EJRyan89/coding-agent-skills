@@ -7,6 +7,8 @@ import re
 
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, git, listed, markdown_section
 
+from tools.release_notes import ReleaseNotesError
+
 # The squash commit takes the pull request's title, so main's history reads by these types, which tools/worktrees.py
 # also takes as a worktree's kind. A breaking-change `!` is refused: the Level in the body's `## Upgrade note` is the
 # one statement of a release level.
@@ -71,7 +73,7 @@ def head_branch() -> str | None:
         return os.environ["GITHUB_HEAD_REF"]
     try:
         completed = git(REPOSITORY_ROOT, "branch", "--show-current")
-    except ValueError:
+    except ReleaseNotesError:
         return None
     if completed.returncode != 0:
         return None

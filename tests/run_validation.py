@@ -106,6 +106,7 @@ from toolchain import report_prerequisite_problems, tool_versions
 from validation_support import REPOSITORY_ROOT, PullRequest, PullRequestChecks
 
 from deployer import tools
+from tools.release_notes import ReleaseNotesError
 
 # The modules whose policy checks run in this process while the pool runs the suites. Each policy module's fixture
 # tests run in the pool as the regression suite beside it.
@@ -307,10 +308,16 @@ def select_jobs(arguments: argparse.Namespace, base: str) -> tuple[list[Job], st
     """The jobs a run without -k selects and the line that says why: every job with --full; with --changed the static
     checks and suites the change since base reaches; otherwise, when every changed file is documentation, the fence
     checks and the suites that name a changed file; and every job when the changed files cannot be determined."""
-    paths = None if arguments.full else changed_paths(REPOSITORY_ROOT, base)
+    paths: list[str] | None = None
+    unknown = ""
+    if not arguments.full:
+        try:
+            paths = changed_paths(REPOSITORY_ROOT, base)
+        except ReleaseNotesError as error:
+            unknown = f" ({error})"
     if arguments.changed:
         if paths is None:
-            return all_jobs(), f"Full validation: the files changed since {base} could not be determined."
+            return all_jobs(), f"Full validation: the files changed since {base} could not be determined{unknown}."
         jobs = changed_jobs(REPOSITORY_ROOT, paths)
         return jobs, (
             f"Changed files: {len(paths)} files changed since {base}. Running the policy checks and the "
@@ -318,7 +325,7 @@ def select_jobs(arguments: argparse.Namespace, base: str) -> tuple[list[Job], st
         )
     only, reason = (False, "--full was given") if arguments.full else documentation_only(paths)
     if not only or paths is None:
-        return all_jobs(), f"Full validation: {reason}."
+        return all_jobs(), f"Full validation: {reason}{unknown}."
     jobs = documentation_jobs(REPOSITORY_ROOT, paths, regression_suites())
     fences = [job.label for job in jobs if job.label in (POWERSHELL_JOB, MARKDOWN_SHELL_JOB)]
     suites = sorted({job.name for job in jobs if job.label not in fences})

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import ClassVar
 from unittest import mock
@@ -23,6 +23,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import executable_locator
+import git_client
 import upgrade_notes
 from release_levels import versioning_levels
 from upgrade_notes import Snapshot, changed_contract_items, contract_list_problems, upgrade_notes_problems
@@ -30,6 +32,20 @@ from validation_support import write_fixture_tree
 
 from tests import run_validation
 from tools import release_notes
+
+
+@contextlib.contextmanager
+def git_not_on_path() -> Iterator[None]:
+    """PATH names a folder that does not exist and no link folder is searched, so the real locator finds no git and
+    the real client raises its own failure."""
+    nowhere = str(Path(__file__).resolve().parent / "no git here")
+    with mock.patch.dict(os.environ, {"PATH": nowhere}), mock.patch.object(executable_locator, "link_folders", list):
+        yield
+
+
+def timed_out(command: list[str], timeout: float) -> git_client.GitResult:
+    """The real runner's failure when git does not finish within the client's time limit."""
+    raise git_client.GitError(f"{' '.join(command)} did not finish within {timeout:g} seconds", kind="timeout")
 
 
 def snapshot(files: Mapping[str, str]) -> Snapshot:
@@ -567,6 +583,48 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.release(tag="v0.1.0-rc.1")
         self.assertEqual((None, None), upgrade_notes.last_release_tag(self.root))
         self.assertEqual([], self.problems(self.MANIFEST_CHANGE))
+
+    def test_a_message_holding_the_old_separators_is_read_and_its_entry_counts(self) -> None:
+        self.release()
+        for index, separator in enumerate(("\x1f", "\x1e")):
+            with self.subTest(separator=repr(separator)):
+                body = self.body(self.entry("`deployer/manifest.py`")).replace("Why.", f"Why{separator}.")
+                self.commit(f"Change the manifest {separator} (#{index + 8})\n\n{body}", self.MANIFEST_CHANGE)
+                self.assertEqual([], upgrade_notes_problems(self.root))
+                self.merged()
+                self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
+
+    def test_a_git_that_cannot_run_or_finish_is_a_problem_line(self) -> None:
+        # The real helper's git missing, or out of time, at each place the check reads git: the checkout's files,
+        # the last tag, and the tag's tree.
+        self.release()
+        self.commit("Change the manifest", self.MANIFEST_CHANGE)
+        for failing, reason in (
+            (git_not_on_path(), git_client.MISSING_GIT),
+            (mock.patch.object(release_notes.CLIENT, "runner", timed_out), " ls-files "),
+        ):
+            with self.subTest(reason=reason), failing:
+                [problem] = upgrade_notes_problems(self.root)
+                self.assertTrue(
+                    problem.startswith("the upgrade-notes check cannot list the checkout's files: "), problem
+                )
+                self.assertIn(reason, problem)
+        with mock.patch.object(upgrade_notes, "working_snapshot", return_value=snapshot({})), git_not_on_path():
+            [problem] = upgrade_notes_problems(self.root)
+        self.assertEqual(f"the upgrade-notes check cannot find the last tag: {git_client.MISSING_GIT}", problem)
+        # A tag git cannot list the tree of, after the commits are read.
+        with (
+            mock.patch.object(upgrade_notes, "last_release_tag", return_value=("v9.9.9", None)),
+            mock.patch.object(upgrade_notes, "range_entries", return_value=[]),
+        ):
+            [problem] = upgrade_notes_problems(self.root)
+        self.assertTrue(
+            problem.startswith(
+                "the upgrade-notes check cannot read the commits and the tree since v9.9.9: "
+                "git ls-tree -r --name-only -z v9.9.9 failed: "
+            ),
+            problem,
+        )
 
     def test_a_missing_origin_main_fails_with_the_fetch_command(self) -> None:
         self.release()
