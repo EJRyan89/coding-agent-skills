@@ -36,7 +36,7 @@ Add `--since '<ref>'` to `release` to start from another base. Keep these lines 
 - `CARRIED <number> "<title>"`: an open issue the next milestone carries; every rotation brief names them too.
 - `BRIEFS "<directory>"`, then one `BRIEF <name> "<file>"` per reader, each its whole prompt; `READERS` counts an area's.
 - `SUBJECT <subject> <pages> <tag>`: guidance's runtimes and Python, each with its pages and the oldest of their last reads, or `never`.
-- `DRIFT <kind> <what>`, `TEMPLATE <field> <what>`, and `SECTION <name> <what>`: the kinds of drift the briefs ask the readers to look for, the fields of a finding, and the sections of a reader's report: what a finding step 4 confirms holds, and the fields step 5 files it with.
+- `DRIFT <kind> <what>`, `QUESTION <name> <what>`, `TEMPLATE <field> <what>`, and `SECTION <name> <what>`: the kinds of drift the briefs ask the readers to look for, the questions a release or rotation brief asks of every file, the fields of a finding, and the sections of a reader's report: what a finding step 4 confirms holds, and the fields step 5 files it with.
 
 The rest are context, with nothing to do: `HEAD <commit>`, the commit the briefs describe; for `release`, `BASE <ref> <commit>`, where the diff starts, `CHANGED <count>`, the files changed since it, and `AREA <area> <count>` for each area; for `rotation`, `RECORD "<file>"`, the record read, `READ <area> <tag> <date>` or `UNREAD <area>` for each area, and `FILES <count>`, the files of the `NEXT` area that step 6 records; and for `guidance`, `GUIDANCE_RECORD "<file>"`, the record read.
 
@@ -56,11 +56,11 @@ Then search the open issues so nothing is filed twice, giving one query per conf
 python -B .claude/skills/audit-repository/scripts/audit_repository.py duplicates '<query>' '<query>'
 ```
 
-`MATCHES <query> <count>` and one `MATCH <query> <number> "<title>"` per open issue it found, queries numbered from 1. Drop a finding an open issue already covers, or name the issue beside it. Show the user the confirmed list, each with its severity and milestone, and ask before filing anything.
+`MATCHES <query> <count>` and one `MATCH <query> <number> "<title>"` per open issue it found, queries numbered from 1, then `MATCHES_CUT <query> <limit>` when the query found more than it lists: narrow that query and search again. Drop a finding an open issue already covers, or name the issue beside it. Show the user the confirmed list, each with its severity and milestone, and ask before filing anything.
 
 ## 5. File
 
-- File each confirmed finding as one issue written from the template its `template` field names in `.github/ISSUE_TEMPLATE/`, keeping the template's headings and quoting both sides. Open its body with the `PROVENANCE` sentence, then file it with `gh issue create --body-file '<file>' --milestone '<title>'`, the title its severity's `MILESTONE` line names. When that line says `none`, ask the user which milestone to create or use.
+- File each confirmed finding as one issue written from the template its `template` field names in `.github/ISSUE_TEMPLATE/`, keeping the template's headings and quoting both sides. Open its body with the `PROVENANCE` sentence, name the finding's `question` beside its auditor gap when a `QUESTION` found it, then file it with `gh issue create --body-file '<file>' --milestone '<title>'`, the title its severity's `MILESTONE` line names. When that line says `none`, ask the user which milestone to create or use.
 - `gh issue create` is deliberately ungranted, so the user approves each filing at its prompt: an issue is public once it is filed, and the prompt is the last check that it is one the user agreed to and no trust-boundary finding.
 - A `trust-boundary` finding, or any finding that shows a way past a trust boundary, is a vulnerability. Report it privately as `SECURITY.md` says, through a private security advisory, and never in a public issue, commit message, or pull request.
 - **Release audit:** a confirmed defect is fixed before the tag; the tag waits for its pull request. The release notes' scope section names each drift and polish finding as deferred.
