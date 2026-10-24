@@ -29,7 +29,15 @@ def deal(names: list[str], count: int, seconds: Mapping[str, float]) -> dict[str
 def shard_of(text: str) -> tuple[int, int]:
     """A shard's `<index>/<count>`, the index counted from 1. Raises ValueError naming what it expects, which each
     caller turns into its own usage error."""
+    expected = ValueError(f"<index>/<count> with 1 <= index <= count, found {text!r}")
     match = SHARD.fullmatch(text)
-    if match is None or int(match.group(1)) > int(match.group(2)):
-        raise ValueError(f"<index>/<count> with 1 <= index <= count, found {text!r}")
-    return int(match.group(1)), int(match.group(2))
+    if match is None:
+        raise expected
+    try:
+        index, count = int(match.group(1)), int(match.group(2))
+    except ValueError:
+        # A number past the interpreter's digit limit for converting text.
+        raise expected from None
+    if index > count:
+        raise expected
+    return index, count

@@ -9,7 +9,6 @@
   {"reader": "github_client.json_body", "case": "deep_nesting", "issue": 1664},
   {"reader": "github_client.json_body", "case": "long_integer", "issue": 1664},
   {"reader": "guidance_record.read", "case": "deep_nesting", "issue": 1664},
-  {"reader": "job_selection.job_seconds", "case": "deep_nesting", "issue": 1756},
   {"reader": "memory_audit.read_settings", "case": "deep_nesting", "issue": 1664},
   {"reader": "memory_audit.read_settings", "case": "long_integer", "issue": 1664},
   {"reader": "msbuild_reader.read_assets", "case": "deep_nesting", "issue": 1664},

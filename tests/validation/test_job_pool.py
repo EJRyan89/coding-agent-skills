@@ -341,6 +341,22 @@ class TerminationFixtures(unittest.TestCase):
         self.assertIn("\nThe retry failed:\nCommand failed with exit code 1: ", report)
         self.assertIn("1 test failed", report)
 
+    def test_a_retry_that_times_out_stays_a_timeout_or_a_raise_whose_report_the_summary_details(self) -> None:
+        ending = Terminated("0x80000004", ["bash.exe", "-c", "x"])
+        for raised, flags in (
+            (TimedOut("Command timed out after 4s: x"), (True, False, False)),
+            (OSError("denied"), (False, True, False)),
+        ):
+            attempts: list[BaseException] = [ending, raised]
+
+            def run(attempts: list[BaseException] = attempts) -> None:
+                raise attempts.pop(0)
+
+            with self.subTest(raised=type(raised).__name__), contextlib.redirect_stdout(io.StringIO()):
+                failures, retries = run_jobs([Job("bash suite", "bash suite", 1, run)], verbose=False, workers=1)
+                self.assertEqual(["failed"], [retry.result for retry in retries])
+                self.assertEqual([flags], [(f.timed_out, f.raised, f.terminated) for f in failures])
+
     def test_step_summary_names_a_termination_and_each_retry(self) -> None:
         ended = "bash.exe was ended with status 0x80000004 before its first line of output: bash.exe -c 'x'"
         text = step_summary(

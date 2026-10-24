@@ -236,7 +236,10 @@ def _settle(job: Job, outcome: Failure | Terminated | None, endings: list[Termin
         )
     if outcome is not None and endings:
         return Failure(
-            job, f"Started once more after: {endings[0]}\nThe retry failed:\n{outcome.report}", outcome.raised
+            job,
+            f"Started once more after: {endings[0]}\nThe retry failed:\n{outcome.report}",
+            raised=outcome.raised,
+            timed_out=outcome.timed_out,
         )
     return outcome
 

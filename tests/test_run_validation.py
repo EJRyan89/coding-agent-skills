@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib
 import io
 import os
 import sys
@@ -23,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import executable_locator
 from git_client import MISSING_GIT
 from job_pool import Failure, Job, PoolResult, Retry
-from job_selection import flatten
+from job_selection import MARKDOWN_SHELL_JOB, flatten
+from suite_names import is_suite_name
 from validation_support import REPOSITORY_ROOT, PullRequest, PullRequestChecks
 
 from tests import run_validation
@@ -210,6 +212,78 @@ class SelectionOptions(unittest.TestCase):
         self.assertEqual("No policy check or suite matches zz names nothing.\n", error)
         self.assertEqual([], started)
 
+    def test_a_pattern_matching_nothing_beside_one_that_matches_is_a_usage_error_naming_it(self) -> None:
+        suite = Job("tests/test_other.py", "tests/test_other.py", 1, lambda: None)
+        for argv in (
+            ["-k", "test_other", "-k", "zz names nothing"],
+            ["-k", "PullRequestTitlePolicies", "-k", "zz names nothing", "-k", "yy?names*nothing"],
+        ):
+            with self.subTest(argv=argv):
+                code, _, error, started = self.run_main(argv, all_jobs=mock.Mock(return_value=[suite]))
+                self.assertEqual(2, code)
+                unmatched = argv[3::2]
+                self.assertEqual("".join(f"No policy check or suite matches {name}.\n" for name in unmatched), error)
+                self.assertEqual([], started)
+
+    def test_a_run_without_a_pattern_that_selects_nothing_is_a_usage_error_naming_how_it_selected(self) -> None:
+        # The policy modules always hold checks, so only a run with none of them reaches the refusal without -k.
+        code, _, error, started = self.run_main(
+            ["--changed"],
+            POLICY_MODULES=(),
+            changed_paths=mock.Mock(return_value=["LICENSE"]),
+            changed_jobs=mock.Mock(return_value=[]),
+        )
+        self.assertEqual(2, code)
+        self.assertEqual(
+            "No policy check or suite job is selected: Changed files: 1 files changed since origin/main. Running the "
+            "policy checks and the 0 static checks and suites they reach; pass --full to run every suite.\n",
+            error,
+        )
+        self.assertEqual([], started)
+
+    def test_every_pattern_matching_a_policy_check_or_a_suite_runs(self) -> None:
+        suite = Job("tests/test_other.py", "tests/test_other.py", 1, lambda: None)
+        code, printed, error, started = self.run_main(
+            ["-k", "test_other", "-k", "PullRequestTitlePolicies"], all_jobs=mock.Mock(return_value=[suite])
+        )
+        self.assertEqual((0, ""), (code, error))
+        self.assertEqual([[suite]], started)
+        self.assertRegex(printed, r"\ARunning [1-9][0-9]* policy checks beside 1 suite jobs ")
+
+    def test_a_documentation_only_change_runs_the_jobs_it_reaches_and_says_why(self) -> None:
+        fence = Job(MARKDOWN_SHELL_JOB, MARKDOWN_SHELL_JOB, 1, print)
+        naming = Job("tests/test_names.py", "tests/test_names.py", 1, print)
+        selection = mock.Mock(return_value=[fence, naming])
+        every = mock.Mock()
+        code, printed, _, started = self.run_main(
+            [],
+            changed_paths=mock.Mock(return_value=["README.md", "docs/skills.md"]),
+            documentation_jobs=selection,
+            all_jobs=every,
+            regression_suites=mock.Mock(return_value=[]),
+        )
+        self.assertEqual(0, code)
+        selection.assert_called_once_with(REPOSITORY_ROOT, ["README.md", "docs/skills.md"], [])
+        every.assert_not_called()
+        self.assertEqual([[fence, naming]], started)
+        self.assertIn(
+            "Documentation only: all 2 changed files are documentation since origin/main. Running the policy checks, "
+            "the 1 Markdown fence checks, and the 1 suites that name a changed file; pass --full to run every suite.",
+            printed,
+        )
+
+    def test_full_runs_every_job_without_reading_the_change(self) -> None:
+        every = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
+        paths, selection = mock.Mock(return_value=["README.md"]), mock.Mock()
+        code, printed, _, started = self.run_main(
+            ["--full"], changed_paths=paths, documentation_jobs=selection, all_jobs=mock.Mock(return_value=every)
+        )
+        self.assertEqual(0, code)
+        paths.assert_not_called()
+        selection.assert_not_called()
+        self.assertEqual([every], started)
+        self.assertIn("Full validation: --full was given.", printed)
+
     def test_changed_runs_the_jobs_the_changed_files_reach(self) -> None:
         reached = Job("tests/deployer/test_rendering_locking.py", "tests/deployer/test_rendering_locking.py", 1, print)
         paths = ["skills/a/scripts/tool.py"]
@@ -243,6 +317,7 @@ class SelectionOptions(unittest.TestCase):
         for argv, message in (
             (["--changed", "-k", "deployer"], "argument --changed: not allowed with argument -k"),
             (["--changed", "--full"], "argument --full: not allowed with argument --changed"),
+            (["--full", "-k", "deployer"], "argument --full: not allowed with argument -k"),
         ):
             with self.subTest(argv=argv):
                 error = io.StringIO()
@@ -395,6 +470,29 @@ class TerminationReport(unittest.TestCase):
         )
 
 
+class PolicyModules(unittest.TestCase):
+    def test_the_policy_modules_are_every_module_beside_the_policies_that_defines_a_check(self) -> None:
+        # Each module in tests/validation/ that is not a suite and defines a test case with a check of its own runs in
+        # this process; a policy module missing from the list would never run, and a list entry with no check is dead.
+        loader = unittest.TestLoader()
+        defining = set()
+        for path in sorted((REPOSITORY_ROOT / "tests" / "validation").glob("*.py")):
+            if is_suite_name(path.name):
+                continue
+            module = importlib.import_module(path.stem)
+            checks = [
+                value
+                for value in vars(module).values()
+                if isinstance(value, type)
+                and issubclass(value, unittest.TestCase)
+                and value.__module__ == module.__name__
+                and loader.getTestCaseNames(value)
+            ]
+            if checks:
+                defining.add(module.__name__)
+        self.assertEqual(sorted(defining), sorted(module.__name__ for module in run_validation.POLICY_MODULES))
+
+
 class RunnerFailures(unittest.TestCase):
     """What ends a run other than its checks: a report a console cannot encode, and a setting the runner cannot use.
     Each reads through the stream and the environment main is given, so neither changes what the pool reads."""
@@ -419,7 +517,29 @@ class RunnerFailures(unittest.TestCase):
             self.assertIn("- Failed: `suite x.py`", summary.read_text(encoding="utf-8"))
         printed = written.getvalue().decode("cp1252")
         self.assertIn("AssertionError: '\\ufffd' != 'e'", printed)
-        self.assertIn("validation FAILED (1 suite jobs failed).", printed)
+        self.assertIn("validation FAILED (0 policy checks and 1 suite jobs failed).", printed)
+
+    def test_the_closing_line_counts_the_failed_policy_checks_beside_the_failed_suite_jobs(self) -> None:
+        class Failing(unittest.TestCase):
+            def test_fails(self) -> None:
+                self.fail("boom")
+
+            def test_raises(self) -> None:
+                raise OSError("denied")
+
+        policies = unittest.TestResult()
+        unittest.TestSuite([Failing("test_fails"), Failing("test_raises")]).run(policies)
+        job = Job("suite x.py", "suite x.py", 1, lambda: None)
+        printed = io.StringIO()
+        with (
+            mock.patch.object(run_validation, "tool_versions", return_value={}),
+            mock.patch.object(run_validation, "report_prerequisite_problems", return_value=False),
+            mock.patch.object(run_validation, "all_jobs", return_value=[job]),
+            mock.patch.object(run_validation, "run_beside", return_value=(policies, PoolResult([], []))),
+        ):
+            code = main(["-k", "suite x.py"], out=printed, environment={})
+        self.assertEqual(1, code)
+        self.assertIn("validation FAILED (2 policy checks and 0 suite jobs failed).", printed.getvalue())
 
     def test_a_worker_count_that_is_not_a_whole_number_is_a_usage_error_before_any_check_runs(self) -> None:
         error = io.StringIO()
