@@ -20,6 +20,10 @@ reaches a model, and the start shows only whether the runtime got past parsing i
 It prints one fact per line:
 
   VERSION <runtime> <version>                        what its --version prints, or unknown
+  SAMPLE_BEHIND <runtime> <sample> <recorded> <version>  a sample of its output captured under
+                                                     tests/fixtures/captured-output records an older version, so it
+                                                     is due to be captured again (tools/captured_samples.py); never
+                                                     a failure
   MISSING <runtime> "<reason>"                       it is not installed where deploy.py check looks; exit 1
   UNSAFE <runtime> "<reason>"                        it cannot be started signed out, so none of its command lines is
                                                      started; exit 1
@@ -59,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from bounded_process import run_bounded
 from console import run_main
 from flat_text import single_line
+from runtime_support import RUNTIMES as RUNTIME_NAMES
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -67,8 +72,8 @@ from review_hosts import COPILOT_SYNC_SESSION_VERSION, copilot_command, isolated
 
 from deployer import discovery, platform_support
 from deployer import tools as deployer_tools
-from tools import plugin_canary, runtime_canary, skill_evals_runs
-from tools.runtime_canary import RUNTIMES, Completed, quote, text
+from tools import captured_samples, plugin_canary, runtime_canary, skill_evals_runs
+from tools.runtime_canary import DECLARED_RUNTIME, RUNTIMES, Completed, quote, text
 
 DEFAULT_TIMEOUT = 30.0
 # A port nothing listens on, so a runtime that found a credential after all could still reach no model through it.
@@ -86,10 +91,12 @@ FLAG_REFUSALS = (
     re.compile(r"unexpected argument '(?P<flag>-[^'\s]+)' found"),
     re.compile(r"(?<![\w-])(?P<flag>--?[A-Za-z][\w-]*) (?:was|has been) (?:removed|renamed)"),
 )
-# How each parser refuses its arguments without naming an unknown flag: a value, a missing value, or a count.
+# How each parser refuses its arguments without naming an unknown flag: a value, a missing value, or a count, and
+# Copilot CLI's refusal of any argument it does not know, an unknown flag among them, which names none.
 ARGUMENT_REFUSALS = re.compile(
     r"^\s*error: (?:invalid value|option '[^']+' argument|too many arguments|missing required argument|"
-    r"the following required arguments|the argument '[^']+' cannot be used|a value is required)",
+    r"the following required arguments|the argument '[^']+' cannot be used|a value is required|"
+    r"invalid command format)",
     re.MULTILINE | re.IGNORECASE,
 )
 # What each runtime prints once it is past its arguments and has started its session, signed out: Claude Code's init
@@ -315,9 +322,16 @@ def listed(flag: str, help_text: str) -> bool:
 
 
 def check(
-    runtime: str, executable: str, root: Path, runner: Starter, timeout: float, environment: dict[str, str]
+    runtime: str,
+    executable: str,
+    root: Path,
+    runner: Starter,
+    timeout: float,
+    environment: dict[str, str],
+    samples: Sequence[captured_samples.Sample] = (),
 ) -> Iterator[str]:
-    """VERSION, then one line per command line the repository builds for `runtime`."""
+    """VERSION, SAMPLE_BEHIND for each of `samples` of the runtime older than it, then one line per command line the
+    repository builds for `runtime`."""
     version = runtime_canary.read_version(
         executable,
         lambda arguments, cwd, variables, limit: runner(arguments, cwd, variables, limit, ""),
@@ -325,6 +339,8 @@ def check(
         root,
     )
     yield f"VERSION {runtime} {runtime_canary.version_text(version)}"
+    if version:
+        yield from captured_samples.behind(list(samples), DECLARED_RUNTIME[runtime], version, runtime)
     helps: dict[tuple[str, ...], str] = {}
     for line in command_lines(runtime, executable, root, environment, version):
         words = tuple(line.subcommand)
@@ -335,7 +351,14 @@ def check(
         yield judge(line, runner(line.arguments, line.cwd, line.environment, timeout, line.stdin), unlisted, timeout)
 
 
-def runtime_lines(runtime: str, executable: str | None, root: Path, runner: Starter, timeout: float) -> Iterator[str]:
+def runtime_lines(
+    runtime: str,
+    executable: str | None,
+    root: Path,
+    runner: Starter,
+    timeout: float,
+    samples: Sequence[captured_samples.Sample] = (),
+) -> Iterator[str]:
     if executable is None:
         yield f"MISSING {runtime} {quote('it is not installed where deploy.py check looks')}"
         return
@@ -344,7 +367,7 @@ def runtime_lines(runtime: str, executable: str | None, root: Path, runner: Star
     except Unsafe as exc:
         yield f"UNSAFE {runtime} {quote(str(exc))}"
         return
-    yield from check(runtime, executable, root, runner, timeout, environment)
+    yield from check(runtime, executable, root, runner, timeout, environment, samples)
 
 
 def failed(lines: Sequence[str]) -> bool:
@@ -374,12 +397,16 @@ def run(
     runner: Starter = start,
     which: Callable[[str], str | None] = platform_support.find_executable,
     say: Callable[[str], None] = print,
+    samples: Sequence[captured_samples.Sample] | None = None,
 ) -> list[str]:
-    """Check each runtime's command lines from `root`, printing each line as it is made; return the lines."""
+    """Check each runtime's command lines from `root`, printing each line as it is made; return the lines. The
+    samples aged against each runtime's version are `samples`, or those this checkout records."""
     paths = {root: "<temp>", runtime_canary.REPOSITORY_ROOT: "<source>", platform_support.home_directory(): "<home>"}
+    if samples is None:
+        samples = captured_samples.read(runtime_canary.REPOSITORY_ROOT, RUNTIME_NAMES)
     lines: list[str] = []
     for runtime in runtimes:
-        for line in runtime_lines(runtime, which(runtime), root / runtime, runner, timeout):
+        for line in runtime_lines(runtime, which(runtime), root / runtime, runner, timeout, samples):
             shown = runtime_canary.placeholders(line, paths)
             say(shown)
             lines.append(shown)

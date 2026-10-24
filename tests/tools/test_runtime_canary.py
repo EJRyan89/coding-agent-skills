@@ -50,21 +50,14 @@ NO_ADAPTER = "the deployer gave it no runtime adapter, so deploy.py verify expec
 PYTHON_EXIT = " exit=0" if sys.version_info >= (3, 12) else ""
 # The platform's Python command, which the fixture renders and Copilot is granted, written here as a literal.
 PYTHON = "python" if sys.platform == "win32" else "python3"
-# A line Codex 0.160 wrote to stderr when its execution policy refused the canary's first command.
-CODEX_REJECTION = (
-    "2026-10-03T22:35:23.161504Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { "
-    'message: "Rejected(\\"`\\\\\\"C:\\\\\\\\pwsh.exe\\\\\\" -Command \\\\\\"Get-Content -LiteralPath '
-    '\'C:\\\\\\\\x\\\\\\\\SKILL.md\'\\\\\\"` rejected: blocked by policy\\")" }\n'
-)
-# The lines Codex 0.163 wrote to stderr when its Windows sandbox could start no process at all: the unelevated sandbox
-# starting a packaged pwsh, and the elevated one with credentials from another machine.
-CODEX_UNSTARTED = (
-    "2026-10-18T09:12:44.000000Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { "
-    'message: "Rejected(\\"Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access is denied.) '
-    '| cwd=C:\\\\x | cmd=C:\\\\WindowsApps\\\\pwsh.exe -Command 1+1\\")" }\n'
-    "2026-10-18T09:12:45.000000Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { "
-    'message: "Rejected(\\"Failed to create unified exec process: CryptUnprotectData failed: 2148073483\\")" }\n'
-)
+# Real output, captured with its provenance in tests/fixtures/captured-output/provenance.json: the line Codex 0.160
+# wrote to stderr when its execution policy refused the canary's first command, the lines Codex 0.163 wrote when its
+# Windows sandbox could start no process at all, the elevated one with credentials from another machine and the
+# unelevated one starting a packaged pwsh, and Claude Code's stream signed out.
+CAPTURED = REPOSITORY_ROOT / "tests" / "fixtures" / "captured-output"
+CODEX_REJECTION = (CAPTURED / "codex" / "exec-policy-rejection.stderr.txt").read_text(encoding="utf-8")
+CODEX_UNSTARTED = (CAPTURED / "codex" / "exec-sandbox-unstarted.stderr.txt").read_text(encoding="utf-8")
+CLAUDE_SIGNED_OUT = (CAPTURED / "claude" / "signed-out-stream.jsonl").read_text(encoding="utf-8")
 
 
 def forward(path: Path | str) -> str:
@@ -942,20 +935,47 @@ class RunTests(RuntimeCanaryTestCase):
         runner = FakeRuntimes()
         runner.actions["codex"] = lambda *_: Completed(0, "", CODEX_UNSTARTED)
         self.assertIn(
-            f'RUNTIME codex {FIXTURE} BLOCKED "its sandbox could not start a process: CreateProcessAsUserW failed: 5 '
-            "(Access is denied.); the runtime refused 2 commands before any script ran; Codex ran with "
+            f'RUNTIME codex {FIXTURE} BLOCKED "its sandbox could not start a process: CryptUnprotectData failed: '
+            "2148073483; the runtime refused 2 commands before any script ran; Codex ran with "
             "windows.sandbox=elevated, so its Windows sandbox likely did not start; see "
             f'docs/codex-support.md#windows-sandbox-mode" {self.kept("codex")}',
             self.canary(runner),
         )
         self.assertEqual(
             [
-                "its sandbox could not start a process: CreateProcessAsUserW failed: 5 (Access is denied.)",
                 "its sandbox could not start a process: CryptUnprotectData failed: 2148073483",
+                "its sandbox could not start a process: CreateProcessAsUserW failed: 5 (Access is denied.)",
                 "blocked by policy",
             ],
             runtime_canary.rejections("codex", Completed(0, "", CODEX_UNSTARTED + CODEX_REJECTION)),
         )
+
+    def test_a_command_failure_in_a_shape_the_canary_does_not_read_is_named_not_passed_over(self) -> None:
+        # Each captured shape with its message changed, as a Codex release that rewords one would print it.
+        reworded = CODEX_UNSTARTED.replace("Failed to create unified exec process", "Could not spawn") + (
+            CODEX_REJECTION.replace("` rejected: blocked by policy", "` denied by rules")
+        )
+        unread = [line.strip() for line in reworded.splitlines()]
+        self.assertEqual([], runtime_canary.rejections("codex", Completed(0, "", reworded)))
+        self.assertEqual(unread, runtime_canary.unread_rejections("codex", Completed(0, "", reworded)))
+        read = Completed(0, "", CODEX_UNSTARTED + CODEX_REJECTION)
+        self.assertEqual([], runtime_canary.unread_rejections("codex", read))
+        self.assertEqual([], runtime_canary.unread_rejections("copilot", Completed(0, "", reworded)))
+        runner = FakeRuntimes()
+        runner.actions["codex"] = lambda *_: Completed(0, "", reworded)
+        reason = (
+            "never ran a script from the skill; the runtime logged 3 command failures in a shape the canary does not "
+            f"read, so whether its policy or sandbox refused them is unknown: {unread[0]}"
+        )
+        self.assertIn(
+            f"RUNTIME codex {FIXTURE} FAILED {runtime_canary.quote(reason)} {self.kept('codex')}", self.canary(runner)
+        )
+
+    def test_claude_codes_signed_out_stream_lists_its_skills_and_denies_nothing(self) -> None:
+        self.assertEqual(
+            ({"update-config", "debug", "simplify", "loop"}, []), runtime_canary.claude_stream(CLAUDE_SIGNED_OUT)
+        )
+        self.assertIsNone(runtime_canary.discovery_failure(CLAUDE_SIGNED_OUT))
 
     def test_the_canary_creates_each_record_file_empty_before_the_run_appends_to_it(self) -> None:
         # A file the Codex Windows sandbox creates belongs to its sandbox user, and the canary cannot read it back.

@@ -39,12 +39,17 @@ It prints one fact per line:
   CHANGELOG <subject> <read_through> <latest> <count>    the releases newer than the recorded one, the latest of
                                                          them or the recorded one, and the entries kept
   ENTRY <subject> <release> "<terms>" "<entry>"          one kept entry, with the terms it mentions
+  SAMPLE_BEHIND <subject> <sample> <recorded> <latest>   a sample of the runtime's output captured under
+                                                         tests/fixtures/captured-output records a version older
+                                                         than the changelog's latest release, so it is due to be
+                                                         captured again (tools/captured_samples.py)
   MOVED <page> <address>                                 the page redirects to that address
   GONE <page> <status>                                   the page answers 404 or 410
   UNREADABLE <page> "<reason>"                           the page answers another error or cannot be reached
   FAILED <reason>                                        the watch could not run: the record cannot be read, names no
-                                                         changelog for a runtime the deployer supports, or a changelog
-                                                         cannot be fetched or read; exit 1
+                                                         changelog for a runtime the deployer supports, a changelog
+                                                         cannot be fetched or read, or the samples' provenance
+                                                         cannot be read; exit 1
 
 With --summary FILE it also appends the findings to FILE as Markdown, as the workflow does with its step summary. A
 finding is never a failure: the run exits 0 whatever it lists, and 1 only on FAILED. A usage error exits 2.
@@ -84,7 +89,7 @@ from suite_names import is_suite_name
 
 from deployer.paths import Paths
 from deployer.render import CODEX_USER_ONLY
-from tools import runtime_command_lines
+from tools import captured_samples, runtime_command_lines
 from tools.runtime_canary import DECLARED_RUNTIME, REPOSITORY_ROOT, quote
 
 DEFAULT_TIMEOUT = 30.0
@@ -437,8 +442,12 @@ def matching(entry: str, subject: str, watched: Sequence[Term]) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def latest_release(changelog: Changelog, releases: Sequence[Release]) -> tuple[int, ...]:
+    return max((release.release for release in releases), default=release_number(changelog.read_through))
+
+
 def changelog_lines(changelog: Changelog, releases: Sequence[Release], watched: Sequence[Term]) -> list[str]:
-    latest = max((release.release for release in releases), default=release_number(changelog.read_through))
+    latest = latest_release(changelog, releases)
     entries: list[str] = []
     for release in sorted(releases, key=lambda release: release.release):
         for entry in release.entries:
@@ -493,9 +502,15 @@ def watch(top: Path, fetcher: Fetcher, timeout: float, watched: Sequence[Term] |
     read = [(changelog, changelog_releases(changelog, fetcher, timeout)) for changelog in record.changelogs]
     if watched is None:
         watched = terms(top, {changelog.subject: versions_read(changelog, releases) for changelog, releases in read})
+    try:
+        samples = captured_samples.read(top, SUBJECTS)
+    except captured_samples.SampleError as exc:
+        raise WatchError(str(exc)) from exc
     lines = [f"TERMS {kind} {sum(1 for term in watched if term.kind == kind)}" for kind in KINDS]
     for changelog, releases in read:
         lines += changelog_lines(changelog, releases, watched)
+    for changelog, releases in read:
+        lines += captured_samples.behind(samples, changelog.subject, latest_release(changelog, releases))
     return lines + page_lines([page.url for page in record.pages], fetcher, timeout)
 
 
@@ -521,6 +536,14 @@ def summary(lines: Sequence[str]) -> str:
             found, end = decoder.raw_decode(rest)
             entry, _ = decoder.raw_decode(rest, end + 1)
             rows.append(f"| {release} | {markdown_cell(found)} | {markdown_cell(entry)} |")
+    behind = [line for line in lines if line.startswith("SAMPLE_BEHIND ")]
+    rows += ["", "### Captured samples", ""]
+    rows += (
+        ["| Runtime | Sample | Recorded | Latest |", "| --- | --- | --- | --- |"]
+        + [f"| {' | '.join(line.split(' ')[1:])} |" for line in behind]
+        if behind
+        else ["Every captured sample records its runtime's latest release."]
+    )
     pages = [line for line in lines if line.startswith(("MOVED ", "GONE ", "UNREADABLE "))]
     rows += ["", "### Guidance pages", ""]
     rows += (
