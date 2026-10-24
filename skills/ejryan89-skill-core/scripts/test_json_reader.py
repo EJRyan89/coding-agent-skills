@@ -34,6 +34,11 @@ class RefusalTests(unittest.TestCase):
                     f"the JSON holds {name}, which JSON does not define", self.refusal(f'{{"value": {name}}}')
                 )
 
+    def test_nesting_past_the_recursion_limit_is_refused(self) -> None:
+        for text in ("[" * 100_000 + "]" * 100_000, '{"a": ' * 100_000 + "1" + "}" * 100_000):
+            with self.subTest(opening=text[:6]):
+                self.assertEqual("the JSON nests deeper than the parser can read", self.refusal(text))
+
     def test_a_refusal_is_a_value_error(self) -> None:
         self.assertTrue(issubclass(JsonRefused, ValueError))
 

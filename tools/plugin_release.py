@@ -39,6 +39,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from console import run_main
 from flat_text import flat_text
 from release_tags import is_release_tag
@@ -84,7 +85,7 @@ def archives(root: Path, tag: str) -> dict[str, bytes]:
 def read_marketplace(root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The checkout's marketplace document, and its plugin entries, which must each be an object."""
     try:
-        document = json.loads((root / plugin_build.MARKETPLACE).read_text(encoding="utf-8"))
+        document = json_reader.loads((root / plugin_build.MARKETPLACE).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ReleaseError(f"{plugin_build.MARKETPLACE.as_posix()} cannot be read: {exc}") from exc
     plugins = document.get("plugins") if isinstance(document, dict) else None
