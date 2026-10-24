@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import frontmatter as skill_frontmatter
 import review_batches
@@ -31,6 +32,7 @@ import review_pipeline
 import review_run
 import review_source
 from review_config import COMPUTED_DASHBOARD_STATES
+from skill_layout import invoked_skills
 
 from deployer import platform_support
 
@@ -188,15 +190,7 @@ class CrossSkillContractTests(unittest.TestCase):
 
         skills = sorted((REPOSITORY_ROOT / "skills").glob("*/SKILL.md"))
         names = {path.parent.name for path in skills}
-        # A backticked skill name on a line that says "invoke" is a skill another skill starts.
-        invoked = {
-            span.split()[0]
-            for path in skills
-            for line in path.read_text(encoding="utf-8-sig").splitlines()
-            if "invoke" in line
-            for span in re.findall(r"`([^`]+)`", line)
-            if span.split() and span.split()[0] in names
-        }
+        invoked = {name for path in skills for name in invoked_skills(path.read_text(encoding="utf-8-sig"), names)}
         self.assertEqual({"review-prs", "flag-review-finding"}, invoked)
         for name in sorted(invoked):
             with self.subTest(invoked=name):

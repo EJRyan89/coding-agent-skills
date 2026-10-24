@@ -41,6 +41,7 @@ from validation_support import (
     python_trees,
     qualified_name,
     scoped_nodes,
+    skill_dependency_closure,
     skill_script_directories,
     skills_by_name,
 )
@@ -1236,26 +1237,11 @@ def _references(text: str, python: bool) -> frozenset[str]:
     }
 
 
-def _skill_dependencies(root: Path, skill: str) -> list[str]:
-    """The skill_deps closure of a skill, from deploy-meta."""
-    found: list[str] = []
-    pending = [skill]
-    while pending:
-        metadata = root / "deploy-meta" / f"{pending.pop()}.json"
-        if not metadata.is_file():
-            continue
-        for dependency in json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []):
-            if dependency not in found and dependency != skill:
-                found.append(dependency)
-                pending.append(dependency)
-    return found
-
-
 def _reached_dependency_scripts(root: Path, skill: str, own: list[Path]) -> list[Path]:
     """The dependency scripts a skill runs: those its own files import or name, and what those import in turn."""
     scripts: dict[str, Path] = {}
     skills = skills_by_name(root)
-    for dependency in _skill_dependencies(root, skill):
+    for dependency in skill_dependency_closure(root, skill):
         found = sorted((skills[dependency] / "scripts").glob("*.py")) if dependency in skills else []
         for path in found:
             if not is_test_script(path):
@@ -1342,22 +1328,46 @@ def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> l
     return problems
 
 
-GH_FILTERS = {"--jq", "--template"}
 GH_SHELL_CALL = re.compile(r"(?:^|[\s;|&(])gh\s")
-GH_SHELL_FILTER = re.compile(r"\s(--jq|--template|-q)(?=[\s=]|$)")
+# A word that passes gh a filter, in each form gh's flag parser reads: --jq or --template alone, with `=` and the
+# filter, and -q alone or with the filter attached. The Python and the shell readers both read a word by it.
+GH_FILTER_WORD = re.compile(r"(--jq|--template)(?:=.*)?|(-q).*", re.DOTALL)
+GH_SHELL_WORD_BREAK = re.compile(r"[\s;|&()]+")
+
+
+def gh_filter_flag(word: str) -> str | None:
+    """The filter flag a word passes gh, as --jq, --template, or -q, or None when it passes none."""
+    match = GH_FILTER_WORD.fullmatch(word)
+    return None if match is None else match.group(1) or match.group(2)
 
 
 def _gh_filter_flags(tree: ast.Module) -> list[tuple[int, str]]:
     """The line and flag of each gh filter a Python module passes."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and node.value in GH_FILTERS:
-            found.append((node.lineno, node.value))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            flag = gh_filter_flag(node.value)
+            if flag in ("--jq", "--template"):
+                found.append((node.lineno, flag))
         elif isinstance(node, (ast.List, ast.Tuple)):
-            values = {item.value for item in node.elts if isinstance(item, ast.Constant)}
+            values = [
+                item.value for item in node.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            ]
             # gh's -q applies a jq filter to --json output; git's -q never comes with --json.
-            if {"-q", "--json"} <= values:
+            json_output = any(value == "--json" or value.startswith("--json=") for value in values)
+            if json_output and any(gh_filter_flag(value) == "-q" for value in values):
                 found.append((node.lineno, "-q"))
+    return found
+
+
+def _gh_shell_filter_flags(text: str) -> list[tuple[int, str]]:
+    """The line and flag of each gh filter a shell script passes on a line that runs gh."""
+    found: list[tuple[int, str]] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if GH_SHELL_CALL.search(line):
+            found += [
+                (number, flag) for word in GH_SHELL_WORD_BREAK.split(line) if (flag := gh_filter_flag(word)) is not None
+            ]
     return found
 
 
@@ -1378,10 +1388,7 @@ def gh_filter_problems(root: Path) -> list[str]:
             for _, _, tree in python_trees([path], root, problems):
                 found += _gh_filter_flags(tree)
         elif path.suffix.casefold() in {".sh", ".bash", ".ps1"}:
-            for number, line in enumerate(text.splitlines(), start=1):
-                match = GH_SHELL_FILTER.search(line) if GH_SHELL_CALL.search(line) else None
-                if match:
-                    found.append((number, match.group(1)))
+            found += _gh_shell_filter_flags(text)
         for number, flag in sorted(set(found)):
             problems.append(
                 f"{name}:{number} filters gh output with {flag}; parse its JSON in Python instead; see {COMMANDS_DOC}"

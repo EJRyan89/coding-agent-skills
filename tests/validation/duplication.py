@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import json
 import re
 import sys
 import unittest
@@ -24,6 +23,7 @@ from validation_support import (
     module_statements,
     python_trees,
     scripts_put_on_path,
+    skill_dependency_closure,
 )
 
 # A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
@@ -319,18 +319,6 @@ def skill_core_import_problems(root: Path) -> list[str]:
     return sorted(problems)
 
 
-def _skill_dependency_closure(root: Path, skill: str) -> set[str]:
-    """The skills a skill's skill_deps reach, directly or through each other, from deploy-meta."""
-    found: set[str] = set()
-    pending = [skill]
-    while pending:
-        metadata = root / "deploy-meta" / f"{pending.pop()}.json"
-        declared = json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []) if metadata.is_file() else []
-        pending += [name for name in declared if name not in found and name != skill]
-        found |= set(declared) - {skill}
-    return found
-
-
 def _module_names(scripts: Path) -> set[str]:
     return {path.stem for path in scripts.glob("*.py") if not is_test_script(path)}
 
@@ -351,7 +339,7 @@ def skill_script_import_problems(root: Path) -> list[str]:
         if skill == SKILL_CORE:
             continue
         reachable = allowed | _module_names(scripts)
-        for dependency in _skill_dependency_closure(root, skill):
+        for dependency in skill_dependency_closure(root, skill):
             reachable |= _module_names(skills / dependency / "scripts")
         files = sorted(path for path in scripts.glob("*.py") if not is_test_script(path))
         for _, name, tree in python_trees(files, root, problems):

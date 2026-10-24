@@ -566,7 +566,7 @@ class TestedModulePolicy(unittest.TestCase):
             return untested_module_problems(root)
 
     def test_a_module_no_test_imports_fails_however_often_it_is_named(self) -> None:
-        missing = "is imported by no test_*.py; add a test that imports it"
+        missing = "is imported by no Python regression suite; add a test that imports it"
         self.assertEqual(
             [
                 f".claude/skills/local/scripts/local_tool.py {missing}",
@@ -611,8 +611,29 @@ class TestedModulePolicy(unittest.TestCase):
             ),
         )
 
+    def test_every_suite_name_counts_and_a_file_that_is_no_running_suite_does_not(self) -> None:
+        missing = "is imported by no Python regression suite; add a test that imports it"
+        modules = ("by_suffix", "by_dash", "by_dotted", "by_upper", "in_fixture", "by_helper", "by_shell")
+        self.assertEqual(
+            [f"deployer/{name}.py {missing}" for name in ("by_helper", "by_shell", "in_fixture")],
+            self.problems(
+                {
+                    **{f"deployer/{name}.py": "" for name in modules},
+                    # Each name the shared rule gives a suite runs, so its imports count.
+                    "tests/deployer/widget_test.py": "from deployer import by_suffix\n",
+                    "tests/deployer/widget-test.py": "from deployer import by_dash\n",
+                    "tests/deployer/widget.test.py": "from deployer import by_dotted\n",
+                    "tests/deployer/TEST_widget.py": "from deployer import by_upper\n",
+                    # A suite under tests/fixtures/ never runs, a helper is no suite, and a shell suite imports nothing.
+                    "tests/fixtures/repo/test_fixture.py": "from deployer import in_fixture\n",
+                    "tests/deployer/support.py": "from deployer import by_helper\n",
+                    "tests/deployer/test_shell.sh": "python -c 'from deployer import by_shell'\n",
+                }
+            ),
+        )
+
     def test_a_module_counts_as_tested_only_by_an_import_that_loads_its_own_file(self) -> None:
-        missing = "is imported by no test_*.py; add a test that imports it"
+        missing = "is imported by no Python regression suite; add a test that imports it"
         common = "def f():\n    return 1\n"
         self.assertEqual(
             [
@@ -763,14 +784,55 @@ class PytestConfigurationPolicy(unittest.TestCase):
                 self.assertEqual(1, len(self.problems({"pyproject.toml": loosened})))
         self.assertEqual(
             [
-                "pytest.ini holds pytest configuration ahead of pyproject.toml; keep it in [tool.pytest.ini_options] "
-                "alone",
-                "setup.cfg holds pytest configuration ahead of pyproject.toml; keep it in [tool.pytest.ini_options] "
-                "alone",
+                "pytest.ini is a pytest configuration file beside pyproject.toml; keep the configuration in "
+                "[tool.pytest.ini_options] alone",
+                "setup.cfg is a pytest configuration file beside pyproject.toml; keep the configuration in "
+                "[tool.pytest.ini_options] alone",
                 f"pyproject.toml: [tool.pytest] must be ini_options = {PYTEST_CONFIGURATION!r}, not {{}}",
             ],
             self.problems({"pyproject.toml": "[tool.ruff]\n", "pytest.ini": "[pytest]\n", "setup.cfg": ""}),
         )
+
+    def test_each_configuration_file_at_the_root_beside_pyproject_toml_fails(self) -> None:
+        # pytest.toml, from pytest 9, takes precedence over pyproject.toml even when empty.
+        pinned = '[tool.pytest.ini_options]\naddopts = ["-p", "no:cacheprovider", "--capture=no"]\nstrict = true\n'
+        for name in ("pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [
+                        f"{name} is a pytest configuration file beside pyproject.toml; keep the configuration in "
+                        "[tool.pytest.ini_options] alone"
+                    ],
+                    self.problems({"pyproject.toml": pinned, name: ""}),
+                )
+
+    def test_a_configuration_file_in_a_suite_s_folder_or_between_it_and_the_root_fails(self) -> None:
+        pinned = '[tool.pytest.ini_options]\naddopts = ["-p", "no:cacheprovider", "--capture=no"]\nstrict = true\n'
+        suites = {
+            "pyproject.toml": pinned,
+            "tests/deployer/test_a.py": "def test_a():\n    pass\n",
+            "skills/a/SKILL.md": "",
+            "skills/a/scripts/test_b.py": "def test_b():\n    pass\n",
+        }
+        self.assertEqual([], self.problems(suites))
+        for path, suite in (
+            ("tests/deployer/pytest.ini", "tests/deployer/test_a.py"),
+            ("tests/pytest.toml", "tests/deployer/test_a.py"),
+            ("tests/deployer/.pytest.toml", "tests/deployer/test_a.py"),
+            ("skills/a/scripts/pyproject.toml", "skills/a/scripts/test_b.py"),
+            ("skills/a/tox.ini", "skills/a/scripts/test_b.py"),
+            ("skills/setup.cfg", "skills/a/scripts/test_b.py"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    [
+                        f"{path} is a pytest configuration file pytest reads for {suite} instead of the root's "
+                        "pyproject.toml; keep the configuration there"
+                    ],
+                    self.problems({**suites, path: ""}),
+                )
+        # A folder no suite sits in or below is never searched.
+        self.assertEqual([], self.problems({**suites, "docs/pytest.ini": ""}))
 
 
 class PoolSharedStatePolicy(unittest.TestCase):
