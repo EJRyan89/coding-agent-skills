@@ -60,6 +60,10 @@ def catalog_answer(*skills: tuple[str, str]) -> str:
     return json.dumps([{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": text}]}])
 
 
+# A skill Codex ships, which its catalog offers the model beside the deployed ones.
+SYSTEM_SKILL = ("skill-creator", "C:/Profiles/YourName/.codex/skills/.system/skill-creator/SKILL.md")
+
+
 def copilot_answer(*skills: tuple[str, str, bool]) -> str:
     """`copilot skill list --json`, which names each skill by its directory."""
     return json.dumps(
@@ -183,6 +187,51 @@ class CapturedListingTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ListingError, "lists a skill in a shape this reader does not know: - sample-skill"):
             discovery.parse_codex_catalog(text.splitlines())
+
+    def test_a_codex_catalog_over_its_skills_budget_leaves_out_the_skills_past_it(self) -> None:
+        found = discovery.parse_codex_catalog(captured("codex/debug-prompt-input-over-budget.json").splitlines())
+        self.assertEqual(
+            [
+                "imagegen",
+                "openai-docs",
+                "skill-creator",
+                "skill-installer",
+                "sample-skill-0",
+                "sample-skill-1",
+                "sample-skill-2",
+            ],
+            list(found),
+        )
+        self.assertEqual(
+            [Listed(forward(Path(CAPTURED_TEMP) / "work/.agents/skills/sample-skill-2"), True)], found["sample-skill-2"]
+        )
+
+    def test_a_codex_catalog_without_a_roots_table_names_each_skill_by_its_absolute_file(self) -> None:
+        found = discovery.parse_codex_catalog(captured("codex/debug-prompt-input-absolute-paths.json").splitlines())
+        self.assertEqual(
+            {"imagegen": [Listed(forward(Path(CAPTURED_TEMP) / "home/.codex/skills/.system/imagegen"), True)]}, found
+        )
+
+    def test_a_codex_catalog_that_lists_no_skill_is_a_listing_error(self) -> None:
+        # Codex lists its own system skills, so prompt input naming none is in a shape this reader does not know;
+        # read as an empty catalog, it would pass every user-only adapter as kept out of the model's catalog.
+        sample = captured("codex/debug-prompt-input.json")
+        start = sample.index("\\n- skill-creator:")
+        end = sample.index("\\n</skills_instructions>")
+        no_message = f"its prompt input has no skills message, which lists them under {discovery.CODEX_CATALOG_SKILLS}"
+        for case, text, reason in (
+            ("no message", "[]", no_message),
+            ("an empty object", "{}", no_message),
+            ("another heading", sample.replace(discovery.CODEX_CATALOG_SKILLS, "### Skills offered"), no_message),
+            (
+                "an empty list",
+                sample[:start] + sample[end:],
+                f"its prompt input lists no skill under {discovery.CODEX_CATALOG_SKILLS}",
+            ),
+        ):
+            with self.subTest(case=case), self.assertRaises(ListingError) as caught:
+                discovery.parse_codex_catalog(text.splitlines())
+            self.assertEqual(reason, str(caught.exception))
 
     def test_the_codex_catalog_reads_only_the_list_under_its_first_available_skills_heading(self) -> None:
         # A list item after the skills list ends, at the next heading or the closing tag, or under a later heading of
@@ -445,8 +494,21 @@ class ParsingTests(unittest.TestCase):
     def test_codex_is_asked_for_the_skills_of_the_working_directory_after_its_handshake(self) -> None:
         cwd = Path("C:/a dir/work")
         requests = [json.loads(line) for line in discovery.codex_requests(cwd)]
-        self.assertEqual(["initialize", "initialized", "skills/list"], [request["method"] for request in requests])
-        self.assertEqual({"cwds": [str(cwd)]}, requests[2]["params"])
+        # The app-server page's handshake: initialize, then the initialized notification with empty params.
+        self.assertEqual(
+            [
+                {
+                    "method": "initialize",
+                    "id": 0,
+                    "params": {
+                        "clientInfo": {"name": "coding-agent-skills", "title": "coding-agent-skills", "version": "1"}
+                    },
+                },
+                {"method": "initialized", "params": {}},
+                {"method": "skills/list", "id": 1, "params": {"cwds": [str(cwd)]}},
+            ],
+            requests,
+        )
         self.assertTrue(discovery.codex_answered(json.dumps({"id": discovery.CODEX_LIST_ID, "result": {}})))
         self.assertFalse(discovery.codex_answered(json.dumps({"id": 0, "result": {}})))
         self.assertFalse(discovery.codex_answered("not json"))
@@ -703,6 +765,9 @@ class VerifyCommandTests(DeployerTestCase):
         everything = [(name, self.adapter(name), True) for name in ("alpha", "beta")]
         codex = everything if codex is None else codex
         self.runtimes.answers["codex"] = [codex_answer(*((name, f"{path}/SKILL.md", on) for name, path, on in codex))]
+        # Codex offers the model every enabled skill it lists, beside its own system skill.
+        offered = [(name, f"{path}/SKILL.md") for name, path, on in codex if on]
+        self.runtimes.answers["codex-catalog"] = [catalog_answer(*offered, SYSTEM_SKILL)]
         self.runtimes.answers["copilot"] = [copilot_answer(*(everything if copilot is None else copilot))]
 
     def groups(self, output: str, label: str) -> dict[str, list[str]]:
@@ -743,7 +808,8 @@ class VerifyCommandTests(DeployerTestCase):
     def test_each_runtime_lists_from_an_empty_directory_it_removes_afterwards(self) -> None:
         self.answer()
         self.verify()
-        self.assertEqual([True, True], self.runtimes.cwd_was_empty)
+        # Codex's listing and catalog, then Copilot's listing.
+        self.assertEqual([True, True, True], self.runtimes.cwd_was_empty)
         directories = {call[1] for call in self.runtimes.calls}
         self.assertEqual(1, len(directories))
         self.assertFalse(directories.pop().exists())
@@ -815,6 +881,57 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertEqual({"FOUND": ["alpha", "beta", "gamma"]}, self.groups(result.output, "CODEX CLI"))
         catalog_calls = [call for call in self.runtimes.calls if call[0][1:] == list(discovery.CODEX_CATALOG)]
         self.assertEqual(2, len(catalog_calls))
+
+    def test_an_adapter_the_model_may_start_that_codex_leaves_out_of_its_catalog_is_omitted_and_fails(self) -> None:
+        # Codex's skills budget leaves the skills past it out of the model's catalog, though it still lists them; a
+        # same-named skill elsewhere in the catalog is not the adapter.
+        self.answer()
+        for catalog in (
+            [("alpha", f"{self.adapter('alpha')}/SKILL.md"), SYSTEM_SKILL],
+            [("alpha", f"{self.adapter('alpha')}/SKILL.md"), ("beta", "C:/elsewhere/skills/beta/SKILL.md")],
+        ):
+            with self.subTest(catalog=catalog):
+                self.runtimes.answers["codex-catalog"] = [catalog_answer(*catalog)]
+                result = self.verify()
+                self.assertEqual(1, result.code, result.output)
+                self.assertEqual(
+                    {"OMITTED": [f"beta ({verify.OMITTED_DETAIL})"], "FOUND": ["alpha"]},
+                    self.groups(result.output, "CODEX CLI"),
+                )
+                self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
+                self.assertIn("Verification failed for Codex CLI.\nSee docs/codex-support.md.\n", result.output)
+
+    def test_codex_reads_the_catalog_with_no_user_only_adapter_deployed(self) -> None:
+        self.answer()
+        result = self.verify()
+        self.assertEqual(0, result.code, result.output)
+        catalog_calls = [call for call in self.runtimes.calls if call[0][1:] == list(discovery.CODEX_CATALOG)]
+        self.assertEqual(1, len(catalog_calls))
+
+    def test_a_codex_catalog_naming_no_skill_or_in_another_shape_fails_codex_as_the_catalog_probe(self) -> None:
+        # Read as an empty catalog, either would pass the user-only adapter as kept out of the model's catalog.
+        self.make_skill("gamma", "Gamma", user_only=True)
+        self.deploy_ok("--all")
+        everything = [(name, self.adapter(name), True) for name in ("alpha", "beta", "gamma")]
+        self.answer(codex=everything, copilot=everything)
+        offered = catalog_answer(*((name, f"{self.adapter(name)}/SKILL.md") for name in ("alpha", "beta", "gamma")))
+        for catalog, reason in (
+            ("[]", "its prompt input has no skills message, which lists them under ### Available skills"),
+            (
+                offered.replace("(file: ", "(path: "),
+                "its prompt input lists a skill in a shape this reader does not know: - alpha",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                self.runtimes.answers["codex-catalog"] = [catalog]
+                result = self.verify()
+                self.assertEqual(1, result.code, result.output)
+                self.assertIn(
+                    "\n=== CODEX CLI ===\n\nListed its skills, but cannot read which ones it offers the model "
+                    f"(codex debug prompt-input): {reason}",
+                    result.output,
+                )
+                self.assertNotIn("FOUND (", result.output.split("=== COPILOT CLI ===")[0])
 
     def test_a_codex_catalog_that_cannot_be_read_fails_codex_naming_that_probe_not_the_listing(self) -> None:
         self.make_skill("gamma", "Gamma", user_only=True)
@@ -993,7 +1110,10 @@ class VerifyCommandTests(DeployerTestCase):
             result.output,
         )
         self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "CODEX CLI"))
-        self.assertEqual([EXECUTABLES["codex"]], [call[0][0] for call in self.runtimes.calls])
+        self.assertEqual(
+            [discovery.listing_command("codex", EXECUTABLES["codex"]), discovery.catalog_command(EXECUTABLES["codex"])],
+            [call[0] for call in self.runtimes.calls],
+        )
         self.assertTrue(
             result.output.endswith("Verification failed for Copilot CLI.\nSee docs/copilot-support.md.\n\n"),
             result.output,
@@ -1017,7 +1137,8 @@ class VerifyCommandTests(DeployerTestCase):
         self.versions.update(codex="codex-cli 0.88.0\n", copilot="no version here\n")
         result = self.verify()
         self.assertEqual(0, result.code, result.output)
-        self.assertEqual(2, len(self.runtimes.calls))
+        # Each runtime's listing, and Codex's catalog.
+        self.assertEqual(3, len(self.runtimes.calls))
 
     def test_nothing_verified_is_a_failure(self) -> None:
         self.installed.clear()
