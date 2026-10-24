@@ -59,8 +59,11 @@ MISSING_GIT = "Git executable 'git' was not found; install Git first"
 # updated some refs leaves them where a second fetch of the same refspecs puts them, so a repeat is safe. `push` may
 # have landed before its answer was lost, and `clone` runs through no skill's client, so neither is here.
 RETRIED_SUBCOMMANDS = frozenset({"fetch", "ls-remote"})
-# git's options that take their value as the next argument, so the subcommand is never read from a value.
-GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
+# git's options that take their value as the next argument, so the subcommand is never read from a value: every one
+# git.c reads that way.
+GLOBAL_VALUE_OPTIONS = frozenset(
+    {"-c", "-C", "--attr-source", "--config-env", "--git-dir", "--namespace", "--super-prefix", "--work-tree"}
+)
 # A dropped connection, a failed handshake, a host briefly not found, or a gateway briefly down clears in seconds; a
 # longer outage should fail fast rather than hold a skill for minutes, leaving the rerun to the user.
 TRANSIENT_RETRIES = 2
@@ -243,27 +246,29 @@ class GitStream:
 
     def read(self, size: int) -> bytes:
         """The next `size` bytes of output, fewer only at its end."""
-        return self._bounded(lambda: self._running.read(size))
+        return self._bounded(lambda: self._running.read(size), "gave no output for")
 
     def readline(self, limit: int | None = None) -> bytes:
         """The next line of output with its newline, or what is left at its end; with `limit`, at most that many
         bytes of it, leaving the rest of a longer line to the next read."""
-        return self._bounded(lambda: self._running.readline(limit))
+        return self._bounded(lambda: self._running.readline(limit), "gave no output for")
 
     def wait(self) -> int:
-        """The exit status once git has exited."""
-        return self._bounded(self._running.wait)
+        """The exit status once git has exited, or a `timeout` GitError when it has not exited within the idle
+        timeout."""
+        return self._bounded(self._running.wait, "had not exited after")
 
     def stderr(self) -> str:
         """What git has written to stderr so far, with each byte that is not UTF-8 as U+FFFD."""
         return self._running.errors().decode("utf-8", "replace")
 
-    def _bounded(self, call: Callable[[], T]) -> T:
+    def _bounded(self, call: Callable[[], T], waited: str) -> T:
+        """`call`'s answer, or a `timeout` GitError naming what git `waited` through the time limit doing."""
         try:
             return call()
         except subprocess.TimeoutExpired as exc:
             command = " ".join(str(part) for part in exc.cmd) if isinstance(exc.cmd, list) else str(exc.cmd)
-            raise GitError(f"{command} gave no output for {exc.timeout:g} seconds", kind="timeout") from exc
+            raise GitError(f"{command} {waited} {exc.timeout:g} seconds", kind="timeout") from exc
 
 
 def _refuse_input(command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult:
