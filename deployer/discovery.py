@@ -44,6 +44,8 @@ CODEX_LIST_ID = 1
 CODEX_CATALOG = ("debug", "prompt-input")
 CODEX_CATALOG_ROOT = re.compile(r"^- `(r\d+)` = `([^`]+)`$", re.MULTILINE)
 CODEX_CATALOG_SKILL = re.compile(r"^- ([\w.-]+): .*\(file: ([^)\s]+)\)$", re.MULTILINE)
+# The heading of the skills message's list of skills, under which every list item is one skill.
+CODEX_CATALOG_SKILLS = "### Available skills"
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.TemporaryFile": "a runtime's stderr is captured in an unnamed file under the system temporary directory, "
@@ -241,9 +243,27 @@ def parse_copilot(output: str) -> Listing:
         raise ListingError("its skill list is not a JSON array")
     found: Listing = {}
     for entry in entries:
-        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and isinstance(entry.get("path"), str):
-            found.setdefault(entry["name"], []).append(Listed(_directory(entry["path"]), entry.get("enabled") is True))
+        name, path, enabled = _skill(entry, "its skill list")
+        found.setdefault(name, []).append(Listed(_directory(path), enabled))
     return found
+
+
+def _shape(entry: object) -> str:
+    """What an entry holds, for a refusal: its keys, or its JSON type."""
+    if isinstance(entry, dict):
+        return f"an object with {', '.join(sorted(map(str, entry))) or 'no key'}"
+    return "a list" if isinstance(entry, list) else type(entry).__name__
+
+
+def _skill(entry: object, where: str) -> tuple[str, str, bool]:
+    """A listed skill's name, path, and whether it is enabled. An entry that is not an object with a string name and
+    path and a boolean enabled is refused, since a listing read past it would report the skill missing or turned off
+    when the runtime said something this reader does not know."""
+    if isinstance(entry, dict):
+        name, path, enabled = entry.get("name"), entry.get("path"), entry.get("enabled")
+        if isinstance(name, str) and isinstance(path, str) and isinstance(enabled, bool):
+            return name, path, enabled
+    raise ListingError(f"{where} has an entry of a shape this reader does not know: {_shape(entry)}")
 
 
 def codex_requests(cwd: Path) -> list[str]:
@@ -290,12 +310,14 @@ def _codex_groups(lines: list[str]) -> list[dict[str, object]]:
     return [group for group in data if isinstance(group, dict)]
 
 
-def _entries(group: dict[str, object], field: str) -> list[dict[str, object]]:
-    """The entries of a group's field that are objects naming a path, which is then a string."""
-    listed = group.get(field) or []
+def _entries(group: dict[str, object], field: str) -> list[object]:
+    """The entries of a group's field, none when the group leaves it out; a field of another shape is refused."""
+    listed = group.get(field)
+    if listed is None:
+        return []
     if not isinstance(listed, list):
-        listed = []
-    return [entry for entry in listed if isinstance(entry, dict) and isinstance(entry.get("path"), str)]
+        raise ListingError(f"its skills/list answer's {field} is {_shape(listed)}, not an array")
+    return listed
 
 
 def parse_codex(lines: list[str]) -> Listing:
@@ -303,20 +325,24 @@ def parse_codex(lines: list[str]) -> Listing:
     found: Listing = {}
     for group in _codex_groups(lines):
         for entry in _entries(group, "skills"):
-            name = entry.get("name")
-            if isinstance(name, str):
-                directory = _directory(str(Path(str(entry["path"])).parent))
-                found.setdefault(name, []).append(Listed(directory, entry.get("enabled") is True))
+            name, path, enabled = _skill(entry, "its skills/list answer")
+            found.setdefault(name, []).append(Listed(_directory(str(Path(path).parent)), enabled))
     return found
 
 
 def parse_codex_refusals(lines: list[str]) -> tuple[Refused, ...]:
     """The skill files the app server's answer to `skills/list` says Codex could not load, with its reasons."""
-    return tuple(
-        Refused(_directory(str(Path(str(entry["path"])).parent)), str(entry.get("message") or "no reason given"))
-        for group in _codex_groups(lines)
-        for entry in _entries(group, "errors")
-    )
+    refused: list[Refused] = []
+    for group in _codex_groups(lines):
+        for entry in _entries(group, "errors"):
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if not isinstance(entry, dict) or not isinstance(path, str):
+                raise ListingError(
+                    f"its skills/list answer has an error of a shape this reader does not know: {_shape(entry)}"
+                )
+            reason = str(entry.get("message") or "no reason given")
+            refused.append(Refused(_directory(str(Path(path).parent)), reason))
+    return tuple(refused)
 
 
 def parse_codex_catalog(lines: list[str]) -> Listing:
@@ -333,11 +359,28 @@ def parse_codex_catalog(lines: list[str]) -> Listing:
     found: Listing = {}
     for text in texts:
         roots = dict(CODEX_CATALOG_ROOT.findall(text))
-        for name, file in CODEX_CATALOG_SKILL.findall(text):
+        for name, file in _catalog_skills(text):
             alias, _, rest = file.partition("/")
             path = f"{roots[alias]}/{rest}" if alias in roots else file
             found.setdefault(name, []).append(Listed(_directory(str(Path(path).parent)), True))
     return found
+
+
+def _catalog_skills(text: str) -> list[tuple[str, str]]:
+    """Each skill a skills message lists, as its name and file; a list item under its "### Available skills" that
+    is not of that shape is refused, since passing over it would report the skill out of the model's catalog."""
+    if CODEX_CATALOG_SKILLS not in text:
+        return CODEX_CATALOG_SKILL.findall(text)
+    skills: list[tuple[str, str]] = []
+    for line in text.split(CODEX_CATALOG_SKILLS, 1)[1].splitlines():
+        if line.startswith(("#", "<")):
+            break
+        if line.startswith("- "):
+            listed = CODEX_CATALOG_SKILL.match(line)
+            if listed is None:
+                raise ListingError(f"its prompt input lists a skill in a shape this reader does not know: {line}")
+            skills.append((listed[1], listed[2]))
+    return skills
 
 
 def _strings(node: object) -> list[str]:

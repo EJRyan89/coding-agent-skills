@@ -1,0 +1,2 @@
+ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: "Rejected(\"Failed to create unified exec process: CryptUnprotectData failed: 2148073483\")" }
+ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: "Rejected(\"Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access is denied.) | cwd=<temp> | cmd=...\\WindowsApps\\pwsh.exe ...\")" }

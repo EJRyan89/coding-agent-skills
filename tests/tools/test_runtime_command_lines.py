@@ -6,6 +6,7 @@ runtime would, from its arguments alone, and a lookup that names a program nobod
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -24,7 +25,7 @@ from review_hosts import COPILOT_SYNC_SESSION_VERSION
 
 from deployer import discovery, platform_support
 from deployer import tools as deployer_tools
-from tools import runtime_canary
+from tools import captured_samples, runtime_canary
 from tools import runtime_command_lines as lines
 from tools.runtime_canary import Completed
 
@@ -69,6 +70,16 @@ class StubRuntimes:
 KNOWN_FLAGS: dict[str, list[str]] = {}
 
 
+# Real output, captured with its provenance in tests/fixtures/captured-output/provenance.json.
+CAPTURED = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "captured-output"
+
+
+def captured(sample: str, status: int, stream: str = "stderr") -> Completed:
+    """A start that printed the captured sample on `stream` and exited with `status`, as the capture did."""
+    text = (CAPTURED / sample).read_text(encoding="utf-8")
+    return Completed(status, text, "") if stream == "stdout" else Completed(status, "", text)
+
+
 def refusing(refusal: Completed) -> Answer:
     """An answer that refuses every command line with `refusal`."""
     return lambda arguments: refusal
@@ -90,9 +101,13 @@ class RuntimeCommandLinesTestCase(unittest.TestCase):
                 )
                 KNOWN_FLAGS[runtime] = [flag for line in built for flag in line.flags]
 
-    def check(self, stub: StubRuntimes, runtimes: tuple[str, ...] = runtime_canary.RUNTIMES) -> list[str]:
+    def check(
+        self, stub: StubRuntimes, runtimes: tuple[str, ...] = runtime_canary.RUNTIMES, run: str = "run"
+    ) -> list[str]:
         printed: list[str] = []
-        found = lines.run(runtimes, 5, self.root / "run", runner=stub, which=lambda name: name, say=printed.append)
+        found = lines.run(
+            runtimes, 5, self.root / run, runner=stub, which=lambda name: name, say=printed.append, samples=()
+        )
         self.assertEqual(printed, found)
         return found
 
@@ -163,6 +178,79 @@ class RefusedTests(RuntimeCommandLinesTestCase):
             found,
         )
         self.assertTrue(lines.failed(found))
+
+
+class CapturedTests(RuntimeCommandLinesTestCase):
+    """Each runtime's own refusal of a flag and its own signed-out start, as it printed them, read as what they are."""
+
+    def test_each_runtimes_real_refusal_of_a_flag_is_read_as_one(self) -> None:
+        for index, (runtime, sample, status, line) in enumerate(
+            (
+                ("claude", "claude/unknown-flag.stderr.txt", 1, "REMOVED claude runtime-canary --no-such-flag "),
+                ("codex", "codex/exec-unknown-flag.stderr.txt", 2, "REMOVED codex runtime-canary --no-such-flag "),
+                ("copilot", "copilot/retired-flag.stderr.txt", 1, "REMOVED copilot runtime-canary --remote "),
+                (
+                    "copilot",
+                    "copilot/unknown-flag.stderr.txt",
+                    1,
+                    'REFUSED copilot runtime-canary "error: Invalid command format."',
+                ),
+            )
+        ):
+            with self.subTest(sample=sample):
+                found = self.check(StubRuntimes(refusing(captured(sample, status))), (runtime,), f"run-{index}")
+                self.assertTrue(any(found_line.startswith(line) for found_line in found), found)
+                self.assertTrue(lines.failed(found))
+
+    def test_each_runtimes_real_signed_out_start_is_accepted(self) -> None:
+        for runtime, start in (
+            ("claude", captured("claude/signed-out-stream.jsonl", 1, "stdout")),
+            ("copilot", captured("copilot/signed-out-prompt.stderr.txt", 1)),
+        ):
+            with self.subTest(runtime=runtime):
+                found = self.check(StubRuntimes(refusing(start)), (runtime,))
+                self.assertIn(f"ACCEPTED {runtime} runtime-canary", found)
+
+    def test_a_sample_of_an_older_version_than_the_installed_one_is_behind_and_never_fails(self) -> None:
+        samples = [
+            captured_samples.Sample("codex/old.txt", {"codex": (0, 162, 0)}, "2026-10-01", "a start"),
+            captured_samples.Sample("codex/current.txt", {"codex": (0, 163, 0)}, "2026-10-01", "a start"),
+            captured_samples.Sample("copilot/old.txt", {"copilot-cli": (1, 0, 1)}, "2026-10-01", "a start"),
+        ]
+        found = lines.run(
+            ("codex", "copilot"),
+            5,
+            self.root / "run",
+            runner=StubRuntimes(),
+            which=lambda name: name,
+            say=lambda _: None,
+            samples=samples,
+        )
+        # Each line names the runtime as the tool does, copilot, though its sample records copilot-cli.
+        self.assertEqual(
+            [
+                "VERSION codex 0.163.0",
+                "SAMPLE_BEHIND codex codex/old.txt 0.162.0 0.163.0",
+                "VERSION copilot 1.0.103",
+                "SAMPLE_BEHIND copilot copilot/old.txt 1.0.1 1.0.103",
+            ],
+            [line for line in found if line.startswith(("VERSION ", "SAMPLE_BEHIND "))],
+        )
+        self.assertFalse(lines.failed(found))
+        self.assertIn("| codex | codex/old.txt | SAMPLE_BEHIND 0.162.0 0.163.0 |", lines.summary(found))
+
+    def test_without_samples_given_a_run_ages_the_ones_this_checkout_records(self) -> None:
+        recorded = json.loads((CAPTURED / "provenance.json").read_text(encoding="utf-8"))["samples"]
+        expected = [
+            f"SAMPLE_BEHIND codex {path} {sample['versions']['codex']} 0.163.0"
+            for path, sample in recorded.items()
+            if "codex" in sample["versions"] and tuple(map(int, sample["versions"]["codex"].split("."))) < (0, 163, 0)
+        ]
+        found = lines.run(
+            ("codex",), 5, self.root / "run", runner=StubRuntimes(), which=lambda name: name, say=lambda _: None
+        )
+        self.assertEqual(expected, [line for line in found if line.startswith("SAMPLE_BEHIND ")])
+        self.assertTrue(expected)
 
 
 class FailedTests(RuntimeCommandLinesTestCase):

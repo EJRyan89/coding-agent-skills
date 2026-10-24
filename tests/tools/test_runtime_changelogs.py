@@ -175,7 +175,8 @@ class ChangelogTests(unittest.TestCase):
 
 
 # Real changelog entries, captured with their provenance, one for each way an entry writes a term.
-CAPTURED = REPOSITORY / "tests" / "fixtures" / "runtime-changelogs"
+CAPTURED = REPOSITORY / "tests" / "fixtures" / "captured-output" / "changelogs"
+PROVENANCE = Path("tests") / "fixtures" / "captured-output" / "provenance.json"
 ENTRIES: dict[str, dict[str, str]] = json.loads((CAPTURED / "entries.json").read_text(encoding="utf-8"))["entries"]
 COPILOT_CHANGELOG = (CAPTURED / "copilot-cli-changelog.md").read_text(encoding="utf-8")
 
@@ -213,6 +214,23 @@ COPILOT_CHANGELOG = (CAPTURED / "copilot-cli-changelog.md").read_text(encoding="
 def test_a_term_matches_only_where_a_real_entry_names_it(term: Term, entry: str, matched: bool) -> None:
     captured = ENTRIES[entry]
     assert (watch.matching(captured["entry"], captured["changelog"], [term]) == [term.text]) is matched
+
+
+CODEX_RELEASES = json.loads((CAPTURED / "codex-releases.json").read_text(encoding="utf-8"))
+
+
+def test_a_real_codex_releases_page_is_read_by_release_with_its_prerelease_left_out() -> None:
+    releases = watch.github_releases(CODEX_RELEASES, "https://api.github.com/repos/openai/codex/releases")
+    assert [release.release for release in releases] == [(0, 164, 0), (0, 163, 0)]
+    assert releases[0].entries[-1] == (
+        "CLI configuration overrides are preserved when `-c` or `--config` appears at multiple subcommand levels. "
+        "(#56022)"
+    )
+    assert watch.matching(releases[0].entries[-1], "codex", [Term("flag", "-c", "codex")]) == ["-c"]
+    changelog = Changelog("codex", "https://example.com/releases", "github-releases", "0.163.0")
+    url = f"{changelog.url}?per_page=100&page=1"
+    fetcher = StubFetcher({url: Fetched(200, url, json.dumps(CODEX_RELEASES).encode("utf-8"))})
+    assert [release.name for release in watch.changelog_releases(changelog, fetcher, 1.0)] == ["0.164.0"]
 
 
 # No captured changelog writes a variable in PowerShell's or cmd's form, so these two entries are written here.
@@ -374,6 +392,63 @@ class MainTests(unittest.TestCase):
         self.assertIn("| 99.0.0 | --allowedTools allowed-tools | Changed --allowedTools and `allowed-tools` |", text)
         self.assertIn(f"- MOVED {record.pages[0].url} https://example.com/moved", text)
         self.assertIn("No entry mentions a watched term.", text)
+        # Every runtime's latest release is 99.0.0 here, so every captured sample is behind it.
+        samples = json.loads((REPOSITORY / PROVENANCE).read_text(encoding="utf-8"))["samples"]
+        recorded = samples["changelogs/copilot-cli-changelog.md"]["versions"]["copilot-cli"]
+        self.assertIn(f"SAMPLE_BEHIND copilot-cli changelogs/copilot-cli-changelog.md {recorded} 99.0.0", lines)
+        self.assertIn(f"| copilot-cli | changelogs/copilot-cli-changelog.md | {recorded} | 99.0.0 |", text)
+        behind = {line.split(" ")[2] for line in lines if line.startswith("SAMPLE_BEHIND ")}
+        self.assertEqual(set(samples), behind)
+
+    def test_a_sample_at_its_runtimes_latest_release_is_not_behind(self) -> None:
+        table = self.table()
+        record = watch.read_record(REPOSITORY)
+        for changelog in record.changelogs:
+            if changelog.format == "markdown":
+                table[changelog.url] = Fetched(200, changelog.url, f"## {changelog.read_through}\n".encode())
+            else:
+                url = f"{changelog.url}?per_page=100&page=1"
+                page = [release(f"v{changelog.read_through}", "")]
+                table[url] = Fetched(200, url, json.dumps(page).encode("utf-8"))
+        samples = json.loads((REPOSITORY / PROVENANCE).read_text(encoding="utf-8"))["samples"]
+        latest = {changelog.subject: changelog.read_through for changelog in record.changelogs}
+        expected = {
+            path
+            for path, sample in samples.items()
+            if any(
+                tuple(map(int, version.split("."))) < tuple(map(int, latest[runtime].split(".")))
+                for runtime, version in sample["versions"].items()
+            )
+        }
+        code, lines = self.run_main(table)
+        self.assertEqual(0, code, lines)
+        self.assertEqual(expected, {line.split(" ")[2] for line in lines if line.startswith("SAMPLE_BEHIND ")})
+
+    def test_the_summary_tables_each_sample_behind_or_says_none_is(self) -> None:
+        def section(lines: list[str]) -> str:
+            text = watch.summary(lines)
+            return text[text.index("### Captured samples") : text.index("### Guidance pages")]
+
+        behind = [
+            "SAMPLE_BEHIND codex codex/version.txt 0.163.0 0.164.0",
+            "SAMPLE_BEHIND copilot-cli copilot/skill-list.json 1.0.103 1.0.104",
+        ]
+        self.assertEqual(
+            "### Captured samples\n\n"
+            "| Runtime | Sample | Recorded | Latest |\n"
+            "| --- | --- | --- | --- |\n"
+            "| codex | codex/version.txt | 0.163.0 | 0.164.0 |\n"
+            "| copilot-cli | copilot/skill-list.json | 1.0.103 | 1.0.104 |\n\n",
+            section(behind),
+        )
+        self.assertEqual(
+            "### Captured samples\n\nNo captured sample is older than its runtime's latest release.\n\n", section([])
+        )
+
+    def test_a_blank_line_ends_the_releases_table_before_the_samples_heading(self) -> None:
+        # A line that is not blank there would join the releases table and break its rendering in the step summary.
+        lines = ["CHANGELOG codex 0.163.0 0.164.0 1", 'ENTRY codex 0.164.0 "-c" "Read -c twice"']
+        self.assertIn("| 0.164.0 | -c | Read -c twice |\n\n### Captured samples\n", watch.summary(lines))
 
     def test_a_flag_the_code_passes_only_before_a_release_it_reads_is_watched(self) -> None:
         # Copilot CLI 1.0.103 retired --no-remote, which the code still passes to the releases before it.
@@ -383,6 +458,8 @@ class MainTests(unittest.TestCase):
         copilot["read_through"] = "1.0.100"
         (top / GUIDANCE_PATH).parent.mkdir(parents=True)
         (top / GUIDANCE_PATH).write_text(json.dumps(record), encoding="utf-8")
+        (top / PROVENANCE).parent.mkdir(parents=True)
+        (top / PROVENANCE).write_bytes((REPOSITORY / PROVENANCE).read_bytes())
         table = {**self.table(), copilot["url"]: Fetched(200, copilot["url"], COPILOT_CHANGELOG.encode("utf-8"))}
         with pytest.MonkeyPatch.context() as patch:
             printed: list[str] = []

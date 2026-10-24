@@ -1,0 +1,94 @@
+{
+  "samples": {
+    "changelogs/entries.json": {
+      "versions": {"claude-code": "2.1.310", "copilot-cli": "1.0.103"},
+      "captured": "2026-10-23",
+      "how": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md and https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md were downloaded whole, their latest releases being the versions named; each entry is one of their bullets byte for byte without the leading '- '."
+    },
+    "changelogs/copilot-cli-changelog.md": {
+      "versions": {"copilot-cli": "1.0.103"},
+      "captured": "2026-10-23",
+      "how": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md downloaded whole; this is its text from the 1.0.103 heading up to the 1.0.100 heading."
+    },
+    "changelogs/codex-releases.json": {
+      "versions": {"codex": "0.164.0"},
+      "captured": "2026-10-24",
+      "how": "gh api 'repos/openai/codex/releases?per_page=40'; kept are the releases rust-v0.164.0 and rust-v0.163.0 and the prerelease rust-v0.165.0-alpha.1, each with its tag_name, name, draft, prerelease, and published_at as returned, and each release's body cut to its first heading and some of its bullets, each byte for byte."
+    },
+    "claude/version.txt": {
+      "versions": {"claude-code": "2.1.302"},
+      "captured": "2026-10-24",
+      "how": "The stdout of `claude --version`, started by tools/runtime_command_lines.py's start in the environment its signed_out builds."
+    },
+    "claude/unknown-flag.stderr.txt": {
+      "versions": {"claude-code": "2.1.302"},
+      "captured": "2026-10-24",
+      "how": "The stderr of `claude -p hello --no-such-flag`, started signed out as claude/version.txt was."
+    },
+    "claude/signed-out-stream.jsonl": {
+      "versions": {"claude-code": "2.1.302"},
+      "captured": "2026-10-24",
+      "how": "The stdout of `claude -p hello --output-format stream-json --verbose`, started signed out as claude/version.txt was. Every session, message, and event id is replaced by zeros; the init event keeps only the keys type, subtype, cwd, session_id, model, permissionMode, apiKeySource, claude_code_version, tools, agents, and skills, its tools and skills cut to built-in ones, since the rest named the capturing machine's own plugins and folders. The throwaway folder is written <temp>."
+    },
+    "codex/version.txt": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-10-24",
+      "how": "The stdout of `codex --version`, started signed out as claude/version.txt was."
+    },
+    "codex/version.stderr.txt": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-10-24",
+      "how": "The stderr of the same start, with the throwaway folder written <temp> and the profile folder <home>."
+    },
+    "codex/exec-unknown-flag.stderr.txt": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-10-24",
+      "how": "The stderr of `codex exec --no-such-flag hello`, started signed out as claude/version.txt was, with the throwaway folder written <temp> and the profile folder <home>."
+    },
+    "codex/exec-policy-rejection.stderr.txt": {
+      "versions": {"codex": "0.160.0"},
+      "captured": "2026-10-03",
+      "how": "The line Codex's execution policy logged to stderr when it refused the canary's first command, from the stderr transcript tools/runtime_canary.py keeps for a failed run, as tests/tools/test_runtime_canary.py first recorded it, with its paths shortened to C:\\x then."
+    },
+    "codex/exec-sandbox-unstarted.stderr.txt": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-10-18",
+      "how": "The two lines Codex logged to stderr when its Windows sandbox could start no process, from the canary's stderr transcripts as issue 1412 quotes them: its elevated sandbox with credentials from another machine, and its unelevated one starting a packaged pwsh, the home written <temp> and the command line cut short with '...' as the issue gives it."
+    },
+    "codex/app-server-skills-list.jsonl": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-10-24",
+      "how": "The stdout lines of `codex app-server` up to its answer to skills/list, through deployer/discovery.py's converse and codex_requests, signed out as claude/version.txt was, in a throwaway home holding sample-skill, user-only-skill (whose agents/openai.yaml sets allow_implicit_invocation: false), and broken-skill (no description) under .agents/skills. Of the user skills the capturing profile held, only audit-skill is kept, and of the system skills only skill-creator; the remote-control notice's machine name is written <machine> and its installation id and time as zeros. The throwaway folder is written <temp> and the profile folder <home>."
+    },
+    "codex/debug-prompt-input.json": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-10-24",
+      "how": "The stdout of `codex debug prompt-input` in the same home: its first message alone, with its first content item, the skills instructions, cut to the same skills as codex/app-server-skills-list.jsonl, and its id as zeros; the other messages and items are Codex's own instructions and the machine's environment, which no reader here reads."
+    },
+    "copilot/version.txt": {
+      "versions": {"copilot-cli": "1.0.103"},
+      "captured": "2026-10-24",
+      "how": "The stdout of `copilot --version`, started signed out as claude/version.txt was."
+    },
+    "copilot/unknown-flag.stderr.txt": {
+      "versions": {"copilot-cli": "1.0.103"},
+      "captured": "2026-10-24",
+      "how": "The stderr of `copilot -p hello --no-such-flag`, started signed out as claude/version.txt was; `--no-such-flag=1` and the flag before -p print the same."
+    },
+    "copilot/retired-flag.stderr.txt": {
+      "versions": {"copilot-cli": "1.0.103"},
+      "captured": "2026-10-24",
+      "how": "The stderr of `copilot -p hello --remote`, started signed out as claude/version.txt was."
+    },
+    "copilot/signed-out-prompt.stderr.txt": {
+      "versions": {"copilot-cli": "1.0.103"},
+      "captured": "2026-10-24",
+      "how": "The stderr of `copilot -p hello --output-format=json`, started signed out as claude/version.txt was."
+    },
+    "copilot/skill-list.json": {
+      "versions": {"copilot-cli": "1.0.103"},
+      "captured": "2026-10-24",
+      "how": "The stdout of `copilot skill list --json` through deployer/discovery.py's converse, signed out, in the home codex/app-server-skills-list.jsonl was captured in, with the throwaway folder written <temp>."
+    }
+  }
+}

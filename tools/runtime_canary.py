@@ -694,6 +694,22 @@ def rejections(runtime: str, completed: Completed) -> list[str]:
     ]
 
 
+# Every line Codex logs for a command its tool router could not run, CODEX_REJECTED's shapes among them.
+CODEX_EXEC_FAILED = re.compile(r"\berror=exec_command failed: ")
+
+
+def unread_rejections(runtime: str, completed: Completed) -> list[str]:
+    """Each command failure the runtime logged in a shape CODEX_REJECTED does not read, so the verdict names it
+    rather than passing over what may be a refusal by its policy or sandbox."""
+    if runtime != "codex":
+        return []
+    return [
+        line.strip()
+        for line in completed.stderr.splitlines()
+        if CODEX_EXEC_FAILED.search(line) and not CODEX_REJECTED.search(line)
+    ]
+
+
 def blocked_cause(runtime: str, codex_sandbox: str) -> str:
     """The likely reason a runtime's policy refused every command, and where the fix is documented."""
     if runtime != "codex" or not CODEX_HAS_WINDOWS_SANDBOX:
@@ -776,6 +792,7 @@ def verdict(
     allowed: list[str] | None = None,
     installed: Path | None = None,
     rejected: Sequence[str] = (),
+    unread: Sequence[str] = (),
     cause: str = "",
 ) -> str:
     """RAN with the script and directory, BLOCKED by the runtime's policy, or FAILED with what went wrong.
@@ -819,6 +836,12 @@ def verdict(
         reason = "never ran a script from the skill"
     if denials:
         reason += f"; denied: {'; '.join(denials)}"
+    if unread:
+        count = f"{len(unread)} command failure{'' if len(unread) == 1 else 's'}"
+        reason += (
+            f"; the runtime logged {count} in a shape the canary does not read, so whether its policy or sandbox "
+            f"refused them is unknown: {unread[0]}"
+        )
     return f"FAILED {quote(reason)}"
 
 
@@ -881,6 +904,7 @@ def run_skill(
             timeout=timeout,
             allowed=allowed,
             rejected=rejections(runtime, completed),
+            unread=unread_rejections(runtime, completed),
             cause=blocked_cause(runtime, codex_sandbox),
         )
     if runtime == "claude" and (nothing := discovery_failure(completed.stdout)):

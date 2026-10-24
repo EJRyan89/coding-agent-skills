@@ -1,0 +1,1 @@
+error: --remote was removed. Use /remote on in a session; manage incoming connections in /environments.

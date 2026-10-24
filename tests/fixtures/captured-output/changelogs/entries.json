@@ -1,17 +1,4 @@
 {
-  "provenance": {
-    "claude-code": {
-      "source": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md",
-      "latest_release": "2.1.310",
-      "captured": "2026-10-23"
-    },
-    "copilot-cli": {
-      "source": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md",
-      "latest_release": "1.0.103",
-      "captured": "2026-10-23"
-    },
-    "how": "Each changelog was downloaded whole; each entry is one of its bullets byte for byte without the leading '- ', and copilot-cli-changelog.md is its text from the 1.0.103 heading up to the 1.0.100 heading."
-  },
   "entries": {
     "flag-after-a-slash": {
       "changelog": "copilot-cli",

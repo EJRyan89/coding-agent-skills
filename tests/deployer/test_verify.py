@@ -118,6 +118,119 @@ class AdapterLineTests(unittest.TestCase):
                     self.assertEqual(expected, verify.adapter_line("alpha", copies, ours))
 
 
+# Real listings, captured with their provenance in tests/fixtures/captured-output/provenance.json, with the throwaway
+# folder they were captured in written <temp> and the profile folder <home>; each is read here with both put back.
+CAPTURED = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "captured-output"
+CAPTURED_TEMP = "C:\\captured\\temp" if platform_support.WINDOWS else "/captured/temp"
+CAPTURED_HOME = "C:\\captured\\profile" if platform_support.WINDOWS else "/captured/profile"
+
+
+def captured(sample: str) -> str:
+    """A captured sample's text with each placeholder a path, escaped as the JSON strings it sits in write one."""
+    text = (CAPTURED / sample).read_text(encoding="utf-8")
+    for placeholder, path in (("<temp>", CAPTURED_TEMP), ("<home>", CAPTURED_HOME)):
+        text = text.replace(placeholder, json.dumps(path)[1:-1])
+    return text
+
+
+def enabled(found: discovery.Listing) -> dict[str, list[bool]]:
+    return {name: [copy.enabled for copy in copies] for name, copies in found.items()}
+
+
+class CapturedListingTests(unittest.TestCase):
+    """Each reader of a runtime's listing holds to what the runtime printed, read whole."""
+
+    def test_copilot_lists_each_skill_of_the_home_and_its_builtins_enabled(self) -> None:
+        found = discovery.parse_copilot(captured("copilot/skill-list.json"))
+        self.assertEqual(
+            {
+                "broken-skill": [True],
+                "sample-skill": [True],
+                "user-only-skill": [True],
+                "customize-cloud-agent": [True],
+                "github-pr-media": [True],
+            },
+            enabled(found),
+        )
+
+    def test_the_codex_app_server_lists_each_skill_and_refuses_the_one_without_a_description(self) -> None:
+        lines = captured("codex/app-server-skills-list.jsonl").splitlines()
+        self.assertEqual(
+            {"sample-skill": [True], "user-only-skill": [True], "audit-skill": [True], "skill-creator": [True]},
+            enabled(discovery.parse_codex(lines)),
+        )
+        self.assertEqual(
+            ["missing field `description`"], [refused.reason for refused in discovery.parse_codex_refusals(lines)]
+        )
+
+    def test_the_codex_catalog_leaves_out_the_skill_only_the_user_may_start(self) -> None:
+        found = discovery.parse_codex_catalog(captured("codex/debug-prompt-input.json").splitlines())
+        self.assertEqual({"skill-creator": [True], "sample-skill": [True], "audit-skill": [True]}, enabled(found))
+        self.assertEqual(
+            {
+                "skill-creator": [
+                    Listed(forward(Path(CAPTURED_TEMP) / "home/.codex/skills/.system/skill-creator"), True)
+                ],
+                "sample-skill": [Listed(forward(Path(CAPTURED_TEMP) / "home/.agents/skills/sample-skill"), True)],
+                "audit-skill": [Listed(forward(Path(CAPTURED_HOME) / ".agents/skills/audit-skill"), True)],
+            },
+            found,
+        )
+
+    def test_a_codex_catalog_skill_in_another_shape_is_a_listing_error(self) -> None:
+        text = captured("codex/debug-prompt-input.json").replace(
+            "(file: r2/sample-skill/SKILL.md)", "(r2/sample-skill)"
+        )
+        with self.assertRaisesRegex(ListingError, "lists a skill in a shape this reader does not know: - sample-skill"):
+            discovery.parse_codex_catalog(text.splitlines())
+
+    def test_the_codex_catalog_reads_only_the_list_under_its_first_available_skills_heading(self) -> None:
+        # A list item after the skills list ends, at the next heading or the closing tag, or under a later heading of
+        # the same name, is not a skill, so its shape is not judged.
+        end = "\\n</skills_instructions>"
+        for after in (
+            "\\n### Using a skill\\n- Read its SKILL.md first.",
+            "\\n<other_instructions>\\n- Not a skill.",
+            f"\\n{discovery.CODEX_CATALOG_SKILLS}\\n- Not a skill either.",
+        ):
+            with self.subTest(after=after):
+                text = captured("codex/debug-prompt-input.json").replace(end, after + end)
+                found = discovery.parse_codex_catalog(text.splitlines())
+                self.assertEqual({"skill-creator", "sample-skill", "audit-skill"}, set(found))
+
+    if platform_support.WINDOWS:
+
+        def test_the_captured_paths_are_the_skill_directories(self) -> None:
+            self.assertEqual(
+                [
+                    Listed("C:/captured/temp/home/.agents/skills/sample-skill", True),
+                ],
+                discovery.parse_copilot(captured("copilot/skill-list.json"))["sample-skill"],
+            )
+            self.assertEqual(
+                [
+                    Listed(
+                        "C:/captured/temp/home/AppData/Local/copilot/pkg/win32-x64/1.0.103/builtin/github-pr-media",
+                        True,
+                    )
+                ],
+                discovery.parse_copilot(captured("copilot/skill-list.json"))["github-pr-media"],
+            )
+            lines = captured("codex/app-server-skills-list.jsonl").splitlines()
+            self.assertEqual(
+                [Listed("C:/captured/profile/.agents/skills/audit-skill", True)],
+                discovery.parse_codex(lines)["audit-skill"],
+            )
+            self.assertEqual(
+                (
+                    discovery.Refused(
+                        "C:/captured/temp/home/.agents/skills/broken-skill", "missing field `description`"
+                    ),
+                ),
+                discovery.parse_codex_refusals(lines),
+            )
+
+
 class ParsingTests(unittest.TestCase):
     def test_codex_refusals_name_each_skill_directory_it_could_not_load_with_its_reason(self) -> None:
         lines = [
@@ -126,7 +239,6 @@ class ParsingTests(unittest.TestCase):
                 errors=[
                     {"path": "C:/home/.agents/skills/beta/SKILL.md", "message": "missing field `description`"},
                     {"path": "C:/home/.agents/skills/gamma/SKILL.md"},
-                    {"message": "no path"},
                 ],
             )
         ]
@@ -139,13 +251,49 @@ class ParsingTests(unittest.TestCase):
         )
         self.assertEqual(["alpha"], list(discovery.parse_codex(lines)))
 
-    def test_a_codex_group_field_that_is_not_an_array_lists_nothing(self) -> None:
-        for value in (7, True, "skills", {"path": "C:/home/.agents/skills/alpha/SKILL.md"}):
-            with self.subTest(value=value):
-                group = {"cwd": "C:/work", "skills": value, "errors": value}
-                lines = [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [group]}})]
-                self.assertEqual({}, discovery.parse_codex(lines))
-                self.assertEqual((), discovery.parse_codex_refusals(lines))
+    def test_a_codex_group_without_a_field_lists_nothing_for_it(self) -> None:
+        lines = [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [{"cwd": "C:/work"}]}})]
+        self.assertEqual({}, discovery.parse_codex(lines))
+        self.assertEqual((), discovery.parse_codex_refusals(lines))
+
+    def test_a_codex_group_field_that_is_not_an_array_is_a_listing_error(self) -> None:
+        for value, shape in (
+            (7, "int"),
+            (True, "bool"),
+            ("skills", "str"),
+            ({"path": "C:/home/.agents/skills/alpha/SKILL.md"}, "an object with path"),
+        ):
+            group = {"cwd": "C:/work", "skills": value, "errors": value}
+            lines = [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [group]}})]
+            for reader, field in ((discovery.parse_codex, "skills"), (discovery.parse_codex_refusals, "errors")):
+                with self.subTest(value=value, field=field), self.assertRaises(ListingError) as caught:
+                    reader(lines)
+                self.assertEqual(f"its skills/list answer's {field} is {shape}, not an array", str(caught.exception))
+
+    def test_a_codex_skill_or_error_of_an_unknown_shape_is_a_listing_error(self) -> None:
+        cases = {
+            "its skills/list answer has an entry of a shape this reader does not know: an object with name, path": (
+                discovery.parse_codex,
+                {"skills": [{"name": "alpha", "path": "C:/a/SKILL.md"}]},
+            ),
+            "its skills/list answer has an entry of a shape this reader does not know: str": (
+                discovery.parse_codex,
+                {"skills": ["alpha"]},
+            ),
+            "its skills/list answer has an error of a shape this reader does not know: an object with message": (
+                discovery.parse_codex_refusals,
+                {"errors": [{"message": "no path"}]},
+            ),
+            "its skills/list answer has an error of a shape this reader does not know: str": (
+                discovery.parse_codex_refusals,
+                {"errors": ["missing field `description`"]},
+            ),
+        }
+        for reason, (reader, group) in cases.items():
+            lines = [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [group]}})]
+            with self.subTest(reason=reason), self.assertRaises(ListingError) as caught:
+                reader(lines)
+            self.assertEqual(reason, str(caught.exception))
 
     def test_the_codex_catalog_resolves_each_short_path_through_its_root(self) -> None:
         home = (
@@ -250,18 +398,24 @@ class ParsingTests(unittest.TestCase):
                 found,
             )
 
-    def test_copilot_entries_without_a_name_or_path_are_ignored_and_a_skills_object_is_accepted(self) -> None:
-        output = json.dumps(
-            {
-                "skills": [
-                    {"name": "alpha"},
-                    {"path": "C:/x"},
-                    "text",
-                    {"name": "beta", "path": "C:/b", "enabled": "yes"},
-                ]
-            }
-        )
+    def test_a_copilot_skills_object_is_accepted(self) -> None:
+        output = json.dumps({"skills": [{"name": "beta", "path": "C:/b", "enabled": False}]})
         self.assertEqual({"beta": [Listed("C:/b", False)]}, discovery.parse_copilot(output))
+
+    def test_a_copilot_entry_of_an_unknown_shape_is_a_listing_error(self) -> None:
+        for entry, shape in (
+            ({"name": "alpha", "enabled": True}, "an object with enabled, name"),
+            ({"path": "C:/x", "enabled": True}, "an object with enabled, path"),
+            ({"name": "beta", "path": "C:/b", "enabled": "yes"}, "an object with enabled, name, path"),
+            ({}, "an object with no key"),
+            ("text", "str"),
+            (["alpha"], "a list"),
+        ):
+            with self.subTest(entry=entry), self.assertRaises(ListingError) as caught:
+                discovery.parse_copilot(json.dumps([entry]))
+            self.assertEqual(
+                f"its skill list has an entry of a shape this reader does not know: {shape}", str(caught.exception)
+            )
 
     def test_copilot_output_that_is_not_a_json_list_is_a_listing_error(self) -> None:
         cases = {
