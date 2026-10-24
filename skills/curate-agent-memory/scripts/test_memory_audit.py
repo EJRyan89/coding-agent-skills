@@ -1488,8 +1488,13 @@ class ResolveTests(unittest.TestCase):
         )
         for supplied, patch in (
             ("tracked", None),
-            ("a symbolic link", mock.patch.object(Path, "is_symlink", return_value=True)),
+            ("a link", mock.patch.object(memory_audit, "is_link_or_junction", return_value=True)),
             ("unknown to git", mock.patch.object(GitClient, "run", side_effect=GitError("no git"))),
+            # A folder whose own metadata cannot be read cannot tell either.
+            (
+                "unreadable",
+                mock.patch.object(memory_audit, "is_link_or_junction", side_effect=PermissionError(13, "no")),
+            ),
         ):
             with self.subTest(supplied=supplied):
                 if patch is None:
@@ -1501,6 +1506,17 @@ class ResolveTests(unittest.TestCase):
                         result = self.resolve()
                 self.assertIsNone(result["memory_dir"])
                 self.assertEqual(self.blocked_note("user", "local", local), result["notes"][-1])
+
+    def test_local_settings_through_a_linked_claude_folder_are_the_repository_own(self) -> None:
+        # Claude Code counts the file the repository's when .claude is a link, and Node reads a junction as one.
+        self.assertFalse(memory_audit.repository_supplied(self.repo, "local"))
+        outside = self.home / "outside"
+        outside.mkdir(parents=True)
+        claude = self.repo / ".claude"
+        if claude.exists():
+            claude.rename(self.home / "moved-claude")
+        directory_link(claude, outside)
+        self.assertTrue(memory_audit.repository_supplied(self.repo, "local"))
 
     def test_a_used_repository_choice_states_the_block_rule(self) -> None:
         self.store(self.home / "chosen")

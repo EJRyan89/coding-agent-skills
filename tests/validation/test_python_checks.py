@@ -10,6 +10,7 @@ import re
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import get_args
 from unittest import mock
@@ -692,3 +693,203 @@ def test_the_type_check_refuses_a_misspelled_member_of_each_closed_vocabulary() 
     # mypy names a program given with -c as <string>, and ends its lines with CRLF on Windows.
     errors = re.findall(r"(?m)^(.*?):(\d+): error: .*?\r?$", str(raised.value))
     assert [("<string>", line) for line in misspelled] == [(path, int(line)) for path, line in errors]
+
+
+def run_claim_policy(
+    policy: Callable[[Path, list[Path]], list[str]], allowance: str, source: str, owner: str
+) -> list[str]:
+    """What a claim policy reports over the claim fixture: `source` in a skill's module, a suite, a tests/ helper, and
+    the claim's owner `owner`, and a tools/ module whose `allowance` maps a scope to an empty reason."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/alpha/scripts/alpha.py": source,
+                "skills/alpha/scripts/test_alpha.py": source,
+                "tests/helper.py": source,
+                owner: source,
+                "tools/broken.py": f"{allowance} = {{'scope': ''}}\n",
+            },
+        )
+        return policy(root, sorted(root.rglob("*.py")))
+
+
+PROCESS_SOURCE = """\
+import os
+import subprocess as sp
+from asyncio import create_subprocess_exec
+
+from bounded_process import without_repository_variables
+
+
+def inherits():
+    sp.run(["git", "status"])
+    sp.Popen(["git"], env=dict(os.environ))
+
+
+def cleared():
+    sp.run(["git"], env=without_repository_variables(os.environ))
+    env = without_repository_variables(os.environ)
+    env.update({"LC_ALL": "C"})
+    return sp.check_output(["git"], env=env)
+
+
+def handed(env, options):
+    sp.call(["git"], env=env)
+    sp.check_call(["git"], **options)
+
+
+def rebound():
+    env = without_repository_variables(os.environ)
+    env = {}
+    sp.run(["git"], env=env)
+
+
+async def started():
+    await create_subprocess_exec("git", env=os.environ)
+
+
+def sanctioned():
+    sp.run(["git"])
+
+
+PROCESS_ENV_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_process_environment_policy_refuses_a_start_that_may_keep_the_repository_variables() -> None:
+    keeps = "git's repository-selecting variables; run it through ejryan89-skill-core's bounded_process, pass "
+    keeps += "env=without_repository_variables(...), or state why in PROCESS_ENV_ALLOWED"
+    alpha = "skills/alpha/scripts/alpha.py"
+    assert run_claim_policy(
+        python_checks.process_environment_problems,
+        "PROCESS_ENV_ALLOWED",
+        PROCESS_SOURCE,
+        "skills/ejryan89-skill-core/scripts/bounded_process.py",
+    ) == [
+        f"{alpha}:9 starts subprocess.run with no env, so it keeps {keeps}",
+        f"{alpha}:10 starts subprocess.Popen with an env that may keep {keeps}",
+        f"{alpha}:21 starts subprocess.call with an env that may keep {keeps}",
+        f"{alpha}:22 starts subprocess.check_call with an env that may keep {keeps}",
+        f"{alpha}:28 starts subprocess.run with an env that may keep {keeps}",
+        f"{alpha}:32 starts asyncio.create_subprocess_exec with an env that may keep {keeps}",
+        f"{alpha}: PROCESS_ENV_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: PROCESS_ENV_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+LINK_SOURCE = """\
+import os
+from os.path import islink
+from pathlib import Path
+
+from deployer import platform_support
+from deployer.platform_support import is_junction
+from link_probe import is_link_or_junction
+
+
+def tests(path: Path) -> list[bool]:
+    return [path.is_symlink(), os.path.islink(path), islink(path), path.is_junction()]
+
+
+def reads(path):
+    return os.lstat(path).st_file_attributes, getattr(os.lstat(path), "st_file_attributes", 0)
+
+
+def conforms(path):
+    return is_link_or_junction(path), is_junction(path), platform_support.is_junction(path)
+
+
+def told_apart(entry):
+    return entry.is_symlink()
+
+
+LINK_TEST_ALLOWED = {"told_apart": "names which kind of link it refuses", "stale": "a reason"}
+"""
+
+
+def test_link_test_policy_refuses_a_link_test_outside_link_probe() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.link_test_problems,
+        "LINK_TEST_ALLOWED",
+        LINK_SOURCE,
+        "skills/ejryan89-skill-core/scripts/link_probe.py",
+    )
+    remedy = (
+        "; call ejryan89-skill-core's link_probe, the one link test, which reads a symbolic link and a junction alike, "
+        "or state why in LINK_TEST_ALLOWED"
+    )
+    assert found == [
+        *(f"{alpha}:11 tests for a link with {test}{remedy}" for test in ("is_symlink", "islink", "islink")),
+        f"{alpha}:11 tests for a link with is_junction{remedy}",
+        *(f"{alpha}:15 tests for a link with st_file_attributes{remedy}" for _ in range(2)),
+        f"{alpha}: LINK_TEST_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: LINK_TEST_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+CLOSE_HANDLE_ARGUMENTS = "    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]\n"
+CTYPES_SOURCE = """\
+import ctypes
+from ctypes import WinDLL, wintypes
+
+
+def _kernel32():
+    kernel32 = WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def probe(pid):
+    kernel32 = _kernel32()
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    kernel32.CloseHandle(handle)
+    kernel32.GetCurrentProcessId()
+    return ctypes.windll.user32.GetForegroundWindow(), ctypes.get_last_error()
+
+
+def query():
+    enabled = ctypes.CDLL("ntdll").RtlAreLongPathsEnabled
+    enabled.restype = ctypes.c_ubyte
+    return enabled()
+
+
+def sanctioned(handle):
+    return ctypes.WinDLL("kernel32").GetHandleInformation(handle, None)
+
+
+CTYPES_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_ctypes_policy_refuses_a_foreign_function_called_undeclared() -> None:
+    # OpenProcess is declared, and RtlAreLongPathsEnabled, called with no arguments, needs only its restype.
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.ctypes_declaration_problems, "CTYPES_ALLOWED", CTYPES_SOURCE, "tests/fixtures/ctypes.py"
+    )
+    passes = "assigned in the module, so ctypes passes it C ints; assign both, or state why in CTYPES_ALLOWED"
+    assert found == [
+        f"{alpha}:16 calls CloseHandle through ctypes with no restype {passes}",
+        f"{alpha}:17 calls GetCurrentProcessId through ctypes with no restype {passes}",
+        f"{alpha}:18 calls GetForegroundWindow through ctypes with no restype {passes}",
+        f"{alpha}: CTYPES_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: CTYPES_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+    # Declared, CloseHandle passes; with neither declaration, it lacks both.
+    restype = "    kernel32.CloseHandle.restype = wintypes.BOOL\n"
+    declared = CTYPES_SOURCE.replace(CLOSE_HANDLE_ARGUMENTS, f"{CLOSE_HANDLE_ARGUMENTS}{restype}")
+    assert run_claim_policy(python_checks.ctypes_declaration_problems, "CTYPES_ALLOWED", declared, "tests/x.py")[
+        :2
+    ] == [
+        f"{alpha}:18 calls GetCurrentProcessId through ctypes with no restype {passes}",
+        f"{alpha}:19 calls GetForegroundWindow through ctypes with no restype {passes}",
+    ]
+    undeclared = CTYPES_SOURCE.replace(CLOSE_HANDLE_ARGUMENTS, "")
+    assert run_claim_policy(python_checks.ctypes_declaration_problems, "CTYPES_ALLOWED", undeclared, "tests/x.py")[
+        0
+    ] == (f"{alpha}:15 calls CloseHandle through ctypes with no argtypes or restype {passes}")

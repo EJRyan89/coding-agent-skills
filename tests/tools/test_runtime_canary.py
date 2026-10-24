@@ -610,6 +610,23 @@ class RemoveHomeTests(unittest.TestCase):
                 self.assertTrue(Path(other).is_dir())
             self.assertTrue(nested.is_dir())
 
+    def test_a_home_reached_through_a_link_or_junction_is_refused_and_kept(self) -> None:
+        home = runtime_canary.create_home()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        runtime_canary.claim_home(home)
+        link = Path(tempfile.gettempdir()) / f"{home.name}-link"
+        # A junction on Windows, which needs no privilege, and a symbolic link elsewhere; either resolves to the home.
+        if sys.platform == "win32":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(home)], check=True, capture_output=True)
+            self.addCleanup(os.rmdir, link)
+        else:
+            link.symlink_to(home, target_is_directory=True)
+            self.addCleanup(link.unlink)
+        code, output = remove_home(str(link))
+        self.assertEqual(1, code)
+        self.assertRegex(output, r'^FAILED ".+ is not a home the canary made under .+"\n$')
+        self.assertTrue((home / ".runtime-canary").is_dir())
+
     def test_a_home_whose_claim_cannot_be_judged_for_links_is_not_claimed_and_is_kept(self) -> None:
         home = runtime_canary.create_home()
         self.addCleanup(shutil.rmtree, home, ignore_errors=True)

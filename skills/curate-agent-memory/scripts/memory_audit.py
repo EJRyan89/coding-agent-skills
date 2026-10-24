@@ -102,7 +102,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
-from link_probe import is_plain_file
+from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import CODE_SPAN
 from skill_roots import skills_directory_holding
 
@@ -839,12 +839,18 @@ def repository_supplied(repo: Path, scope: str) -> bool:
     """Whether Claude Code counts a scope's file as supplied by the repository rather than by the user.
 
     The project's settings.json always is; its settings.local.json is when git tracks it or `.claude` is a symbolic
-    link (https://code.claude.com/docs/en/permissions, "When your local settings file needs trust"). When git cannot
-    tell, the file counts as the repository's, the answer that never uses a directory Claude Code may ignore.
+    link (https://code.claude.com/docs/en/permissions, "When your local settings file needs trust"), which a junction
+    is too as Node reads one on Windows. When git, or the folder's own metadata, cannot tell, the file counts as the
+    repository's, the answer that never uses a directory Claude Code may ignore.
     """
     if scope != "local":
         return scope == "project"
-    if (repo / ".claude").is_symlink():
+    try:
+        if is_link_or_junction(repo / ".claude"):
+            return True
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
         return True
     try:
         listed = GitClient().run(["ls-files", "--error-unmatch", "--", ".claude/settings.local.json"], directory=repo)

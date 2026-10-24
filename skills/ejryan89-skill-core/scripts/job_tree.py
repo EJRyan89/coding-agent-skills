@@ -169,11 +169,15 @@ def _kernel32() -> Any:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
     kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
     kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
     kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
     kernel32.QueryInformationJobObject.argtypes = [
         wintypes.HANDLE,
         ctypes.c_int,
@@ -185,12 +189,15 @@ def _kernel32() -> Any:
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Thread32First.restype = wintypes.BOOL
     kernel32.Thread32First.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+    kernel32.Thread32Next.restype = wintypes.BOOL
     kernel32.Thread32Next.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
     kernel32.OpenThread.restype = wintypes.HANDLE
     kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.ResumeThread.restype = wintypes.DWORD
     kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     return kernel32
 
