@@ -122,17 +122,19 @@ class RecordingTree:
 
 class OnceWritten(RecordingTree):
     """Holds the command only once it has created `written`, so its time limit starts after its output is out and how
-    long start-up takes never decides what a timeout carries."""
+    long start-up takes never decides what a timeout carries. `held_at` is when its time limit started."""
 
     def __init__(self, written: Path) -> None:
         super().__init__({})
         self.written = written
+        self.held_at = 0.0
 
     @contextmanager
     def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
         deadline = time.monotonic() + STARTUP_SECONDS
         while not self.written.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
+        self.held_at = time.monotonic()
         yield
 
 
@@ -286,6 +288,38 @@ class BoundedProcessTests(unittest.TestCase):
         self.assertEqual(0.5, raised.exception.timeout)
         self.assertEqual(b"begunbeg\n[output cut: 12 bytes past the first 8 not kept]\n", raised.exception.output)
         self.assertEqual(b"note", raised.exception.stderr)
+
+    def test_a_kill_not_reported_in_time_still_raises_the_callers_limit_with_the_output(self) -> None:
+        started: list[subprocess.Popen[bytes]] = []
+        popen = subprocess.Popen
+
+        def recorded(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+            started.append(popen(*args, **kwargs))
+            return started[-1]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            written = Path(temporary) / "written"
+            program = f"import time; print('begun', flush=True); open({str(written)!r}, 'w').close(); time.sleep(60)"
+            command = [sys.executable, "-c", program]
+            tree = OnceWritten(written)
+            try:
+                # The kill does nothing, so the command is still running when its allowance ends.
+                with (
+                    mock.patch.object(popen, "kill"),
+                    mock.patch.object(subprocess, "Popen", side_effect=recorded),
+                    mock.patch.object(bounded_process, "KILL_WAIT_SECONDS", 0.2),
+                    self.assertRaises(subprocess.TimeoutExpired) as raised,
+                ):
+                    run_bounded(command, 0.5, tree=tree)
+                # The limit and the allowance, not the command's minute of sleep, bound the call.
+                self.assertLess(time.monotonic() - tree.held_at, 0.5 + 0.2 + IDLE_MARGIN_SECONDS)
+            finally:
+                for process in started:
+                    process.kill()
+                    process.wait()
+        self.assertEqual(command, raised.exception.cmd)
+        self.assertEqual(0.5, raised.exception.timeout)
+        self.assertEqual(b"begun", raised.exception.output.strip())
 
     def test_a_given_environment_is_the_whole_environment_with_no_prompt_turned_off(self) -> None:
         given = {**os.environ, "KEPT": "given"}
@@ -642,9 +676,11 @@ class StreamingTests(unittest.TestCase):
         self.assertTrue(running._stdout.closed, "the reader closed the command's stdout")
 
     def test_a_command_started_without_its_pipes_is_stopped_and_raises(self) -> None:
-        for missing in ("stdin", "stdout"):
-            with self.subTest(missing=missing):
+        # A kill not reported within its allowance still raises the missing pipes.
+        for missing, reported in (("stdin", 0), ("stdout", 0), ("stdin", subprocess.TimeoutExpired("any", 10))):
+            with self.subTest(missing=missing, reported=reported):
                 process = mock.MagicMock(spec=subprocess.Popen)
+                process.wait.side_effect = [reported]
                 process.stdin = None if missing == "stdin" else mock.MagicMock()
                 process.stdout = None if missing == "stdout" else mock.MagicMock()
                 with (

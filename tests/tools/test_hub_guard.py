@@ -1068,6 +1068,12 @@ class CommandReadingTests(GuardTestCase):
             (f"pushd {tree}; git commit; popd; git add .", [*self.at(self.tree, "commit"), *self.at(self.hub, "add")]),
             ("cd; git commit; cd -; git add .", [*self.at(Path.home(), "commit"), *self.at(None, "add")]),
             (f"env -C {tree} git commit", self.at(self.tree, "commit")),
+            (f"env -C{tree} git commit", self.at(self.tree, "commit")),
+            (f"env --chdir={tree} git commit", self.at(self.tree, "commit")),
+            (f"env --chdir {tree} git commit", self.at(self.tree, "commit")),
+            (f"env -v -C{tree} GIT_PAGER=cat git commit", self.at(self.tree, "commit")),
+            # env changes directory once, to its last -C, read from where env starts.
+            (f"env -C {tree} -C . git commit", self.at(self.hub, "commit")),
             (f"bash -lc 'cd {tree} && git commit'", self.at(self.tree, "commit")),
             (f"bash <<< 'cd {tree} && git commit'", self.at(self.tree, "commit")),
             (f"bash <<'EOF'\ncd {tree} && git commit\nEOF", self.at(self.tree, "commit")),
@@ -1094,6 +1100,9 @@ class CommandReadingTests(GuardTestCase):
             ("env -i git commit", self.at(self.hub, "commit")),
             ("env -u GIT_WORK_TREE git commit", self.at(self.hub, "commit")),
             ("env --unset=GIT_WORK_TREE git commit", self.at(self.hub, "commit")),
+            ("env --unset GIT_WORK_TREE git commit", self.at(self.hub, "commit")),
+            ("env -uGIT_WORK_TREE git commit", self.at(self.hub, "commit")),
+            ("env -uOTHER git commit", self.at(self.tree, "commit")),
             ("unset GIT_WORK_TREE; git commit", self.at(self.hub, "commit")),
             ('GIT_WORK_TREE="$ELSEWHERE_UNSET"; git commit', self.at(None, "commit")),
         ):
@@ -1106,6 +1115,9 @@ class CommandReadingTests(GuardTestCase):
         )
         self.assertEqual([], self.read("env -S 'git commit'", tool="Bash"))
         self.assertEqual(["could not read the option -S passed to env"], self.unread)
+        # The refusal names the first option it could not read, past every one it reads.
+        self.assertEqual([], self.read("env -uA -u B -CC -C D --unset=E --chdir=F -i -q git commit", tool="Bash"))
+        self.assertEqual(["could not read the option -q passed to env"], self.unread)
 
     def test_powershell_applies_inherited_and_assigned_location_variables(self) -> None:
         inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
@@ -1926,6 +1938,20 @@ class ContractTests(GuardTestCase):
         self.assertIsNone(self.bash("echo 'unterminated", self.tree))
 
 
+class EnvOptionTests(unittest.TestCase):
+    def test_the_first_unread_option_is_found_past_each_value_given_as_the_next_word(self) -> None:
+        for arguments, expected in (
+            (["-u", "NAME"], "?"),
+            (["-C", "dir"], "?"),
+            (["-u", "NAME", "-q"], "-q"),
+            (["-C", "dir", "-q", "git"], "-q"),
+            (["-uNAME", "-q"], "-q"),
+            (["-x"], "-x"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(expected, hub_guard.first_unread_env_option(list(arguments)))
+
+
 class ContractListTests(unittest.TestCase):
     """Each list of names the guard's section of docs/parallel-sessions.md gives is the set tools/hub_guard.py reads."""
 
@@ -1948,7 +1974,8 @@ class ContractListTests(unittest.TestCase):
         self.assertEqual(hub_guard.READ_SUBMODULE, {None, *(name.removeprefix("submodule ") for name in named)})
 
     def test_git_s_options_with_a_value_are_the_ones_the_guard_reads(self) -> None:
-        self.assertEqual(sorted(hub_guard.GIT_OPTIONS_WITH_VALUE), sorted(contract_names("or as the next word (", ")")))
+        # The guard reads git_client's list, the one home of the options git reads a value after.
+        self.assertEqual(sorted(git_client.GLOBAL_VALUE_OPTIONS), sorted(contract_names("or as the next word (", ")")))
 
     def test_the_prefix_programs_are_the_ones_each_reader_reads(self) -> None:
         bash = contract_names("Commands after", "are read as the commands they start")
