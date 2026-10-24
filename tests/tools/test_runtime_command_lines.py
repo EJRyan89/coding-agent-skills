@@ -456,6 +456,19 @@ class SignedOutTests(unittest.TestCase):
         for name in platform_support.STARTING_VARIABLES:
             self.assertEqual("kept", environment[name])
 
+    def test_starting_variables_are_matched_as_this_platform_matches_a_name(self) -> None:
+        # Windows reports the system's variables upper-cased, as SYSTEMROOT, COMSPEC, and PROGRAMFILES, and matches a
+        # name in any case; elsewhere a name matches only as written.
+        folded = {name.upper(): "kept" for name in platform_support.STARTING_VARIABLES}
+        folded.update({name.lower(): "kept" for name in platform_support.STARTING_VARIABLES})
+        environment = platform_support.signed_out_environment(folded, Path("home"))
+        kept = {name for name in folded if name in environment}
+        if sys.platform == "win32":
+            self.assertLessEqual({"SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PROGRAMFILES", "PROGRAMFILES(X86)"}, kept)
+            self.assertEqual(set(folded), kept)
+        else:
+            self.assertEqual({"PATH", "TMPDIR", "LANG", "LC_ALL"}, kept)
+
     def test_github_cli_is_left_off_the_path_and_refused_beside_the_runtime(self) -> None:
         separator = os.pathsep
         holds_gh = {"gh-dir", "shared"}

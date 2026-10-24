@@ -30,6 +30,7 @@ from harness import (
 )
 
 from deployer import fsops, hashing, journal, platform_support, render
+from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED
 from deployer.kinds import KINDS
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
@@ -623,7 +624,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertTrue(
             result.output.endswith(
                 "\nERROR: Unexpected RuntimeError: synthetic recovery failure\n"
-                "Recovery stopped before it finished; the next deployment retries it before deploying anything.\n"
+                f"{RECOVERY_STOPPED}\n"
                 f"{state}\n"
                 f"{SEE_RECOVERY_FAILED}\n\n"
             ),
@@ -643,15 +644,13 @@ class RecoveryFailureTests(RecoveryTestCase):
     def test_an_unexpected_error_in_startup_recovery_of_an_uncommitted_run_says_it_is_rolled_back(self) -> None:
         self.assert_startup_recovery_stops(
             False,
-            "Run 20260101-000000-kill was not committed to the manifest, so the manifest does not hold its changes; "
-            "the next deployment rolls them back.",
+            RUN_NOT_COMMITTED.format(run_id="20260101-000000-kill"),
         )
 
     def test_an_unexpected_error_in_startup_recovery_of_a_committed_run_says_its_changes_are_installed(self) -> None:
         self.assert_startup_recovery_stops(
             True,
-            "Run 20260101-000000-kill was committed to the manifest, so its changes are installed and the manifest "
-            "holds them; the next deployment finishes its cleanup.",
+            RUN_COMMITTED.format(run_id="20260101-000000-kill"),
         )
 
     def test_an_os_error_while_reconciling_a_failed_deployment_keeps_the_original_error(self) -> None:
@@ -698,10 +697,7 @@ class ImmediateRecoveryExceptionTests(RecoveryTestCase):
             stopped = "Cancelled during recovery; the next deployment finishes recovering before it deploys.\n"
             see = ""
         else:
-            stopped = (
-                "ERROR: Unexpected RuntimeError: synthetic immediate recovery failure\n"
-                "Recovery stopped before it finished; the next deployment retries it before deploying anything.\n"
-            )
+            stopped = f"ERROR: Unexpected RuntimeError: synthetic immediate recovery failure\n{RECOVERY_STOPPED}\n"
             see = f"{SEE_RECOVERY_FAILED}\n"
         self.assertTrue(stderr.endswith(f"\n{stopped}{state}\n{see}\n"), stderr)
 

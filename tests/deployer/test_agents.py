@@ -232,7 +232,7 @@ class AgentDeploymentTests(DeployerTestCase):
 
     def test_an_agent_naming_a_path_or_configured_variable_is_refused_with_its_token_left_unexpanded(self) -> None:
         # The skill renders each variable, so a value is there to substitute; the agent takes the interpreter alone.
-        python = "python" if platform_support.WINDOWS else "python3"
+        python = platform_support.PYTHON
         for token in ("HOME", "SOURCE_ROOT", "REPOS_ROOT"):
             with self.subTest(token=token):
                 self.make_skill("alpha", f'Alpha in "{{{{{token}}}}}"', [token], agent_deps=["reviewer"])

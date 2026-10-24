@@ -1016,7 +1016,7 @@ class DerivedAllowlistTests(unittest.TestCase):
         derived = config.derived_values(Path(f"{profiles}/a"), source)
         self.assertEqual({"HOME", "SOURCE_ROOT", "PYTHON"}, set(derived))
         # The interpreter is the platform's Python command, never a path, so no allowlist of path characters holds it.
-        self.assertEqual("python" if platform_support.WINDOWS else "python3", derived["PYTHON"])
+        self.assertEqual(platform_support.PYTHON, derived["PYTHON"])
 
     if not platform_support.WINDOWS:
 
