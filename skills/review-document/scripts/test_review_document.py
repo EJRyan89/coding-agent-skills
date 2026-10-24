@@ -1812,3 +1812,24 @@ def test_failures_use_the_shared_flattener_after_converting_the_exception_to_tex
         code, lines = run_main(*arguments)
     assert (1, [f"FAILED {expected}"]) == (code, lines)
     flatten.assert_called_once_with(str(error))
+
+
+class JsonObjectTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "pull.json"
+
+    def test_a_utf8_object_is_read(self) -> None:
+        self.path.write_bytes('{"title": "café"}'.encode())
+        self.assertEqual({"title": "café"}, review_document.json_object(self.path))
+
+    def test_a_byte_order_mark_another_encoding_or_deep_nesting_holds_no_object(self) -> None:
+        for content in (
+            b'\xef\xbb\xbf{"title": "x"}',
+            '{"title": "x"}'.encode("utf-16"),
+            b'{"x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+        ):
+            with self.subTest(start=content[:4]):
+                self.path.write_bytes(content)
+                self.assertIsNone(review_document.json_object(self.path))

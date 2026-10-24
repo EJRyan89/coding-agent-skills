@@ -700,10 +700,10 @@ def build_pull(
 
 
 def json_object(path: Path) -> dict[str, Any] | None:
-    """The JSON object in the file at `path`, or None when it holds none or cannot be read, as a directory in its
-    place cannot."""
+    """The JSON object in the UTF-8 file at `path`, which the pipeline writes without a byte-order mark, or None when
+    it holds none or cannot be read, as a directory in its place, a byte-order mark, or another encoding cannot."""
     try:
-        value = json_reader.loads(path.read_bytes())
+        value = json_reader.read_file(path)
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None
