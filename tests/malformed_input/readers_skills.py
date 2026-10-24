@@ -356,7 +356,21 @@ READERS = [
     Reader(
         "review_insights.load_report",
         "json",
-        b'{"schema_version": 6, "recommendations": [], "records": []}',
+        json.dumps(
+            {
+                "schema_version": 6,
+                "repository_set": "primary",
+                "repositories": ["owner/repo"],
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-31",
+                "record_count": 0,
+                "finding_count": 0,
+                "severity_counts": {},
+                "category_counts": {},
+                "recommendations": [],
+                "records": [],
+            }
+        ).encode(),
         review_insights.load_report,
         (review_insights.InsightError,),
         filename="insights.json",
