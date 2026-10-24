@@ -469,12 +469,17 @@ LINUX_VALIDATION_LINES = (
 )
 
 
+# The Linux legs check ShellCheck's release archive against the workflow's pinned digest before extracting it.
+LINUX_SHELLCHECK_DIGEST_CHECK = 'echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict'
+
+
 def linux_job_problems(workflow: str, legs: int) -> list[str]:
     """Report how validate.yml's `linux` job departs from one validation run on ubuntu-latest dealt across `legs` legs
     named as Linux legs, each running its own shard, every leg reporting rather than the first failure cancelling the
     rest: the checkout's whole history, Python at the floor with pip's cache keyed on requirements-dev.txt, ShellCheck
-    from Ubuntu's archive, PSScriptAnalyzer at the workflow's pin, and the Windows legs' validation step.
-    `required_check_problems` holds it inside the required check."""
+    from the pinned release's archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, and
+    the Windows legs' validation step. `required_check_problems` holds it inside the required check,
+    `tool_cache_problems` its tool caches, and `pinned_tool_problems` its verify step."""
     tree = read_workflow(workflow)
     linux = _mapping(tree, "jobs", "linux")
     if not linux:
@@ -502,7 +507,7 @@ def linux_job_problems(workflow: str, legs: int) -> list[str]:
     problems.extend(
         f"no step of the linux job runs {install!r}"
         for install in (
-            "sudo apt-get install --yes shellcheck",
+            LINUX_SHELLCHECK_DIGEST_CHECK,
             "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION ",
             "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
         )
@@ -526,12 +531,12 @@ def linux_job_problems(workflow: str, legs: int) -> list[str]:
     return problems
 
 
-def tool_cache_problems(workflow: str, caches: dict[str, str]) -> list[str]:
-    """Report how validate.yml's tool caches depart from `caches`: each `actions/cache` key, mapped to the install
-    command that runs when it misses. Every version a key names is a workflow-level `env` pin, so the install and
-    the key read one declaration, and pip's cache is keyed on requirements-dev.txt."""
+def tool_cache_problems(workflow: str, caches: dict[str, str], job: str = "suite") -> list[str]:
+    """Report how validate.yml's tool caches in `job` depart from `caches`: each `actions/cache` key, mapped to the
+    install command that runs when it misses. Every version a key names is a workflow-level `env` pin, so the install
+    and the key read one declaration, and pip's cache is keyed on requirements-dev.txt."""
     tree = read_workflow(workflow)
-    steps = _steps(_mapping(tree, "jobs", "suite"))
+    steps = _steps(_mapping(tree, "jobs", job))
     keys = [
         str(_mapping(step, "with").get("key"))
         for step in steps
@@ -556,6 +561,74 @@ def tool_cache_problems(workflow: str, caches: dict[str, str]) -> list[str]:
     ]:
         problems.append("setup-python does not cache pip keyed on requirements-dev.txt")
     return problems
+
+
+# What each job's verify step runs before validation: the ShellCheck validation runs and the PSScriptAnalyzer it loads
+# are the workflow's pins, or the step fails.
+PINNED_TOOL_LINES = (
+    "$shellcheck = [string]((shellcheck --version) -match '^version: ' -replace '^version: ')",
+    "if ($shellcheck -ne $env:SHELLCHECK_VERSION) { throw \"ShellCheck is '$shellcheck', not the pin "
+    '$env:SHELLCHECK_VERSION" }',
+    "$analyzer = [string](Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | "
+    "Select-Object -First 1).Version",
+    "if ($analyzer -ne $env:PSSCRIPTANALYZER_VERSION) { throw \"PSScriptAnalyzer is '$analyzer', not the pin "
+    '$env:PSSCRIPTANALYZER_VERSION" }',
+)
+# The informational lookup of the gallery's latest PSScriptAnalyzer, which only the weekly run waits on.
+GALLERY_LOOKUP = "Find-Module PSScriptAnalyzer"
+SCHEDULE_ONLY = "github.event_name == 'schedule'"
+
+
+def _validation_index(steps: list[dict[str, Node]]) -> int:
+    """The index of the first step that runs tests/run_validation.py, or the step count when none does."""
+    runs = [index for index, step in enumerate(steps) if "tests/run_validation.py" in str(step.get("run", ""))]
+    return runs[0] if runs else len(steps)
+
+
+def pinned_tool_problems(workflow: str, job: str) -> list[str]:
+    """Report how validate.yml's `job` departs from verifying, in a pwsh step before validation runs, that its
+    ShellCheck and newest PSScriptAnalyzer are the workflow's pins, and from querying the gallery for the latest
+    PSScriptAnalyzer anywhere but in a step the weekly schedule alone runs."""
+    steps = _steps(_mapping(read_workflow(workflow), "jobs", job))
+    before = steps[: _validation_index(steps)]
+    verifies = [
+        step
+        for step in before
+        if step.get("shell") == "pwsh"
+        and all(line in {raw.strip() for raw in str(step.get("run", "")).splitlines()} for line in PINNED_TOOL_LINES)
+    ]
+    problems: list[str] = []
+    if not verifies:
+        problems.append(f"no pwsh step of the {job} job verifies the pinned tools before validation runs")
+    problems.extend(
+        f"the step {step.get('name')} of the {job} job queries the gallery on every event, not on the schedule only"
+        for step in steps
+        if GALLERY_LOOKUP in str(step.get("run", "")) and step.get("if") != SCHEDULE_ONLY
+    )
+    return problems
+
+
+# The Windows legs' real-time protection reading, and the runner's own folders excluded when it is on.
+DEFENDER_LINES = (
+    "$enabled = (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled",
+    'Write-Host "Defender real-time protection enabled: $enabled"',
+    "if ($enabled) {",
+    "Add-MpPreference -ExclusionPath @($env:RUNNER_TEMP, $env:TEMP, $env:GITHUB_WORKSPACE) -ErrorAction Stop",
+)
+
+
+def defender_problems(workflow: str) -> list[str]:
+    """Report how validate.yml's Windows legs depart from printing Defender's real-time protection state and, when it
+    is on, excluding the ephemeral runner's temporary folders and workspace, in a pwsh step before validation runs."""
+    steps = _steps(_mapping(read_workflow(workflow), "jobs", "suite"))
+    before = steps[: _validation_index(steps)]
+    if any(
+        step.get("shell") == "pwsh"
+        and all(line in {raw.strip() for raw in str(step.get("run", "")).splitlines()} for line in DEFENDER_LINES)
+        for step in before
+    ):
+        return []
+    return ["no pwsh step of the suite job reads Defender's real-time protection and excludes the runner's folders"]
 
 
 def _verify_commands(script: str) -> list[list[str]]:
@@ -1037,11 +1110,30 @@ class WorkflowsPolicies(unittest.TestCase):
                 },
             ),
         )
+        self.assertEqual([], pinned_tool_problems(workflow, "suite"))
+        # Real-time scanning of the runner's own folders, read and excluded before the file-heavy suites run.
+        self.assertEqual([], defender_problems(workflow))
 
     def test_validate_workflow_runs_the_whole_run_on_linux_inside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         # Keep the Linux leg count here and in the workflow synchronized.
         self.assertEqual([], linux_job_problems(workflow, 2))
+        # The Linux legs restore the same pinned tools as the Windows legs, and install them from the network only on
+        # a miss: ShellCheck from its release archive, so the Linux pin is exact.
+        self.assertEqual(
+            [],
+            tool_cache_problems(
+                workflow,
+                {
+                    "shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}": LINUX_SHELLCHECK_DIGEST_CHECK,
+                    "psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}": (
+                        "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION "
+                    ),
+                },
+                job="linux",
+            ),
+        )
+        self.assertEqual([], pinned_tool_problems(workflow, "linux"))
         # Every supported platform gates a merge through the one check branch protection requires.
         self.assertEqual([], required_check_problems(workflow, ("suite", "linux")))
 
