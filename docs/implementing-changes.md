@@ -103,10 +103,14 @@ The `Mutation gate` job of the `Mutation` workflow runs on every pull request an
 the lines the pull request adds or changes in each Python module under `deployer/`, `tools/`, a skill's `scripts/`, or
 a repository skill's `scripts/`, suites and `conftest.py` left out, with mutmut's operators, and runs each mutant
 against the suites that executed the statement holding its line unmutated, as coverage.py measured them, until one
-fails, so a mutant on a continuation line of a multi-line statement is reached when that statement ran. A mutation
+fails, so a mutant on a continuation line of a multi-line statement is reached when that statement ran. Of each such
+suite it runs only the tests that ran the statement, as coverage.py's test-function contexts recorded them, and the
+whole suite when code outside a test function ran it too: a process the suite started, a set-up, a fixture, or an
+import. A mutation
 anchored on an expression that starts on an unchanged line, such as removing an argument from a call that opens above
 the change, is left out. Its step summary gives each module's changed lines and kill ratio, names each changed module whose
-changed lines yield no mutant, and names each surviving mutant by its line, the mutation, and the suites it passed; a
+changed lines yield no mutant, and names each surviving mutant by its line, the mutation, and the suites it passed, with how many of a suite's tests ran
+when not all did; a
 pull request that changes no such module gets one line saying so. The mutants run from one queue that takes one from
 each module in turn, the run is capped by `DEFAULT_MINUTES` in the gate, and the summary says which module the cap cut
 short. The summary on the job is the record: read it, and for a surviving mutant on a
