@@ -62,7 +62,7 @@ from git_worktrees import Worktree
 from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
 from github_remote import github_repository
-from link_probe import is_plain_directory
+from link_probe import is_plain_directory, is_plain_file
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
@@ -1252,7 +1252,7 @@ def hidden_edits(services: Services, path: str) -> list[str]:
         target = Path(path, name)
         if not os.path.lexists(target):
             continue
-        if mode in REGULAR_MODES and target.is_file() and not target.is_symlink():
+        if mode in REGULAR_MODES and is_plain_file(target):
             compared.append((name, sha))
         else:
             edited.append(name)

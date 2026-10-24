@@ -1,5 +1,7 @@
-"""The Python static checks: ruff format and lint, mypy and its mypy_path, the noqa and type: ignore rules, and the
-rule against issue numbers in comments and docstrings."""
+"""The Python static checks: ruff format and lint, mypy and its mypy_path, the noqa and type: ignore rules, the rule
+against issue numbers in comments and docstrings, and the policies that hold the code's universal claims: every process
+starts without git's repository-selecting variables, link_probe is the one link test, and every ctypes foreign function
+a module calls is declared."""
 
 from __future__ import annotations
 
@@ -17,14 +19,23 @@ from typing import Any
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from toolchain import find_mypy, find_ruff
 from validation_support import (
+    ATTRIBUTE_LOOKUPS,
     REPOSITORY_ROOT,
+    CallableResolver,
     UnreadablePython,
+    call_argument,
+    import_aliases,
+    is_test_script,
+    module_allowance,
     module_imports,
     parse_source,
+    path_order,
     python_source,
     python_trees,
+    qualified_name,
     relative,
     repository_files,
+    scoped_nodes,
     scripts_put_on_path,
     skill_script_directories,
 )
@@ -384,6 +395,292 @@ def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK
     return problems
 
 
+# The Python whose universal claims the policies below hold: every non-test module under these, the regression suites
+# and their fixture trees left out, since a suite starts processes and makes links to test the code that refuses them.
+CLAIM_ROOTS = ("skills", "deployer", "tools", ".claude/skills")
+
+
+def claim_files(root: Path, files: list[Path]) -> list[Path]:
+    """The non-test Python modules under CLAIM_ROOTS among files, in path order."""
+    found = [
+        path
+        for path in files
+        if path.suffix == ".py"
+        and not is_test_script(path)
+        and any(path.relative_to(root).as_posix().startswith(f"{top}/") for top in CLAIM_ROOTS)
+    ]
+    return sorted(found, key=lambda path: path_order(path.relative_to(root)))
+
+
+def sanctioned_problems(name: str, tree: ast.Module, allowance: str, found: list[tuple[int, str, str]]) -> list[str]:
+    """Each finding, as its line, the scope holding it, and its refusal, that the module's allowance does not
+    sanction, then each entry that sanctions nothing, and an allowance that is no dictionary of reasons."""
+    allowed = module_allowance(tree, allowance)
+    problems: list[str] = []
+    if allowed is None:
+        problems.append(f"{name}: {allowance} must map each function, class, or assignment to its reason")
+        allowed = {}
+    problems += [f"{name}:{line} {refusal}" for line, scope, refusal in found if scope not in allowed]
+    problems += [
+        f"{name}: {allowance} allows {scope}, which holds nothing it sanctions; remove the entry"
+        for scope in sorted(set(allowed) - {scope for _, scope, _ in found})
+    ]
+    return problems
+
+
+def resolves_to(qualified: str, name: str) -> bool:
+    """Whether a qualified name is `name`, reached as itself or through the package a module imports it from."""
+    return qualified == name or qualified.endswith(f".{name}")
+
+
+# Every process the repository starts runs without git's repository-selecting variables. ejryan89-skill-core's
+# bounded_process starts it so; a start anywhere else passes an environment that module's without_repository_variables
+# built, or states why in a module-level PROCESS_ENV_ALLOWED = {scope: reason}.
+PROCESS_STARTS = frozenset(
+    {
+        *(f"subprocess.{start}" for start in ("run", "Popen", "call", "check_call", "check_output")),
+        *(
+            f"{module}.create_subprocess_{kind}"
+            for module in ("asyncio", "asyncio.subprocess")
+            for kind in ("exec", "shell")
+        ),
+    }
+)
+CLEARED_ENVIRONMENT = "bounded_process.without_repository_variables"
+PROCESS_RUNNER = "skills/ejryan89-skill-core/scripts/bounded_process.py"
+PROCESS_ENV_ALLOWANCE = "PROCESS_ENV_ALLOWED"
+FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+
+def _holders(tree: ast.Module) -> dict[int, ast.AST]:
+    """The innermost function or lambda holding each node, by the node's id, or the module for a node in none."""
+    holders: dict[int, ast.AST] = {}
+
+    def walk(node: ast.AST, holder: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            holders[id(child)] = holder
+            walk(child, child if isinstance(child, FUNCTIONS) else holder)
+
+    walk(tree, tree)
+    return holders
+
+
+def _clears(value: ast.expr | None, resolver: CallableResolver) -> bool:
+    """Whether an expression is a call of without_repository_variables."""
+    return isinstance(value, ast.Call) and resolves_to(resolver.name(value.func), CLEARED_ENVIRONMENT)
+
+
+def _cleared_names(tree: ast.Module, holders: dict[int, ast.AST], resolver: CallableResolver) -> dict[int, set[str]]:
+    """The names each function, by its id, binds only to an environment without_repository_variables builds. A
+    parameter is bound by the caller, so it is none; an update in place, such as `env.update(...)` or `env |= ...`,
+    keeps the name bound to that environment."""
+    assigned: dict[int, ast.expr] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            assigned |= {id(target): node.value for target in node.targets if isinstance(target, ast.Name)}
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
+            assigned[id(node.target)] = node.value
+    bound: dict[int, dict[str, list[bool]]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, FUNCTIONS):
+            parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+            for parameter in [*parameters, node.args.vararg, node.args.kwarg]:
+                if parameter is not None:
+                    bound.setdefault(id(node), {}).setdefault(parameter.arg, []).append(False)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            cleared = _clears(assigned.get(id(node)), resolver)
+            bound.setdefault(id(holders[id(node)]), {}).setdefault(node.id, []).append(cleared)
+    return {holder: {name for name, values in names.items() if all(values)} for holder, names in bound.items()}
+
+
+def process_environment_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each process start outside bounded_process whose environment may keep git's repository-selecting variables,
+    that no PROCESS_ENV_ALLOWED entry sanctions: one given no env, which inherits this process's, or an env that is
+    neither a without_repository_variables call nor a name its function binds only to one."""
+    problems: list[str] = []
+    paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != PROCESS_RUNNER]
+    for _, name, tree in python_trees(paths, root, problems):
+        resolver = CallableResolver(tree)
+        holders = _holders(tree)
+        cleared = _cleared_names(tree, holders, resolver)
+        found: list[tuple[int, str, str]] = []
+        for node, scope in scoped_nodes(tree.body):
+            if not isinstance(node, ast.Call) or (start := resolver.name(node.func)) not in PROCESS_STARTS:
+                continue
+            env = call_argument(node, None, "env")
+            if _clears(env, resolver) or (
+                isinstance(env, ast.Name) and env.id in cleared.get(id(holders[id(node)]), set())
+            ):
+                continue
+            given = "no env, so it keeps" if env is None else "an env that may keep"
+            found.append(
+                (
+                    node.lineno,
+                    scope,
+                    f"starts {start} with {given} git's repository-selecting variables; run it through "
+                    "ejryan89-skill-core's bounded_process, pass env=without_repository_variables(...), or state why "
+                    f"in {PROCESS_ENV_ALLOWANCE}",
+                )
+            )
+        problems += sanctioned_problems(name, tree, PROCESS_ENV_ALLOWANCE, found)
+    return problems
+
+
+# ejryan89-skill-core's link_probe is the one test of whether a path is a link, and reads a symbolic link and a Windows
+# junction alike, where is_symlink and islink see no junction. deployer/platform_support.py's is_junction delegates to
+# it, so a call of that wrapper is no other test. Any other test states why in a module-level
+# LINK_TEST_ALLOWED = {scope: reason}, as where a symbolic link and a junction must be told apart.
+LINK_TESTS = frozenset({"is_symlink", "islink", "is_junction", "isjunction", "st_file_attributes"})
+LINK_PROBE = "skills/ejryan89-skill-core/scripts/link_probe.py"
+LINK_WRAPPER = "platform_support.is_junction"
+LINK_TEST_ALLOWANCE = "LINK_TEST_ALLOWED"
+
+
+def _link_test(node: ast.expr, aliases: dict[str, str]) -> str | None:
+    """The link test a node names, as an attribute, an imported name, or the literal a getattr or hasattr reads, or
+    None."""
+    named = ""
+    if isinstance(node, ast.Attribute):
+        named = qualified_name(node, aliases) or node.attr
+    elif isinstance(node, ast.Name) and node.id in aliases:
+        named = aliases[node.id]
+    elif isinstance(node, ast.Call) and qualified_name(node.func, aliases) in {*ATTRIBUTE_LOOKUPS, "hasattr"}:
+        literal = call_argument(node, 1, "name")
+        named = literal.value if isinstance(literal, ast.Constant) and isinstance(literal.value, str) else ""
+    test = named.rpartition(".")[2]
+    return test if test in LINK_TESTS and not resolves_to(named, LINK_WRAPPER) else None
+
+
+def link_test_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each link test outside link_probe that no LINK_TEST_ALLOWED entry sanctions: an is_symlink, islink,
+    is_junction, or isjunction, or a read of st_file_attributes, which holds the reparse-point half of the test."""
+    problems: list[str] = []
+    paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != LINK_PROBE]
+    for _, name, tree in python_trees(paths, root, problems):
+        aliases = import_aliases(tree)
+        found = [
+            (
+                node.lineno,
+                scope,
+                f"tests for a link with {test}; call ejryan89-skill-core's link_probe, the one link test, which reads "
+                f"a symbolic link and a junction alike, or state why in {LINK_TEST_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.expr) and (test := _link_test(node, aliases))
+        ]
+        problems += sanctioned_problems(name, tree, LINK_TEST_ALLOWANCE, found)
+    return problems
+
+
+# ctypes passes an undeclared foreign function's arguments and its result as C ints, which cuts a pointer-sized handle
+# short, so every function a module calls through a library it loads has its argtypes and restype assigned in that
+# module. A function every call gives no arguments needs no argtypes. Any other exception states why in a module-level
+# CTYPES_ALLOWED = {scope: reason}.
+LIBRARY_LOADERS = frozenset(
+    {
+        "ctypes.WinDLL",
+        "ctypes.CDLL",
+        "ctypes.OleDLL",
+        "ctypes.PyDLL",
+        "ctypes.windll.LoadLibrary",
+        "ctypes.cdll.LoadLibrary",
+    }
+)
+LIBRARY_NAMESPACES = frozenset({"ctypes.windll", "ctypes.cdll", "ctypes.oledll"})
+# What a library or a foreign function holds that is no foreign function.
+FOREIGN_MEMBERS = frozenset({"LoadLibrary", "argtypes", "restype", "errcheck", "_handle", "_name"})
+FOREIGN_DECLARATIONS = ("argtypes", "restype")
+CTYPES_ALLOWANCE = "CTYPES_ALLOWED"
+
+
+class _ForeignLibraries:
+    """What a module binds to a library ctypes loads: the names bound to one, the module's functions that return one,
+    and the names bound to a function of one, through the module's imports."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.aliases = import_aliases(tree)
+        self.names: set[str] = set()
+        self.loaders: set[str] = set()
+        self.functions: dict[str, str] = {}
+        assignments = [
+            (target.id, node.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+            if isinstance(target, ast.Name)
+        ]
+        returns = [
+            (function.name, node.value)
+            for function in ast.walk(tree)
+            if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+            for node in ast.walk(function)
+            if isinstance(node, ast.Return) and node.value is not None
+        ]
+        # A name bound to a loader's result is a library, and so is a name bound to that name, to the fixed point.
+        while True:
+            names = {name for name, value in assignments if self.library(value)} - self.names
+            loaders = {name for name, value in returns if self.library(value)} - self.loaders
+            if not names and not loaders:
+                break
+            self.names |= names
+            self.loaders |= loaders
+        self.functions = {name: function for name, value in assignments if (function := self.foreign(value))}
+
+    def library(self, node: ast.expr) -> bool:
+        """Whether an expression is a library ctypes loads."""
+        if isinstance(node, ast.Call):
+            return qualified_name(node.func, self.aliases) in LIBRARY_LOADERS or (
+                isinstance(node.func, ast.Name) and node.func.id in self.loaders
+            )
+        if isinstance(node, ast.Attribute):
+            return node.attr not in FOREIGN_MEMBERS and qualified_name(node.value, self.aliases) in LIBRARY_NAMESPACES
+        return isinstance(node, ast.Name) and node.id in self.names
+
+    def foreign(self, node: ast.expr) -> str | None:
+        """The name of the foreign function an expression is, or None."""
+        if isinstance(node, ast.Attribute) and node.attr not in FOREIGN_MEMBERS and self.library(node.value):
+            return node.attr
+        return self.functions.get(node.id) if isinstance(node, ast.Name) else None
+
+
+def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each call of a ctypes foreign function whose module does not assign it both argtypes and restype, argtypes
+    excepted for a function every call gives no arguments, that no CTYPES_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        libraries = _ForeignLibraries(tree)
+        declared: dict[str, set[str]] = {}
+        calls: list[tuple[ast.Call, str, str]] = []
+        for node, scope in scoped_nodes(tree.body):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute) and target.attr in FOREIGN_DECLARATIONS:
+                        function = libraries.foreign(target.value)
+                        if function is not None:
+                            declared.setdefault(function, set()).add(target.attr)
+            elif isinstance(node, ast.Call) and (function := libraries.foreign(node.func)) is not None:
+                calls.append((node, scope, function))
+        given = {function for call, _, function in calls if call.args or call.keywords}
+        found: list[tuple[int, str, str]] = []
+        for call, scope, function in calls:
+            missing = [
+                declaration
+                for declaration in FOREIGN_DECLARATIONS
+                if declaration not in declared.get(function, set()) and (declaration == "restype" or function in given)
+            ]
+            if missing:
+                found.append(
+                    (
+                        call.lineno,
+                        scope,
+                        f"calls {function} through ctypes with no {' or '.join(missing)} assigned in the module, so "
+                        f"ctypes passes it C ints; assign both, or state why in {CTYPES_ALLOWANCE}",
+                    )
+                )
+        problems += sanctioned_problems(name, tree, CTYPES_ALLOWANCE, found)
+    return problems
+
+
 def ruff_format_check(root: Path, targets: list[str]) -> None:
     """Fail, naming each file, when ruff format would change any Python file under the targets in root."""
     ruff = find_ruff()
@@ -552,3 +849,12 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_repository_comments_state_reasons_instead_of_issue_numbers(self) -> None:
         self.assertEqual([], issue_numbers_in_comments(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_every_process_starts_without_git_repository_variables(self) -> None:
+        self.assertEqual([], process_environment_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_link_probe_is_the_one_link_test(self) -> None:
+        self.assertEqual([], link_test_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_every_ctypes_foreign_function_called_is_declared(self) -> None:
+        self.assertEqual([], ctypes_declaration_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

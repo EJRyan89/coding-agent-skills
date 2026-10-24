@@ -846,6 +846,23 @@ class RemoveBriefsTests(Fixture):
             (directory / ".audit-repository-briefs.json").write_text(marker, encoding="utf-8")
         return directory
 
+    def test_refuses_a_briefs_directory_reached_through_a_link_or_junction_and_leaves_it(self) -> None:
+        _, lines = self.run_main("release", "--since", "v0.1.0")
+        directory = Path(next(line for line in lines if line.startswith("BRIEFS ")).split(" ", 1)[1].strip('"'))
+        self.addCleanup(remove_briefs_left, directory)
+        link = Path(tempfile.gettempdir()) / f"{directory.name}-link"
+        # A junction on Windows, which needs no privilege, and a symbolic link elsewhere; either resolves to the run's.
+        if sys.platform == "win32":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(directory)], check=True, capture_output=True)
+            self.addCleanup(os.rmdir, link)
+        else:
+            link.symlink_to(directory, target_is_directory=True)
+            self.addCleanup(link.unlink)
+        code, lines = self.remove(link)
+        self.assertEqual(1, code)
+        self.assertTrue(lines[0].startswith("FAILED ") and "is not a briefs directory this script made" in lines[0])
+        self.assertTrue((directory / ".audit-repository-briefs.json").is_file())
+
     def test_a_run_marks_its_directory_with_its_own_path(self) -> None:
         _, lines = self.run_main("release", "--since", "v0.1.0")
         directory = Path(next(line for line in lines if line.startswith("BRIEFS ")).split(" ", 1)[1].strip('"'))

@@ -130,6 +130,7 @@ import runtime_support
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 from git_client import GitClient, GitError
+from link_probe import is_plain_directory
 from release_tags import last_release
 from skill_roots import sibling_scripts
 
@@ -1259,7 +1260,7 @@ def remove_home(directory: str) -> int:
     temporary = Path(tempfile.gettempdir()).resolve()
     resolved = home.resolve()
     if (
-        home.is_symlink()
+        not is_plain_directory(home)
         or not resolved.is_dir()
         or resolved.parent != temporary
         or not resolved.name.startswith(HOME_PREFIX)
