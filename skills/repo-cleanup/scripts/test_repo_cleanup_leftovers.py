@@ -292,7 +292,7 @@ class LeftoverTests(Fixture):
             *("--path", str(trees["on-remote"])),
             *("--path", str(trees["own-commit"])),
         )
-        self.assertEqual(0, code, lines)
+        self.assertEqual(1, code, "a path the plan never offered needs the agent")
         self.assertEqual(["detached"], [fields[1] for fields in facts(lines, "REMOVED")])
         self.same(trees["on-main"], facts(lines, "REMOVED")[0][0])
         self.assertEqual(
@@ -306,7 +306,8 @@ class LeftoverTests(Fixture):
         self.assertTrue(trees["on-remote"].exists() and trees["own-commit"].exists())
         self.assertIn(" (detached)", self.summary(lines))
         code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(trees["on-main"]))
-        self.preserved(lines, (trees["on-main"], "not a detached worktree or orphan directory offered by this plan"))
+        self.assertEqual(0, code, "a path the plan already removed needs nothing more")
+        self.preserved(lines, (trees["on-main"], "already removed by this plan"))
 
     def test_a_worktree_or_branch_that_moves_after_planning_is_preserved_as_moved_and_never_offered(self) -> None:
         main = git(self.clone, "rev-parse", "main")
@@ -411,7 +412,7 @@ class LeftoverTests(Fixture):
             *("--path", str(task)),
             *("--path", str(self.area / "live wt")),
         )
-        self.assertEqual(0, code, lines)
+        self.assertEqual(1, code, "a path the plan never offered needs the agent")
         self.preserved(
             lines,
             (task, "no longer a directory Git does not track"),
@@ -452,7 +453,7 @@ class LeftoverTests(Fixture):
         self.assertIn("  Preserved:               1 — ", self.summary(applied))
 
         code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(templates))
-        self.assertEqual(0, code, lines)
+        self.assertEqual(1, code, "a path the plan never offered needs the agent")
         self.preserved(lines, (templates, "not a detached worktree or orphan directory offered by this plan"))
         self.assertTrue((templates / "base.md").exists() and (templates / "local.env").exists())
         self.assertEqual("", git(self.clone, "status", "--porcelain"), "the main worktree lost no tracked file")
