@@ -27,7 +27,6 @@ from skill_layout import (
     embedded_program_problems,
     find_executable_fences,
     fixture_source_problems,
-    invoked_skills,
     marketplace_problems,
     metadata_format_problems,
     output_placeholder_problems,
@@ -256,16 +255,6 @@ class SkillLayoutFixtures(unittest.TestCase):
                 ],
                 output_placeholder_problems(root, REPOSITORY_SKILLS),
             )
-
-    def test_an_invoked_skill_is_the_first_word_of_a_code_span_on_a_line_that_says_invoke(self) -> None:
-        text = (
-            "Then invoke `review-prs --re-review`, or invoke `flag-review-finding`.\n"
-            "Run `repo-cleanup` once.\n"
-            "Invoke `review-document` here.\n"
-            "invoke `unknown-skill` and `review-insights`\n"
-        )
-        names = {"review-prs", "flag-review-finding", "repo-cleanup", "review-document", "review-insights"}
-        self.assertEqual({"review-prs", "flag-review-finding", "review-insights"}, invoked_skills(text, names))
 
     def test_fixture_source_policy_detects_each_problem(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

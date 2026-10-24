@@ -99,7 +99,11 @@ with its base needs no local rerun, since continuous integration runs on the res
 The gates that call a model never run in continuous integration, so they stay with the author: a change to skill
 paths, `allowed-tools`, runtime adapters, or agents runs the `runtime-canary` repository skill, a change to a skill's
 prompt, description, model guidance, or reviewer instructions runs `evaluate-skill` when the skill has scenarios, and a change to a
-skill under `skills/` or `.claude/skills/` runs `audit-skill` on it. `CLAUDE.md` ("Required validation") holds
+skill under `skills/` or `.claude/skills/` runs `audit-skill` on it. A canary run that started the real profile's
+installed copy of a skill, which no runtime keeps out of a model's reach, tested nothing: the canary prints it
+`UNCOUNTED`, runs the skill again, and judges only the last run, so the record holds every `UNCOUNTED` line beside the
+run that counted, and a rerun of the whole canary chosen because it passed is no result. `CLAUDE.md` ("Required
+validation") holds
 the rules validation enforces.
 
 The `Mutation gate` job of the `Mutation` workflow runs on every pull request and is not a required check. It mutates
@@ -109,14 +113,19 @@ against the suites that executed the statement holding its line unmutated, as co
 fails, so a mutant on a continuation line of a multi-line statement is reached when that statement ran. Of each such
 suite it runs only the tests that ran the statement, as coverage.py's test-function contexts recorded them, and the
 whole suite when code outside a test function ran it too: a process the suite started, a set-up, a fixture, or an
-import. A mutation
+import. A mutant of a module-level assignment, such as a table or a compiled pattern, runs at import, so it runs
+instead the tests that ran a line reading a name it binds, when only the module's functions read those names and no
+other file names one, and the whole of each reaching suite otherwise. A mutation
 anchored on an expression that starts on an unchanged line, such as removing an argument from a call that opens above
 the change, is left out. Its step summary gives each module's changed lines and kill ratio, names each changed module whose
 changed lines yield no mutant, and names each surviving mutant by its line, the mutation, and the suites it passed, with how many of a suite's tests ran
 when not all did; a
 pull request that changes no such module gets one line saying so. The mutants run from one queue that takes one from
-each module in turn, the run is capped by `DEFAULT_MINUTES` in the gate, and the summary says which module the cap cut
-short. The summary on the job is the record: read it, and for a surviving mutant on a
+each module in turn, and the run is capped by `DEFAULT_MINUTES` in the gate. A run the cap cuts short, leaving a
+mutant not run or a suite's reach unmeasured, is unfinished: its summary's first line says so, naming each module's
+mutants not run and how many lie on lines that run at import, and the job fails. An unfinished gate is not a verdict,
+whatever its table shows. Split the pull request, or move the module-level tables its changed lines hold into the
+functions that use them, until its gate finishes. The summary of a finished run is the record: read it, and for a surviving mutant on a
 line the pull request changed that alters behavior a caller relies on, such as a refusal or a line a document or
 test treats as a contract, add the test that kills it, or name it in the pull request with why it is equivalent.
 A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere. It runs on Linux only, because mutmut refuses Windows; the gate's docstring
