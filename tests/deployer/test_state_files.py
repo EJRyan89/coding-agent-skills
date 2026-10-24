@@ -12,7 +12,7 @@ import re
 
 from harness import SOURCE_ID, DeployerTestCase
 
-from deployer import discovery, platform_support, render
+from deployer import discovery, platform_support, render, state_files
 from deployer.errors import STATE_FILE, DeployError, see_recovery
 
 # An integer past the digit limit, which json.loads raises ValueError for, and lists nested past the recursion limit,
@@ -26,6 +26,29 @@ RUN_ID = "20260101-000000-bad1"
 
 def shown(path: object) -> str:
     return re.escape(platform_support.normalize(str(path)))
+
+
+class ReaderTests(DeployerTestCase):
+    def test_json_past_the_limits_or_not_json_reads_as_none_and_json_as_its_value(self) -> None:
+        for case, text in {**UNREADABLE, "not json": "{", "a lone surrogate": '"\\ud800'}.items():
+            with self.subTest(case=case):
+                self.assertIsNone(state_files.parse_json(text))
+        self.assertEqual({"a": [1, 2]}, state_files.parse_json('{"a": [1, 2]}'))
+        self.assertEqual(7, state_files.parse_json("7"))
+
+    def test_a_file_is_present_nothing_is_absent_and_anything_else_is_refused_by_name(self) -> None:
+        path = self.root / "state.json"
+        self.assertFalse(state_files.is_present(path, "The state"))
+        path.write_text("{}", encoding="utf-8")
+        self.assertTrue(state_files.is_present(path, "The state"))
+        path.unlink()
+        path.mkdir()
+        with self.assertRaises(DeployError) as raised:
+            state_files.is_present(path, "The state", "Move it aside.", "Then retry.")
+        self.assertEqual(
+            (f"ERROR: The state at {platform_support.normalize(path)} is not a file.", "Move it aside.", "Then retry."),
+            raised.exception.lines,
+        )
 
 
 class StateFileTests(DeployerTestCase):
