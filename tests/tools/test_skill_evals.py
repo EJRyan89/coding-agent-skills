@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from unittest import mock
@@ -2679,12 +2679,17 @@ class EvaluateTests(unittest.TestCase):
         return skill_evals.Seams(**values)
 
     def evaluate(
-        self, argv: Sequence[str], seams: skill_evals.Seams, skill: str = "review-prs"
+        self, argv: Sequence[str], seams: skill_evals.Seams, skill: str = "review-prs", only: Sequence[str] = ()
     ) -> tuple[int, list[str]]:
         """The run's status and its output lines but the citation block, which `self.output` keeps with the rest and
-        `self.cited` alone, between its BEGIN and END lines."""
+        `self.cited` alone, between its BEGIN and END lines. With `only`, the skill holds just those scenarios, so a
+        run of one scenario is still a full run, which --write accepts."""
+
+        def loader(name: str, names: Sequence[str] = (), *rest: Any) -> list[Scenario]:
+            return review_scenarios(name, list(names) or list(only), *rest)
+
         output = io.StringIO()
-        with contextlib.redirect_stdout(output), mock.patch.object(skill_evals, "load_scenarios", review_scenarios):
+        with contextlib.redirect_stdout(output), mock.patch.object(skill_evals, "load_scenarios", loader):
             status = skill_evals.main([skill, *argv], seams=seams)
         self.output = output.getvalue().splitlines()
         self.cited: list[str] = []
@@ -2776,61 +2781,6 @@ class EvaluateTests(unittest.TestCase):
                 names = {name.upper() for name in environment}
                 self.assertEqual(set(), names & (selecting | {"GIT_NAMESPACE"}))
                 self.assertLessEqual(set(configuring) | {"PATH"}, names)
-
-    def test_a_document_scenario_runs_the_skill_on_its_staged_document(self) -> None:
-        pdftotext_reads_pdf_gaps(self)
-        claude = StubClaude(self)
-        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "review-document")
-        self.assertEqual(0, status, lines)
-        scenarios = {
-            "committed-edit": "export-download-links.md",
-            "design-clean": "export-download-links.md",
-            "design-draft": "export-sharing.md",
-            "design-final": "export-link-expiry.md",
-            "design-gaps": "export-retention.md",
-            "pdf-gaps": "export-retention.pdf",
-            "word-gaps": "export-retention.docx",
-        }
-        # A scenario that names a stage starts the skill at it.
-        stages = {"design-draft": ' --stage "draft"', "design-final": ' --stage "final"'}
-        prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
-        self.assertEqual(
-            [
-                f'/review-document "{self.homes / model / skill_evals_runs.STATE / scenario / "document" / name}"'
-                + stages.get(scenario, "")
-                for scenario, name in scenarios.items()
-                for model in skill_evals_records.MODELS
-            ],
-            prompts,
-        )
-        # The edit is reviewed against its committed base, and a whole document against nothing.
-        self.assertEqual(
-            {
-                f"{scenario} {model}": "committed" if scenario == "committed-edit" else "none"
-                for scenario in scenarios
-                for model in skill_evals_records.MODELS.values()
-            },
-            {key: built[1].split(" ")[1] for key, built in claude.built.items()},
-        )
-        guarded = [line for line in lines if line.startswith("GUARDED ")]
-        self.assertEqual(
-            [
-                f"GUARDED {scenario} {model} design-review files_read=0"
-                for scenario in scenarios
-                for model in skill_evals_records.MODELS
-            ],
-            guarded,
-        )
-        self.assertEqual([], [line for line in lines if line.startswith("FAIL")])
-        self.assertIn("PASS review-document committed-edit haiku only_at export-download-links.md:17", lines)
-        written = self.results.read_text(encoding="utf-8")
-        self.assertIn(
-            "| review-document | haiku | claude-haiku-5-5 | 25/25 | 1 | committed-edit 3/3, design-clean 2/2, "
-            "design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | "
-            "2.1.291 | 2026-10-08 |",
-            written,
-        )
-        self.assertIn("| review-prs | opus | old |", written)
 
     def test_repeated_scenarios_run_once_per_distinct_model_in_requested_order(self) -> None:
         claude = StubClaude(self)
@@ -3113,83 +3063,6 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual("broken\n", log.read_text(encoding="utf-8"))
         self.assertEqual([], claude.calls)
 
-    def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_holding_the_checkout_s_files(
-        self,
-    ) -> None:
-        copies = self.root / "copies"
-        copies.mkdir()
-        before = tree_bytes(REVIEW_REPOSITORY)
-        claude = StubClaude(self)
-        with mock.patch.object(tempfile, "tempdir", str(copies)):
-            status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "review-repository")
-        self.assertEqual(0, status, lines)
-        runs = [(scenario, model) for scenario in REVIEW_REPOSITORY_SCENARIOS for model in skill_evals_records.MODELS]
-        prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
-        fixtures = [claude.fixtures[f"{scenario} {skill_evals_records.MODELS[model]}"][0] for scenario, model in runs]
-        self.assertEqual([f'/review-prs --canary --fixture "{fixture}"' for fixture in fixtures], prompts)
-        self.assertEqual([(scenario, copies) for scenario, _ in runs], [(f.name, f.parent.parent) for f in fixtures])
-        for key, (_, files) in claude.fixtures.items():
-            scenario = key.split(" ")[0]
-            for tree in ("base", "head"):
-                for path in REVIEW_REPOSITORY_PLACED:
-                    with self.subTest(run=key, tree=tree, path=path):
-                        self.assertEqual(
-                            (skill_evals_scenarios.REPOSITORY_ROOT / path).read_bytes(), files[f"{tree}/{path}"]
-                        )
-            own = {
-                path[len(scenario) + 1 :].removesuffix(skill_evals_scenarios.HELD): content
-                for path, content in before.items()
-                if path.startswith(f"{scenario}/")
-            }
-            self.assertEqual(own, {path: files[path] for path in own})
-            self.assertEqual([], [path for path in files if path.endswith(skill_evals_scenarios.HELD)])
-        self.assertEqual([], list(copies.iterdir()), "every copy is removed")
-        self.assertEqual(before, tree_bytes(REVIEW_REPOSITORY), "the fixtures are untouched")
-        # Each route's condition opens on the copy as on the fixture, with the reviewer's files beside it, and each
-        # route's scenario starts its specialist on the held files the copy restores.
-        roles = {
-            "branch-name-command": "skill-scripts,trust-boundary",
-            "build-grant": "documentation-drift,generic-review,skill-contract,skill-scripts,upgrade-notes",
-            "drifted-guide": "documentation-drift,generic-review",
-            "misstated-exit-status": "documentation",
-            "tested-change": "generic-review",
-            "text-read-policy": "validation-policy",
-            "undocumented-change": "generic-review",
-            "unnoted-flag-rename": "deployer,upgrade-notes",
-            "untested-change": "generic-review,untested-changes",
-            "write-before-refusal": "deployer",
-        }
-        guarded: dict[str, set[str]] = {}
-        for line in lines:
-            if line.startswith("GUARDED "):
-                _, scenario, model, role, _ = line.split(" ")
-                guarded.setdefault(f"{scenario} {model}", set()).add(role)
-        self.assertEqual(
-            {f"{scenario} {model}": roles[scenario] for scenario, model in runs},
-            {key: ",".join(sorted(value)) for key, value in guarded.items()},
-        )
-        self.assertEqual([], [line for line in lines if line.startswith("FAIL")])
-        self.assertIn(
-            "PASS review-repository untested-change haiku finding tools/report_age.sh:7,8,9,10 "
-            "SHOULD_FIX Test coverage",
-            lines,
-        )
-        self.assertIn(
-            "PASS review-repository write-before-refusal haiku finding deployer/install.py:27,28,29,30,31 "
-            "MUST_FIX Unheld invariant",
-            lines,
-        )
-        written = self.results.read_text(encoding="utf-8")
-        for model, identifier in skill_evals_records.MODELS.items():
-            self.assertIn(
-                f"| review-repository | {model} | {identifier} | 13/13 | 1 | branch-name-command 1/1, build-grant 1/1, "
-                "drifted-guide 2/2, misstated-exit-status 1/1, tested-change 2/2, text-read-policy 1/1, "
-                "undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 "
-                "| claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
-                written,
-            )
-        self.assertIn("| review-prs | opus | old |", written)
-
     def test_a_repository_reviewer_s_copy_is_removed_when_its_run_fails(self) -> None:
         copies = self.root / "copies"
         copies.mkdir()
@@ -3366,6 +3239,196 @@ class EvaluateTests(unittest.TestCase):
             ):
                 skill_evals.main(["review-prs", "--write", *argv], seams=self.seams(StubClaude(self)))
             self.assertEqual(2, raised.exception.code)
+
+
+@pytest.fixture
+def evaluation() -> Iterator[EvaluateTests]:
+    """An EvaluateTests case set up as unittest sets one up, for a sweep pytest parametrizes per scenario so its cases
+    spread across the suite's shards, which it cannot do to a unittest method; its cleanups run when the test ends."""
+    case = EvaluateTests()
+    try:
+        case.setUp()
+        yield case
+    finally:
+        case.doCleanups()
+
+
+# Each review-document scenario's staged document, and the stage a scenario that names one starts the skill at.
+REVIEW_DOCUMENT_STAGED = {
+    "committed-edit": "export-download-links.md",
+    "design-clean": "export-download-links.md",
+    "design-draft": "export-sharing.md",
+    "design-final": "export-link-expiry.md",
+    "design-gaps": "export-retention.md",
+    "pdf-gaps": "export-retention.pdf",
+    "word-gaps": "export-retention.docx",
+}
+REVIEW_DOCUMENT_STAGES = {"design-draft": ' --stage "draft"', "design-final": ' --stage "final"'}
+# The expectations each review-document scenario passes on each model, and a PASS line a scenario's run prints.
+REVIEW_DOCUMENT_EXPECTATIONS = {
+    "committed-edit": 3,
+    "design-clean": 2,
+    "design-draft": 3,
+    "design-final": 2,
+    "design-gaps": 5,
+    "pdf-gaps": 5,
+    "word-gaps": 5,
+}
+REVIEW_DOCUMENT_PASSES = {
+    "committed-edit": "PASS review-document committed-edit haiku only_at export-download-links.md:17",
+}
+
+
+@pytest.mark.parametrize("scenario", REVIEW_DOCUMENT_STAGED)
+def test_a_document_scenario_runs_the_skill_on_its_staged_document(scenario: str, evaluation: EvaluateTests) -> None:
+    case = evaluation
+    pdftotext_reads_pdf_gaps(case)
+    claude = StubClaude(case)
+    status, lines = case.evaluate(["--write", "--jobs", "1"], case.seams(claude), "review-document", [scenario])
+    case.assertEqual(0, status, lines)
+    name = REVIEW_DOCUMENT_STAGED[scenario]
+    # A scenario that names a stage starts the skill at it.
+    prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
+    case.assertEqual(
+        [
+            f'/review-document "{case.homes / model / skill_evals_runs.STATE / scenario / "document" / name}"'
+            + REVIEW_DOCUMENT_STAGES.get(scenario, "")
+            for model in skill_evals_records.MODELS
+        ],
+        prompts,
+    )
+    # The edit is reviewed against its committed base, and a whole document against nothing.
+    case.assertEqual(
+        {
+            f"{scenario} {model}": "committed" if scenario == "committed-edit" else "none"
+            for model in skill_evals_records.MODELS.values()
+        },
+        {key: built[1].split(" ")[1] for key, built in claude.built.items()},
+    )
+    guarded = [line for line in lines if line.startswith("GUARDED ")]
+    case.assertEqual(
+        [f"GUARDED {scenario} {model} design-review files_read=0" for model in skill_evals_records.MODELS], guarded
+    )
+    case.assertEqual([], [line for line in lines if line.startswith("FAIL")])
+    if scenario in REVIEW_DOCUMENT_PASSES:
+        case.assertIn(REVIEW_DOCUMENT_PASSES[scenario], lines)
+    written = case.results.read_text(encoding="utf-8")
+    passed = REVIEW_DOCUMENT_EXPECTATIONS[scenario]
+    case.assertIn(
+        f"| review-document | haiku | claude-haiku-5-5 | {passed}/{passed} | 1 | {scenario} {passed}/{passed} | "
+        "claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+        written,
+    )
+    case.assertIn("| review-prs | opus | old |", written)
+
+
+# The specialists each review-repository scenario's route starts, and the expectations each scenario passes on each
+# model.
+REVIEW_REPOSITORY_ROLES = {
+    "branch-name-command": "skill-scripts,trust-boundary",
+    "build-grant": "documentation-drift,generic-review,skill-contract,skill-scripts,upgrade-notes",
+    "drifted-guide": "documentation-drift,generic-review",
+    "misstated-exit-status": "documentation",
+    "tested-change": "generic-review",
+    "text-read-policy": "validation-policy",
+    "undocumented-change": "generic-review",
+    "unnoted-flag-rename": "deployer,upgrade-notes",
+    "untested-change": "generic-review,untested-changes",
+    "write-before-refusal": "deployer",
+}
+REVIEW_REPOSITORY_EXPECTATIONS = {
+    "branch-name-command": 1,
+    "build-grant": 1,
+    "drifted-guide": 2,
+    "misstated-exit-status": 1,
+    "tested-change": 2,
+    "text-read-policy": 1,
+    "undocumented-change": 2,
+    "unnoted-flag-rename": 1,
+    "untested-change": 1,
+    "write-before-refusal": 1,
+}
+REVIEW_REPOSITORY_PASSES = {
+    "untested-change": (
+        "PASS review-repository untested-change haiku finding tools/report_age.sh:7,8,9,10 SHOULD_FIX Test coverage"
+    ),
+    "write-before-refusal": (
+        "PASS review-repository write-before-refusal haiku finding deployer/install.py:27,28,29,30,31 "
+        "MUST_FIX Unheld invariant"
+    ),
+}
+
+
+@pytest.mark.parametrize("scenario", REVIEW_REPOSITORY_SCENARIOS)
+def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_holding_the_checkout_s_files(
+    scenario: str, evaluation: EvaluateTests, subtests: pytest.Subtests
+) -> None:
+    case = evaluation
+    copies = case.root / "copies"
+    copies.mkdir()
+    before = tree_bytes(REVIEW_REPOSITORY)
+    claude = StubClaude(case)
+    with mock.patch.object(tempfile, "tempdir", str(copies)):
+        status, lines = case.evaluate(["--write", "--jobs", "1"], case.seams(claude), "review-repository", [scenario])
+    case.assertEqual(0, status, lines)
+    runs = [(scenario, model) for model in skill_evals_records.MODELS]
+    prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
+    fixtures = [claude.fixtures[f"{scenario} {skill_evals_records.MODELS[model]}"][0] for scenario, model in runs]
+    case.assertEqual([f'/review-prs --canary --fixture "{fixture}"' for fixture in fixtures], prompts)
+    case.assertEqual([(scenario, copies) for scenario, _ in runs], [(f.name, f.parent.parent) for f in fixtures])
+    for key, (_, files) in claude.fixtures.items():
+        for tree in ("base", "head"):
+            for path in REVIEW_REPOSITORY_PLACED:
+                # pytest's subtests, since unittest's report nothing for a case pytest does not run itself.
+                with subtests.test(run=key, tree=tree, path=path):
+                    case.assertEqual(
+                        (skill_evals_scenarios.REPOSITORY_ROOT / path).read_bytes(), files[f"{tree}/{path}"]
+                    )
+        own = {
+            path[len(scenario) + 1 :].removesuffix(skill_evals_scenarios.HELD): content
+            for path, content in before.items()
+            if path.startswith(f"{scenario}/")
+        }
+        case.assertEqual(own, {path: files[path] for path in own})
+        case.assertEqual([], [path for path in files if path.endswith(skill_evals_scenarios.HELD)])
+    case.assertEqual([], list(copies.iterdir()), "every copy is removed")
+    case.assertEqual(before, tree_bytes(REVIEW_REPOSITORY), "the fixtures are untouched")
+    # Each route's condition opens on the copy as on the fixture, with the reviewer's files beside it, and each
+    # route's scenario starts its specialist on the held files the copy restores.
+    guarded: dict[str, set[str]] = {}
+    for line in lines:
+        if line.startswith("GUARDED "):
+            _, ran, model, role, _ = line.split(" ")
+            guarded.setdefault(f"{ran} {model}", set()).add(role)
+    case.assertEqual(
+        {f"{scenario} {model}": REVIEW_REPOSITORY_ROLES[scenario] for scenario, model in runs},
+        {key: ",".join(sorted(value)) for key, value in guarded.items()},
+    )
+    case.assertEqual([], [line for line in lines if line.startswith("FAIL")])
+    if scenario in REVIEW_REPOSITORY_PASSES:
+        case.assertIn(REVIEW_REPOSITORY_PASSES[scenario], lines)
+    written = case.results.read_text(encoding="utf-8")
+    passed = REVIEW_REPOSITORY_EXPECTATIONS[scenario]
+    for model, identifier in skill_evals_records.MODELS.items():
+        case.assertIn(
+            f"| review-repository | {model} | {identifier} | {passed}/{passed} | 1 | {scenario} {passed}/{passed} "
+            "| claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            written,
+        )
+    case.assertIn("| review-prs | opus | old |", written)
+
+
+def test_the_parametrized_sweeps_name_every_scenario_and_add_up_to_the_skills_whole_rows() -> None:
+    # Each sweep's cases together are its skill's whole run: every scenario once, whose counts are the totals a full
+    # run's row gives, 25 for review-document and 13 for review-repository on each model.
+    for skill, cases, total in (
+        ("review-document", REVIEW_DOCUMENT_EXPECTATIONS, 25),
+        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 13),
+    ):
+        assert [scenario.name for scenario in review_scenarios(skill)] == list(cases)
+        assert sum(cases.values()) == total
+    assert list(REVIEW_DOCUMENT_STAGED) == list(REVIEW_DOCUMENT_EXPECTATIONS)
+    assert list(REVIEW_REPOSITORY_ROLES) == list(REVIEW_REPOSITORY_EXPECTATIONS) == list(REVIEW_REPOSITORY_SCENARIOS)
 
 
 @pytest.mark.parametrize(
