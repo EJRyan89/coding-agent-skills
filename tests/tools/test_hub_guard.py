@@ -1962,6 +1962,23 @@ class EnvOptionTests(unittest.TestCase):
                 self.assertEqual(expected, hub_guard.first_unread_env_option(list(arguments)))
 
 
+class HubsInViewTests(unittest.TestCase):
+    def test_a_directory_git_cannot_read_is_noted_and_the_project_s_hub_still_counts(self) -> None:
+        cwd, project = Path("session").absolute(), Path("project").absolute()
+        failure = git_client.GitError("git could not read the checkout")
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(hub_guard, "checkout_of", side_effect=[failure, worktrees.Checkout(project, project)]),
+            mock.patch.object(hub_guard, "guard_enabled", return_value=True),
+            contextlib.redirect_stderr(stderr),
+        ):
+            found = hub_guard.hubs_in_view(cwd, {"CLAUDE_PROJECT_DIR": str(project)})
+        self.assertEqual({project}, found)
+        self.assertEqual(
+            f"hub guard could not look up the hub of {cwd}: git could not read the checkout\n", stderr.getvalue()
+        )
+
+
 class ContractListTests(unittest.TestCase):
     """Each list of names the guard's section of docs/parallel-sessions.md gives is the set tools/hub_guard.py reads."""
 

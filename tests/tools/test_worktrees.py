@@ -239,23 +239,41 @@ class CheckoutFailureTests(unittest.TestCase):
                 self.assertEqual(f"git could not read the checkout at {checkout}: {said}", str(raised.exception))
                 self.assertEqual(128, raised.exception.returncode)
 
-    def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
+    def counted_row(self, head: str, answer: git_client.GitResult) -> tuple[worktrees.Row, list[object]]:
+        """The row list shows for a worktree whose count git answers with answer, and each git call it made."""
         with tempfile.TemporaryDirectory() as folder:
             hub, tree = Path(folder) / "hub", Path(folder) / "tree"
             tree.mkdir()
-            calls: list[tuple[Path, tuple[str, ...], float | None]] = []
+            calls: list[object] = []
 
             def git(cwd: Path, *arguments: str, timeout: float | None = 10.0) -> git_client.GitResult:
-                calls.append((cwd, arguments, timeout))
-                return git_client.GitResult(0, "2\t3\n", "")
+                calls.append((cwd == hub, arguments, timeout))
+                return answer
 
             with (
                 mock.patch.object(worktrees, "git", git),
                 mock.patch.object(git_worktrees, "changed_paths", return_value=0),
             ):
-                row = worktrees.row(hub, git_worktrees.Worktree(str(tree), "abc", "feat/x", False))
-        self.assertEqual([(hub, ("rev-list", "--left-right", "--count", "main...abc"), None)], calls)
+                return worktrees.row(hub, git_worktrees.Worktree(str(tree), head, "feat/x", False)), calls
+
+    def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
+        row, calls = self.counted_row("abc", git_client.GitResult(0, "2\t3\n", ""))
+        self.assertEqual([(True, ("rev-list", "--left-right", "--count", "main...abc"), None)], calls)
         self.assertEqual(("in progress", "3", "2"), (row.state, row.ahead, row.behind))
+        # A worktree with no commit of its own recorded is counted from its HEAD.
+        _, calls = self.counted_row("", git_client.GitResult(0, "0\t0\n", ""))
+        self.assertEqual([(True, ("rev-list", "--left-right", "--count", "main...HEAD"), None)], calls)
+
+    def test_list_shows_any_answer_that_is_not_two_counts_as_unknown(self) -> None:
+        for answer in (
+            git_client.GitResult(0, "garbage\n", ""),
+            git_client.GitResult(0, "1\tx\n", ""),
+            git_client.GitResult(0, "", ""),
+            git_client.GitResult(128, "2\t3\n", "fatal: bad revision"),
+        ):
+            with self.subTest(answer=answer):
+                row, _ = self.counted_row("abc", answer)
+                self.assertEqual(("unknown", "?", "?"), (row.state, row.ahead, row.behind))
 
 
 class GitProgramTests(unittest.TestCase):
