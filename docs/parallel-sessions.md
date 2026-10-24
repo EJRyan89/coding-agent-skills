@@ -107,15 +107,25 @@ When many tasks run at once, one session orchestrates: it plans the work, starts
 its own, and starts the next task as each pull request merges. A second session, in the hub, shepherds the pull
 requests on a repeating prompt that runs the
 [`shepherd-pull-requests`](../.claude/skills/shepherd-pull-requests/SKILL.md) repository skill. Its tested script does
-one tick: it fast-forwards the hub, arms squash auto-merge, and merges `main` into the oldest behind branches whose
-check is green or pending, a few per tick and never by a rebase, holding those updates while a pull request that
-changes the validation policies or the runner's selection is open. It checks that a red run tested the pull request's
+one tick: it fast-forwards the hub, arms squash auto-merge, and merges `main` into one armed behind branch whose check
+is green or pending, never by a rebase. It updates none while an armed pull request that is current with `main` and
+green or pending merges next, and otherwise the one furthest along in `Validation`, the oldest among equals, leaving
+the other behind branches alone, since an update cancels the run in flight on the branch it updates; it holds every
+update but that pull request's own while one that changes the validation policies or the runner's selection is open.
+It checks that a red run tested the pull request's
 current head before judging it, reruns a failure of the runner or a service once per head, and names every other
 failure for the session that owns the branch. Each worktree whose pull request merged is named for `repo-cleanup`,
 run from outside it. It admits only pull requests whose head branch is in this repository: one from a fork or any
 other repository is named as not admitted and never armed, judged, updated, or rerun, so it merges only when the
 maintainer merges it. A script rather than a prompt repeats these steps, so neither session spends its context on
 them, and the orchestrator keeps its own for the decisions.
+
+Hold a pull request from merging when it comes to owe a gate that calls a model, such as an `evaluate-skill`
+citation, that it does not yet cite. Its owner or the orchestrator adds a line of its own to the pull request's body,
+`Shepherd-hold: <reason>`, with `gh pr edit <number> --body-file '<file>'`. The next tick turns off its auto-merge and
+arms it no more, names it with the reason on a `HELD` line, and still judges and reruns its checks, while it arms and
+updates every other pull request as before. Release it by deleting the line once the gate is cited; the next tick arms
+it again.
 
 ## What is shared even across worktrees
 

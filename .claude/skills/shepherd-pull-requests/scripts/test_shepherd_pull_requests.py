@@ -23,12 +23,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "validation"))
 
 import shepherd_pull_requests as shepherd
-from git_client import GitClient
+from git_client import GitClient, GitError
 from git_worktrees import list_worktrees
 from github_client import Backoff, CommandResult, GitHubClient
 
-# Imported by name, since mypy checks this folder from inside it, where the deployer the pool imports does not resolve.
+# Imported by name, since mypy checks this folder from inside it, where the deployer the pool imports does not resolve;
+# the runner, whose report the script reads, likewise.
 job_pool = importlib.import_module("job_pool")
+run_validation = importlib.import_module("tests.run_validation")
 
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
 REPOSITORY = "owner/repo"
@@ -415,7 +417,7 @@ class HubTest(FixtureTestCase):
         after = self.advance_origin()
         status, lines = self.tick(StubGh(), dry_run=True)
         self.assertEqual(0, status)
-        self.assertTrue(lines[0].startswith("DRY_RUN "))
+        self.assertEqual("DRY_RUN the hub is not fetched, and nothing is armed, disarmed, updated, or rerun", lines[0])
         self.assertEqual(
             f'HUB "{self.hub.as_posix()}" would fast-forward {before[:7]} to {after[:7]}', self.line(lines, "HUB ")
         )
@@ -436,12 +438,28 @@ class HubTest(FixtureTestCase):
     def test_a_hub_off_main_or_with_a_tracked_change_is_not_fast_forwarded(self) -> None:
         self.advance_origin()
         (self.hub / "README.md").write_text("edited\n", encoding="utf-8")
-        _, lines = self.tick(StubGh())
+        status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
         self.assertTrue(self.line(lines, "HUB ").endswith("not fast-forwarded: it has uncommitted changes"))
         git("checkout", "-q", "README.md", directory=self.hub)
         git("switch", "-q", "-c", "side", directory=self.hub)
-        _, lines = self.tick(StubGh())
+        status, lines = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(1, status)
         self.assertTrue(self.line(lines, "HUB ").endswith("not fast-forwarded: it is on side, not main"))
+
+    def test_a_fetch_that_fails_is_named_for_the_shepherd(self) -> None:
+        output = GitClient.output
+
+        def refuse_fetch(client: GitClient, arguments: Sequence[str], **options: Any) -> str:
+            if arguments[0] == "fetch":
+                raise GitError("fatal: unable to access origin", returncode=128)
+            return output(client, arguments, **options)
+
+        with mock.patch.object(GitClient, "output", refuse_fetch):
+            status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
+        self.assertTrue(self.line(lines, "HUB ").endswith("not fast-forwarded: fatal: unable to access origin"))
+        self.assertEqual("REMAINING 0", lines[-1])
 
     def test_a_hub_whose_main_diverged_names_git_s_refusal(self) -> None:
         self.advance_origin()
@@ -449,7 +467,8 @@ class HubTest(FixtureTestCase):
         git("add", "local.md", directory=self.hub)
         git("commit", "-q", "-m", "local", directory=self.hub)
         local = git("rev-parse", "HEAD", directory=self.hub)
-        _, lines = self.tick(StubGh())
+        status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
         line = self.line(lines, "HUB ")
         self.assertTrue(line.startswith(f'HUB "{self.hub.as_posix()}" not fast-forwarded: '), line)
         self.assertGreater(len(line), len(f'HUB "{self.hub.as_posix()}" not fast-forwarded: '))
@@ -484,6 +503,8 @@ class ListingTest(FixtureTestCase):
         )
         self.assertEqual("REMAINING 3", lines[-1])
         self.assertEqual([], gh.writes())
+        listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
+        self.assertEqual(REPOSITORY, listing[listing.index("--repo") + 1])
 
     def test_auto_merge_is_armed_as_a_squash_where_it_is_unarmed(self) -> None:
         gh = StubGh([pull(10, armed=False), pull(11)])
@@ -510,7 +531,7 @@ class ListingTest(FixtureTestCase):
     def test_the_required_check_is_pending_while_its_legs_run_and_missing_without_them(self) -> None:
         self.assertEqual(shepherd.Check("PENDING", RUN), shepherd.required_check(rollup("PENDING")))
         self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(rollup("MISSING")))
-        self.assertEqual(shepherd.Check("FAILURE", RUN), shepherd.required_check(rollup("FAILURE")))
+        self.assertEqual(shepherd.Check("FAILURE", RUN, 1.0), shepherd.required_check(rollup("FAILURE")))
         self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(None))
 
 
@@ -614,6 +635,56 @@ class ConflictTest(FixtureTestCase):
         self.assertTrue(self.line(lines, "CONFLICT #15 ").endswith(" merge origin/main and resolve"))
 
 
+class HoldTest(FixtureTestCase):
+    def held(self, number: int, reason: str = "owes an evaluate-skill citation", **fields: Any) -> dict[str, Any]:
+        return {**pull(number, **fields), "body": f"## Summary\n\nA change.\n\nShepherd-hold: {reason}\n"}
+
+    def test_a_held_pull_request_is_not_armed_but_is_judged_and_the_others_are_armed_and_updated(self) -> None:
+        held = self.held(20, armed=False, merge="BEHIND", state="FAILURE")
+        gh = StubGh(
+            [held, pull(21, armed=False, merge="BEHIND")],
+            runs={RUN: run_view([job("Windows shard 2/4", "failure")])},
+            logs={1: failed_log(TERMINATED_BLOCK)},
+        )
+        status, lines = self.tick(gh)
+        self.assertEqual(0, status, lines)
+        self.assertEqual('HELD #20 fix/topic-20 "owes an evaluate-skill citation"', self.line(lines, "HELD "))
+        self.assertTrue(self.line(lines, "PR #20 ").endswith(" Validation FAILURE rerun"))
+        self.line(lines, "JUDGED #20 ")
+        self.assertEqual(
+            [
+                ["run", "rerun", str(RUN), "--repo", REPOSITORY, "--failed"],
+                ["pr", "merge", "21", "--repo", REPOSITORY, "--auto", "--squash"],
+                ["pr", "update-branch", "21", "--repo", REPOSITORY],
+            ],
+            gh.writes(),
+        )
+
+    def test_an_armed_pull_request_that_is_held_is_disarmed(self) -> None:
+        gh = StubGh([self.held(20)])
+        _, lines = self.tick(gh)
+        self.assertEqual([["pr", "merge", "20", "--repo", REPOSITORY, "--disable-auto"]], gh.writes())
+        self.assertTrue(self.line(lines, "PR #20 ").endswith(" auto-merge on head aaaaaaa Validation SUCCESS disarmed"))
+        gh = StubGh([self.held(20)])
+        _, lines = self.tick(gh, dry_run=True)
+        self.assertEqual([], gh.writes())
+        self.assertTrue(self.line(lines, "PR #20 ").endswith(" would-disarm"))
+
+    def test_a_disarm_that_fails_is_named(self) -> None:
+        status, lines = self.tick(StubGh([self.held(20)], failing=["pr merge"]))
+        self.assertEqual(1, status)
+        self.assertEqual("PR_FAILED #20 disarm pr merge refused (HTTP 422)", self.line(lines, "PR_FAILED "))
+
+    def test_only_a_line_of_its_own_holds_and_its_reason_is_flattened(self) -> None:
+        self.assertIsNone(shepherd.hold_of("Do not add a Shepherd-hold: line yet"))
+        self.assertIsNone(shepherd.hold_of(None))
+        self.assertEqual("no reason given", shepherd.hold_of("Text\nShepherd-hold:\n"))
+        self.assertEqual("waits on #1 then #2", shepherd.hold_of("Shepherd-hold:  waits on #1\x85then #2  "))
+        # A pull request from another repository is not admitted, held or not.
+        _, lines = self.tick(StubGh([self.held(20, cross=True)]))
+        self.assertFalse(any(line.startswith("HELD") for line in lines), lines)
+
+
 class FlatTextTest(FixtureTestCase):
     def test_every_branch_path_and_step_from_github_is_flattened_onto_its_line(self) -> None:
         first, after = self.branches_behind_and_current()
@@ -658,26 +729,86 @@ class FlatTextTest(FixtureTestCase):
         )
 
 
+def legs_finished(finished: int, legs: int, run: int = RUN) -> list[dict[str, Any]]:
+    """A head's checks while its run's legs run, `finished` of `legs` of them done."""
+    url = f"https://github.com/{REPOSITORY}/actions/runs/{run}/job/9"
+    return [
+        {
+            "__typename": "CheckRun",
+            "name": f"Windows shard {index}/{legs}",
+            "workflowName": "Validation",
+            "detailsUrl": url,
+            "status": "COMPLETED" if index <= finished else "IN_PROGRESS",
+            "conclusion": "SUCCESS" if index <= finished else "",
+        }
+        for index in range(1, legs + 1)
+    ]
+
+
 class UpdateTest(FixtureTestCase):
-    def test_at_most_two_behind_pull_requests_are_updated_oldest_first_by_a_merge(self) -> None:
+    def test_one_behind_pull_request_is_updated_the_one_furthest_along_by_a_merge(self) -> None:
+        gh = StubGh([pull(14, merge="BEHIND"), pull(11, merge="BEHIND", state="PENDING"), pull(13, merge="BEHIND")])
+        _, lines = self.tick(gh)
+        self.assertEqual([["pr", "update-branch", "13", "--repo", REPOSITORY]], gh.writes())
+        self.assertTrue(self.line(lines, "PR #13 ").endswith(" updated"))
+        self.assertTrue(self.line(lines, "PR #11 ").endswith(" next-tick"))
+        self.assertTrue(self.line(lines, "PR #14 ").endswith(" next-tick"))
+        self.assertFalse(any("--rebase" in call for call in gh.calls))
+
+    def test_among_pending_checks_the_one_with_more_legs_finished_is_updated(self) -> None:
+        behind = [pull(number, merge="BEHIND", state="PENDING") for number in (21, 22, 23)]
+        behind[0]["statusCheckRollup"] = legs_finished(1, 4)
+        behind[1]["statusCheckRollup"] = legs_finished(3, 4)
+        behind[2]["statusCheckRollup"] = legs_finished(3, 4)
+        gh = StubGh(behind)
+        _, lines = self.tick(gh)
+        self.assertEqual([["pr", "update-branch", "22", "--repo", REPOSITORY]], gh.writes())
+        self.assertEqual(
+            ["next-tick", "updated", "next-tick"],
+            [self.line(lines, f"PR #{number} ").rsplit(" ", 1)[1] for number in (21, 22, 23)],
+        )
+        self.assertEqual(0.75, shepherd.required_check(legs_finished(3, 4)).progress)
+        # The required check's own entry is no leg, even while it runs.
+        url = f"https://github.com/{REPOSITORY}/actions/runs/{RUN}/job/9"
+        running = {"name": "Validation", "workflowName": "Validation", "detailsUrl": url, "status": "IN_PROGRESS"}
+        self.assertEqual(shepherd.Check("PENDING", RUN, 0.75), shepherd.required_check([*legs_finished(3, 4), running]))
+        self.assertEqual(shepherd.Check("PENDING", RUN, 0.0), shepherd.required_check([running]))
+        ended = {**running, "status": "COMPLETED", "conclusion": ""}
+        self.assertEqual(shepherd.Check("UNKNOWN", RUN, 1.0), shepherd.required_check([ended]))
+
+    def test_nothing_is_updated_while_an_armed_current_pull_request_is_green_or_pending(self) -> None:
+        for state in ("SUCCESS", "PENDING"):
+            with self.subTest(state=state):
+                gh = StubGh([pull(12, state=state), pull(13, merge="BEHIND"), pull(14, merge="BEHIND")])
+                _, lines = self.tick(gh)
+                self.assertEqual([], gh.writes())
+                self.assertTrue(self.line(lines, "PR #13 ").endswith(" next-tick"))
+                self.assertTrue(self.line(lines, "PR #14 ").endswith(" next-tick"))
+        # An unarmed one is armed by the same tick, so it merges next too.
+        gh = StubGh([pull(12, armed=False), pull(13, merge="BEHIND")])
+        self.tick(gh)
+        self.assertEqual([["pr", "merge", "12", "--repo", REPOSITORY, "--auto", "--squash"]], gh.writes())
+
+    def test_a_current_pull_request_that_cannot_merge_next_does_not_stop_the_update(self) -> None:
+        held = {**pull(12), "body": "Shepherd-hold: owes a citation"}
         gh = StubGh(
-            [
-                pull(14, merge="BEHIND"),
-                pull(11, merge="BEHIND", state="PENDING"),
-                pull(13, merge="BEHIND"),
-                pull(12, merge="CLEAN"),
-            ]
+            [held, pull(15, merge="DIRTY"), pull(16, state="MISSING"), pull(17, armed=False), pull(18, merge="BEHIND")],
+            failing=["pr merge"],
         )
         _, lines = self.tick(gh)
         self.assertEqual(
-            [["pr", "update-branch", "11", "--repo", REPOSITORY], ["pr", "update-branch", "13", "--repo", REPOSITORY]],
-            gh.writes(),
+            [["pr", "update-branch", "18", "--repo", REPOSITORY]],
+            [call for call in gh.writes() if call[1] == "update-branch"],
         )
-        self.assertTrue(self.line(lines, "PR #11 ").endswith(" updated"))
-        self.assertTrue(self.line(lines, "PR #13 ").endswith(" updated"))
-        self.assertTrue(self.line(lines, "PR #14 ").endswith(" next-tick"))
-        self.assertTrue(self.line(lines, "PR #12 ").endswith(" none"))
-        self.assertFalse(any("--rebase" in call for call in gh.calls))
+        self.assertTrue(self.line(lines, "PR #18 ").endswith(" updated"))
+
+    def test_a_behind_pull_request_that_is_not_armed_is_not_updated(self) -> None:
+        held = {**pull(10, merge="BEHIND"), "body": "Shepherd-hold: owes a citation"}
+        gh = StubGh([held, pull(11, merge="BEHIND", armed=False)], failing=["pr merge"])
+        _, lines = self.tick(gh)
+        self.assertEqual([], [call for call in gh.writes() if call[1] == "update-branch"])
+        self.assertTrue(self.line(lines, "PR #10 ").endswith(" none"))
+        self.assertTrue(self.line(lines, "PR #11 ").endswith(" none"))
 
     def test_a_behind_pull_request_whose_check_is_red_or_missing_is_not_updated(self) -> None:
         gh = StubGh(
@@ -716,8 +847,9 @@ class UpdateTest(FixtureTestCase):
         gh = StubGh(
             [
                 pull(41, merge="UNKNOWN", head=first),
-                pull(42, merge="UNKNOWN", head=after),
-                pull(43, merge="UNKNOWN", head="c" * 40),
+                # Neither may merge next, so neither stops the update.
+                pull(42, merge="UNKNOWN", head=after, state="MISSING"),
+                pull(43, merge="UNKNOWN", head="c" * 40, state="MISSING"),
             ]
         )
         status, lines = self.tick(gh)
@@ -838,7 +970,9 @@ class JudgementTest(FixtureTestCase):
         self.assertEqual(shepherd.Check("PENDING", RUN + 1), shepherd.required_check(newer_pending))
         # A rerun of the older run starts its required check after the newer run's.
         older = [{**entry, "startedAt": "2026-10-17"} for entry in rollup("CANCELLED")]
-        self.assertEqual(shepherd.Check("SUCCESS", RUN + 1), shepherd.required_check([*older, *rollup(run=RUN + 1)]))
+        self.assertEqual(
+            shepherd.Check("SUCCESS", RUN + 1, 1.0), shepherd.required_check([*older, *rollup(run=RUN + 1)])
+        )
         entry = {**pull(20), "statusCheckRollup": newer_pending}
         gh = StubGh([entry])
         status, lines = self.tick(gh)
@@ -967,6 +1101,39 @@ class JudgementTest(FixtureTestCase):
         self.assertTrue(self.line(lines, "PR #21 ").endswith(" would-update"))
 
 
+class SourceTest(unittest.TestCase):
+    """The runner's report wording and the workflow's step names the script reads, held to their sources."""
+
+    def runner_log(self) -> str:
+        """A leg's log of the runner's own report: a failed policy check, a failed suite, and the closing line."""
+
+        class Policy(unittest.TestCase):
+            def test_policy(self) -> None:
+                self.fail("a policy failed")
+
+        out = io.StringIO()
+        result = run_validation.run_policies(unittest.TestSuite([Policy("test_policy")]), False, out)
+        suite = job_pool.Job("tests/x.py", "tests/x.py", 1, lambda: None)
+        failures = [job_pool.Failure(suite, "Command failed with exit code 1: python -B tests/x.py\nE   boom")]
+        run = run_validation.Run("Full run.", "1/4", {}, 1.0)
+        run_validation.report_run(result, job_pool.PoolResult(failures, []), 1, run, out, {})
+        return "".join(PREFIX + line + "\n" for line in out.getvalue().split("\n"))
+
+    def test_the_runner_s_report_is_read_as_the_script_reads_it(self) -> None:
+        lines = shepherd.log_lines(self.runner_log())
+        self.assertEqual("test_policy", shepherd.first_failing_check(lines))
+        blocks = shepherd.failure_blocks(lines)
+        self.assertEqual(["tests/x.py"], [label for label, _ in blocks])
+        self.assertEqual("E   boom", [line for line in blocks[0][1] if line][-1])
+        self.assertTrue(any(shepherd.CLOSING.search(line) for line in lines), lines)
+
+    def test_the_validation_steps_are_the_workflow_s_steps_that_run_the_runner(self) -> None:
+        workflow = (Path(__file__).resolve().parents[4] / ".github" / "workflows" / "validate.yml").read_text("utf-8")
+        steps = re.split(r"^\s*- name: ", workflow, flags=re.MULTILINE)[1:]
+        running = {step.split("\n", 1)[0].strip() for step in steps if "tests/run_validation.py" in step}
+        self.assertEqual(shepherd.VALIDATION_STEPS, running)
+
+
 class LogTest(unittest.TestCase):
     def test_log_lines_drop_github_s_prefixes_and_terminal_escapes(self) -> None:
         text = PREFIX + "\x1b[31mFAIL\x1b[0m one\n2026-10-16T05:51:51Z two\nthree\twith a tab\n"
@@ -1088,12 +1255,37 @@ class MergedTest(FixtureTestCase):
             self.merged_lines(StubGh(merged=merged)),
         )
 
-    def test_no_worktree_is_matched_by_commit_while_git_holds_no_main_to_leave_out(self) -> None:
+    def test_no_worktree_is_named_while_git_does_not_hold_origin_s_main(self) -> None:
+        # Origin's main moved since the last fetch, so the commits it gained would count as each merged head's own.
         carried = self.add_worktree("carried", "claude/carried")
         pushed = self.commit_in(carried, "carried")
-        git("update-ref", "-d", "refs/remotes/origin/main", directory=self.hub)
+        newer = self.advance_origin()
         merged = [{"number": 9, "headRefName": "fix/pushed", "headRefOid": pushed}]
-        self.assertEqual([], self.merged_lines(StubGh(merged=merged)))
+        status, lines = self.tick(StubGh(merged=merged), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual([], [line for line in lines if line.startswith("MERGED ")])
+        self.assertEqual(
+            f"MERGED_FAILED git does not hold origin's main {newer[:7]}, so a merged head's own commits cannot be told "
+            "from main's; fetch origin in the hub",
+            self.line(lines, "MERGED_FAILED "),
+        )
+
+    def test_a_merged_head_s_own_commits_are_refused_without_origin_s_main(self) -> None:
+        head = git("rev-parse", "HEAD", directory=self.hub)
+        with self.assertRaises(shepherd.ShepherdError) as raised:
+            shepherd.own_history(GitClient(), self.hub, [head], None)
+        self.assertEqual(
+            "origin has no main, so a merged head's own commits cannot be told from main's", str(raised.exception)
+        )
+        self.assertEqual({}, shepherd.own_history(GitClient(), self.hub, [], None))
+
+    def test_a_worktree_an_open_draft_carries_is_never_named(self) -> None:
+        reused = self.add_worktree("reused", "fix/reused")
+        merged = [{"number": 6, "headRefName": "fix/reused", "headRefOid": OTHER}]
+        status, lines = self.tick(StubGh([pull(40, draft=True, branch="fix/reused")], merged=merged), dry_run=True)
+        self.assertEqual(0, status, lines)
+        self.assertNotIn(reused.as_posix(), " ".join(lines))
+        self.assertEqual("REMAINING 0", lines[-1])
 
     def test_a_merged_listing_that_fails_is_named(self) -> None:
         gh = StubGh()
