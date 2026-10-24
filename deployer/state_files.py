@@ -7,10 +7,10 @@ directory in the file's place for no file at all plans a deployment the commit t
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import file_presence
+import json_reader
 
 from . import platform_support
 from .errors import DeployError
@@ -19,11 +19,12 @@ from .errors import DeployError
 def parse_json(text: str) -> object | None:
     """The JSON text's value, or None when it is not JSON the deployer can read.
 
-    ValueError covers a decoding error and an integer past Python's digit limit; RecursionError, nesting too deep.
+    ValueError covers a decoding error, an integer past Python's digit limit, and the repeated key or undefined
+    constant `json_reader` refuses; RecursionError, nesting too deep.
     """
     value: object
     try:
-        value = json.loads(text)
+        value = json_reader.loads(text)
     except (ValueError, RecursionError):
         return None
     return value

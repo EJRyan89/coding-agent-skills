@@ -309,6 +309,30 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern="deploy-meta/alpha.json has an invalid metadata shape")
 
+    def test_metadata_or_a_source_json_past_the_json_limits_is_refused_by_its_named_line(self) -> None:
+        # An integer past Python's digit limit raises ValueError, nesting past the recursion limit RecursionError, and
+        # a repeated key or NaN is JSON another reader would read differently; each is refused, never unclassified.
+        unreadable = {
+            "digits": '{"required_vars": [], "batch": ' + "1" * 5000 + "}",
+            "nesting": '{"required_vars": ' + "[" * 100000 + "]" * 100000 + "}",
+            "repeated key": '{"required_vars": [], "required_vars": ["HOME"]}',
+            "nan": '{"required_vars": [], "batch": NaN}',
+        }
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        self.make_config()
+        for case, text in unreadable.items():
+            with self.subTest(case=case):
+                self.write(self.source / "deploy-meta" / "alpha.json", text)
+                result = self.deploy_fails("--dry-run", pattern="deploy-meta/alpha.json has an invalid metadata shape")
+                self.assertNotIn("FAILED", result.stdout + result.stderr)
+        self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({}))
+        for case, text in unreadable.items():
+            with self.subTest(case=f"source.json {case}"):
+                self.write(self.source / "source.json", text.replace('"required_vars"', '"id"'))
+                result = self.deploy_fails("--dry-run", pattern="ERROR: Invalid source ID format: null")
+                self.assertNotIn("FAILED", result.stdout + result.stderr)
+
     def test_declared_tools_must_be_a_list_of_known_tools(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Test")
