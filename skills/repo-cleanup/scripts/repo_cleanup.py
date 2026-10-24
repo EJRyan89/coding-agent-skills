@@ -808,7 +808,7 @@ def read_sealed(path: str | Path, what: str) -> bytes:
         raise CleanupError(f"cannot read {what} {path}: {exc}") from exc
     sealed = seal_file(path)
     try:
-        seal = sealed.read_text(encoding="utf-8").strip() if file_presence.is_present(sealed) else None
+        seal = sealed.read_bytes().decode("utf-8").strip() if file_presence.is_present(sealed) else None
     except (OSError, UnicodeDecodeError) as exc:
         raise CleanupError(f"cannot read the seal of {what} {path}: {exc}") from exc
     if seal is None:

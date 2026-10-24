@@ -4,6 +4,8 @@ in the documented refusal, never a traceback."""
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -120,6 +122,30 @@ class PlanSealTests(Fixture):
             (1, [["open-work", "not reported UNMERGED by this plan"]]), (code, facts(lines, "PRESERVED")), lines
         )
         self.assertEqual(self.open_tip, self.tip("open-work"))
+
+    def test_a_confirmation_naming_what_the_plan_never_offered_returns_false_and_the_help_says_where_plans_go(
+        self,
+    ) -> None:
+        services = rc.Services(gh=self.github)
+        with contextlib.redirect_stdout(io.StringIO()):
+            for force in (False, True):
+                self.assertIs(False, rc.confirm(str(self.plan_file), ["open-work"], services, force=force))
+            self.assertIs(False, rc.remove_directories(str(self.plan_file), [str(self.outside)], services))
+            self.assertIs(True, rc.confirm(str(self.plan_file), ["scratch"], services, force=False))
+        self.assert_untouched_but_scratch()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            rc.main(["sweep", "--help"])
+        self.assertIn(
+            "--record RECORD the directory an earlier sweep printed as PLANS, to keep this sweep's plans and record "
+            "there; without it, a new temporary directory",
+            " ".join(output.getvalue().split()),
+        )
+
+    def assert_untouched_but_scratch(self) -> None:
+        self.assertEqual(self.open_tip, self.tip("open-work"))
+        self.assertIsNone(self.tip("scratch"))
+        self.assertTrue((self.outside / "precious.txt").is_file())
 
     def test_a_plan_changed_after_the_sweep_saved_it_is_refused_before_anything_is_deleted(self) -> None:
         other = self.repos / "other repo"
