@@ -4,7 +4,10 @@ suites with a stub generator and reach, since mutmut and coverage.py are install
 
 from __future__ import annotations
 
+import ast
 import importlib
+import io
+import itertools
 import json
 import os
 import re
@@ -721,6 +724,31 @@ def scale(a):
 '''
 
 
+NESTED_MODULE = """import functools
+
+TABLE: dict[str, int] = {
+    "a": 1,
+    "b": 2,
+}
+
+
+def outer():
+    def inner():
+        return 0
+
+    return TABLE["a"] + inner()
+
+
+def keyed():
+    return sorted([0], key=lambda v: TABLE["b"])
+
+
+@functools.lru_cache(maxsize=3)
+def cached():
+    return 4
+"""
+
+
 def table_mutants(source: str, lines: frozenset[int], elsewhere: bool = False) -> list[Mutant]:
     return module_mutants("tools/table.py", source, lines, line_generator, lambda name: elsewhere)
 
@@ -767,6 +795,60 @@ class ImportTimeFixtures(unittest.TestCase):
         self.assertEqual((True, None), (mutants[3].at_import, mutants[3].readers))
         self.assertEqual((True, None), (mutants[4].at_import, mutants[4].readers))
         self.assertEqual(frozenset({9}), mutants[5].readers)
+
+    def test_a_functions_body_runs_from_its_first_statement_to_the_end_of_its_last_however_many_lines_it_takes(
+        self,
+    ) -> None:
+        source = "def f():\n    a = 1\n    b = 2\n    return (\n        a + b\n    )\n\n\nX = 1\n"
+        self.assertEqual(frozenset(range(2, 7)), mutation_gate.function_body_lines(ast.parse(source)))
+
+    def test_a_multi_line_annotated_table_read_after_a_nested_function_and_in_a_lambda_names_its_readers(self) -> None:
+        mutants = {mutant.line: mutant for mutant in table_mutants(NESTED_MODULE, frozenset({4, 5, 20, 22}))}
+        # Lines 4 and 5 continue the annotated assignment on line 3.
+        self.assertEqual((True, frozenset({13, 17})), (mutants[4].at_import, mutants[4].readers))
+        self.assertEqual(frozenset({13, 17}), mutants[5].readers)
+        # A decorator's line lies between the module's statements, and a function's body runs when it is called.
+        self.assertEqual((True, None), (mutants[20].at_import, mutants[20].readers))
+        self.assertEqual((False, None), (mutants[22].at_import, mutants[22].readers))
+
+    def test_a_name_read_in_a_decorator_or_a_return_annotation_is_read_at_import(self) -> None:
+        for reader in ("@functools.lru_cache(maxsize=len(TABLE))\ndef f():\n", "def f() -> type(TABLE):\n"):
+            with self.subTest(reader=reader):
+                source = f'import functools\n\nTABLE = {{"a": 1}}\n\n\n{reader}    return 2\n'
+                self.assertIsNone(table_mutants(source, frozenset({3}))[0].readers)
+
+    def test_any_of_the_names_an_assignment_binds_named_in_a_string_runs_the_whole_suite(self) -> None:
+        source = 'A, B = 1, 2\n\n\ndef f():\n    return globals()["A"] + B\n'
+        self.assertIsNone(table_mutants(source, frozenset({1}))[0].readers)
+
+    def test_other_sources_are_every_python_file_but_the_module_in_path_order_each_byte_decoded_or_replaced(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            for name, content in (
+                ("tools/m.py", b"NAME\n"),
+                ("tools/a.py", b"X\n"),
+                ("tests/b.py", "Y é\n".encode()),
+                ("tools/c.py", b"\xff\n"),
+                ("README.md", b"Z\n"),
+            ):
+                (tree / name).parent.mkdir(parents=True, exist_ok=True)
+                (tree / name).write_bytes(content)
+            self.assertEqual("Y é\n\nX\n\n�\n", mutation_gate.other_sources(tree, "tools/m.py"))
+
+    def test_selection_reads_the_other_files_of_the_worktree_for_the_names_a_table_binds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            (tree / "tools").mkdir()
+            (tree / "tools" / "table.py").write_text(TABLE_MODULE, encoding="utf-8")
+            (tree / "tools" / "other.py").write_text("UNRELATED = 1\n", encoding="utf-8")
+            git = mock.create_autospec(GitClient, instance=True)
+            git.output.return_value = "@@ -0,0 +5 @@\n"
+            gate = Gate(tree, "main", 1, 1, git, line_generator)
+            self.assertEqual(frozenset({11, 12}), gate.select(tree, ["tools/table.py"])["tools/table.py"][1][0].readers)
+            (tree / "tools" / "other.py").write_text("from table import TABLE\n", encoding="utf-8")
+            self.assertIsNone(gate.select(tree, ["tools/table.py"])["tools/table.py"][1][0].readers)
 
     def test_a_name_is_named_in_a_text_only_as_a_whole_word(self) -> None:
         self.assertTrue(named_in("from table import TABLE\n", "TABLE"))
@@ -901,7 +983,7 @@ class SummaryFixtures(unittest.TestCase):
             "into the functions that use them, until it finishes.",
             first,
         )
-        self.assertIn("\n## Mutation gate\n", summary(report))
+        self.assertEqual(["", "## Mutation gate"], summary(report).splitlines()[1:3])
 
     def test_a_reach_the_cap_left_unmeasured_alone_leaves_the_run_unfinished(self) -> None:
         report = self.report([Outcome(mutant(1), KILLED, ("t",))])
@@ -1017,6 +1099,19 @@ class WholeRunFixtures(unittest.TestCase):
         # The worktrees are gone and the checkout untouched.
         self.assertEqual(1, worktrees.count("worktree "))
         self.assertEqual("", status)
+
+    def test_a_run_the_cap_cuts_short_is_reported_unfinished(self) -> None:
+        times = itertools.chain([0.0], itertools.repeat(10_000.0))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            result = Gate(
+                root, "main", 5, 2, GitClient(), stub_generator, stub_reach, clock=lambda: next(times)
+            ).report()
+        self.assertFalse(result.finished)
+        self.assertTrue(
+            result.text.startswith("**Unfinished, so not a verdict:** the 5-minute cap cut the run short: 2")
+        )
 
     def test_a_mutant_on_a_line_the_pull_request_did_not_change_is_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1182,6 +1277,17 @@ class QueueFixtures(unittest.TestCase):
         self.assertTrue(summary(report).startswith("**Unfinished, so not a verdict:**"))
 
 
+class FlushRecorder(io.StringIO):
+    """A standard output that records what was written when each flush came."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushed: list[str] = []
+
+    def flush(self) -> None:
+        self.flushed.append(self.getvalue())
+
+
 @pytest.mark.parametrize(
     ("result", "code", "annotation"),
     [
@@ -1194,14 +1300,17 @@ class QueueFixtures(unittest.TestCase):
     ],
 )
 def test_an_unfinished_run_fails_the_job_with_an_annotation_after_writing_its_summary(
-    result: mutation_gate.Result, code: int, annotation: str | None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    result: mutation_gate.Result, code: int, annotation: str | None, tmp_path: Path
 ) -> None:
     summary_file = tmp_path / "summary.md"
-    with mock.patch.object(mutation_gate.Gate, "report", return_value=result):
+    output = FlushRecorder()
+    with mock.patch.object(mutation_gate.Gate, "report", return_value=result), mock.patch("sys.stdout", output):
         assert code == mutation_gate.main([], {"GITHUB_STEP_SUMMARY": str(summary_file), "VALIDATION_JOBS": "1"})
-    printed = capsys.readouterr().out
+    printed = output.getvalue()
     assert printed.startswith(result.text)
     assert printed.removeprefix(result.text) == (annotation or "")
+    # The summary, and then the annotation, each reach the log before anything printed after them.
+    assert output.flushed == [result.text, *([printed] if annotation else [])]
     assert result.text in summary_file.read_text(encoding="utf-8")
 
 

@@ -53,9 +53,9 @@ a mutant that breaks the import.
 When no changed line yields a mutant, no suite runs. Otherwise the run is bounded by --minutes (DEFAULT_MINUTES): the
 reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
 one queue that takes one mutant from each module in turn, each module's in line order, so a module late in the list
-starts as soon as the first. A mutant the cap leaves untested is counted as not run, and a suite whose reach the cap left
-unmeasured is named. Either leaves the run unfinished, which is no verdict: the summary's first line says so, naming
-each module's mutants not run and how many of them lie on lines that run at import, and the count of unmeasured
+starts as soon as the first. A mutant the cap leaves untested is counted as not run, and a suite whose reach the cap
+left unmeasured is named. Either leaves the run unfinished, which is no verdict: the summary's first line says so,
+naming each module's mutants not run and how many of them lie on lines that run at import, and the count of unmeasured
 suites. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
 
 The report, each module's changed lines, counts, and kill ratio, each changed module with no mutant, and each surviving
@@ -269,11 +269,10 @@ def function_body_lines(tree: ast.Module) -> frozenset[int]:
 
 
 def top_statement(tree: ast.Module, line: int) -> ast.stmt | None:
-    """The statement of the module's body that holds a line, its decorators included."""
+    """The statement of the module's body that holds a line, or None for a line between them, such as a decorator's,
+    which no assignment holds."""
     for statement in tree.body:
-        decorators = getattr(statement, "decorator_list", ())
-        first = min([statement.lineno, *(decorator.lineno for decorator in decorators)])
-        if first <= line <= (statement.end_lineno or statement.lineno):
+        if statement.lineno <= line <= (statement.end_lineno or statement.lineno):
             return statement
     return None
 
@@ -303,13 +302,13 @@ class NameReaders(ast.NodeVisitor):
     def __init__(self, names: frozenset[str]) -> None:
         self.names = names
         self.lines: set[int] = set()
-        self.at_import = False
+        # The lines of the loads that run at import.
+        self.at_import: set[int] = set()
         self.depth = 0
 
     def visit_Name(self, node: ast.Name) -> None:
         if node.id in self.names and isinstance(node.ctx, ast.Load):
-            self.lines.add(node.lineno)
-            self.at_import = self.at_import or not self.depth
+            (self.lines if self.depth else self.at_import).add(node.lineno)
 
     def visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
         for part in [*getattr(node, "decorator_list", ()), node.args, getattr(node, "returns", None)]:
@@ -353,7 +352,7 @@ def reached_otherwise(tree: ast.Module, source: str, names: frozenset[str]) -> b
 
 
 def name_readers(
-    tree: ast.Module, source: str, statement: ast.stmt | None, mentioned_elsewhere: Callable[[str], bool]
+    tree: ast.Module, source: str, statement: ast.stmt, mentioned_elsewhere: Callable[[str], bool]
 ) -> frozenset[int] | None:
     """For a statement of the module's body that assigns, the lines that read a name it binds, when only the module's
     functions read them: none at import, nothing reached any other way, and no other file of the repository naming
@@ -361,7 +360,7 @@ def name_readers(
 
     The mutant changes only the value the names are bound to, so only a line that reads one can tell it apart, and the
     tests that ran those lines are the tests that can kill it."""
-    names = bound_names(statement) if statement else frozenset()
+    names = bound_names(statement)
     if not names or any(mentioned_elsewhere(name) for name in names) or reached_otherwise(tree, source, names):
         return None
     readers = NameReaders(names)
@@ -390,12 +389,13 @@ def module_mutants(
             continue
         line, before, after = describe(source, text)
         if line in changed:
-            at_import = line not in bodies
-            statement = top_statement(tree, line) if at_import else None
+            # A line in a function's body lies in a top statement that defines a function or a class, which binds
+            # no name an assignment would, so it gets no readers.
+            statement = top_statement(tree, line)
             if statement and statement.lineno not in readers:
                 readers[statement.lineno] = name_readers(tree, source, statement, mentioned_elsewhere)
             found = readers[statement.lineno] if statement else None
-            mutants.append(Mutant(module, line, before, after, text, at_import, found))
+            mutants.append(Mutant(module, line, before, after, text, line not in bodies, found))
     return sorted(mutants, key=lambda mutant: mutant.line)
 
 
@@ -732,7 +732,8 @@ def suite_selection(mutant: Mutant, measured: Reach) -> list[str] | None:
         return sorted(tests[mutant.line])
     if mutant.readers is None:
         return []
-    executed = measured.lines.get(mutant.module, frozenset())
+    # A suite is asked only once it executed the mutant's line, so it holds the module.
+    executed = measured.lines[mutant.module]
     found: set[str] = set()
     for line in sorted(mutant.readers & executed):
         if line not in tests:
@@ -935,7 +936,7 @@ def other_sources(tree: Path, module: str) -> str:
     """The text of every Python file in a worktree but one module, read so that a name the module binds can be looked
     for in them; a byte that does not decode is replaced."""
     files = sorted(path for path in tree.rglob("*.py") if path.relative_to(tree).as_posix() != module)
-    return "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in files)
+    return "\n".join(path.read_bytes().decode("utf-8", "replace") for path in files)
 
 
 def named_in(text: str, name: str) -> bool:
