@@ -1068,6 +1068,10 @@ class CommandReadingTests(GuardTestCase):
             (f"pushd {tree}; git commit; popd; git add .", [*self.at(self.tree, "commit"), *self.at(self.hub, "add")]),
             ("cd; git commit; cd -; git add .", [*self.at(Path.home(), "commit"), *self.at(None, "add")]),
             (f"env -C {tree} git commit", self.at(self.tree, "commit")),
+            (f"env -C{tree} git commit", self.at(self.tree, "commit")),
+            (f"env -v -C{tree} GIT_PAGER=cat git commit", self.at(self.tree, "commit")),
+            # env changes directory once, to its last -C, read from where env starts.
+            (f"env -C {tree} -C . git commit", self.at(self.hub, "commit")),
             (f"bash -lc 'cd {tree} && git commit'", self.at(self.tree, "commit")),
             (f"bash <<< 'cd {tree} && git commit'", self.at(self.tree, "commit")),
             (f"bash <<'EOF'\ncd {tree} && git commit\nEOF", self.at(self.tree, "commit")),

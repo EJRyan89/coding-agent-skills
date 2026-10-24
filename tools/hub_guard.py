@@ -1206,25 +1206,31 @@ def read_env_options(
     arguments: list[Word], cwd: Path | None, variables: Mapping[str, Word]
 ) -> tuple[int, Path | None, dict[str, Word]] | None:
     """env's options: where its command starts, its directory, and the environment it gives; None when one cannot
-    be read."""
+    be read.
+
+    A short option's value is read attached, as in `-uNAME` and `-CDIR`, or as the next word. env changes directory
+    once, to the last -C it is given, read from where env starts."""
     given = dict(variables)
+    directory: tuple[Word] | None = None
     index = 0
     while index < len(arguments):
         word = arguments[index]
         value = arguments[index + 1] if index + 1 < len(arguments) else None
         if word is None or not word.startswith("-") or word == "--":
-            return index + (word == "--"), cwd, given
+            index += word == "--"
+            break
         option, _, inline_value = word.partition("=")
+        short = not word.startswith("--")
         if word in ENV_CLEAR:
             given.clear()
-        elif word in ENV_UNSET or option == "--unset" or (word.startswith("-u") and not word.startswith("--")):
+        elif word in ENV_UNSET or option == "--unset" or (short and word.startswith("-u")):
             given.pop((value if word in ENV_UNSET else inline_value if option == "--unset" else word[2:]) or "", None)
-        elif word in ENV_CHDIR or option == "--chdir":
-            cwd = moved(cwd, value if word in ENV_CHDIR else inline_value)
+        elif word in ENV_CHDIR or option == "--chdir" or (short and word.startswith("-C")):
+            directory = (value if word in ENV_CHDIR else inline_value if option == "--chdir" else word[2:],)
         elif word not in ENV_FLAGS:
             return None
         index += 2 if word in ENV_UNSET | ENV_CHDIR else 1
-    return index, cwd, given
+    return index, cwd if directory is None else moved(cwd, directory[0]), given
 
 
 def first_unread_env_option(arguments: list[Word]) -> str:
@@ -1232,7 +1238,7 @@ def first_unread_env_option(arguments: list[Word]) -> str:
     for word in arguments:
         if word is None or not word.startswith("-"):
             break
-        if word not in known and not word.startswith(("-u", "--unset=", "--chdir=")):
+        if word not in known and not word.startswith(("-u", "-C", "--unset=", "--chdir=")):
             return word
     return "?"
 
