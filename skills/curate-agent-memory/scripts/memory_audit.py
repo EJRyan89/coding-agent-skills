@@ -48,8 +48,11 @@ characters, because Claude Code loads the index into every session and stops at 
 It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
 `NEAR_LIMIT` or `OVER_LIMIT` when the index nears or passes Claude Code's load limit, then
 `UNCHANGED`, `WOULD_WRITE <path>`, or `WROTE <path>`. OVER_LIMIT is a finding: it exits 1.
-An entry whose file exists but is not a regular file stays as written, and it and each such
-unindexed name print an `UNREADABLE <file>: <reason>` line before those. A memory it cannot read,
+An entry whose target, after any leading `./`, is not a bare *.md name directly in the store (a `..`
+segment, an absolute path, a subfolder, or a link or junction on the way) is never read or followed,
+and neither is one whose file exists but is not a regular file: each stays as written, and it and each
+such unindexed name print an `UNREADABLE <file>: <reason>` line before those. audit reports the same
+targets in its `unreadable` list. A memory it cannot read,
 or whose file name holds a line break, which no entry can link on one line, is a `FAILED` line,
 and nothing is written.
 
@@ -368,6 +371,26 @@ def entry_problem(path: Path) -> str | None:
     return None
 
 
+# Why a name is refused before any file is touched: delete's names and an index entry's targets share these reasons.
+NOT_IN_STORE = "not a file name directly inside the memory directory"
+NOT_MARKDOWN = "not a .md file"
+CURRENT_FOLDER = re.compile(r"^(?:\.[\\/])+")
+
+
+def index_target_problem(memory_dir: Path, target: str) -> str | None:
+    """Why an index entry's target is no memory file to read, or None when it names one directly in the store.
+
+    The target is judged by its text before any file is touched: after any leading `./`, it must be a bare *.md name,
+    so a `..` segment, an absolute path, or a path through a subfolder, symbolic link, or junction is never followed.
+    """
+    name = CURRENT_FOLDER.sub("", target)
+    if not bare_name(name):
+        return NOT_IN_STORE
+    if not name.lower().endswith(".md"):
+        return NOT_MARKDOWN
+    return entry_problem(memory_dir / name)
+
+
 def memory_entries(memory_dir: Path) -> tuple[list[Path], list[tuple[str, str]]]:
     """The store's memory files, and each other entry named like one with why it is none, both in name order.
 
@@ -492,7 +515,7 @@ def audit(
     candidates, others = memory_entries(memory_dir)
     unreadable = {target_identity(memory_dir, name): (name, problem) for name, problem in others}
     for entry in entries:
-        problem = entry_problem(memory_dir / entry["target"])
+        problem = index_target_problem(memory_dir, entry["target"])
         if problem is not None and problem != MISSING:
             unreadable.setdefault(target_identity(memory_dir, entry["target"]), (entry["file"], problem))
     parsed: dict[Path, tuple[dict[str, str], str]] = {}
@@ -537,7 +560,7 @@ def audit(
             "near_limit": len(index_lines) > INDEX_LINE_LIMIT * NEAR_LIMIT_FRACTION
             or index_bytes > INDEX_BYTE_LIMIT * NEAR_LIMIT_FRACTION,
             "missing_files": [
-                entry["file"] for entry in entries if entry_problem(memory_dir / entry["target"]) == MISSING
+                entry["file"] for entry in entries if index_target_problem(memory_dir, entry["target"]) == MISSING
             ],
             "duplicate_entries": sorted(
                 {entry["file"] for entry in entries if indexed_files[target_identity(memory_dir, entry["target"])] > 1}
@@ -587,7 +610,7 @@ def reindex(memory_dir: Path) -> dict[str, Any]:
             lines.append(line)
             continue
         file = entry["target"]
-        problem = entry_problem(memory_dir / file)
+        problem = index_target_problem(memory_dir, file)
         if problem == MISSING:
             dropped.append(("missing", entry["file"]))
             continue
@@ -656,11 +679,11 @@ def bare_name(name: str) -> bool:
 def refusal(memory_dir: Path, name: str) -> str | None:
     """Why name must not be deleted, or None when it is a memory file directly inside memory_dir."""
     if not bare_name(name):
-        return "not a file name directly inside the memory directory"
+        return NOT_IN_STORE
     if holds_line_break(name):
         return "the name holds a line break, so no line can name it; rename the file first"
     if not name.lower().endswith(".md"):
-        return "not a .md file"
+        return NOT_MARKDOWN
     if name.casefold() == INDEX_NAME.casefold():
         return "the index is rebuilt with reindex, never deleted"
     return entry_problem(memory_dir / name)
