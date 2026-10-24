@@ -19,7 +19,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import cleanup_policy
 import repo_cleanup as rc
-from test_repo_cleanup import GIT_CONFIG, UNNAMEABLE, Fixture, build_template, facts, git, refusing_branch_deletion
+from test_repo_cleanup import (
+    GIT_CONFIG,
+    UNNAMEABLE,
+    Fixture,
+    build_template,
+    facts,
+    git,
+    is_regenerable,
+    refusing_branch_deletion,
+)
 
 # The settings conftest.py adds to the global configuration of every home this suite's git runs in.
 git_config = GIT_CONFIG
@@ -720,9 +729,10 @@ class LeftoverTests(Fixture):
         self.assertTrue(detached.is_dir() and leftover.is_dir())
 
     def test_a_link_where_a_regenerable_directory_is_named_is_not_regenerable(self) -> None:
-        entries = cleanup_policy.configured(".venv").regenerable
+        entries = cleanup_policy.configured(".venv")
         tree = self.root / "layout"
         (tree / "web").mkdir(parents=True)
+        git(tree, "init", "--quiet")  # an added entry is asked of Git, which tracks nothing here
         (tree / "web" / "package.json").write_text("{}\n", encoding="utf-8")
         target = self.outside_area("store")
         link_directory(target, tree / "web" / "node_modules")
@@ -730,15 +740,15 @@ class LeftoverTests(Fixture):
         link_directory(target, tree / ".venv")
         for entry in ("web/node_modules/", "web/node_modules/victim/keep.txt", ".vs/", ".vs/victim/", ".venv/lib/"):
             with self.subTest(entry=entry):
-                self.assertFalse(rc.is_regenerable(entry, str(tree), entries))
+                self.assertFalse(is_regenerable(entry, tree, entries))
         (tree / "real").mkdir()
         link_directory(tree / "real", tree / "linked")
         (tree / "real" / "__pycache__").mkdir()
         (tree / "real" / ".venv").mkdir()
-        self.assertTrue(rc.is_regenerable("real/__pycache__/", str(tree), entries))
-        self.assertTrue(rc.is_regenerable("real/.venv/", str(tree), entries))
-        self.assertFalse(rc.is_regenerable("linked/__pycache__/", str(tree), entries), "reached through a link")
-        self.assertFalse(rc.is_regenerable("linked/.venv/", str(tree), entries), "an addition, through a link")
+        self.assertTrue(is_regenerable("real/__pycache__/", tree, entries))
+        self.assertTrue(is_regenerable("real/.venv/", tree, entries))
+        self.assertFalse(is_regenerable("linked/__pycache__/", tree, entries), "reached through a link")
+        self.assertFalse(is_regenerable("linked/.venv/", tree, entries), "an addition, through a link")
 
 
 def test_a_hidden_file_is_compared_only_when_its_index_mode_and_its_worktree_entry_are_both_regular(

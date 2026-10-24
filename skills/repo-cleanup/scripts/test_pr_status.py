@@ -534,6 +534,20 @@ class BranchTipTests(GitFixture):
         self.git("-C", str(self.clone), "fetch", "--prune", "origin")
         self.assertEqual((tip, None), branch_tips(str(self.clone), "topic"))
 
+    def test_an_upstream_whose_name_holds_a_bar_is_read_whole(self) -> None:
+        # Git allows a | in a ref name, which Windows refuses in a file name, so the ref goes in packed-refs.
+        tip = self.tracking_branch()
+        main = self.git("-C", str(self.clone), "rev-parse", "main")
+        self.git("-C", str(self.clone), "update-ref", "refs/remotes/origin/a", main)
+        self.git("-C", str(self.clone), "pack-refs", "--all")
+        packed = self.clone / ".git" / "packed-refs"
+        refs = [line for line in packed.read_text(encoding="utf-8").splitlines() if not line.startswith("#")]
+        refs.append(f"{tip} refs/remotes/origin/a|b")
+        listed = "".join(f"{line}\n" for line in sorted(refs, key=lambda line: line.split()[1]))
+        packed.write_bytes(listed.encode("utf-8"))
+        self.git("-C", str(self.clone), "config", "branch.topic.merge", "refs/heads/a|b")
+        self.assertEqual((tip, tip), branch_tips(str(self.clone), "topic"), "not origin/a, at main")
+
     def test_missing_branch_fails_closed(self) -> None:
         with self.assertRaisesRegex(QueryError, "cannot resolve local branch"):
             branch_tips(str(self.clone), "missing")

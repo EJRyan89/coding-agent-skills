@@ -188,6 +188,17 @@ def test_the_repositories_root_is_the_plugin_option_in_the_body_and_a_phrase_in_
     assert "userConfig" not in json.loads(plugins["fixture-skills-solo"].files[skill_menu.PLUGIN_MANIFEST])
 
 
+def test_a_plugin_value_naming_an_option_no_plugin_declares_is_a_build_error(
+    source: Source, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    variables = ["PYTHON", "REPOS_ROOT", "REPO_CLEANUP_PROTECTED", "REPO_CLEANUP_REGENERABLE"]
+    directory = source.skill("rooted", required_vars=variables)
+    (directory / "SKILL.md").write_text(ROOTED, encoding="utf-8", newline="\n")
+    monkeypatch.setattr(plugin_build, "PLUGIN_OPTIONS", {})
+    with pytest.raises(plugin_build.BuildError, match=r"^no plugin option is declared for repos_root$"):
+        assembled(source)
+
+
 GUARD_HOOK = (
     "hooks:\n"
     "  PreToolUse:\n"

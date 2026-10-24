@@ -1148,11 +1148,6 @@ def regenerable_holders(path: str, worktree: str, entries: tuple[Regenerable, ..
     return holders
 
 
-def is_regenerable(path: str, worktree: str, entries: tuple[Regenerable, ...]) -> bool:
-    """Whether the ignored path is one of the regenerable `entries`, or lies inside one."""
-    return bool(regenerable_holders(path, worktree, entries))
-
-
 def tracked_below(services: Services, worktree: str, directory: str) -> bool:
     """Whether Git tracks a file at or below `directory` of the worktree, named literally, never as a pattern."""
     return bool(git_output(services, worktree, "ls-files", "-z", "--", f":(literal){directory}"))
@@ -2185,7 +2180,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--regenerable",
         default="",
         help="regenerable directories to add to the shipped list, separated by spaces, each <directory> or "
-        "<directory>:<project file>,<project file>",
+        "<directory>=<project file>,<project file>",
     )
     sweep_parser.add_argument(
         "--protected", default="", help="branch prefixes to protect beside the shipped ones, separated by spaces"
