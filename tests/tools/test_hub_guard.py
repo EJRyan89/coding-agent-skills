@@ -1189,6 +1189,33 @@ class CommandReadingTests(GuardTestCase):
             self.reach(f"Set-Content env:GIT_WORK_TREE '{self.tree}'; git commit", self.tree, environment=aimed),
         )
 
+    def test_both_readers_leave_unknown_what_a_name_they_cannot_settle_may_set(self) -> None:
+        # Bash's export "$v"=x may set any variable, and so may a cmdlet writing a provider path the text does not
+        # settle; a path whose last part is literal text names that variable alone, which git does not read.
+        for tool, command, expected in (
+            ("Bash", 'export "$v"=x', "unknown"),
+            ("Bash", 'unset "$v"', "unknown"),
+            ("PowerShell", 'Set-Item "env:$v" x', "unknown"),
+            ("PowerShell", "Set-Item $p x", "unknown"),
+            ("PowerShell", "Set-Content -Path $p -Value x", "unknown"),
+            ("PowerShell", "Set-Content $target x", "unknown"),
+            ("PowerShell", 'Set-Item "$d\\GIT_DIR" x', "unknown"),
+            ("PowerShell", "Copy-Item env:FOO $destination", "unknown"),
+            ("PowerShell", "Remove-Item $p", "unknown"),
+            ("PowerShell", "Rename-Item env:FOO $n", "unknown"),
+            ("PowerShell", "New-Item -Path env: -Name $n -Value x", "unknown"),
+            ("PowerShell", "New-Item $p -Value x", "unknown"),
+            ("PowerShell", "Remove-Item -LiteralPath $p", "unknown"),
+            ("PowerShell", "Rename-Item $p NEW", "unknown"),
+            # A cmdlet that neither writes, removes, nor renames a variable reaches none, whatever path it reads.
+            ("PowerShell", "Get-Content $p", "elsewhere"),
+            ("Bash", 'printf x > "$d/out.txt"', "elsewhere"),
+            ("PowerShell", 'Set-Content "$d\\out.txt" x', "elsewhere"),
+            ("PowerShell", "New-Item -Path C:\\x -Name $n -ItemType Directory", "elsewhere"),
+        ):
+            with self.subTest(tool=tool, command=command):
+                self.assertEqual([(expected, "commit")], self.reach(f"{command}; git commit", tool=tool))
+
     def test_powershell_reads_a_location_variable_set_through_the_provider_qualified_path(self) -> None:
         # Environment:: names the environment provider as the env: drive does, with or without its module.
         for command in (
@@ -1275,7 +1302,8 @@ class CommandReadingTests(GuardTestCase):
             "Set-Content notes.txt GIT_DIR",
             "Set-Content -Path notes.txt -Value env:GIT_DIR",
             "Set-Content env:NOTES GIT_DIR",
-            "Set-Content $target x",
+            # A computed path whose last part is literal text names only that variable.
+            'Set-Content "$target\\notes.txt" x',
             "Rename-Item notes.txt GIT_DIR",
             # The provider takes -NewName as a bare name, so this sets a variable named env:GIT_DIR.
             "Rename-Item env:FOO env:GIT_DIR",
@@ -1960,6 +1988,22 @@ class EnvOptionTests(unittest.TestCase):
         ):
             with self.subTest(arguments=arguments):
                 self.assertEqual(expected, hub_guard.first_unread_env_option(list(arguments)))
+
+
+class ProviderPathTests(unittest.TestCase):
+    def test_a_computed_path_may_name_a_tracked_variable_unless_its_last_part_is_literal(self) -> None:
+        for word, expected in (
+            ({"text": "", "dynamic": True, "variable": "p"}, True),
+            ({"text": "$d\\out.txt", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, False),
+            ({"text": "$d/GIT_DIR", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, True),
+            ({"text": "env:$n", "dynamic": True, "expansions": [{"token": "$n", "variable": "n"}]}, True),
+            ({"text": "$d\\GIT_*", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, True),
+            ({"text": "$d\\a`b", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, True),
+            ({"text": "$d\\x:y", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, True),
+            ({"text": "a$d", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, True),
+        ):
+            with self.subTest(word=word["text"]):
+                self.assertEqual(expected, hub_guard.may_name_tracked(word))
 
 
 class HubsInViewTests(unittest.TestCase):

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
-from . import fsops, state_files
+from . import fsops, platform_support, state_files
 from .errors import STATE_FILE, DeployError, os_error, see_recovery
 from .hashing import HASH_PATTERN
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind, KindKey
@@ -284,11 +284,11 @@ def _validate_source_commit(source_id: str, entry: dict[object, object]) -> None
     if "source_commit" in entry:
         value = entry["source_commit"]
         if not isinstance(value, str) or not COMMIT_PATTERN.fullmatch(value):
-            raise DeployError(f"ERROR: Manifest source '{source_id}' source_commit is malformed")
+            raise DeployError(f"ERROR: Manifest source '{source_id}' source_commit is malformed", *MANIFEST_REMEDY)
     if "source_ref" in entry:
         ref = entry["source_ref"]
         if "source_commit" not in entry or not isinstance(ref, str) or not REF_PATTERN.fullmatch(ref):
-            raise DeployError(f"ERROR: Manifest source '{source_id}' source_ref is malformed")
+            raise DeployError(f"ERROR: Manifest source '{source_id}' source_ref is malformed", *MANIFEST_REMEDY)
 
 
 def _validate(data: dict[object, object], sources: dict[object, object], version: int, path: Path) -> ManifestData:
@@ -298,16 +298,18 @@ def _validate(data: dict[object, object], sources: dict[object, object], version
     """
     run_id = data.get("last_run_id", "")
     if not isinstance(run_id, str) or (run_id and safe_name_problem(run_id, "run ID") is not None):
-        raise DeployError(f"ERROR: Manifest last_run_id is malformed: {path}")
+        raise DeployError(
+            f"ERROR: Manifest last_run_id is malformed: {platform_support.normalize(path)}", *MANIFEST_REMEDY
+        )
     for source_id, entry in sources.items():
         if (
             not isinstance(source_id, str)
             or len(source_id) > SOURCE_ID_MAX_LENGTH
             or not SOURCE_ID_PATTERN.fullmatch(source_id)
         ):
-            raise DeployError(f"ERROR: Manifest source ID is malformed: {source_id!r}")
+            raise DeployError(f"ERROR: Manifest source ID is malformed: {source_id!r}", *MANIFEST_REMEDY)
         if not isinstance(entry, dict):
-            raise DeployError(f"ERROR: Manifest source '{source_id}' is malformed")
+            raise DeployError(f"ERROR: Manifest source '{source_id}' is malformed", *MANIFEST_REMEDY)
         _validate_source_commit(source_id, entry)
         # selected_skills is no longer written, but an older entry still carries it until its source next
         # deploys, so it is validated, never trusted, on read.
@@ -316,7 +318,7 @@ def _validate(data: dict[object, object], sources: dict[object, object], version
             if not isinstance(values, list) or not all(
                 isinstance(value, str) and is_valid_name(value) for value in values
             ):
-                raise DeployError("ERROR: Manifest selection fields are malformed")
+                raise DeployError("ERROR: Manifest selection fields are malformed", *MANIFEST_REMEDY)
         members = entry.get("requested_bundle_members", {})
         if not isinstance(members, dict) or not all(
             isinstance(name, str)
@@ -325,11 +327,11 @@ def _validate(data: dict[object, object], sources: dict[object, object], version
             and all(isinstance(value, str) and is_valid_name(value) for value in values)
             for name, values in members.items()
         ):
-            raise DeployError("ERROR: Manifest selection fields are malformed")
+            raise DeployError("ERROR: Manifest selection fields are malformed", *MANIFEST_REMEDY)
         for kind in KINDS:
             items = entry.get(kind.key, {})
             if not isinstance(items, dict):
-                raise DeployError("ERROR: Manifest selection fields are malformed")
+                raise DeployError("ERROR: Manifest selection fields are malformed", *MANIFEST_REMEDY)
             for name, value in items.items():
                 named_like_skill = kind in (SKILL, ADAPTER_KIND)
                 safe = isinstance(name, str) and safe_name_problem(name, "item") is None
@@ -355,7 +357,10 @@ def _validate(data: dict[object, object], sources: dict[object, object], version
                         )
                     )
                 ):
-                    raise DeployError(f"ERROR: Manifest entry is malformed: source '{source_id}' {kind.key} {name!r}")
+                    raise DeployError(
+                        f"ERROR: Manifest entry is malformed: source '{source_id}' {kind.key} {name!r}",
+                        *MANIFEST_REMEDY,
+                    )
     # Every field the shape gives a type was checked above; source_dir and deployed_at, which it types as object, and
     # a field it does not name are kept as they are.
     return cast(ManifestData, data)
@@ -366,7 +371,8 @@ def _record_owners(data: ManifestData, kind: KindKey, label: str, owners: dict[s
         for name in entry.get(kind, {}):
             if name in owners and owners[name] != source_id:
                 raise DeployError(
-                    f"ERROR: {label} '{name}' is owned by both '{owners[name]}' and '{source_id}' in manifest"
+                    f"ERROR: {label} '{name}' is owned by both '{owners[name]}' and '{source_id}' in manifest",
+                    *MANIFEST_REMEDY,
                 )
             owners[name] = source_id
 
@@ -399,13 +405,15 @@ def load(path: Path) -> Manifest:
         raw = None
     sources = raw.setdefault("sources", {}) if isinstance(raw, dict) else None
     if not isinstance(raw, dict) or not isinstance(sources, dict):
-        raise DeployError(f"ERROR: Manifest is malformed: {path}", *MANIFEST_REMEDY)
+        raise DeployError(f"ERROR: Manifest is malformed: {platform_support.normalize(path)}", *MANIFEST_REMEDY)
     version = raw.get("manifest_version")
     if not isinstance(version, int) or isinstance(version, bool) or version < OLDEST_READABLE_VERSION:
-        raise DeployError(f"ERROR: Manifest has unsupported schema version '{version}'")
+        raise DeployError(f"ERROR: Manifest has unsupported schema version '{version}'", *MANIFEST_REMEDY)
     if version > MANIFEST_VERSION:
         raise DeployError(
-            f"ERROR: Manifest schema version '{version}' is newer than supported version {MANIFEST_VERSION}"
+            f"ERROR: Manifest schema version '{version}' is newer than supported version {MANIFEST_VERSION}",
+            # A newer deployer wrote it, so this checkout is older than the one that last deployed.
+            "Update this checkout with 'git pull', or deploy from the checkout that wrote the manifest.",
         )
     data = _validate(raw, sources, version, path)
     _upgrade_dependencies(data)
@@ -416,6 +424,7 @@ def load(path: Path) -> Manifest:
         if name in manifest.shared_owners:
             raise DeployError(
                 f"ERROR: Destination name '{name}' is owned as a skill by '{manifest.skill_owners[name]}' "
-                f"and as a shared asset by '{manifest.shared_owners[name]}' in manifest"
+                f"and as a shared asset by '{manifest.shared_owners[name]}' in manifest",
+                *MANIFEST_REMEDY,
             )
     return manifest

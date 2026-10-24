@@ -11,7 +11,7 @@ from unittest import mock
 
 from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, Result, forward, interrupting
 
-from deployer import check, configure, paths, platform_support, verify
+from deployer import check, configure, errors, paths, platform_support, verify
 from deployer.arguments import USAGE_ERROR, debug_given, parse_command
 
 
@@ -167,7 +167,7 @@ class SingleEntryPointTests(DeployerTestCase):
         result = self.run_cli("configure", stdin=interrupting())
         self.assertEqual(130, result.code, result.output)
         self.assertIn("Ctrl+C cancels", result.output)
-        self.assertIn("Configuration cancelled; existing config was not changed.", result.output)
+        self.assertIn(configure.CANCELLED, result.output)
         self.assertNotIn("Traceback", result.output)
         self.assertEqual(before, self.config_file().read_bytes())
 
@@ -179,7 +179,7 @@ class SingleEntryPointTests(DeployerTestCase):
             with self.subTest(arguments=arguments):
                 result = self.run_cli(*arguments, stdin=interrupting())
                 self.assertEqual(130, result.code, result.output)
-                self.assertIn("Cancelled; nothing was changed.", result.output)
+                self.assertIn(errors.CANCELLED, result.output)
                 self.assertNotIn("Deployment failed", result.output)
                 self.assertNotIn("Traceback", result.output)
                 self.assertFalse((self.skills_dir / "alpha").exists())

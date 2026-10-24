@@ -13,7 +13,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from harness import FAILS_PARTWAY, DeployerTestCase, Deployment, deployer, deployment, tree_state
+from harness import FAILS_PARTWAY, DeployerTestCase, Deployment, deployer, deployment, make_directory_link, tree_state
 
 from deployer import cli, pipeline, platform_support, render
 from deployer.errors import DeployError
@@ -43,6 +43,22 @@ class TreeStateTests(DeployerTestCase):
                 tree = self.tree(name)
                 change(tree)
                 self.assertNotEqual(unchanged, tree_state(tree))
+
+    def test_a_write_through_a_link_out_of_the_tree_changes_the_state_and_one_inside_is_counted_once(self) -> None:
+        tree, outside = self.tree("linked"), self.root / "outside"
+        self.write(outside / "kept.txt", "kept\n")
+        make_directory_link(tree / "out", outside)
+        make_directory_link(tree / "in", tree / "a")
+        before = tree_state(tree)
+        self.assertIn("out/kept.txt", before)
+        self.assertNotIn("in/file.txt", before)
+        self.write(outside / "kept.txt", "changed\n")
+        self.assertNotEqual(before, tree_state(tree))
+        self.write(outside / "kept.txt", "kept\n")
+        self.assertEqual(before, tree_state(tree))
+        # A link back into the tree from outside it is not followed again.
+        make_directory_link(outside / "back", tree)
+        self.assertNotIn("out/back/b.txt", tree_state(tree))
 
 
 def failing_after_applying() -> mock._patch[mock.MagicMock | mock.AsyncMock]:
@@ -329,6 +345,43 @@ class FreshHomeGuardTests(DeployerTestCase):
 class EntryPointGuardTests(DeployerTestCase):
     """deploy.py run as a program runs from a copy of this checkout, which the harness compares around the run."""
 
+    def home_environment(self) -> dict[str, str]:
+        return {"HOME": str(self.home), "USERPROFILE": str(self.home)}
+
+    def test_a_child_whose_environment_names_another_home_is_never_started(self) -> None:
+        other = self.root / "other home"
+        started: list[list[str]] = []
+
+        def record(arguments: list[str], _environment: object = None) -> platform_support.ToolResult:
+            started.append(arguments)
+            return platform_support.ToolResult(0, "")
+
+        for environment in ({}, {"HOME": str(other), "USERPROFILE": str(other)}):
+            with self.subTest(environment=environment):
+                with (
+                    mock.patch("deployer.platform_support.run_tool", side_effect=record),
+                    self.assertRaisesRegex(AssertionError, "not the fixture home"),
+                ):
+                    self.run_entry_point("--help", environment=environment)
+                with self.assertRaisesRegex(AssertionError, "not the fixture home"):
+                    self.run_in_checkout("raise SystemExit(0)", environment=environment)
+        self.assertEqual([], started)
+        with mock.patch("deployer.platform_support.run_tool", side_effect=record):
+            self.assertEqual(0, self.run_entry_point("--help", environment=self.home_environment()).code)
+        self.assertEqual(1, len(started))
+
+    def test_a_second_entry_point_run_reuses_the_copy(self) -> None:
+        seen: list[str] = []
+
+        def record(arguments: list[str], _environment: object = None) -> platform_support.ToolResult:
+            seen.append(arguments[2])
+            return platform_support.ToolResult(0, "")
+
+        with mock.patch("deployer.platform_support.run_tool", side_effect=record):
+            self.run_entry_point("--help", environment=self.home_environment())
+            self.run_entry_point("--help", environment=self.home_environment())
+        self.assertEqual([str(self.root / "repository" / "deploy.py")] * 2, seen)
+
     def test_an_entry_point_run_that_changes_its_checkout_fails_the_test(self) -> None:
         def write_beside(arguments: list[str], _environment: object = None) -> platform_support.ToolResult:
             Path(arguments[2]).with_name("unexpected.txt").write_bytes(b"mutation\n")
@@ -338,7 +391,7 @@ class EntryPointGuardTests(DeployerTestCase):
             mock.patch("deployer.platform_support.run_tool", side_effect=write_beside),
             self.assertRaisesRegex(AssertionError, "the deployment changed its source"),
         ):
-            self.run_entry_point("--help", environment={})
+            self.run_entry_point("--help", environment=self.home_environment())
 
     def test_an_entry_point_run_names_the_copy_and_not_the_checkout(self) -> None:
         seen: list[str] = []
@@ -348,7 +401,7 @@ class EntryPointGuardTests(DeployerTestCase):
             return platform_support.ToolResult(0, "printed\n")
 
         with mock.patch("deployer.platform_support.run_tool", side_effect=record):
-            result = self.run_entry_point("--help", environment={})
+            result = self.run_entry_point("--help", environment=self.home_environment())
         self.assertEqual((0, "printed\n"), (result.code, result.output))
         self.assertEqual([str(self.root / "repository" / "deploy.py")], seen)
 

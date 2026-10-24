@@ -32,9 +32,9 @@ PROMPTS: dict[str, str] = {
     "UPDATE_CHANNEL": "what update-coding-agent-skills deploys: release, the latest release, or main, the head of main",
     "REPO_CLEANUP_REGENERABLE": "ignored directories repo-cleanup may delete with a worktree, besides the ones it "
     "ships with, separated by spaces: a directory, or a directory, an equals sign, and the project files one of which "
-    "must sit beside it, such as .venv .tox=tox.ini,setup.cfg; empty for none",
+    "must sit beside it, such as .venv .tox=tox.ini,setup.cfg",
     "REPO_CLEANUP_PROTECTED": "branch prefixes repo-cleanup never deletes, besides the ones it ships with, separated "
-    "by spaces, such as hotfix/ support/; empty for none",
+    "by spaces, such as hotfix/ support/",
 }
 # Rendering escapes a value only for the contexts it knows, so derived values pass an allowlist as configured ones
 # do. Nobody chooses a home folder's name to suit the deployer, so letters of any script are allowed, but nothing a
@@ -131,7 +131,7 @@ def read(path: Path, source_id: str, dropped: list[str] | None = None) -> dict[s
     try:
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise DeployError(f"ERROR: Config file is not valid UTF-8: {path}", remedy) from exc
+        raise DeployError(f"ERROR: Config file is not valid UTF-8: {platform_support.normalize(path)}", remedy) from exc
     try:
         return parse(text, source_id, dropped)
     except UnknownKey as exc:
@@ -171,7 +171,9 @@ def is_saved(path: Path) -> bool:
 
 def load(path: Path, source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
     if not is_saved(path):
-        raise DeployError(f"ERROR: No config found at {path}", f"Run '{CONFIGURE_COMMAND_LINE}' first.")
+        raise DeployError(
+            f"ERROR: No config found at {platform_support.normalize(path)}", f"Run '{CONFIGURE_COMMAND_LINE}' first."
+        )
     values = {**DEFAULTS, **read(path, source_id)}
     values.update(derived_values(home, source_dir))
     try:

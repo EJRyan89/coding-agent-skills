@@ -23,8 +23,8 @@
     },
     "pull_number": { "type": "integer", "minimum": 1 },
     "head_sha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
-    "summary": { "type": "string", "minLength": 1, "pattern": "\\S" },
-    "reviewer": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "summary": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
+    "reviewer": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
     "status": {
       "type": "string",
       "enum": ["complete", "partial", "failed"]
@@ -49,29 +49,29 @@
             "description": "Unique among the findings, so another finding's repeats can name it.",
             "type": "string",
             "minLength": 1,
-            "pattern": "\\S"
+            "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
           },
           "severity": {
             "type": "string",
             "enum": ["MUST_FIX", "SHOULD_FIX", "SUGGESTION"]
           },
-          "category": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "category": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
           "path": {
             "description": "A repository-relative POSIX path that stays inside the repository: no backslash, no leading slash or drive letter, and no .. segment.",
             "type": "string",
             "minLength": 1,
-            "pattern": "^(?=[\\s\\S]*\\S)(?!/)(?![A-Za-z]:)(?!(?:[^/]*/)*\\.\\.(?:/|$))[^\\\\]*$"
+            "pattern": "^(?=[\\s\\S]*[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])(?!/)(?![A-Za-z]:)(?!(?:[^/]*/)*\\.\\.(?:/|$))[^\\\\]*$"
           },
           "line": { "type": "integer", "minimum": 1 },
-          "title": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^\\S(?:.*\\S)?$" },
-          "body": { "type": "string", "minLength": 1, "pattern": "\\S" },
-          "evidence": { "type": "string", "minLength": 1, "pattern": "\\S" },
-          "source": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000](?:[^\\n-\\r\\u001c-\\u001e\\u0085\\u2028\\u2029]*[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])?$" },
+          "body": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
+          "evidence": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
+          "source": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
           "repeats": {
             "description": "Present only when the finding reports the same problem as another one, so it counts once: another finding's candidate_key, or the ID of a prior finding whose disposition is still_present or partially_addressed. The finding it names must be at least as severe and must not have repeats itself.",
             "type": "string",
             "minLength": 1,
-            "pattern": "\\S"
+            "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
           },
           "analyzer": {
             "description": "Present only when a diagnostic analyzer could catch the finding: a rule in an analyzer the repository already has but does not enforce (available), a rule in an established analyzer it does not use (known), or a mechanically detectable pattern no rule covers (custom-candidate, whose rule is a proposed pattern name).",
@@ -80,8 +80,8 @@
             "required": ["coverage", "tool", "rule"],
             "properties": {
               "coverage": { "type": "string", "enum": ["available", "known", "custom-candidate"] },
-              "tool": { "type": "string", "pattern": "^[^\\s`|<>]{1,100}$" },
-              "rule": { "type": "string", "pattern": "^[^\\s`|<>]{1,100}$" }
+              "tool": { "type": "string", "pattern": "^[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000`|<>]{1,100}$" },
+              "rule": { "type": "string", "pattern": "^[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000`|<>]{1,100}$" }
             },
             "if": { "properties": { "coverage": { "const": "custom-candidate" } } },
             "then": { "properties": { "rule": { "maxLength": 60, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" } } }
@@ -101,7 +101,7 @@
             "description": "The ID of one of the request's prior_findings, each once.",
             "type": "string",
             "minLength": 1,
-            "pattern": "\\S"
+            "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
           },
           "disposition": {
             "type": "string",
@@ -113,7 +113,7 @@
               "unable_to_verify"
             ]
           },
-          "rationale": { "type": "string", "minLength": 1, "pattern": "\\S" }
+          "rationale": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" }
         }
       }
     },
@@ -140,7 +140,7 @@
               "unable_to_verify"
             ]
           },
-          "rationale": { "type": "string", "minLength": 1, "pattern": "\\S" }
+          "rationale": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" }
         }
       }
     },

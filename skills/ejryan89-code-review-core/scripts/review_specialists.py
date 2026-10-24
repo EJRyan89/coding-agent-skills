@@ -612,6 +612,9 @@ Scope rules (violating them invalidates your result):
   rules the repository enforces as errors, or request explanatory comments."""
 )
 
+# A role's `source-file` command, None for a snapshot that holds every file already, and its `source-search`.
+SourceCommands = tuple[str | None, str]
+
 SOURCE_RULE = """
 - SOURCE_ROOT starts with only the changed files and the analyzer settings, so a file missing
   there may still be in the head commit. To read any other file, run this command with its
@@ -838,11 +841,11 @@ def render_prompt(
     local_checkout: Path | None = None,
     other_files: Sequence[str] = (),
     links: dict[str, tuple[int, str] | None] | None = None,
-    source_commands: tuple[str, str] | None = None,
+    source_commands: SourceCommands | None = None,
 ) -> str:
     """`links`, from `symbolic_links`, names the symbolic links among the role's files, which it raises as findings.
-    `source_commands`, a lazy snapshot's `source-file` and `source-search` commands for this role, are named in the
-    input contract."""
+    `source_commands`, the snapshot's `source-search` command for this role and, for a lazy snapshot, its
+    `source-file` command, are named in the input contract."""
     identity = role["id"]
     if identity == GENERIC_SPECIALIST:
         instructions = role["instructions"]
@@ -928,18 +931,28 @@ def link_lines(links: dict[str, tuple[int, str] | None]) -> list[str]:
     ]
 
 
-def _source_rule(source_commands: tuple[str, str] | None) -> str:
-    """The input contract's rule for a lazy snapshot, naming its two source commands, or nothing."""
+def _source_rule(source_commands: SourceCommands | None) -> str:
+    """The input contract's rule naming the snapshot's source commands: a lazy snapshot's two, or a whole snapshot's
+    search alone, which serves where the runtime gives the reviewer no Grep or Glob. Nothing when there are none."""
     if source_commands is None:
         return ""
-    return SOURCE_RULE.format(fetch=source_commands[0], search=source_commands[1])
+    fetch, search = source_commands
+    if fetch is not None:
+        return SOURCE_RULE.format(fetch=fetch, search=search)
+    return f"""
+- To search the code, run this command with an extended regular expression in place of
+  <pattern>, rather than Grep or Glob over SOURCE_ROOT, which a runtime may not give you:
+  {search}
+  The pattern may not hold a double quote, backtick, dollar sign, or backslash; write [.] for
+  a literal dot."""
 
 
-def self_check_rule(command: str | None, source_commands: tuple[str, str] | None) -> str:
+def self_check_rule(command: str | None, source_commands: SourceCommands | None) -> str:
     """The output contract's self-check, which counts the commands the reviewer may run, or nothing."""
     if not command:
         return ""
-    only = "one of the three commands you may run" if source_commands else "the one command you may run"
+    count = 1 + sum(1 for each in source_commands or () if each is not None)
+    only = {1: "the one command", 2: "one of the two commands", 3: "one of the three commands"}[count] + " you may run"
     return SELF_CHECK.format(command=command, only=only)
 
 
@@ -1069,7 +1082,7 @@ def render_entrypoint_prompt(
     self_check: str,
     links: dict[str, tuple[int, str] | None],
     local_checkout: Path | None = None,
-    source_commands: tuple[str, str] | None = None,
+    source_commands: SourceCommands | None = None,
 ) -> str:
     """A repository entrypoint reviewer's one prompt: the request's facts and the adapter result contract inline,
     the entrypoint and its trusted files named as the instructions to follow, and the same input rules a
@@ -1409,7 +1422,7 @@ def _write_role(
     links: dict[str, tuple[int, str] | None],
     self_check: Callable[[str], str] | None,
     local_checkout: Path | None,
-    source_commands: Callable[[str], tuple[str, str]] | None = None,
+    source_commands: Callable[[str], SourceCommands] | None = None,
 ) -> None:
     """A role's result and prompt paths and its disposition IDs, then its inputs and prompt, in that order."""
     identity = role["id"]
@@ -1458,7 +1471,7 @@ def build_plan(
     snapshot: dict[str, Any] | None = None,
     local_checkout: Path | None = None,
     review_files: set[str] | None = None,
-    source_commands: Callable[[str], tuple[str, str]] | None = None,
+    source_commands: Callable[[str], SourceCommands] | None = None,
     document_stage: str | None = None,
 ) -> dict[str, Any]:
     """Plan the review roles. Without a reviewer root, the suite's generic reviewer reviews the whole change.
@@ -1467,7 +1480,7 @@ def build_plan(
     materialization verified. Without it the snapshot is verified here, contents included.
     `review_files`, for an incremental re-review, names the files to review in full. A role with none of them
     only gives dispositions, and a specialist with no prior finding or comment either is left out.
-    `source_commands` gives a role's `source-file` and `source-search` commands, for a lazy snapshot.
+    `source_commands` gives a role's `source-file` command, for a lazy snapshot only, and its `source-search`.
     `document_stage`, one of DOCUMENT_STAGES, is given to each role of the suite's design-review profile.
     """
     request = _load_request(request_path)

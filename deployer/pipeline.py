@@ -537,11 +537,7 @@ def _run_states(paths: Paths) -> list[str]:
     A run committed before recovery stopped is installed, so the report must not say that nothing was deployed.
     """
     return [
-        f"Run {run_id} was committed to the manifest, so its changes are installed and the manifest holds them; "
-        "the next deployment finishes its cleanup."
-        if committed
-        else f"Run {run_id} was not committed to the manifest, so the manifest does not hold its changes; "
-        "the next deployment rolls them back."
+        (errors.RUN_COMMITTED if committed else errors.RUN_NOT_COMMITTED).format(run_id=run_id)
         for run_id, committed in journal.journaled_runs(paths) or []
     ]
 
@@ -556,7 +552,7 @@ def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths) -> int:
     else:
         error = DeployError(
             errors.named(exc, "finish recovery"),
-            "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
+            errors.RECOVERY_STOPPED,
             *_run_states(paths),
             see_recovery(RECOVERY_FAILED),
         )

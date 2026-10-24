@@ -4,10 +4,12 @@ entries of the plugin's hooks file.
 A plugin agent's own `hooks` are ignored, so a plugin runs them from `hooks/hooks.json`, for every matching tool call of
 every session; a hook an agent declares must therefore hold to its own agent itself, as the code-review reviewer guard
 does from the `agent_type` of each call. The hooks are read from the subset of YAML they are written in, block
-mappings and sequences of scalars, and anything else is refused. A command names a script under the deployed skills
+mappings whose values are scalars, block mappings, or sequences of block mappings, and anything else is refused, as is
+a scalar of digits that are not ASCII digits. A command names a script under the deployed skills
 directory, which a plugin does not have, so each `os.path.expanduser('~/.claude/skills/<path>')` becomes the same path
 under the plugin's root, which Claude Code exports to a plugin hook as CLAUDE_PLUGIN_ROOT; a command that names the
-home's Claude folder any other way is refused.
+home's Claude folder any other way, as `$HOME/.claude`, `%USERPROFILE%\\.claude`, or a `.claude` it joins to a home, is
+refused: once those paths are rewritten, a command names no `.claude` folder, in any case, at all.
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ import frontmatter
 HOOKS_KEY = "hooks"
 KEY_LINE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(?P<value>.*))?$")
 DEPLOYED_SCRIPT = re.compile(r"os\.path\.expanduser\('~/\.claude/skills/(?P<path>[A-Za-z0-9_./-]+)'\)")
-HOME_CLAUDE = re.compile(r"~/\.claude|\.claude[/\\]skills")
 
 Node = str | int | list["Node"] | dict[str, "Node"]
 
@@ -46,6 +47,8 @@ def _scalar(key: str, inline: str, following: list[str]) -> str | int:
         raise AgentError(f"hooks: {exc}") from exc
     if value is None:
         raise AgentError(f"hooks: {key} has no value")
+    if value.isdigit() and not value.isascii():
+        raise AgentError(f"hooks: {key} is not a number of ASCII digits: {value}")
     return int(value) if value.isdigit() else value
 
 
@@ -89,7 +92,9 @@ def _plugin_command(command: str) -> str:
         return f"os.path.join(os.environ['CLAUDE_PLUGIN_ROOT'], 'skills', {parts})"
 
     rewritten = DEPLOYED_SCRIPT.sub(plugin_path, command)
-    if HOME_CLAUDE.search(rewritten):
+    # The home has many spellings, so a folder named `.claude` is refused under any of them, in any case, which Windows
+    # folds; `.claude-plugin` is not.
+    if re.search(r"\.claude(?![a-z0-9_-])", rewritten, re.IGNORECASE):
         raise AgentError("hooks: a command names the home's Claude folder other than as a deployed script's path")
     return rewritten
 

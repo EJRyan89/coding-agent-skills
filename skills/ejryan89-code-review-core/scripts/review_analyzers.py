@@ -9,8 +9,9 @@ also lists the settings that decide which rules run and how severely: MSBuild an
 .globalconfig diagnostic severities, ruff and flake8 rule selections, and ShellCheck directives. Nothing here runs an
 analyzer or executes repository code. Each settings file is read whole, within the reader's size bound, and parsed in
 memory, and one that cannot be read or parsed, for any reason its parser gives on its content, is listed as present but
-unread and names a tool only when its file name does. EditorConfig files are read one `key = value` per line, since the
-format has no continuation lines; setup.cfg and tox.ini keep configparser's, which are real there.
+unread, past the settings cap too, and names a tool only when its file name does. EditorConfig files are read one
+`key = value` per line, since the format has no continuation lines; setup.cfg and tox.ini keep configparser's, which
+are real there.
 """
 
 from __future__ import annotations
@@ -147,6 +148,10 @@ class _Inventory:
             self.truncated = True
             return
         self.settings.append({"file": path, "setting": flat_text(text)})
+
+    def unread(self, path: str) -> None:
+        # Listed past the cap too: there a file left out reads as one parsed with no settings, not one never read.
+        self.settings.append({"file": path, "setting": UNREAD})
 
     def result(self) -> dict[str, Any]:
         tools = []
@@ -320,7 +325,7 @@ def inventory(root: Path, paths: Iterable[str]) -> dict[str, Any]:
             # MSBuild file, setup.cfg, tox.ini, pyproject.toml, or package.json may configure none, so it names none.
             if name in NAMED_BY_FILE:
                 found.tool(NAMED_BY_FILE[name], path)
-            found.setting(path, UNREAD)
+            found.unread(path)
     return found.result()
 
 
