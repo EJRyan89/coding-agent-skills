@@ -183,6 +183,33 @@ class ParseTests(unittest.TestCase):
             text,
         )
 
+    def test_only_a_leg_s_three_field_ok_line_counts(self) -> None:
+        # A line with the leg and the text but no step, and a line with a step but no leg, are no leg's result.
+        log = "\n".join(
+            [
+                "Windows shard 1/4, Python 3.11\t2026-10-10T06:17:04Z ok   5.0s tests/a.py",
+                "Another job\tRun repository validation\t2026-10-10T06:17:04Z ok   6.0s tests/a.py",
+                f"{LEG_1}ok   1.0s tests/b.py",
+            ]
+        )
+        self.assertEqual({"Windows": {"tests/b.py": 1.0}}, record_job_seconds.job_seconds_from_log(log))
+
+    def test_seconds_keep_one_decimal_and_a_job_that_rounds_to_zero_is_dropped(self) -> None:
+        log = "\n".join(
+            [
+                # Reported twice, the job counts at its mean, 1.25, which the table keeps to one decimal.
+                f"{LEG_1}ok   1.0s tests/a.py",
+                f"{LATEST}ok   1.5s tests/a.py",
+                # Its mean, a thirtieth of a second, rounds to zero: a job's seconds are above zero or not recorded.
+                f"{LEG_2}ok   0.1s tests/b.py",
+                f"{LEG_3}ok   0.0s tests/b.py",
+                f"{LEG_4}ok   0.0s tests/b.py",
+                # Every job of a platform rounds to zero, so the platform has no seconds.
+                f"{LINUX_1}ok   0.0s tests/b.py",
+            ]
+        )
+        self.assertEqual({"Windows": {"tests/a.py": 1.2}}, record_job_seconds.job_seconds_from_log(log))
+
     def test_the_platforms_recorded_are_those_the_deal_reads(self) -> None:
         # Pinned against the literals: the platforms the deployer supports, by the names platform_support gives them.
         self.assertEqual(("Linux", "Windows"), record_job_seconds.PLATFORMS)
@@ -226,6 +253,17 @@ class ParseTests(unittest.TestCase):
             {"Windows": {"tests/renamed.py": 11.0, "tests/kept.py": 2.0}}, record_job_seconds.combine(per_run)
         )
 
+    def test_a_median_keeps_one_decimal_and_a_run_without_the_platform_is_passed_over(self) -> None:
+        per_run: dict[int, dict[str, dict[str, float]]] = {
+            1: {"Windows": {"tests/a.py": 9.0}},
+            2: {"Windows": {"tests/a.py": 1.0}, "Linux": {"tests/a.py": 1.0}},
+            3: {"Windows": {"tests/a.py": 1.5}, "Linux": {"tests/a.py": 1.5}},
+        }
+        # Linux's median, 1.25, is of the two runs that report Linux, kept to one decimal.
+        self.assertEqual(
+            {"Windows": {"tests/a.py": 1.5}, "Linux": {"tests/a.py": 1.2}}, record_job_seconds.combine(per_run)
+        )
+
     def test_the_newest_run_is_the_highest_id_whatever_the_order_given(self) -> None:
         per_run: dict[int, dict[str, dict[str, float]]] = {
             9: {"Linux": {"tests/new.py": 1.0}},
@@ -242,6 +280,11 @@ class ParseTests(unittest.TestCase):
         )
         gap = log_of({"tests/a.py": 1.0}, (LEG_1, *LEGS[2:]))
         self.assertEqual("lacks Windows leg 2/4", record_job_seconds.leg_problem(gap))
+        self.assertEqual("lacks Windows leg 1/4", record_job_seconds.leg_problem(log_of({"tests/a.py": 1.0}, LEGS[1:])))
+        self.assertEqual(
+            "lacks Linux leg 1/2",
+            record_job_seconds.leg_problem(log_of({"tests/a.py": 1.0}, linux_legs=LINUX_LEGS[1:])),
+        )
         self.assertEqual(
             "lacks Linux leg 2/2",
             record_job_seconds.leg_problem(log_of({"tests/a.py": 1.0}, linux_legs=LINUX_LEGS[:1])),
