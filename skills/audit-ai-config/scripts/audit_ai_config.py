@@ -467,17 +467,25 @@ GENERATOR_CANDIDATES: list[str] = [".github/scripts/ai_config.py", "scripts/ai_c
 
 
 # The fixed files a check reads with no finding of its own when it cannot read or decode one, or with only a WARNING:
-# the canonical source, which the authority signals, the behavioral checks, and Copilot parity read, the manifest, the
-# Copilot instructions, and each generator. The inventory reports each of them, every AGENTS.md, and every workflow it
-# cannot read as an ERROR, so an audit that skipped the checks reading one is never COMPLIANT.
+# the canonical source, which the authority signals, the behavioral checks, and Copilot parity read, CLAUDE.local.md,
+# whose length and imports the memory check reads, GEMINI.md and REVIEW.md, whose length the code-review check reads,
+# the manifest, the Copilot instructions, and each generator. The inventory reports each of them, every AGENTS.md, and
+# every workflow it cannot read as an ERROR, so an audit that skipped the checks reading one is never COMPLIANT.
 READ_FILES: list[str] = [
     "CLAUDE.md",
     ".claude/CLAUDE.md",
+    "CLAUDE.local.md",
+    "GEMINI.md",
+    "REVIEW.md",
     ".github/ai-config-manifest.json",
     ".github/copilot-instructions.md",
 ]
 # Where Claude Code's memory page reads a project's CLAUDE.md: the root, or .claude/CLAUDE.md.
 CLAUDE_MD_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude/CLAUDE.md")
+# The file the memory page has Claude Code read as the project's instructions when no CLAUDE.md is present, from
+# CLAUDE_AGENTS_MD_SINCE on.
+CLAUDE_AGENTS_MD = "AGENTS.md"
+CLAUDE_AGENTS_MD_SINCE = "v2.1.277"
 
 
 def check_inventory(root: Path) -> list[Finding]:
@@ -929,6 +937,13 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
     findings.extend(frontmatter_findings)
     if not _text(values, "description").strip():
         findings.append(Finding("ERROR", "copilot-agent", rel, message="Agent frontmatter requires description"))
+    return [*findings, *_copilot_agent_fields(rel, agent_id, values)]
+
+
+def _copilot_agent_fields(rel: str, agent_id: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
+    """The fields of a custom agent Copilot reads, whose ID is `agent_id`, beside the description each runtime
+    requires: its target, switches, tools, and model policy, and a name its built-in agents take."""
+    findings: list[Finding] = []
     if "target" in values and _text(values, "target") not in {"vscode", "github-copilot"}:
         findings.append(Finding("ERROR", "copilot-agent", rel, message="target must be 'vscode' or 'github-copilot'"))
     findings.extend(
@@ -1013,8 +1028,8 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         findings.extend(outside_link_findings(root, listing))
         for path in (p for p in listing.paths if p.is_file()):
             if agent_dir == ".claude/agents":
-                # Claude Code's sub-agents page reads a project agent from a Markdown file here; Copilot documents
-                # no agent location but .github/agents.
+                # Claude Code's sub-agents page reads a project agent from a Markdown file here, and Copilot CLI's
+                # command reference reads its custom agents from here after .github/agents.
                 if path.suffix != ".md":
                     continue
                 findings.extend(_validate_claude_agent(path, root))
@@ -1171,13 +1186,22 @@ CLAUDE_AGENT_NAME_MAX = 256
 
 def _validate_claude_agent(path: Path, root: Path) -> list[Finding]:
     """A Claude Code project agent, read with the fields Claude Code's sub-agents page gives it, and an INFO naming
-    what it may do: its tools, model, and hooks."""
+    what it may do: its tools, model, and hooks; then with the fields Copilot CLI, which reads this folder too, gives a
+    custom agent."""
     rel = path.relative_to(root).as_posix()
     values, findings = _frontmatter(root, path)
     for finding in findings:
         finding.path, finding.check = rel, "claude-agent"
     if findings and not values:
         return findings  # unreadable, or no frontmatter to judge
+    return [
+        *_claude_agent_fields(rel, values, findings),
+        *_copilot_agent_fields(rel, _identifier_from_agent_filename(path), values),
+    ]
+
+
+def _claude_agent_fields(rel: str, values: dict[str, FrontmatterValue], findings: list[Finding]) -> list[Finding]:
+    """The sub-agents page's fields of an agent whose frontmatter has `findings`, or the INFO naming what it may do."""
     name = _text(values, "name").strip()
     if not name:
         findings.append(Finding("ERROR", "claude-agent", rel, message="Agent frontmatter requires name"))
@@ -1256,14 +1280,15 @@ def derive_file_scope(root: Path) -> dict[str, list[str]]:
     """The runtimes and surfaces the repository's own files show it serves, for a repository without a manifest or a
     recognized generator: check 3 of references/audit-policy.md.
 
-    Claude Code by a CLAUDE.md where its memory page reads one; Codex by a root AGENTS.md or AGENTS.override.md, a
-    .codex folder, or skills under .agents/skills; and Copilot CLI and app and code review by a .github folder, since a
-    repository hosted on GitHub has its CLAUDE.md and AGENTS.md read by them without any setting of its own. The cloud
-    agent needs its setup workflow. JetBrains and VS Code read instructions only through settings and Copilot's own
-    files, which no file shows, so only a manifest targets them.
+    Claude Code by a CLAUDE.md where its memory page reads one, or by a root AGENTS.md, which the page has it read in
+    place of a CLAUDE.md; Codex by a root AGENTS.md or AGENTS.override.md, a .codex folder, or skills under
+    .agents/skills; and Copilot CLI and app and code review by a .github folder, since a repository hosted on GitHub has
+    its CLAUDE.md and AGENTS.md read by them without any setting of its own. The cloud agent needs its setup workflow.
+    JetBrains and VS Code read instructions only through settings and Copilot's own files, which no file shows, so only
+    a manifest targets them.
     """
     runtimes: list[str] = []
-    if any((root / name).is_file() for name in CLAUDE_MD_FILES):
+    if any((root / name).is_file() for name in (*CLAUDE_MD_FILES, CLAUDE_AGENTS_MD)):
         runtimes.append("claude")
     if (
         any((root / name).is_file() for name in CODEX_INSTRUCTION_FILES)
@@ -1308,8 +1333,20 @@ def check_scope_and_roles(root: Path, manifest: dict[str, Any]) -> tuple[str, li
     if derived is None and not manifest_exists:
         # With no manifest there is no editable scope that could narrow checks: the repository's files show the
         # runtimes and surfaces it serves, or, when they show none, say what was skipped.
-        status, finding = _file_scope_finding(derive_file_scope(root))
+        scope = derive_file_scope(root)
+        status, finding = _file_scope_finding(scope)
         findings.append(finding)
+        if "claude" in scope.get("runtimes", ()) and not _has_claude_md(root):
+            findings.append(
+                Finding(
+                    "INFO",
+                    "scope",
+                    CLAUDE_AGENTS_MD,
+                    message=f"Claude Code reads {CLAUDE_AGENTS_MD} as the project's instructions, since no CLAUDE.md "
+                    f"is present, from {CLAUDE_AGENTS_MD_SINCE} on and while no CLAUDE.local.md is; an earlier Claude "
+                    "Code reads no project instructions here",
+                )
+            )
     elif derived is None:
         findings.append(
             Finding(
@@ -2213,6 +2250,7 @@ class InstructionSources:
     copilot_instructions: bool
     gemini_md: bool
     path_instructions: bool
+    claude_rules: bool
 
 
 def _instruction_sources(root: Path) -> InstructionSources:
@@ -2222,6 +2260,7 @@ def _instruction_sources(root: Path) -> InstructionSources:
         with contextlib.suppress(OSError, UnicodeError):
             agents_redirects = is_redirecting_agents_md(read_text(root, root / "AGENTS.md"))
     instructions = root / ".github/instructions"
+    rules = root / CLAUDE_RULES
     return InstructionSources(
         claude_md=(root / "CLAUDE.md").is_file(),
         dot_claude_md=(root / ".claude/CLAUDE.md").is_file(),
@@ -2231,6 +2270,7 @@ def _instruction_sources(root: Path) -> InstructionSources:
         gemini_md=(root / "GEMINI.md").is_file(),
         # The inventory reports a link this walk skips.
         path_instructions=instructions.is_dir() and bool(walk_files(root, instructions, _is_path_instructions).paths),
+        claude_rules=rules.is_dir() and bool(walk_files(root, rules, _is_markdown).paths),
     )
 
 
@@ -2421,7 +2461,8 @@ def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[
 
 
 def _layering_copilot_cli(sources: InstructionSources) -> list[Finding]:
-    """The instruction files Copilot CLI and the Copilot app load."""
+    """The instruction files Copilot CLI and the Copilot app load: its command reference reads the rules under
+    .claude/rules the way it reads .github/instructions."""
     effective = [
         name
         for name, present in (
@@ -2431,6 +2472,7 @@ def _layering_copilot_cli(sources: InstructionSources) -> list[Finding]:
             (".github/copilot-instructions.md", sources.copilot_instructions),
             ("GEMINI.md", sources.gemini_md),
             (".github/instructions", sources.path_instructions),
+            (CLAUDE_RULES, sources.claude_rules),
         )
         if present
     ]
@@ -2555,6 +2597,7 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
         )
     findings = [
         first,
+        *_code_review_lengths(root, [name for name in review_sources if name != ".github/instructions"], sources),
         Finding(
             severity="WARNING",
             check="layering",
@@ -2577,6 +2620,42 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
                 "and .agents/skills are not its documented automatic skill location",
             )
         )
+    return findings
+
+
+# GitHub's customize-code-review page: limit any single instruction file to about this many lines, beyond which the
+# quality of its reviews may deteriorate.
+CODE_REVIEW_MAX_LINES = 1000
+
+
+def _code_review_lengths(root: Path, names: list[str], sources: InstructionSources) -> list[Finding]:
+    """A WARNING for each instruction file code review reads that is longer than its page advises: the fixed files it
+    found, and each path-specific instruction file. The inventory reports a fixed one it cannot read; a path-specific
+    one it cannot read is an ERROR here."""
+    paths = [root / name for name in names]
+    if sources.path_instructions:
+        paths += sorted(walk_files(root, root / ".github/instructions", _is_path_instructions).paths)
+    findings: list[Finding] = []
+    for path in paths:
+        rel = path.relative_to(root).as_posix()
+        text = read_text_or_none(root, path)
+        if text is None:
+            if rel not in names:
+                findings.append(
+                    Finding("ERROR", "layering", rel, message="Could not read, so its length was not checked")
+                )
+            continue
+        lines = len(text.splitlines())
+        if lines > CODE_REVIEW_MAX_LINES:
+            findings.append(
+                Finding(
+                    "WARNING",
+                    "layering",
+                    rel,
+                    message=f"{lines} lines, over the about {CODE_REVIEW_MAX_LINES:,} lines GitHub advises for one "
+                    "instruction file Copilot code review reads; beyond it the quality of its reviews may deteriorate",
+                )
+            )
     return findings
 
 
@@ -2644,12 +2723,16 @@ class HookRules:
 
     runtime: str
     events: frozenset[str]
-    # The handler types the runtime runs, and the field each requires; None when its page gives no closed list.
-    types: dict[str, tuple[str, ...]] | None
+    # The handler types the runtime reads, and the fields each requires.
+    types: dict[str, tuple[str, ...]]
+    # The types among them it reads but never runs.
+    skipped_types: frozenset[str]
     # Events whose handlers default to a short timeout; every other handler without one runs up to DEFAULT_HOOK_TIMEOUT.
     short_timeout_events: frozenset[str]
     long_timeout_types: frozenset[str]
     on_failure: bool
+    # Events whose hooks guard the operation, which a hook run in the background, with async set, cannot block.
+    guard_events: frozenset[str]
 
 
 DEFAULT_HOOK_TIMEOUT = 600
@@ -2699,11 +2782,13 @@ CLAUDE_HOOKS = HookRules(
         "prompt": ("prompt",),
         "agent": ("prompt",),
     },
+    skipped_types=frozenset(),
     short_timeout_events=frozenset(
         {"UserPromptSubmit", "PreModelSwitch", "PostModelSwitch", "MessageDisplay", "SessionEnd"}
     ),
     long_timeout_types=frozenset({"command", "http", "mcp_tool"}),
     on_failure=True,
+    guard_events=frozenset(),
 )
 ON_FAILURE_VALUES = ("continue", "block")
 ON_FAILURE_TYPES = ("command", "http")
@@ -2746,7 +2831,8 @@ def _claude_permissions(permissions: Any) -> list[Finding]:
         return [finding("ERROR", "'permissions' must be an object")]
     findings: list[Finding] = []
     mode = permissions.get("defaultMode")
-    if mode is not None and mode not in CLAUDE_DEFAULT_MODES:
+    # A mode that is not text, such as a list, is no mode, and is never looked up by its value.
+    if mode is not None and (not isinstance(mode, str) or mode not in CLAUDE_DEFAULT_MODES):
         findings.append(finding("ERROR", f"permissions.defaultMode {mode!r} is not a mode Claude Code knows"))
     elif mode in PROJECT_INEFFECTIVE_MODES:
         findings.append(
@@ -2806,14 +2892,24 @@ def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[t
     if not isinstance(handler, dict):
         return [("ERROR", f"Hook on '{event}': each handler must be an object")]
     kind = handler.get("type")
-    if rules.types is not None and kind not in rules.types:
+    # A type that is not text, such as a list, is no type the runtime knows, and is never looked up by its value.
+    if not isinstance(kind, str) or kind not in rules.types:
         return [("ERROR", f"Hook on '{event}': type {kind!r} is not one {rules.runtime} runs")]
-    required = rules.types.get(str(kind), ()) if rules.types is not None else ("command",) if kind == "command" else ()
+    if kind in rules.skipped_types:
+        return [("ERROR", f"Hook on '{event}': {rules.runtime} reads a {kind} hook but skips it, so it never runs")]
     problems = [
         ("ERROR", f"Hook on '{event}': a {kind} hook needs '{name}'")
-        for name in required
+        for name in rules.types[kind]
         if not (isinstance(handler.get(name), str) and handler[name].strip())
     ]
+    if handler.get("async") is True and event in rules.guard_events:
+        problems.append(
+            (
+                "WARNING",
+                f"Hook on '{event}' runs in the background (async), so it cannot block or control the operation; "
+                "a guard must run synchronously",
+            )
+        )
     timeout = handler.get("timeout")
     if timeout is None:
         if kind in rules.long_timeout_types and event not in rules.short_timeout_events:
@@ -2864,7 +2960,7 @@ def _claude_memory(root: Path) -> list[Finding]:
     load with it."""
     findings: list[Finding] = []
     for rel in (*CLAUDE_MD_FILES, CLAUDE_LOCAL_MD):
-        text = read_text_or_none(root, root / rel)  # the inventory reports a CLAUDE.md it cannot read as an ERROR
+        text = read_text_or_none(root, root / rel)  # the inventory reports each one it cannot read as an ERROR
         if text is None:
             continue
         findings.extend(_length_finding(rel, text))
@@ -2966,10 +3062,15 @@ def _rule_scope(root: Path, path: Path, rel: str, text: str) -> list[Finding]:
 CODEX_HOOKS_FILE = ".codex/hooks.json"
 CODEX_AGENTS = ".codex/agents"
 CODEX_RULES = ".codex/rules"
+# The hooks page's events, and the two model-request events Codex 0.164.0 adds, which the page does not list yet; its
+# handler types, of which it parses prompt and agent but skips them; and the guards it says a background hook cannot
+# be: tool policies, permission decisions, prompt rejection, and turn continuation.
 CODEX_HOOKS = HookRules(
     runtime="Codex",
     events=frozenset(
         {
+            "PreModelRequest",
+            "PostModelRequest",
             "PreToolUse",
             "PermissionRequest",
             "PostToolUse",
@@ -2984,10 +3085,12 @@ CODEX_HOOKS = HookRules(
             "SessionEnd",
         }
     ),
-    types=None,
+    types={"command": ("command",), "mcp_tool": ("server", "tool"), "prompt": (), "agent": ()},
+    skipped_types=frozenset({"prompt", "agent"}),
     short_timeout_events=frozenset({"SessionEnd", "Interrupt"}),
-    long_timeout_types=frozenset({"command"}),
+    long_timeout_types=frozenset({"command", "mcp_tool"}),
     on_failure=False,
+    guard_events=frozenset({"PreToolUse", "PermissionRequest", "UserPromptSubmit", "Stop"}),
 )
 # The fields Codex's subagents page requires of a custom agent file, and the session settings it says such a file
 # cannot override.
@@ -3008,12 +3111,13 @@ def _codex_hooks(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     path = root / CODEX_HOOKS_FILE
     file_hooks = None
-    if path.is_file():
-        try:
-            data = json_reader.loads(read_text(root, path))
-        # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-        except (OSError, ValueError, RecursionError) as error:
-            return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message=f"Could not read or parse: {error}")]
+    try:
+        present = is_present(path)
+        data = json_reader.loads(read_text(root, path)) if present else None
+    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (OSError, ValueError, RecursionError) as error:
+        return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message=f"Could not read or parse: {error}")]
+    if present:
         if not isinstance(data, dict):
             return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message="Top-level value must be an object")]
         file_hooks = data.get("hooks")
