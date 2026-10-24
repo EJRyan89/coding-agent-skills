@@ -250,6 +250,36 @@ def test_an_installed_plugin_the_canary_cannot_place_in_the_home_is_refused_by_n
     assert sorted(item.name for item in tmp_path.iterdir()) == ["built", "home", "working"]
 
 
+def test_a_refused_install_path_gives_no_path_with_its_reason(tmp_path: Path) -> None:
+    outside = str(tmp_path / "elsewhere" / "runtime-canary")
+    assert canary.install_path(tmp_path, {}) == ("", "claude plugin list --json gives it no installPath")
+    assert canary.install_path(tmp_path, {"installPath": "cache/x"}) == (
+        "",
+        "claude plugin list --json gives it a relative installPath cache/x",
+    )
+    assert canary.install_path(tmp_path / "home", {"installPath": outside}) == (
+        "",
+        f"claude plugin list --json gives it an installPath outside the throwaway home {outside}",
+    )
+    placed = str(tmp_path / "cache" / "runtime-canary" / "0.0.0-dev")
+    assert canary.install_path(tmp_path, {"installPath": placed}) == (placed, "")
+
+
+def test_a_plugin_the_canary_cannot_place_leaves_the_later_plugins_checked(tmp_path: Path) -> None:
+    plugins = canary.build(tmp_path, [REPOSITORY_ROOT, FIXTURE_SOURCE])
+    entry = {"id": "coding-agent-skills@canary", "version": "0.0.0-dev"}
+    runner = FakeClaude(tmp_path, entries={"coding-agent-skills": entry})
+    runner.plugins = plugins
+    lines = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    refusal = quote("claude plugin list --json gives it no installPath")
+    assert f"INSTALL_FAILED claude coding-agent-skills {refusal}" in lines
+    assert "INSTALLED claude coding-agent-skills-dotnet 0.0.0-dev" in lines
+    assert "INSTALLED claude runtime-canary 0.0.0-dev" in lines
+    assert "DISCOVERED claude runtime-canary:runtime-canary-probe skill" in lines
+    paths = json.loads(lines[-1].removeprefix("PATHS "))
+    assert sorted(paths) == ["coding-agent-skills-dotnet", "runtime-canary"]
+
+
 def test_the_probe_runs_the_installed_copy_and_records_beside_it(tmp_path: Path) -> None:
     installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
     script = installed / "skills" / FIXTURE_SKILL / "scripts" / "canary_probe.py"
