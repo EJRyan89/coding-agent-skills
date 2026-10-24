@@ -10,7 +10,9 @@ the pull request that records the audit. Every entry of a newer release, prerele
 term this repository uses, and the terms are read from the code at each run, never typed here:
 
   flag         each flag a command line the repository starts passes, from the builders
-               tools/runtime_command_lines.py starts, matched in that runtime's changelog only
+               tools/runtime_command_lines.py starts, given the runtime version each changelog was read through, each
+               newer release it lists, and no version, so a flag the code passes only for some of them is one;
+               matched in that runtime's changelog only
   variable     each variable of the environment those builders start a command line in, and each environment
                variable a Python module under deployer/, tools/, or a skill's scripts reads or sets:
                a key of `os.environ`, of a mapping named `env`, `environ`, or `environment`, or of a dict literal that
@@ -22,9 +24,10 @@ term this repository uses, and the terms are read from the code at each run, nev
                each key of the Codex metadata it writes
 
 A flag, a path, and a variable or frontmatter key that holds a hyphen or an underscore match where the entry writes
-them as a whole word. A one-word frontmatter key matches only in a code span, and a one-word variable only in a code
-span or as `$NAME`, `${NAME}`, `$env:NAME`, or `%NAME%`, since a key such as `model` and a variable such as `OS` are
-also ordinary words.
+them as a whole word, as after a slash or a parenthesis, in a code span, or, for a flag, before `=` and its value,
+and never inside a longer flag, name, or path. A one-word frontmatter key matches only in a code span, and a one-word
+variable only in a code span or as `$NAME`, `${NAME}`, `$env:NAME`, or `%NAME%`, since a key such as `model` and a
+variable such as `OS` are also ordinary words.
 
 Each page of the guidance record is requested, which covers every page the audit-skill and audit-ai-config provenance
 files cite, since the audit-repository suite holds each of those to be in the record. Its text is never compared: a
@@ -160,11 +163,13 @@ class Term:
 # --- the terms ----------------------------------------------------------------------------------------------------
 
 
-def command_line_terms() -> list[Term]:
+def command_line_terms(versions: Mapping[str, Sequence[tuple[int, ...]]]) -> list[Term]:
     """Each flag of each command line runtime_command_lines.py builds, for the runtime it starts, and each variable
-    of the environment it starts the line in, which holds the signed-out folders and the proxy it sets. Where GitHub
-    CLI sits beside Node.js, that check cannot hide it and builds no signed-out environment, so the variables are the
-    ones the builders set alone."""
+    of the environment it starts the line in, which holds the signed-out folders and the proxy it sets. A builder
+    that reads the runtime's version is given each of `versions` for its changelog's subject, and no version, which it
+    takes to be the latest, so a flag the code passes only before or after a release a changelog lists is a term.
+    Where GitHub CLI sits beside Node.js, that check cannot hide it and builds no signed-out environment, so the
+    variables are the ones the builders set alone."""
     terms: list[Term] = []
     with tempfile.TemporaryDirectory(prefix="runtime-changelogs-") as directory:
         for runtime, subject in DECLARED_RUNTIME.items():
@@ -173,7 +178,13 @@ def command_line_terms() -> list[Term]:
                 environment = runtime_command_lines.signed_out(root / "home", runtime)
             except runtime_command_lines.Unsafe:
                 environment = {}
-            lines = runtime_command_lines.command_lines(runtime, runtime, root, environment, None)
+            lines = [
+                line
+                for index, version in enumerate([None, *versions.get(subject, ())])
+                for line in runtime_command_lines.command_lines(
+                    runtime, runtime, root / str(index), environment, version
+                )
+            ]
             flags = dict.fromkeys(flag for line in lines for flag in line.flags)
             variables = dict.fromkeys(
                 name for line in lines for name in line.environment if VARIABLE_NAME.fullmatch(name)
@@ -300,9 +311,14 @@ def frontmatter_terms(top: Path) -> list[Term]:
     return [Term("frontmatter", key) for key in sorted(keys)]
 
 
-def terms(top: Path) -> list[Term]:
-    """Every term, each once, in KINDS order."""
-    found = [*command_line_terms(), *variable_terms(top), *path_terms(top), *frontmatter_terms(top)]
+def terms(top: Path, versions: Mapping[str, Sequence[tuple[int, ...]]] | None = None) -> list[Term]:
+    """Every term, each once, in KINDS order, the flags built at `versions`, each subject's runtime versions."""
+    found = [
+        *command_line_terms(versions or {}),
+        *variable_terms(top),
+        *path_terms(top),
+        *frontmatter_terms(top),
+    ]
     unique = list(dict.fromkeys(found))
     return sorted(unique, key=lambda term: KINDS.index(term.kind))
 
@@ -410,6 +426,11 @@ def changelog_releases(changelog: Changelog, fetcher: Fetcher, timeout: float) -
     )
 
 
+def versions_read(changelog: Changelog, releases: Sequence[Release]) -> list[tuple[int, ...]]:
+    """The runtime versions a run reads `changelog` across: the one it was read through and each newer release."""
+    return [release_number(changelog.read_through), *(release.release for release in releases)]
+
+
 def matching(entry: str, subject: str, watched: Sequence[Term]) -> list[str]:
     """The terms `entry` mentions, among those watched in `subject`'s changelog."""
     found = [term.text for term in watched if term.subject in (None, subject) and term.pattern.search(entry)]
@@ -469,10 +490,12 @@ def read_record(top: Path) -> GuidanceRecord:
 def watch(top: Path, fetcher: Fetcher, timeout: float, watched: Sequence[Term] | None = None) -> list[str]:
     """Every line of a run over the checkout at `top`, or WatchError."""
     record = read_record(top)
-    watched = terms(top) if watched is None else watched
+    read = [(changelog, changelog_releases(changelog, fetcher, timeout)) for changelog in record.changelogs]
+    if watched is None:
+        watched = terms(top, {changelog.subject: versions_read(changelog, releases) for changelog, releases in read})
     lines = [f"TERMS {kind} {sum(1 for term in watched if term.kind == kind)}" for kind in KINDS]
-    for changelog in record.changelogs:
-        lines += changelog_lines(changelog, changelog_releases(changelog, fetcher, timeout), watched)
+    for changelog, releases in read:
+        lines += changelog_lines(changelog, releases, watched)
     return lines + page_lines([page.url for page in record.pages], fetcher, timeout)
 
 
