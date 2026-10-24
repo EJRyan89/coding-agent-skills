@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import re
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,8 @@ from unittest import mock
 
 from harness import SOURCE_ID, DeployerTestCase, Result, git
 
-from deployer import fsops, manifest, platform_support, source_commit
+from deployer import fsops, manifest, platform_support, source, source_commit
+from deployer.context import Context, Options
 from deployer.errors import DeployError
 
 FULL_SHA1 = re.compile(r"^[0-9a-f]{40}$")
@@ -106,6 +108,10 @@ class SourceCommitTests(DeployerTestCase):
         self.assertNotIn(mock.call("git"), find_executable.call_args_list)
         self.assertNotIn("source_commit", self.manifest()["sources"][SOURCE_ID])
 
+    def cannot(self, reason: str) -> str:
+        """The first line of the refusal of a checkout whose commit git cannot name, for this reason."""
+        return f"ERROR: Cannot read the commit checked out in {platform_support.normalize(self.source)}: {reason}"
+
     def refuses_keeping_the_recorded_commit(self, run_tool: Any = None, find_executable: Any = None) -> str:
         """Deploy once, then redeploy and dry-run with git patched; each refuses, the home kept byte for byte.
 
@@ -141,8 +147,11 @@ class SourceCommitTests(DeployerTestCase):
         output = self.refuses_keeping_the_recorded_commit(
             find_executable=lambda name: None if name == "git" else real(name)
         )
-        self.assertIn("Git was not found.", output)
-        self.assertIn('Install it as "Installing the tools" in docs/installation.md says, then retry.', output)
+        self.assert_lines(
+            output,
+            self.cannot("Git was not found."),
+            'Install it as "Installing the tools" in docs/installation.md says, then retry.',
+        )
 
     def test_a_failing_git_refuses_the_redeployment_with_its_reason_and_keeps_the_recorded_commit(self) -> None:
         real = platform_support.run_tool
@@ -153,8 +162,11 @@ class SourceCommitTests(DeployerTestCase):
             return real(arguments, environment)
 
         output = self.refuses_keeping_the_recorded_commit(run_tool=run_tool)
-        self.assertIn(": fatal: detected dubious ownership in the checkout\n", output)
-        self.assertIn("Put right what Git reports in the checkout, then retry.", output)
+        self.assert_lines(
+            output,
+            self.cannot("fatal: detected dubious ownership in the checkout"),
+            "Put right what Git reports in the checkout, then retry.",
+        )
 
     def test_a_git_that_cannot_start_refuses_the_redeployment_and_keeps_the_recorded_commit(self) -> None:
         real = platform_support.run_tool
@@ -165,7 +177,7 @@ class SourceCommitTests(DeployerTestCase):
             return real(arguments, environment)
 
         output = self.refuses_keeping_the_recorded_commit(run_tool=run_tool)
-        self.assertIn(": Access is denied\n", output)
+        self.assert_lines(output, self.cannot("Access is denied"), "Check that Git runs, then retry.")
 
     def test_a_git_that_names_no_commit_or_exits_with_nothing_said_refuses(self) -> None:
         for result, reason in (
@@ -181,6 +193,12 @@ class SourceCommitTests(DeployerTestCase):
                 with self.assertRaises(DeployError) as raised:
                     source_commit.head_commit(self.source)
                 self.assertIn(reason, raised.exception.lines[0] + "\n")
+
+    def test_a_runs_context_holds_no_commit_until_the_deployment_reads_one(self) -> None:
+        data = manifest.load(self.manifest_file)
+        src = source.discover(self.paths, SOURCE_ID)
+        context = Context(self.paths, Options(), src, {}, data, data.ownership(SOURCE_ID), io.StringIO())
+        self.assertIsNone(context.commit)
 
     def test_the_head_commit_is_read_past_a_warning_git_prints_beside_it(self) -> None:
         head = self.make_repository()

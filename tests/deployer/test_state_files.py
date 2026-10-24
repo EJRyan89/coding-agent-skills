@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 import re
 
-from harness import SOURCE_ID, DeployerTestCase
+from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line
 
 from deployer import discovery, platform_support, render, state_files
-from deployer.errors import STATE_FILE, DeployError, see_recovery
+from deployer.errors import DeployError
 
 # An integer past the digit limit, which json.loads raises ValueError for, and lists nested past the recursion limit,
 # which it raises RecursionError for.
@@ -22,6 +22,13 @@ UNREADABLE = {
     "nesting": "[" * 100000 + "]" * 100000,
 }
 RUN_ID = "20260101-000000-bad1"
+# Each refusal's remedy, written out here rather than read from the deployer, so a changed remedy fails a test.
+STATE_FILE_SECTION = 'See "A state file that does not read" in docs/recovery.md.'
+MANIFEST_REMEDY = (
+    "Put back a copy you trust, or move it out of the skills folder and rerun with --dry-run.",
+    STATE_FILE_SECTION,
+)
+CONFIGURATION_REMEDY = ("Move it aside, then run 'python deploy.py configure'.", STATE_FILE_SECTION)
 
 
 def shown(path: object) -> str:
@@ -65,7 +72,7 @@ class StateFileTests(DeployerTestCase):
                 self.write(self.manifest_file, text)
                 for arguments in (("--all",), ("--all", "--dry-run")):
                     result = self.deploy_fails(*arguments, pattern=re.escape("ERROR: Manifest is malformed: "))
-                    self.assertIn(see_recovery(STATE_FILE), result.output)
+                    self.assert_lines(result.output, *MANIFEST_REMEDY)
                     self.assertNotIn("FAILED", result.output)
                 checked = self.run_cli("check")
                 self.assertIn("ERROR: Manifest is malformed: ", checked.output)
@@ -78,7 +85,7 @@ class StateFileTests(DeployerTestCase):
                 result = self.deploy_fails(*arguments, pattern=refusal)
                 self.assertNotIn("FRESH INSTALL", result.output)
                 self.assertNotIn("INSTALLED", result.output)
-                self.assertIn(see_recovery(STATE_FILE), result.output)
+                self.assert_lines(result.output, *MANIFEST_REMEDY)
 
     def test_a_directory_in_place_of_the_configuration_is_refused_by_deployment_and_configure(self) -> None:
         config_file = self.config_file()
@@ -87,12 +94,13 @@ class StateFileTests(DeployerTestCase):
         refusal = f"ERROR: The configuration at {shown(config_file)} is not a file."
         result = self.deploy_fails("--all", "--dry-run", pattern=refusal)
         self.assertNotIn("No config found", result.output)
-        self.assertIn(see_recovery(STATE_FILE), result.output)
+        self.assert_lines(result.output, *CONFIGURATION_REMEDY)
         for arguments in ((), ("--reset",)):
             with self.subTest(arguments=arguments):
                 configured = self.configure(*arguments, stdin=f"{self.repos}\n")
                 self.assertEqual(1, configured.code, configured.output)
                 self.assertRegex(configured.output, refusal)
+                self.assert_lines(configured.output, *CONFIGURATION_REMEDY)
                 self.assertNotIn("REPOS_ROOT", configured.output)
 
     def test_a_journal_line_the_deployer_cannot_read_stops_recovery_and_keeps_the_run(self) -> None:
@@ -113,10 +121,38 @@ class StateFileTests(DeployerTestCase):
         (run / "journal.jsonl").mkdir()
         kept = run / "alpha"
         self.write(kept / "SKILL.md", "What the run moved aside")
-        result = self.deploy_fails("--all", pattern=re.escape(f"ERROR: Run {RUN_ID}'s journal is not a file."))
-        self.assertIn(f"Retaining {platform_support.normalize(run)} for manual inspection.", result.output)
-        self.assertTrue((kept / "SKILL.md").is_file())
+        shown_run = platform_support.normalize(run)
+        cleanup = (
+            f"  When no .deploying-bak remains, delete {shown_run} and rerun with --dry-run. "
+            'See "When recovery fails" in docs/recovery.md.'
+        )
+        for committed, state in (
+            (False, "was not committed to the manifest, so put back the copies it replaced."),
+            (True, "was committed to the manifest, so keep the copies it installed."),
+        ):
+            with self.subTest(committed=committed):
+                if committed:
+                    data = self.manifest()
+                    data["last_run_id"] = RUN_ID
+                    self.write_manifest(data)
+                result = self.deploy_fails("--all", pattern=re.escape(f"ERROR: Run {RUN_ID}'s journal is not a file."))
+                self.assert_lines(
+                    result.stderr,
+                    f"  ERROR: Run {RUN_ID}'s journal is not a file. Retaining {shown_run} for manual inspection.",
+                    f"  Run {RUN_ID} {state} A replaced copy sits beside its item as <name>.deploying-bak; a retained "
+                    f"backup is under .backups/{RUN_ID}/ in the same root.",
+                    cleanup,
+                )
+                self.assertTrue((kept / "SKILL.md").is_file())
         self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: Run {RUN_ID} cannot be recovered")
+
+    def test_a_dry_run_lists_every_run_after_one_whose_journal_is_not_a_file(self) -> None:
+        self.deploy_ok("--all")
+        (self.staging_run(RUN_ID) / "journal.jsonl").mkdir()
+        later = "20260101-000000-bad2"
+        self.write(self.staging_run(later) / "journal.jsonl", journal_line(install_entry("alpha", ZERO_HASH)))
+        result = self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: Run {RUN_ID} cannot be recovered")
+        self.assert_lines(result.output, f"Pending recovery: the next deployment will recover run {later}.")
 
     def test_lock_metadata_the_deployer_cannot_read_is_refused_with_the_step_to_take(self) -> None:
         self.deploy_ok("--all")
