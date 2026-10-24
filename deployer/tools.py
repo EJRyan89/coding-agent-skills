@@ -230,7 +230,13 @@ def probe(tool: Tool) -> Probe:
     if path is None or not tool.version_arguments:
         return Probe(tool, path, None)
     result = platform_support.run_tool([path, *tool.version_arguments])
-    return Probe(tool, path, parse_version(result.output) if result.returncode == 0 else None)
+    version = parse_version(result.output) if result.returncode == 0 else None
+    if version is None and tool.minimum:
+        # A version that cannot be read is no evidence the floor is met, so the probe refuses it as pdf_tool's does.
+        found = f"failed with exit status {result.returncode}" if result.returncode != 0 else "printed no version"
+        refusal = f"version probe {found}; needs {format_version(tool.minimum)} or newer"
+        return Probe(tool, path, None, refusal=refusal)
+    return Probe(tool, path, version)
 
 
 def _provider_probe(tool: Tool) -> Probe:
