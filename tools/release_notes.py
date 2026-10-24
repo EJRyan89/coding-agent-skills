@@ -206,9 +206,14 @@ def added_unreleased_entries(root: Path, sha: str) -> list[NotesEntry]:
     return [entry for entry in unreleased_entries(_notes_at(root, sha)) if entry.text not in before]
 
 
+def notes_commits(root: Path, start: str, end: str) -> set[str]:
+    """The commits reachable from end and not from start that change the notes file, merge commits left out."""
+    return set(git_output(root, "log", "--no-merges", "--format=%H", f"{start}..{end}", "--", UPGRADE_NOTES).split())
+
+
 def range_entries(root: Path, start: str, end: str) -> list[SourcedEntry]:
     """Every entry the commits between two refs carry, newest first, each heading once."""
-    touched = set(git_output(root, "log", "--no-merges", "--format=%H", f"{start}..{end}", "--", UPGRADE_NOTES).split())
+    touched = notes_commits(root, start, end)
     found: list[SourcedEntry] = []
     seen: set[str] = set()
     for commit in commits(root, start, end):

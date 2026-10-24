@@ -176,6 +176,23 @@ class RangeEntriesTests(FixtureRepository):
             entries = release_notes.range_entries(self.root, "v0.1.0", "HEAD")
         self.assertEqual(["#5", "#3"], [item.pull_request for item in entries])
 
+    def test_the_commits_touching_the_notes_are_the_ranges_non_merge_commits_that_change_the_file(self) -> None:
+        # Before the range: a commit changing the notes. In it: one changing the notes, one changing another file,
+        # and a merge whose side changes another part of the notes, so the merge changes the file against both parents.
+        notes = f"{INTRO}\n## Unreleased\n\n{HAND_ENTRY}\n{RELEASED}"
+        self.commit("Before the range (#2)", notes=notes)
+        start = self.git("rev-parse", "HEAD").strip()
+        self.commit("Edit the notes (#3)", notes=notes.replace("What each release", "What every release"))
+        edited = self.git("rev-parse", "HEAD").strip()
+        self.commit("Change a file (#4)", change="other")
+        self.git("checkout", "-q", "-b", "side", start)
+        side_notes = notes.replace("- Pull request: #1", "- Pull request: #1, #9")
+        self.commit("Edit the notes on a side (#5)", notes=side_notes, change="side")
+        side = self.git("rev-parse", "HEAD").strip()
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "-m", "Merge side", "side")
+        self.assertEqual({edited, side}, release_notes.notes_commits(self.root, start, "HEAD"))
+
     def test_a_message_holding_any_byte_but_nul_is_read_whole(self) -> None:
         # The separators an earlier reader split on, and text that looks like the next commit's name, sit in the
         # subject and the body; git refuses a NUL, the one byte the listing splits on.
