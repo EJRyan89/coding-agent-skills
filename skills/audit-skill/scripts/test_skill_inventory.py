@@ -2648,3 +2648,28 @@ class SourcePluginTests(SourceTreeTestCase):
         lines = self.plugins(skill)
         self.assertEqual(1, len(lines), lines)
         self.assertTrue(lines[0].startswith("PLUGINS_UNREADABLE ") and "names no source ID" in lines[0], lines)
+
+
+class JsonFileDecodingTests(TemporaryTestCase):
+    """Each JSON file the inventory reads decodes as UTF-8 on every platform, whatever the locale's codec."""
+
+    def write_json(self, path: Path, value: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+    def test_metadata_reads_its_non_ascii_text(self) -> None:
+        self.write_json(self.root / "deploy-meta" / "example.json", {"about": "café"})
+        self.assertEqual({"about": "café"}, skill_inventory.read_metadata(self.root, "example"))
+
+    def test_a_plugin_manifest_beside_non_ascii_text_names_its_plugin(self) -> None:
+        self.write_json(self.root / ".claude-plugin" / "plugin.json", {"description": "café", "name": "example"})
+        self.assertEqual("example", skill_inventory.manifest_name(self.root))
+
+    def test_a_trigger_scenario_with_non_ascii_requests_is_counted(self) -> None:
+        self.write_json(self.root / "deploy-meta" / "example.json", {})
+        scenario = self.root / skill_inventory.TRIGGER_SCENARIOS / "example" / "description" / "scenario.json"
+        self.write_json(scenario, {"mode": "trigger", "requests": ["café"], "near_misses": []})
+        self.assertEqual(
+            [f"TRIGGER_SCENARIO {scenario.as_posix()} 1 0"],
+            skill_inventory.trigger_scenario_lines(self.root / "skills" / "example", "model"),
+        )

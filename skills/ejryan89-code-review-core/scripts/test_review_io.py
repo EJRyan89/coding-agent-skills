@@ -57,6 +57,29 @@ class ReadJsonTests(unittest.TestCase):
                 self.assertEqual(value, read_json(self.path))
 
 
+class LockOwnerSizeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name) / "lock"
+        self.directory.mkdir()
+
+    def inspect(self, size: int) -> review_io.LockIdentity:
+        owner = b'{"token": "holder"}'
+        (self.directory / "owner.json").write_bytes(owner + b" " * (size - len(owner)))
+        found = review_io.ResourceLock._inspect(self.directory)
+        assert found is not None
+        return found[0]
+
+    def test_an_owner_file_of_exactly_the_maximum_names_its_holder(self) -> None:
+        self.assertEqual("holder", self.inspect(review_io.OWNER_MAXIMUM_BYTES).token)
+
+    def test_an_owner_file_past_the_maximum_is_read_as_torn(self) -> None:
+        identity = self.inspect(review_io.OWNER_MAXIMUM_BYTES + 1)
+        self.assertIsNone(identity.token)
+        self.assertTrue(identity.torn)
+
+
 class ParallelCallTests(unittest.TestCase):
     def test_results_keep_item_order_and_at_most_four_run_at_once(self) -> None:
         active = peak = 0

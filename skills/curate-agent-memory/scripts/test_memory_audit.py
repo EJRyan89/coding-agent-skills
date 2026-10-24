@@ -1981,3 +1981,28 @@ def test_hooks_use_shared_flattening_before_exact_character_and_word_cutoffs(
     with mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten:
         assert expected == memory_audit.one_line(text, limit)
     flatten.assert_called_once_with(text)
+
+
+class JsonFileDecodingTests(unittest.TestCase):
+    """Each JSON file reads as UTF-8 on every platform, whatever the locale's codec."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_settings_after_a_byte_order_mark_read_their_non_ascii_text(self) -> None:
+        path = self.root / "settings.json"
+        text = json.dumps({"autoMemoryDirectory": "café"}, ensure_ascii=False)
+        path.write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
+        self.assertEqual({"autoMemoryDirectory": "café"}, memory_audit.read_settings(path))
+
+    def test_a_manifest_source_dir_reads_its_non_ascii_text(self) -> None:
+        manifest = self.root / ".claude" / "skills" / memory_audit.MANIFEST_NAME
+        manifest.parent.mkdir(parents=True)
+        source = {"source_dir": "/café", "skills": {"example": {}}}
+        manifest.write_bytes(json.dumps({"sources": {"one": source}}, ensure_ascii=False).encode("utf-8"))
+        self.assertEqual(
+            [Path("/café") / "skills" / "example" / "SKILL.md"],
+            memory_audit.manifest_skill_files(self.root, "example"),
+        )
