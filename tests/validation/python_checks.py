@@ -6,13 +6,17 @@ module calls is declared, and no process runner's result is discarded unchecked.
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
+import hashlib
 import io
 import os
 import re
+import tempfile
 import tokenize
 import tomllib
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +46,10 @@ from validation_support import (
 
 from deployer import platform_support
 
+# The folder each type check keeps mypy's cache under, in a folder of its own, so no two mypy processes of a run share
+# one. CI names a folder actions/cache restores between runs, so mypy reparses no standard-library stubs; unset, each
+# check caches in a temporary folder removed when it ends, so a run writes nothing into the tree.
+MYPY_CACHE_VARIABLE = "VALIDATION_MYPY_CACHE"
 # Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded, since
 # pyproject.toml empties ruff's default exclusions.
 FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py", "conftest.py")
@@ -814,15 +822,39 @@ def mypy_type_check(cwd: Path, targets: list[str], configuration: Path, *, stric
     mypy = find_mypy()
     if mypy is None:
         raise AssertionError(f"mypy was not found: {platform_support.install_hint('mypy')}")
-    # The null device as the cache directory keeps mypy from writing a cache into the tree.
-    command = [mypy, "--config-file", str(configuration), "--cache-dir", os.devnull, *(["--strict"] if strict else [])]
-    try:
-        run_process([*command, *targets], cwd=cwd)
-    except AssertionError as exc:
-        raise AssertionError(
-            f"{exc}\nFix each error named above; a `# type: ignore[<code>]` that must stay states its reason in a "
-            "comment after it."
-        ) from exc
+    with contextlib.ExitStack() as stack:
+        root = mypy_cache_root(os.environ)
+        if root is None:
+            cache = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="mypy-cache-")))
+        else:
+            cache = mypy_cache_directory(root, cwd, targets, strict=strict)
+        command = [mypy, "--config-file", str(configuration), "--cache-dir", str(cache)]
+        try:
+            run_process([*command, *(["--strict"] if strict else []), *targets], cwd=cwd)
+        except AssertionError as exc:
+            raise AssertionError(
+                f"{exc}\nFix each error named above; a `# type: ignore[<code>]` that must stay states its reason in a "
+                "comment after it."
+            ) from exc
+
+
+def mypy_cache_root(environment: Mapping[str, str]) -> Path | None:
+    """The folder MYPY_CACHE_VARIABLE names in `environment`, or None when it is unset or empty. Raises AssertionError,
+    naming the variable, for a relative path, which each check would read from its own working folder."""
+    value = environment.get(MYPY_CACHE_VARIABLE, "")
+    if not value:
+        return None
+    if not Path(value).is_absolute():
+        raise AssertionError(f"{MYPY_CACHE_VARIABLE} must be an absolute path, not {value!r}")
+    return Path(value)
+
+
+def mypy_cache_directory(root: Path, cwd: Path, targets: list[str], *, strict: bool) -> Path:
+    """The cache folder under `root` of the type check run from `cwd` on `targets`: one per check, since each check
+    differs in one of them, and the same at every run, so a restored cache is found again."""
+    place = cwd.relative_to(REPOSITORY_ROOT).as_posix() if cwd.is_relative_to(REPOSITORY_ROOT) else cwd.as_posix()
+    check = "\0".join([place, *targets, "strict" if strict else "default"])
+    return root / hashlib.sha256(check.encode("utf-8")).hexdigest()[:16]
 
 
 def type_check_skill_roots(root: Path = REPOSITORY_ROOT) -> list[Path]:
