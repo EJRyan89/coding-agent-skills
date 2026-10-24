@@ -322,6 +322,16 @@ def run_git_bash(command: str) -> None:
     )
 
 
+def run_bash_suite(target: str) -> None:
+    """Start a Bash suite as Git Bash's own program, from the repository root, with no shell above it.
+
+    Windows ends a Git Bash process on a CI runner now and then with 0x80000004, and a Bash above the suite's reads that
+    end as exit 0 or reports only its low byte, 4, so the runner would see a pass or an unnamed exit. Started directly,
+    the suite's own status reaches the runner, which names a termination as one.
+    """
+    run_process([find_git_bash(), target])
+
+
 def shell_script_targets(root: Path) -> list[Path]:
     """Every Bash script under skills/, and under each repository skill's scripts/."""
     scripts = [path for path in (root / "skills").rglob("*") if path.is_file() and is_shell_script(path)]
