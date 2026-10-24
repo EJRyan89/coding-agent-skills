@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import git_client
+import git_worktrees
 import skill_scripts
 from worktree_fixture import (
     GUARD_SCRIPT,
@@ -221,6 +222,40 @@ class CheckoutTests(WorktreesTestCase):
         with self.assertRaises(git_client.GitError) as raised:
             worktrees.checkout_of(self.tree)
         self.assertIn(f"git could not read the checkout at {self.tree}", str(raised.exception))
+
+
+class CheckoutFailureTests(unittest.TestCase):
+    def test_a_checkout_git_fails_on_names_git_s_message_or_its_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = Path(folder) / "checkout"
+            (checkout / ".git").mkdir(parents=True)
+            for stderr, said in (("fatal: one\n  two\n", "fatal: one two"), ("", "git rev-parse exited with 128")):
+                with (
+                    self.subTest(stderr=stderr),
+                    mock.patch.object(worktrees, "git", return_value=git_client.GitResult(128, "", stderr)),
+                    self.assertRaises(git_client.GitError) as raised,
+                ):
+                    worktrees.checkout_of(checkout)
+                self.assertEqual(f"git could not read the checkout at {checkout}: {said}", str(raised.exception))
+                self.assertEqual(128, raised.exception.returncode)
+
+    def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            hub, tree = Path(folder) / "hub", Path(folder) / "tree"
+            tree.mkdir()
+            calls: list[tuple[Path, tuple[str, ...], float | None]] = []
+
+            def git(cwd: Path, *arguments: str, timeout: float | None = 10.0) -> git_client.GitResult:
+                calls.append((cwd, arguments, timeout))
+                return git_client.GitResult(0, "2\t3\n", "")
+
+            with (
+                mock.patch.object(worktrees, "git", git),
+                mock.patch.object(git_worktrees, "changed_paths", return_value=0),
+            ):
+                row = worktrees.row(hub, git_worktrees.Worktree(str(tree), "abc", "feat/x", False))
+        self.assertEqual([(hub, ("rev-list", "--left-right", "--count", "main...abc"), None)], calls)
+        self.assertEqual(("in progress", "3", "2"), (row.state, row.ahead, row.behind))
 
 
 class GitProgramTests(unittest.TestCase):

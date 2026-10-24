@@ -213,7 +213,8 @@ POWERSHELL_VALUE_PARAMETERS = (
     ("of", "of"),
     ("settingsfile", "settings"),
     ("windowstyle", "w"),
-    ("workingdirectory", "wd"),
+    ("workingdirectory", "wo"),
+    ("wd", "wd"),
 )
 # How deep bash -c, pwsh -Command, eval, a function call, and Invoke-Expression are followed; the PowerShell reader is
 # handed what is left of it. Deeper nesting is a command the guard cannot read.

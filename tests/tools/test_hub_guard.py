@@ -1979,6 +1979,78 @@ class ContractTests(GuardTestCase):
         self.assertIsNone(self.bash("echo 'unterminated", self.tree))
 
 
+class StandardInputTests(unittest.TestCase):
+    """The pwsh and bash forms that read a script from standard input, judged without starting either program."""
+
+    def test_pwsh_reads_its_input_only_without_an_inline_command_a_file_or_an_encoded_command(self) -> None:
+        for arguments, expected in (
+            ([], True),
+            (["-NoProfile", "-NonInteractive"], True),
+            (["-Command", "-"], True),
+            (["-c", "Get-Date"], False),
+            (["-File", "-"], True),
+            (["-fi", "-"], True),
+            # A file named like a switch is still a file, under any spelling of -File.
+            (["-File", "-NoProfile"], False),
+            (["-FILE", "-NoProfile"], False),
+            (["-f", "-NoProfile"], False),
+            (["-cwa", "Get-Date"], False),
+            (["-EncodedCommand"], False),
+            (["-ENCODEDCOMMAND"], False),
+            (["-ec"], False),
+            (["-EC"], False),
+            (["-e"], False),
+            (["-enc"], False),
+            (["build.ps1"], False),
+            (["-ExecutionPolicy", "Bypass"], True),
+            (["-ex", "Bypass", "build.ps1"], False),
+            ([None], True),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(expected, hub_guard.powershell_reads_input(list(arguments)))
+
+    def test_pwsh_parameters_that_take_a_value_by_name_shortest_form_and_alias(self) -> None:
+        for word, expected in (
+            ("-ConfigurationFile", True),
+            ("-ConfigurationName", True),
+            ("-config", True),
+            ("-conf", False),
+            ("-CustomPipeName", True),
+            ("-custom", False),
+            ("-ExecutionPolicy", True),
+            ("-ex", True),
+            ("-ep", True),
+            ("-InputFormat", True),
+            ("-inp", True),
+            ("-if", True),
+            ("-in", False),
+            ("-OutputFormat", True),
+            ("-o", True),
+            ("-of", True),
+            ("-SettingsFile", True),
+            ("-settings", True),
+            ("-set", False),
+            ("-WindowStyle", True),
+            ("-w", True),
+            ("-WorkingDirectory", True),
+            ("-wd", True),
+            ("-NoProfile", False),
+        ):
+            with self.subTest(word=word):
+                self.assertEqual(expected, hub_guard.powershell_takes_value(word))
+
+    def test_a_computed_path_may_name_a_tracked_variable_unless_its_last_part_is_literal(self) -> None:
+        for word, expected in (
+            ({"text": "", "dynamic": True, "variable": "p"}, True),
+            ({"text": "$d\\out.txt", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, False),
+            ({"text": "$d/GIT_DIR", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, True),
+            ({"text": "env:$n", "dynamic": True, "expansions": [{"token": "$n", "variable": "n"}]}, True),
+            ({"text": "$d\\GIT_*", "dynamic": True, "expansions": [{"token": "$d", "variable": "d"}]}, True),
+        ):
+            with self.subTest(word=word["text"]):
+                self.assertEqual(expected, hub_guard.may_name_tracked(word))
+
+
 class ContractListTests(unittest.TestCase):
     """Each list of names the guard's section of docs/parallel-sessions.md gives is the set tools/hub_guard.py reads."""
 
