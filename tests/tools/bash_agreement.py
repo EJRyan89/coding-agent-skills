@@ -12,7 +12,6 @@ import sys
 import tempfile
 import threading
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -30,26 +29,60 @@ VERDICTS_LOCK = threading.Lock()
 WORKSPACE = tempfile.TemporaryDirectory(prefix="bash-agreement.")
 NAMES = itertools.count()
 
+# One Bash reads every unchecked text, since a start costs far more than a reading: each text in a subshell that turns
+# on `set -n`, read but do not run, before `eval` parses the text, so the subshell's status is the one `bash -n` gives
+# that text as a file. tests/tools/test_bash_syntax.py holds the two to the same verdicts.
+READ_EACH = r"""for ((index = 0; index < $2; index++)); do
+  file="$1/$index.sh"
+  IFS= read -r -d '' text < "$file"
+  ( eval $'set -n\n'"$text" ) 2> "$file.said"
+  printf 'status %s\n' "$?"
+done"""
 
-def _bash_verdict(bash: str, text: str) -> tuple[bool, str]:
+
+def find_bash() -> str:
+    bash = platform_support.find_bash()
+    if bash is None:
+        raise AssertionError(f"{platform_support.BASH_MISSING} Bash checks the Bash reader's verdicts")
+    return bash
+
+
+def bash_n_verdict(text: str) -> tuple[bool, str]:
+    """Whether `bash -n` reads text as a file, with what it printed: one Bash start for one text."""
     with VERDICTS_LOCK:
         path = Path(WORKSPACE.name) / f"{next(NAMES)}.sh"
     path.write_bytes(text.encode("utf-8"))
-    result = platform_support.run_tool([bash, "-n", platform_support.normalize(path)])
+    result = platform_support.run_tool([find_bash(), "-n", platform_support.normalize(path)])
     return result.returncode == 0, result.output.strip()
 
 
+def _read_each(texts: list[str]) -> list[tuple[bool, str]]:
+    with VERDICTS_LOCK:
+        folder = Path(WORKSPACE.name) / f"batch-{next(NAMES)}"
+    folder.mkdir()
+    for index, text in enumerate(texts):
+        (folder / f"{index}.sh").write_bytes(text.encode("utf-8"))
+    result = platform_support.run_tool(
+        [find_bash(), "-c", READ_EACH, "read-each", platform_support.normalize(folder), str(len(texts))]
+    )
+    statuses = [line.split()[1] for line in result.output.splitlines() if line.startswith("status ")]
+    if result.returncode != 0 or len(statuses) != len(texts):
+        raise AssertionError(f"Bash did not read each of {len(texts)} texts: {result.output.strip()}")
+    return [
+        (status == "0", (folder / f"{index}.sh.said").read_text(encoding="utf-8", errors="replace").strip())
+        for index, status in enumerate(statuses)
+    ]
+
+
 def bash_verdicts(texts: Iterable[str]) -> dict[str, tuple[bool, str]]:
-    """Whether `bash -n` reads each text, with what it printed; Bash missing fails, as it is a prerequisite."""
+    """Whether Bash reads each text, with what it printed, from one Bash start for the texts not yet checked; Bash
+    missing fails, as it is a prerequisite."""
     wanted = list(dict.fromkeys(texts))
     with VERDICTS_LOCK:
         unchecked = [text for text in wanted if text not in VERDICTS]
     if unchecked:
-        bash = platform_support.find_bash()
-        if bash is None:
-            raise AssertionError(f"{platform_support.BASH_MISSING} Bash checks the Bash reader's verdicts")
-        with ThreadPoolExecutor(max_workers=min(8, len(unchecked))) as pool:
-            found = list(pool.map(lambda text: _bash_verdict(bash, text), unchecked))
+        # A subshell for each text costs more than the start it saves when there is only one.
+        found = [bash_n_verdict(unchecked[0])] if len(unchecked) == 1 else _read_each(unchecked)
         with VERDICTS_LOCK:
             VERDICTS.update(zip(unchecked, found, strict=True))
     with VERDICTS_LOCK:
