@@ -51,6 +51,7 @@ from check_provenance import Source
 from console import run_main
 from folder_walk import LINKED, SKIPPED_FOLDERS
 from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
+from frontmatter import split as split_frontmatter
 from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
 
@@ -1060,8 +1061,9 @@ def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
 
 def _claude_skill_rules(root: Path, path: Path, rel: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
     """A skill that reads $ARGUMENTS without the argument-hint Claude Code shows during autocomplete."""
-    body = read_text_or_none(root, path)  # _validate_skill reports a skill it cannot read
-    if body is None or "$ARGUMENTS" not in body.split("---", 2)[-1] or _text(values, "argument-hint").strip():
+    text = read_text_or_none(root, path)  # _validate_skill reports a skill it cannot read
+    reads_arguments = text is not None and any("$ARGUMENTS" in line for line in _skill_body(text))
+    if not reads_arguments or _text(values, "argument-hint").strip():
         return []
     return [
         Finding(
@@ -1072,6 +1074,17 @@ def _claude_skill_rules(root: Path, path: Path, rel: str, values: dict[str, Fron
             "expected arguments",
         )
     ]
+
+
+def _skill_body(text: str) -> list[str]:
+    """The lines after a skill's frontmatter, as ejryan89-skill-core's reader finds where it closes: all of them when
+    there is no frontmatter, and none when the frontmatter never closes, which _validate_skill reports."""
+    lines = text.splitlines()
+    try:
+        parts = split_frontmatter(lines)
+    except FrontmatterError:
+        return []
+    return lines if parts is None else lines[parts[1] :]
 
 
 def _is_true(value: FrontmatterValue | None) -> bool:

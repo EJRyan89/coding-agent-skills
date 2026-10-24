@@ -1442,6 +1442,27 @@ class CopilotConfigurationTests(unittest.TestCase):
         ]
         self.assertEqual([("ERROR", "copilot-config"), ("ERROR", "copilot-skill"), ("ERROR", "copilot-skill")], found)
 
+    def test_only_the_body_after_the_frontmatter_is_searched_for_arguments(self) -> None:
+        # A rule (---) in the body does not end the frontmatter again, and $ARGUMENTS in the frontmatter is not read.
+        hint = (
+            "Skill reads $ARGUMENTS but gives no argument-hint, so Claude Code's autocomplete shows no "
+            "expected arguments"
+        )
+        cases = {
+            "---\nname: demo\ndescription: d\n---\nUse $ARGUMENTS here.\n\n---\n\nNothing more.\n": [hint],
+            "---\nname: demo\ndescription: d\n---\nFirst part.\n\n---\n\nThen $ARGUMENTS.\n\n---\n\nEnd.\n": [hint],
+            "---\nname: demo\ndescription: Takes $ARGUMENTS.\n---\nIt reads none.\n": [],
+            "---\nname: demo\ndescription: Takes $ARGUMENTS.\n---\n": [],
+            "---\nname: demo\ndescription: Takes $ARGUMENTS.\n": [],
+            "Use $ARGUMENTS without frontmatter.\n": [hint],
+        }
+        skill = self.root / ".claude/skills/demo/SKILL.md"
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                skill.write_text(text, encoding="utf-8")
+                found = audit.check_copilot_configuration(self.root, {})
+                self.assertEqual(expected, [f.message for f in found if f.check == "claude-skill"])
+
     def test_each_unowned_projection_is_named_by_its_path_and_kind_and_an_owned_one_is_not(self) -> None:
         marked = f"---\nname: project-skill\ndescription: Projected.\n---\n\n<!-- {OWNERSHIP} -->\n"
         _write_fixture(
