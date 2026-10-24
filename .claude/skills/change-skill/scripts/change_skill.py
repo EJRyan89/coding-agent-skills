@@ -57,6 +57,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
+import json_reader
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -237,8 +238,8 @@ def metadata(text: str | None) -> dict[str, object] | None:
     if text is None:
         return {}
     try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
+        value = json_reader.loads(text)
+    except (json.JSONDecodeError, json_reader.JsonRefused):
         return None
     return value if isinstance(value, dict) else None
 

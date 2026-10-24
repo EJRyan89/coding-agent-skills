@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import check_provenance
 import folder_walk
+import json_reader
 from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from check_provenance import Source
 from console import run_main
@@ -1510,7 +1511,7 @@ def _manifest_signal(root: Path) -> tuple[str | None, dict[str, Any], list[Findi
     try:
         if not is_present(manifest_path):
             return None, {}, []
-        return _judge_manifest(root, json.loads(read_text(root, manifest_path)))
+        return _judge_manifest(root, json_reader.loads(read_text(root, manifest_path)))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (KeyError, OSError, ValueError, RecursionError):
         return None, {}, [_manifest_authority_finding("WARNING", "Manifest exists but is malformed")]
@@ -1904,7 +1905,7 @@ def read_mcp_json(root: Path, rel_path: str) -> tuple[dict[str, Any], list[Findi
     try:
         if not is_present(path):
             return {}, findings
-        data = json.loads(read_text(root, path))
+        data = json_reader.loads(read_text(root, path))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError) as e:
         findings.append(
@@ -2719,7 +2720,7 @@ def _claude_settings(root: Path) -> list[Finding]:
     try:
         if not is_present(path):
             return []
-        data = json.loads(read_text(root, path))
+        data = json_reader.loads(read_text(root, path))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError) as error:
         return [Finding("ERROR", "claude-settings", CLAUDE_SETTINGS, message=f"Could not read or parse: {error}")]
@@ -3009,7 +3010,7 @@ def _codex_hooks(root: Path) -> list[Finding]:
     file_hooks = None
     if path.is_file():
         try:
-            data = json.loads(read_text(root, path))
+            data = json_reader.loads(read_text(root, path))
         # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
         except (OSError, ValueError, RecursionError) as error:
             return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message=f"Could not read or parse: {error}")]

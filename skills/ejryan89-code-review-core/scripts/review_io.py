@@ -20,6 +20,7 @@ from typing import IO, Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from atomic_file import UnfinishedCopyError, replace_bytes
 from process_identity import ProcessStatus, process_status
 from review_process import same_process
@@ -109,7 +110,7 @@ def parse_json(text: str) -> Any:
     """The value JSON text holds, once it can be written back as UTF-8. json accepts an escaped lone surrogate, which
     no UTF-8 file can hold, so a value holding one would otherwise fail only when a later step writes it. Raises one
     of CONTENT_ERRORS."""
-    value = json.loads(text)
+    value = json_reader.loads(text)
     if SURROGATE_ESCAPE.search(text):  # only an escape spells a surrogate, so text without one needs no second pass
         json.dumps(value, ensure_ascii=False).encode("utf-8")
     return value
@@ -330,7 +331,8 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             return None
         try:
             owner = READ.json_object(
-                json.loads(content.decode("utf-8-sig")) if len(content) <= OWNER_MAXIMUM_BYTES else None, "lock owner"
+                json_reader.loads(content.decode("utf-8-sig")) if len(content) <= OWNER_MAXIMUM_BYTES else None,
+                "lock owner",
             )
             token = READ.string(owner.get("token"), "lock owner.token", empty=True)
         except CONTENT_ERRORS:  # undecodable, not JSON, too large or deep, or not an owner record
