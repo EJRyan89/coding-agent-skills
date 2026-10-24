@@ -460,6 +460,10 @@ def main(
     if unmatched:
         print("".join(f"No policy check or suite matches {pattern}.\n" for pattern in unmatched), end="", file=errors)
         return 2
+    # Whatever chose the run, one that holds nothing would pass empty.
+    if not policies.countTestCases() and not jobs:
+        print(f"No policy check or suite job is selected: {mode}", file=errors)
+        return 2
     leg = f"{arguments.shard[0]}/{arguments.shard[1]}" if arguments.shard else None
     if arguments.shard:
         try:

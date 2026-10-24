@@ -225,6 +225,22 @@ class SelectionOptions(unittest.TestCase):
                 self.assertEqual("".join(f"No policy check or suite matches {name}.\n" for name in unmatched), error)
                 self.assertEqual([], started)
 
+    def test_a_run_without_a_pattern_that_selects_nothing_is_a_usage_error_naming_how_it_selected(self) -> None:
+        # The policy modules always hold checks, so only a run with none of them reaches the refusal without -k.
+        code, _, error, started = self.run_main(
+            ["--changed"],
+            POLICY_MODULES=(),
+            changed_paths=mock.Mock(return_value=["LICENSE"]),
+            changed_jobs=mock.Mock(return_value=[]),
+        )
+        self.assertEqual(2, code)
+        self.assertEqual(
+            "No policy check or suite job is selected: Changed files: 1 files changed since origin/main. Running the "
+            "policy checks and the 0 static checks and suites they reach; pass --full to run every suite.\n",
+            error,
+        )
+        self.assertEqual([], started)
+
     def test_every_pattern_matching_a_policy_check_or_a_suite_runs(self) -> None:
         suite = Job("tests/test_other.py", "tests/test_other.py", 1, lambda: None)
         code, printed, error, started = self.run_main(
