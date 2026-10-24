@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from bounded_process import run_bounded
 from console import run_main
+from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
 from job_tree import process_tree
 
 from deployer import platform_support
@@ -100,16 +101,7 @@ FAST_FORWARD_OPTIONS = {"--ff-only", "-q", "--quiet", "-v", "--verbose", "--no-r
 # The submodule subcommands that only read; no subcommand at all means status. foreach runs any command.
 READ_SUBMODULE = {None, "status", "summary"}
 # git's own options, read as git.c reads them: no abbreviation, and a value either attached after = or the next word.
-GIT_OPTIONS_WITH_VALUE = {
-    "-C",
-    "-c",
-    "--attr-source",
-    "--config-env",
-    "--git-dir",
-    "--namespace",
-    "--super-prefix",
-    "--work-tree",
-}
+# Those that take a value are git_client's GLOBAL_VALUE_OPTIONS, imported above as GIT_OPTIONS_WITH_VALUE.
 GIT_OPTIONS_WITHOUT_VALUE = {
     "-p",
     "--paginate",

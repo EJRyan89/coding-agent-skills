@@ -1974,7 +1974,8 @@ class ContractListTests(unittest.TestCase):
         self.assertEqual(hub_guard.READ_SUBMODULE, {None, *(name.removeprefix("submodule ") for name in named)})
 
     def test_git_s_options_with_a_value_are_the_ones_the_guard_reads(self) -> None:
-        self.assertEqual(sorted(hub_guard.GIT_OPTIONS_WITH_VALUE), sorted(contract_names("or as the next word (", ")")))
+        # The guard reads git_client's list, the one home of the options git reads a value after.
+        self.assertEqual(sorted(git_client.GLOBAL_VALUE_OPTIONS), sorted(contract_names("or as the next word (", ")")))
 
     def test_the_prefix_programs_are_the_ones_each_reader_reads(self) -> None:
         bash = contract_names("Commands after", "are read as the commands they start")

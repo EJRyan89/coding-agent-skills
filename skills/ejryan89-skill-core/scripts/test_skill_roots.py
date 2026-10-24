@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -80,16 +82,23 @@ class SiblingScriptsTests(unittest.TestCase):
         self.make_skill(skills / "a category" / "nested-dep")
         self.use_skills_root(skills)
         for name in ("shared-dep", "no-scripts", "nested-dep"):
-            with self.subTest(name=name), self.assertRaises(MissingSibling) as caught:
+            with (
+                self.subTest(name=name),
+                contextlib.redirect_stdout(io.StringIO()) as printed,
+                self.assertRaises(MissingSibling) as caught,
+            ):
                 sibling_scripts(name)
             self.assertEqual(name, caught.exception.name)
+            self.assertEqual(1, caught.exception.code)
+            self.assertEqual(f"FAILED MissingSibling: {caught.exception}\n", printed.getvalue())
             self.assertIn(f"skill {name} has no scripts under {skills}", str(caught.exception))
             self.assertIn("; deploy the skills that declare it in skill_deps again", str(caught.exception))
 
-    def test_a_script_whose_sibling_is_absent_exits_1_without_a_traceback(self) -> None:
-        deployed = self.root / "a home" / ".claude" / "skills"
+    def test_a_script_whose_sibling_is_absent_ends_with_a_failed_line_and_exit_1(self) -> None:
+        # A home no legacy code page can spell, so the line is shown to print in UTF-8 before run_main sets it up.
+        deployed = self.root / "a home 家" / ".claude" / "skills"
         core = self.make_skill(deployed / "ejryan89-skill-core")
-        for module in ("skill_roots.py", "file_presence.py"):
+        for module in ("skill_roots.py", "file_presence.py", "console.py", "flat_text.py"):
             (core / module).write_text(
                 (Path(__file__).resolve().parent / module).read_text(encoding="utf-8"), encoding="utf-8"
             )
@@ -106,12 +115,23 @@ class SiblingScriptsTests(unittest.TestCase):
             if manifest is not None:
                 (deployed.parent / ".claude-plugin").mkdir()
                 (deployed.parent / ".claude-plugin" / "plugin.json").write_text(manifest, encoding="utf-8")
-            result = subprocess.run([sys.executable, "-B", str(script)], capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                [sys.executable, "-B", str(script)],
+                capture_output=True,
+                env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+                check=False,
+            )
             with self.subTest(manifest=manifest):
                 self.assertEqual(1, result.returncode)
-                self.assertEqual("", result.stdout)
-                self.assertNotIn("Traceback", result.stderr)
-                self.assertIn("skill shared-dep has no scripts under", result.stderr)
+                self.assertEqual(b"", result.stderr)
+                lines = result.stdout.decode("utf-8").splitlines()
+                self.assertEqual(1, len(lines))
+                self.assertTrue(
+                    lines[0].startswith(
+                        f"FAILED MissingSibling: skill shared-dep has no scripts under {deployed.resolve()}; "
+                    ),
+                    lines[0],
+                )
 
 
 class PluginNameTests(unittest.TestCase):
@@ -170,8 +190,14 @@ class PluginNameTests(unittest.TestCase):
             ('{"name": "a-suite"}', unreadable, "cannot be read"),
         ):
             self.write_manifest(text)
-            with self.subTest(reason=reason), reading, self.assertRaises(MissingSibling) as caught:
+            with (
+                self.subTest(reason=reason),
+                reading,
+                contextlib.redirect_stdout(io.StringIO()) as printed,
+                self.assertRaises(MissingSibling) as caught,
+            ):
                 sibling_scripts("shared-dep")
+            self.assertEqual(f"FAILED MissingSibling: {caught.exception}\n", printed.getvalue())
             self.assertEqual("shared-dep", caught.exception.name)
             self.assertIn("skill shared-dep has no scripts under", str(caught.exception))
             self.assertIn("; reinstall the plugin: ", str(caught.exception))
@@ -179,8 +205,9 @@ class PluginNameTests(unittest.TestCase):
 
     def test_an_absent_sibling_in_a_plugin_asks_for_the_plugin_again_not_a_deployment(self) -> None:
         self.write_manifest('{"name": "a-suite"}')
-        with self.assertRaises(MissingSibling) as caught:
+        with contextlib.redirect_stdout(io.StringIO()) as printed, self.assertRaises(MissingSibling) as caught:
             sibling_scripts("shared-dep")
+        self.assertEqual(f"FAILED MissingSibling: {caught.exception}\n", printed.getvalue())
         self.assertIn("; update or reinstall the plugin a-suite", str(caught.exception))
         self.assertNotIn("deploy", str(caught.exception))
 
