@@ -265,7 +265,7 @@ DEPTH = 300
 )
 def test_a_documented_limit_text_nested_past_the_recursion_limit_which_bash_reads_is_an_error(text: str) -> None:
     assert bash_agreement.bash_verdicts([text])[text][0]
-    with pytest.raises(BashSyntaxError, match="nests deeper than the reader follows"):
+    with pytest.raises(BashSyntaxError, match=r"^it nests deeper than the reader follows$"):
         bash_syntax.parse(text)
 
 

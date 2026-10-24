@@ -1911,8 +1911,8 @@ def reached_hubs(reading: Reading) -> set[Path]:
 
 def guard(stream: str) -> int:
     # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
-    # fails leaves a command the guard cannot read.
-    command, hubs = "", set[Path]()
+    # fails leaves a command the guard cannot read; None until then.
+    in_view: tuple[str, set[Path]] | None = None
     try:
         event = json.loads(stream)
         tool = event.get("tool_name", "")
@@ -1925,15 +1925,16 @@ def guard(stream: str) -> int:
                 refused = DENY_REASON
         elif tool in SHELL_READERS and isinstance(tool_input.get("command"), str):
             reading = start_reading(tool_input["command"], cwd, os.environ)
-            command, hubs = reading.text, set(reading.context_hubs)
-            SHELL_READERS[tool](command, cwd, reading, 0, inherited_variables(os.environ))
+            hubs = set(reading.context_hubs)
+            in_view = (reading.text, hubs)
+            SHELL_READERS[tool](reading.text, cwd, reading, 0, inherited_variables(os.environ))
             hubs |= reached_hubs(reading)
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
             for note in reading.notes:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses
-        if not (hubs and mentions(MENTIONS_GIT, command)):
+        if in_view is None or not (in_view[1] and mentions(MENTIONS_GIT, in_view[0])):
             print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 0
         # Where a guarded hub is in view, a command naming git that the guard failed to read or judge is one it cannot
