@@ -564,7 +564,7 @@
     {
       "url": "https://docs.github.com/en/copilot/reference/hooks-reference",
       "subject": "copilot-cli",
-      "governs": "hooks: the files Copilot CLI reads them from, .claude/settings.json among them",
+      "governs": "hooks: the files Copilot CLI reads them from, .claude/settings.json among them, and the machine-wide policy hooks that load in the bounded reviewer host whatever its COPILOT_HOME",
       "read": [
         "v0.10.0",
         "v0.11.0",

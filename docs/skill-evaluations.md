@@ -17,6 +17,14 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   The checkout's Git commands point at a temporary empty hook directory, so neither global nor template-installed
   user hooks run; the base commit also disables signing, without changing the user's Git configuration.
   `tools/skill_evals.py`'s docstring defines the format.
+- **The checkout is trusted input.** A fixture's reviewer manifest names the condition scripts a review runs, and each
+  home runs this checkout's skills in a session signed in as the user, so a run vouches for every file of the
+  checkout, its scenarios included. A pull request from another author is read in full, as its code is, before its
+  scenarios run. Before anything runs, `tools/skill_evals.py` refuses with `FAILED` a checkout whose branch follows a
+  pull request's ref (`refs/pull/...`) or a remote other than `origin`, as `gh pr checkout` sets for another
+  repository's pull request, and a detached `HEAD` at a commit no branch of `origin` holds. A branch with no upstream,
+  or one that follows `origin` or a local branch, is the user's own, so an author runs their own branch's scenarios
+  before its pull request merges.
 - **A repository reviewer's scenarios**, such as `review-repository`'s, sit under the reviewer's name, and each
   `scenario.json` names `review-prs` as the skill beside the reviewer, since `review-prs` runs a reviewer and no
   session starts one. `--canary-home` ships none of this repository's own skills, so each run copies the fixture into a
