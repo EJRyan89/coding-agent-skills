@@ -2,7 +2,7 @@
 
 Usage:
   python tools/runtime_canary.py [SKILL ...] [--runtime NAME ...] [--discovery-only] [--timeout SECONDS]
-                                 [--codex-sandbox mxc|elevated|unelevated] [--keep-home]
+                                 [--codex-sandbox mxc|elevated|unelevated] [--attempts RUNS] [--keep-home]
   python tools/runtime_canary.py --changed-since [REF]
   python tools/runtime_canary.py --remove-home DIR
 
@@ -24,6 +24,7 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   DISCOVERY_FAILED <runtime> "<reason>"         it cannot read the runtime's skill list; the canary exits 1
   SUPPLIED <runtime> "<key>=<value>"            a setting the canary passes in place of the configuration it ignores
   RUNTIME <runtime> <skill> RAN "<script>" "<cwd>" [exit=<n>] [timed-out] KEPT "<ambient>"
+  RUNTIME <runtime> <skill> UNCOUNTED "<reason>" KEPT "<ambient>"  it ran the real profile's installed copy
   RUNTIME <runtime> <skill> BLOCKED "<policy>" KEPT "<ambient>"
   RUNTIME <runtime> <skill> FAILED "<reason>" KEPT "<ambient>"
   RUNTIME <runtime> <skill> UNSUPPORTED "<reason>"  the runtime cannot start the skill headless, so it never ran
@@ -62,9 +63,15 @@ changed one where it can. A git failure is FAILED "<reason>" and exit 1.
 The isolation is of configuration, not of credentials: each runtime keeps its real configuration folder and so
 its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, and MCP
 servers; Codex's config.toml and rules; Copilot's custom instructions and built-in MCP servers. KEPT names what
-still loads. Codex on Windows refuses every command without a Windows sandbox mode, which it would otherwise read
-from config.toml, so the canary supplies that one value itself (--codex-sandbox mxc, elevated, or unelevated; default
-elevated) and prints it as SUPPLIED. It also sets Codex's approval policy to never, as a non-interactive run should.
+still loads, among it the personal skills Codex and Copilot keep listing, and no flag keeps a model's shell from
+reading the installed copies under the profile's skill folders. So a run that started a script there, from
+.claude/skills, .agents/skills, .codex/skills, or .copilot/skills under the profile, is UNCOUNTED: it tested nothing,
+and the canary runs the skill again, up to --attempts runs in all. Each such run keeps its own RUNTIME and
+TRANSCRIPT lines, a run after the first naming its transcript -run<n>, so the record shows how many runs the skill
+took, and MATRIX compares only the last; one still UNCOUNTED disagrees with every declared level. Codex on Windows
+refuses every command without a Windows sandbox mode, which it would otherwise read from config.toml, so the canary
+supplies that one value itself (--codex-sandbox mxc, elevated, or unelevated; default elevated) and prints it as
+SUPPLIED. It also sets Codex's approval policy to never, as a non-interactive run should.
 Every prompt carries RUNTIME_CANARY_MARKER, so a session the runtime saves can be found later.
 
 The canary judges nothing from a transcript. The fixture's script writes a marker from its own location, carrying
@@ -72,13 +79,16 @@ the identifier the canary writes into the home before each run, a sitecustomize.
 Python script the runtime starts, and a BASH_ENV file records every Bash script, however the runtime names Bash. A
 recorder counts a script only when it names a file the interpreter can open: a missing file, a folder, `python -c`,
 and `python -m` are no script. RAN means the script ran from the canary's copy of the skill or of a skill it
-declares in skill_deps, whatever it exited with; a script from the installed copy is a failure, never RAN. RAN adds
+declares in skill_deps, whatever it exited with; a script from the installed copy is UNCOUNTED, never RAN. RAN adds
 exit=<n> when a recorder saw the script end (Python 3.12 or later, where a script that does not compile exits 1; a
 Bash script that sets no EXIT trap of its own) and timed-out when the session ran out of time after the script
-started. The fixture must also exit 0, or it is FAILED with the status. A run ends at --timeout, or on Ctrl+C, with
-every process the runtime started, and a runtime the canary cannot start for a skill, as when its own update has moved
-its program away, is FAILED with why; each line prints as it is made, so none before it is lost. Copilot's headless
-mode cannot start a skill only the user may start, so such a skill is UNSUPPORTED there and no model is called for it.
+started. The fixture must also exit 0, or it is FAILED with the status, which it is when it found no run identifier
+to write. A records file holding a whole line the canary will not read, such as an integer past Python's digit limit
+or JSON nested past the recursion limit, fails that run naming the file and the line. A run ends at --timeout, or on
+Ctrl+C, with every process the runtime started, and a runtime the canary cannot start for a skill, as when its own
+update has moved its program away, is FAILED with why; each line prints as it is made, so none before it is lost.
+Copilot's headless mode cannot start a skill only the user may start, so such a skill is UNSUPPORTED there and no model
+is called for it.
 --discovery-only lists skills without running any model. --remove-home deletes a home an earlier run printed and
 nothing else: a runtime-canary- directory directly under the temporary directory that holds the
 .runtime-canary/home.json marker each run writes, naming that home; it refuses any other with FAILED.
@@ -193,13 +203,19 @@ GIT = GitClient()
 RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
 # What each runtime still loads from the user's real configuration once the canary's flags have switched off all
 # they can. Claude Code: checked with /context under --setting-sources project,local. Codex and Copilot: their
-# skill listings, and the flags each offers.
+# skill listings, the flags each offers, Codex's AGENTS.md page, under which every run reads the Codex home's
+# AGENTS.override.md or AGENTS.md while --ignore-user-config skips config.toml only, and Copilot's hooks reference,
+# under which user hooks load without admission.
 KEPT = {
     "claude": "user CLAUDE.md; auto-memory folder",
-    "codex": "personal skills in ~/.agents/skills and ~/.codex/skills",
+    "codex": "global AGENTS.override.md or AGENTS.md in ~/.codex; personal skills in ~/.agents/skills and "
+    "~/.codex/skills",
     "copilot": "personal skills in ~/.agents/skills and ~/.copilot/skills; MCP servers in ~/.copilot/mcp-config.json; "
-    "session history",
+    "user hooks in ~/.copilot/hooks and the hooks key of ~/.copilot/settings.json; session history",
 }
+# How many times a skill is run on a runtime while each run starts the real profile's installed copy, which no flag
+# keeps out of a model's reach, so that no such run counts.
+DEFAULT_ATTEMPTS = 3
 # How a prompt starts a skill by name: `$<skill>` in Codex, `/<skill>` elsewhere. See "Starting a skill" in
 # docs/skills.md. npm installs Codex as a .cmd file that cmd.exe runs, so the text avoids cmd's special characters.
 MENTION = {"claude": "/", "codex": "$", "copilot": "/"}
@@ -398,19 +414,40 @@ def inside(path: str, directory: Path) -> bool:
     return candidate != root and os.path.commonpath([candidate, root]) == root
 
 
+class RecordRefused(ValueError):
+    """A records file holding a whole line the canary will not read, with the file and why."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.path = path
+        self.reason = reason
+
+
 def read_records(path: Path) -> list[dict[str, Any]]:
     """The JSON objects in a JSON Lines file, skipping any line a crashed writer left incomplete. The canary creates
     each records file empty before the run, so an empty or missing file is a run that recorded nothing, which the
     verdict reports as no marker; a directory or anything else in the file's place raises NotAFile, an OSError, which
-    the run reports as a record it cannot read."""
+    the run reports as a record it cannot read. A line that is JSON json_reader refuses, or holds an integer past
+    Python's digit limit, raises RecordRefused, naming the file and the line."""
     records = []
     if is_present(path):
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            with contextlib.suppress(json.JSONDecodeError, json_reader.JsonRefused):
+        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            try:
                 record = json_reader.loads(line)
-                if isinstance(record, dict):
-                    records.append(record)
+            except json.JSONDecodeError:
+                continue
+            except ValueError as exc:
+                raise RecordRefused(path, f"line {number}: {exc}") from exc
+            if isinstance(record, dict):
+                records.append(record)
     return records
+
+
+def unreadable(exc: OSError | RecordRefused, path: Path) -> str:
+    """Why the records a run wrote cannot be read, naming the file."""
+    if isinstance(exc, RecordRefused):
+        return f"cannot read what the run recorded in {forward(exc.path)}: {exc.reason}"
+    return f"cannot read what the run recorded in {forward(exc.filename or path)}: {exc.strerror or exc}"
 
 
 def deploy(home: Path, source_dir: Path) -> tuple[int, str]:
@@ -489,14 +526,22 @@ def expected(support: runtime_support.Support) -> str:
     return "RAN"
 
 
+def outcome_of(line: str) -> str | None:
+    """The outcome a RUNTIME line names, or None for any other line."""
+    match = OUTCOME_LINE.match(line)
+    return match.group(3) if match else None
+
+
 def compare(lines: Sequence[str], declared: Declarations) -> list[str]:
-    """One MATRIX line per RUNTIME line: whether what ran is what the skill's declared support expects."""
-    result = []
+    """One MATRIX line per runtime and skill, from its last RUNTIME line, since an UNCOUNTED run is followed by
+    another: whether what ran is what the skill's declared support expects."""
+    last: dict[tuple[str, str], str] = {}
     for line in lines:
         match = OUTCOME_LINE.match(line)
-        if match is None:
-            continue
-        runtime, skill, outcome = match.groups()
+        if match is not None:
+            last[match.group(1), match.group(2)] = match.group(3)
+    result = []
+    for (runtime, skill), outcome in last.items():
         support = (declared.get(skill) or {}).get(DECLARED_RUNTIME[runtime])
         if support is None:
             result.append(f"MATRIX {runtime} {skill} DISAGREES undeclared {quote('it declares no runtime_support')}")
@@ -776,6 +821,12 @@ def recorded_scripts(started: list[dict[str, Any]]) -> list[tuple[str, str, int 
     return scripts
 
 
+def installed_roots(profile: Path) -> list[Path]:
+    """The skill folders of the user's real profile a runtime can still reach, since no flag hides a folder from a
+    model's shell: the deployed copies and their adapters, and the personal skills Codex and Copilot load."""
+    return [profile / folder / "skills" for folder in (".claude", ".agents", ".codex", ".copilot")]
+
+
 def ran_line(skill: str, script: str, cwd: str, status: int | None, timed_out: bool) -> str:
     """RAN with the exit status when it was recorded and `timed-out` when the session ran out of time afterwards, or
     FAILED for the fixture when it exited otherwise than 0."""
@@ -795,12 +846,13 @@ def verdict(
     denials: list[str],
     timeout: float,
     allowed: list[str] | None = None,
-    installed: Path | None = None,
+    installed: Sequence[Path] | None = None,
     rejected: Sequence[str] = (),
     unread: Sequence[str] = (),
     cause: str = "",
 ) -> str:
-    """RAN with the script and directory, BLOCKED by the runtime's policy, or FAILED with what went wrong.
+    """RAN with the script and directory, BLOCKED by the runtime's policy, UNCOUNTED when the run started a script
+    under one of the `installed` folders, the real profile's by default, or FAILED with what went wrong.
 
     `started` holds the Python and Bash recorders' records: one when a script starts and, when the recorder saw it
     end, the same record again with its `exit` status. A script counts when it is under the canary's copy of the
@@ -817,14 +869,17 @@ def verdict(
             script = forward(record["script"])
             status = next((status for path, _, status in ran if lexical(path) == lexical(script)), None)
             return ran_line(skill, script, forward(record.get("cwd", "")), status, completed.timed_out)
+    # The fixture refuses to write a marker it cannot give the run's identifier, and exits 1.
+    if ran and skill == FIXTURE_SKILL and ran[0][2] not in (None, 0):
+        return ran_line(skill, *ran[0], completed.timed_out)
     if ran and skill == FIXTURE_SKILL:
         return f"FAILED {quote(f'ran {ran[0][0]} but it wrote no marker; was the write denied?')}"
     if ran:
         return ran_line(skill, *ran[0], completed.timed_out)
-    installed = installed or platform_support.home_directory() / ".claude" / "skills"
+    roots = installed_roots(platform_support.home_directory()) if installed is None else installed
     for script, _, _ in scripts:
-        if inside(script, installed):
-            return f"FAILED {quote(f'ran the installed copy {script}, not the canary copy')}"
+        if any(inside(script, root) for root in roots):
+            return f"UNCOUNTED {quote(f'ran the installed copy {script}, not the canary copy')}"
     if scripts:
         return f"FAILED {quote(f'ran {scripts[0][0]} instead of a script under {forward(skills_root / skill)}')}"
     if rejected:
@@ -866,10 +921,13 @@ def run_skill(
     allowed: list[str],
     codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
     version: tuple[int, ...] | None = None,
+    attempt: int = 1,
 ) -> list[str]:
+    """The lines of one run of the skill; a run after the first names its files with its number."""
     state = home / STATE
     probe_log = state / "probe.jsonl"
-    script_log = state / "scripts" / f"{runtime}-{skill}.jsonl"
+    name = f"{runtime}-{skill}" if attempt == 1 else f"{runtime}-{skill}-run{attempt}"
+    script_log = state / "scripts" / f"{name}.jsonl"
     # Created empty here, so the canary owns them and the probe and recorders only append. A file the Codex Windows
     # sandbox creates belongs to its sandbox user, and the permissions that sandbox sets leave it unreadable here.
     probe_log.write_text("", encoding="utf-8")
@@ -883,7 +941,7 @@ def run_skill(
         environment(base, script_log, home),
         timeout,
     )
-    transcript = state / "transcripts" / f"{runtime}-{skill}.jsonl"
+    transcript = state / "transcripts" / f"{name}.jsonl"
     transcript.write_text(completed.stdout, encoding="utf-8")
     if completed.stderr:
         transcript.with_suffix(".stderr.txt").write_text(completed.stderr, encoding="utf-8")
@@ -895,9 +953,8 @@ def run_skill(
             lines.append(f"DISCOVERED claude {skill}" if skill in listed else f"UNDISCOVERED claude {skill}")
     try:
         probes, started = marked(read_records(probe_log), run), read_records(script_log)
-    except OSError as exc:
-        reason = f"cannot read what the run recorded in {forward(exc.filename or probe_log)}: {exc.strerror or exc}"
-        outcome = f"FAILED {quote(reason)}"
+    except (OSError, RecordRefused) as exc:
+        outcome = f"FAILED {quote(unreadable(exc, probe_log))}"
     else:
         outcome = verdict(
             skill,
@@ -937,6 +994,7 @@ class RuntimeChecks:
     talk: discovery.Converse | None = None
     declared: Declarations | None = None
     unadapted: Mapping[str, str] | None = None
+    attempts: int = DEFAULT_ATTEMPTS
 
 
 def check_runtime(
@@ -966,18 +1024,25 @@ def check_runtime(
             yield f"RUNTIME {runtime} {skill} UNSUPPORTED {quote(reason)}"
             continue
         reachable = run.closure.get(skill, [skill])
-        yield from run_skill(
-            runtime,
-            executable,
-            skill,
-            run.home,
-            run.base,
-            run.runner,
-            run.timeout,
-            reachable,
-            run.codex_sandbox,
-            version,
-        )
+        # A run that started the installed copy tested nothing, so the skill runs again, up to run.attempts runs, and
+        # each such run keeps its UNCOUNTED line, so the record says how many runs the skill took.
+        for attempt in range(1, run.attempts + 1):
+            lines = run_skill(
+                runtime,
+                executable,
+                skill,
+                run.home,
+                run.base,
+                run.runner,
+                run.timeout,
+                reachable,
+                run.codex_sandbox,
+                version,
+                attempt,
+            )
+            yield from lines
+            if not any(outcome_of(line) == "UNCOUNTED" for line in lines):
+                break
 
 
 def canary(
@@ -993,6 +1058,7 @@ def canary(
     timeout: float = DEFAULT_TIMEOUT,
     codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
     talk: discovery.Converse | None = None,
+    attempts: int = DEFAULT_ATTEMPTS,
 ) -> int:
     """Deploy the sources into home, then check each runtime; print the facts, then the record, and return the exit
     code."""
@@ -1015,6 +1081,7 @@ def canary(
         timeout=timeout,
         codex_sandbox=codex_sandbox,
         talk=talk,
+        attempts=attempts,
         say=say,
         versions=versions,
     )
@@ -1036,6 +1103,7 @@ def checked(
     timeout: float,
     codex_sandbox: str,
     talk: discovery.Converse | None,
+    attempts: int,
     say: Callable[[str], None],
     versions: dict[str, str],
 ) -> int:
@@ -1075,6 +1143,7 @@ def checked(
         talk=talk,
         declared=declared,
         unadapted=without_adapter(home),
+        attempts=attempts,
     )
     printed = []
     reasons = []
@@ -1340,12 +1409,21 @@ def main(arguments: list[str]) -> int:
         help=f"limit for each runtime run (default: {DEFAULT_TIMEOUT})",
     )
     parser.add_argument(
+        "--attempts",
+        type=int,
+        default=DEFAULT_ATTEMPTS,
+        metavar="RUNS",
+        help=f"runs of a skill on a runtime while each starts the installed copy (default: {DEFAULT_ATTEMPTS})",
+    )
+    parser.add_argument(
         "--codex-sandbox",
         choices=CODEX_SANDBOXES,
         default=DEFAULT_CODEX_SANDBOX,
         help=f"Windows sandbox mode Codex runs with (default: {DEFAULT_CODEX_SANDBOX})",
     )
     options = parser.parse_args(arguments)
+    if options.attempts < 1:
+        parser.error(f"--attempts takes at least one run: {options.attempts}")
     if options.remove_home is not None or options.changed_since is not None:
         option = "--remove-home" if options.remove_home is not None else "--changed-since"
         if options.skills:
@@ -1372,6 +1450,7 @@ def main(arguments: list[str]) -> int:
         discovery_only=options.discovery_only,
         timeout=options.timeout,
         codex_sandbox=options.codex_sandbox,
+        attempts=options.attempts,
     )
     return finish(home, code, options.keep_home)
 
