@@ -591,7 +591,7 @@ def index_line(title: str, file: str, hook: str, *, original_target: str | None 
 def reindex(memory_dir: Path) -> dict[str, Any]:
     """Rebuild MEMORY.md in memory without writing it; see the module docstring for the rules."""
     index_path = memory_dir / INDEX_NAME
-    current = index_path.read_text(encoding="utf-8", errors="replace") if is_present(index_path) else ""
+    current = index_path.read_bytes().decode("utf-8", errors="replace") if is_present(index_path) else ""
 
     def frontmatter(file: str) -> tuple[dict[str, str], str]:
         return parse_frontmatter((memory_dir / file).read_text(encoding="utf-8", errors="replace"))

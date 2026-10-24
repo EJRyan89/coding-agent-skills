@@ -544,6 +544,17 @@ class ReindexTests(unittest.TestCase):
         self.assertEqual((code, ""), (result[0], result[2]), result[1])
         return result[1].splitlines()
 
+    def test_the_index_reads_as_utf8_keeping_non_ascii_text_and_replacing_an_undecodable_byte(self) -> None:
+        self.index.write_bytes("# Café notes 設計\n".encode() + b"Kept \xff line\n")
+        self.assertEqual("# Café notes 設計\nKept � line\n", memory_audit.reindex(self.memory_dir)["content"])
+
+    def test_no_index_reads_as_none_and_a_directory_in_its_place_raises(self) -> None:
+        self.index.unlink()
+        self.assertEqual("", memory_audit.reindex(self.memory_dir)["content"])
+        self.index.mkdir()
+        with self.assertRaises(NotAFile):
+            memory_audit.reindex(self.memory_dir)
+
     def snapshot(self) -> dict[str, bytes]:
         return {path.name: path.read_bytes() for path in self.memory_dir.iterdir() if path.name != "MEMORY.md"}
 
