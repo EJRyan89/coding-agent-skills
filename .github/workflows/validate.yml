@@ -145,8 +145,6 @@ jobs:
         shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
-          # Trial: more workers than the runner's four vCPUs, since most jobs wait on Git and other processes.
-          VALIDATION_JOBS: '6'
         run: |
           # Outside a pull request there is no base to compare with, so run every suite.
           $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)
@@ -289,7 +287,8 @@ jobs:
         shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
-          # Trial: more workers than the runner's four vCPUs, since most jobs wait on Git and other processes.
+          # More workers than the runner's four vCPUs, since most Linux jobs wait on Git and other processes: it cut the
+          # legs' summed seconds by about a fifth with no retry or timeout, where the Windows legs gained nothing.
           VALIDATION_JOBS: '6'
         run: |
           # The Windows legs' step: outside a pull request there is no base to compare with, so every suite runs, and
