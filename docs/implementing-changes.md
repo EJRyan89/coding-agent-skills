@@ -99,7 +99,11 @@ with its base needs no local rerun, since continuous integration runs on the res
 The gates that call a model never run in continuous integration, so they stay with the author: a change to skill
 paths, `allowed-tools`, runtime adapters, or agents runs the `runtime-canary` repository skill, a change to a skill's
 prompt, description, model guidance, or reviewer instructions runs `evaluate-skill` when the skill has scenarios, and a change to a
-skill under `skills/` or `.claude/skills/` runs `audit-skill` on it. `CLAUDE.md` ("Required validation") holds
+skill under `skills/` or `.claude/skills/` runs `audit-skill` on it. A canary run that started the real profile's
+installed copy of a skill, which no runtime keeps out of a model's reach, tested nothing: the canary prints it
+`UNCOUNTED`, runs the skill again, and judges only the last run, so the record holds every `UNCOUNTED` line beside the
+run that counted, and a rerun of the whole canary chosen because it passed is no result. `CLAUDE.md` ("Required
+validation") holds
 the rules validation enforces.
 
 The `Mutation gate` job of the `Mutation` workflow runs on every pull request and is not a required check. It mutates
