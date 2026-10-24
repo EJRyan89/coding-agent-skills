@@ -17,6 +17,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
+from flat_text import LINE_UNSAFE
 from github_logins import is_login
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
 from review_vocabularies import SEVERITIES, Severity
@@ -313,9 +314,9 @@ def validate_glob_patterns(
     reader: FieldReader = READ,
 ) -> list[str]:
     """Distinct glob patterns, each a repository-relative POSIX path pattern that cannot name the snapshot's root or
-    leave it: no backslash, leading slash, control character, or empty, `.`, or `..` segment. A repository's
-    `snapshot_exclude` and a condition's `reads` are both such patterns; `reader` is the reader of the format that
-    holds them, so a fault raises that format's error."""
+    leave it: no backslash, leading slash, control character, line separator, or empty, `.`, or `..` segment. A
+    repository's `snapshot_exclude` and a condition's `reads` are both such patterns; `reader` is the reader of the
+    format that holds them, so a fault raises that format's error."""
     patterns = reader.array(
         value,
         field,
@@ -326,13 +327,13 @@ def validate_glob_patterns(
     for index, pattern in enumerate(patterns):
         if (
             not safe_repository_path(pattern)
-            or re.search(r"[\x00-\x1f\x7f]", pattern)
+            or LINE_UNSAFE.search(pattern)
             or any(segment in {"", ".", ".."} for segment in pattern.split("/"))
         ):
             raise reader.fail(
                 f"{field}[{index}]",
-                "a repository-relative glob pattern without a backslash, a control character, or an empty, '.', or "
-                "'..' segment",
+                "a repository-relative glob pattern without a backslash, a control character, a line separator, or an "
+                "empty, '.', or '..' segment",
                 describe(pattern),
             )
         if pattern.casefold() in seen:

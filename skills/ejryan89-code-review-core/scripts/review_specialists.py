@@ -26,10 +26,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from bounded_process import non_interactive_environment, run_bounded
 from diff_paths import HUNK_HEADER, DiffPathError, header_path, unquote
+from flat_text import LINE_UNSAFE
 from job_tree import TreeNotEnded, process_tree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
-from review_documents import LINE_UNSAFE
 from review_io import (
     CONTENT_ERRORS,
     PersistenceError,

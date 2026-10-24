@@ -2717,11 +2717,26 @@ class ReadCountTests(PipelineFixture):
 
 # Literal: the reason check gives for a role the reviewer guard never claimed, as review-prs's SKILL.md names it.
 UNGUARDED = (
-    "the reviewer ran without its guard: the reviewer guard never claimed this role, as when hooks are off "
-    "(disableAllHooks, or allowManagedHooksOnly for a plugin's hooks), the code-review-reviewer agent or its hook did "
-    "not load, or another agent type ran the role; enable hooks for the code-review-reviewer agent, or prepare the "
-    "review again with --inline"
+    "the reviewer ran without its guard: the reviewer guard never claimed this role, as when a setting keeps its hook "
+    "from running (disableAllHooks; allowManagedHooksOnly, which runs no hook an agent's frontmatter declares and no "
+    "plugin's hook unless managed settings force-enable the plugin; or strictPluginOnlyCustomization locking hooks, "
+    "which stops the frontmatter hooks of agents in ~/.claude/agents, or agents, which stops loading those agents), "
+    "the code-review-reviewer agent or its hook did not load, or another agent type ran the role; let the "
+    "code-review-reviewer agent load and run its hook, or prepare the review again with --inline"
 )
+# Literal: each cause of an unclaimed role, as Claude Code's settings reference states what each setting stops
+# (https://code.claude.com/docs/en/settings-reference): every hook; an agent's frontmatter hooks and an unforced
+# plugin's hooks; the frontmatter hooks of agents in ~/.claude/agents; loading those agents; and the other causes.
+UNGUARDED_CAUSES = {
+    "disableAllHooks": "disableAllHooks;",
+    "allowManagedHooksOnly, agent frontmatter": "allowManagedHooksOnly, which runs no hook an agent's frontmatter",
+    "allowManagedHooksOnly, plugin": "no plugin's hook unless managed settings force-enable the plugin",
+    "strictPluginOnlyCustomization hooks": "strictPluginOnlyCustomization locking hooks, which stops the frontmatter "
+    "hooks of agents in ~/.claude/agents",
+    "strictPluginOnlyCustomization agents": "or agents, which stops loading those agents",
+    "not loaded": "the code-review-reviewer agent or its hook did not load",
+    "another agent type": "another agent type ran the role",
+}
 
 
 class GuardClaimTests(PipelineFixture):
@@ -2775,6 +2790,17 @@ class GuardClaimTests(PipelineFixture):
         state = review_run.load_run(run)
         self.assertEqual(({role["id"]: 1}, {}), (state["attempts"], state["reads"]))
         self.assertEqual([], list_versions(pull_directory(self.archive, REPOSITORY, 12)))
+
+    def test_the_refusal_names_each_cause_of_an_unclaimed_role(self) -> None:
+        ready = self.prepare()
+        run, role = Path(ready["run"]), ready["roles"][0]
+        self.write_role_result(role, findings=[self.finding()], claimed=False)
+        code, out, _ = self.run_main("check", "--run", str(run))
+        retry = out.splitlines()[0]
+        self.assertEqual((1, True), (code, retry.startswith(f"RETRY {SELECTOR} {role['id']} ")), retry)
+        for cause, named in UNGUARDED_CAUSES.items():
+            with self.subTest(cause=cause):
+                self.assertIn(named, retry)
 
     def test_finalize_refuses_a_result_the_guard_never_claimed_with_nothing_recorded(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))

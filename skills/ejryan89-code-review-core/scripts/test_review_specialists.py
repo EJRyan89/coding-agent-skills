@@ -753,16 +753,22 @@ class UnsafeDiffPathTests(unittest.TestCase):
         self.assertEqual((["src/A.cs"], ["../evil.py", "a\\b.py", "x\ny"]), _keys(rs.split_unified_diff(text)))
 
     def test_reviewable_path_rejects_each_control_and_line_breaking_character(self) -> None:
-        rejected = [chr(code) for code in range(0x20)] + ["\x7f", "\x85", "\u2028", "\u2029"]
+        # Literal: every C0 control, DEL, every C1 control, and the two Unicode line separators.
+        rejected = [chr(code) for code in (*range(0x20), *range(0x7F, 0xA0))] + ["\u2028", "\u2029"]
         for character in rejected:
             with self.subTest(code=hex(ord(character))):
                 self.assertIsNone(rs.reviewable_path(f"src/a{character}b.py"))
-        for character in (" ", "~", "\x80", "\xa0", "é", "�", "?", ":"):
+        for character in (" ", "~", "\xa0", "\xa1", "é", "�", "?", ":"):
             with self.subTest(code=hex(ord(character))):
                 self.assertEqual(f"src/a{character}b.py", rs.reviewable_path(f"src/a{character}b.py"))
         for path in ("", "/abs.py", "a/../b.py", "./a.py", "a//b.py", "a\\b.py", "C:/x.py", "c:/x.py", "C:x.py"):
             with self.subTest(path=path):
                 self.assertIsNone(rs.reviewable_path(path))
+
+    def test_a_path_holding_a_c1_control_is_excluded_and_reaches_no_prompt(self) -> None:
+        # Git quotes U+009B (CSI), which a terminal reads as the start of an escape, as its two UTF-8 bytes.
+        text = SAFE_FILE + _new_file('"b/a\\302\\233b.py"') + _new_file('"b/c\\302\\200d.py"')
+        self.assertEqual((["src/A.cs"], ["a\x9bb.py", "c\x80d.py"]), _keys(rs.split_unified_diff(text)))
 
     def test_a_quoted_path_that_is_not_utf8_decodes_with_replacement(self) -> None:
         # The source snapshot and the GitHub client write one U+FFFD per undecodable byte; this agrees with them.
