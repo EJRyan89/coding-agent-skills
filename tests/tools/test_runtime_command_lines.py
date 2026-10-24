@@ -199,13 +199,16 @@ class StartTests(unittest.TestCase):
             self.assertIs(finished, lines.start(["copilot", "-p"], Path("here"), {"A": "1"}, 7.0, "the prompt"))
         run_process.assert_called_once_with(["copilot", "-p"], Path("here"), {"A": "1"}, 7.0, b"the prompt")
 
-    def test_a_real_program_reads_only_the_stdin_it_is_given(self) -> None:
-        program = [sys.executable, "-B", "-c", "import sys; print(sys.stdin.read()[::-1])"]
+    def test_a_real_program_reads_only_the_stdin_it_is_given_where_it_is_started(self) -> None:
+        program = [sys.executable, "-B", "-c", "import os, sys; print(sys.stdin.read()[::-1]); print(os.getcwd())"]
         with tempfile.TemporaryDirectory() as directory:
             started = lines.start(program, Path(directory), dict(os.environ), 30.0, "abc")
             nothing = lines.start(program, Path(directory), dict(os.environ), 30.0, "")
-        self.assertEqual(("cba\n", 0), (started.stdout, started.returncode))
-        self.assertEqual("\n", nothing.stdout)
+            here = os.path.realpath(directory)
+        self.assertEqual(0, started.returncode)
+        read, cwd = started.stdout.splitlines()
+        self.assertEqual(("cba", here), (read, os.path.realpath(cwd)))
+        self.assertEqual("", nothing.stdout.splitlines()[0])
 
 
 class PluginCommandTests(RuntimeCommandLinesTestCase):
@@ -227,6 +230,9 @@ class PluginCommandTests(RuntimeCommandLinesTestCase):
         self.assertEqual(
             ["claude", "plugin", "validate", "--strict", str(marketplace / "coding-agent-skills")],
             built["plugin-canary-validate"].arguments,
+        )
+        self.assertEqual(
+            ["claude", "plugin", "marketplace", "add", str(marketplace)], built["plugin-canary-marketplace"].arguments
         )
         install = built["plugin-canary-install"]
         self.assertEqual(["plugin", "install", "coding-agent-skills@canary"], install.subcommand)

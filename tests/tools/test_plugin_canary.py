@@ -128,9 +128,12 @@ class FakeClaude:
         self.entries = entries or {}
         self.plugins: list[plugin_build.Plugin] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
+        # Where each command ran and the limit it was given.
+        self.places: list[tuple[Path, float]] = []
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         self.calls.append((arguments, environment))
+        self.places.append((cwd, timeout))
         command = arguments[1:3]
         if command == ["plugin", "list"]:
             installed = [
@@ -204,6 +207,7 @@ def test_every_plugin_command_the_canary_starts_is_one_its_builders_return(tmp_p
             canary.details_command("claude", identifier),
         ]
     assert [arguments for arguments, _ in runner.calls] == expected
+    assert set(runner.places) == {(tmp_path, 30)}
     configured = next(plugin for plugin in plugins if plugin.name == "coding-agent-skills")
     assert canary.install_command("claude", "x@canary", canary.option_values(tmp_path, configured)) == [
         "claude",

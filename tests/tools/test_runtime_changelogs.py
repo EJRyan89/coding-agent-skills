@@ -269,13 +269,19 @@ def test_a_real_codex_release_without_a_bullet_is_listed_as_unread_and_its_neigh
 
 def test_a_release_whose_entries_are_a_numbered_list_or_which_is_empty_is_unread_never_a_silent_zero() -> None:
     # The issue's reproduction: no captured changelog numbers its entries, so this one is written here.
-    text = "## 2.1.303\n\n1. Removed the `--allowedTools` flag\n\n## 2.1.302.5\n\n## 2.1.302\n\n- Already read\n"
+    text = (
+        "## 2.1.303\n\n  ### Removed\n1. Removed the `--allowedTools` flag\n\n"
+        "## 2.1.302.5\n\n## 2.1.302\n\n- Already read\n"
+    )
     releases = watch.changelog_releases(CLAUDE, StubFetcher({CLAUDE.url: Fetched(200, CLAUDE.url, text.encode())}), 1.0)
     assert watch.changelog_lines(CLAUDE, releases, WATCHED) == [
         "CHANGELOG claude-code 2.1.302 2.1.303 0 0",
         'UNREAD claude-code 2.1.302.5 "its text is empty"',
         'UNREAD claude-code 2.1.303 "no bullet in its text: 1. Removed the `--allowedTools` flag"',
     ]
+    # A GitHub release whose body is null reads as one whose text is empty.
+    unnamed = watch.github_releases([{"tag_name": "rust-v0.150.0", "body": None}], "https://example.com/releases")
+    assert [(found.name, found.entries, found.unread) for found in unnamed] == [("0.150.0", (), "its text is empty")]
 
 
 def test_a_read_through_the_changelog_never_names_stops_the_watch() -> None:
@@ -310,16 +316,21 @@ def test_the_summary_says_how_many_entries_it_read_and_tables_each_unread_releas
         "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
         'UNREAD copilot-cli 1.0.54 "no bullet in its text: Fixes | changes"',
         "CHANGELOG claude-code 2.1.302 2.1.303 4 0",
+        "CHANGELOG codex 0.163.0 0.164.0 3 1",
+        'ENTRY codex 0.164.0 "-c" "Read -c twice"',
     ]
     text = watch.summary(lines)
     assert (
-        "### copilot-cli: releases after 1.0.53, up to 1.0.54\n\nEntries read: 0.\n\n"
+        "\n\n### codex: releases after 0.163.0, up to 0.164.0\n\nEntries read: 3.\n\n| Release | Terms | Entry |\n"
+    ) in text
+    assert (
+        "\n\n### copilot-cli: releases after 1.0.53, up to 1.0.54\n\nEntries read: 0.\n\n"
         "No entry read mentions a watched term.\n\n| Release | Terms | Entry |\n| --- | --- | --- |\n"
         "| 1.0.54 | none read | no bullet in its text: Fixes &#124; changes |\n"
     ) in text
     assert (
         "### claude-code: releases after 2.1.302, up to 2.1.303\n\nEntries read: 4.\n\n"
-        "No entry read mentions a watched term.\n\n\n### Captured samples"
+        "No entry read mentions a watched term.\n\n\n### codex"
     ) in text
 
 

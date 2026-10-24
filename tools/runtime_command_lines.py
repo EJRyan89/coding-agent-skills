@@ -209,7 +209,6 @@ def claude_lines(executable: str, root: Path, environment: dict[str, str]) -> li
     plugin.mkdir(exist_ok=True)
     paths = {PLUGIN: str(plugin)}
     marketplace = root / "marketplace"
-    marketplace.mkdir(exist_ok=True)
     built_plugins = plugin_canary.build(marketplace, [runtime_canary.REPOSITORY_ROOT])
     configured = next(item for item in built_plugins if plugin_canary.option_values(marketplace, item))
     identifier = f"{configured.name}@{plugin_canary.MARKETPLACE}"
