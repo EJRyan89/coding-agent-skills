@@ -25,6 +25,7 @@ from validation_support import REPOSITORY_ROOT, PullRequest, PullRequestChecks
 
 from tests import run_validation
 from tests.run_validation import documentation_only, is_documentation, main, parse_arguments, shard_option
+from tools import release_notes
 
 
 class DocumentationDecision(unittest.TestCase):
@@ -211,18 +212,22 @@ class SelectionOptions(unittest.TestCase):
         self.assertIn("Changed files: 1 files changed since origin/main.", printed)
 
     def test_changed_runs_everything_when_the_changed_files_cannot_be_determined(self) -> None:
+        # The real git, given no time to finish, cannot tell; the run says why and runs every job.
         every = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
-        selection = mock.Mock()
-        code, printed, _, started = self.run_main(
-            ["--changed"],
-            changed_paths=mock.Mock(return_value=None),
-            changed_jobs=selection,
-            all_jobs=mock.Mock(return_value=every),
-        )
-        self.assertEqual(0, code)
-        selection.assert_not_called()
-        self.assertEqual([every], started)
-        self.assertIn("Full validation: the files changed since origin/main could not be determined.", printed)
+        unfinished = "diff -z --name-only --no-renames origin/main...HEAD did not finish within 0 seconds"
+        for argv, line in (
+            (["--changed"], "the files changed since origin/main could not be determined"),
+            ([], "the changed files could not be determined"),
+        ):
+            selection = mock.Mock()
+            with self.subTest(argv=argv), mock.patch.object(release_notes.CLIENT, "timeout", 0.0):
+                code, printed, _, started = self.run_main(
+                    argv, changed_jobs=selection, documentation_jobs=selection, all_jobs=mock.Mock(return_value=every)
+                )
+                self.assertEqual(0, code)
+                selection.assert_not_called()
+                self.assertEqual([every], started)
+                self.assertIn(f"Full validation: {line} (git -C {REPOSITORY_ROOT} {unfinished}).", printed)
 
     def test_changed_with_a_pattern_or_full_is_a_usage_error(self) -> None:
         for argv, message in (

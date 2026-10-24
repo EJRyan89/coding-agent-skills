@@ -6,6 +6,7 @@ Each policy fails on a violating input and passes on a conforming one.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import job_selection
+from git_client import MISSING_GIT, GitError, GitResult
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from job_selection import (
     FORMAT_JOB,
@@ -43,6 +45,13 @@ from suite_discovery import regression_suites
 from validation_support import REPOSITORY_ROOT, relative
 
 from deployer import platform_support
+from tools import release_notes
+from tools.release_notes import ReleaseNotesError
+
+
+def missing_git(command: list[str], timeout: float) -> GitResult:
+    """The real client's runner when the locator finds no git."""
+    raise GitError(MISSING_GIT, kind="prerequisite")
 
 
 def fixture_job(label: str, weight: float) -> Job:
@@ -299,11 +308,24 @@ class JobSelectionFixtures(unittest.TestCase):
             git("commit", "-q", "-m", "move")
             (root / "docs" / "edited.md").write_text("changed\n", encoding="utf-8")
             (root / "docs" / "new.md").write_text("new\n", encoding="utf-8")
+            # A name git would quote and escape on a line of its own is read as itself.
+            (root / "docs" / "café notes.md").write_text("new\n", encoding="utf-8")
             self.assertEqual(
-                ["docs/edited.md", "docs/new.md", "docs/tool.md", "skills/a/tool.py"], changed_paths(root, "main")
+                [
+                    "docs/café notes.md",
+                    "docs/edited.md",
+                    "docs/new.md",
+                    "docs/tool.md",
+                    "skills/a/tool.py",
+                ],
+                changed_paths(root, "main"),
             )
-            self.assertIsNone(changed_paths(root, "no-such-base"))
-            self.assertIsNone(changed_paths(Path(temporary), "main"))
+            for base, directory, command in (
+                ("no-such-base", root, "git diff -z --name-only --no-renames no-such-base...HEAD failed: "),
+                ("main", Path(temporary), "git diff -z --name-only --no-renames main...HEAD failed: "),
+            ):
+                with self.subTest(base=base), self.assertRaisesRegex(ReleaseNotesError, re.escape(command)):
+                    changed_paths(directory, base)
 
     def test_changed_files_are_the_checkouts_whatever_repository_git_dir_names(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -323,9 +345,13 @@ class JobSelectionFixtures(unittest.TestCase):
                 git("commit", "-q", "-m", "change")
             with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
                 self.assertEqual(["docs/mine.md"], changed_paths(checkout, "main"))
-            # A git that cannot run at all cannot tell either.
-            with mock.patch.object(job_selection, "git", side_effect=ValueError("git was not found")):
-                self.assertIsNone(changed_paths(checkout, "main"))
+            # A git that cannot run at all cannot tell either: the real helper's git missing, or out of time.
+            for failing, reason in (
+                (mock.patch.object(release_notes.CLIENT, "runner", missing_git), MISSING_GIT),
+                (mock.patch.object(release_notes.CLIENT, "timeout", 0.0), "did not finish within 0 seconds"),
+            ):
+                with self.subTest(reason=reason), failing, self.assertRaisesRegex(ReleaseNotesError, reason):
+                    changed_paths(checkout, "main")
 
     @staticmethod
     def documentation_failures(files: dict[str, str], changed: list[str]) -> dict[str, str]:

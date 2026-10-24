@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import git_client
 import upgrade_notes
 from release_levels import versioning_levels
 from upgrade_notes import Snapshot, changed_contract_items, contract_list_problems, upgrade_notes_problems
@@ -30,6 +31,11 @@ from validation_support import write_fixture_tree
 
 from tests import run_validation
 from tools import release_notes
+
+
+def no_time_left() -> contextlib.AbstractContextManager[object]:
+    """The real client and runner given no time, so git does not finish."""
+    return mock.patch.object(release_notes.CLIENT, "timeout", 0.0)
 
 
 def snapshot(files: Mapping[str, str]) -> Snapshot:
@@ -567,6 +573,46 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.release(tag="v0.1.0-rc.1")
         self.assertEqual((None, None), upgrade_notes.last_release_tag(self.root))
         self.assertEqual([], self.problems(self.MANIFEST_CHANGE))
+
+    def test_a_message_holding_the_old_separators_is_read_and_its_entry_counts(self) -> None:
+        self.release()
+        for index, separator in enumerate(("\x1f", "\x1e")):
+            with self.subTest(separator=repr(separator)):
+                body = self.body(self.entry("`deployer/manifest.py`")).replace("Why.", f"Why{separator}.")
+                self.commit(f"Change the manifest {separator} (#{index + 8})\n\n{body}", self.MANIFEST_CHANGE)
+                self.assertEqual([], upgrade_notes_problems(self.root))
+                self.merged()
+                self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
+
+    def test_a_git_that_cannot_run_or_finish_is_a_problem_line(self) -> None:
+        # The real helper's git missing, or given no time, at each place the check reads git: the checkout's files,
+        # the last tag, and the tag's tree.
+        self.release()
+        self.commit("Change the manifest", self.MANIFEST_CHANGE)
+        missing = mock.Mock(side_effect=git_client.GitError(git_client.MISSING_GIT, kind="prerequisite"))
+        for failing in (mock.patch.object(release_notes.CLIENT, "runner", missing), no_time_left()):
+            with self.subTest(failing=failing), failing:
+                [problem] = upgrade_notes_problems(self.root)
+                self.assertTrue(
+                    problem.startswith("the upgrade-notes check cannot list the checkout's files: "), problem
+                )
+        with mock.patch.object(upgrade_notes, "working_snapshot", return_value=snapshot({})), no_time_left():
+            [problem] = upgrade_notes_problems(self.root)
+        self.assertTrue(problem.startswith("the upgrade-notes check cannot find the last tag: git -C "), problem)
+        self.assertTrue(problem.endswith(" did not finish within 0 seconds"), problem)
+        # A tag git cannot list the tree of, after the commits are read.
+        with (
+            mock.patch.object(upgrade_notes, "last_release_tag", return_value=("v9.9.9", None)),
+            mock.patch.object(upgrade_notes, "range_entries", return_value=[]),
+        ):
+            [problem] = upgrade_notes_problems(self.root)
+        self.assertTrue(
+            problem.startswith(
+                "the upgrade-notes check cannot read the commits and the tree since v9.9.9: "
+                "git ls-tree -r --name-only -z v9.9.9 failed: "
+            ),
+            problem,
+        )
 
     def test_a_missing_origin_main_fails_with_the_fetch_command(self) -> None:
         self.release()

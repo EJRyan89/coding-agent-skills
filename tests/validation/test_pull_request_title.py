@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -19,14 +20,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import pull_request_title
-from git_client import GitResult
+from git_client import MISSING_GIT, GitError, GitResult
 from pull_request_title import head_branch, title_problems, title_types_problems
 
+from tools import release_notes
 from tools.worktrees import TITLE_TYPES
 
 
 def git(repository: Path, *arguments: str) -> None:
     subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, check=True)
+
+
+def missing_git(command: list[str], timeout: float) -> GitResult:
+    """The real client's runner when the locator finds no git."""
+    raise GitError(MISSING_GIT, kind="prerequisite")
+
+
+def no_time_left() -> contextlib.AbstractContextManager[object]:
+    """The real client and runner given no time, so git does not finish."""
+    return mock.patch.object(release_notes.CLIENT, "timeout", 0.0)
 
 
 class PullRequestTitlePolicy(unittest.TestCase):
@@ -145,6 +157,9 @@ class HeadBranch(unittest.TestCase):
         with mock.patch.object(pull_request_title, "git", return_value=failed) as run:
             self.assertIsNone(head_branch())
         self.assertEqual(1, run.call_count)
-        # Nor does a git that cannot run at all.
-        with mock.patch.object(pull_request_title, "git", side_effect=ValueError("git was not found")):
-            self.assertIsNone(head_branch())
+        # Nor does a git that cannot run at all: the real helper's git missing, or not finishing in its time limit.
+        self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository))
+        self.assertEqual("feat/local-branch", head_branch())
+        for failing in (mock.patch.object(release_notes.CLIENT, "runner", missing_git), no_time_left()):
+            with self.subTest(failing=failing), failing:
+                self.assertIsNone(head_branch())

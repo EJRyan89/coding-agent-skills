@@ -19,9 +19,10 @@ from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from python_checks import static_format_check, static_lint_check, type_check_jobs
 from shell_targets import static_markdown_shell_check, static_powershell_check, static_shell_check
 from suite_discovery import FIXTURE_ROOT, regression_suites, suite_jobs
-from validation_support import REPOSITORY_ROOT, UnreadablePython, git, parse_python, repository_files
+from validation_support import REPOSITORY_ROOT, UnreadablePython, parse_python, repository_files
 
 from deployer import platform_support
+from tools.release_notes import git_output
 
 POWERSHELL_JOB = "static PowerShell checks (PSScriptAnalyzer on .ps1 files and PowerShell fences)"
 MARKDOWN_SHELL_JOB = "static Markdown shell checks (ShellCheck on Bash fences outside skills/ and tests/)"
@@ -247,24 +248,20 @@ def change_reach_problems(files: list[str], suites: list[str]) -> list[str]:
     return problems
 
 
-def changed_paths(root: Path, base: str) -> list[str] | None:
-    """Files changed since the merge base with `base`, plus uncommitted and untracked ones; None when Git cannot tell.
+def changed_paths(root: Path, base: str) -> list[str]:
+    """Files changed since the merge base with `base`, plus uncommitted and untracked ones, each as git names it, read
+    NUL-separated so a name git would quote is read as itself.
 
     Renames count as a deletion and an addition, so moving a file out of skills/ is still a change to skills/.
+    Raises ReleaseNotesError naming why when git cannot run or cannot tell.
     """
     paths: set[str] = set()
     for command in (
-        ["diff", "--name-only", "--no-renames", f"{base}...HEAD"],
-        ["diff", "--name-only", "--no-renames", "HEAD"],
-        ["ls-files", "--others", "--exclude-standard"],
+        ["diff", "-z", "--name-only", "--no-renames", f"{base}...HEAD"],
+        ["diff", "-z", "--name-only", "--no-renames", "HEAD"],
+        ["ls-files", "-z", "--others", "--exclude-standard"],
     ):
-        try:
-            result = git(root, *command)
-        except ValueError:
-            return None
-        if result.returncode != 0:
-            return None
-        paths.update(line for line in result.stdout.splitlines() if line)
+        paths.update(name for name in git_output(root, *command).split("\0") if name)
     return sorted(paths)
 
 

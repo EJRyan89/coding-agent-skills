@@ -176,6 +176,31 @@ class RangeEntriesTests(FixtureRepository):
             entries = release_notes.range_entries(self.root, "v0.1.0", "HEAD")
         self.assertEqual(["#5", "#3"], [item.pull_request for item in entries])
 
+    def test_a_message_holding_any_byte_but_nul_is_read_whole(self) -> None:
+        # The separators an earlier reader split on, and text that looks like the next commit's name, sit in the
+        # subject and the body; git refuses a NUL, the one byte the listing splits on.
+        for index, separator in enumerate(("\x1f", "\x1e", f"\n{'0' * 40}\n")):
+            with self.subTest(separator=repr(separator)):
+                subject = f"Add a skill {separator.strip()} (#6)"
+                body = BODY.replace("\r\n", "\n").replace("Why the change.", f"Why{separator}the change.")
+                self.commit(subject, body=body, change=f"change {index}")
+                [commit] = release_notes.commits(self.root, "HEAD~1", "HEAD")
+                self.assertEqual((subject, f"{subject}\n\n{body}"), (commit.subject, commit.message))
+                entries = release_notes.range_entries(self.root, "HEAD~1", "HEAD")
+                self.assertEqual(["#6"], [item.pull_request for item in entries])
+                self.assertEqual(["A skill is added"], [item.entry.heading for item in entries])
+                self.assertEqual(0, self.run_main("v0.2.0", "--from", "HEAD~1")[0])
+
+    def test_a_listing_that_is_not_whole_commits_is_a_release_notes_error(self) -> None:
+        for listed in (f"{'a' * 40}\0subject\0", f"{'a' * 40}\0subject\0message", "\0"):
+            runner = mock.Mock(return_value=git_client.GitResult(0, listed, ""))
+            with (
+                self.subTest(listed=listed),
+                mock.patch.object(release_notes.CLIENT, "runner", runner),
+                self.assertRaisesRegex(release_notes.ReleaseNotesError, "a listing that is not whole commits"),
+            ):
+                release_notes.commits(self.root, "v0.1.0", "HEAD")
+
     def test_an_entry_released_with_the_previous_tag_is_not_read_again(self) -> None:
         self.commit("Move a heading (#2)", notes=f"{INTRO}\n## Unreleased\n\n{RELEASED.replace('## v0.1.0', '')}")
         self.assertEqual([], release_notes.range_entries(self.root, "v0.1.0", "HEAD"))

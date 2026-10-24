@@ -17,7 +17,7 @@ from pathlib import Path
 from markdown_sections import HTML_COMMENT
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, git
 
-from tools.release_notes import RELEASE_BRANCH, SQUASH_TITLE_NUMBER
+from tools.release_notes import RELEASE_BRANCH, SQUASH_TITLE_NUMBER, ReleaseNotesError
 
 # How far before the merge base the walk of main's first-parent line reaches, in commits. In continuous integration
 # the checkout is the merge of the pull request into main, so its merge base is main's tip and this window is all the
@@ -63,10 +63,10 @@ class Revert:
 
 
 def _git(root: Path, *arguments: str) -> str:
-    """git's output, or ValueError naming the command when it fails."""
+    """git's output, or ReleaseNotesError, as `git` raises when git cannot run, naming the command when it fails."""
     completed = git(root, "--literal-pathspecs", *arguments)
     if completed.returncode != 0:
-        raise ValueError(f"git {' '.join(arguments[:2])} failed: {completed.stderr.strip()}")
+        raise ReleaseNotesError(f"git {' '.join(arguments[:2])} failed: {completed.stderr.strip()}")
     return completed.stdout
 
 
@@ -109,7 +109,12 @@ def window_start(root: Path, merge_base: str) -> str | None:
 
 def earlier_states(root: Path, main: str, start: str | None, paths: list[str]) -> dict[str, list[tuple[str, str, str]]]:
     """For each path, newest first, each (blob before, commit, subject) of the commits on main's first-parent line
-    after start that changed it."""
+    after start that changed it.
+
+    git writes each commit's name and subject, then each of its --raw entries and their paths, each ended by NUL, which
+    neither a subject nor a path holds, so the fields are read by their place: a subject that looks like an entry, or a
+    path that looks like a commit, is read as what it is.
+    """
     states: dict[str, list[tuple[str, str, str]]] = {}
     span = f"{start}..{main}" if start else main
     for batch in _batches(paths):
@@ -122,16 +127,19 @@ def earlier_states(root: Path, main: str, start: str | None, paths: list[str]) -
             "--no-renames",
             "--raw",
             "--no-abbrev",
-            "--format=%x01%H%x02%s",
+            "--format=%H%x00%s",
             span,
             "--",
             *batch,
         )
-        for record in output.split("\x01")[1:]:
-            header, *tokens = record.split("\0")
-            commit, _, subject = header.partition("\x02")
-            for old, _, _, path in _raw_entries([token.lstrip("\n") for token in tokens]):
-                states.setdefault(path, []).append((old, commit, subject))
+        tokens = iter(output.split("\0"))
+        commit = subject = ""
+        for token in tokens:
+            if token.lstrip("\n").startswith(":"):
+                for old, _, _, path in _raw_entries([token.lstrip("\n"), next(tokens, "")]):
+                    states.setdefault(path, []).append((old, commit, subject))
+            elif token:
+                commit, subject = token, next(tokens, "")
     return states
 
 
@@ -171,24 +179,24 @@ def silent_revert_problems(root: Path, body: str | None = None) -> list[str]:
     The declarations are read from the pull request body when given, since the body becomes the squash commit's
     message, and otherwise from the messages of the branch's commits since its merge base, so a local run reads them.
     """
-    if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
-        return [
-            f"{RELEASE_BRANCH} is missing, so the silent-revert check cannot compare the change with main's history; "
-            "fetch it with `git fetch origin main`"
-        ]
-    if git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
-        return [
-            "this clone is shallow, so the silent-revert check cannot read main's history; fetch it with "
-            "`git fetch --unshallow`"
-        ]
     try:
+        if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
+            return [
+                f"{RELEASE_BRANCH} is missing, so the silent-revert check cannot compare the change with main's "
+                "history; fetch it with `git fetch origin main`"
+            ]
+        if git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+            return [
+                "this clone is shallow, so the silent-revert check cannot read main's history; fetch it with "
+                "`git fetch --unshallow`"
+            ]
         reverts = find_reverts(root)
         if not reverts:
             return []
         if body is None:
             merge_base = _git(root, "merge-base", "HEAD", RELEASE_BRANCH).strip()
             body = _git(root, "log", "--format=%B", f"{merge_base}..HEAD")
-    except ValueError as error:
+    except ReleaseNotesError as error:
         return [f"the silent-revert check cannot read the history: {error}"]
     declared = declarations(body)
     return [revert.report() for revert in reverts if not is_declared(revert, declared)]

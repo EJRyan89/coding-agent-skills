@@ -52,6 +52,8 @@ from validation_support import (
     write_fixture_tree,
 )
 
+from tools.release_notes import ReleaseNotesError
+
 SOURCE = (
     "import os.path\n"
     "import subprocess as sp, json\n"
@@ -685,5 +687,7 @@ class RepositoryFilesFixtures(unittest.TestCase):
             with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
                 self.assertEqual(expected, sorted(repository_files(checkout)))
             # Outside any repository git cannot list them, and the failure says so rather than reading as no files.
-            with self.assertRaisesRegex(ValueError, "git ls-files failed"):
+            with self.assertRaisesRegex(
+                ReleaseNotesError, "git ls-files --cached --others --exclude-standard -z failed"
+            ):
                 repository_files(Path(temporary))
