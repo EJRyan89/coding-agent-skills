@@ -20,6 +20,8 @@ permissions:
 env:
   SHELLCHECK_VERSION: '0.9.0'
   PSSCRIPTANALYZER_VERSION: '1.25.0'
+  # The digest of ShellCheck's Linux release archive at the pin, which the Linux legs check before extracting it.
+  SHELLCHECK_LINUX_SHA256: '700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f'
 
 # A newer push to a pull request cancels its older run; every commit on main keeps its own result.
 concurrency:
@@ -49,6 +51,19 @@ jobs:
           # Validation compares with the base branch to find documentation-only changes; without its history it
           # cannot tell and runs every suite.
           fetch-depth: 0
+
+      # The file-heavy suites run many times slower here than on Linux, and real-time scanning of the checkout and the
+      # suites' temporary trees is a suspected cause. The runner is ephemeral and these folders hold only this
+      # repository and its tests' files, so they are excluded for this job alone.
+      - name: Exclude the runner's own folders from real-time scanning
+        shell: pwsh
+        run: |
+          $enabled = (Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled
+          Write-Host "Defender real-time protection enabled: $enabled"
+          if ($enabled) {
+            Add-MpPreference -ExclusionPath @($env:RUNNER_TEMP, $env:TEMP, $env:GITHUB_WORKSPACE) -ErrorAction Stop
+            Write-Host "Excluded from scanning: $((Get-MpPreference).ExclusionPath -join ', ')"
+          }
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -115,9 +130,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m mypy --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Validation loads the newest installed version; the gallery's latest shows when the pin has fallen behind.
-          $installed = (Get-Module -ListAvailable PSScriptAnalyzer -ErrorAction Stop).Version -join ', '
-          Write-Host "PSScriptAnalyzer installed: $installed; latest release: $((Find-Module PSScriptAnalyzer).Version)"
+          # Validation runs the first ShellCheck on PATH and the newest installed PSScriptAnalyzer: each is the pin.
+          $shellcheck = [string]((shellcheck --version) -match '^version: ' -replace '^version: ')
+          if ($shellcheck -ne $env:SHELLCHECK_VERSION) { throw "ShellCheck is '$shellcheck', not the pin $env:SHELLCHECK_VERSION" }
+          $analyzer = [string](Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | Select-Object -First 1).Version
+          if ($analyzer -ne $env:PSSCRIPTANALYZER_VERSION) { throw "PSScriptAnalyzer is '$analyzer', not the pin $env:PSSCRIPTANALYZER_VERSION" }
+          Write-Host "ShellCheck $shellcheck; PSScriptAnalyzer $analyzer"
+
+      # The gallery is not a Dependabot ecosystem, so the weekly run shows when the pin has fallen behind; a pull request
+      # does not wait on the query.
+      - name: Show the latest PSScriptAnalyzer release
+        if: github.event_name == 'schedule'
+        shell: pwsh
+        run: |
+          Write-Host "PSScriptAnalyzer latest release: $((Find-Module PSScriptAnalyzer -ErrorAction Stop).Version)"
 
       - name: Run repository validation
         shell: pwsh
@@ -182,15 +208,41 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
-      # The image has Bash and PowerShell 7; ShellCheck comes from Ubuntu's archive, whose release the toolchain
-      # check holds to the pin's floor, and PSScriptAnalyzer at the pin the Windows legs install.
+      # As on the Windows legs, a leg after the first restores the pinned tools; a raised pin changes the key.
+      - name: Restore ShellCheck
+        id: shellcheck
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/shellcheck
+          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
+
+      - name: Restore PSScriptAnalyzer
+        id: psscriptanalyzer
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/powershell/Modules/PSScriptAnalyzer
+          key: psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}
+
+      # The image has Bash and PowerShell 7. ShellCheck is the pinned release's own Linux build, checked against its
+      # pinned digest and kept in its own folder ahead of the image's on PATH.
       - name: Install ShellCheck
         shell: bash
+        env:
+          SHELLCHECK_CACHED: ${{ steps.shellcheck.outputs.cache-hit }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          shellcheck="$RUNNER_TEMP/shellcheck"
+          if [ "$SHELLCHECK_CACHED" != true ]; then
+            release="https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION"
+            archive="$RUNNER_TEMP/shellcheck.tar.xz"
+            curl --fail --silent --show-error --location --retry 3 --output "$archive" "$release/shellcheck-v$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+            echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict
+            mkdir -p "$shellcheck"
+            tar --extract --xz --file "$archive" --directory "$shellcheck" --strip-components 1 "shellcheck-v$SHELLCHECK_VERSION/shellcheck"
+          fi
+          echo "$shellcheck" >> "$GITHUB_PATH"
 
       - name: Install PSScriptAnalyzer
+        if: steps.psscriptanalyzer.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Scope CurrentUser -Force -ErrorAction Stop
@@ -199,6 +251,26 @@ jobs:
         shell: bash
         run: |
           python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
+
+      - name: Verify validation tools
+        shell: pwsh
+        run: |
+          foreach ($command in @('python', 'bash', 'pwsh', 'shellcheck')) {
+            $resolved = Get-Command $command -ErrorAction Stop
+            Write-Host "$command -> $($resolved.Source)"
+            & $resolved.Source --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python -m ruff --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m mypy --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Validation runs the first ShellCheck on PATH and the newest installed PSScriptAnalyzer: each is the pin.
+          $shellcheck = [string]((shellcheck --version) -match '^version: ' -replace '^version: ')
+          if ($shellcheck -ne $env:SHELLCHECK_VERSION) { throw "ShellCheck is '$shellcheck', not the pin $env:SHELLCHECK_VERSION" }
+          $analyzer = [string](Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | Select-Object -First 1).Version
+          if ($analyzer -ne $env:PSSCRIPTANALYZER_VERSION) { throw "PSScriptAnalyzer is '$analyzer', not the pin $env:PSSCRIPTANALYZER_VERSION" }
+          Write-Host "ShellCheck $shellcheck; PSScriptAnalyzer $analyzer"
 
       - name: Run repository validation
         shell: pwsh
