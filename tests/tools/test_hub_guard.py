@@ -1200,6 +1200,10 @@ class CommandReadingTests(GuardTestCase):
             ("PowerShell", "'git commit -m x' | pwsh -NoProfile", ["could not read the command passed to pwsh"]),
             ("Bash", "bash -s one <<< 'git commit -m x'", []),
             ("Bash", "bash script.sh; git status", []),
+            # Only -s, alone or in a bundle of short options, reads the script from standard input.
+            ("Bash", "bash -l script.sh; git status", []),
+            ("Bash", "bash --posix script.sh; git status", []),
+            ("Bash", "echo 'git commit -m x' | bash -ls one", ["could not read the command passed to bash"]),
             ("Bash", "bash < script.sh; git status", []),
             ("Bash", "pwsh -File build.ps1; git status", []),
             ("Bash", "pwsh -ExecutionPolicy Bypass build.ps1; git status", []),
@@ -1991,6 +1995,10 @@ class StandardInputTests(unittest.TestCase):
             (["-e"], False),
             (["-enc"], False),
             (["build.ps1"], False),
+            # A switch that takes no value is one word, and the word after it is read on its own.
+            (["-NoProfile", "build.ps1"], False),
+            (["-NoProfile", "-Command", "-"], True),
+            (["-NoProfile", "-File", "-"], True),
             (["-ExecutionPolicy", "Bypass"], True),
             (["-ex", "Bypass", "build.ps1"], False),
             ([None], True),
