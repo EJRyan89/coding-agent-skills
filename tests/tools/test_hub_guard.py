@@ -368,7 +368,7 @@ class HookCommandTests(GuardTestCase):
     all, and with what, without depending on which Python the machine has.
     """
 
-    def run_hook(self, variables: Mapping[str, str] | None = None) -> tuple[int, list[str] | None]:
+    def run_hook(self, variables: Mapping[str, str] | None = None, note: str = "") -> tuple[int, list[str] | None]:
         bash = platform_support.find_bash()
         if bash is None:
             raise AssertionError("Git Bash was not found; it is required for repository validation.")
@@ -399,7 +399,7 @@ class HookCommandTests(GuardTestCase):
             env=environment,
             check=False,
         )
-        self.assertEqual("", completed.stderr)
+        self.assertEqual(note, completed.stderr)
         arguments = record.read_text(encoding="utf-8").splitlines() if record.exists() else None
         return completed.returncode, arguments
 
@@ -416,6 +416,35 @@ class HookCommandTests(GuardTestCase):
                 code, arguments = self.run_hook()
                 self.assertEqual(0, code)
                 self.assertEqual(["-B", f"{self.hub}/tools/hub_guard.py"], arguments)
+
+    def test_an_opt_in_git_cannot_read_is_allowed_with_a_note_that_names_the_failure(self) -> None:
+        def not_a_boolean() -> None:
+            self.enable("maybe")
+
+        def malformed_configuration() -> None:
+            with (self.hub / ".git" / "config").open("a", encoding="utf-8") as configuration:
+                configuration.write("[not closed\n")
+
+        # A value that is no boolean, then a configuration file git cannot parse, with the opt-in set in it.
+        for name, breaks in (("not a boolean", not_a_boolean), ("malformed", malformed_configuration)):
+            with self.subTest(name):
+                self.enable("true")
+                breaks()
+                reading = ["config", "--local", "--type=bool", "--get", "coding-agent-skills.hubGuard"]
+                said = subprocess.run(
+                    ["git", "-C", str(self.hub), *reading],
+                    env=self.environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotIn(said.returncode, (0, 1))
+                # git's own message comes first, as git prints it, and the note that names its exit status after it.
+                note = (
+                    f"hub guard skipped: the opt-in of {self.hub} could not be read: "
+                    f"git config exited with {said.returncode}\n"
+                )
+                self.assertEqual((0, None), self.run_hook(note=said.stderr + note))
 
     def test_an_inherited_git_dir_or_git_config_cannot_switch_the_opt_in_off(self) -> None:
         other = self.other_repository()
@@ -509,7 +538,8 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
         return completed, record.exists()
 
     def test_powershell_parses_the_command_and_ends_it_before_it_starts_anything(self) -> None:
-        for value in (None, "true"):
+        # Unset, opted in, and an opt-in git cannot read: in each PowerShell ends at the command's own `exit 0`.
+        for value in (None, "true", "maybe"):
             for mode in ("-Command", "-File"):
                 with self.subTest(value=value, mode=mode):
                     self.enable(value)
