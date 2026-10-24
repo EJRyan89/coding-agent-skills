@@ -607,6 +607,12 @@ class LockRemedyTests(RemedyTestCase):
 
 
 class RecoveryGuideTests(unittest.TestCase):
+    def test_the_stopped_recovery_line_is_the_one_interrupted_deployments_quotes(self) -> None:
+        # The guide owns the wording a user reads, so the constant the deployer prints is held to it.
+        guide = (REPOSITORY_ROOT / "docs" / "recovery.md").read_text(encoding="utf-8")
+        section = guide.split("\n## Interrupted deployments\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(f"followed by `{errors.RECOVERY_STOPPED}`, and exits 1", section)
+
     def test_every_section_a_refusal_names_is_a_heading_of_the_guide(self) -> None:
         self.assertEqual("docs/recovery.md", errors.RECOVERY_GUIDE)
         self.assertEqual(
