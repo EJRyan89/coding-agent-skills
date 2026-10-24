@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from console import failed_line, use_utf8_output
 from file_presence import is_present
 
 # This skill's own folder name, which every dependent's fixed sys.path line and every check of that line names.
@@ -36,13 +37,17 @@ class MissingSibling(SystemExit):
     """A sibling skill a script reaches is not beside it.
 
     `sibling_scripts` runs while a script imports, before `console.run_main` can turn an exception into a FAILED
-    line, so the lookup ends the script as a usage error does, with its message on stderr and exit code 1, rather
-    than with a traceback.
+    line, so the lookup prints the line `run_main` would, `FAILED MissingSibling: <message>` on stdout, and this exit
+    then ends the script with exit code 1 and nothing on stderr, rather than with a traceback.
     """
 
     def __init__(self, name: str, message: str) -> None:
-        super().__init__(message)
+        super().__init__(1)
         self.name = name
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
 
 
 def sibling_scripts(name: str) -> Path:
@@ -57,7 +62,7 @@ def sibling_scripts(name: str) -> Path:
     try:
         plugin = plugin_name()
     except ValueError as error:
-        raise MissingSibling(
+        raise _reported(
             name, f"skill {name} has no scripts under {SKILLS_ROOT}; reinstall the plugin: {error}"
         ) from None
     remedy = (
@@ -65,7 +70,15 @@ def sibling_scripts(name: str) -> Path:
         if plugin is not None
         else "deploy the skills that declare it in skill_deps again"
     )
-    raise MissingSibling(name, f"skill {name} has no scripts under {SKILLS_ROOT}; {remedy}")
+    raise _reported(name, f"skill {name} has no scripts under {SKILLS_ROOT}; {remedy}")
+
+
+def _reported(name: str, message: str) -> MissingSibling:
+    """The exit for an absent sibling, once its FAILED line is out on stdout in UTF-8, as `run_main` prints one."""
+    missing = MissingSibling(name, message)
+    use_utf8_output()
+    print(failed_line(missing))
+    return missing
 
 
 def plugin_name() -> str | None:

@@ -170,8 +170,10 @@ def read_title(text: str) -> tuple[str, list[str]]:
 
 
 def read_file(path: Path) -> str:
+    """A title or body file's UTF-8 text, without the byte-order mark an editor on Windows may save before it, so the
+    checks judge the text as typed."""
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as exc:
         raise PullRequestError(f'cannot read "{path}": {flat_text(str(exc))}') from exc
 

@@ -222,8 +222,8 @@ class RemovalTests(DeployerTestCase):
         # core plays ejryan89-skill-core: it holds the real sibling lookup, which run.py reaches middle through once
         # deployed, where the manifest's recorded skill_deps keep middle installed beside a skipped or preserved public.
         self.write(core / "scripts" / "skill_roots.py", SKILL_ROOTS.read_text(encoding="utf-8"))
-        presence = SKILL_ROOTS.with_name("file_presence.py")
-        self.write(core / "scripts" / "file_presence.py", presence.read_text(encoding="utf-8"))
+        for module in ("file_presence.py", "console.py", "flat_text.py"):
+            self.write(core / "scripts" / module, SKILL_ROOTS.with_name(module).read_text(encoding="utf-8"))
         self.write(
             middle / "scripts" / "bridge.py",
             "import sys\nfrom pathlib import Path\n"
