@@ -196,8 +196,12 @@ def commits(root: Path, start: str, end: str) -> list[Commit]:
 
 
 def _notes_at(root: Path, revision: str) -> str | None:
-    shown = git(root, "show", f"{revision}:{UPGRADE_NOTES}")
-    return shown.stdout if shown.returncode == 0 else None
+    """The notes file as the revision holds it, or None when the revision holds no such file. ReleaseNotesError, with
+    git's reason, when git cannot read the revision, so a failure never reads as a missing file."""
+    listed = git_output(root, "ls-tree", "--name-only", revision, "--", UPGRADE_NOTES)
+    if not listed.strip():
+        return None
+    return git_output(root, "show", f"{revision}:{UPGRADE_NOTES}")
 
 
 def added_unreleased_entries(root: Path, sha: str) -> list[NotesEntry]:
