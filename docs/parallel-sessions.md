@@ -112,7 +112,9 @@ check is green or pending, a few per tick and never by a rebase, holding those u
 changes the validation policies or the runner's selection is open. It checks that a red run tested the pull request's
 current head before judging it, reruns a failure of the runner or a service once per head, and names every other
 failure for the session that owns the branch. Each worktree whose pull request merged is named for `repo-cleanup`,
-run from outside it. A script rather than a prompt repeats these steps, so neither session spends its context on
+run from outside it. It admits only pull requests whose head branch is in this repository: one from a fork or any
+other repository is named as not admitted and never armed, judged, updated, or rerun, so it merges only when the
+maintainer merges it. A script rather than a prompt repeats these steps, so neither session spends its context on
 them, and the orchestrator keeps its own for the decisions.
 
 ## What is shared even across worktrees

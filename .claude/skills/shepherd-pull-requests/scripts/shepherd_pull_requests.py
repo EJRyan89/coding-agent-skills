@@ -7,7 +7,10 @@ Run it from the hub on main. One tick:
   linked worktree it leaves the hub to the hub's own session;
 - lists the open pull requests that are not drafts, with their merge state, auto-merge, head, and the state of the
   required check Validation on that head;
-- arms squash auto-merge on each one that has none;
+- admits only the pull requests whose head branch is in this repository, and names every other one, such as one
+  opened from a fork, as not admitted: it arms, judges, updates, and reruns nothing for it, and it holds no other
+  pull request's update;
+- arms squash auto-merge on each admitted one that has none;
 - names each pull request whose recorded head is not the commit its branch on origin holds, because GitHub missed a
   push, and neither judges nor updates it, since GitHub refuses to update a stale head;
 - names each pull request in conflict with main (GitHub's merge state DIRTY), which only its owner can resolve, and
@@ -36,13 +39,16 @@ Every line is one fact:
     REPOSITORY <owner/name>            the GitHub repository origin names
     HUB "<path>" <what happened>       fast-forwarded <old> to <new>, current at <commit>, would fast-forward <old>
                                        to <new>, or not fast-forwarded: <reason>
-    HOLD #<number> changes <path>      a pull request that holds every other one's update while it is open
+    HOLD #<number> changes <path>      an admitted pull request that holds every other one's update while it is open
     PR #<number> <branch> <merge state> auto-merge <on|off> head <commit> Validation <state> <actions>
                                        one per pull request, oldest first; <merge state> is GitHub's, <state> is a
                                        conclusion of the newest run on the head, such as SUCCESS or FAILURE,
                                        PENDING, or MISSING, and <actions> is none or a comma-separated
                                        list of armed, updated, rerun (would-arm, would-update, and would-rerun with
                                        --dry-run), held, and next-tick, a BEHIND pull request past this tick's limit
+    NOT_ADMITTED #<number> <branch> head <commit> from another repository
+                                       a pull request whose head branch is not in this repository, left to the
+                                       maintainer: never armed, judged, updated, or rerun
     OUT_OF_STEP #<number> <branch> head <commit> branch <commit>
                                        a pull request whose recorded head is not its branch's commit on origin,
                                        neither judged nor updated until its owner pushes again
@@ -72,8 +78,9 @@ Every line is one fact:
 
 Every branch, path, state, leg, step, and check name that GitHub returned is flattened onto its line.
 
-Exit status 0 means the tick ran with nothing left for the shepherd's judgment; 1 that it printed an OUT_OF_STEP,
-CONFLICT, DEFECT, RERUN_SPENT, PR_FAILED, or MERGED_FAILED line, or a last line FAILED <reason>; 2 a usage error.
+Exit status 0 means the tick ran with nothing left for the shepherd's judgment; 1 that it printed a NOT_ADMITTED,
+OUT_OF_STEP, CONFLICT, DEFECT, RERUN_SPENT, PR_FAILED, or MERGED_FAILED line, or a last line FAILED <reason>; 2 a
+usage error.
 """
 
 from __future__ import annotations
@@ -131,7 +138,12 @@ RULE = "=" * 70
 FAILED_HEADER = "FAILED "
 CLOSING = re.compile(r"policy checks and \d+ suite jobs in ")
 POLICY_FAILURE = re.compile(r"^(?:FAIL|ERROR): (\S+)")
-TERMINATION = "before its first line of output"
+# How tests/validation/job_pool.py's _settle reports a suite whose program was ended before its first line of output:
+# ended on every attempt, a termination; or started once more and failed, a retry note whose report after RETRY_FAILED
+# is the retry's own. The shepherd's suite pins both against the pool's own output.
+TERMINATED = re.compile(r"^Ended before its first line of output on each of \d+ attempts")
+RETRIED = "Started once more after: "
+RETRY_FAILED = "The retry failed:"
 SILENT_EXIT = re.compile(r"^Command failed with exit code -?\d+: ")
 SERVICE_MARKERS = (
     "powershellgallery.com",
@@ -423,11 +435,14 @@ def first_failing_check(lines: Sequence[str]) -> str | None:
 
 
 def block_reason(body: Sequence[str]) -> str | None:
-    """The rerun case a failed job's report shows, or None when it shows a failure of the change."""
-    text = "\n".join(body)
-    if TERMINATION in text:
-        return "termination"
+    """The rerun case a failed job's report shows, or None when it shows a failure of the change; a retry that
+    failed is judged by the retry's report alone."""
     content = [line for line in body if line.strip()]
+    if len(content) > 1 and content[0].startswith(RETRIED) and content[1] == RETRY_FAILED:
+        return block_reason(body[body.index(RETRY_FAILED) + 1 :])
+    if content and TERMINATED.match(content[0]):
+        return "termination"
+    text = "\n".join(body)
     if len(content) == 1 and SILENT_EXIT.match(content[0]):
         return "silent-exit"
     lowered = text.casefold()
@@ -686,6 +701,25 @@ def pull_line(pull: Pull, outcome: Outcome) -> str:
     )
 
 
+def act(client: GitHubClient, repository: str, pull: Pull, outcome: Outcome, stale: str | None, dry_run: bool) -> None:
+    """Name `pull` when it is not admitted; otherwise arm it, and name it when it is out of step, where `stale` is its
+    branch's commit on origin, or in conflict, and judge its red check."""
+    named = f"{flat_text(pull.branch)} head {short(pull.head)}"
+    if pull.cross_repository:
+        outcome.lines.append(f"NOT_ADMITTED #{pull.number} {named} from another repository")
+        outcome.flagged = True
+        return
+    arm(client, repository, pull, outcome, dry_run)
+    if stale is not None:
+        outcome.lines.append(f"OUT_OF_STEP #{pull.number} {named} branch {short(stale)}")
+        outcome.flagged = True
+        return
+    if pull.merge_state == CONFLICTED:
+        outcome.lines.append(f"CONFLICT #{pull.number} {named} merge {REMOTE}/{BASE} and resolve")
+        outcome.flagged = True
+    judge_red(client, repository, pull, outcome, dry_run)
+
+
 def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool, emit: Callable[[str], None]) -> int:
     """Run one tick from `directory`, printing each line through `emit`, and return the exit status."""
     try:
@@ -707,27 +741,19 @@ def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool
     except GitError as exc:
         emit(f"FAILED cannot read {REMOTE}'s branches: {flat_text(str(exc))}")
         return 1
-    holds = {pull.number: path for pull in pulls if (path := holding_path(pull.files)) is not None}
+    admitted = [pull for pull in pulls if not pull.cross_repository]
+    holds = {pull.number: path for pull in admitted if (path := holding_path(pull.files)) is not None}
     for number, path in holds.items():
         emit(f"HOLD #{number} changes {flat_text(path)}")
     outcomes = {pull.number: Outcome() for pull in pulls}
     stale = {pull.number: branch for pull in pulls if (branch := out_of_step(pull, heads)) is not None}
     behind = {
-        pull.number for pull in pulls if pull.number not in stale and is_behind(git, place.top, pull, heads.get(BASE))
+        pull.number
+        for pull in admitted
+        if pull.number not in stale and is_behind(git, place.top, pull, heads.get(BASE))
     }
     for pull in pulls:
-        outcome = outcomes[pull.number]
-        arm(client, place.repository, pull, outcome, dry_run)
-        if pull.number in stale:
-            named = f"{flat_text(pull.branch)} head {short(pull.head)}"
-            outcome.lines.append(f"OUT_OF_STEP #{pull.number} {named} branch {short(stale[pull.number])}")
-            outcome.flagged = True
-            continue
-        if pull.merge_state == CONFLICTED:
-            named = f"{flat_text(pull.branch)} head {short(pull.head)}"
-            outcome.lines.append(f"CONFLICT #{pull.number} {named} merge {REMOTE}/{BASE} and resolve")
-            outcome.flagged = True
-        judge_red(client, place.repository, pull, outcome, dry_run)
+        act(client, place.repository, pull, outcomes[pull.number], stale.get(pull.number), dry_run)
     update(client, place.repository, pulls, behind, holds, outcomes, dry_run)
     flagged = False
     for pull in pulls:
