@@ -1075,6 +1075,48 @@ class SkillScriptsFixtures(unittest.TestCase):
                 gh_filter_problems(root),
             )
 
+    def test_the_python_and_the_shell_readers_refuse_each_filter_form_alike(self) -> None:
+        # One corpus of the forms gh's flag parser reads, held to both readers, so neither misses one the other sees.
+        forms = {
+            "--jq": ["--jq", ".x"],
+            "--jq=": ["--jq=.x"],
+            "--template": ["--template", "{{.}}"],
+            "--template=": ["--template={{.}}"],
+            "-q": ["-q", ".x"],
+            "-q<filter>": ["-q.x"],
+        }
+        doc = '"Commands skills may run" in docs/adding-a-skill.md'
+        for name, words in forms.items():
+            flag = name.rstrip("=").replace("<filter>", "")
+            arguments = ["gh", "pr", "view", "--json", "title", *words]
+            for script, text in (
+                ("tool.py", f"run({arguments!r})\n"),
+                ("tool.sh", " ".join(arguments) + "\n"),
+                ("tool.ps1", f"$title = {' '.join(arguments)}\n"),
+            ):
+                with self.subTest(form=name, script=script), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_fixture_tree(root, {f"skills/alpha/scripts/{script}": text})
+                    self.assertEqual(
+                        [
+                            f"skills/alpha/scripts/{script}:1 filters gh output with {flag}; parse its JSON in Python "
+                            f"instead; see {doc}"
+                        ],
+                        gh_filter_problems(root),
+                    )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # git's -q, with no --json beside it or no gh on its line, and a word that only starts like a flag.
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/scripts/tool.py": 'run(["git", "fetch", "-q"])\n'
+                    'run(["gh", "pr", "view", "--jquery"])\n',
+                    "skills/alpha/scripts/tool.sh": "git fetch -q origin\ngh pr view --jquery x\n",
+                },
+            )
+            self.assertEqual([], gh_filter_problems(root))
+
     def test_skill_command_policy_detects_undeclared_unused_and_nonstandard_commands(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

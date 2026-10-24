@@ -204,6 +204,40 @@ def test_the_allowed_github_fields_and_other_contexts_pass(expression: str) -> N
     assert workflow_guard_problems(workflow, ["push"], set()) == []
 
 
+BARE_CONDITION = (
+    "on:\n  push:\n\npermissions:\n  contents: read\n\njobs:\n  run:\n    if: {job}\n    steps:\n"
+    "      - if: {step}\n        run: echo done\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("job", "step"),
+    [
+        ("github.event.pull_request.title == 'x'", "true"),
+        ("true", "contains(github.event.head_commit.message, 'x')"),
+        ("true", "toJSON(github)"),
+        ("true", "secrets.TOKEN != ''"),
+        ("true", "github.event_name == `schedule`"),
+    ],
+)
+def test_a_bare_condition_is_read_as_the_expression_github_evaluates(job: str, step: str) -> None:
+    # GitHub evaluates an if: value as an expression whether or not it is wrapped in ${{ }}.
+    problems = workflow_guard_problems(BARE_CONDITION.format(job=job, step=step), ["push"], set())
+    assert len(problems) == 1, problems
+    assert "jobs.run" in problems[0]
+
+
+@pytest.mark.parametrize(
+    ("job", "step"),
+    [
+        ("github.event_name == 'schedule'", "github.ref != 'refs/heads/main' && matrix.shard == '1/2'"),
+        ("${{ !cancelled() }}", "steps.cache.outputs.cache-hit != 'true'"),
+    ],
+)
+def test_a_bare_condition_reading_only_the_allowed_fields_passes(job: str, step: str) -> None:
+    assert workflow_guard_problems(BARE_CONDITION.format(job=job, step=step), ["push"], set()) == []
+
+
 LEGS = (
     "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n"
     "    name: Windows shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n"
