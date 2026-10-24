@@ -44,6 +44,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import json_reader
 from executable_locator import PYTHON
 from flat_text import flat_text
 from review_config import safe_repository_path
@@ -385,7 +386,8 @@ def seal(directory: Path) -> str:
     """The hash `report` sealed the input with: of every input line after the first, the seal line, and of the
     context. A changed input or context no longer matches the hash the seal line and the report hold."""
     first, _, body = (directory / INPUT_NAME).read_text(encoding="utf-8").partition("\n")
-    sealed = json.loads(first).get("input_sha256") if first else None
+    head = json_reader.loads(first) if first else None
+    sealed = head.get("input_sha256") if isinstance(head, dict) else None
     actual = _digest(body, (directory / CONTEXT_NAME).read_text(encoding="utf-8"))
     return actual if sealed == actual else ""
 
@@ -469,7 +471,7 @@ def remove_run(synthesis: dict[str, Any] | None) -> None:
     if not run.name.startswith(RUN_PREFIX) or run.parent.resolve() != Path(tempfile.gettempdir()).resolve():
         return
     try:
-        roles = json.loads((run / RUN_FILE).read_text(encoding="utf-8"))["roles"]
+        roles = json_reader.loads((run / RUN_FILE).read_text(encoding="utf-8"))["roles"]
     except (OSError, ValueError, KeyError, TypeError):
         return
     if (

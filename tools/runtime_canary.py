@@ -130,6 +130,7 @@ import json_reader
 import runtime_support
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
+from file_presence import is_present
 from git_client import GitClient, GitError
 from link_probe import is_plain_directory
 from release_tags import last_release
@@ -398,9 +399,12 @@ def inside(path: str, directory: Path) -> bool:
 
 
 def read_records(path: Path) -> list[dict[str, Any]]:
-    """The JSON objects in a JSON Lines file, skipping any line a crashed writer left incomplete."""
+    """The JSON objects in a JSON Lines file, skipping any line a crashed writer left incomplete. The canary creates
+    each records file empty before the run, so an empty or missing file is a run that recorded nothing, which the
+    verdict reports as no marker; a directory or anything else in the file's place raises NotAFile, an OSError, which
+    the run reports as a record it cannot read."""
     records = []
-    if path.is_file():
+    if is_present(path):
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             with contextlib.suppress(json.JSONDecodeError, json_reader.JsonRefused):
                 record = json_reader.loads(line)

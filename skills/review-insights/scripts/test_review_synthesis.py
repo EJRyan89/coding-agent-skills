@@ -248,6 +248,23 @@ class InputTests(SynthesisFixture):
         self.assertEqual(sorted([self.linked, self.unlinked, self.general]), context["open_flags"])
         self.assertIsNone(context["previous_recommendations"])
 
+    def test_a_seal_line_that_is_no_object_or_nests_too_deep_is_refused_as_unsealed_or_unreadable(self) -> None:
+        json_path, _ = self.run_report()
+        synthesis = self.synthesis(json_path)
+        path = json_path.parent / rs.INPUT_NAME
+        body = path.read_text(encoding="utf-8").partition("\n")[2]
+        for first, reason in (
+            ("[]", "the synthesis input or context changed after the report sealed it; run report again"),
+            ('"seal"', "the synthesis input or context changed after the report sealed it; run report again"),
+            ("null", "the synthesis input or context changed after the report sealed it; run report again"),
+            ("[" * 100_000 + "]" * 100_000, "the synthesis input cannot be read: the JSON nests deeper than the "),
+        ):
+            with self.subTest(first=first[:8]):
+                path.write_text(f"{first}\n{body}", encoding="utf-8")
+                with self.assertRaises(rs.SynthesisError) as raised:
+                    rs.load_context(synthesis)
+                self.assertTrue(raised.exception.problems[0].startswith(reason), raised.exception.problems)
+
     def test_a_record_beside_the_version_chain_is_analyzed_without_a_ledger(self) -> None:
         directory = self.archive / "owner" / "repo" / "pulls" / "11"
         directory.mkdir(parents=True)
