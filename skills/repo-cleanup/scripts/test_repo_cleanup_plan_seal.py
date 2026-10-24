@@ -718,6 +718,14 @@ class SealReadingTests(CleanupTestCase):
         rc.save_plan(self.root / "plan.json", written_plan())
         rc.load_plan(self.root / "plan.json")
 
+    def test_a_directory_in_the_sweep_records_place_is_refused_as_unreadable_naming_it_and_why(self) -> None:
+        record = self.root / rc.SWEEP_RECORD
+        record.mkdir()
+        with self.assertRaises(rc.CleanupError) as raised:
+            rc.read_record(self.root)
+        self.assertTrue(str(raised.exception).startswith(f"cannot read the sweep record {record}: "), raised.exception)
+        self.assertIn("not a file", str(raised.exception))
+
     def test_a_record_naming_the_seals_folder_is_refused_before_a_sweep_writes_there(self) -> None:
         with self.assertRaises(rc.CleanupError) as raised:
             rc.recorded_location(str(rc.SEALS))
