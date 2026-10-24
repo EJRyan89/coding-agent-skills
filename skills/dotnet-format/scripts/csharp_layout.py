@@ -10,36 +10,39 @@
     region-spacing          exactly one blank line between an #endregion and a directly following #region
     endregion-brace-spacing no blank line between an #endregion and a directly following closing brace
 
-It prints `VIOLATION <file> <line> <severity> <rule> <message>` per violation, `FIXED <file> <line> <rule>` per fix
-with --fix (preserving line endings, BOM, and encoding), `UNREADABLE <file> <reason>` per file whose byte order mark
-names an encoding its bytes are not in, which it neither checks nor fixes, and `SUMMARY <violations> <files> <rules>`.
-It exits 1 when a VIOLATION remains or a file was UNREADABLE (findings), 0 otherwise.
+It prints `VIOLATION <file> <line> <severity> <rule> <message>` per violation, `FIXED <file> <line> <rule>` per fix with
+--fix (preserving line endings, BOM, and encoding), `UNREADABLE <file> <reason>` per file whose byte order mark names an
+encoding its bytes are not in, which it neither checks nor fixes, and `SUMMARY <violations> <files> <rules>`. It exits 1
+when a VIOLATION remains, a file was UNREADABLE, or a listed entry was REFUSED (findings), 0 otherwise.
 
-`config` prints `PACKAGE Roslynator.Formatting.Analyzers present|missing`, or `... unknown <reason>`, and one
-`SETTING <key> <wanted> <state>` per analyzer setting (state: present, missing, or other:<value>), judged as the
-listed files see it. The package is present when MSBuild's evaluation of each project of the solution that owns a
-listed file (`dotnet msbuild -getItem`, conditions and imports settled as a build settles them) holds a PackageReference
-to it, or an Analyzer item of its assembly, as a packages.config project does; missing when one project's holds
-neither; and unknown when dotnet is not installed or MSBuild cannot evaluate a project. A setting is read as the
-compiler reads it: from the .editorconfig files above the file, nearest last, up to the repository root or the first
-whose preamble, the lines before its first section, sets `root = true`; and below them from the global analyzer
-configs, the nearest `.globalconfig` at or above the file's project folder within the repository and any .editorconfig
-whose preamble sets `is_global = true`, each giving its preamble to every file and a section only to the file whose
-absolute path it names, the higher `global_level` winning (100 for a `.globalconfig` that sets none, 0 for any other
-file) and a key two files at one level both set left unset. A global config a project names in
-`GlobalAnalyzerConfigFiles` is not read. With --apply it adds only the missing settings, as a `[*.cs]` section placed
-first in the outermost .editorconfig that applies, so every existing section, and every value a global config sets,
-still holds, and prints `ADDED <.editorconfig> <key> <value>`; it never changes a value the repository already sets
-and never adds a package reference. It exits 1 when a setting is still missing, because --apply was not given or
-could not write it (findings), 0 otherwise: another value is the repository's choice, and the package is advice the
-skill cannot act on.
+`config` prints `PACKAGE Roslynator.Formatting.Analyzers present|missing`, or `... unknown <reason>`, and one `SETTING
+<key> <wanted> <state>` per analyzer setting (state: present, missing, or other:<value>), judged as the listed files see
+it. The package is present when MSBuild's evaluation of each project of the solution that owns a listed file (`dotnet
+msbuild -getItem`, conditions and imports settled as a build settles them) holds a PackageReference to it, or an
+Analyzer item of its assembly, as a packages.config project does; missing when one project's holds neither; and unknown
+when dotnet is not installed or MSBuild cannot evaluate a project. A setting is read as the compiler reads it: from the
+.editorconfig files above the file, nearest last, up to the repository root or the first whose preamble, the lines
+before its first section, sets `root = true`; and below them from the global analyzer configs, the nearest
+`.globalconfig` at or above the file's project folder within the repository and any .editorconfig whose preamble sets
+`is_global = true`, each giving its preamble to every file and a section only to the file whose absolute path it names,
+the higher `global_level` winning (100 for a `.globalconfig` that sets none, 0 for any other file) and a key two files
+at one level both set left unset. A global config a project names in `GlobalAnalyzerConfigFiles` is not read. With
+--apply it adds only the missing settings, as a `[*.cs]` section placed first in the outermost .editorconfig that
+applies, so every existing section, and every value a global config sets, still holds, and prints `ADDED <.editorconfig>
+<key> <value>`; it never changes a value the repository already sets and never adds a package reference. It exits 1 when
+a setting is still missing, because --apply was not given or could not write it, or a listed entry was REFUSED
+(findings), 0 otherwise: another value is the repository's choice, and the package is advice the skill cannot act on.
 
-Both act only inside the repository. `config` evaluates a project the solution lists only when the entry lies inside
-the repository root, judged from its text before anything touches it; an entry outside the root, or written as a
-network share or a device, prints `REFUSED <entry> <reason>` and is left unread. Neither writes
-a file that is a symbolic link or a Windows junction, or that lies below one inside the repository, since the write
-would land wherever the link points: `check --fix` prints `REFUSED <file> <reason>` and leaves the file unfixed, and
-`config --apply` prints `REFUSED <.editorconfig> <reason>`, adds nothing there, and exits 1, a setting still missing.
+Both act only inside the repository. Each reads a FILE_LIST entry only when it lies inside the repository root, judged
+from its text before anything touches it and then as resolved: an absolute entry, one whose `..` segments leave the
+root, one written as a network share or a device, and one a symbolic link or junction leads out of the root prints
+`REFUSED <entry> <reason>` and is never read, checked, or fixed, and `config` fails when no entry is left. `config`
+evaluates a project the solution lists only when the entry lies inside the repository root, judged from its text before
+anything touches it; an entry outside the root, or written as a network share or a device, prints `REFUSED <entry>
+<reason>` and is left unread. Neither writes a file that is a symbolic link or a Windows junction, or that lies below
+one inside the repository, since the write would land wherever the link points: `check --fix` prints `REFUSED <file>
+<reason>` and leaves the file unfixed, and `config --apply` prints `REFUSED <.editorconfig> <reason>`, adds nothing
+there, and exits 1, a setting still missing.
 
 A failure, such as a listed file that does not exist or a file it cannot read or write, prints `FAILED <reason>`
 as the last line and exits 1. A usage error exits 2.
@@ -61,7 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
-from dotnet_format_targets import owning_projects, read_file_list
+from dotnet_format_targets import inside_root, owning_projects, read_file_list
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
 from folders_up import folders_up
 from link_probe import is_link_or_junction
@@ -528,10 +531,11 @@ class Failed(Exception):
     pass
 
 
-def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], None]) -> bool:
-    """Check (and fix) each file; return whether a violation remains or a file could not be read. A file
-    `link_refusal` refuses is checked and left unfixed, and one `read_source` cannot decode is reported and left
-    alone while the rest are checked."""
+def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], None]) -> bool:
+    """Check (and fix) each file; return whether a violation remains, a file could not be read, or an entry was
+    refused. An entry `inside_root` refuses is never opened, a file `link_refusal` refuses is checked and left unfixed,
+    and one `read_source` cannot decode is reported and left alone while the rest are checked."""
+    names = inside_root(root, listed, emit)
     missing = next((root / name for name in names if not (root / name).is_file()), None)
     if missing is not None:
         raise Failed(f"{missing} does not exist")
@@ -564,7 +568,7 @@ def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], N
         )
     rules = sorted({violation.rule for _, violation in remaining})
     emit(f"SUMMARY\t{len(remaining)}\t{len({name for name, _ in remaining})}\t{','.join(rules) or '-'}")
-    return bool(remaining) or unreadable
+    return bool(remaining) or unreadable or len(names) < len(listed)
 
 
 # ------------------------------------------------------------------------------------------ configuration
@@ -930,11 +934,14 @@ def insert_settings(path: Path, settings: list[tuple[str, str]]) -> None:
 
 
 def configure(
-    root: Path, solution: Path, files: list[str], apply: bool, services: Services, emit: Callable[[str], None]
+    root: Path, solution: Path, listed: list[str], apply: bool, services: Services, emit: Callable[[str], None]
 ) -> bool:
     """Report each setting as the changed files see it; with apply, fill only the gaps. Return whether a setting
     is still missing, which an .editorconfig `link_refusal` refuses to write, or `read_source` cannot read, leaves
-    so."""
+    so, or an entry was refused. An entry `inside_root` refuses is never judged, and a list it refuses whole fails."""
+    files = inside_root(root, listed, emit)
+    if not files:
+        raise Failed("no listed file lies inside the repository root")
     state, reason = package_state(root, solution, files, services, emit)
     emit("\t".join(("PACKAGE", PACKAGE, state, *([reason] if reason else []))))
     configs = AnalyzerConfigs(root)
@@ -955,8 +962,9 @@ def configure(
                 sorted({value for value in values if value is not None and value not in ACCEPTED[wanted]})
             )
         emit(f"SETTING\t{key}\t{wanted}\t{state}")
+    left_out = len(files) < len(listed)
     if not apply:
-        return bool(gaps)
+        return bool(gaps) or left_out
     still_missing = False
     for target, missing in gaps.items():
         refused = link_refusal(root, target)
@@ -972,7 +980,7 @@ def configure(
             continue
         for key, value in missing:
             emit(f"ADDED\t{target.relative_to(root).as_posix()}\t{key}\t{value}")
-    return still_missing
+    return still_missing or left_out
 
 
 # -------------------------------------------------------------------------------------------------- main

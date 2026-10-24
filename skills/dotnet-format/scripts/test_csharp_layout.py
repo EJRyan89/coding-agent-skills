@@ -6,7 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -20,6 +20,7 @@ import dotnet_solution
 from run_dotnet_format import Completed, Services
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
+OUTSIDE_THROUGH_LINK = "a symbolic link or junction leads it outside the repository root"
 
 
 def linked_folder(name: str) -> str:
@@ -41,6 +42,24 @@ def outside_directory(test: unittest.TestCase) -> Path:
     directory = tempfile.TemporaryDirectory()
     test.addCleanup(directory.cleanup)
     return Path(directory.name).resolve()
+
+
+@contextlib.contextmanager
+def recording_paths(*methods: str) -> Iterator[list[str]]:
+    """Record each path the named `Path` methods are called on, while they still do what they do."""
+    touched: list[str] = []
+
+    def recording(original: Callable[..., object]) -> Callable[..., object]:
+        def record(path: Path, *arguments: object) -> object:
+            touched.append(str(path))
+            return original(path, *arguments)
+
+        return record
+
+    with contextlib.ExitStack() as stack:
+        for method in methods:
+            stack.enter_context(mock.patch.object(Path, method, recording(getattr(Path, method))))
+        yield touched
 
 
 def source(*lines: str) -> str:
@@ -464,14 +483,15 @@ class FileTests(unittest.TestCase):
         self.assertEqual((1, ["VIOLATION", "SUMMARY"]), (status, [line[0] for line in lines]))
 
     def test_fix_never_writes_through_a_real_link(self) -> None:
-        outside = outside_directory(self)
+        real = self.root / "Real"
+        real.mkdir()
         original = b"#region A\n\n#endregion A\n"
-        (outside / "Outside.cs").write_bytes(original)
-        link_directory(outside, self.root / "Linked")
-        names = ["Linked/Outside.cs"]
-        expected = [["REFUSED", "Linked/Outside.cs", linked_folder("Linked")]]
+        (real / "Target.cs").write_bytes(original)
+        link_directory(real, self.root / "Linked")
+        names = ["Linked/Target.cs"]
+        expected = [["REFUSED", "Linked/Target.cs", linked_folder("Linked")]]
         if sys.platform != "win32":  # a symbolic link to a file needs a privilege Windows rarely grants
-            (self.root / "File.cs").symlink_to(outside / "Outside.cs")
+            (self.root / "File.cs").symlink_to(real / "Target.cs")
             names.append("File.cs")
             expected.append(["REFUSED", "File.cs", LINKED_FILE])
         status, lines = self.main(
@@ -480,7 +500,50 @@ class FileTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual(expected, [line for line in lines if line[0] == "REFUSED"])
         self.assertNotIn("FIXED", [line[0] for line in lines])
-        self.assertEqual(original, (outside / "Outside.cs").read_bytes())
+        self.assertEqual(original, (real / "Target.cs").read_bytes())
+
+    def check_never_leaving_the_root(self, entry: str, outside: Path, reason: str) -> None:
+        """Check, then fix, a list holding `entry`, which names a fixable file in `outside`, and an in-root fixable
+        file: the entry is refused before anything opens a path outside the root, and the in-root file is fixed."""
+        original = b"#region A\n\n#endregion A\n"
+        (outside / "Outside.cs").write_bytes(original)
+        inside = self.root / "Inside.cs"
+        file_list = self.file_list(entry, "Inside.cs")
+        root = dotnet_solution.same_path(self.root)
+        for extra, verdict in (((), "VIOLATION"), (("--fix",), "FIXED")):
+            with self.subTest(entry=entry, extra=extra):
+                inside.write_bytes(original)
+                with recording_paths("is_file", "read_bytes", "write_bytes") as touched:
+                    status, lines = self.main(
+                        "check", "--repo-root", str(self.root), "--file-list", str(file_list), *extra
+                    )
+                self.assertEqual(1, status, "a refused entry is a finding, since its file went unchecked")
+                self.assertEqual(["REFUSED", entry], lines[0][:2])
+                self.assertTrue(lines[0][2].startswith(reason), lines[0])
+                self.assertEqual([verdict, "Inside.cs"], lines[1][:2])
+                self.assertNotIn(entry, [line[1] for line in lines[1:] if len(line) > 1])
+                self.assertEqual(
+                    [],
+                    [path for path in touched if not Path(dotnet_solution.same_path(Path(path))).is_relative_to(root)],
+                )
+                self.assertEqual(original, (outside / "Outside.cs").read_bytes())
+        self.assertEqual(b"#region A\n\n#endregion\n", inside.read_bytes())
+
+    def test_an_entry_whose_dot_dot_segments_leave_the_root_is_refused_unread(self) -> None:
+        outside = outside_directory(self)
+        entry = f"../{outside.name}/Outside.cs"
+        self.check_never_leaving_the_root(entry, outside, "the path is outside the examined tree")
+
+    def test_an_absolute_entry_outside_the_root_is_refused_unread(self) -> None:
+        outside = outside_directory(self)
+        self.check_never_leaving_the_root(
+            (outside / "Outside.cs").as_posix(), outside, "the path is outside the examined tree"
+        )
+
+    def test_an_entry_a_link_leads_outside_the_root_is_refused_unread(self) -> None:
+        outside = outside_directory(self)
+        link_directory(outside, self.root / "Linked")
+        self.check_never_leaving_the_root("Linked/Outside.cs", outside, OUTSIDE_THROUGH_LINK)
 
     def test_a_path_whose_link_state_cannot_be_read_is_not_written(self) -> None:
         (self.root / "Fixable.cs").write_bytes(b"#region A\n\n#endregion A\n")
@@ -967,16 +1030,48 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual("# shared\n", editorconfig.read_text(encoding="utf-8"))
 
     def test_apply_never_writes_through_a_real_link(self) -> None:
-        outside = outside_directory(self)
-        shared = outside / ".editorconfig"
+        real = self.root / "real"
+        real.mkdir()
+        shared = real / ".editorconfig"
         shared.write_text("root = true\n", encoding="utf-8")
-        link_directory(outside, self.root / "linked")
+        link_directory(real, self.root / "linked")
         self.changed("linked/Program.cs")
         status, grouped = self.run_config("--apply")
         self.assertEqual(1, status)
         self.assertEqual([["linked/.editorconfig", linked_folder("linked")]], grouped["REFUSED"])
         self.assertNotIn("ADDED", grouped)
         self.assertEqual("root = true\n", shared.read_text(encoding="utf-8"))
+        self.assertFalse(list(self.root.glob(".editorconfig")))
+
+    def test_an_entry_outside_the_root_is_refused_and_never_judged_or_written(self) -> None:
+        outside = outside_directory(self)
+        (outside / "Shared").mkdir()
+        shared = outside / "Shared" / ".editorconfig"
+        shared.write_text("root = true\n", encoding="utf-8")
+        link_directory(outside / "Shared", self.root / "linked")
+        entries = {
+            f"../{outside.name}/Shared/Program.cs": "the path is outside the examined tree",
+            (outside / "Shared" / "Program.cs").as_posix(): "the path is outside the examined tree",
+            "linked/Program.cs": OUTSIDE_THROUGH_LINK,
+        }
+        for entry, reason in entries.items():
+            with self.subTest(entry=entry):
+                self.changed(entry, "src/App/Program.cs")
+                status, grouped = self.run_config("--apply")
+                self.assertEqual(1, status, "a refused entry is a finding, since its file went unjudged")
+                self.assertEqual([entry], [refused for refused, _ in grouped["REFUSED"]])
+                self.assertTrue(grouped["REFUSED"][0][1].startswith(reason), grouped["REFUSED"])
+                self.assertEqual({".editorconfig"}, {added[0] for added in grouped["ADDED"]})
+                self.assertEqual("root = true\n", shared.read_text(encoding="utf-8"))
+                (self.root / ".editorconfig").unlink()
+
+    def test_a_list_every_entry_of_which_is_refused_fails(self) -> None:
+        outside = outside_directory(self)
+        self.changed(f"../{outside.name}/Program.cs")
+        status, grouped = self.run_config("--apply")
+        self.assertEqual(1, status)
+        self.assertEqual([f"../{outside.name}/Program.cs"], [entry for entry, _ in grouped["REFUSED"]])
+        self.assertEqual(["REFUSED", "FAILED no listed file lies inside the repository root"], list(grouped))
         self.assertFalse(list(self.root.glob(".editorconfig")))
 
     def test_a_single_star_section_does_not_configure_deeper_files(self) -> None:
