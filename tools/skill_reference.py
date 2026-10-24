@@ -348,7 +348,8 @@ def problems(root: Path) -> list[str]:
     for entry in skills:
         skill_md = source.skills[entry.name].directory / "SKILL.md"
         name = skill_md.relative_to(root).as_posix()
-        if entry.argument_hint is None and "$ARGUMENTS" in _read(root, skill_md):
+        # entries() has read this file whole as UTF-8 already, refusing it otherwise.
+        if entry.argument_hint is None and "$ARGUMENTS" in skill_md.read_bytes().decode("utf-8"):
             found.append(f"{name} reads $ARGUMENTS but declares no argument-hint")
         if not entry.user_only and not says_when(entry.description):
             found.append(f"{name}: the model may start it, so its description must {WHEN_RULE}")
@@ -376,7 +377,9 @@ def problems(root: Path) -> list[str]:
         found.append(f"{REFERENCE.as_posix()}: generated content is stale; run python tools/skill_reference.py --write")
     roots = sorted([*deploy_source.root_names(source), *source.bundles])
     readme = root / README
-    found.extend(readme_problems(_read(root, readme) if readme.is_file() else "", roots, sorted(names)))
+    if not readme.is_file():
+        return [*found, f"{README.as_posix()} does not exist"]
+    found.extend(readme_problems(_read(root, readme), roots, sorted(names)))
     return found
 
 

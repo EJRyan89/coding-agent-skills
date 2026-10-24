@@ -229,7 +229,13 @@ def test_each_command_works_on_this_checkout_unless_root_names_another(checkout:
 
 def test_the_help_names_each_command_and_option_with_what_it_does() -> None:
     for arguments, expected in (
-        (["--help"], ["build the tag's archives and pin them in the marketplace", "compare each pinned digest with"]),
+        (
+            ["--help"],
+            [
+                " build build the tag's archives and pin them in the marketplace"
+                " check compare each pinned digest with a rebuild from its tag "
+            ],
+        ),
         (["build", "--help"], ["--root DIR", "a directory holding source.json and .claude/skills", "the release tag"]),
         (["check", "--help"], ["--root DIR", "work on this checkout of the repository instead"]),
     ):
@@ -237,6 +243,6 @@ def test_the_help_names_each_command_and_option_with_what_it_does() -> None:
         with redirect_stdout(output), pytest.raises(SystemExit) as raised:
             plugin_release.main(arguments)
         assert raised.value.code == 0
-        flat = " ".join(output.getvalue().split())
+        flat = f" {' '.join(output.getvalue().split())} "
         for text in expected:
             assert text in flat, (arguments, flat)

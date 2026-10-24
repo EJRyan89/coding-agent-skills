@@ -363,7 +363,7 @@ class SkillReferenceTestCase(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             code = skill_reference.main(["--root", str(self.root)])
-        self.assertEqual((1, "README.md: no 'Included skills' section\n"), (code, stdout.getvalue()))
+        self.assertEqual((1, "README.md does not exist\n"), (code, stdout.getvalue()))
 
     def test_a_file_that_is_not_utf8_ends_the_run_as_failed_never_as_stale(self) -> None:
         skill_reference.write(self.root)
