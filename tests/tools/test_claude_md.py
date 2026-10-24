@@ -1,4 +1,4 @@
-"""Regression suite for CLAUDE.md: it stays small enough for Codex to read whole, and each pointer names a section.
+"""Regression suite for CLAUDE.md: it stays within its size budget, and each pointer names a section.
 
 CLAUDE.md states each rule once and points at the section that holds how the rule is enforced, written as the
 section's heading in double quotes followed by `in` and the document's path in backticks. A pointer whose section
@@ -13,8 +13,10 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 INSTRUCTIONS = REPOSITORY_ROOT / "CLAUDE.md"
-# Codex's default `project_doc_max_bytes`, 32 KiB: the most project instructions it loads, written out here rather
-# than derived from the file, so the ceiling cannot move with what it holds.
+# Codex's default `project_doc_max_bytes`, 32 KiB, kept as CLAUDE.md's budget: Codex stops adding AGENTS.md files
+# at that combined size and reads CLAUDE.md through the root AGENTS.md's redirect, which the limit does not govern,
+# so the budget keeps the file one a session can read whole. Written out here rather than derived from the file, so
+# the ceiling cannot move with what it holds.
 CODEX_INSTRUCTION_LIMIT = 32768
 # Every document CLAUDE.md points into, named here so that the runner selects this suite when one of them changes.
 POINTED_DOCUMENTS = (
