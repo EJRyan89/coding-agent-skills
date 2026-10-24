@@ -542,7 +542,7 @@ def summary(lines: Sequence[str]) -> str:
         ["| Runtime | Sample | Recorded | Latest |", "| --- | --- | --- | --- |"]
         + [f"| {' | '.join(line.split(' ')[1:])} |" for line in behind]
         if behind
-        else ["Every captured sample records its runtime's latest release."]
+        else ["No captured sample is older than its runtime's latest release."]
     )
     pages = [line for line in lines if line.startswith(("MOVED ", "GONE ", "UNREADABLE "))]
     rows += ["", "### Guidance pages", ""]

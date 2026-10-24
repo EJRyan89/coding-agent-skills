@@ -6,6 +6,7 @@ runtime would, from its arguments alone, and a lookup that names a program nobod
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -217,7 +218,7 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             captured_samples.Sample("copilot/old.txt", {"copilot-cli": (1, 0, 1)}, "2026-10-01", "a start"),
         ]
         found = lines.run(
-            ("codex",),
+            ("codex", "copilot"),
             5,
             self.root / "run",
             runner=StubRuntimes(),
@@ -225,12 +226,31 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             say=lambda _: None,
             samples=samples,
         )
+        # Each line names the runtime as the tool does, copilot, though its sample records copilot-cli.
         self.assertEqual(
-            ["VERSION codex 0.163.0", "SAMPLE_BEHIND codex codex/old.txt 0.162.0 0.163.0"],
+            [
+                "VERSION codex 0.163.0",
+                "SAMPLE_BEHIND codex codex/old.txt 0.162.0 0.163.0",
+                "VERSION copilot 1.0.103",
+                "SAMPLE_BEHIND copilot copilot/old.txt 1.0.1 1.0.103",
+            ],
             [line for line in found if line.startswith(("VERSION ", "SAMPLE_BEHIND "))],
         )
         self.assertFalse(lines.failed(found))
         self.assertIn("| codex | codex/old.txt | SAMPLE_BEHIND 0.162.0 0.163.0 |", lines.summary(found))
+
+    def test_without_samples_given_a_run_ages_the_ones_this_checkout_records(self) -> None:
+        recorded = json.loads((CAPTURED / "provenance.json").read_text(encoding="utf-8"))["samples"]
+        expected = [
+            f"SAMPLE_BEHIND codex {path} {sample['versions']['codex']} 0.163.0"
+            for path, sample in recorded.items()
+            if "codex" in sample["versions"] and tuple(map(int, sample["versions"]["codex"].split("."))) < (0, 163, 0)
+        ]
+        found = lines.run(
+            ("codex",), 5, self.root / "run", runner=StubRuntimes(), which=lambda name: name, say=lambda _: None
+        )
+        self.assertEqual(expected, [line for line in found if line.startswith("SAMPLE_BEHIND ")])
+        self.assertTrue(expected)
 
 
 class FailedTests(RuntimeCommandLinesTestCase):

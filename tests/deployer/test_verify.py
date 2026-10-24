@@ -184,6 +184,20 @@ class CapturedListingTests(unittest.TestCase):
         with self.assertRaisesRegex(ListingError, "lists a skill in a shape this reader does not know: - sample-skill"):
             discovery.parse_codex_catalog(text.splitlines())
 
+    def test_the_codex_catalog_reads_only_the_list_under_its_first_available_skills_heading(self) -> None:
+        # A list item after the skills list ends, at the next heading or the closing tag, or under a later heading of
+        # the same name, is not a skill, so its shape is not judged.
+        end = "\\n</skills_instructions>"
+        for after in (
+            "\\n### Using a skill\\n- Read its SKILL.md first.",
+            "\\n<other_instructions>\\n- Not a skill.",
+            f"\\n{discovery.CODEX_CATALOG_SKILLS}\\n- Not a skill either.",
+        ):
+            with self.subTest(after=after):
+                text = captured("codex/debug-prompt-input.json").replace(end, after + end)
+                found = discovery.parse_codex_catalog(text.splitlines())
+                self.assertEqual({"skill-creator", "sample-skill", "audit-skill"}, set(found))
+
     if platform_support.WINDOWS:
 
         def test_the_captured_paths_are_the_skill_directories(self) -> None:
@@ -269,6 +283,10 @@ class ParsingTests(unittest.TestCase):
             "its skills/list answer has an error of a shape this reader does not know: an object with message": (
                 discovery.parse_codex_refusals,
                 {"errors": [{"message": "no path"}]},
+            ),
+            "its skills/list answer has an error of a shape this reader does not know: str": (
+                discovery.parse_codex_refusals,
+                {"errors": ["missing field `description`"]},
             ),
         }
         for reason, (reader, group) in cases.items():

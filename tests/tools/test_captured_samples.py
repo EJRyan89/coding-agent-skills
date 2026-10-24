@@ -39,6 +39,8 @@ def test_the_record_is_read_whole() -> None:
     assert {sample.path for sample in samples} == set(recorded())
     copilot = next(sample for sample in samples if sample.path == "copilot/skill-list.json")
     assert copilot.versions == {"copilot-cli": (1, 0, 103)}
+    entry = recorded()["copilot/skill-list.json"]
+    assert (copilot.captured, copilot.how) == (entry["captured"], entry["how"])
 
 
 @pytest.mark.parametrize("sample", sorted(recorded()))
@@ -84,7 +86,11 @@ GOOD = {"versions": {"codex": "0.163.0"}, "captured": "2026-10-24", "how": "code
         pytest.param({"samples": {}}, "names no sample", id="no-sample"),
         pytest.param({"samples": {"a": {**GOOD, "extra": 1}}}, "exactly versions, captured, and how", id="extra-key"),
         pytest.param({"samples": {"a": {**GOOD, "versions": {}}}}, "names no runtime", id="no-runtime"),
-        pytest.param({"samples": {"a": {**GOOD, "versions": {"gh": "2.0.0"}}}}, "not gh", id="unknown-runtime"),
+        pytest.param(
+            {"samples": {"a": {**GOOD, "versions": {"gh": "2.0.0"}}}},
+            "a: versions maps a runtime of claude-code, codex, copilot-cli to a version, not gh",
+            id="unknown-runtime",
+        ),
         pytest.param({"samples": {"a": {**GOOD, "versions": {"codex": "0.163"}}}}, "not codex", id="short-version"),
         pytest.param({"samples": {"a": {**GOOD, "captured": "October"}}}, "captured is a date", id="not-a-date"),
         pytest.param({"samples": {"a": {**GOOD, "captured": "2026-02-30"}}}, "captured is a date", id="no-such-day"),

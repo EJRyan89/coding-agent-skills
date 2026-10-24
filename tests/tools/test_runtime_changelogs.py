@@ -424,6 +424,27 @@ class MainTests(unittest.TestCase):
         self.assertEqual(0, code, lines)
         self.assertEqual(expected, {line.split(" ")[2] for line in lines if line.startswith("SAMPLE_BEHIND ")})
 
+    def test_the_summary_tables_each_sample_behind_or_says_none_is(self) -> None:
+        def section(lines: list[str]) -> str:
+            text = watch.summary(lines)
+            return text[text.index("### Captured samples") : text.index("### Guidance pages")]
+
+        behind = [
+            "SAMPLE_BEHIND codex codex/version.txt 0.163.0 0.164.0",
+            "SAMPLE_BEHIND copilot-cli copilot/skill-list.json 1.0.103 1.0.104",
+        ]
+        self.assertEqual(
+            "### Captured samples\n\n"
+            "| Runtime | Sample | Recorded | Latest |\n"
+            "| --- | --- | --- | --- |\n"
+            "| codex | codex/version.txt | 0.163.0 | 0.164.0 |\n"
+            "| copilot-cli | copilot/skill-list.json | 1.0.103 | 1.0.104 |\n\n",
+            section(behind),
+        )
+        self.assertEqual(
+            "### Captured samples\n\nNo captured sample is older than its runtime's latest release.\n\n", section([])
+        )
+
     def test_a_flag_the_code_passes_only_before_a_release_it_reads_is_watched(self) -> None:
         # Copilot CLI 1.0.103 retired --no-remote, which the code still passes to the releases before it.
         top = Path(self.enterContext(tempfile.TemporaryDirectory()))

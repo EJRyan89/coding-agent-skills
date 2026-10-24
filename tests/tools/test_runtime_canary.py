@@ -970,6 +970,24 @@ class RunTests(RuntimeCanaryTestCase):
         self.assertIn(
             f"RUNTIME codex {FIXTURE} FAILED {runtime_canary.quote(reason)} {self.kept('codex')}", self.canary(runner)
         )
+        one = runtime_canary.verdict(
+            FIXTURE,
+            self.home,
+            probes=[],
+            started=[],
+            completed=Completed(0, "", ""),
+            denials=[],
+            timeout=60,
+            unread=unread[:1],
+        )
+        self.assertEqual(
+            "FAILED "
+            + runtime_canary.quote(
+                "never ran a script from the skill; the runtime logged 1 command failure in a shape the canary does "
+                f"not read, so whether its policy or sandbox refused them is unknown: {unread[0]}"
+            ),
+            one,
+        )
 
     def test_claude_codes_signed_out_stream_lists_its_skills_and_denies_nothing(self) -> None:
         self.assertEqual(
