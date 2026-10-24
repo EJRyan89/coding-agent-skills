@@ -53,8 +53,8 @@ which runs it anyway:
    take seconds over the whole tree, and the type check of each root a changed file sits in, as in
    `python -B tests/run_validation.py -k ruff -k '*mypy*deployer*'` for a change under `deployer/`.
 4. Once the title and the body are written, the checks that read them, and only those. Given without `-k`,
-   `--changed`, `--full`, or `--shard`, `--pr-title` and `--pr-body` limit the run to the title, upgrade-note, and
-   silent-revert checks, start no suite, and say so:
+   `--changed`, `--full`, or `--shard`, `--pr-title` and `--pr-body` limit the run to the title, upgrade-note,
+   silent-revert, and known-failure closing checks, start no suite, and say so:
 
 ```powershell
 python -B tests/run_validation.py --pr-title '<title file>' --pr-body '<body file>'
@@ -181,6 +181,13 @@ line of the body of its own, optionally as a list item and outside an HTML comme
 ``Reverts `<path>` to its state before <commit>``, with seven or more hexadecimal digits of the commit the check
 names. The check reads the body from `--pr-body <file>` locally, otherwise the branch's commit messages, and the pull
 request in continuous integration.
+
+A pull request that closes an issue a known failure of the malformed-input suite still names, in
+`tests/malformed_input/known_failures.json`, is refused by the known-failure closing check, in
+`tests/validation/known_failures.py`: the issue would close while its case still fails. It reads every closing keyword
+GitHub reads (`close`, `fix`, or `resolve`, in any of their forms, before `#<number>`) outside an HTML comment, from
+`--pr-body <file>` locally and the pull request in continuous integration, and passes when no body is given. The pull
+request that fixes the reader removes the entry, which the suite then requires, and closes the issue.
 
 Before `gh pr create`, run `git fetch origin main` and `git rebase origin/main`: onto `origin/main`, not the local
 `main`, which is only as fresh as the hub's last pull. The branch is unpublished, so the rebase rewrites nothing anyone

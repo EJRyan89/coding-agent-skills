@@ -127,20 +127,29 @@ explicit_package_bases = true
 # audit-skill inventory tools/new_skill.py and the validation runner import, the review-document and
 # review-insights scripts tools/runtime_prompts.py imports, the review-document scripts the skill-evals suite imports,
 # the review-insights and update-pr-dashboard scripts the format-contract suite imports, the update-pr-dashboard
-# scripts an ejryan89-code-review-core suite imports, and the dotnet-format scripts the check suite imports. Then
-# tests/deployer, whose suites import harness from beside them, tests/tools, whose hub guard and worktrees suites
+# scripts an ejryan89-code-review-core suite imports, the dotnet-format scripts the check suite imports, and the
+# audit-ai-config, curate-agent-memory, dotnet-dependencies, github-activity-report, and repo-cleanup scripts the
+# malformed-input reader tables import beside the others. Then
+# tests/deployer, whose suites import harness from beside them, tests/malformed_input, whose suite and reader tables
+# import the corpus and one another from beside them, tests/tools, whose hub guard and worktrees suites
 # import worktree_fixture from beside them, and tests/validation, whose policy modules and their suites import one
 # another by bare name, as tests/run_validation.py does. Their imports then resolve as they do at run time. Validation
 # keeps this list equal to those directories.
 mypy_path = [
+    "$MYPY_CONFIG_FILE_DIR/skills/audit-ai-config/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/audit-skill/scripts",
+    "$MYPY_CONFIG_FILE_DIR/skills/curate-agent-memory/scripts",
+    "$MYPY_CONFIG_FILE_DIR/skills/dotnet-dependencies/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/ejryan89-code-review-core/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/dotnet-format/scripts",
+    "$MYPY_CONFIG_FILE_DIR/skills/github-activity-report/scripts",
+    "$MYPY_CONFIG_FILE_DIR/skills/repo-cleanup/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/review-document/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/review-insights/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/ejryan89-skill-core/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/update-pr-dashboard/scripts",
     "$MYPY_CONFIG_FILE_DIR/tests/deployer",
+    "$MYPY_CONFIG_FILE_DIR/tests/malformed_input",
     "$MYPY_CONFIG_FILE_DIR/tests/tools",
     "$MYPY_CONFIG_FILE_DIR/tests/validation",
 ]

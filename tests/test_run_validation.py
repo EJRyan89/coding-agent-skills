@@ -246,8 +246,18 @@ class PullRequestOnlySelection(unittest.TestCase):
     """--pr-title or --pr-body alone runs the checks that judge the pull request and no suite; with -k, --changed,
     --full, or --shard the run selects as it would without them, as CI's legs, which always pass --shard, do."""
 
-    PULL_REQUEST_CHECKS = frozenset({"PullRequestTitlePolicies", "SilentRevertPolicies", "UpgradeNotesPolicies"})
-    LIMITED = "Pull request checks only: PullRequestTitlePolicies, SilentRevertPolicies, UpgradeNotesPolicies, since"
+    PULL_REQUEST_CHECKS = frozenset(
+        {
+            "KnownFailurePullRequestPolicies",
+            "PullRequestTitlePolicies",
+            "SilentRevertPolicies",
+            "UpgradeNotesPolicies",
+        }
+    )
+    LIMITED = (
+        "Pull request checks only: KnownFailurePullRequestPolicies, PullRequestTitlePolicies, SilentRevertPolicies, "
+        "UpgradeNotesPolicies, since"
+    )
     EVERY = (Job("tests/test_a.py", "tests/test_a.py", 1, print),)
 
     def run_main(self, argv: list[str], **patches: Any) -> tuple[set[str], list[list[Job]], str]:
