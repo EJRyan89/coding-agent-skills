@@ -1859,6 +1859,12 @@ class SkillSourceTests(unittest.TestCase):
         lines = self.source("demo", code=1)
         self.assertEqual(1, len(lines))
         self.assertTrue(lines[0].startswith("FAILED cannot read the deployer manifest: "), lines)
+        manifest = self.home / ".claude" / "skills" / ".deploy-manifest.json"
+        manifest.unlink()
+        manifest.mkdir()
+        lines = self.source("demo", code=1)
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("FAILED cannot read the deployer manifest: "), lines)
         for name in ("../demo", "demo\nSKILL_FILE forged", "demo\u2028x"):
             with self.subTest(name=repr(name)):
                 self.assertEqual([f"FAILED {flat_text(repr(name))} is not a skill name"], self.source(name, code=1))

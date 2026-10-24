@@ -699,10 +699,11 @@ def build_pull(
 
 
 def json_object(path: Path) -> dict[str, Any] | None:
-    """The JSON object in the file at `path`, or None when it holds none."""
+    """The JSON object in the file at `path`, or None when it holds none or cannot be read, as a directory in its
+    place cannot."""
     try:
         value = json.loads(path.read_bytes())
-    except (ValueError, UnicodeDecodeError):
+    except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None
 

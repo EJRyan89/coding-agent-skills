@@ -405,6 +405,16 @@ class FileTests(unittest.TestCase):
         self.assertEqual((bad, odd), ((self.root / "Bad.cs").read_bytes(), (self.root / "Odd.cs").read_bytes()))
         self.assertEqual(b"#region R\n\n#endregion\n", (self.root / "Good.cs").read_bytes())
 
+    def test_a_file_that_cannot_be_read_is_unreadable_with_the_reason(self) -> None:
+        path = self.root / "With Space.cs"
+        path.write_bytes(b"class A {}\n")
+        with (
+            mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Permission denied")),
+            self.assertRaises(layout.Unreadable) as raised,
+        ):
+            layout.read_source(path)
+        self.assertEqual("it cannot be read: Permission denied", str(raised.exception))
+
     def test_a_listed_file_that_does_not_exist_fails_before_any_check_or_fix(self) -> None:
         fixable = self.root / "Fixable.cs"
         original = b"#region A\n\n#endregion A\n"
