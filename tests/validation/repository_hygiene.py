@@ -11,7 +11,7 @@ from validation_support import REPOSITORY_ROOT, repository_files
 
 # Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see. Monitor runs its
 # command in the shell the Bash tool uses, so it can run git.
-HUB_GUARD_TOOLS = {"Bash", "Edit", "MultiEdit", "Monitor", "NotebookEdit", "PowerShell", "Write"}
+HUB_GUARD_TOOLS = {"Bash", "Edit", "Monitor", "NotebookEdit", "PowerShell", "Write"}
 
 
 # Defense in depth only: the private-name scan in docs/releasing.md runs before every release. YourName is the
@@ -62,7 +62,8 @@ def tracked_settings_problems(settings: dict[str, object]) -> list[str]:
 
 
 def hub_guard_matcher_problems(settings: dict[str, object]) -> list[str]:
-    """Report each tool that can edit a file or run git whose calls the hub guard's PreToolUse hook would not see."""
+    """Report each tool that can edit a file or run git whose calls the hub guard's PreToolUse hook would not see, and
+    each name its matcher holds that is none of those tools, such as a tool Claude Code no longer has."""
     hooks = settings.get("hooks")
     groups = hooks.get("PreToolUse", []) if isinstance(hooks, dict) else []
     guarded = [
@@ -78,7 +79,13 @@ def hub_guard_matcher_problems(settings: dict[str, object]) -> list[str]:
         if matcher in {"", "*"}:
             return []
         matched.update(matcher.split("|"))
-    return [f"the hub guard's hook does not match the {tool} tool" for tool in sorted(HUB_GUARD_TOOLS - matched)]
+    return [
+        *(f"the hub guard's hook does not match the {tool} tool" for tool in sorted(HUB_GUARD_TOOLS - matched)),
+        *(
+            f"the hub guard's hook names {name}, which is no tool the guard reads"
+            for name in sorted(matched - HUB_GUARD_TOOLS)
+        ),
+    ]
 
 
 class RepositoryHygienePolicies(unittest.TestCase):

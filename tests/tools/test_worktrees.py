@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import git_client
+import git_worktrees
 import skill_scripts
 from worktree_fixture import (
     GUARD_SCRIPT,
@@ -197,6 +198,82 @@ class ListTests(WorktreesTestCase):
             dot_git.write(f"gitdir: {self.root / 'gone'}\n")
             dot_git.truncate()
         self.assertEqual(["feat/demo", "unreadable", "0", "0", "-"], self.rows(cwd=self.hub)["feat/demo"][:5])
+
+    def test_list_shows_a_count_git_cannot_take_as_unknown_never_in_progress(self) -> None:
+        # With no main to count against, git answers nonzero for every worktree's ahead and behind.
+        self.git(self.hub, "branch", "-m", "main", "trunk")
+        rows = self.rows()
+        self.assertEqual(["trunk", "hub · off main", "?", "?", "0"], rows["trunk"][:5])
+        self.assertEqual(["feat/demo", "unknown", "?", "?", "0"], rows["feat/demo"][:5])
+
+
+class CheckoutTests(WorktreesTestCase):
+    def test_a_checkout_git_cannot_read_raises_and_a_place_outside_every_checkout_is_none(self) -> None:
+        self.assertEqual(worktrees.Checkout(self.tree, self.hub), worktrees.checkout_of(self.tree / "README.md"))
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.assertIsNone(worktrees.checkout_of(outside))
+        # Inside a git directory there is no work tree to show, and that is no failure either.
+        self.assertIsNone(worktrees.checkout_of(self.hub / ".git" / "refs"))
+        # Rewritten in place: git for Windows hides the file, and Windows refuses to create a hidden file anew.
+        with (self.tree / ".git").open("r+", encoding="utf-8") as dot_git:
+            dot_git.write(f"gitdir: {self.root / 'gone'}\n")
+            dot_git.truncate()
+        with self.assertRaises(git_client.GitError) as raised:
+            worktrees.checkout_of(self.tree)
+        self.assertIn(f"git could not read the checkout at {self.tree}", str(raised.exception))
+
+
+class CheckoutFailureTests(unittest.TestCase):
+    def test_a_checkout_git_fails_on_names_git_s_message_or_its_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = Path(folder) / "checkout"
+            (checkout / ".git").mkdir(parents=True)
+            for stderr, said in (("fatal: one\n  two\n", "fatal: one two"), ("", "git rev-parse exited with 128")):
+                with (
+                    self.subTest(stderr=stderr),
+                    mock.patch.object(worktrees, "git", return_value=git_client.GitResult(128, "", stderr)),
+                    self.assertRaises(git_client.GitError) as raised,
+                ):
+                    worktrees.checkout_of(checkout)
+                self.assertEqual(f"git could not read the checkout at {checkout}: {said}", str(raised.exception))
+                self.assertEqual(128, raised.exception.returncode)
+
+    def counted_row(self, head: str, answer: git_client.GitResult) -> tuple[worktrees.Row, list[object]]:
+        """The row list shows for a worktree whose count git answers with answer, and each git call it made."""
+        with tempfile.TemporaryDirectory() as folder:
+            hub, tree = Path(folder) / "hub", Path(folder) / "tree"
+            tree.mkdir()
+            calls: list[object] = []
+
+            def git(cwd: Path, *arguments: str, timeout: float | None = 10.0) -> git_client.GitResult:
+                calls.append((cwd == hub, arguments, timeout))
+                return answer
+
+            with (
+                mock.patch.object(worktrees, "git", git),
+                mock.patch.object(git_worktrees, "changed_paths", return_value=0),
+            ):
+                return worktrees.row(hub, git_worktrees.Worktree(str(tree), head, "feat/x", False)), calls
+
+    def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
+        row, calls = self.counted_row("abc", git_client.GitResult(0, "2\t3\n", ""))
+        self.assertEqual([(True, ("rev-list", "--left-right", "--count", "main...abc"), None)], calls)
+        self.assertEqual(("in progress", "3", "2"), (row.state, row.ahead, row.behind))
+        # A worktree with no commit of its own recorded is counted from its HEAD.
+        _, calls = self.counted_row("", git_client.GitResult(0, "0\t0\n", ""))
+        self.assertEqual([(True, ("rev-list", "--left-right", "--count", "main...HEAD"), None)], calls)
+
+    def test_list_shows_any_answer_that_is_not_two_counts_as_unknown(self) -> None:
+        for answer in (
+            git_client.GitResult(0, "garbage\n", ""),
+            git_client.GitResult(0, "1\tx\n", ""),
+            git_client.GitResult(0, "", ""),
+            git_client.GitResult(128, "2\t3\n", "fatal: bad revision"),
+        ):
+            with self.subTest(answer=answer):
+                row, _ = self.counted_row("abc", answer)
+                self.assertEqual(("unknown", "?", "?"), (row.state, row.ahead, row.behind))
 
 
 class GitProgramTests(unittest.TestCase):

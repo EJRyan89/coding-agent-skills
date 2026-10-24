@@ -46,6 +46,8 @@ KINDS = (*TITLE_TYPES, INVESTIGATION)
 # A Claude Code session keeps the hook command it loaded when it started, so one started before the hub guard
 # moved into hub_guard.py still runs this script's guard subcommand, which runs the guard as its own program.
 HUB_GUARD = Path(__file__).with_name("hub_guard.py")
+# What list shows for an ahead or behind count git could not take.
+UNKNOWN = "?"
 
 
 class UsageError(Exception):
@@ -87,7 +89,11 @@ class Checkout:
 
 
 def checkout_of(path: Path) -> Checkout | None:
-    """The worktree containing path, and the hub that owns it; None outside a non-bare repository."""
+    """The worktree containing path, and the hub that owns it; None outside a non-bare repository.
+
+    Raises GitError when git answers nonzero for a directory below a checkout, one that a `.git` beside it or above
+    it marks, outside any git directory: a checkout git cannot read, as one it refuses to trust, is not one outside
+    every repository."""
     directory = path
     while not directory.is_dir():
         if directory.parent == directory:
@@ -95,12 +101,24 @@ def checkout_of(path: Path) -> Checkout | None:
         directory = directory.parent
     result = git(directory, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
     lines = result.stdout.splitlines()
+    if result.returncode != 0 and below_a_checkout(directory):
+        said = " ".join(result.stderr.split()) or f"git rev-parse exited with {result.returncode}"
+        raise GitError(f"git could not read the checkout at {directory}: {said}", returncode=result.returncode)
     if result.returncode != 0 or len(lines) != 2:
         return None
     common = Path(lines[1])
     if common.name != ".git":
         return None
     return Checkout(Path(lines[0]), common.parent)
+
+
+def below_a_checkout(directory: Path) -> bool:
+    """Whether a `.git` in directory or above it marks it as part of a checkout, outside any git directory, where git
+    has no work tree to show."""
+    absolute = directory.absolute()
+    if any(os.path.normcase(part) == ".git" for part in absolute.parts):
+        return False
+    return any((folder / ".git").exists() for folder in (absolute, *absolute.parents))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -161,10 +179,11 @@ def row(hub: Path, tree: git_worktrees.Worktree) -> Row:
     shown = platform_support.normalize(path)
     if not path.is_dir():
         return Row(branch, "missing", "-", "-", "-", shown)
-    counts = git(
-        hub, "rev-list", "--left-right", "--count", f"{MAIN}...{tree.head or 'HEAD'}", timeout=None
-    ).stdout.split()
-    behind, ahead = counts if len(counts) == 2 else ("-", "-")
+    counted = git(hub, "rev-list", "--left-right", "--count", f"{MAIN}...{tree.head or 'HEAD'}", timeout=None)
+    counts = counted.stdout.split()
+    # A count git could not take is unknown, never read as a branch with commits of its own.
+    known = counted.returncode == 0 and len(counts) == 2 and all(count.isdigit() for count in counts)
+    behind, ahead = counts if known else (UNKNOWN, UNKNOWN)
     try:
         dirty = git_worktrees.changed_paths(CLIENT, path)
     except GitError as exc:
@@ -176,7 +195,7 @@ def row(hub: Path, tree: git_worktrees.Worktree) -> Row:
         problems = [*(["off main"] if branch != MAIN else []), *(["dirty"] if dirty else [])]
         state = " · ".join(["hub", *problems])
     else:
-        state = "no commits" if ahead == "0" else "in progress"
+        state = "unknown" if not known else "no commits" if ahead == "0" else "in progress"
     return Row(branch, state, ahead, behind, str(dirty), shown)
 
 
