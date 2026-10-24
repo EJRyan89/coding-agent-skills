@@ -548,8 +548,21 @@ class PythonChecksFixtures(unittest.TestCase):
     def test_ratchets_hold_each_ceiling_and_the_blind_excepts_at_their_literals_or_lower(self) -> None:
         held = [f"module.py:{line}" for line in range(1, BLIND_EXCEPT_CEILING + 1)]
         self.assertEqual([], ratchet_problems(copy.deepcopy(CEILINGS), held))
+        # A value below its literal could rise back to it unrefused, so the literal is lowered with it.
         lowered = {table: {key: ceiling - 1 for key, ceiling in keys.items()} for table, keys in CEILINGS.items()}
-        self.assertEqual([], ratchet_problems(lowered, held[1:]))
+        self.assertEqual(
+            [
+                f"[tool.ruff.lint.{table}] {key} is {ceiling - 1}, below the ratchet's {ceiling}; lower its literal "
+                f"in CEILINGS to {ceiling - 1} in the same change"
+                for table, keys in CEILINGS.items()
+                for key, ceiling in keys.items()
+            ]
+            + [
+                f"{BLIND_EXCEPT_CEILING - 1} noqa comments keep a blind except, below the ratchet's "
+                f"{BLIND_EXCEPT_CEILING}; lower BLIND_EXCEPT_CEILING to {BLIND_EXCEPT_CEILING - 1} in the same change"
+            ],
+            ratchet_problems(lowered, held[1:]),
+        )
         raised = copy.deepcopy(CEILINGS)
         raised["mccabe"]["max-complexity"] += 1
         raised["pylint"]["max-args"] = True

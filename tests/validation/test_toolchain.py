@@ -271,11 +271,21 @@ def test_a_workflow_installs_only_its_locks_with_hash_checking() -> None:
         "          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt -r\n",
         "          python -m pip install --require-hashes --only-binary :all:\n",
         "          python -m pip install ruff==0.17.1\n",
+        # pip by another name, with an option before install, or with the words spaced apart.
+        "          pip3 install ruff==0.17.1\n",
+        "          pip3.11 install --require-hashes --only-binary :all: -r requirements-dev.in\n",
+        "          python -m pip --quiet install --require-hashes --only-binary :all: -r requirements-dev.txt\n",
+        "          python -m pip  install  ruff==0.17.1\n",
+        "          C:/Python311/Scripts/pip.exe install ruff==0.17.1\n",
+        "          uv pip install ruff==0.17.1\n",
     ):
         assert [
             "line 2 does not install only ['requirements-dev.txt'] with --require-hashes --only-binary :all:: "
             + repr(drifted.strip())
         ] == hash_install_problems(clean + drifted, ("requirements-dev.txt",))
+    # A workflow that installs no lock may run no pip install, and pip that installs nothing is not one.
+    assert len(hash_install_problems(clean, ())) == 1
+    assert hash_install_problems("      - run: python -m pip --version\n        cache: pip\n", ()) == []
 
 
 def test_an_input_may_hold_its_includes_as_written_and_nothing_else_like_them() -> None:

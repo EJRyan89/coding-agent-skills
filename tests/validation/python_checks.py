@@ -181,21 +181,32 @@ def blind_except_noqa(root: Path, files: list[Path]) -> list[str]:
 
 
 def ratchet_problems(lint: dict[str, Any], blind_excepts: list[str]) -> list[str]:
-    """Each ceiling of the lint configuration missing or raised past its literal, and the blind excepts kept with a
-    noqa when there are more of them than theirs."""
-    found = [
-        f"[tool.ruff.lint.{table}] {key} is {value!r}; the ratchet holds it at {ceiling} or lower, so split the "
-        "function instead"
-        for table, ceilings in CEILINGS.items()
-        for key, ceiling in ceilings.items()
-        if not (
-            isinstance(value := lint.get(table, {}).get(key), int) and not isinstance(value, bool) and value <= ceiling
-        )
-    ]
+    """Each ceiling of the lint configuration missing, raised past its literal, or lowered below it, and the blind
+    excepts kept with a noqa when there are more or fewer of them than theirs: a value below its literal could rise
+    back to it unrefused, so the literal is lowered in the same change."""
+    found: list[str] = []
+    for table, ceilings in CEILINGS.items():
+        for key, ceiling in ceilings.items():
+            value = lint.get(table, {}).get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value > ceiling:
+                found.append(
+                    f"[tool.ruff.lint.{table}] {key} is {value!r}; the ratchet holds it at {ceiling} or lower, so "
+                    "split the function instead"
+                )
+            elif value < ceiling:
+                found.append(
+                    f"[tool.ruff.lint.{table}] {key} is {value}, below the ratchet's {ceiling}; lower its literal in "
+                    f"CEILINGS to {value} in the same change"
+                )
     if len(blind_excepts) > BLIND_EXCEPT_CEILING:
         found.append(
             f"{len(blind_excepts)} noqa comments keep a blind except, past the ratchet's {BLIND_EXCEPT_CEILING}; "
             f"catch the exceptions the code expects instead: {', '.join(blind_excepts)}"
+        )
+    elif len(blind_excepts) < BLIND_EXCEPT_CEILING:
+        found.append(
+            f"{len(blind_excepts)} noqa comments keep a blind except, below the ratchet's {BLIND_EXCEPT_CEILING}; "
+            f"lower BLIND_EXCEPT_CEILING to {len(blind_excepts)} in the same change"
         )
     return found
 
