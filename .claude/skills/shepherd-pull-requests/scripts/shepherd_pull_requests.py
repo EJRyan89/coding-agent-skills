@@ -683,13 +683,16 @@ def read_merged(client: GitHubClient, repository: str) -> list[Merged]:
 
 def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | None) -> dict[str, list[str]]:
     """The parents of each commit `heads` reach that origin's main, `base`, does not, by the commit. A head git does
-    not hold is passed over. Raises ShepherdError when git does not hold `base`, as when the hub was not fetched
-    since main moved, since every commit main gained since the last fetch would then count as a head's own."""
+    not hold is passed over. Raises ShepherdError when origin has no main, or git does not hold `base`, as when the hub
+    was not fetched since main moved, since every commit main gained since the last fetch would then count as a head's
+    own."""
     if not heads:
         return {}
-    if base is None or git.run(["cat-file", "-e", f"{base}^{{commit}}"], directory=top).returncode:
+    if base is None:
+        raise ShepherdError(f"{REMOTE} has no {BASE}, so a merged head's own commits cannot be told from {BASE}'s")
+    if git.run(["cat-file", "-e", f"{base}^{{commit}}"], directory=top).returncode:
         raise ShepherdError(
-            f"git does not hold {REMOTE}'s {BASE} {short(base or '')}, so a merged head's own commits cannot be told "
+            f"git does not hold {REMOTE}'s {BASE} {short(base)}, so a merged head's own commits cannot be told "
             f"from {BASE}'s; fetch {REMOTE} in the hub"
         )
     listing = git.output(["rev-list", "--parents", "--ignore-missing", *heads, "--not", base], directory=top)

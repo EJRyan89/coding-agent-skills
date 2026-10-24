@@ -512,12 +512,12 @@ def read_record(path: Path) -> list[Entry]:
     """The record's entries, in the order it lists them, or AuditError naming what is wrong with it."""
     name = path.as_posix()
     try:
-        document = json_reader.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.read_file(path)
     except FileNotFoundError as exc:
         raise AuditError(f"no rotation record at {name}") from exc
-    # ValueError covers the decode errors, a repeated key, and an over-long integer; RecursionError, nesting too deep.
-    except (OSError, ValueError, RecursionError) as exc:
-        raise AuditError(f"cannot read the rotation record {name}: {type(exc).__name__}: {exc}") from exc
+    # ValueError covers the decode errors, a repeated key, nesting too deep, and an over-long integer.
+    except (OSError, ValueError) as exc:
+        raise AuditError(f"cannot read the rotation record {name}: {exc}") from exc
     audits = document.get("audits") if isinstance(document, dict) else None
     if not isinstance(audits, list):
         raise AuditError(f"{name} must be an object whose audits is a list")
@@ -1103,8 +1103,8 @@ def names_directory(marker: Path, directory: Path) -> bool:
     if not is_plain_file(marker):
         return False
     try:
-        record = json_reader.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
+        record = json_reader.read_file(marker)
+    except (OSError, ValueError):
         return False
     return isinstance(record, dict) and record.get("directory") == directory.as_posix()
 

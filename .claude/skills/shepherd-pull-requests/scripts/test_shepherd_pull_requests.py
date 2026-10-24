@@ -1270,6 +1270,15 @@ class MergedTest(FixtureTestCase):
             self.line(lines, "MERGED_FAILED "),
         )
 
+    def test_a_merged_head_s_own_commits_are_refused_without_origin_s_main(self) -> None:
+        head = git("rev-parse", "HEAD", directory=self.hub)
+        with self.assertRaises(shepherd.ShepherdError) as raised:
+            shepherd.own_history(GitClient(), self.hub, [head], None)
+        self.assertEqual(
+            "origin has no main, so a merged head's own commits cannot be told from main's", str(raised.exception)
+        )
+        self.assertEqual({}, shepherd.own_history(GitClient(), self.hub, [], None))
+
     def test_a_worktree_an_open_draft_carries_is_never_named(self) -> None:
         reused = self.add_worktree("reused", "fix/reused")
         merged = [{"number": 6, "headRefName": "fix/reused", "headRefOid": OTHER}]

@@ -99,10 +99,19 @@ QUESTION_LINES = [f"QUESTION {name} {what}" for name, what in QUESTIONS]
 
 
 def assert_questions(test: unittest.TestCase, brief: str) -> None:
-    """That a release or rotation brief asks each question in its own section, before the advice on confirming a
-    finding, and asks a finding to name the question that found it."""
+    """That a release or rotation brief asks each question in its own section, between the kinds of drift and the
+    advice on confirming a finding, each block ended by a blank line, and asks a finding to name the question that
+    found it."""
+    last_kind = "- **trust-boundary**: anything an author controls that the threat model in SECURITY.md does not cover."
     block = "\n".join(
-        ["", "## Questions to ask of every file", "", *(f"- **{name}**: {what}." for name, what in QUESTIONS), ""]
+        [
+            last_kind,
+            "",
+            "## Questions to ask of every file",
+            "",
+            *(f"- **{name}**: {what}." for name, what in QUESTIONS),
+            "",
+        ]
     )
     test.assertIn(block + "\n## Before you report a finding\n", brief)
     test.assertIn("- **question**: the question that found it, by its name, or none.", brief)
@@ -961,6 +970,15 @@ class RemoveBriefsTests(Fixture):
         self.assertTrue(lines[0].startswith("FAILED ") and "is not a briefs directory this script made" in lines[0])
         self.assertTrue((directory / ".audit-repository-briefs.json").is_file())
 
+    def test_a_marker_naming_a_directory_whose_name_is_not_ascii_is_read_as_utf_8(self) -> None:
+        directory = Path(tempfile.mkdtemp(prefix=f"{audit.BRIEFS_PREFIX}é-"))
+        self.addCleanup(remove_briefs_left, directory)
+        (directory / "brief.md").write_text("x", encoding="utf-8")
+        marker = json.dumps({"directory": directory.resolve().as_posix()}, ensure_ascii=False)
+        (directory / ".audit-repository-briefs.json").write_bytes(marker.encode("utf-8"))
+        code, lines = self.remove(directory)
+        self.assertEqual((0, [f'REMOVED "{directory.resolve().as_posix()}"']), (code, lines))
+
     def test_a_run_marks_its_directory_with_its_own_path(self) -> None:
         _, lines = self.run_main("release", "--since", "v0.1.0")
         directory = Path(next(line for line in lines if line.startswith("BRIEFS ")).split(" ", 1)[1].strip('"'))
@@ -1162,7 +1180,7 @@ def test_a_code_literal_of_a_printable_path_is_its_json_string_in_backticks() ->
         pytest.param("not json", "cannot read the rotation record", id="not-json"),
         pytest.param(
             '{"audits": ' + "[" * 100_000 + "]" * 100_000 + "}",
-            "RecursionError: ",
+            "nests deeper than the parser can read",
             id="nested-past-the-recursion-limit",
         ),
         pytest.param('{"audits": [], "audits": []}', "repeats the key 'audits'", id="repeated-key"),
@@ -1202,6 +1220,16 @@ def test_a_malformed_record_fails_with_the_reason(tmp_path: Path, text: str, rea
     with pytest.raises(audit.AuditError) as caught:
         audit.read_record(path)
     assert reason in str(caught.value)
+
+
+def test_a_record_is_read_as_utf_8_whatever_the_platform_s_codec(tmp_path: Path) -> None:
+    path = tmp_path / "rotation.json"
+    path.write_bytes('{"audits": [{"date": "2026-01-01", "tag": "v1.0.0", "area": "dé"}]}'.encode())
+    with pytest.raises(audit.AuditError) as caught:
+        audit.read_record(path)
+    assert str(caught.value).endswith(
+        "audit 1 names area 'dé', not one of deployer, code-review, other-skills, infrastructure"
+    )
 
 
 def test_a_missing_record_fails_with_the_reason(tmp_path: Path) -> None:
