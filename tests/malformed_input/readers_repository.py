@@ -179,6 +179,7 @@ READERS = [
         accepts={
             "truncated": ONE_LINE_TITLE,
             "long_line": ONE_LINE_TITLE,
+            "bom": "read_file drops the byte-order mark an editor may save, so the title is judged as typed",
         },
     ),
     Reader(

@@ -2265,7 +2265,8 @@ def json_hook(event: str, group: int, handler: dict[str, object]) -> Hook:
 
 
 def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
-    """Each command hook the hooks file of the skill's plugin holds, with its matcher; none outside a plugin."""
+    """Each command hook the hooks file of the skill's plugin holds, with its matcher; none outside a plugin. A hooks
+    file that cannot be read, is not JSON, or is not a JSON object raises InputError."""
     plugin = plugin_of(folder)
     path = plugin[1] / skill_menu.PLUGIN_HOOKS if plugin is not None else None
     if path is None:
@@ -2280,7 +2281,9 @@ def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (ValueError, RecursionError) as exc:
         raise InputError(f"{posix(path)} is not JSON: {exc}") from exc
-    events = document.get("hooks") if isinstance(document, dict) else None
+    if not isinstance(document, dict):
+        raise InputError(f"{posix(path)} is not a JSON object")
+    events = document.get("hooks")
     found: list[tuple[Hook, str]] = []
     group = 0
     for event, groups in events.items() if isinstance(events, dict) else []:

@@ -938,6 +938,13 @@ class FileListTests(unittest.TestCase):
                 targets.read_file_list(self.path)
             self.assertEqual(f"{self.path} {message}", str(context.exception))
 
+    def test_a_line_holding_a_nul_is_refused_naming_it(self) -> None:
+        for content, number in ((b"src/A.cs\nsrc/B.cs\0\0\n", 2), (b"\0src/A.cs\n", 1)):
+            self.path.write_bytes(content)
+            with self.subTest(content=content), self.assertRaises(ValueError) as context:
+                targets.read_file_list(self.path)
+            self.assertEqual(f"{self.path} line {number} holds a NUL, which no path holds", str(context.exception))
+
     def test_a_missing_list_is_an_os_error(self) -> None:
         with self.assertRaises(FileNotFoundError):
             targets.read_file_list(self.path)
