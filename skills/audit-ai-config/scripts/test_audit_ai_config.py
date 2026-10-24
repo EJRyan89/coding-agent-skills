@@ -2366,6 +2366,15 @@ LAYERING_SCENARIOS: dict[str, tuple[dict[str, str], dict[str, Any]]] = {
         {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
     ),
     "nothing": ({}, {"runtimes": ["codex"], "surfaces": EVERY_SURFACE}),
+    # Copilot CLI's command reference reads .claude/rules/**/*.md the way it reads .github/instructions.
+    "claude_rules_only": (
+        {".claude/rules/api.md": "Prefer async.\n", ".claude/rules/frontend/ui.md": "Use tabs.\n"},
+        {"runtimes": [], "surfaces": ["copilot_cli"]},
+    ),
+    "claude_rules_without_markdown": (
+        {".claude/rules/notes.txt": "Not a rule.\n"},
+        {"runtimes": [], "surfaces": ["copilot_cli"]},
+    ),
     "copilot_app_only": ({"CLAUDE.md": "# CLAUDE.md\n"}, {"runtimes": ["claude"], "surfaces": ["copilot_app"]}),
     "no_targets": ({"CLAUDE.md": "# CLAUDE.md\n"}, {"runtimes": [], "surfaces": []}),
 }
@@ -2591,6 +2600,40 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             None,
             "VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, "
             "useInstructionFiles, includeApplyingInstructions) cannot be verified statically",
+        ),
+    ],
+    "claude_rules_only": [
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: .claude/rules"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined "
+            "statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, "
+            "runtime enablement, and actual operational use cannot be verified statically",
+        ),
+    ],
+    "claude_rules_without_markdown": [
+        ("ERROR", "layering", None, "Copilot CLI/app: no instruction sources available"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined "
+            "statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, "
+            "runtime enablement, and actual operational use cannot be verified statically",
         ),
     ],
     "path_instructions_only": [
@@ -2821,6 +2864,63 @@ def test_every_mcp_scenario_has_its_expected_findings() -> None:
 def test_mcp_findings_and_their_order(name: str) -> None:
     files, manifest = MCP_SCENARIOS[name]
     assert MCP_EXPECTED[name] == sequence_rows(audit.check_mcp, files, manifest)
+
+
+def test_an_instruction_file_code_review_reads_over_its_length_is_a_warning() -> None:
+    # GitHub's customize-code-review page: limit any single instruction file to a maximum of about 1,000 lines.
+    long, limit = "line\n" * 1001, "line\n" * 1000
+
+    def over(rel: str) -> tuple[str, str, str | None, str]:
+        return (
+            "WARNING",
+            "layering",
+            rel,
+            "1001 lines, over the about 1,000 lines GitHub advises for one instruction file Copilot code review reads; "
+            "beyond it the quality of its reviews may deteriorate",
+        )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        _write_fixture(
+            root,
+            {
+                "AGENTS.md": long,
+                "CLAUDE.md": long,
+                "GEMINI.md": limit,
+                "REVIEW.md": long,
+                ".github/copilot-instructions.md": long,
+                ".github/instructions/api.instructions.md": long,
+                ".github/instructions/ui.instructions.md": limit,
+                ".github/instructions/zz.instructions.md": UNDECODABLE,
+            },
+        )
+        rows = [
+            row
+            for row in _finding_rows(audit.check_instruction_layering(root, {"surfaces": ["code_review"]}))
+            if row[2]
+        ]
+    assert rows == [
+        over("AGENTS.md"),
+        over("CLAUDE.md"),
+        over("REVIEW.md"),
+        over(".github/copilot-instructions.md"),
+        over(".github/instructions/api.instructions.md"),
+        (
+            "ERROR",
+            "layering",
+            ".github/instructions/zz.instructions.md",
+            "Could not read, so its length was not checked",
+        ),
+    ]
+
+
+def test_a_redirecting_agents_md_is_no_length_of_code_reviews() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        _write_fixture(root, {"AGENTS.md": REDIRECTING_AGENTS + "line\n" * 1001, "CLAUDE.md": "# CLAUDE.md\n"})
+        assert audit._instruction_sources(root).agents_redirects
+        findings = audit.check_instruction_layering(root, {"surfaces": ["code_review"]})
+    assert [f for f in findings if f.path == "AGENTS.md"] == []
 
 
 def test_every_layering_scenario_has_its_expected_findings() -> None:
@@ -4047,6 +4147,7 @@ class UnreadableConfigurationTests(unittest.TestCase):
             (".mcp.json", "mcp", "Could not read or parse:"),
             (".claude/settings.json", "claude-settings", "Could not read or parse:"),
             (".codex/config.toml", "mcp", "Error reading config:"),
+            (".codex/hooks.json", "codex-hook", "Could not read or parse:"),
         ):
             with self.subTest(rel=rel):
                 (self.root / rel).mkdir(parents=True)
@@ -4055,6 +4156,19 @@ class UnreadableConfigurationTests(unittest.TestCase):
                 self.assertTrue(errors[0][1].startswith(message), errors)
                 self.assertIn("not a file", errors[0][1])
                 (self.root / rel).rmdir()
+
+    def test_an_undecodable_file_the_length_checks_read_is_an_inventory_error(self) -> None:
+        # CLAUDE.local.md is the memory check's, GEMINI.md and REVIEW.md the code-review length check's: one they
+        # could not read would otherwise pass as a file within its length.
+        for rel in ("CLAUDE.local.md", "GEMINI.md", "REVIEW.md"):
+            with self.subTest(rel=rel):
+                (self.root / rel).write_bytes(UNDECODABLE + b"\nline" * 1001)
+                errors = self._errors(rel)
+                self.assertEqual(["inventory"], [check for check, _ in errors])
+                self.assertTrue(
+                    errors[0][1].startswith("Could not read, so the checks that read it did not run:"), errors
+                )
+                (self.root / rel).unlink()
 
     def test_a_directory_in_the_manifest_place_is_a_malformed_manifest_never_none(self) -> None:
         manifest = self.root / ".github/ai-config-manifest.json"
@@ -4265,6 +4379,7 @@ class FileDerivedScopeTests(unittest.TestCase):
             "nothing": ({}, {}),
             "root CLAUDE.md": ({"CLAUDE.md": "x"}, {"runtimes": ["claude"], "surfaces": []}),
             ".claude/CLAUDE.md": ({".claude/CLAUDE.md": "x"}, {"runtimes": ["claude"], "surfaces": []}),
+            "root AGENTS.md": ({"AGENTS.md": "x"}, {"runtimes": ["claude", "codex"], "surfaces": []}),
             "AGENTS.override.md": ({"AGENTS.override.md": "x"}, {"runtimes": ["codex"], "surfaces": []}),
             ".codex folder": ({".codex/hooks.json": "{}"}, {"runtimes": ["codex"], "surfaces": []}),
             ".agents/skills": ({".agents/skills/demo/SKILL.md": "x"}, {"runtimes": ["codex"], "surfaces": []}),
@@ -4281,6 +4396,37 @@ class FileDerivedScopeTests(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
                 _write_fixture(Path(temporary), files)
                 self.assertEqual(expected, audit.derive_file_scope(Path(temporary)))
+
+    def test_a_repository_whose_only_instructions_are_agents_md_serves_claude_code_and_codex(self) -> None:
+        # Claude Code's memory page: Claude Code reads AGENTS.md as the project's instructions when there is no
+        # CLAUDE.md, from v2.1.277 on, and not while a CLAUDE.local.md is present.
+        result = self._audit(
+            {
+                "AGENTS.md": PLAIN_AGENTS,
+                "scripts/ai_config.py": GENERATOR_NAMING_CLAUDE,
+                ".github/workflows/parity.yml": PARITY_WORKFLOW,
+            }
+        )
+        _assert_scope_status(self, result, "file-derived")
+        self.assertEqual(
+            [
+                (
+                    "INFO",
+                    None,
+                    "No AI-config manifest or recognized generator declares target runtimes or surfaces; the layering "
+                    "checks cover what the repository's files show it serves: runtimes claude, codex; surfaces "
+                    "copilot_cli, code_review",
+                ),
+                (
+                    "INFO",
+                    "AGENTS.md",
+                    "Claude Code reads AGENTS.md as the project's instructions, since no CLAUDE.md is present, from "
+                    "v2.1.277 on and while no CLAUDE.local.md is; an earlier Claude Code reads no project instructions "
+                    "here",
+                ),
+            ],
+            [(f.severity, f.path, f.message) for f in result.findings if f.check == "scope"],
+        )
 
     def test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run(self) -> None:
         self.assertEqual(
@@ -4413,6 +4559,43 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
             [("ERROR", "claude-settings", SETTINGS, "'permissions' must be an object")],
             settings_rows({"permissions": ["allow"]}),
         )
+
+    def test_a_value_that_is_not_text_is_an_error_never_a_crash(self) -> None:
+        set_mode = (
+            "INFO",
+            "claude-settings",
+            SETTINGS,
+            "The shared settings set permissions.defaultMode for everyone who opens the repository",
+        )
+        for mode in (["plan"], {"mode": "plan"}):
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    [
+                        (
+                            "ERROR",
+                            "claude-settings",
+                            SETTINGS,
+                            f"permissions.defaultMode {mode!r} is not a mode Claude Code knows",
+                        ),
+                        set_mode,
+                    ],
+                    settings_rows({"permissions": {"defaultMode": mode}}),
+                )
+        for kind in (["command"], {"type": "command"}):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    [
+                        (
+                            "ERROR",
+                            "claude-hook",
+                            SETTINGS,
+                            f"Hook on 'PreToolUse': type {kind!r} is not one Claude Code runs",
+                        )
+                    ],
+                    settings_rows(
+                        {"hooks": {"PreToolUse": [{"hooks": [{"type": kind, "command": "x", "timeout": 5}]}]}}
+                    ),
+                )
 
     def test_a_hook_is_read_as_the_hooks_page_gives_it(self) -> None:
         cases: dict[str, tuple[dict[str, Any], list[tuple[str, str]]]] = {
@@ -4716,7 +4899,7 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
             ),
         )
 
-    def test_a_claude_code_agent_is_read_with_its_own_fields_and_never_copilots(self) -> None:
+    def test_a_claude_code_agent_is_read_with_its_own_fields_and_copilots(self) -> None:
         files: dict[str, str | bytes] = {
             ".claude/agents/reviewer.md": (
                 "---\nname: code-review\ndescription: Reviews.\ntarget: invalid\ntools: Read, Grep\nmodel: inherit\n"
@@ -4757,9 +4940,45 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
                     ".claude/agents/reviewer.md",
                     "Claude Code agent 'code-review': tools Read, Grep; inherit; its own hooks",
                 ),
+                ("ERROR", "copilot-agent", ".claude/agents/reviewer.md", "target must be 'vscode' or 'github-copilot'"),
                 ("ERROR", "claude-agent", ".claude/agents/unnamed.md", "Agent frontmatter requires name"),
             ],
             rows,
+        )
+
+    def test_copilot_cli_judges_a_claude_code_agent_by_its_custom_agent_fields(self) -> None:
+        # Copilot CLI's command reference reads custom agents from .claude/agents after .github/agents, each by the
+        # ID its file name gives.
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "collision",
+                    ".claude/agents/code-review.md",
+                    "Custom agent 'code-review' collides with a Copilot built-in agent",
+                ),
+                ("ERROR", "copilot-agent", ".claude/agents/fields.md", "infer must be a boolean"),
+                (
+                    "ERROR",
+                    "copilot-agent",
+                    ".claude/agents/fields.md",
+                    "tools must not be empty; write [] to disable every tool, or omit tools to enable every tool",
+                ),
+                ("ERROR", "copilot-agent", ".claude/agents/fields.md", "modelPolicy must be 'preferred' or 'required'"),
+            ],
+            runtime_rows(
+                {
+                    ".claude/agents/code-review.md": "---\nname: reviewer\ndescription: Reviews.\n---\n",
+                    ".claude/agents/fields.md": (
+                        "---\nname: fields\ndescription: Fields.\ninfer: sometimes\ntools:\nmodelPolicy: strict\n---\n"
+                    ),
+                    ".claude/agents/clean.md": (
+                        "---\nname: clean\ndescription: Clean.\ntools: Read, Grep\ninfer: false\n"
+                        "modelPolicy: required\n---\n"
+                    ),
+                },
+                ("copilot-agent", "collision"),
+            ),
         )
 
 
@@ -4842,6 +5061,121 @@ class CodexConfigurationTests(unittest.TestCase):
                     ".codex/hooks.json": CODEX_HOOK,
                     ".codex/config.toml": '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ntimeout = 5\n',
                 }
+            ),
+        )
+
+    def test_the_hook_events_are_the_pages_and_the_model_request_events_of_0_164_0(self) -> None:
+        # The hooks page's twelve events, and the two that HookEventName.ts adds at rust-v0.164.0
+        # (openai/codex#55144), which the page does not list yet.
+        self.assertEqual(
+            {
+                "PreModelRequest",
+                "PostModelRequest",
+                "PreToolUse",
+                "PermissionRequest",
+                "PostToolUse",
+                "PreCompact",
+                "PostCompact",
+                "UserPromptSubmit",
+                "SubagentStop",
+                "Stop",
+                "Interrupt",
+                "SessionStart",
+                "SubagentStart",
+                "SessionEnd",
+            },
+            audit.CODEX_HOOKS.events,
+        )
+        handler = [{"hooks": [{"type": "command", "command": "x", "timeout": 5}]}]
+        self.assertEqual(
+            [],
+            codex_rows(
+                {".codex/hooks.json": json.dumps({"hooks": {"PreModelRequest": handler, "PostModelRequest": handler}})}
+            ),
+        )
+
+    def test_a_hook_handler_is_held_to_the_types_the_hooks_page_lists(self) -> None:
+        def hook(event: str = "PreToolUse", /, **fields: Any) -> str:
+            return json.dumps({"hooks": {event: [{"matcher": "Bash", "hooks": [fields]}]}})
+
+        cases: dict[str, tuple[str, list[tuple[str, str]]]] = {
+            "command": (hook(type="command", command="x", timeout=5), []),
+            "mcp_tool": (hook(type="mcp_tool", server="docs", tool="lookup", timeout=5), []),
+            "mcp_tool without server or tool": (
+                hook(type="mcp_tool", timeout=5),
+                [
+                    ("ERROR", "Hook on 'PreToolUse': a mcp_tool hook needs 'server'"),
+                    ("ERROR", "Hook on 'PreToolUse': a mcp_tool hook needs 'tool'"),
+                ],
+            ),
+            "mcp_tool without a timeout": (
+                hook(type="mcp_tool", server="docs", tool="lookup"),
+                [("WARNING", "Hook on 'PreToolUse' sets no timeout, so Codex waits up to 600 seconds for it")],
+            ),
+            "prompt": (
+                hook(type="prompt", prompt="Check."),
+                [("ERROR", "Hook on 'PreToolUse': Codex reads a prompt hook but skips it, so it never runs")],
+            ),
+            "agent": (
+                hook(type="agent", prompt="Check."),
+                [("ERROR", "Hook on 'PreToolUse': Codex reads a agent hook but skips it, so it never runs")],
+            ),
+            "http": (
+                hook(type="http", url="https://example.test", timeout=5),
+                [("ERROR", "Hook on 'PreToolUse': type 'http' is not one Codex runs")],
+            ),
+            "a type that is a list": (
+                hook(type=["command"], command="x", timeout=5),
+                [("ERROR", "Hook on 'PreToolUse': type ['command'] is not one Codex runs")],
+            ),
+            "an async guard": (
+                hook(type="command", command="x", timeout=5, **{"async": True}),
+                [
+                    (
+                        "WARNING",
+                        "Hook on 'PreToolUse' runs in the background (async), so it cannot block or control the "
+                        "operation; a guard must run synchronously",
+                    )
+                ],
+            ),
+            "an async observer": (hook("PostToolUse", type="command", command="x", timeout=5, **{"async": True}), []),
+            "a synchronous guard": (hook(type="command", command="x", timeout=5, **{"async": False}), []),
+        }
+        for name, (hooks, expected) in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [(severity, "codex-hook", ".codex/hooks.json", None, message) for severity, message in expected],
+                    codex_rows({".codex/hooks.json": hooks}),
+                )
+        for event in ("PermissionRequest", "UserPromptSubmit", "Stop"):
+            with self.subTest(event=event):
+                self.assertEqual(
+                    ["WARNING"],
+                    [
+                        row[0]
+                        for row in codex_rows(
+                            {
+                                ".codex/hooks.json": hook(
+                                    event, type="command", command="x", timeout=5, **{"async": True}
+                                )
+                            }
+                        )
+                    ],
+                )
+
+    def test_a_config_toml_hook_whose_type_is_a_list_is_an_error_never_a_crash(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "codex-hook",
+                    ".codex/config.toml",
+                    None,
+                    "Hook on 'Stop': type ['command'] is not one Codex runs",
+                )
+            ],
+            codex_rows(
+                {".codex/config.toml": '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = ["command"]\ncommand = "x"\n'}
             ),
         )
 
