@@ -21,7 +21,7 @@ CAPTURED = REPOSITORY / "tests" / "fixtures" / "captured-output"
 PROVENANCE = "provenance.json"
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
 # A path into a real profile or home, as a capture names it before its folders are written <temp> and <home>.
-MACHINE_PATHS = re.compile(r"[A-Za-z]:(?:\\\\|\\|/)+(?:Users|Documents and Settings)\b|(?<![\w.<>])/(?:home|Users)/\w")
+MACHINE_PATHS = re.compile(r"[A-Za-z]:[\\/]+(?:Users|Documents and Settings)\b|(?<![\w.<>])/(?:home|Users)/\w")
 
 
 def recorded() -> dict[str, dict[str, object]]:
