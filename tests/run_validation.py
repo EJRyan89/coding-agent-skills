@@ -11,8 +11,9 @@ tests/validation/test_<module>.py, which run in the pool as regression suites. E
 split into shards, each its own pytest process that conftest.py's --suite-shard deals the suite's tests to, so no single
 suite sets the length of the run.
 -k selects the policy checks whose name, and the suites whose path, matches a pattern, and a pattern that matches
-none of either is a usage error, exit 2, rather than a run that passes empty. VALIDATION_JOBS sets the number of
-workers.
+none of either, alone or beside one that does, is a usage error, exit 2, rather than a run that passes without it. -k
+selects by name, so --changed and --full, which select by the change, are usage errors beside it. VALIDATION_JOBS sets
+the number of workers.
 
 When every changed file is documentation, it runs the policy checks and only the suites that name a changed
 file, and, when a changed file is Markdown, the PowerShell analyzer and the ShellCheck check of Markdown Bash fences;
@@ -97,6 +98,7 @@ from job_selection import (
     changed_jobs,
     changed_paths,
     documentation_jobs,
+    flatten,
     leg_jobs,
     leg_policies,
     name_patterns,
@@ -290,6 +292,8 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
     arguments = parser.parse_args(argv)
     if arguments.changed and arguments.patterns:
         parser.error("argument --changed: not allowed with argument -k, which selects by name instead")
+    if arguments.full and arguments.patterns:
+        parser.error("argument --full: not allowed with argument -k, which selects by name instead")
     if arguments.pr_body is not None and not arguments.pr_body.is_file():
         parser.error(f"--pr-body is not a file: {arguments.pr_body}")
     if arguments.pr_title is not None and not arguments.pr_title.is_file():
@@ -362,13 +366,18 @@ def report_run(
     for failure in failures:
         print(f"\n{'=' * 70}\nFAILED {failure.job.label}\n{'-' * 70}\n{failure.report}", file=out, flush=True)
     passed = policy_result.wasSuccessful() and not failures
+    failed_policies = policy_result.failures + policy_result.errors
     print(
         f"\n{f'Shard {run.leg}: ' if run.leg else ''}{policy_result.testsRun} policy checks and {jobs} suite jobs in "
         f"{run.seconds:.0f}s: "
-        + ("validation passed." if passed else f"validation FAILED ({len(failures)} suite jobs failed)."),
+        + (
+            "validation passed."
+            if passed
+            else f"validation FAILED ({len(failed_policies)} policy checks and {len(failures)} suite jobs failed)."
+        ),
         file=out,
     )
-    failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in policy_result.failures + policy_result.errors]
+    failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in failed_policies]
     failed += [failure.job.label for failure in failures]
     details = {
         failure.job.label: failure.report
@@ -389,6 +398,17 @@ def report_run(
     )
     append_step_summary(environment, summary)
     return passed
+
+
+def unmatched_patterns(patterns: list[str], policies: unittest.TestSuite, jobs: list[Job]) -> list[str]:
+    """The -k patterns, each as given, that match no loaded policy check's ID and no selected suite job's name:
+    unittest keeps a check any one pattern matches, so a pattern beside one that matches would otherwise drop out."""
+    names = [*(check.id() for check in flatten(policies)), *(job.name for job in jobs)]
+    return [
+        given
+        for given, pattern in zip(patterns, name_patterns(patterns), strict=True)
+        if not any(fnmatch.fnmatchcase(name, pattern) for name in names)
+    ]
 
 
 def main(
@@ -436,8 +456,9 @@ def main(
     else:
         jobs, mode = select_jobs(arguments, f"origin/{environment.get('GITHUB_BASE_REF') or 'main'}")
         print(mode, file=out, flush=True)
-    if not policies.countTestCases() and not jobs:
-        print(f"No policy check or suite matches {' '.join(arguments.patterns)}.", file=errors)
+    unmatched = unmatched_patterns(arguments.patterns, policies, jobs)
+    if unmatched:
+        print("".join(f"No policy check or suite matches {pattern}.\n" for pattern in unmatched), end="", file=errors)
         return 2
     leg = f"{arguments.shard[0]}/{arguments.shard[1]}" if arguments.shard else None
     if arguments.shard:
@@ -470,6 +491,6 @@ def main(
 
 if __name__ == "__main__":
     # ejryan89-skill-core's runner writes UTF-8, so a report quoting what a suite printed, its replacement characters
-    # included, ends with its closing line and its step summary on any console, and a crash of the runner itself ends in
-    # a FAILED line after its traceback.
+    # included, ends with its closing line and its step summary on any console, and a crash of the runner itself prints
+    # its FAILED line on stdout and then its traceback on stderr.
     run_main(main, errors="backslashreplace", traceback_requested=lambda: True)

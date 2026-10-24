@@ -38,6 +38,7 @@ conftest.py overrides one.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -218,8 +219,11 @@ def recorded_seconds(arguments: list[str]) -> dict[str, float]:
             seconds[test] = float(value)
         except ValueError:
             seconds[test] = 0
-        if not separator or seconds[test] <= 0:
-            raise pytest.UsageError(f"{SECONDS_OPTION} expects <test>=<seconds> above 0, found {argument!r}")
+        # float() reads nan, inf, and infinity, which no test's seconds are.
+        if not separator or not 0 < seconds[test] < math.inf:
+            raise pytest.UsageError(
+                f"{SECONDS_OPTION} expects <test>=<seconds>, a finite number above 0, found {argument!r}"
+            )
     return seconds
 
 

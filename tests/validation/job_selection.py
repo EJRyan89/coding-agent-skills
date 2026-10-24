@@ -9,6 +9,7 @@ import ast
 import fnmatch
 import functools
 import json
+import math
 import unittest
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -29,14 +30,19 @@ MARKDOWN_SHELL_JOB = "static Markdown shell checks (ShellCheck on Bash fences ou
 SHELL_JOB = "static shell checks (bash -n and ShellCheck on skill scripts)"
 FORMAT_JOB = "static format check (ruff format --check)"
 LINT_JOB = "static lint check (ruff check)"
+# The development dependencies' pins and their hash lock, which pin the ruff, mypy, and pytest every Python check and
+# suite runs on, so a bump reaches the format, lint, and type checks and every Python suite.
+DEVELOPMENT_DEPENDENCIES = ("requirements-dev.in", "requirements-dev.txt")
+# The files besides Python's own that set how the format, lint, and type checks read it.
+PYTHON_CHECK_FILES = ("pyproject.toml", *DEVELOPMENT_DEPENDENCIES)
 # What a change reaches beyond the suites that name, import, or sit in the skill of a changed file, as pairs of
 # changed-path patterns and the suite patterns they add, both fnmatch patterns over repository-relative paths, where *
 # crosses folders. The deployer renders and deploys every shipped skill's files in its rendering suite; it reads each
 # skill's metadata, its dependencies, agents, tools, runtime support, and selection, in the rendering suite and the
 # bundles-and-dependencies suite; the deployer's suites run deploy.py and every module behind it; and the files that
 # set a tool floor are read by the toolchain, upgrade-note, and check suites; and the root conftest.py sets up every
-# Python suite, whose git it isolates and whose shards it deals. --changed adds them, so no contributor has to
-# remember them.
+# Python suite, whose git it isolates and whose shards it deals, and the development dependencies pin the pytest that
+# runs every Python suite. --changed adds them, so no contributor has to remember them.
 CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("skills/*",), ("tests/deployer/test_rendering_locking.py",)),
     (
@@ -58,7 +64,7 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "tests/deployer/test_check.py",
         ),
     ),
-    (("conftest.py",), ("*.py",)),
+    (("conftest.py", *DEVELOPMENT_DEPENDENCIES), ("*.py",)),
 )
 # The folders skills sit in: a change anywhere in a skill reaches the suites in its scripts/.
 SKILL_PARENTS = ("skills", ".claude/skills")
@@ -112,7 +118,8 @@ def all_jobs() -> list[Job]:
 
 def changed_static_jobs(paths: list[str], jobs: list[Job], type_checks: set[str]) -> list[Job]:
     """The static checks that read a changed file's kind: the fence checks for Markdown, the PowerShell analyzer for a
-    PowerShell script, the shell check for a Bash script, and for Python or its configuration the format and lint
+    PowerShell script, the shell check for a Bash script, and for Python, its configuration, or the development
+    dependencies that pin its checkers, the format and lint
     checks and every type check in type_checks, since a module's callers sit in other type-check roots."""
     suffixes = {PurePosixPath(path).suffix.casefold() for path in paths}
     labels = set()
@@ -122,7 +129,7 @@ def changed_static_jobs(paths: list[str], jobs: list[Job], type_checks: set[str]
         labels.add(POWERSHELL_JOB)
     if suffixes & {".sh", ".bash"}:
         labels.add(SHELL_JOB)
-    if ".py" in suffixes or "pyproject.toml" in paths:
+    if ".py" in suffixes or any(path in PYTHON_CHECK_FILES for path in paths):
         labels |= {FORMAT_JOB, LINT_JOB, *type_checks}
     return [job for job in jobs if job.label in labels]
 
@@ -277,17 +284,24 @@ def name_patterns(patterns: list[str]) -> list[str]:
     return [pattern if any(character in pattern for character in "*?[") else f"*{pattern}*" for pattern in patterns]
 
 
+def _no_constant(name: str) -> float:
+    raise ValueError(f"{name} is not a number of seconds")
+
+
 def job_seconds(path: Path = JOB_SECONDS) -> dict[str, dict[str, float]]:
     """The measured seconds by platform and job name: a JSON object of the runs they came from and the seconds, an
-    object for each platform the deployer supports, each value above zero.
+    object for each platform the deployer supports, each value a finite number above zero. A file that cannot be read,
+    is not UTF-8 JSON, nests past the parser's depth, or holds NaN or Infinity is refused by name, as ValueError.
 
     A table from before the runs were several, which records one run under "run", or from before each platform had its
     own seconds, whose seconds are by job name alone, is refused rather than read: the release step that writes it
     rewrites it whole, so a reader of both would only keep the old shape alive.
     """
     try:
-        table = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        table = json.loads(path.read_text(encoding="utf-8"), parse_constant=_no_constant)
+    # ValueError covers the decode errors, UnicodeError, an over-long integer, and NaN or Infinity; RecursionError,
+    # nesting too deep
+    except (OSError, ValueError, RecursionError) as error:
         raise ValueError(f"{path.name} cannot be read as JSON: {error}") from error
     if isinstance(table, dict) and "run" in table and "runs" not in table:
         raise ValueError(
@@ -315,9 +329,11 @@ def job_seconds(path: Path = JOB_SECONDS) -> dict[str, dict[str, float]]:
         raise ValueError(f"{path.name} records seconds for {sorted(seconds)}; it records each of {platforms}")
     for platform, jobs in seconds.items():
         for name, value in jobs.items():
-            if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+            # A float past the largest one, such as 1e999, parses to infinity without naming a constant.
+            if isinstance(value, bool) or not isinstance(value, int | float) or not 0 < value < math.inf:
                 raise ValueError(
-                    f"{path.name} records {name} on {platform} at {value!r}; a job's seconds are a number above zero"
+                    f"{path.name} records {name} on {platform} at {value!r}; a job's seconds are a finite number "
+                    "above zero"
                 )
     return {platform: {name: float(value) for name, value in jobs.items()} for platform, jobs in seconds.items()}
 
