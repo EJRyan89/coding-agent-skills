@@ -28,7 +28,7 @@ from markdown_sections import CODE_SPAN, markdown_section
 from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment
 
 from deployer import platform_support
-from tools import hub_guard, worktrees
+from tools import bash_syntax, hub_guard, worktrees
 
 
 def guard_in_process(stdin: str, cwd: Path, environment: Mapping[str, str]) -> tuple[int, str, str]:
@@ -245,6 +245,76 @@ class EndToEndTests(GuardTestCase):
                 with self.subTest(tool=event["tool_name"], value=value):
                     self.enable(value)
                     self.assertEqual(expected, self.both(event))
+
+    def test_bash_nested_deeper_than_the_reader_follows_is_refused_alike_in_its_own_process(self) -> None:
+        # Bash reads this text, and the reader does not (tests/tools/test_bash_syntax.py holds both), so the event is
+        # handed over as text, past the check that Bash and the reader agree.
+        nested = "$( " * 300 + "git commit -m x" + " )" * 300
+        for command, expected in ((nested, "deny"), ("git status", None)):
+            with self.subTest(command=command[:30]):
+                event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.hub)}
+                self.assertEqual(expected, self.both(json.dumps(event)))
+        self.assertNotIn("hub guard skipped", self.stderr)
+
+
+class ReaderFailureTests(GuardTestCase):
+    """A reader or a judgment that fails leaves a command the guard cannot read: refused when it names git while a
+    guarded hub is in view, and allowed with a note otherwise, as a part the readers cannot settle is."""
+
+    def outside(self) -> Path:
+        outside = self.root / "not-a-repository"
+        outside.mkdir(exist_ok=True)
+        return outside
+
+    def shell(self, tool: str, command: str, cwd: Path) -> str | None:
+        # Handed over as text: a reader made to fail cannot agree with Bash.
+        return self.decision(json.dumps({"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}))
+
+    def test_any_error_inside_a_reader_is_refused_when_the_command_names_git(self) -> None:
+        for tool, target, name, error in (
+            ("Bash", bash_syntax, "parse", ValueError("the reader broke")),
+            ("Bash", bash_syntax, "parse", RecursionError("maximum recursion depth exceeded")),
+            ("Monitor", hub_guard.BashReader, "run_list", KeyError("variables")),
+            ("PowerShell", hub_guard, "powershell_events", KeyError("events")),
+        ):
+            with (
+                self.subTest(tool=tool, failing=name, error=type(error).__name__),
+                mock.patch.object(target, name, side_effect=error),
+            ):
+                self.assertEqual("deny", self.shell(tool, "git commit -m x", self.hub))
+                self.assertIn(f"The guard failed reading this command ({type(error).__name__}: ", self.reason)
+                self.assertIsNone(self.shell(tool, "echo done", self.hub))
+                self.assertIsNone(self.shell(tool, "git commit -m x", self.outside()))
+                self.assertIn(f"hub guard skipped: {type(error).__name__}: ", self.stderr)
+
+    def test_an_error_before_the_guarded_hubs_in_view_are_known_is_allowed_with_a_note(self) -> None:
+        with mock.patch.object(hub_guard, "hubs_in_view", side_effect=RuntimeError("no hubs")):
+            for tool in ("Bash", "PowerShell"):
+                with self.subTest(tool=tool):
+                    self.assertIsNone(self.shell(tool, "git commit -m x", self.hub))
+                    self.assertEqual("hub guard skipped: RuntimeError: no hubs\n", self.stderr)
+
+    def test_an_error_reading_a_shell_alias_is_a_part_of_the_command_the_guard_cannot_read(self) -> None:
+        self.git(self.hub, "config", "alias.save", "!git commit -m x")
+        with mock.patch.object(hub_guard, "read_bash", side_effect=RecursionError("maximum recursion depth exceeded")):
+            self.assertEqual("deny", self.shell("Bash", "git save", self.tree))
+        self.assertIn("The guard failed reading this command (RecursionError: ", self.reason)
+
+    def test_an_error_judging_a_command_is_refused_while_a_guarded_hub_is_in_view(self) -> None:
+        with mock.patch.object(hub_guard, "denied", side_effect=RuntimeError("the judge broke")):
+            for tool in ("Bash", "PowerShell"):
+                with self.subTest(tool=tool):
+                    self.assertEqual("deny", self.shell(tool, "git commit -m x", self.hub))
+                    self.assertEqual(
+                        "The guard failed reading this command (RuntimeError: the judge broke), and it names git, so "
+                        "it is refused while a hub is guarded. Rewrite it so each git command is written out. "
+                        f"{hub_guard.DENY_REASON}",
+                        self.reason,
+                    )
+                    self.assertIsNone(self.shell(tool, "echo done", self.hub))
+                    self.assertIn("hub guard skipped: RuntimeError: the judge broke", self.stderr)
+                    self.assertIsNone(self.shell(tool, "git commit -m x", self.outside()))
+                    self.assertIn("hub guard skipped: RuntimeError: the judge broke", self.stderr)
 
 
 class HookCommandTests(GuardTestCase):

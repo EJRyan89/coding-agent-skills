@@ -330,15 +330,18 @@ command names. While one is, the guard refuses:
 - a git call whose subcommand the text does not settle, or that comes after an option of git's own the guard does
   not read;
 - a command with a part it cannot read that may start git, when the command names git: Bash its grammar cannot read
-  (the lines before a syntax error do run, unlike PowerShell's), a script handed to `bash`, `pwsh`, `eval`, or
-  `Invoke-Expression` that the text does not settle or that nests more than four deep, every `env -S`, whatever
-  follows it, an option of `env` or of a prefix program above that the guard does not read, and a PowerShell
-  command when `pwsh` cannot be started or does not finish reading it within 20 seconds;
+  (the lines before a syntax error do run, unlike PowerShell's), Bash nested deeper than its reader follows, a
+  script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression` that the text does not settle or that nests more
+  than four deep, every `env -S`, whatever follows it, an option of `env` or of a prefix program above that the guard
+  does not read, a PowerShell command when `pwsh` cannot be started or does not finish reading it within 20 seconds,
+  and a command either shell's reader fails on with an error of its own;
 - an alias that cannot be read, as above.
 
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
 `cd <dir> &&`. With no guarded hub in view, the same calls are allowed with a note on stderr. A defect in the guard
-itself is allowed with a note too, so that it cannot block every tool.
+itself, once it has found a guarded hub in view, is refused the same way when the command names git, since a failure
+says nothing about where the call acts; a defect before that, such as an event it cannot decode or a hub it cannot
+look up, is allowed with a note, so that it cannot block every tool.
 
 #### What it does not see
 
