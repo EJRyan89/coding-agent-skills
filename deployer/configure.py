@@ -49,7 +49,8 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
         config_file = paths.config_file(source_id)
         existing: dict[str, str] = {}
         dropped: list[str] = []
-        if not reset and config_file.is_file():
+        # Checked with --reset too, which would otherwise ask every question and then fail to write over it.
+        if config.is_saved(config_file) and not reset:
             try:
                 existing = config.read(config_file, source_id, dropped)
             except OSError as exc:

@@ -20,7 +20,7 @@ from skill_menu import expand as expand
 from skill_menu import is_opt_in as is_opt_in
 from skill_menu import root_names as root_names
 
-from . import platform_support
+from . import platform_support, state_files
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
 from .errors import DeployError, os_error
 from .paths import Paths
@@ -68,9 +68,10 @@ class Source:
 def _load_json(path: Path) -> object:
     """A JSON file's content, or None when it is not JSON; an OSError while reading is raised, never read as None."""
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (UnicodeError, json.JSONDecodeError):
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeError:
         return None
+    return state_files.parse_json(text)
 
 
 def _load_source_document(paths: Paths) -> object:
@@ -82,7 +83,7 @@ def _load_source_document(paths: Paths) -> object:
 
 
 def load_source_id(paths: Paths) -> str:
-    if not paths.source_file.is_file():
+    if not state_files.is_present(paths.source_file, "source.json"):
         raise DeployError(f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}")
     document = _load_source_document(paths)
     source_id = document.get("id") if isinstance(document, dict) else None

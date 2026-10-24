@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
-from . import fsops
-from .errors import DeployError, os_error
+from . import fsops, state_files
+from .errors import STATE_FILE, DeployError, os_error, see_recovery
 from .hashing import HASH_PATTERN
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind, KindKey
 from .names import safe_name_problem
@@ -34,6 +34,11 @@ SKILL_DEPS_VERSION = 8
 # Version 7 added agent ownership; a version 6 manifest has no agents. Optional agent_deps and source_ref came later:
 # an older entry without them records no agents for a preserved skill and no pinned ref, respectively.
 OLDEST_READABLE_VERSION = 6
+# What to do with a manifest the deployer cannot read, before it plans anything.
+MANIFEST_REMEDY = (
+    "Put back a copy you trust, or move it out of the skills folder and rerun with --dry-run.",
+    see_recovery(STATE_FILE),
+)
 
 
 class ItemEntry(TypedDict):
@@ -382,19 +387,19 @@ def _upgrade_dependencies(data: ManifestData) -> None:
 
 
 def load(path: Path) -> Manifest:
-    if not path.is_file():
+    if not state_files.is_present(path, "The manifest", *MANIFEST_REMEDY):
         return Manifest(path, {"manifest_version": MANIFEST_VERSION, "sources": {}})
     raw: object
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = state_files.parse_json(path.read_text(encoding="utf-8"))
     except OSError as exc:
         # A file another process holds, or one this user may not read, is not malformed: say which it is.
         raise os_error(exc, "read the manifest") from exc
-    except (UnicodeError, json.JSONDecodeError):
+    except UnicodeError:
         raw = None
     sources = raw.setdefault("sources", {}) if isinstance(raw, dict) else None
     if not isinstance(raw, dict) or not isinstance(sources, dict):
-        raise DeployError(f"ERROR: Manifest is malformed: {path}")
+        raise DeployError(f"ERROR: Manifest is malformed: {path}", *MANIFEST_REMEDY)
     version = raw.get("manifest_version")
     if not isinstance(version, int) or isinstance(version, bool) or version < OLDEST_READABLE_VERSION:
         raise DeployError(f"ERROR: Manifest has unsupported schema version '{version}'")

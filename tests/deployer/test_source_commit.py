@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import re
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,9 @@ from unittest import mock
 
 from harness import SOURCE_ID, DeployerTestCase, Result, git
 
-from deployer import fsops, manifest, platform_support, source_commit
+from deployer import fsops, manifest, platform_support, source, source_commit
+from deployer.context import Context, Options
+from deployer.errors import DeployError
 
 FULL_SHA1 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -105,28 +108,103 @@ class SourceCommitTests(DeployerTestCase):
         self.assertNotIn(mock.call("git"), find_executable.call_args_list)
         self.assertNotIn("source_commit", self.manifest()["sources"][SOURCE_ID])
 
-    def test_a_deployment_without_git_on_path_records_no_commit(self) -> None:
-        self.make_repository()
-        real = platform_support.find_executable
-        with mock.patch(
-            "deployer.platform_support.find_executable",
-            side_effect=lambda name: None if name == "git" else real(name),
-        ):
-            self.deploy_ok("--all")
-        self.assertNotIn("source_commit", self.manifest()["sources"][SOURCE_ID])
+    def cannot(self, reason: str) -> str:
+        """The first line of the refusal of a checkout whose commit git cannot name, for this reason."""
+        return f"ERROR: Cannot read the commit checked out in {platform_support.normalize(self.source)}: {reason}"
 
-    def test_a_failing_git_records_no_commit(self) -> None:
-        self.make_repository()
+    def refuses_keeping_the_recorded_commit(self, run_tool: Any = None, find_executable: Any = None) -> str:
+        """Deploy once, then redeploy and dry-run with git patched; each refuses, the home kept byte for byte.
+
+        The harness compares the home before and after each refusal, so the manifest still records the first commit.
+        Returns the refusal's output.
+        """
+        head = self.make_repository()
+        self.deploy_ok("--all")
+        patches = []
+        if run_tool is not None:
+            patches.append(mock.patch("deployer.platform_support.run_tool", side_effect=run_tool))
+        if find_executable is not None:
+            patches.append(mock.patch("deployer.platform_support.find_executable", side_effect=find_executable))
+        cannot = re.escape(f"ERROR: Cannot read the commit checked out in {platform_support.normalize(self.source)}: ")
+        outputs = []
+        for arguments in (("--all",), ("--all", "--dry-run")):
+            with self.subTest(arguments=arguments):
+                for patch in patches:
+                    patch.start()
+                try:
+                    outputs.append(self.deploy_fails(*arguments, pattern=cannot).output)
+                finally:
+                    for patch in patches:
+                        patch.stop()
+        self.assertEqual(head, self.recorded())
+        self.assertIn(f"\nDeployed commit: {head[:7]} ({head})\n", self.check().output)
+        self.assertNotIn("INSTALLED", outputs[0])
+        self.assertNotIn("FRESH INSTALL", outputs[1])
+        return outputs[0]
+
+    def test_a_redeployment_without_git_on_path_refuses_and_keeps_the_recorded_commit(self) -> None:
+        real = platform_support.find_executable
+        output = self.refuses_keeping_the_recorded_commit(
+            find_executable=lambda name: None if name == "git" else real(name)
+        )
+        self.assert_lines(
+            output,
+            self.cannot("Git was not found."),
+            'Install it as "Installing the tools" in docs/installation.md says, then retry.',
+        )
+
+    def test_a_failing_git_refuses_the_redeployment_with_its_reason_and_keeps_the_recorded_commit(self) -> None:
         real = platform_support.run_tool
 
         def run_tool(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
             if "rev-parse" in arguments:
-                return platform_support.ToolResult(128, "fatal: detected dubious ownership\n")
+                return platform_support.ToolResult(128, "fatal: detected dubious ownership\n  in the checkout\n")
             return real(arguments, environment)
 
-        with mock.patch("deployer.platform_support.run_tool", side_effect=run_tool):
-            self.deploy_ok("--all")
-        self.assertNotIn("source_commit", self.manifest()["sources"][SOURCE_ID])
+        output = self.refuses_keeping_the_recorded_commit(run_tool=run_tool)
+        self.assert_lines(
+            output,
+            self.cannot("fatal: detected dubious ownership in the checkout"),
+            "Put right what Git reports in the checkout, then retry.",
+        )
+
+    def test_a_git_that_cannot_start_refuses_the_redeployment_and_keeps_the_recorded_commit(self) -> None:
+        real = platform_support.run_tool
+
+        def run_tool(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
+            if "rev-parse" in arguments:
+                raise PermissionError(13, "Access is denied")
+            return real(arguments, environment)
+
+        output = self.refuses_keeping_the_recorded_commit(run_tool=run_tool)
+        self.assert_lines(output, self.cannot("Access is denied"), "Check that Git runs, then retry.")
+
+    def test_a_git_that_names_no_commit_or_exits_with_nothing_said_refuses(self) -> None:
+        for result, reason in (
+            (platform_support.ToolResult(0, "HEAD\n"), ": HEAD\n"),
+            (platform_support.ToolResult(0, "a" * 40 + "\n" + "b" * 40 + "\n"), ""),
+            (platform_support.ToolResult(129, ""), ": git exited with 129\n"),
+        ):
+            with (
+                self.subTest(output=result.output),
+                mock.patch("deployer.platform_support.run_tool", return_value=result),
+            ):
+                (self.source / ".git").mkdir(exist_ok=True)
+                with self.assertRaises(DeployError) as raised:
+                    source_commit.head_commit(self.source)
+                self.assertIn(reason, raised.exception.lines[0] + "\n")
+
+    def test_a_runs_context_holds_no_commit_until_the_deployment_reads_one(self) -> None:
+        data = manifest.load(self.manifest_file)
+        src = source.discover(self.paths, SOURCE_ID)
+        context = Context(self.paths, Options(), src, {}, data, data.ownership(SOURCE_ID), io.StringIO())
+        self.assertIsNone(context.commit)
+
+    def test_the_head_commit_is_read_past_a_warning_git_prints_beside_it(self) -> None:
+        head = self.make_repository()
+        warned = platform_support.ToolResult(0, f"warning: unable to access a configuration file\n{head}\n")
+        with mock.patch("deployer.platform_support.run_tool", return_value=warned):
+            self.assertEqual(head, source_commit.head_commit(self.source))
 
     def test_a_manifest_entry_without_source_commit_loads_and_deploys(self) -> None:
         self.deploy_ok("--all")

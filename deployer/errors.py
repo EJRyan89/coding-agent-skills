@@ -13,6 +13,8 @@ CANCELLED = "Cancelled; nothing was changed."
 DEPLOYMENT_CANCELLED = "Cancelled after the deployment began; its changes are reconciled before exit."
 
 RECOVERY_GUIDE = "docs/recovery.md"
+# The section a refusal of a manifest, configuration, or journal the deployer cannot read points at.
+STATE_FILE = "A state file that does not read"
 # The guide's sections that refusals point at; a test checks each is a heading of the guide.
 RECOVERY_SECTIONS = (
     "Interrupted deployments",
@@ -23,6 +25,7 @@ RECOVERY_SECTIONS = (
     "Deploying from another checkout",
     "Deploying an earlier commit",
     "A tool that does not finish",
+    STATE_FILE,
 )
 
 

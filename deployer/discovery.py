@@ -233,7 +233,7 @@ def parse_copilot(output: str) -> Listing:
     """The skills in `copilot skill list --json` output, whose paths are skill directories."""
     try:
         entries = json.loads(output)
-    except json.JSONDecodeError as exc:
+    except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
         raise ListingError(f"its skill list is not JSON: {exc}") from None
     if isinstance(entries, dict):
         entries = entries.get("skills")
@@ -263,7 +263,7 @@ def codex_requests(cwd: Path) -> list[str]:
 def _codex_message(line: str) -> dict[str, object] | None:
     try:
         message = json.loads(line)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):  # a decoding error or the digit limit, or nesting too deep
         return None
     return message if isinstance(message, dict) else None
 
@@ -327,10 +327,11 @@ def parse_codex_catalog(lines: list[str]) -> Listing:
     """
     try:
         messages = json.loads("\n".join(lines))
-    except json.JSONDecodeError as exc:
+        texts = _strings(messages)
+    except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
         raise ListingError(f"its prompt input is not JSON: {exc}") from None
     found: Listing = {}
-    for text in _strings(messages):
+    for text in texts:
         roots = dict(CODEX_CATALOG_ROOT.findall(text))
         for name, file in CODEX_CATALOG_SKILL.findall(text):
             alias, _, rest = file.partition("/")

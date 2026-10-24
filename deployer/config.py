@@ -6,9 +6,9 @@ import os
 import re
 from pathlib import Path
 
-from . import fsops, platform_support
+from . import fsops, platform_support, state_files
 from .arguments import CONFIGURE_COMMAND_LINE
-from .errors import DeployError
+from .errors import STATE_FILE, DeployError, see_recovery
 
 ALLOW_PATH = "[A-Za-z0-9 /:.@_()-]"
 # repo-cleanup's additions to its shipped lists: words separated by spaces, which the skill passes quoted to its
@@ -162,8 +162,15 @@ def validate_directories(values: dict[str, str]) -> None:
         _validate_absolute_directory(key, values.get(key, ""))
 
 
+def is_saved(path: Path) -> bool:
+    """Whether a configuration is saved at path, refusing a directory or anything else in its place."""
+    return state_files.is_present(
+        path, "The configuration", f"Move it aside, then run '{CONFIGURE_COMMAND_LINE}'.", see_recovery(STATE_FILE)
+    )
+
+
 def load(path: Path, source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
-    if not path.is_file():
+    if not is_saved(path):
         raise DeployError(f"ERROR: No config found at {path}", f"Run '{CONFIGURE_COMMAND_LINE}' first.")
     values = {**DEFAULTS, **read(path, source_id)}
     values.update(derived_values(home, source_dir))

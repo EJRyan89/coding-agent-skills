@@ -46,6 +46,9 @@ class Context:
     selection: Selection = field(default_factory=Selection)
     # The commit --at deploys, or None when the run deploys the checkout as it is.
     pin: source_ref.Pin | None = None
+    # The commit the run deploys, read once the rendered skills pass their checks; None from a folder that is no Git
+    # checkout.
+    commit: str | None = None
 
     @property
     def source_id(self) -> str:
