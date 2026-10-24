@@ -87,9 +87,11 @@ class StubFetcher:
     def __init__(self, answers: dict[str, Fetched]) -> None:
         self.answers = answers
         self.requested: list[str] = []
+        self.timeouts: dict[str, float] = {}
 
     def __call__(self, url: str, timeout: float) -> Fetched:
         self.requested.append(url)
+        self.timeouts[url] = timeout
         return self.answers.get(url, Fetched(200, url, b"<html></html>"))
 
 
@@ -389,6 +391,16 @@ class MainTests(unittest.TestCase):
         self.assertEqual(0, code, printed)
         retired = ENTRIES["flag-after-a-slash"]["entry"]
         self.assertIn(f'ENTRY copilot-cli 1.0.103 "--no-remote" "{retired}"', printed)
+
+    def test_every_request_is_given_the_timeout_the_run_was_given(self) -> None:
+        fetcher = StubFetcher(self.table())
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr("builtins.print", lambda line: None)
+            self.assertEqual(0, watch.main(["--timeout", "7.5"], fetcher=fetcher, top=REPOSITORY))
+        record = watch.read_record(REPOSITORY)
+        self.assertTrue({changelog.url for changelog in record.changelogs} & set(fetcher.timeouts))
+        self.assertTrue({page.url for page in record.pages} <= set(fetcher.timeouts))
+        self.assertEqual({7.5}, set(fetcher.timeouts.values()))
 
     def test_a_watch_that_cannot_run_prints_one_failed_line_and_exits_1(self) -> None:
         record = watch.read_record(REPOSITORY)
