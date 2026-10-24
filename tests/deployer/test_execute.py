@@ -25,9 +25,9 @@ from harness import DEPLOY_COMMAND
 from deployer import config, errors, journal, lock, pipeline, plan, platform_support, selection, source
 from deployer.arguments import usage_error
 from deployer.context import Options
-from deployer.errors import Cancelled, DeployError
+from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED, Cancelled, DeployError
 from deployer.paths import Paths
-from deployer.pipeline import RECOVERY_CANCELLED, RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED
+from deployer.pipeline import RECOVERY_CANCELLED
 
 SOURCE_ID = "test/skills"
 RUN_ID = "19700101-000000-beef"

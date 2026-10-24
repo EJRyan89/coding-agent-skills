@@ -30,9 +30,9 @@ from harness import (
 )
 
 from deployer import fsops, hashing, journal, platform_support, render
+from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED
 from deployer.kinds import KINDS
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
-from deployer.pipeline import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED
 
 
 class RecoveryTestCase(DeployerTestCase):

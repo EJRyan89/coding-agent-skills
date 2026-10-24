@@ -22,8 +22,8 @@ from harness import (
 
 from deployer import fsops, hashing, platform_support
 from deployer.configure import CANCELLED as CONFIGURE_CANCELLED
-from deployer.errors import CANCELLED
-from deployer.pipeline import RECOVERY_CANCELLED, RUN_NOT_COMMITTED
+from deployer.errors import CANCELLED, RUN_NOT_COMMITTED
+from deployer.pipeline import RECOVERY_CANCELLED
 
 
 def interrupt(*_arguments: Any, **_keywords: Any) -> Any:
