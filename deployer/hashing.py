@@ -30,8 +30,9 @@ def tree_hash(files: dict[str, bytes]) -> str:
 
 def _refuse_unlisted(error: OSError) -> None:
     """Refuse a folder os.walk cannot list, which it would otherwise skip: its files would be judged free of links
-    and left out of the hash, so a tree whose contents were never read would compare as unmodified."""
-    folder = platform_support.normalize(Path(error.filename)) if error.filename else "a folder"
+    and left out of the hash, so a tree whose contents were never read would compare as unmodified. os.walk passes the
+    error os.scandir raised, which names the folder."""
+    folder = platform_support.normalize(Path(error.filename))
     raise DeployError(f"ERROR: Cannot list {folder} to hash it or check it for links: {error.strerror or error}")
 
 
