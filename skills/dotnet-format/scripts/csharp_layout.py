@@ -481,15 +481,20 @@ class Source:
 
 
 class Unreadable(ValueError):
-    """A file whose byte order mark names an encoding its bytes are not in; the message says where they stop."""
+    """A file that cannot be read, such as a directory in its place, or whose byte order mark names an encoding its
+    bytes are not in; the message says why, or where the bytes stop."""
 
 
 def read_source(path: Path) -> Source:
     """Decode a source file so that it can be written back byte-for-byte except where it was changed.
 
     A file with a byte order mark is decoded strictly in the encoding the mark names, and raises `Unreadable` when its
-    bytes are not in it: reading it any other way would write it back changed."""
-    data = path.read_bytes()
+    bytes are not in it: reading it any other way would write it back changed. A file that cannot be read raises
+    `Unreadable` too."""
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise Unreadable(f"it cannot be read: {error.strerror or error}") from None
     for bom, encoding in ((b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")):
         if data.startswith(bom):
             try:

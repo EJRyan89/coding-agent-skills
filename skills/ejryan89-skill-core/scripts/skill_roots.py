@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from file_presence import is_present
+
 # This skill's own folder name, which every dependent's fixed sys.path line and every check of that line names.
 SKILL_CORE = "ejryan89-skill-core"
 # The skills directory holding ejryan89-skill-core, and so every skill that imports it: the source tree's skills/, the
@@ -71,13 +73,13 @@ def plugin_name() -> str | None:
 
     A plugin holds its manifest beside its skills directory, and Claude Code namespaces every component the plugin
     carries under the manifest's name, so an agent `reviewer` of plugin `suite` is `suite:reviewer`. A manifest that
-    cannot be read, is not JSON, or names no plugin raises ValueError: the skills run from a plugin whose name cannot
-    be known.
+    cannot be read, such as a directory in its place, is not JSON, or names no plugin raises ValueError: the skills run
+    from a plugin whose name cannot be known.
     """
     manifest = SKILLS_ROOT.parent / PLUGIN_MANIFEST
-    if not manifest.is_file():
-        return None
     try:
+        if not is_present(manifest):
+            return None
         document: object = json.loads(manifest.read_text(encoding="utf-8"))
     except OSError as error:
         raise ValueError(f"{manifest} cannot be read: {error.strerror or error}") from error

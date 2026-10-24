@@ -8,8 +8,9 @@ directory in the file's place for no file at all plans a deployment the commit t
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+
+import file_presence
 
 from . import platform_support
 from .errors import DeployError
@@ -34,8 +35,7 @@ def is_present(path: Path, what: str, *remedy: str) -> bool:
     A directory, a link to nothing, or any other thing that is not a regular file is refused here, before anything is
     planned, so it is never read as absent.
     """
-    if path.is_file():
-        return True
-    if not os.path.lexists(path):
-        return False
-    raise DeployError(f"ERROR: {what} at {platform_support.normalize(path)} is not a file.", *remedy)
+    try:
+        return file_presence.is_present(path)
+    except file_presence.NotAFile:
+        raise DeployError(f"ERROR: {what} at {platform_support.normalize(path)} is not a file.", *remedy) from None

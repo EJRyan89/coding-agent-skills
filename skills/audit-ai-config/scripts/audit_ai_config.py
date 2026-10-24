@@ -49,6 +49,7 @@ import folder_walk
 from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from check_provenance import Source
 from console import run_main
+from file_presence import is_present
 from folder_walk import LINKED, SKIPPED_FOLDERS
 from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
 from frontmatter import split as split_frontmatter
@@ -1506,9 +1507,9 @@ def _manifest_authority_finding(severity: str, message: str) -> Finding:
 def _manifest_signal(root: Path) -> tuple[str | None, dict[str, Any], list[Finding]]:
     """Return ("manifest", "alternative", or None), the manifest data that signal carries, and findings."""
     manifest_path = root / ".github/ai-config-manifest.json"
-    if not manifest_path.is_file():
-        return None, {}, []
     try:
+        if not is_present(manifest_path):
+            return None, {}, []
         return _judge_manifest(root, json.loads(read_text(root, manifest_path)))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (KeyError, OSError, ValueError, RecursionError):
@@ -1900,9 +1901,9 @@ def read_mcp_json(root: Path, rel_path: str) -> tuple[dict[str, Any], list[Findi
     path = root / rel_path
     wrapper_key = MCP_JSON_FILES[rel_path]
     findings: list[Finding] = []
-    if not path.is_file():
-        return {}, findings
     try:
+        if not is_present(path):
+            return {}, findings
         data = json.loads(read_text(root, path))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError) as e:
@@ -2030,9 +2031,9 @@ def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding
     read_mcp_json reports what is not an object. The handshake reads Codex servers through this too."""
     rel = CODEX_CONFIG
     path = root / rel
-    if not path.is_file():
-        return {}, []
     try:
+        if not is_present(path):
+            return {}, []
         config = tomllib.loads(read_bytes(root, path).decode())
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (ValueError, RecursionError) as e:
@@ -2715,9 +2716,9 @@ def check_claude_code(root: Path) -> list[Finding]:
 
 def _claude_settings(root: Path) -> list[Finding]:
     path = root / CLAUDE_SETTINGS
-    if not path.is_file():
-        return []
     try:
+        if not is_present(path):
+            return []
         data = json.loads(read_text(root, path))
     # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError) as error:

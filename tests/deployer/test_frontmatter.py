@@ -265,3 +265,15 @@ class DocumentTests(unittest.TestCase):
             path.write_text("No frontmatter.\n", encoding="utf-8")
             with self.assertRaisesRegex(FrontmatterError, "no frontmatter"):
                 frontmatter.read(path)
+
+    def test_read_refuses_a_file_it_cannot_decode_or_read_as_frontmatter_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "With Spaces" / "SKILL.md"
+            path.parent.mkdir()
+            path.write_bytes(b"\xff---\nname: a\n---\n")
+            with self.assertRaisesRegex(FrontmatterError, "is not UTF-8"):
+                frontmatter.read(path)
+            path.unlink()
+            path.mkdir()
+            with self.assertRaisesRegex(FrontmatterError, "cannot be read"):
+                frontmatter.read(path)
