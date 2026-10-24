@@ -547,7 +547,17 @@ class StreamTests(unittest.TestCase):
         ):
             git_client.GitStream(running).readline()
         self.assertEqual("timeout", context.exception.kind)
-        self.assertIn("gave no output for 0.5 seconds", str(context.exception))
+        self.assertRegex(str(context.exception), r" gave no output for 0\.5 seconds$")
+
+    def test_a_sized_read_that_gets_no_output_is_a_timeout_that_says_so(self) -> None:
+        program = "import time; time.sleep(60)"
+        with (
+            bounded_process.streaming([sys.executable, "-c", program], idle_timeout=0.5, exit_wait=0.5) as running,
+            self.assertRaises(GitError) as context,
+        ):
+            git_client.GitStream(running).read(1)
+        self.assertEqual("timeout", context.exception.kind)
+        self.assertRegex(str(context.exception), r" gave no output for 0\.5 seconds$")
 
     def test_a_wait_for_git_that_has_not_exited_is_a_timeout_that_says_so(self) -> None:
         program = "import time; time.sleep(60)"

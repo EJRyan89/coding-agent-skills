@@ -77,7 +77,7 @@ def _reported(name: str, message: str) -> MissingSibling:
     """The exit for an absent sibling, once its FAILED line is out on stdout in UTF-8, as `run_main` prints one."""
     missing = MissingSibling(name, message)
     use_utf8_output()
-    print(failed_line(missing), flush=True)
+    print(failed_line(missing))
     return missing
 
 

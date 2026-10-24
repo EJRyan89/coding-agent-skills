@@ -122,17 +122,19 @@ class RecordingTree:
 
 class OnceWritten(RecordingTree):
     """Holds the command only once it has created `written`, so its time limit starts after its output is out and how
-    long start-up takes never decides what a timeout carries."""
+    long start-up takes never decides what a timeout carries. `held_at` is when its time limit started."""
 
     def __init__(self, written: Path) -> None:
         super().__init__({})
         self.written = written
+        self.held_at = 0.0
 
     @contextmanager
     def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
         deadline = time.monotonic() + STARTUP_SECONDS
         while not self.written.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
+        self.held_at = time.monotonic()
         yield
 
 
@@ -299,6 +301,7 @@ class BoundedProcessTests(unittest.TestCase):
             written = Path(temporary) / "written"
             program = f"import time; print('begun', flush=True); open({str(written)!r}, 'w').close(); time.sleep(60)"
             command = [sys.executable, "-c", program]
+            tree = OnceWritten(written)
             try:
                 # The kill does nothing, so the command is still running when its allowance ends.
                 with (
@@ -307,7 +310,9 @@ class BoundedProcessTests(unittest.TestCase):
                     mock.patch.object(bounded_process, "KILL_WAIT_SECONDS", 0.2),
                     self.assertRaises(subprocess.TimeoutExpired) as raised,
                 ):
-                    run_bounded(command, 0.5, tree=OnceWritten(written))
+                    run_bounded(command, 0.5, tree=tree)
+                # The limit and the allowance, not the command's minute of sleep, bound the call.
+                self.assertLess(time.monotonic() - tree.held_at, 0.5 + 0.2 + IDLE_MARGIN_SECONDS)
             finally:
                 for process in started:
                     process.kill()
