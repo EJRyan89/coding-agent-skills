@@ -25,9 +25,12 @@ FSOPS_ALLOWED = {
     "outside every managed root; the read-only command changes no deployed state",
     "shutil.rmtree": "verify removes only the empty working directory it created with tempfile.mkdtemp",
 }
-VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "EXPOSED", "FOUND")
+VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "EXPOSED", "OMITTED", "FOUND")
 # What an adapter only the user may start is, where Codex offers it to the model anyway.
 EXPOSED_DETAIL = f"Codex offers it to the model, though only the user starts it; check its {CODEX_METADATA}"
+# What an adapter the model may start is, where Codex lists it but leaves it out of the model's catalog, as its skills
+# budget does once the skills' names and paths alone overrun it.
+OMITTED_DETAIL = "Codex lists it but leaves it out of the model's catalog; check its skills.max_context_tokens"
 # The lines of an adapter Copilot CLI did not list: it lists one copy per name, the one it will use, so a SHADOWED
 # adapter is one it listed another copy in place of, as it does for a same-named skill under COPILOT_HOME.
 UNLISTED = ("NOT FOUND", "SHADOWED")
@@ -95,13 +98,21 @@ def user_only(names: list[str], adapters: Path) -> list[str]:
     return [name for name in names if (adapters / name / CODEX_METADATA).is_file()]
 
 
-def expose(lines: list[ReportLine], hidden: list[str], catalog: Listing, adapters: Path) -> list[ReportLine]:
-    """The lines with each FOUND adapter of `hidden` that the model's catalog offers from its directory EXPOSED."""
-    exposed = {name for name in hidden if any(_same(copy.directory, adapters / name) for copy in catalog.get(name, []))}
-    return [
-        ReportLine(line.name, "EXPOSED", EXPOSED_DETAIL) if line.action == "FOUND" and line.name in exposed else line
-        for line in lines
-    ]
+def catalogued(lines: list[ReportLine], hidden: list[str], catalog: Listing, adapters: Path) -> list[ReportLine]:
+    """The lines with each FOUND adapter of `hidden` that the model's catalog offers from its directory EXPOSED, and
+    each other FOUND adapter that it does not offer from there OMITTED."""
+    return [_catalogued(line, line.name in hidden, catalog, adapters) for line in lines]
+
+
+def _catalogued(line: ReportLine, only_user: bool, catalog: Listing, adapters: Path) -> ReportLine:
+    if line.action != "FOUND":
+        return line
+    offered = any(_same(copy.directory, adapters / line.name) for copy in catalog.get(line.name, []))
+    if only_user and offered:
+        return ReportLine(line.name, "EXPOSED", EXPOSED_DETAIL)
+    if not only_user and not offered:
+        return ReportLine(line.name, "OMITTED", OMITTED_DETAIL)
+    return line
 
 
 def unlisted_note(runtime: str, lines: list[ReportLine], paths: Paths, environment: Mapping[str, str]) -> str | None:
@@ -119,21 +130,20 @@ def unlisted_note(runtime: str, lines: list[ReportLine], paths: Paths, environme
 def runtime_report(
     runtime: str, executable: str, names: list[str], adapters: Path, cwd: Path, environment: Mapping[str, str]
 ) -> list[ReportLine] | str:
-    """The runtime's report lines, or the sentence that says which of its probes failed: the listing, or, for Codex
-    with a user-only adapter deployed, the catalog of the skills it offers the model."""
+    """The runtime's report lines, or the sentence that says which of its probes failed: the listing, or, for Codex,
+    the catalog of the skills it offers the model."""
     try:
         discovered = discovery.discover(runtime, executable, cwd, environment)
     except ListingError as exc:
         return f"{LISTING_FAILED}{exc}"
     lines = runtime_lines(names, discovered.listing, adapters, discovered.refused)
-    hidden = user_only(names, adapters) if runtime == "codex" else []
-    if not hidden:
+    if runtime != "codex":
         return lines
     try:
         catalog = discovery.codex_catalog(executable, cwd, environment)
     except ListingError as exc:
         return f"{CATALOG_FAILED}{exc}"
-    return expose(lines, hidden, catalog, adapters)
+    return catalogued(lines, user_only(names, adapters), catalog, adapters)
 
 
 def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | None = None) -> int:
