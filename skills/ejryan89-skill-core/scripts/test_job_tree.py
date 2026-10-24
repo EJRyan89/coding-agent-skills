@@ -277,6 +277,21 @@ if sys.platform == "win32":
                 self.fail("a command that cannot join is never held")
             self.assertIsNotNone(process.poll(), "the refused command was killed")
 
+        def test_a_refused_command_whose_kill_is_not_reported_in_time_is_still_refused(self) -> None:
+            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+            with (
+                mock.patch.object(job_tree, "job_holding", side_effect=OSError("AssignProcessToJobObject failed")),
+                mock.patch.object(process, "kill"),
+                mock.patch.object(job_tree, "KILL_WAIT_SECONDS", 0.2),
+                self.assertRaisesRegex(
+                    JobRefused, r"^it could not join a Windows job object: AssignProcessToJobObject"
+                ),
+                JobTree().hold(process),
+            ):
+                self.fail("a command that cannot join is never held")
+
         def test_a_command_no_job_can_hold_is_killed_before_it_starts_a_program(self) -> None:
             command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held), "hang"]
             joining = "it could not join a Windows job object"
@@ -657,6 +672,18 @@ if sys.platform != "win32":
             ):
                 self.fail("a command outside a group of its own is never held")
             self.assertIsNotNone(process.poll(), "the refused command was killed")
+
+        def test_a_refused_command_whose_kill_is_not_reported_in_time_is_still_refused(self) -> None:
+            process = subprocess.Popen(SLEEPER)  # started without the tree's options, so in this process's group
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+            with (
+                mock.patch.object(process, "kill"),
+                mock.patch.object(job_tree, "KILL_WAIT_SECONDS", 0.2),
+                self.assertRaisesRegex(JobRefused, "^it was not started as the leader of a process group of its own$"),
+                GroupTree().hold(process),
+            ):
+                self.fail("a command outside a group of its own is never held")
 
         def test_a_group_it_cannot_signal_says_its_processes_may_still_run(self) -> None:
             with (

@@ -148,7 +148,9 @@ def run_bounded(
                 returncode = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired as exc:
                 process.kill()
-                process.wait(timeout=KILL_WAIT_SECONDS)
+                # A kill not yet reported within its allowance still ends as the caller's time limit, with its output.
+                with suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=KILL_WAIT_SECONDS)
                 expired = exc
         kept_output, kept_errors = _read_back(output, output_limit), _read_back(errors, output_limit)
         if expired is not None:
@@ -271,7 +273,8 @@ class Streaming:
     ) -> None:
         if process.stdin is None or process.stdout is None:
             process.kill()
-            process.wait(timeout=KILL_WAIT_SECONDS)
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=KILL_WAIT_SECONDS)
             raise OSError("the command started without its pipes")
         self.command = process.args
         self.idle_timeout = idle_timeout

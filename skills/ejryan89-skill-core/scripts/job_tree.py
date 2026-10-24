@@ -34,7 +34,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -155,9 +155,11 @@ class JobTree:
 
 
 def _kill(process: subprocess.Popen[Any]) -> None:
-    """Kill a command that may not run, and wait for it to be reported gone."""
+    """Kill a command that may not run, and wait for it to be reported gone, at most KILL_WAIT_SECONDS: a kill not
+    reported by then leaves the refusal its caller raises next to say why."""
     process.kill()
-    process.wait(timeout=KILL_WAIT_SECONDS)
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=KILL_WAIT_SECONDS)
 
 
 @functools.cache
@@ -428,8 +430,7 @@ class GroupTree:
         except ProcessLookupError:
             leads = True  # already reaped, so nothing of it is left to hold but what end_group finds
         if not leads and process.poll() is None:
-            process.kill()
-            process.wait(timeout=KILL_WAIT_SECONDS)
+            _kill(process)
             raise JobRefused("it was not started as the leader of a process group of its own")
         try:
             yield
