@@ -652,10 +652,12 @@ def survivor_lines(module: ModuleReport) -> list[str]:
     lines = ["", f"### `{module.module}`: {len(survivors)} surviving {noun}", ""]
     for outcome in survivors:
         mutant = outcome.mutant
-        suites = ", ".join(
-            f"`{suite}`" + (f" ({count} {'test' if count == 1 else 'tests'} that ran the line)" if count else "")
-            for suite, count in zip(outcome.suites, [*outcome.tests, *[0] * len(outcome.suites)], strict=False)
-        )
+        named = []
+        for index, suite in enumerate(outcome.suites):
+            count = outcome.tests[index] if index < len(outcome.tests) else 0
+            noun = "test" if count == 1 else "tests"
+            named.append(f"`{suite}`" + (f" ({count} {noun} that ran the line)" if count else ""))
+        suites = ", ".join(named)
         lines.append(f"- Line {mutant.line}: {code(mutant.before)} became {code(mutant.after)}; passed {suites}")
     return lines
 
