@@ -253,6 +253,8 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
                 "$HOME/.claude/skills/core/scripts/guard.py",
                 "${HOME}/.claude/settings.json",
                 "%USERPROFILE%\\\\.claude\\\\skills\\\\core\\\\scripts\\\\guard.py",
+                # Windows folds case, so this is the same folder.
+                "%USERPROFILE%/.Claude/settings.json",
                 "$env:USERPROFILE/.claude/agents",
             )
         ),
@@ -273,6 +275,17 @@ def test_hooks_a_plugin_cannot_carry_as_written_are_refused(source: Source, hook
     source.skill("beta", agent_deps=["guarded"])
     with pytest.raises(plugin_build.BuildError, match=problem):
         assembled(source)
+
+
+@pytest.mark.parametrize("name", [".claudeRC", ".claude-plugin", ".claude_Notes", ".CLAUDE9"])
+def test_a_command_naming_a_folder_that_only_starts_like_the_claude_folder_is_carried(
+    source: Source, name: str
+) -> None:
+    hook = GUARD_HOOK.replace("os.path.expanduser('~/.claude/skills/core/scripts/guard.py')", f"'{name}/guard.py'")
+    source.agent("guarded", extra=hook)
+    source.skill("beta", agent_deps=["guarded"])
+    hooks = json.loads(by_name(assembled(source))["fixture-skills"].files[skill_menu.PLUGIN_HOOKS])
+    assert f"'{name}/guard.py'" in hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
 
 
 def test_the_manifest_is_the_marketplace_entry_with_the_name_and_version_and_no_source(source: Source) -> None:

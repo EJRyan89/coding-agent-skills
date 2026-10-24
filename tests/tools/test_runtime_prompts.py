@@ -95,6 +95,18 @@ class RuntimePromptsTestCase(unittest.TestCase):
             self.assertEqual(0, runtime_prompts.main(["--root", str(self.root), "--write"]))
         self.assertIn("does not exist", output.getvalue())
 
+    def test_the_samples_are_this_checkouts_unless_root_names_another(self) -> None:
+        roots: list[Path] = []
+
+        def checked(root: Path, renderers: object = None) -> list[str]:
+            roots.append(root)
+            return []
+
+        with mock.patch.object(runtime_prompts, "problems", side_effect=checked):
+            self.assertEqual(0, runtime_prompts.main([]))
+            self.assertEqual(0, runtime_prompts.main(["--root", str(self.root)]))
+        self.assertEqual([runtime_prompts.REPOSITORY_ROOT, self.root], roots)
+
     def test_a_root_that_is_not_a_checkout_is_refused_before_write_removes_anything(self) -> None:
         other = self.root.parent / "Not A Checkout"
         extra = other / "docs" / "runtime-prompts" / "alpha" / "kept.txt"

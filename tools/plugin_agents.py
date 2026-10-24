@@ -9,7 +9,7 @@ a scalar of digits that are not ASCII digits. A command names a script under the
 directory, which a plugin does not have, so each `os.path.expanduser('~/.claude/skills/<path>')` becomes the same path
 under the plugin's root, which Claude Code exports to a plugin hook as CLAUDE_PLUGIN_ROOT; a command that names the
 home's Claude folder any other way, as `$HOME/.claude`, `%USERPROFILE%\\.claude`, or a `.claude` it joins to a home, is
-refused: once those paths are rewritten, a command names no `.claude` folder at all.
+refused: once those paths are rewritten, a command names no `.claude` folder, in any case, at all.
 """
 
 from __future__ import annotations
@@ -92,8 +92,9 @@ def _plugin_command(command: str) -> str:
         return f"os.path.join(os.environ['CLAUDE_PLUGIN_ROOT'], 'skills', {parts})"
 
     rewritten = DEPLOYED_SCRIPT.sub(plugin_path, command)
-    # The home has many spellings, so a folder named `.claude` is refused under any of them; `.claude-plugin` is not.
-    if re.search(r"\.claude(?![A-Za-z0-9_-])", rewritten):
+    # The home has many spellings, so a folder named `.claude` is refused under any of them, in any case, which Windows
+    # folds; `.claude-plugin` is not.
+    if re.search(r"\.claude(?![a-z0-9_-])", rewritten, re.IGNORECASE):
         raise AgentError("hooks: a command names the home's Claude folder other than as a deployed script's path")
     return rewritten
 

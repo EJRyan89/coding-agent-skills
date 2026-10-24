@@ -567,6 +567,32 @@ class DeployableReportTests(unittest.TestCase):
                     self.assertEqual(content, self.results_file.read_bytes())
                     self.assertFalse(self.summary_file.exists())
 
+    def test_a_malformed_pass_is_named_by_what_is_wrong_with_it(self) -> None:
+        cases: tuple[tuple[list[object], str], ...] = (
+            ([[]], "a pass is not a JSON object"),
+            ([{"label": ["first deploy"]}], "a pass's label is not a string"),
+            ([{"results": {}}], "a pass's results are not a JSON array"),
+            ([{"results": [[]]}], "a result is not a JSON object"),
+            ([{"results": [{"status": "PASSED"}]}], "a result's runtime or status is not a string"),
+            ([{"results": [{"runtime": "codex", "status": 1}]}], "a result's runtime or status is not a string"),
+            (
+                [{"results": [{"runtime": "codex", "status": "PASSED", "detail": 1}]}],
+                "a result's detail is not a string",
+            ),
+            ([{"left": "alpha"}], "a pass's left is not a JSON array of strings"),
+            ([{"left": [1]}], "a pass's left is not a JSON array of strings"),
+        )
+        for passes, problem in cases:
+            with self.subTest(problem=problem, passes=passes):
+                self.results_file.write_text(json.dumps(passes), encoding="utf-8")
+                code, output = self.results_command("summary")
+                self.assertEqual(2, code, output)
+                self.assertIn(f"ERROR: Results file is malformed: {self.results_file}: {problem}\n", output)
+        # A pass of every field this tool writes is read.
+        whole = [{"label": "first deploy", "results": [{"runtime": "codex", "status": "PASSED", "detail": "ok"}]}]
+        self.results_file.write_text(json.dumps([*whole, {"label": "uninstall", "left": ["alpha"]}]), encoding="utf-8")
+        self.assertEqual(0, self.results_command("summary")[0])
+
     def test_a_results_file_that_cannot_be_read_or_written_exits_2_naming_it(self) -> None:
         self.use_fake_runtimes()
         self.results_file.mkdir()
@@ -593,10 +619,11 @@ class DeployableReportTests(unittest.TestCase):
         """Run `pin` for a claude that reports `reported` and exits `code`, or is not on PATH."""
         found = "/runtimes/claude" if installed else None
         with (
-            mock.patch.object(platform_support, "find_executable", return_value=found),
+            mock.patch.object(platform_support, "find_executable", return_value=found) as find,
             mock.patch.object(report, "_run_version", return_value=(code, reported)) as run,
         ):
             result = self.run_main("pin", "--program", "claude", "--wanted", wanted)
+        find.assert_called_once_with("claude")
         if installed:
             run.assert_called_once_with(["/runtimes/claude", "--version"])
         return result
@@ -606,6 +633,15 @@ class DeployableReportTests(unittest.TestCase):
             with self.subTest(wanted=wanted):
                 code, output = self.pin(wanted, reported)
                 self.assertEqual((0, f"claude --version: {reported.strip()}\n"), (code, output))
+
+    def test_pin_requires_the_program_and_the_version(self) -> None:
+        for arguments in (["pin", "--wanted", "1.0.0"], ["pin", "--program", "claude"]):
+            with self.subTest(arguments=arguments):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+                    report.main(arguments)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn("the following arguments are required", errors.getvalue())
 
     def test_pin_compares_versions_as_numbers_never_as_text(self) -> None:
         # Each reported version holds the requested one as text.

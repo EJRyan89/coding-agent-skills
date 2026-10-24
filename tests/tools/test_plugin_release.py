@@ -13,6 +13,7 @@ import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -203,3 +204,24 @@ def test_the_release_procedure_builds_attaches_pins_and_checks_the_archives_afte
         "never the hub",
     ):
         assert phrase in step
+
+
+def test_each_command_works_on_this_checkout_unless_root_names_another(checkout: Path) -> None:
+    roots: list[Path] = []
+
+    def checked(root: Path) -> tuple[list[str], bool]:
+        roots.append(root)
+        return ["PIN_MATCHES fixture-skills v1.2.3"], True
+
+    def built(root: Path, tag: str, output: Path | None) -> list[str]:
+        roots.append(root)
+        return []
+
+    with (
+        mock.patch.object(plugin_release, "check", side_effect=checked),
+        mock.patch.object(plugin_release, "build", side_effect=built),
+    ):
+        assert run(["check"]) == (0, ["PIN_MATCHES fixture-skills v1.2.3"])
+        assert run(["build", "v1.2.3"])[0] == 0
+        assert run(["check", "--root", str(checkout)])[0] == 0
+    assert roots == [plugin_release.REPOSITORY_ROOT, plugin_release.REPOSITORY_ROOT, checkout]

@@ -111,9 +111,11 @@ def _read(root: Path, path: Path) -> str:
     """A file the reference is made from or checked against; one that is not UTF-8 is a SkillReferenceError naming it,
     which ends the run as FAILED rather than as a stale reference."""
     try:
-        return path.read_text(encoding="utf-8")
+        text = path.read_bytes().decode("utf-8")
     except UnicodeError as exc:
         raise SkillReferenceError(f"{path.relative_to(root).as_posix()} is not UTF-8: {exc}") from exc
+    # A file saved with CRLF endings reads as one saved with LF, as read_text read it.
+    return text.replace("\r\n", "\n")
 
 
 def load_source(root: Path) -> deploy_source.Source:

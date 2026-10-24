@@ -129,7 +129,7 @@ def _expected(root: Path) -> dict[str, dict[str, str] | str | None]:
     for name, path in _skills(root).items():
         is_present(path)  # a directory or anything else named SKILL.md raises NotAFile, ending the run as FAILED
         try:
-            text = path.read_text(encoding="utf-8-sig")
+            text = path.read_bytes().decode("utf-8-sig")
         except UnicodeError as exc:
             raise ShimError(f"{(SKILLS / name / SKILL_FILE).as_posix()} is not UTF-8: {exc}") from exc
         try:
