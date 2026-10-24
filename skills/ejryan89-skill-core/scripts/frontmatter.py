@@ -149,8 +149,15 @@ def parse(text: str) -> Frontmatter:
 
 
 def read(path: Path) -> Frontmatter:
-    """The frontmatter of a UTF-8 Markdown file, which must have one."""
-    found = split(path.read_text(encoding="utf-8-sig").splitlines())
+    """The frontmatter of a UTF-8 Markdown file, which must have one; a file that cannot be read or decoded, such as
+    a directory in its place, raises FrontmatterError too."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as error:
+        raise FrontmatterError(f"{path} cannot be read: {error.strerror or error}") from error
+    except UnicodeError as error:
+        raise FrontmatterError(f"{path} is not UTF-8: {error}") from error
+    found = split(text.splitlines())
     if found is None:
         raise FrontmatterError("no frontmatter")
     return Frontmatter(found[0])

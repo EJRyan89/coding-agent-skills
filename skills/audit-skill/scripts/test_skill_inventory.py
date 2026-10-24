@@ -1977,6 +1977,17 @@ def test_provenance_fails_on_a_file_that_leaves_a_check_out() -> None:
     assert "provenance.json: no entry for AGENT_HOOK, AGENT_UNDECLARED, " in str(caught.value)
 
 
+def test_require_text_refuses_a_file_it_cannot_read_with_the_reason() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        path = write(Path(folder) / "With Space" / "SKILL.md", "text")
+        with (
+            mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Permission denied")),
+            pytest.raises(skill_inventory.InputError) as caught,
+        ):
+            skill_inventory.require_text(path)
+    assert str(caught.value) == f"cannot read {path.as_posix()}: Permission denied"
+
+
 REPOSITORY_ROOT = SCRIPT.parents[3]
 GUARDED_AGENT = (
     "---\n"
@@ -2430,6 +2441,15 @@ class PluginTests(TemporaryTestCase):
         code, lines, error = run("locate", argument, "--home", str(self.home), "--repo", str(self.root / "repo"))
         self.assertEqual(("", 0 if lines and lines[-1].startswith("PLUGIN ") else 1), (error, code))
         return lines[1:]
+
+    def test_a_directory_in_the_hooks_file_place_is_refused_by_name_never_read_as_no_hooks(self) -> None:
+        root = self.plugin()
+        skill = self.skill(root)
+        hooks = root / "hooks" / "hooks.json"
+        hooks.mkdir(parents=True)
+        with self.assertRaises(skill_inventory.InputError) as caught:
+            skill_inventory.plugin_hooks(skill.parent)
+        self.assertEqual(f"cannot read {hooks.as_posix()}: not a file", str(caught.exception))
 
     def test_locate_finds_a_skill_in_a_built_plugin_folder_with_its_plugin(self) -> None:
         root = self.plugin()

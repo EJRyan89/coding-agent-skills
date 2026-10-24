@@ -160,6 +160,7 @@ import git_client
 import runtime_support
 import skill_menu
 from console import run_main
+from file_presence import is_present
 from flat_text import flat_text, single_line
 from git_client import GitClient
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
@@ -603,8 +604,12 @@ def read_text(path: Path) -> str | None:
 
 
 def require_text(path: Path) -> str:
-    """A file's UTF-8 text; one that is binary or not UTF-8 fails rather than reading as empty."""
-    text = read_text(path)
+    """A file's UTF-8 text; one that cannot be read, such as a directory in its place, or is binary or not UTF-8 fails
+    rather than reading as empty."""
+    try:
+        text = read_text(path)
+    except OSError as exc:
+        raise InputError(f"cannot read {posix(path)}: {exc.strerror or exc}") from exc
     if text is None:
         raise InputError(f"cannot read {posix(path)}: {NOT_UTF8}")
     return text
@@ -2263,8 +2268,13 @@ def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
     """Each command hook the hooks file of the skill's plugin holds, with its matcher; none outside a plugin."""
     plugin = plugin_of(folder)
     path = plugin[1] / skill_menu.PLUGIN_HOOKS if plugin is not None else None
-    if path is None or not path.is_file():
+    if path is None:
         return []
+    try:
+        if not is_present(path):
+            return []
+    except OSError as exc:
+        raise InputError(f"cannot read {posix(path)}: {exc.strerror or exc}") from exc
     try:
         document = json.loads(require_text(path))
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep

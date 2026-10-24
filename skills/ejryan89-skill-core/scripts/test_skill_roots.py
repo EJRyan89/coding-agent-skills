@@ -89,9 +89,10 @@ class SiblingScriptsTests(unittest.TestCase):
     def test_a_script_whose_sibling_is_absent_exits_1_without_a_traceback(self) -> None:
         deployed = self.root / "a home" / ".claude" / "skills"
         core = self.make_skill(deployed / "ejryan89-skill-core")
-        (core / "skill_roots.py").write_text(
-            (Path(__file__).resolve().parent / "skill_roots.py").read_text(encoding="utf-8"), encoding="utf-8"
-        )
+        for module in ("skill_roots.py", "file_presence.py"):
+            (core / module).write_text(
+                (Path(__file__).resolve().parent / module).read_text(encoding="utf-8"), encoding="utf-8"
+            )
         script = self.make_skill(deployed / "dependent") / "run.py"
         script.write_text(
             "import sys\nfrom pathlib import Path\n"
@@ -154,6 +155,11 @@ class PluginNameTests(unittest.TestCase):
             mock.patch("pathlib.Path.read_text", side_effect=PermissionError(13, "Permission denied")),
             self.assertRaisesRegex(ValueError, "cannot be read: Permission denied"),
         ):
+            plugin_name()
+
+    def test_a_directory_in_the_manifest_place_raises_value_error_never_reads_as_no_plugin(self) -> None:
+        (self.plugin / ".claude-plugin" / "plugin.json").mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "cannot be read: not a file"):
             plugin_name()
 
     def test_an_absent_sibling_beside_a_manifest_that_cannot_be_known_still_names_the_sibling(self) -> None:
