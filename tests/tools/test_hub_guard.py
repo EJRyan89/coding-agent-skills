@@ -149,7 +149,6 @@ class FileGuardTests(GuardTestCase):
         for tool, path, cwd in (
             ("Edit", self.hub / "README.md", None),
             ("Write", self.hub / "new" / "nested" / "file.txt", None),
-            ("MultiEdit", self.hub / "README.md", None),
             ("NotebookEdit", self.hub / "notebook.ipynb", None),
             ("Edit", "README.md", self.hub),
             ("Edit", self.hub / "README.md", self.tree),
@@ -279,6 +278,17 @@ class EndToEndTests(GuardTestCase):
         self.enable(None)
         self.assertIsNone(self.both(event))
         self.assertEqual("", self.stderr, "a clone that has not opted in is unguarded, with nothing to note")
+
+    def test_a_checkout_git_cannot_read_is_noted_never_read_as_outside_every_repository(self) -> None:
+        # Rewritten in place: git for Windows hides the file, and Windows refuses to create a hidden file anew.
+        with (self.tree / ".git").open("r+", encoding="utf-8") as dot_git:
+            dot_git.write(f"gitdir: {self.root / 'gone'}\n")
+            dot_git.truncate()
+        for command, expected in (("git status", None), (f'git -C "{self.hub}" commit -m x', "deny")):
+            with self.subTest(command=command):
+                event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.tree)}
+                self.assertEqual(expected, self.both(event))
+                self.assertIn(f"hub guard could not look up the hub of {self.tree}: git could not read", self.stderr)
 
     def test_an_opt_in_changed_between_events_is_read_afresh_as_by_a_new_process(self) -> None:
         for event in (
@@ -1952,6 +1962,23 @@ class EnvOptionTests(unittest.TestCase):
                 self.assertEqual(expected, hub_guard.first_unread_env_option(list(arguments)))
 
 
+class HubsInViewTests(unittest.TestCase):
+    def test_a_directory_git_cannot_read_is_noted_and_the_project_s_hub_still_counts(self) -> None:
+        cwd, project = Path("session").absolute(), Path("project").absolute()
+        failure = git_client.GitError("git could not read the checkout")
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(hub_guard, "checkout_of", side_effect=[failure, worktrees.Checkout(project, project)]),
+            mock.patch.object(hub_guard, "guard_enabled", return_value=True),
+            contextlib.redirect_stderr(stderr),
+        ):
+            found = hub_guard.hubs_in_view(cwd, {"CLAUDE_PROJECT_DIR": str(project)})
+        self.assertEqual({project}, found)
+        self.assertEqual(
+            f"hub guard could not look up the hub of {cwd}: git could not read the checkout\n", stderr.getvalue()
+        )
+
+
 class ContractListTests(unittest.TestCase):
     """Each list of names the guard's section of docs/parallel-sessions.md gives is the set tools/hub_guard.py reads."""
 
@@ -1965,6 +1992,14 @@ class ContractListTests(unittest.TestCase):
 
     def test_the_file_tools_are_the_ones_the_guard_judges_by_their_path(self) -> None:
         self.assertEqual(sorted(hub_guard.FILE_TOOLS), sorted(contract_names("**File tools.**", "is refused when")))
+
+    def test_the_hook_matches_exactly_the_tools_the_guard_reads(self) -> None:
+        settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        (group,) = settings["hooks"]["PreToolUse"]
+        self.assertEqual(sorted({*hub_guard.FILE_TOOLS, *hub_guard.SHELL_READERS}), sorted(group["matcher"].split("|")))
+        self.assertEqual(
+            ["Bash", "Edit", "Monitor", "NotebookEdit", "PowerShell", "Write"], sorted(group["matcher"].split("|"))
+        )
 
     def test_the_fast_forward_options_and_the_reading_submodule_subcommands_are_the_guard_s(self) -> None:
         self.assertEqual(

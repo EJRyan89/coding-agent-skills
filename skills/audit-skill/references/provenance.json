@@ -37,7 +37,7 @@
     "DESCRIPTION": [
       {
         "page": "https://code.claude.com/docs/en/skills",
-        "passage": "Claude Code loads the description of every skill the model may start into context, so Claude knows what is available, and shortens a listing entry past its character budget."
+        "passage": "Claude Code loads a listing of skill names and descriptions into context so Claude knows what is available; when the listing passes its budget of 1% of the model's context window, it drops descriptions, starting with the skills invoked least, and it caps each entry's combined description and when_to_use text at 1,536 characters."
       },
       {
         "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
@@ -231,6 +231,11 @@
         "decision": "A prompt a skill's script writes for a subagent at runtime is audited from a rendered sample kept in the source tree as docs/runtime-prompts/<skill>/<role>.txt: the runtime prompt decision in this source's docs/design.md."
       }
     ],
+    "SCRIPT_MISSING": [
+      {
+        "decision": "A skill's Markdown runs a script of its own through the skill-directory variable, or a repository tool from the repository root, so a command naming a script that does not exist fails on every run: Paths to a skill's own files in this source's docs/adding-a-skill.md."
+      }
+    ],
     "SIBLING_FOLDER_ALLOWED": [
       {
         "page": "https://code.claude.com/docs/en/permissions",
@@ -316,7 +321,7 @@
     "emphasis": [
       {
         "page": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices",
-        "passage": "Current models are more responsive to the system prompt and may overtrigger on aggressive wording such as \"CRITICAL: You MUST\"; soften it to normal prompting."
+        "passage": "Claude Opus 4.5 and Claude Opus 4.6 are more responsive to the system prompt than earlier models, so a prompt written to stop undertriggering may make them overtrigger; soften aggressive wording such as \"CRITICAL: You MUST\" to normal prompting."
       },
       {
         "decision": "A reviewer prompt states its rules plainly, without capitalised emphasis: the reviewer prompt decision in this source's docs/design.md."
