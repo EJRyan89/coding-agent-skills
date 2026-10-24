@@ -417,7 +417,7 @@ class HubTest(FixtureTestCase):
         after = self.advance_origin()
         status, lines = self.tick(StubGh(), dry_run=True)
         self.assertEqual(0, status)
-        self.assertTrue(lines[0].startswith("DRY_RUN "))
+        self.assertEqual("DRY_RUN the hub is not fetched, and nothing is armed, disarmed, updated, or rerun", lines[0])
         self.assertEqual(
             f'HUB "{self.hub.as_posix()}" would fast-forward {before[:7]} to {after[:7]}', self.line(lines, "HUB ")
         )
@@ -503,6 +503,8 @@ class ListingTest(FixtureTestCase):
         )
         self.assertEqual("REMAINING 3", lines[-1])
         self.assertEqual([], gh.writes())
+        listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
+        self.assertEqual(REPOSITORY, listing[listing.index("--repo") + 1])
 
     def test_auto_merge_is_armed_as_a_squash_where_it_is_unarmed(self) -> None:
         gh = StubGh([pull(10, armed=False), pull(11)])
@@ -766,6 +768,13 @@ class UpdateTest(FixtureTestCase):
             [self.line(lines, f"PR #{number} ").rsplit(" ", 1)[1] for number in (21, 22, 23)],
         )
         self.assertEqual(0.75, shepherd.required_check(legs_finished(3, 4)).progress)
+        # The required check's own entry is no leg, even while it runs.
+        url = f"https://github.com/{REPOSITORY}/actions/runs/{RUN}/job/9"
+        running = {"name": "Validation", "workflowName": "Validation", "detailsUrl": url, "status": "IN_PROGRESS"}
+        self.assertEqual(shepherd.Check("PENDING", RUN, 0.75), shepherd.required_check([*legs_finished(3, 4), running]))
+        self.assertEqual(shepherd.Check("PENDING", RUN, 0.0), shepherd.required_check([running]))
+        ended = {**running, "status": "COMPLETED", "conclusion": ""}
+        self.assertEqual(shepherd.Check("UNKNOWN", RUN, 1.0), shepherd.required_check([ended]))
 
     def test_nothing_is_updated_while_an_armed_current_pull_request_is_green_or_pending(self) -> None:
         for state in ("SUCCESS", "PENDING"):
@@ -1255,7 +1264,11 @@ class MergedTest(FixtureTestCase):
         status, lines = self.tick(StubGh(merged=merged), dry_run=True)
         self.assertEqual(1, status)
         self.assertEqual([], [line for line in lines if line.startswith("MERGED ")])
-        self.assertIn(f"origin's main {newer[:7]}", self.line(lines, "MERGED_FAILED "))
+        self.assertEqual(
+            f"MERGED_FAILED git does not hold origin's main {newer[:7]}, so a merged head's own commits cannot be told "
+            "from main's; fetch origin in the hub",
+            self.line(lines, "MERGED_FAILED "),
+        )
 
     def test_a_worktree_an_open_draft_carries_is_never_named(self) -> None:
         reused = self.add_worktree("reused", "fix/reused")

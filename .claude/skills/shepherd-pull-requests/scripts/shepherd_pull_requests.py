@@ -206,9 +206,9 @@ class Pull:
     armed: bool
     check: Check
     files: tuple[str, ...]
-    cross_repository: bool = False
-    draft: bool = False
-    hold: str | None = None  # the reason a Shepherd-hold line gives, or None when none holds it
+    cross_repository: bool
+    draft: bool
+    hold: str | None  # the reason a Shepherd-hold line gives, or None when none holds it
 
 
 @dataclass
@@ -646,10 +646,9 @@ def update(
     `places` holds the numbers of the pull requests behind main and of those blocked: out of step or in conflict."""
     behind, blocked = places
     ready = [pull for pull in pulls if pull.check.state in UPDATABLE and armed(pull, outcomes[pull.number])]
-    due = None
-    if not any(pull.number not in behind and pull.number not in blocked for pull in ready):
-        candidates = [pull for pull in ready if pull.number in behind and (not holds or pull.number in holds)]
-        due = min(candidates, key=lambda pull: (-pull.check.progress, pull.number), default=None)
+    merging = any(pull.number not in behind and pull.number not in blocked for pull in ready)
+    candidates = [pull for pull in ready if pull.number in behind and (not holds or pull.number in holds)]
+    due = None if merging else min(candidates, key=lambda pull: (-pull.check.progress, pull.number), default=None)
     for pull in ready:
         outcome = outcomes[pull.number]
         if pull.number not in behind:
