@@ -2522,3 +2522,34 @@ class PlanVersionTests(CleanupTestCase):
                     lines[0].startswith(f"FAILED\t{plan} is not a repo-cleanup plan: schema_version must be one of 1"),
                     lines,
                 )
+
+
+def test_a_hidden_file_is_compared_only_when_its_index_mode_and_its_worktree_entry_are_both_regular(
+    tmp_path: Path,
+) -> None:
+    # Every hash matches its index entry, so only an entry left uncompared is reported as edited.
+    (tmp_path / "plain").write_text("x", encoding="utf-8")
+    (tmp_path / "folder").mkdir()
+    (tmp_path / "linked").write_text("x", encoding="utf-8")
+    (tmp_path / "linked-folder").mkdir()
+    listing = [
+        "S 100644 1111 0\tplain",
+        "S 100755 2222 0\tfolder",
+        "S 120000 3333 0\tlinked",
+        "S 160000 4444 0\tlinked-folder",
+    ]
+    hashed: list[list[str]] = []
+
+    def git_output(services: Any, path: str, *arguments: str) -> str:
+        if arguments[0] == "ls-files":
+            return "\0".join(listing)
+        names = list(arguments[arguments.index("--") + 1 :])
+        hashed.append(names)
+        return "\n".join(
+            {"plain": "1111", "folder": "2222", "linked": "3333", "linked-folder": "4444"}[n] for n in names
+        )
+
+    with mock.patch.object(rc, "git_output", side_effect=git_output):
+        edited = rc.hidden_edits(rc.Services(), str(tmp_path))
+    assert edited == ["folder", "linked", "linked-folder"]
+    assert hashed == [["plain"]]

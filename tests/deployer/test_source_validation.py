@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
 import sys
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -476,6 +478,35 @@ class MetadataValidationTests(DeployerTestCase):
         # Windows makes the link a junction, a reparse point that is no symlink; elsewhere it is a symlink.
         self.deploy_fails("--all", pattern="(?i)Reparse point found" if platform_support.WINDOWS else "Symlink found")
         self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_a_link_in_source_is_refused_by_its_kind_and_path(self) -> None:
+        tree = self.root / "tree"
+        outside = self.root / "outside"
+        outside.mkdir()
+        (tree / "skill").mkdir(parents=True)
+        link = tree / "skill" / "external"
+        make_directory_link(link, outside)
+        # Windows makes the link a junction and elsewhere a symbolic link; each is named by its own kind.
+        kind = "Reparse point" if platform_support.WINDOWS else "Symlink"
+        real = platform_support.is_junction
+
+        def judging(told: bool) -> Callable[[Path], bool]:
+            """is_junction answering `told` for the link and judging every other path itself."""
+            return lambda path: told if Path(path) == link else real(path)
+
+        for told, expected in ((None, kind), (True, "Reparse point"), (False, "Symlink")):
+            with self.subTest(junction=told):
+                judged = (
+                    contextlib.nullcontext()
+                    if told is None
+                    else mock.patch.object(platform_support, "is_junction", side_effect=judging(told))
+                )
+                with judged, self.assertRaises(DeployError) as raised:
+                    source._reject_links(tree)
+                self.assertEqual(
+                    f"ERROR: {expected} found in deployable source tree: {platform_support.normalize(link)}",
+                    str(raised.exception),
+                )
 
 
 class RenamedValidationTests(DeployerTestCase):
