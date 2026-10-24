@@ -107,15 +107,25 @@ When many tasks run at once, one session orchestrates: it plans the work, starts
 its own, and starts the next task as each pull request merges. A second session, in the hub, shepherds the pull
 requests on a repeating prompt that runs the
 [`shepherd-pull-requests`](../.claude/skills/shepherd-pull-requests/SKILL.md) repository skill. Its tested script does
-one tick: it fast-forwards the hub, arms squash auto-merge, and merges `main` into the oldest behind branches whose
-check is green or pending, a few per tick and never by a rebase, holding those updates while a pull request that
-changes the validation policies or the runner's selection is open. It checks that a red run tested the pull request's
+one tick: it fast-forwards the hub, arms squash auto-merge, and merges `main` into one armed behind branch whose check
+is green or pending, never by a rebase. It updates none while an armed pull request that is current with `main` and
+green or pending merges next, and otherwise the one furthest along in `Validation`, the oldest among equals, leaving
+the other behind branches alone, since an update cancels the run in flight on the branch it updates; it holds every
+update but that pull request's own while one that changes the validation policies or the runner's selection is open.
+It checks that a red run tested the pull request's
 current head before judging it, reruns a failure of the runner or a service once per head, and names every other
 failure for the session that owns the branch. Each worktree whose pull request merged is named for `repo-cleanup`,
 run from outside it. It admits only pull requests whose head branch is in this repository: one from a fork or any
 other repository is named as not admitted and never armed, judged, updated, or rerun, so it merges only when the
 maintainer merges it. A script rather than a prompt repeats these steps, so neither session spends its context on
 them, and the orchestrator keeps its own for the decisions.
+
+Hold a pull request from merging when it comes to owe a gate that calls a model, such as an `evaluate-skill`
+citation, that it does not yet cite. Its owner or the orchestrator adds a line of its own to the pull request's body,
+`Shepherd-hold: <reason>`, with `gh pr edit <number> --body-file '<file>'`. The next tick turns off its auto-merge and
+arms it no more, names it with the reason on a `HELD` line, and still judges and reruns its checks, while it arms and
+updates every other pull request as before. Release it by deleting the line once the gate is cited; the next tick arms
+it again.
 
 ## What is shared even across worktrees
 
@@ -282,12 +292,16 @@ refused while a guarded hub is in view, and what they do not see at all is named
   literal text, `~`, and each `$NAME` the command sets or the environment holds, and `$PWD` is where the shell is; a
   substitution, arithmetic, a special parameter, a glob, a brace expansion, or a value that would split leaves the
   word unsettled. The guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
-  directory unknown), `pushd`, `popd`, and `env -C`, and runs a function's body where a command calls it.
+  directory unknown), `pushd`, `popd`, and `env -C`, whose last `-C` alone counts, read from where `env` starts, and
+  runs a function's body where a command calls it.
   Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, and `env`
-  are read as the commands they start, a short option's value read attached, as in `nice -n5` and `stdbuf -oL`, or
-  as the next word; `env`'s after every word holding `=`, which it takes as an assignment whatever the name; and
-  `eval` of fixed words is read as part of the shell. Every command or process substitution runs, as Bash runs it,
-  in a subshell before the command that holds it, and so does one in an unquoted here-document's body.
+  are read as the commands they start, a short option's value read attached, as in `nice -n5`, `stdbuf -oL`, and
+  `env -C<dir>`, or as the next word; `env`'s after every word holding `=`, which it takes as an assignment whatever
+  the name; and `eval` of fixed words is read as part of the shell. `tests/tools/test_prefix_programs.py` runs `env`
+  and each of those programs where the system installs it, on the option forms its own `--help` lists, and holds the
+  guard, form by form, to reading the command the program starts or refusing the form. Every command or process
+  substitution runs, as Bash runs it, in a subshell before the command that holds it, and so does one in an unquoted
+  here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
   parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder

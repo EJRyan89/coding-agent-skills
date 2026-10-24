@@ -27,7 +27,6 @@ import doc_passages
 import review_specialists
 import untested_functions
 from git_client import GitClient
-from markdown_sections import CODE_SPAN
 from review_runtime import declared_reviewer_files, glob_matcher, validate_adapter_manifest
 from review_specialists import INPUTS, route, uncovered
 
@@ -55,7 +54,52 @@ SCENARIO_ROUTES = {
     "write-before-refusal": {"deployer"},
 }
 PIPELINE_SCRIPTS = "skills/ejryan89-code-review-core/scripts"
-TRUST_BOUNDARY_BRIEF = REPOSITORY / SKILL / "references" / "trust-boundary.md"
+# The scripts the trust-boundary route holds, written out here rather than read from the manifest or the brief,
+# which describes them by kind, so a script the route gains or loses is a choice this list records too.
+TRUST_BOUNDARY_SCRIPTS = (
+    f"{PIPELINE_SCRIPTS}/review_analyzers.py",
+    f"{PIPELINE_SCRIPTS}/review_batches.py",
+    f"{PIPELINE_SCRIPTS}/review_canary.py",
+    f"{PIPELINE_SCRIPTS}/review_dispatch.py",
+    f"{PIPELINE_SCRIPTS}/review_documents.py",
+    f"{PIPELINE_SCRIPTS}/review_github.py",
+    f"{PIPELINE_SCRIPTS}/review_guard.py",
+    f"{PIPELINE_SCRIPTS}/review_hosts.py",
+    f"{PIPELINE_SCRIPTS}/review_io.py",
+    f"{PIPELINE_SCRIPTS}/review_pipeline.py",
+    f"{PIPELINE_SCRIPTS}/review_process.py",
+    f"{PIPELINE_SCRIPTS}/review_records.py",
+    f"{PIPELINE_SCRIPTS}/review_reporting.py",
+    f"{PIPELINE_SCRIPTS}/review_reviewer_setup.py",
+    f"{PIPELINE_SCRIPTS}/review_reviewers.py",
+    f"{PIPELINE_SCRIPTS}/review_run.py",
+    f"{PIPELINE_SCRIPTS}/review_runtime.py",
+    f"{PIPELINE_SCRIPTS}/review_snapshot.py",
+    f"{PIPELINE_SCRIPTS}/review_source.py",
+    f"{PIPELINE_SCRIPTS}/review_specialists.py",
+    f"{PIPELINE_SCRIPTS}/review_vocabularies.py",
+    f"{PIPELINE_SCRIPTS}/test_adversarial_inputs.py",
+    "skills/review-document/scripts/review_document.py",
+    f"{SKILL_CORE}/bounded_process.py",
+    f"{SKILL_CORE}/device_names.py",
+    f"{SKILL_CORE}/diff_paths.py",
+    f"{SKILL_CORE}/dotnet_solution.py",
+    f"{SKILL_CORE}/executable_locator.py",
+    f"{SKILL_CORE}/flat_text.py",
+    f"{SKILL_CORE}/git_client.py",
+    f"{SKILL_CORE}/git_worktrees.py",
+    f"{SKILL_CORE}/github_client.py",
+    f"{SKILL_CORE}/github_remote.py",
+    f"{SKILL_CORE}/job_tree.py",
+    f"{SKILL_CORE}/json_reader.py",
+    f"{SKILL_CORE}/link_probe.py",
+    f"{SKILL_CORE}/markdown_literal.py",
+    f"{SKILL_CORE}/msbuild_xml.py",
+    f"{SKILL_CORE}/pdf_tool.py",
+    f"{SKILL_CORE}/process_identity.py",
+    f"{SKILL_CORE}/typed_fields.py",
+    f"{SKILL_CORE}/xml_reader.py",
+)
 # A group of alternatives in a route's pattern, which holds no group of its own.
 ALTERNATIVES = re.compile(r"\(\?:([^()]*\|[^()]*)\)")
 # The repository modules a trust-boundary module imports that the boundary does not depend on, each with its reason.
@@ -131,21 +175,9 @@ def reviewed_files() -> list[str]:
     return [path for path in tracked_files() if not path.startswith("tests/fixtures/")]
 
 
-def brief_scripts(files: list[str]) -> dict[str, list[str]]:
-    """Each script the trust-boundary brief names, with the files of that name among `files`."""
-    named = {
-        span for span in CODE_SPAN.findall(TRUST_BOUNDARY_BRIEF.read_text(encoding="utf-8")) if span.endswith(".py")
-    }
-    return {name: [path for path in files if path.rsplit("/", 1)[-1] == name] for name in sorted(named)}
-
-
 def trust_boundary_modules() -> list[str]:
-    """The trust-boundary brief's scripts but the suite it names, each as the one file of its name."""
-    return [
-        paths[0]
-        for paths in brief_scripts(reviewed_files()).values()
-        if len(paths) == 1 and not conditions.is_suite(paths[0])
-    ]
+    """The trust-boundary route's scripts but the suite among them."""
+    return [path for path in TRUST_BOUNDARY_SCRIPTS if not conditions.is_suite(path)]
 
 
 def alternatives(pattern: str) -> list[str]:
@@ -281,15 +313,14 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual({}, route(MANIFEST, nested, lambda name: True))
         self.assertEqual(nested, uncovered(MANIFEST, nested))
 
-    def test_the_brief_names_each_script_the_trust_boundary_route_matches_and_each_choice_matches_a_file(self) -> None:
-        # The brief tells its reviewer what each script holds, so a script the route gains is one the brief names,
-        # and a rename leaves neither a choice in the route nor a name in the brief that no file has.
+    def test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file(self) -> None:
+        # The brief describes the route's scripts by kind, so the scripts themselves are this list's: a script the
+        # route gains is one the list names, and a rename leaves no choice in the route that no file has.
         files = reviewed_files()
-        named = brief_scripts(files)
-        self.assertIn("review_document.py", named)
-        self.assertEqual({}, {name: paths for name, paths in named.items() if len(paths) != 1})
+        self.assertIn("skills/review-document/scripts/review_document.py", TRUST_BOUNDARY_SCRIPTS)
+        self.assertEqual([], [path for path in TRUST_BOUNDARY_SCRIPTS if path not in files])
         routed = [path for path in route(MANIFEST, files, lambda name: True)["trust-boundary"] if path.endswith(".py")]
-        self.assertEqual(sorted(routed), sorted(paths[0] for paths in named.values()))
+        self.assertEqual(sorted(TRUST_BOUNDARY_SCRIPTS), sorted(routed))
         entry = next(item for item in MANIFEST["specialists"] if item["id"] == "trust-boundary")
         for pattern in entry["include"]:
             for choice in alternatives(pattern):
@@ -925,9 +956,16 @@ def test_every_pattern_matches_without_regard_to_case(pattern: str) -> None:
     assert pattern.startswith("(?i)")
 
 
-@pytest.mark.parametrize("name", ["SKILL.md", "references/upgrade-notes.md"])
-def test_entry_validation_and_reviewer_judgment_are_distinct_on_both_surfaces(name: str) -> None:
-    text = " ".join((REPOSITORY / SKILL / name).read_text(encoding="utf-8").split())
+def test_skill_md_leaves_entry_validation_to_the_upgrade_notes_brief() -> None:
+    # The agent setting up or tuning the reviewer never acts on what validation checks of an entry, so only the brief
+    # whose reviewer judges entries states it.
+    text = " ".join((REPOSITORY / SKILL / "SKILL.md").read_text(encoding="utf-8").split())
+    assert "syntactic checks" not in text
+    assert "non-empty `Level`" not in text
+
+
+def test_entry_validation_and_reviewer_judgment_are_distinct_in_the_upgrade_notes_brief() -> None:
+    text = " ".join((REPOSITORY / SKILL / "references" / "upgrade-notes.md").read_text(encoding="utf-8").split())
     assert "non-empty `Level`, `Contract`, and `User action` fields" in text
     assert re.search(r"`Level` whose first word is .*Versioning", text)
     assert "a `Contract` naming backticked items or `none`" in text
@@ -967,3 +1005,28 @@ def test_the_drift_profile_reads_the_condition_file_and_anchors_on_added_lines(p
 def test_the_untested_profile_reads_the_condition_file_and_the_body_and_anchors_on_added_lines(phrase: str) -> None:
     profile = " ".join((REPOSITORY / SKILL / "references" / "untested-changes.md").read_text("utf-8").split())
     assert phrase in profile
+
+
+@pytest.mark.parametrize("name", ["deployer.md", "skill-contract.md"])
+def test_the_briefs_whose_files_write_records_a_later_run_reads_ask_about_successive_runs(name: str) -> None:
+    text = " ".join((REPOSITORY / SKILL / "references" / name).read_text(encoding="utf-8").split())
+    assert "**Successive runs.**" in text
+    assert "after run N, who owns each field, the user or the tool" in text
+    assert "(#1689)" in text
+    assert "opens its title with `Successive runs:`" in text
+
+
+@pytest.mark.parametrize("name", ["deployer.md", "skill-contract.md", "upgrade-notes.md"])
+def test_the_briefs_the_installed_update_reaches_ask_about_the_previous_release_s_copy(name: str) -> None:
+    text = " ".join((REPOSITORY / SKILL / "references" / name).read_text(encoding="utf-8").split())
+    assert "**The previous release's installed copy.**" in text
+    assert "The test #1607 proposes" in text
+    assert "`Installed copy:`" in text
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["SKILL.md", *(f"references/{path.name}" for path in sorted((REPOSITORY / SKILL / "references").glob("*.md")))],
+)
+def test_the_guidance_names_no_release(name: str) -> None:
+    assert re.search(r"\bv\d+\.\d+\.\d+\b", (REPOSITORY / SKILL / name).read_text(encoding="utf-8")) is None

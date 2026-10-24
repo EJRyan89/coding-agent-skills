@@ -399,6 +399,78 @@ class ConfigurationTests(unittest.TestCase):
             validate_config(config)["dashboard"]["author_names"],
         )
 
+    def test_dashboard_ignored_repositories_default_to_empty_and_are_lowercased(self) -> None:
+        self.assertEqual([], validate_config(valid_config())["dashboard"]["ignored_repositories"])
+        config = valid_config()
+        config["dashboard"] = {"ignored_repositories": ["Other/Sandbox", "octo/test-*", "*/scratch?"]}
+        self.assertEqual(
+            ["other/sandbox", "octo/test-*", "*/scratch?"],
+            validate_config(config)["dashboard"]["ignored_repositories"],
+        )
+
+    def test_dashboard_ignored_repositories_are_validated(self) -> None:
+        for entries, message in (
+            ("other/sandbox", "must be an array"),
+            ([7], "must be a non-empty string"),
+            (["other"], "an owner/repo identity, or a pattern"),
+            (["other/one/two"], "an owner/repo identity, or a pattern"),
+            (["other/[ab]"], "an owner/repo identity, or a pattern"),
+            (["other/"], "an owner/repo identity, or a pattern"),
+            (["other/a b"], "an owner/repo identity, or a pattern"),
+            (["other/" + "a" * 101], "an owner/repo identity, or a pattern"),
+            (["other/one", "Other/One"], "distinct entries, ignoring case"),
+            ([f"other/r{index}" for index in range(1001)], "at most 1000 items"),
+            # A repository a set tracks, matched exactly or by a pattern, ignoring case.
+            (["EXAMPLE/one"], "Repository example/one in repository set primary matches"),
+            (["example/*"], "entry example/\\*; a tracked repository cannot be ignored"),
+            (["*/on?"], "matches config.dashboard.ignored_repositories entry \\*/on\\?"),
+        ):
+            with self.subTest(entries=entries):
+                config = valid_config()
+                config["dashboard"] = {"ignored_repositories": entries}
+                with self.assertRaisesRegex(ConfigurationError, message):
+                    validate_config(config)
+        # A pattern matches the owner and the name each on their own, so `*` never spans the slash.
+        config = valid_config()
+        config["dashboard"] = {"ignored_repositories": ["exam*one/*", "example/x*", "e*/one?"]}
+        validate_config(config)
+
+    def test_an_ignored_entry_splits_owner_from_name_at_the_first_slash(self) -> None:
+        match = review_config.ignored_repository_match
+        self.assertEqual("octo/*", match("Octo/Sandbox", ["other/*", "octo/*"]))
+        self.assertIsNone(match("octo/sandbox", ["octo/test-*", "sandbox/*"]))
+        # Everything after the first slash is the name, in the identity and in the entry alike.
+        self.assertEqual("a/*", match("a/b/c", ["a/*"]))
+        self.assertEqual("a/b/*", match("a/b/c", ["a/b/*"]))
+        self.assertIsNone(match("a/b/c", ["a/b"]))
+
+    def test_each_ignored_repositories_refusal_names_the_field_and_what_it_found(self) -> None:
+        field = "config.dashboard.ignored_repositories"
+        for entries, message in (
+            ("x", f'{field} must be an array of at most 1000 items, found string "x"'),
+            ([7], f"{field}[0] must be a non-empty string, found integer 7"),
+            (
+                ["a/b", "other"],
+                f"{field}[1] must be an owner/repo identity, or a pattern of one using only * and ? as wildcards, "
+                'found string "other"',
+            ),
+            (["a/b", "A/B"], f'{field} must be distinct entries, ignoring case, found "a/b" twice'),
+        ):
+            with self.subTest(entries=entries):
+                config = valid_config()
+                config["dashboard"] = {"ignored_repositories": entries}
+                with self.assertRaises(ConfigurationFieldError) as raised:
+                    validate_config(config)
+                self.assertEqual(message, str(raised.exception))
+
+    def test_the_default_configuration_file_is_named_config_json(self) -> None:
+        # update-pr-dashboard names its tracker record after this name, so a rename would move the record.
+        self.assertEqual("config.json", review_config.DEFAULT_CONFIG_NAME)
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODE_REVIEW_CONFIG": ""}):
+            with mock.patch.object(Path, "home", return_value=Path(home)):
+                path = review_config.default_config_path()
+            self.assertEqual(".coding-agent-skills/code-review/config.json", path.relative_to(home).as_posix())
+
     def test_dashboard_author_names_are_validated(self) -> None:
         for names, message in (
             (["ada"], "must be an object"),
