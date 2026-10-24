@@ -92,9 +92,11 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       a finding there of another severity: a less severe one is about another defect, and a more severe one is a new
       finding, since a repeat may not be more severe than what it repeats
 
-An unknown kind, a field a kind does not take, or a `category` the scenario's manifest does not list, ignoring case,
-fails the whole run before anything is judged. The manifest is the one the fixture's pull.json names in its base tree,
-the checkout's for a repository reviewer's scenario, or review-document's design manifest for a document scenario.
+An unknown kind, a field a kind does not take, an initial review's scenario that expects no finding and names no
+verdict, which an INCOMPLETE review that raised nothing would pass, or a `category` the scenario's manifest does not
+list, ignoring case, fails the whole run before anything is judged. The manifest is the one the fixture's pull.json
+names in its base tree, the checkout's for a repository reviewer's scenario, or review-document's design manifest for
+a document scenario.
 
 Records come from a record source, a function of a scenario, a model, and which run, that returns the record that
 run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, DIR/<scenario>/<model>-<run>.json

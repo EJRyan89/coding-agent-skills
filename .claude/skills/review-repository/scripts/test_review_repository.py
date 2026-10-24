@@ -582,7 +582,10 @@ class DocumentationDriftScenarioTests(unittest.TestCase):
                 (1, "PASSAGES 0 given=0\n", ""),
                 run_condition(REPOSITORY / CONDITION, directory / "head", diff, Path(temporary)),
             )
-        self.assertEqual([{"kind": "no_finding_above", "severity": "SUGGESTION"}], spec["expectations"])
+        self.assertEqual(
+            [{"kind": "no_finding_above", "severity": "SUGGESTION"}, {"kind": "verdict", "verdict": "APPROVED"}],
+            spec["expectations"],
+        )
 
     def test_the_untested_change_hands_the_route_its_function_and_expects_a_finding_on_its_added_lines(self) -> None:
         directory, spec, diff = self.scenario("untested-change")
@@ -644,7 +647,10 @@ class DocumentationDriftScenarioTests(unittest.TestCase):
                 (1, "UNTESTED 0 given=0\n", ""),
                 run_condition(REPOSITORY / UNTESTED, directory / "head", diff, Path(temporary)),
             )
-        self.assertEqual([{"kind": "no_finding_above", "severity": "SUGGESTION"}], spec["expectations"])
+        self.assertEqual(
+            [{"kind": "no_finding_above", "severity": "SUGGESTION"}, {"kind": "verdict", "verdict": "APPROVED"}],
+            spec["expectations"],
+        )
 
 
 def restored(name: str, into: Path) -> Path:

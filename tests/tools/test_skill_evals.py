@@ -425,6 +425,21 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(directory / "prior.json", scenario.prior)
         self.assertEqual("re-review", scenario.mode)
 
+    def test_an_initial_scenario_that_expects_no_finding_names_its_verdict(self) -> None:
+        clean: dict[str, Any] = {"kind": "no_finding_above", "severity": "SUGGESTION"}
+        finding: dict[str, Any] = {"kind": "finding", "path": "a.go", "lines": [3], "severity": "MUST_FIX"}
+        refused: list[list[dict[str, Any]]] = [[clean], [{"kind": "only_at", "path": "a.go", "lines": [3]}]]
+        accepted: list[list[dict[str, Any]]] = [[clean, {"kind": "verdict", "verdict": "APPROVED"}], [finding]]
+        message = "a scenario that expects no finding names its verdict, or an INCOMPLETE review that raised nothing"
+        for expectations in refused:
+            with self.subTest(expectations=expectations):
+                self.assertIn(message, self.load_error(scenario_spec(*expectations)))
+        for number, expectations in enumerate(accepted):
+            with self.subTest(expectations=expectations):
+                write_scenario(self.root, f"case{number}", scenario_spec(*expectations))
+                (scenario,) = skill_evals_scenarios.load_scenarios("demo", [f"case{number}"], root=self.root)
+                self.assertEqual(len(expectations), len(scenario.expectations))
+
     def test_other_scenario_faults(self) -> None:
         self.assertIn("names skill", self.load_error({**scenario_spec(), "skill": "other"}))
         self.assertIn("mode must be one of", self.load_error(scenario_spec(mode="partial")))
@@ -3167,9 +3182,9 @@ class EvaluateTests(unittest.TestCase):
         written = self.results.read_text(encoding="utf-8")
         for model, identifier in skill_evals_records.MODELS.items():
             self.assertIn(
-                f"| review-repository | {model} | {identifier} | 11/11 | 1 | branch-name-command 1/1, build-grant 1/1, "
-                "drifted-guide 2/2, misstated-exit-status 1/1, tested-change 1/1, text-read-policy 1/1, "
-                "undocumented-change 1/1, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 "
+                f"| review-repository | {model} | {identifier} | 13/13 | 1 | branch-name-command 1/1, build-grant 1/1, "
+                "drifted-guide 2/2, misstated-exit-status 1/1, tested-change 2/2, text-read-policy 1/1, "
+                "undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 "
                 "| claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
                 written,
             )
@@ -3718,6 +3733,35 @@ def test_every_committed_trigger_scenario_loads_and_judges_a_stub_record_each_wa
     assert [outcome.failure for outcome in ideal] == [None] * expected
     inverted = skill_evals_judging.judge([scenario], ["haiku"], constant(record([], [skill])))
     assert [outcome.kind for outcome in inverted] == [skill_evals_records.JUDGMENT] * expected
+
+
+# Every committed initial review scenario that expects no finding: a clean change, which only a completed review passes.
+COMMITTED_CLEAN = sorted(
+    path.parent
+    for path in skill_evals_scenarios.SCENARIO_ROOT.glob("*/*/scenario.json")
+    if (spec := json.loads(path.read_text(encoding="utf-8")))["mode"] == "initial"
+    and all(item["kind"] != "finding" for item in spec["expectations"])
+)
+
+
+def test_the_clean_scenarios_include_each_reviewer_s_clean_change() -> None:
+    named = {f"{folder.parent.name}/{folder.name}" for folder in COMMITTED_CLEAN}
+    assert {
+        "review-prs/clean-change",
+        "review-repository/tested-change",
+        "review-repository/undocumented-change",
+    } <= named
+
+
+@pytest.mark.parametrize("folder", COMMITTED_CLEAN, ids=lambda folder: f"{folder.parent.name}/{folder.name}")
+def test_every_committed_clean_scenario_fails_an_incomplete_review_that_raised_nothing(folder: Path) -> None:
+    (scenario,) = skill_evals_scenarios.load_scenarios(folder.parent.name, [folder.name])
+    approved = skill_evals_judging.judge([scenario], ["haiku"], constant(record()))
+    assert [outcome.failure for outcome in approved] == [None] * len(scenario.expectations)
+    incomplete = skill_evals_judging.judge([scenario], ["haiku"], constant(record(verdict="INCOMPLETE")))
+    assert [(outcome.label, outcome.failure) for outcome in incomplete if outcome.failure] == [
+        ("verdict APPROVED", "verdict is INCOMPLETE")
+    ]
 
 
 def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
