@@ -1,4 +1,4 @@
-"""The audit-skill cues and status-line check, held to the v0.9.0 pull requests that fixed what they name.
+"""The audit-skill cues and checks, held to the pull requests that fixed what they name.
 
 Each folder under tests/fixtures/audit-skill/deterministic-prose holds a skill's SKILL.md as it stood before
 the pull request that moved its deterministic prose into a script, and as that pull request left it; corpus.json names
@@ -19,13 +19,15 @@ guarded agent, and the agent. The text before it, in a source tree that declares
 definition, shows UNGUARDED_SUBAGENT on that line, and the skill the source tree keeps today shows none.
 
 Every fixture is, byte for byte, the text its entry names at the commit or its parent, path included, so a
-later rename of a skill or a name it mentions leaves the fixtures as their commits hold them.
+later rename of a skill or a name it mentions leaves the fixtures as their commits hold them. Each entry's commit is
+the full merge commit of its pull request, and each family's folders and entries name the same fixtures.
 """
 
 from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -73,10 +75,49 @@ def test_no_cue_fires_once_the_pull_request_moved_the_prose(skill: str) -> None:
 def test_the_corpus_holds_every_cue_and_a_text_on_each_side_of_each_fix() -> None:
     named = {cue for entry in CORPUS["deterministic-prose"].values() for cue in entry["cues"]}
     assert named == PROSE_CUES
-    folders = {path.name for path in (FIXTURES / "deterministic-prose").iterdir()}
-    assert set(CORPUS["deterministic-prose"]) == folders
     for folder in (FIXTURES / "deterministic-prose").iterdir():
         assert sorted(path.name for path in folder.iterdir()) == ["after.md", "before.md"]
+
+
+def disagreements(fixtures: Path, corpus: dict[str, dict[str, object]]) -> list[str]:
+    """Each folder of the fixtures that no corpus entry names, and each entry with no folder, at both levels: a family
+    and the entries in it."""
+    families = {path.name for path in fixtures.iterdir() if path.is_dir()}
+    found = [f"folder {name} has no entry" for name in sorted(families - set(corpus))]
+    found += [f"entry {name} has no folder" for name in sorted(set(corpus) - families)]
+    for family in sorted(families & set(corpus)):
+        folders = {path.name for path in (fixtures / family).iterdir() if path.is_dir()}
+        found += [f"folder {family}/{name} has no entry" for name in sorted(folders - set(corpus[family]))]
+        found += [f"entry {family}/{name} has no folder" for name in sorted(set(corpus[family]) - folders)]
+    return found
+
+
+def test_every_family_s_folders_and_entries_name_the_same_fixtures() -> None:
+    assert disagreements(FIXTURES, CORPUS) == []
+
+
+def test_a_folder_without_an_entry_or_an_entry_without_a_folder_disagrees_in_any_family(tmp_path: Path) -> None:
+    for folder in ("status-lines/kept", "status-lines/orphan", "unlisted/one", "runtime-prompt-shape/kept"):
+        (tmp_path / folder).mkdir(parents=True)
+    corpus: dict[str, dict[str, object]] = {
+        "status-lines": {"kept": {}},
+        "runtime-prompt-shape": {"kept": {}, "gone": {}},
+        "unguarded-subagent": {},
+    }
+    assert disagreements(tmp_path, corpus) == [
+        "folder unlisted has no entry",
+        "entry unguarded-subagent has no folder",
+        "entry runtime-prompt-shape/gone has no folder",
+        "folder status-lines/orphan has no entry",
+    ]
+
+
+def test_each_entry_names_the_full_merge_commit_of_its_pull_request() -> None:
+    for family, entries in CORPUS.items():
+        for name, entry in entries.items():
+            assert re.fullmatch(r"[0-9a-f]{40}", entry["commit"]), (family, name, entry["commit"])
+            subject = GitClient().output(["log", "-1", "--format=%s", entry["commit"]], directory=REPOSITORY)
+            assert subject.rstrip().endswith(f"(#{entry['pull_request']})"), (family, name, subject)
 
 
 @pytest.mark.parametrize("skill", sorted(CORPUS["status-lines"]))
@@ -170,5 +211,17 @@ def corpus_texts() -> list[tuple[Path, str]]:
 def test_each_fixture_is_the_named_commits_text_byte_for_byte(fixture: Path, revision: str) -> None:
     # A rename across the repository must not reach these texts: each is what its commit held, so a cue is held to
     # the prose a pull request actually changed.
-    committed = GitClient().run(["show", revision], directory=REPOSITORY).output_bytes()
-    assert committed == fixture.read_bytes()
+    assert committed_text(revision) == fixture.read_bytes()
+
+
+def committed_text(revision: str) -> bytes:
+    """The bytes `git show <revision>` prints; a revision git cannot read fails with git's own message, never as
+    empty text compared with the fixture."""
+    shown = GitClient().run(["show", revision], directory=REPOSITORY)
+    assert shown.returncode == 0, f"git show {revision} failed: {shown.stderr.strip()}"
+    return shown.output_bytes()
+
+
+def test_a_revision_git_cannot_read_fails_with_gits_message() -> None:
+    with pytest.raises(AssertionError, match=r"git show 0{40}:missing\.md failed: fatal: "):
+        committed_text("0" * 40 + ":missing.md")
