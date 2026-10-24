@@ -42,6 +42,8 @@ from job_selection import (
 from suite_discovery import regression_suites
 from validation_support import REPOSITORY_ROOT, relative
 
+from deployer import platform_support
+
 
 def fixture_job(label: str, weight: float) -> Job:
     return Job(label, label.split(" [")[0], weight, lambda: None)
@@ -101,6 +103,40 @@ class LegFixtures(unittest.TestCase):
             [[job.label for job in leg_jobs(jobs, index, 2, {})] for index in range(2)],
         )
 
+    def test_a_leg_left_to_the_table_deals_by_its_own_platform_s_seconds(self) -> None:
+        # The same three jobs, ranked one way on Windows and the other on Linux: each platform's heaviest goes first
+        # onto a leg of its own, so the leg it gets alone names the platform whose seconds dealt it.
+        jobs = [fixture_job(name, 1) for name in ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py")]
+        table = {
+            "Windows": {"tests/test_a.py": 90.0, "tests/test_b.py": 20.0, "tests/test_c.py": 30.0},
+            "Linux": {"tests/test_a.py": 5.0, "tests/test_b.py": 70.0, "tests/test_c.py": 6.0},
+        }
+        expected = {
+            "Windows": [["tests/test_a.py"], ["tests/test_b.py", "tests/test_c.py"]],
+            "Linux": [["tests/test_b.py"], ["tests/test_a.py", "tests/test_c.py"]],
+        }
+        for platform, legs in expected.items():
+            with (
+                self.subTest(platform=platform),
+                mock.patch.object(job_selection, "recorded_job_seconds", return_value=table),
+                mock.patch.object(platform_support, "PLATFORM_NAME", platform),
+            ):
+                self.assertEqual(legs, [[job.label for job in leg_jobs(jobs, index, 2)] for index in range(2)])
+
+    def test_the_recorded_table_is_the_host_platform_s_when_a_leg_is_dealt(self) -> None:
+        recorded = job_selection.recorded_job_seconds()
+        self.assertEqual(sorted(platform_support.SUPPORTED_PLATFORMS.values()), sorted(recorded))
+        self.assertIn(platform_support.PLATFORM_NAME, recorded)
+        self.assertEqual(recorded[platform_support.PLATFORM_NAME], job_selection.host_job_seconds())
+        table = {"Windows": {"tests/test_a.py": 9.0}, "Linux": {"tests/test_a.py": 1.0}}
+        for platform, expected in (("Windows", 9.0), ("Linux", 1.0)):
+            with (
+                self.subTest(platform=platform),
+                mock.patch.object(job_selection, "recorded_job_seconds", return_value=table),
+                mock.patch.object(platform_support, "PLATFORM_NAME", platform),
+            ):
+                self.assertEqual({"tests/test_a.py": expected}, job_selection.host_job_seconds())
+
     def test_a_measured_cost_moves_a_job_to_a_lighter_leg(self) -> None:
         jobs = [
             fixture_job("skills/a/scripts/test_a.sh", UNSPLIT_SUITE_WEIGHT),
@@ -158,24 +194,44 @@ class JobSecondsFixtures(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_the_table_reads_seconds_by_job_name(self) -> None:
-        path = self.write_table('{"runs": [7, 9], "seconds": {"static lint check": 2.5, "tests/test_a.py": 12}}\n')
-        self.assertEqual({"static lint check": 2.5, "tests/test_a.py": 12.0}, job_seconds(path))
+    def test_the_table_reads_each_platform_s_seconds_by_job_name(self) -> None:
+        path = self.write_table(
+            '{"runs": [7, 9], "seconds": {"Linux": {"tests/test_a.py": 1.5}, '
+            '"Windows": {"static lint check": 2.5, "tests/test_a.py": 12}}}\n'
+        )
+        self.assertEqual(
+            {"Linux": {"tests/test_a.py": 1.5}, "Windows": {"static lint check": 2.5, "tests/test_a.py": 12.0}},
+            job_seconds(path),
+        )
         self.assertTrue(JOB_SECONDS.is_file())
-        self.assertTrue(job_seconds(JOB_SECONDS))
+        recorded = job_seconds(JOB_SECONDS)
+        # Pinned against the literals, not the platforms the reader takes from platform_support.
+        self.assertEqual(["Linux", "Windows"], sorted(recorded))
+        self.assertTrue(all(recorded.values()))
 
     def test_a_table_from_one_run_is_refused_with_the_step_that_rewrites_it(self) -> None:
         path = self.write_table('{"run": 7, "seconds": {"tests/test_a.py": 1}}\n')
         with self.assertRaisesRegex(ValueError, r'one run under "run"; rerun tools/record_job_seconds\.py'):
             job_seconds(path)
 
-    def test_an_entry_for_a_job_that_no_longer_runs_is_stale(self) -> None:
-        seconds = {"tests/test_kept.py": 3.0, "tests/test_gone.py": 4.0, "static lint check": 1.0}
-        problems = stale_job_seconds_problems(seconds, {"tests/test_kept.py", "static lint check", "tests/test_new.py"})
-        self.assertEqual(1, len(problems))
-        self.assertIn("tests/test_gone.py", problems[0])
+    def test_a_table_of_one_platform_s_seconds_by_job_name_is_refused_with_the_step_that_rewrites_it(self) -> None:
+        path = self.write_table('{"runs": [7], "seconds": {"tests/test_a.py": 1}}\n')
+        with self.assertRaisesRegex(ValueError, r"by job name alone; rerun tools/record_job_seconds\.py"):
+            job_seconds(path)
+
+    def test_an_entry_for_a_job_that_no_longer_runs_is_stale_on_either_platform(self) -> None:
+        names = {"tests/test_kept.py", "static lint check", "tests/test_new.py"}
+        seconds = {
+            "Windows": {"tests/test_kept.py": 3.0, "tests/test_gone.py": 4.0, "static lint check": 1.0},
+            "Linux": {"tests/test_kept.py": 1.0, "tests/test_renamed.py": 2.0},
+        }
+        problems = stale_job_seconds_problems(seconds, names)
+        self.assertEqual(2, len(problems))
+        self.assertIn("tests/test_renamed.py on Linux", problems[0])
+        self.assertIn("tests/test_gone.py on Windows", problems[1])
         self.assertIn("tools/record_job_seconds.py", problems[0])
-        self.assertEqual([], stale_job_seconds_problems({"tests/test_kept.py": 3.0}, {"tests/test_kept.py"}))
+        kept = {"Windows": {"tests/test_kept.py": 3.0}, "Linux": {"tests/test_kept.py": 1.0}}
+        self.assertEqual([], stale_job_seconds_problems(kept, {"tests/test_kept.py"}))
 
 
 @pytest.mark.parametrize(
@@ -185,10 +241,14 @@ class JobSecondsFixtures(unittest.TestCase):
         "[]",
         '{"runs": [7]}',
         '{"runs": [7], "seconds": []}',
-        '{"runs": [7], "seconds": {"tests/test_a.py": "12"}}',
-        '{"runs": [7], "seconds": {"tests/test_a.py": 0}}',
-        '{"runs": [7], "seconds": {"tests/test_a.py": true}}',
-        '{"runs": [7], "seconds": {}, "extra": 1}',
+        '{"runs": [7], "seconds": {"Linux": {}, "Windows": {"tests/test_a.py": "12"}}}',
+        '{"runs": [7], "seconds": {"Linux": {"tests/test_a.py": 0}, "Windows": {}}}',
+        '{"runs": [7], "seconds": {"Linux": {}, "Windows": {"tests/test_a.py": true}}}',
+        '{"runs": [7], "seconds": {"Linux": {}, "Windows": {}}, "extra": 1}',
+        '{"runs": [7], "seconds": {"Windows": {"tests/test_a.py": 1}}}',
+        '{"runs": [7], "seconds": {"Linux": {}, "Windows": {}, "Darwin": {}}}',
+        '{"runs": [7], "seconds": {"Linux": {}, "Windows": []}}',
+        '{"runs": [7], "seconds": {"linux": {}, "windows": {}}}',
         '{"seconds": {"tests/test_a.py": 1}}',
         '{"runs": [], "seconds": {"tests/test_a.py": 1}}',
         '{"runs": 7, "seconds": {"tests/test_a.py": 1}}',

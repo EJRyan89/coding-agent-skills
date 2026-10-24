@@ -79,7 +79,7 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient
 from job_pool import append_step_summary, worker_count
-from job_selection import reached_suites, recorded_job_seconds
+from job_selection import host_job_seconds, reached_suites
 from suite_discovery import pytest_command
 from suite_names import is_suite_name
 
@@ -429,7 +429,7 @@ def measure_reach(
 ) -> tuple[dict[str, Reach], dict[str, str], list[str]]:
     """Each suite's unmutated reach, the longest-recorded suites first, and the suites that failed unmutated or that
     the reach pass's share of the run left unmeasured."""
-    recorded = recorded_job_seconds()
+    recorded = host_job_seconds()
     ordered = sorted(suites, key=lambda suite: (-recorded.get(suite, 0.0), suite))
 
     def measure(tree: Path, index: int) -> Reach | str | None:

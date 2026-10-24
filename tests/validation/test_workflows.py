@@ -283,7 +283,8 @@ def test_a_tool_cache_off_its_workflow_pin_fails(drifted: str, problem: str) -> 
 
 LINUX = (
     "jobs:\n  suite:\n    runs-on: windows-latest\n"
-    "  linux:\n    name: Validation on Linux\n    runs-on: ubuntu-latest\n    steps:\n"
+    "  linux:\n    name: Validation on Linux, shard ${{ matrix.shard }}\n    runs-on: ubuntu-latest\n"
+    "    strategy:\n      fail-fast: false\n      matrix:\n        shard: ['1/2', '2/2']\n    steps:\n"
     "      - uses: actions/checkout@SHA # v1\n        with:\n          fetch-depth: 0\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n          python-version: '3.11'\n"
     "          cache: pip\n          cache-dependency-path: requirements-dev.txt\n"
@@ -291,8 +292,8 @@ LINUX = (
     "      - shell: pwsh\n"
     "        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n"
     "      - run: |\n          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt\n"
-    "      - name: Run\n        shell: pwsh\n        run: |\n"
-    "          $arguments = @('-B', 'tests/run_validation.py', '-v')\n"
+    "      - name: Run\n        shell: pwsh\n        env:\n          SHARD: ${{ matrix.shard }}\n        run: |\n"
+    "          $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)\n"
     "          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }\n"
     "          [System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)\n"
     "          $arguments += @('--pr-body', $bodyFile)\n"
@@ -304,8 +305,8 @@ LINUX = (
 
 
 class LinuxJobFixtures(unittest.TestCase):
-    def test_the_linux_job_runs_the_whole_run_named_as_linux(self) -> None:
-        self.assertEqual([], linux_job_problems(LINUX))
+    def test_the_linux_job_runs_the_whole_run_across_its_legs_named_as_linux(self) -> None:
+        self.assertEqual([], linux_job_problems(LINUX, 2))
 
 
 @pytest.mark.parametrize(
@@ -316,11 +317,34 @@ class LinuxJobFixtures(unittest.TestCase):
             LINUX.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-22.04"), "not ubuntu-latest", id="a pinned Ubuntu"
         ),
         pytest.param(
-            LINUX.replace("    name: Validation on Linux\n", "    name: Validation on Ubuntu\n"),
-            "say Linux",
+            LINUX.replace("    name: Validation on Linux, ", "    name: Validation on Ubuntu, "),
+            "legs are named",
             id="named for Ubuntu",
         ),
-        pytest.param(LINUX.replace("    name: Validation on Linux\n", ""), "say Linux", id="unnamed"),
+        pytest.param(
+            LINUX.replace("    name: Validation on Linux, shard ${{ matrix.shard }}\n", ""),
+            "legs are named",
+            id="unnamed",
+        ),
+        # The name the seconds recorder reads, with each leg's shard.
+        pytest.param(
+            LINUX.replace(
+                "    name: Validation on Linux, shard ${{ matrix.shard }}\n", "    name: Validation on Linux\n"
+            ),
+            "legs are named",
+            id="named without the shard",
+        ),
+        pytest.param(LINUX, "expected ['1/3', '2/3', '3/3']", id="fewer legs than shards"),
+        pytest.param(LINUX.replace("['1/2', '2/2']", "['1/2', '1/2']"), "shards", id="a shard twice"),
+        pytest.param(LINUX.replace("      fail-fast: false\n", ""), "fail-fast", id="fail-fast left on"),
+        pytest.param(
+            LINUX.replace("      fail-fast: false\n", "      fail-fast: true\n"), "fail-fast", id="fail-fast set on"
+        ),
+        pytest.param(
+            LINUX.replace("          SHARD: ${{ matrix.shard }}\n", "          SHARD: 1/2\n"),
+            "does not run its leg's --shard",
+            id="a literal shard",
+        ),
         pytest.param(
             LINUX.replace("          fetch-depth: 0\n", "          fetch-depth: 1\n"),
             "the whole history",
@@ -358,11 +382,11 @@ class LinuxJobFixtures(unittest.TestCase):
             id="source distributions allowed",
         ),
         pytest.param(
-            LINUX.replace("        shell: pwsh\n        run: |", "        shell: bash\n        run: |"),
+            LINUX.replace("      - name: Run\n        shell: pwsh\n", "      - name: Run\n        shell: bash\n"),
             "not pwsh",
             id="run in bash",
         ),
-        pytest.param(LINUX.replace("'-v')", "'-v', '--shard', $env:SHARD)"), "runs a shard", id="a shard"),
+        pytest.param(LINUX.replace(", '--shard', $env:SHARD)", ")"), "--shard", id="the whole run on each leg"),
         pytest.param(LINUX.replace("{ $arguments += '--full' }", "{ }"), "--full", id="never --full"),
         pytest.param(
             LINUX.replace("          $arguments += @('--pr-title', $titleFile)\n", ""), "--pr-title", id="no title"
@@ -375,7 +399,8 @@ class LinuxJobFixtures(unittest.TestCase):
     ],
 )
 def test_a_linux_job_that_runs_less_than_the_whole_run_or_is_misnamed_fails(drifted: str, problem: str) -> None:
-    problems = linux_job_problems(drifted)
+    count = 3 if problem.startswith("expected") else 2
+    problems = linux_job_problems(drifted, count)
     assert any(problem in found for found in problems), problems
 
 

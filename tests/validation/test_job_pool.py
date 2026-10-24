@@ -34,11 +34,13 @@ from job_pool import (
     step_summary,
     worker_count,
 )
+from job_selection import stale_job_seconds_problems
 from process_identity import process_status
 from validation_support import REPOSITORY_ROOT
 
 from deployer import platform_support
 from tests import run_validation
+from tools import record_job_seconds
 
 # Stand-ins for the program a job starts, Bash among them. Windows reports a process that exits with -2147483644 as
 # 0x80000004, the status Git Bash was ended with on the hosted runners before it printed anything; elsewhere a process
@@ -280,6 +282,22 @@ class TerminationFixtures(unittest.TestCase):
             r"a termination, not a failed check, so it starts once more\n"
             rf"ok +[0-9.]+s bash suite \(retried after status {STATUS}\)\n\Z",
         )
+
+    def test_the_line_a_retried_job_passes_with_is_recorded_under_the_job_s_name(self) -> None:
+        # The seconds recorder reads this line from a leg's log: the retry note stays out of the name it records, so
+        # the refreshed table names a job validation runs.
+        # The retry takes long enough that its seconds round above zero, which a recorded job's always are.
+        job, _ = job_running(
+            "tests/test_a.py [shard 1/2]", ENDED, [sys.executable, "-c", "import time; time.sleep(0.3)"]
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            run_jobs([job], verbose=True, workers=1)
+        leg = "Validation on Linux, shard 1/2\tRun repository validation\t2026-10-23T06:17:04.0000000Z "
+        log = "\n".join(f"{leg}{line}" for line in printed.getvalue().splitlines())
+        self.assertIn("(retried after status", log)
+        recorded = record_job_seconds.job_seconds_from_log(log)
+        self.assertEqual(["tests/test_a.py"], list(recorded["Linux"]))
+        self.assertEqual([], stale_job_seconds_problems(recorded, {"tests/test_a.py"}))
 
     def test_a_second_ending_is_a_failed_job_that_names_each_status(self) -> None:
         job, started = job_running("bash suite", ENDED)

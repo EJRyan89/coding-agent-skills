@@ -453,10 +453,13 @@ def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
     return problems
 
 
-# What the linux job's validation step runs, as the Windows legs' step does but on one leg: every suite outside a
-# pull request, and a pull request's body and title as files written from the event payload.
+# The Linux legs' name, which says their platform beside the Windows legs' and from which tools/record_job_seconds.py
+# reads each Linux leg's shard index and count.
+LINUX_LEG_NAME = "Validation on Linux, shard ${{ matrix.shard }}"
+# What each Linux leg's validation step runs, as the Windows legs' step does: its own shard, every suite outside a pull
+# request, and a pull request's body and title as files written from the event payload.
 LINUX_VALIDATION_LINES = (
-    "$arguments = @('-B', 'tests/run_validation.py', '-v')",
+    "$arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)",
     "if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }",
     "[System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)",
     "$arguments += @('--pr-body', $bodyFile)",
@@ -466,11 +469,12 @@ LINUX_VALIDATION_LINES = (
 )
 
 
-def linux_job_problems(workflow: str) -> list[str]:
-    """Report how validate.yml's `linux` job departs from one unsharded validation run on ubuntu-latest, named as
-    the Linux run: the checkout's whole history, Python at the floor with pip's cache keyed on requirements-dev.txt,
-    ShellCheck from Ubuntu's archive, PSScriptAnalyzer at the workflow's pin, and the Windows legs' validation step
-    without its shard. `required_check_problems` holds it inside the required check."""
+def linux_job_problems(workflow: str, legs: int) -> list[str]:
+    """Report how validate.yml's `linux` job departs from one validation run on ubuntu-latest dealt across `legs` legs
+    named as Linux legs, each running its own shard, every leg reporting rather than the first failure cancelling the
+    rest: the checkout's whole history, Python at the floor with pip's cache keyed on requirements-dev.txt, ShellCheck
+    from Ubuntu's archive, PSScriptAnalyzer at the workflow's pin, and the Windows legs' validation step.
+    `required_check_problems` holds it inside the required check."""
     tree = read_workflow(workflow)
     linux = _mapping(tree, "jobs", "linux")
     if not linux:
@@ -478,8 +482,15 @@ def linux_job_problems(workflow: str) -> list[str]:
     problems: list[str] = []
     if linux.get("runs-on") != "ubuntu-latest":
         problems.append(f"the linux job runs on {linux.get('runs-on')}, not ubuntu-latest")
-    if "Linux" not in str(linux.get("name", "")):
-        problems.append(f"the linux job is named {linux.get('name')!r}, which does not say Linux")
+    if linux.get("name") != LINUX_LEG_NAME:
+        problems.append(f"the linux job's legs are named {linux.get('name')!r}, not {LINUX_LEG_NAME!r}")
+    strategy = _mapping(linux, "strategy")
+    expected = [f"{index}/{legs}" for index in range(1, legs + 1)]
+    shards = _mapping(strategy, "matrix").get("shard")
+    if shards != expected:
+        problems.append(f"the linux matrix's shards are {shards}, expected {expected}")
+    if strategy.get("fail-fast") != "false":
+        problems.append("the linux matrix does not set fail-fast: false, so one red leg would cancel the other")
     steps = _steps(linux)
     checkouts = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
     if checkouts != [{"fetch-depth": "0"}]:
@@ -504,8 +515,8 @@ def linux_job_problems(workflow: str) -> list[str]:
         script = str(step.get("run", ""))
         if step.get("shell") != "pwsh":
             problems.append(f"the step {step.get('name')} runs in {step.get('shell')}, not pwsh as the legs' does")
-        if "--shard" in script:
-            problems.append(f"the step {step.get('name')} runs a shard, not the whole run")
+        if _mapping(step, "env").get("SHARD") != "${{ matrix.shard }}":
+            problems.append(f"the step {step.get('name')} does not run its leg's --shard from matrix.shard")
         lines = {line.strip() for line in script.splitlines()}
         problems.extend(
             f"the step {step.get('name')} does not run {expected!r}"
@@ -1029,7 +1040,8 @@ class WorkflowsPolicies(unittest.TestCase):
 
     def test_validate_workflow_runs_the_whole_run_on_linux_inside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-        self.assertEqual([], linux_job_problems(workflow))
+        # Keep the Linux leg count here and in the workflow synchronized.
+        self.assertEqual([], linux_job_problems(workflow, 2))
         # Every supported platform gates a merge through the one check branch protection requires.
         self.assertEqual([], required_check_problems(workflow, ("suite", "linux")))
 
