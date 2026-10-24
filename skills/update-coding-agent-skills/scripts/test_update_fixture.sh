@@ -137,7 +137,8 @@ EOF
 # set, and exits with $FAKE_DEPLOY_EXIT. A deployment that succeeds records the commit it ran from, or the commit --at
 # names and the ref as its pin, keeping a user's recorded pin's ref at its own commit unless --unpin is given, as the
 # real one does, and check names that commit and the pin, or prints
-# $FAKE_CHECK_OUTPUT when it is set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
+# $FAKE_CHECK_OUTPUT when it is set, prints $FAKE_CHECK_STDERR to stderr, as the real one prints its errors, when it is
+# set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
 # recorded pin without --unpin: with --at only a pin at another commit that is not the full name of the last release
 # its commit holds, and without --at any pin.
 UPSTREAM="$FIXTURE/upstream.git"
@@ -162,6 +163,9 @@ if arguments == ["check"]:
         print("Deployed commit: " + commit + (", pinned with --at " + pin if pin else ""))
     else:
         print("Deployed commit: unknown")
+    if "FAKE_CHECK_STDERR" in os.environ:
+        for line in ("", os.environ["FAKE_CHECK_STDERR"], ""):
+            print(line, file=sys.stderr)
     raise SystemExit(int(os.environ.get("FAKE_CHECK_EXIT", "0")))
 if os.environ.get("FAKE_DEPLOY_MOVE"):
     os.rename(os.environ["FAKE_DEPLOY_MOVE"], os.environ["FAKE_DEPLOY_MOVE"] + ".bak")

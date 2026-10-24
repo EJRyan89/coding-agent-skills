@@ -10,11 +10,13 @@ import re
 import sys
 import tarfile
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from flat_text import flat_text
-from release_tags import TAGS, highest_release
+from git_client import GitClient, GitError, GitResult
+from release_tags import TAGS, last_release
 
 from . import fsops, platform_support, tools
 from .arguments import usage_error
@@ -49,14 +51,29 @@ def check_ref(ref: str) -> None:
         raise usage_error(f"--at must name a branch, tag, or commit of this checkout (got: {ref!r})", REF_RULES)
 
 
-def _git(source_dir: Path, *arguments: str) -> platform_support.ToolResult:
+class TagsUnreadable(Exception):
+    """Git could not read the release tags reaching a pinned commit; the message is Git's reason, on one line."""
+
+
+def _run_git(arguments: Sequence[str], timeout: float | None = None) -> platform_support.ToolResult:
     git = platform_support.find_executable("git")
     if git is None:
         raise DeployError(
             "ERROR: --at needs Git, which was not found.",
             'Install it as "Installing the tools" in docs/installation.md says, then retry.',
         )
-    return platform_support.run_tool([git, "-C", str(source_dir), *arguments])
+    return platform_support.run_tool([git, *arguments], timeout=timeout)
+
+
+def _git(source_dir: Path, *arguments: str) -> platform_support.ToolResult:
+    return _run_git(["-C", str(source_dir), *arguments])
+
+
+def _git_runner(command: Sequence[str], timeout: float) -> GitResult:
+    """GitClient's runner over the deployer's own, for release_tags: the command GitClient builds, git first, run by
+    run_tool, which captures stdout and stderr together, so both carry what Git printed."""
+    result = _run_git(command[1:], timeout)
+    return GitResult(result.returncode, result.output, result.output)
 
 
 def resolve(source_dir: Path, ref: str) -> Pin:
@@ -82,15 +99,17 @@ def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> boo
     """Whether a pin is update-coding-agent-skills' own: its ref is refs/tags/<the last release its commit holds>.
 
     The release channel pins each release by its tag's full name, so a pin with a short name, another tag, or a tag a
-    later release on the same commit has overtaken is the user's. A pin whose tags git cannot read counts as the
-    user's, so a failure never lets a run replace it.
+    later release on the same commit has overtaken is the user's. The last release is the one release_tags names, the
+    definition every reader of a release asks. Raises TagsUnreadable with Git's reason when Git cannot read the tags
+    reaching the commit, so no owner is guessed for a pin whose evidence was never produced.
     """
     if ref is None or commit is None or not ref.startswith(TAGS) or not (source_dir / ".git").exists():
         return False
-    result = _git(source_dir, "for-each-ref", f"--merged={commit}", "--format=%(refname)", TAGS)
-    if result.returncode != 0:
-        return False
-    release = highest_release(line.removeprefix(TAGS) for line in result.output.splitlines())
+    client = GitClient(_git_runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
+    try:
+        release = last_release(client, source_dir, commit)
+    except GitError as error:
+        raise TagsUnreadable(flat_text(str(error))) from error
     return release is not None and ref == f"{TAGS}{release}"
 
 
@@ -100,13 +119,19 @@ def recorded_ref(source_dir: Path, pin: Pin | None, ref: str | None, commit: str
     The ref's form tells update-coding-agent-skills' own pin from the user's (is_release_pin), so the user's form wins
     at the pinned commit. A user's pin keeps its ref as written through a deployment at its commit unless that passes
     --unpin, since recording the update's refs/tags/<tag> over it would let the next release move it. Over the update's
-    own pin, as over any other, the ref --at names is recorded, so a user's pin there is recorded as the user's.
+    own pin, as over any other, the ref --at names is recorded, so a user's pin there is recorded as the user's. When
+    Git cannot read the pinned commit's tags, the recorded ref is kept as written: the run has deployed by then, and
+    keeping it changes neither the pinned commit nor the owner its form names.
     """
     if pin is None:
         return None
-    if ref is None or pin.commit != commit or unpin or is_release_pin(source_dir, ref, commit):
+    if ref is None or pin.commit != commit or unpin:
         return pin.ref
-    return ref
+    try:
+        own = is_release_pin(source_dir, ref, commit)
+    except TagsUnreadable:
+        own = False
+    return pin.ref if own else ref
 
 
 def export(source_dir: Path, commit: str) -> Path:

@@ -88,11 +88,15 @@ for DESCRIBED in "v1.0.0 ($PINNED_COMMIT)" "$PINNED_COMMIT"; do
   expect_deployed "pin refused '$DESCRIBED'"
 done
 
-# Any other failure is DEPLOY_FAILED with the deployer's error shown: another error, or the refusal's line with an exit
-# the refusal never has.
+# Any other failure is DEPLOY_FAILED with the deployer's error shown: another error, the refusal's line with an exit
+# the refusal never has, or the deployer's refusal of a pin whose release tags Git cannot read, which names Git's fault
+# rather than a pin of the user's.
 begin_case 'deploy failed with an error'
+TAGS_UNREAD="Git could not read the release tags reaching it, so whether it is update-coding-agent-skills' own pin is"
+TAGS_UNREAD+=" unknown: fatal: refused by the test"
 for FAILURE in "1 ERROR: Could not write the manifest." \
-  "2 ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to $PINNED_COMMIT without --unpin."; do
+  "2 ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to $PINNED_COMMIT without --unpin." \
+  "1 ERROR: Refusing to replace the deployment pinned with --at refs/tags/v1.0.0 to v1.0.0 ($PINNED_COMMIT): $TAGS_UNREAD"; do
   FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_DEPLOY_EXIT=${FAILURE%% *} \
     FAKE_DEPLOY_STDERR=${FAILURE#* } run_subject "$CLONE" main
   expect_status 1 "deploy failed '$FAILURE'"
@@ -102,32 +106,38 @@ for FAILURE in "1 ERROR: Could not write the manifest." \
     fail "deploy failed '$FAILURE': the deployer's error not shown: $(cat "$FIXTURE/stderr")"
 done
 
-# A check that fails still names the deployed commit when it prints the line, and the update reads it.
+# A check that fails still names the deployed commit when it prints the line, and the update reads it; the error it
+# prints on stderr is captured with its output, never shown.
 begin_case 'check failed'
-FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_CHECK_EXIT=1 run_subject "$CLONE" main
+FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_CHECK_EXIT=1 \
+  FAKE_CHECK_STDERR="ERROR: ShellCheck was not found." run_subject "$CLONE" main
 expect_status 0 "check failed"
 expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "check failed"
 expect_no_stderr "check failed"
 expect_deployed "check failed"
 
-# A check that names no deployed commit and pin the update can read leaves whether the installation is pinned unknown,
-# so the update stops on either channel before anything is fetched, with or without --unpin or --cross-major, rather
-# than deploy over a pin it could not see: a check that prints nothing, one that prints only its error, and a line
-# that names neither a full commit nor unknown, or a pin without a ref or with one no ref could be.
+# A check that prints nothing, prints only its error, or names the deployed commit or the pin in a form the update
+# cannot read leaves whether the installation is pinned unknown, so the update stops on either channel before anything
+# is fetched, with or without --unpin or --cross-major, rather than deploy over a pin it could not see: a line that
+# names neither a full commit nor unknown, or a pin without a ref or with one no ref could be. Each case is the exit,
+# then what check prints on stdout, then on stderr, where the real check prints its errors between blank lines.
 begin_case 'pin unknown'
 FETCHED=$(git -C "$CLONE" rev-parse origin/main)
-for CHECK in "1|" "0|" "1|ERROR: Could not read the manifest." "0|Deployed commit: v3.0.0" \
-  "0|Deployed commit: v3.0.0 (abc1234)" "0|Deployed commit: $PINNED_COMMIT, pinned with --at " \
-  "0|Deployed commit: unknown, pinned with --at v1.0.0 extra"; do
+for CHECK in "1||" "0||" "1||ERROR: Could not read the manifest." "0|Deployed commit: v3.0.0|" \
+  "0|Deployed commit: v3.0.0 (abc1234)|" "0|Deployed commit: $PINNED_COMMIT, pinned with --at |" \
+  "0|Deployed commit: unknown, pinned with --at v1.0.0 extra|"; do
   CODE=${CHECK%%|*}
   CHECK_OUTPUT=${CHECK#*|}
-  case "$CHECK_OUTPUT" in
+  CHECK_ERROR=${CHECK_OUTPUT#*|}
+  CHECK_OUTPUT=${CHECK_OUTPUT%%|*}
+  case "$CHECK_OUTPUT$CHECK_ERROR" in
     "") REASON="deploy.py check exited $CODE and printed nothing" ;;
     "Deployed commit: "*) REASON="deploy.py check printed: $CHECK_OUTPUT" ;;
-    *) REASON="deploy.py check exited $CODE without naming the deployed commit: $CHECK_OUTPUT" ;;
+    *) REASON="deploy.py check exited $CODE without naming the deployed commit: $CHECK_ERROR" ;;
   esac
   for ARGUMENTS in "main" "release" "release --cross-major" "main --cross-major --unpin"; do
     read -r -a SPLIT <<<"$ARGUMENTS"
+    if [ -n "$CHECK_ERROR" ]; then export FAKE_CHECK_STDERR=$CHECK_ERROR; else unset FAKE_CHECK_STDERR; fi
     FAKE_CHECK_OUTPUT=$CHECK_OUTPUT FAKE_CHECK_EXIT=$CODE run_subject "$CLONE" "${SPLIT[@]}"
     [ "$OUTPUT" = "FAILED cannot read whether the installation is pinned: $REASON" ] ||
       fail "pin unknown '$CHECK' $ARGUMENTS: got: $OUTPUT"
@@ -136,6 +146,7 @@ for CHECK in "1|" "0|" "1|ERROR: Could not read the manifest." "0|Deployed commi
     [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "pin unknown '$CHECK' $ARGUMENTS: fetched"
   done
 done
+unset FAKE_CHECK_STDERR
 
 # With no deployed commit to read, from a check that names none, the installed version is unknown, which any release
 # on origin/main raises, until --cross-major accepts it.
@@ -156,6 +167,19 @@ MISSING_COMMIT=0123456789abcdef0123456789abcdef01234567
 FAKE_CHECK_OUTPUT="Deployed commit: $MISSING_COMMIT" run_subject "$CLONE" main
 expect_failed "FAILED cannot read the release tags reaching the deployed commit $MISSING_COMMIT: " "deployed commit missing"
 expect_not_deployed "deployed commit missing"
+
+# A pin to a tag's full name, as the release channel's own pin is, at a commit the clone does not hold ends the update
+# before the fetch, named as the pinned commit, on either channel: telling the update's own pin from the user's needs
+# that commit's release.
+begin_case 'pinned commit missing'
+FETCHED=$(git -C "$CLONE" rev-parse origin/main)
+for CHANNEL in main release; do
+  FAKE_CHECK_OUTPUT="Deployed commit: $MISSING_COMMIT, pinned with --at refs/tags/v1.0.0" run_subject "$CLONE" "$CHANNEL"
+  expect_failed "FAILED cannot read the release tags reaching the pinned commit $MISSING_COMMIT: " \
+    "pinned commit missing $CHANNEL"
+  [ "$(cat "$FAKE_DEPLOY_LOG")" = "check" ] || fail "pinned commit missing $CHANNEL: ran: $(cat "$FAKE_DEPLOY_LOG")"
+  [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "pinned commit missing $CHANNEL: fetched"
+done
 
 # An unknown option is a usage error.
 begin_case 'unknown option'
