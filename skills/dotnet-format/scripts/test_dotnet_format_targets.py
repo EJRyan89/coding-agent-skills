@@ -861,6 +861,39 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(targets.SDK_FORMATTER, targets.formatter_for(repo.root, repo.root / "Lib.sln"))
 
 
+class ListedRefusalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+
+    def test_an_entry_inside_the_root_is_kept_and_a_device_or_share_form_is_refused_unresolved(self) -> None:
+        resolve = Path.resolve
+        resolved: list[str] = []
+
+        def recording(path: Path, strict: bool = False) -> Path:
+            resolved.append(str(path))
+            return resolve(path, strict)
+
+        with mock.patch.object(Path, "resolve", recording):
+            self.assertIsNone(targets.listed_refusal(self.root, "src/./App/../App/Program.cs"))
+            self.assertEqual(2, len(resolved), "the entry and the root")
+            for entry, reason in (
+                ("//?/C:/Program.cs", "the path names a device"),
+                ("\\\\localhost\\share\\Program.cs", "the path names a network share"),
+            ):
+                with self.subTest(entry=entry):
+                    refused = targets.listed_refusal(self.root, entry)
+                    self.assertTrue(refused and refused.startswith(reason), refused)
+        self.assertEqual(2, len(resolved), "a refused form is never resolved")
+
+    def test_an_entry_that_cannot_be_resolved_is_refused(self) -> None:
+        denied = PermissionError(13, "Permission denied")
+        with mock.patch.object(Path, "resolve", side_effect=denied):
+            refused = targets.listed_refusal(self.root, "Program.cs")
+        self.assertEqual("the path cannot be resolved: Permission denied", refused)
+
+
 class ConsoleTests(unittest.TestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
