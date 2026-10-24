@@ -146,11 +146,16 @@ def claimed(run: Path, role: str) -> bool:
 
 
 # Why a result is refused on Claude Code when the guard never claimed its role, ending with the remedy, which names how
-# the skill runs the role without the agent.
+# the skill runs the role without the agent. It names each setting Claude Code's settings reference gives that keeps
+# the guard's hook from running on either install route: the hook in the agent's frontmatter, as the deployer installs
+# it to ~/.claude/agents, or the plugin's hooks file.
 UNGUARDED = (
-    "the reviewer ran without its guard: the reviewer guard never claimed this role, as when hooks are off "
-    "(disableAllHooks, or allowManagedHooksOnly for a plugin's hooks), the code-review-reviewer agent or its hook did "
-    "not load, or another agent type ran the role; enable hooks for the code-review-reviewer agent, or {remedy}"
+    "the reviewer ran without its guard: the reviewer guard never claimed this role, as when a setting keeps its hook "
+    "from running (disableAllHooks; allowManagedHooksOnly, which runs no hook an agent's frontmatter declares and no "
+    "plugin's hook unless managed settings force-enable the plugin; or strictPluginOnlyCustomization locking hooks, "
+    "which stops the frontmatter hooks of agents in ~/.claude/agents, or agents, which stops loading those agents), "
+    "the code-review-reviewer agent or its hook did not load, or another agent type ran the role; let the "
+    "code-review-reviewer agent load and run its hook, or {remedy}"
 )
 
 

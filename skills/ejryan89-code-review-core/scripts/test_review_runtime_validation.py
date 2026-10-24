@@ -1204,7 +1204,8 @@ EFFORT_KIND = 'one of "high", "low", "max", "medium", "xhigh" or null'
 CATEGORY_KIND = "a non-empty trimmed string of at most 60 characters"
 READS_KIND = "a non-empty string of at most 200 characters"
 GLOB_RULE = (
-    "a repository-relative glob pattern without a backslash, a control character, or an empty, '.', or '..' segment"
+    "a repository-relative glob pattern without a backslash, a control character, a line separator, or an empty, "
+    "'.', or '..' segment"
 )
 UNSUPPORTED = "Adapter manifest protocol version is unsupported"
 BAD_ID = "Adapter manifest id is invalid"
@@ -1928,6 +1929,8 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
             ("of 201 characters", "a" * 201, READS_KIND, "a string of 201 characters"),
             ("with a backslash", "src\\global.json", GLOB_RULE, 'string "src\\\\global.json"'),
             ("with a control character", "src/\x01.json", GLOB_RULE, 'string "src/\\u0001.json"'),
+            ("with a C1 control character", "src/\x9b.json", GLOB_RULE, 'string "src/\\u009b.json"'),
+            ("with a line separator", "src/\u2029.json", GLOB_RULE, 'string "src/\\u2029.json"'),
             ("with a leading slash", "/global.json", GLOB_RULE, 'string "/global.json"'),
             ("with an empty segment", "src//global.json", GLOB_RULE, 'string "src//global.json"'),
             ("with a '.' segment", "./global.json", GLOB_RULE, 'string "./global.json"'),

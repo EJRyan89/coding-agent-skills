@@ -1430,10 +1430,13 @@ class GuardTests(SynthesisFixture):
         self.assertEqual(1, code)
         self.assertEqual(
             [
-                "FAILED the reviewer ran without its guard: the reviewer guard never claimed this role, as when hooks "
-                "are off (disableAllHooks, or allowManagedHooksOnly for a plugin's hooks), the code-review-reviewer "
-                "agent or its hook did not load, or another agent type ran the role; enable hooks for the "
-                "code-review-reviewer agent, or follow the prompt yourself and record its result with --inline"
+                "FAILED the reviewer ran without its guard: the reviewer guard never claimed this role, as when a "
+                "setting keeps its hook from running (disableAllHooks; allowManagedHooksOnly, which runs no hook an "
+                "agent's frontmatter declares and no plugin's hook unless managed settings force-enable the plugin; or "
+                "strictPluginOnlyCustomization locking hooks, which stops the frontmatter hooks of agents in "
+                "~/.claude/agents, or agents, which stops loading those agents), the code-review-reviewer agent or its "
+                "hook did not load, or another agent type ran the role; let the code-review-reviewer agent load and "
+                "run its hook, or follow the prompt yourself and record its result with --inline"
             ],
             out.splitlines(),
         )
