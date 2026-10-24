@@ -28,7 +28,8 @@ MANIFEST_REMEDY = (
     "Put back a copy you trust, or move it out of the skills folder and rerun with --dry-run.",
     STATE_FILE_SECTION,
 )
-CONFIGURATION_REMEDY = ("Move it aside, then run 'python deploy.py configure'.", STATE_FILE_SECTION)
+# The command that runs Python is the platform's: python on Windows, python3 on Linux.
+CONFIGURATION_REMEDY = (f"Move it aside, then run '{platform_support.PYTHON} deploy.py configure'.", STATE_FILE_SECTION)
 
 
 def shown(path: object) -> str:
