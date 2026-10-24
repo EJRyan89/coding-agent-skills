@@ -240,6 +240,16 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual("is_global = true", result["settings"][0]["setting"])
         self.assertTrue(result["settings_truncated"])
 
+    def test_a_settings_file_it_cannot_parse_past_the_cap_is_still_listed_unread(self) -> None:
+        lines = "".join(f"disable=SC{index:04d}\n" for index in range(MAX_SETTINGS + 1))
+        paths = self.write({".shellcheckrc": lines, "z/pyproject.toml": "[tool.ruff\n", "z/.ruff.toml": "select = [\n"})
+        result = inventory(self.root, paths)
+        self.assertTrue(result["settings_truncated"])
+        self.assertEqual(MAX_SETTINGS + 2, len(result["settings"]))
+        self.assertEqual([UNREAD], self.settings(result, "z/pyproject.toml"))
+        self.assertEqual([UNREAD], self.settings(result, "z/.ruff.toml"))
+        self.assertEqual(["z/.ruff.toml"], self.tools(result)["ruff"])
+
     def test_a_tool_lists_a_bounded_number_of_files(self) -> None:
         paths = self.write({f"src/P{index:02d}/P.csproj": SDK_PROJECT for index in range(12)})
         entry = next(item for item in inventory(self.root, paths)["tools"] if item["tool"] == "StyleCop.Analyzers")

@@ -462,6 +462,26 @@ class SearchTests(LazySnapshotFixture):
         with self.assertRaises(RuntimeContractError):
             self.search("(unclosed")
 
+    def test_a_whole_snapshot_is_searched_in_its_own_files_without_a_checkout(self) -> None:
+        # A whole snapshot, as the tarball route writes one, has no repository to search; its own files are searched,
+        # leaving out what it excludes and its manifest, so the matches are the lazy snapshot's from the commit.
+        whole = self.root / "whole"
+        materialize_source_snapshot(self.checkout, REPOSITORY, self.head, whole, changed_paths=["src/changed.py"])
+        expected = (
+            [
+                ("src/changed.py", "2", "    return helper(sum(items))"),
+                ("src/unchanged.py", "1", "def helper(value):"),
+                ("src/with space.py", "1", "SPACED = 'helper'"),
+            ],
+            False,
+        )
+        self.assertEqual(expected, search_source(None, whole, "helper", repository=REPOSITORY, commit=self.head))
+        self.assertEqual(
+            ([], False), search_source(None, whole, "source_hashes", repository=REPOSITORY, commit=self.head)
+        )
+        with self.assertRaises(RuntimeContractError):
+            search_source(None, whole, "(unclosed", repository=REPOSITORY, commit=self.head)
+
 
 class CommandTests(LazySnapshotFixture):
     """review_source.py as a reviewer runs it, on a run prepare would have written around the lazy snapshot."""
@@ -519,6 +539,23 @@ class CommandTests(LazySnapshotFixture):
         self.assertEqual(
             (1, ["FAILED this run's snapshot holds every file already; read it under SOURCE_ROOT"]),
             self.main("source-file", "--run", run, "--role", "generic-review", "--path=src/unchanged.py"),
+        )
+        self.state["source_repository"] = str(self.root / "gone")
+        self.write_state()
+        gone = f"FAILED the run's source repository {self.root / 'gone'} is not a directory"
+        self.assertEqual(
+            (1, [gone]), self.main("source-search", "--run", run, "--role", "generic-review", "--pattern=helper")
+        )
+
+    def test_source_search_on_a_run_with_no_source_repository_searches_the_snapshot_s_files(self) -> None:
+        # The run names no repository, as a whole snapshot's run does, so only the files the snapshot holds are
+        # searched: here the lazy snapshot's changed file, not the unchanged one it left to fetch.
+        self.state["source_repository"] = None
+        self.write_state()
+        run = str(self.run_directory)
+        self.assertEqual(
+            (0, ["MATCH src/changed.py:2:     return helper(sum(items))", "MATCHES 1"]),
+            self.main("source-search", "--run", run, "--role", "generic-review", "--pattern=helper"),
         )
 
     def test_a_run_with_a_field_of_the_wrong_kind_is_refused(self) -> None:
