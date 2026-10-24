@@ -445,6 +445,11 @@ class MainTests(unittest.TestCase):
             "### Captured samples\n\nNo captured sample is older than its runtime's latest release.\n\n", section([])
         )
 
+    def test_a_blank_line_ends_the_releases_table_before_the_samples_heading(self) -> None:
+        # A line that is not blank there would join the releases table and break its rendering in the step summary.
+        lines = ["CHANGELOG codex 0.163.0 0.164.0 1", 'ENTRY codex 0.164.0 "-c" "Read -c twice"']
+        self.assertIn("| 0.164.0 | -c | Read -c twice |\n\n### Captured samples\n", watch.summary(lines))
+
     def test_a_flag_the_code_passes_only_before_a_release_it_reads_is_watched(self) -> None:
         # Copilot CLI 1.0.103 retired --no-remote, which the code still passes to the releases before it.
         top = Path(self.enterContext(tempfile.TemporaryDirectory()))
