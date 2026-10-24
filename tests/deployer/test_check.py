@@ -105,11 +105,12 @@ class Machine:
         python_command: str | None = PYTHON_COMMAND,
         pwsh_command: str | None = None,
         codex_probe: tuple[int, str] = (0, prompt_input("workspace-write")),
+        statuses: dict[str, int] | None = None,
     ) -> None:
         # describe is what git describe prints for the deployed commit; None makes it fail, as for an unknown commit.
         # settings says whether this machine's platform has the machine settings check reports, as Windows does: then
         # python_command is what the skills' Python command runs, pwsh_command what pwsh runs, and codex_probe what
-        # Codex's sandbox probe prints.
+        # Codex's sandbox probe prints. statuses is the exit status of each named tool's version probe, 0 if unnamed.
         self.settings = settings
         self.python_command = python_command
         self.pwsh_command = pwsh_command
@@ -120,6 +121,7 @@ class Machine:
         self.git_calls: list[list[str]] = []
         self.installed = {name: entry for name, entry in INSTALLED.items() if name not in missing}
         self.versions = dict(self.installed.values())
+        self.statuses = {**STATUSES, **{self.installed[name][0]: code for name, code in (statuses or {}).items()}}
         for name, output in (versions or {}).items():
             self.versions[self.installed[name][0]] = output
         self.bash = None if "git-bash" in missing else "C:/Program Files/Git/bin/bash.exe"
@@ -179,7 +181,7 @@ class Machine:
         if arguments[1:] == list(tools.CODEX_SANDBOX_PROBE):
             return platform_support.ToolResult(*self.codex_probe)
         if arguments[0] != GIT:
-            return platform_support.ToolResult(STATUSES.get(arguments[0], 0), self.versions[arguments[0]])
+            return platform_support.ToolResult(self.statuses.get(arguments[0], 0), self.versions[arguments[0]])
         if arguments[1:] == ["--version"]:
             return platform_support.ToolResult(0, GIT_VERSION)
         self.git_calls.append(arguments)
@@ -318,6 +320,8 @@ class CheckCommandTests(DeployerTestCase):
         for machine in (
             Machine(settings=True, missing=("codex",)),
             Machine(settings=True, versions={"codex": "codex-cli 0.87.0\n"}),
+            Machine(settings=True, statuses={"codex": 1}),
+            Machine(settings=True, versions={"codex": "codex-cli\n"}),
             Machine(settings=False, codex_probe=(0, prompt_input("read-only"))),
         ):
             with self.subTest(settings=machine.settings, installed=sorted(machine.installed)):
@@ -703,6 +707,37 @@ class CheckCommandTests(DeployerTestCase):
         groups = self.report_groups(self.check(Machine(versions={"claude": "2.1.295 (Claude Code)\n"})).output, "CHECK")
         self.assertIn("Claude Code 2.1.295 (used by every skill run in Claude Code)", groups["OPTIONAL"])
         self.assertNotIn("OUTDATED", groups)
+
+    def test_a_floored_tool_whose_version_cannot_be_read_is_unusable_never_found(self) -> None:
+        # A version probe that fails or prints no version is no evidence that the tool meets its floor, so the tool is
+        # reported unusable with the probe's reason, as pdftotext is, and a probe that reads one is still found.
+        set_tools(self, "formatter", ["dotnet-format", "dotnet"])
+        floors = {
+            "gh": ("gh", "2.48.0"),
+            "copilot": ("copilot", "1.0.88"),
+            "codex": ("codex", "0.88.0"),
+            "dotnet": ("dotnet", "9.0.200"),
+            "claude": ("Claude Code", "2.1.295"),
+        }
+        catalogue = [*tools.VERIFY_TOOLS.values(), *tools.SKILL_TOOLS.values(), *tools.REPORTED_TOOLS]
+        self.assertEqual(set(floors), {tool.name for tool in catalogue if tool.minimum})
+        found = self.report_groups(self.check(Machine()).output, "CHECK")
+        usable = [*found["FOUND"], *found["OPTIONAL"]]
+        for name, (label, floor) in floors.items():
+            version = tools.format_version(tools.parse_version(INSTALLED[name][1]) or ())
+            self.assertTrue(any(line.startswith(f"{label} {version} (used by ") for line in usable), (name, usable))
+            for machine, failure in (
+                (Machine(statuses={name: 1}), "failed with exit status 1"),
+                (Machine(versions={name: "no version here\n"}), "printed no version"),
+            ):
+                with self.subTest(tool=name, failure=failure):
+                    result = self.check(machine)
+                    self.assertEqual(0, result.code, result.output)
+                    groups = self.report_groups(result.output, "CHECK")
+                    lines = [line for lines in groups.values() for line in lines if line.startswith(f"{label} ")]
+                    self.assertEqual([f"{label} (version probe {failure}; needs {floor} or newer)"], lines)
+                    self.assertIn(lines[0], groups["UNUSABLE"])
+                    self.assertIn("Skills cannot use a missing, outdated, or unusable tool\n", result.output)
 
     def test_tools_no_skill_declares_are_not_listed(self) -> None:
         set_tools(self, "formatter", [])
