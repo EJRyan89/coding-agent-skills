@@ -198,6 +198,30 @@ class ListTests(WorktreesTestCase):
             dot_git.truncate()
         self.assertEqual(["feat/demo", "unreadable", "0", "0", "-"], self.rows(cwd=self.hub)["feat/demo"][:5])
 
+    def test_list_shows_a_count_git_cannot_take_as_unknown_never_in_progress(self) -> None:
+        # With no main to count against, git answers nonzero for every worktree's ahead and behind.
+        self.git(self.hub, "branch", "-m", "main", "trunk")
+        rows = self.rows()
+        self.assertEqual(["trunk", "hub · off main", "?", "?", "0"], rows["trunk"][:5])
+        self.assertEqual(["feat/demo", "unknown", "?", "?", "0"], rows["feat/demo"][:5])
+
+
+class CheckoutTests(WorktreesTestCase):
+    def test_a_checkout_git_cannot_read_raises_and_a_place_outside_every_checkout_is_none(self) -> None:
+        self.assertEqual(worktrees.Checkout(self.tree, self.hub), worktrees.checkout_of(self.tree / "README.md"))
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.assertIsNone(worktrees.checkout_of(outside))
+        # Inside a git directory there is no work tree to show, and that is no failure either.
+        self.assertIsNone(worktrees.checkout_of(self.hub / ".git" / "refs"))
+        # Rewritten in place: git for Windows hides the file, and Windows refuses to create a hidden file anew.
+        with (self.tree / ".git").open("r+", encoding="utf-8") as dot_git:
+            dot_git.write(f"gitdir: {self.root / 'gone'}\n")
+            dot_git.truncate()
+        with self.assertRaises(git_client.GitError) as raised:
+            worktrees.checkout_of(self.tree)
+        self.assertIn(f"git could not read the checkout at {self.tree}", str(raised.exception))
+
 
 class GitProgramTests(unittest.TestCase):
     def runner(self, output: str = "") -> tuple[list[tuple[list[str], float]], Any]:

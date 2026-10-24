@@ -149,7 +149,6 @@ class FileGuardTests(GuardTestCase):
         for tool, path, cwd in (
             ("Edit", self.hub / "README.md", None),
             ("Write", self.hub / "new" / "nested" / "file.txt", None),
-            ("MultiEdit", self.hub / "README.md", None),
             ("NotebookEdit", self.hub / "notebook.ipynb", None),
             ("Edit", "README.md", self.hub),
             ("Edit", self.hub / "README.md", self.tree),
@@ -279,6 +278,17 @@ class EndToEndTests(GuardTestCase):
         self.enable(None)
         self.assertIsNone(self.both(event))
         self.assertEqual("", self.stderr, "a clone that has not opted in is unguarded, with nothing to note")
+
+    def test_a_checkout_git_cannot_read_is_noted_never_read_as_outside_every_repository(self) -> None:
+        # Rewritten in place: git for Windows hides the file, and Windows refuses to create a hidden file anew.
+        with (self.tree / ".git").open("r+", encoding="utf-8") as dot_git:
+            dot_git.write(f"gitdir: {self.root / 'gone'}\n")
+            dot_git.truncate()
+        for command, expected in (("git status", None), (f'git -C "{self.hub}" commit -m x', "deny")):
+            with self.subTest(command=command):
+                event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.tree)}
+                self.assertEqual(expected, self.both(event))
+                self.assertIn(f"hub guard could not look up the hub of {self.tree}: git could not read", self.stderr)
 
     def test_an_opt_in_changed_between_events_is_read_afresh_as_by_a_new_process(self) -> None:
         for event in (
@@ -1167,6 +1177,48 @@ class CommandReadingTests(GuardTestCase):
             self.reach(f"Set-Content env:GIT_WORK_TREE '{self.tree}'; git commit", self.tree, environment=aimed),
         )
 
+    def test_both_readers_leave_unknown_what_a_name_they_cannot_settle_may_set(self) -> None:
+        # Bash's export "$v"=x may set any variable, and so may a cmdlet writing a provider path the text does not
+        # settle; a path whose last part is literal text names that variable alone, which git does not read.
+        for tool, command, expected in (
+            ("Bash", 'export "$v"=x', "unknown"),
+            ("Bash", 'unset "$v"', "unknown"),
+            ("PowerShell", 'Set-Item "env:$v" x', "unknown"),
+            ("PowerShell", "Set-Item $p x", "unknown"),
+            ("PowerShell", "Set-Content -Path $p -Value x", "unknown"),
+            ("PowerShell", "Set-Content $target x", "unknown"),
+            ("PowerShell", 'Set-Item "$d\\GIT_DIR" x', "unknown"),
+            ("PowerShell", "Copy-Item env:FOO $destination", "unknown"),
+            ("PowerShell", "Remove-Item $p", "unknown"),
+            ("PowerShell", "Rename-Item env:FOO $n", "unknown"),
+            ("PowerShell", "New-Item -Path env: -Name $n -Value x", "unknown"),
+            ("Bash", 'printf x > "$d/out.txt"', "elsewhere"),
+            ("PowerShell", 'Set-Content "$d\\out.txt" x', "elsewhere"),
+            ("PowerShell", "New-Item -Path C:\\x -Name $n -ItemType Directory", "elsewhere"),
+        ):
+            with self.subTest(tool=tool, command=command):
+                self.assertEqual([(expected, "commit")], self.reach(f"{command}; git commit", tool=tool))
+
+    def test_a_script_a_shell_reads_from_its_standard_input_is_one_the_guard_cannot_read(self) -> None:
+        for tool, command, unread in (
+            ("Bash", "echo 'git commit -m x' | bash", ["could not read the command passed to bash"]),
+            ("Bash", "printf 'git commit -m x' | sh -s -- one two", ["could not read the command passed to sh"]),
+            ("Bash", "echo 'git commit -m x' | pwsh -NoProfile", ["could not read the command passed to pwsh"]),
+            ("Bash", "echo 'git commit -m x' | pwsh -Command -", ["could not read the command passed to pwsh"]),
+            ("Bash", "echo 'git commit -m x' | pwsh -f -", ["could not read the command passed to pwsh"]),
+            ("PowerShell", "'git commit -m x' | bash", ["could not read the command passed to bash"]),
+            ("PowerShell", "'git commit -m x' | pwsh -NoProfile", ["could not read the command passed to pwsh"]),
+            ("Bash", "bash -s one <<< 'git commit -m x'", []),
+            ("Bash", "bash script.sh; git status", []),
+            ("Bash", "bash < script.sh; git status", []),
+            ("Bash", "pwsh -File build.ps1; git status", []),
+            ("Bash", "pwsh -ExecutionPolicy Bypass build.ps1; git status", []),
+            ("PowerShell", "pwsh -NoProfile -c 'git status'; git commit -m x", []),
+        ):
+            with self.subTest(tool=tool, command=command):
+                self.read(command, tool=tool)
+                self.assertEqual(unread, self.unread)
+
     def test_powershell_reads_a_location_variable_set_through_the_provider_qualified_path(self) -> None:
         # Environment:: names the environment provider as the env: drive does, with or without its module.
         for command in (
@@ -1253,7 +1305,8 @@ class CommandReadingTests(GuardTestCase):
             "Set-Content notes.txt GIT_DIR",
             "Set-Content -Path notes.txt -Value env:GIT_DIR",
             "Set-Content env:NOTES GIT_DIR",
-            "Set-Content $target x",
+            # A computed path whose last part is literal text names only that variable.
+            'Set-Content "$target\\notes.txt" x',
             "Rename-Item notes.txt GIT_DIR",
             # The provider takes -NewName as a bare name, so this sets a variable named env:GIT_DIR.
             "Rename-Item env:FOO env:GIT_DIR",
@@ -1939,6 +1992,14 @@ class ContractListTests(unittest.TestCase):
 
     def test_the_file_tools_are_the_ones_the_guard_judges_by_their_path(self) -> None:
         self.assertEqual(sorted(hub_guard.FILE_TOOLS), sorted(contract_names("**File tools.**", "is refused when")))
+
+    def test_the_hook_matches_exactly_the_tools_the_guard_reads(self) -> None:
+        settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        (group,) = settings["hooks"]["PreToolUse"]
+        self.assertEqual(sorted({*hub_guard.FILE_TOOLS, *hub_guard.SHELL_READERS}), sorted(group["matcher"].split("|")))
+        self.assertEqual(
+            ["Bash", "Edit", "Monitor", "NotebookEdit", "PowerShell", "Write"], sorted(group["matcher"].split("|"))
+        )
 
     def test_the_fast_forward_options_and_the_reading_submodule_subcommands_are_the_guard_s(self) -> None:
         self.assertEqual(
