@@ -1391,6 +1391,25 @@ class CheckoutTests(unittest.TestCase):
         self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/main"], directory=self.root)
         self.assertIsNone(self.foreign())
 
+    def test_the_branches_holding_head_are_origin_s_alone_by_their_full_names(self) -> None:
+        # origin/topic holds the second commit, origin/main only the first; another remote's branch never counts.
+        self.git.output(["update-ref", "refs/remotes/origin/topic", "HEAD"], directory=self.root)
+        self.git.output(["update-ref", "refs/remotes/someone/topic", "HEAD"], directory=self.root)
+        self.assertEqual(["refs/remotes/origin/topic"], skill_evals.origin_branches_holding_head(self.git, self.root))
+        self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/main"], directory=self.root)
+        self.assertEqual(
+            ["refs/remotes/origin/main", "refs/remotes/origin/topic"],
+            skill_evals.origin_branches_holding_head(self.git, self.root),
+        )
+
+    def test_a_run_reads_the_checkout_at_the_repository_root(self) -> None:
+        with mock.patch.object(skill_evals, "REPOSITORY_ROOT", self.root):
+            self.assertIsNone(skill_evals.this_checkout())
+            self.follow("origin", "refs/pull/7/head")
+            self.assertEqual(
+                "its branch main follows refs/pull/7/head, a pull request's ref", skill_evals.this_checkout()
+            )
+
     def test_a_folder_git_cannot_read_raises(self) -> None:
         outside = self.root.parent / "not a checkout"
         outside.mkdir()

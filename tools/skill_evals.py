@@ -344,16 +344,24 @@ def new_home() -> Path:
 OWN_REMOTES = frozenset({"", ".", "origin"})
 
 
+def origin_branches_holding_head(git: GitClient, directory: Path) -> list[str]:
+    """The full names of origin's remote-tracking branches whose history holds the checkout's HEAD, in git's order.
+    Raises GitError when git cannot read the checkout."""
+    held = git.output(
+        ["for-each-ref", "--contains", "HEAD", "--format=%(refname)", "refs/remotes/origin"], directory=directory
+    )
+    return held.splitlines()
+
+
 def foreign_checkout(git: GitClient, directory: Path) -> str | None:
     """Why the checkout at `directory` follows another repository's pull request, or None when it does not: its
     branch's upstream is a pull request's ref or a remote other than origin, or its HEAD is detached at a commit no
     branch of origin holds. Raises GitError when git cannot read the checkout."""
     branch = git.run(["symbolic-ref", "-q", "--short", "HEAD"], directory=directory)
     if branch.returncode != 0:
-        held = git.output(
-            ["for-each-ref", "--contains", "HEAD", "--format=%(refname)", "refs/remotes/origin"], directory=directory
-        )
-        return None if held.strip() else "its HEAD is detached at a commit no branch of origin holds"
+        if origin_branches_holding_head(git, directory):
+            return None
+        return "its HEAD is detached at a commit no branch of origin holds"
     name = branch.stdout.strip()
     remote = git.run(["config", "--get", f"branch.{name}.remote"], directory=directory).stdout.strip()
     merge = git.run(["config", "--get", f"branch.{name}.merge"], directory=directory).stdout.strip()
