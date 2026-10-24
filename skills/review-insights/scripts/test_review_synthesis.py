@@ -254,6 +254,7 @@ class InputTests(SynthesisFixture):
         path = json_path.parent / rs.INPUT_NAME
         body = path.read_text(encoding="utf-8").partition("\n")[2]
         for first, reason in (
+            ("", "the synthesis input or context changed after the report sealed it; run report again"),
             ("[]", "the synthesis input or context changed after the report sealed it; run report again"),
             ('"seal"', "the synthesis input or context changed after the report sealed it; run report again"),
             ("null", "the synthesis input or context changed after the report sealed it; run report again"),

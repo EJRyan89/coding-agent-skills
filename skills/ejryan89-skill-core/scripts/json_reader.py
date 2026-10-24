@@ -12,6 +12,7 @@ such as its `JSONDecodeError` or the `ValueError` of an integer past the digit l
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 
@@ -39,3 +40,10 @@ def loads(text: str | bytes) -> Any:
         return json.loads(text, object_pairs_hook=_object, parse_constant=_constant)
     except RecursionError as error:
         raise JsonRefused("the JSON nests deeper than the parser can read") from error
+
+
+def read_file(path: Path) -> Any:
+    """The value the UTF-8 file at `path` holds, as `loads` reads it, whatever the platform's own codec: an `OSError`
+    when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, which includes a
+    byte-order mark that the caller does not expect."""
+    return loads(path.read_bytes().decode("utf-8"))

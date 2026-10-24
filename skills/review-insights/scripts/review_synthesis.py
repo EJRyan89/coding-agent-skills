@@ -471,7 +471,7 @@ def remove_run(synthesis: dict[str, Any] | None) -> None:
     if not run.name.startswith(RUN_PREFIX) or run.parent.resolve() != Path(tempfile.gettempdir()).resolve():
         return
     try:
-        roles = json_reader.loads((run / RUN_FILE).read_text(encoding="utf-8"))["roles"]
+        roles = json_reader.read_file(run / RUN_FILE)["roles"]
     except (OSError, ValueError, KeyError, TypeError):
         return
     if (

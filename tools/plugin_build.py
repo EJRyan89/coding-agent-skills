@@ -124,7 +124,7 @@ def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:
     if (directory / PLUGIN_MANIFEST).exists():
         raise BuildError(f"{directory / PLUGIN_MANIFEST} exists; a source tree is never a plugin itself")
     try:
-        document = json_reader.loads((directory / MARKETPLACE).read_text(encoding="utf-8"))
+        document = json_reader.read_file(directory / MARKETPLACE)
     except (OSError, ValueError) as exc:
         raise BuildError(f"{directory / MARKETPLACE} cannot be read: {exc}") from exc
     plugins = document.get("plugins") if isinstance(document, dict) else None

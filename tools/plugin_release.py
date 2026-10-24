@@ -85,7 +85,7 @@ def archives(root: Path, tag: str) -> dict[str, bytes]:
 def read_marketplace(root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The checkout's marketplace document, and its plugin entries, which must each be an object."""
     try:
-        document = json_reader.loads((root / plugin_build.MARKETPLACE).read_text(encoding="utf-8"))
+        document = json_reader.read_file(root / plugin_build.MARKETPLACE)
     except (OSError, ValueError) as exc:
         raise ReleaseError(f"{plugin_build.MARKETPLACE.as_posix()} cannot be read: {exc}") from exc
     plugins = document.get("plugins") if isinstance(document, dict) else None

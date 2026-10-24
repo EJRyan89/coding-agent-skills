@@ -78,7 +78,7 @@ def records_in(directory: Path) -> RecordSource:
     def source(scenario: Scenario, model: str, index: Index) -> Record:
         path = directory / scenario.name / record_name(model, index)
         try:
-            record: Record = json_reader.loads(path.read_text(encoding="utf-8"))
+            record: Record = json_reader.read_file(path)
         except FileNotFoundError as exc:
             raise RecordError(f"no record at {path}") from exc
         except (OSError, ValueError) as exc:
