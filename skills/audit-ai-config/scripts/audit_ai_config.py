@@ -1060,8 +1060,8 @@ def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
 
 def _claude_skill_rules(root: Path, path: Path, rel: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
     """A skill that reads $ARGUMENTS without the argument-hint Claude Code shows during autocomplete."""
-    body = read_text_or_none(root, path) or ""
-    if "$ARGUMENTS" not in body.split("---", 2)[-1] or _text(values, "argument-hint").strip():
+    body = read_text_or_none(root, path)  # _validate_skill reports a skill it cannot read
+    if body is None or "$ARGUMENTS" not in body.split("---", 2)[-1] or _text(values, "argument-hint").strip():
         return []
     return [
         Finding(
@@ -1095,7 +1095,8 @@ def _codex_skill_rules(path: Path, root: Path, rel: str, values: dict[str, Front
             )
         )
     canonical_path = root / ".claude/skills" / path.parent.name / "SKILL.md"
-    canonical: dict[str, FrontmatterValue] = _frontmatter(root, canonical_path)[0] if canonical_path.is_file() else {}
+    # Nothing when there is no such skill or it cannot be read; the .claude/skills checks report one they cannot read.
+    canonical = _frontmatter(root, canonical_path)[0]
     user_only = _is_true(values.get("disable-model-invocation")) or _is_true(canonical.get("disable-model-invocation"))
     if user_only:
         policy = path.parent / CODEX_METADATA

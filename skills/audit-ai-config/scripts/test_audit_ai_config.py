@@ -1119,9 +1119,18 @@ class CollisionTests(unittest.TestCase):
             "# My custom instructions\n\nUser content.\n", encoding="utf-8"
         )
         result = audit.audit(self.root)
-        self.assertTrue(
-            any(f.check in ("collision", "parity") and f.severity == "ERROR" for f in result.findings),
+        self.assertIn(
+            (
+                "ERROR",
+                "collision",
+                ".github/copilot-instructions.md",
+                "User-authored copilot-instructions.md would conflict with generated projection",
+            ),
+            [(f.severity, f.check, f.path, f.message) for f in result.findings],
         )
+        marked = f"# Instructions\n\n> {OWNERSHIP}.\n"
+        (self.root / ".github/copilot-instructions.md").write_text(marked, encoding="utf-8")
+        self.assertEqual([], [f for f in audit.audit(self.root).findings if f.check == "collision"])
 
 
 # ---------------------------------------------------------------------------
@@ -1423,6 +1432,48 @@ class CopilotConfigurationTests(unittest.TestCase):
         self.assertTrue(
             any(f.check == "provenance" and "not owned by the manifest" in f.message for f in result.findings)
         )
+
+    def test_a_skill_that_cannot_be_read_is_one_error_and_no_rule_judges_its_body(self) -> None:
+        _write_fixture(self.root, {".claude/skills/broken/SKILL.md": UNDECODABLE})
+        found = [
+            (f.severity, f.check)
+            for f in audit.check_copilot_configuration(self.root, {})
+            if f.path == ".claude/skills/broken/SKILL.md"
+        ]
+        self.assertEqual([("ERROR", "copilot-config"), ("ERROR", "copilot-skill"), ("ERROR", "copilot-skill")], found)
+
+    def test_each_unowned_projection_is_named_by_its_path_and_kind_and_an_owned_one_is_not(self) -> None:
+        marked = f"---\nname: project-skill\ndescription: Projected.\n---\n\n<!-- {OWNERSHIP} -->\n"
+        _write_fixture(
+            self.root,
+            {".github/skills/project-skill/SKILL.md": marked, ".github/agents/projected.agent.md": marked},
+        )
+        found = [
+            (f.severity, f.path, f.message)
+            for f in audit.check_copilot_configuration(self.root, self._manifest())
+            if f.check == "provenance"
+        ]
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    ".github/skills/project-skill/SKILL.md",
+                    "Generated Copilot skill projection is not owned by the manifest",
+                ),
+                (
+                    "ERROR",
+                    ".github/agents/projected.agent.md",
+                    "Generated Copilot agent projection is not owned by the manifest",
+                ),
+            ],
+            found,
+        )
+        manifest = self._manifest()
+        manifest["artifacts"].extend(
+            {"path": rel} for rel in (".github/skills/project-skill/SKILL.md", ".github/agents/projected.agent.md")
+        )
+        owned = audit.check_copilot_configuration(self.root, manifest)
+        self.assertEqual([], [f for f in owned if f.check == "provenance"])
 
     def test_manifest_projection_requires_marker_and_hash(self) -> None:
         projection = self.root / ".github/agents/project-agent.agent.md"
@@ -5148,6 +5199,26 @@ class OutsideLinkTests(unittest.TestCase):
                 self.assertEqual([("WARNING", "inventory", folder)], self._outside_links(result))
                 for finding in result.findings:
                     self.assertNotIn("elsewhere", finding.message.lower(), finding)
+
+    def test_the_codex_check_names_the_link_its_invocation_policy_lies_behind(self) -> None:
+        # The walks name this link too; the Codex rule names it itself, so its ERROR never stands alone wherever it
+        # is called from.
+        self._fresh_repository("policy")
+        _write_fixture(self.outside / "agents", {"openai.yaml": "policy:\n  allow_implicit_invocation: false\n"})
+        _link_directory(self.outside / "agents", self.root / ".agents/skills/demo/agents")
+        skill = self.root / ".agents/skills/demo/SKILL.md"
+        values: dict[str, audit.FrontmatterValue] = {"name": "demo", "disable-model-invocation": "true"}
+        found = [
+            (f.severity, f.check, f.path)
+            for f in audit._codex_skill_rules(skill, self.root, ".agents/skills/demo/SKILL.md", values)
+        ]
+        self.assertEqual(
+            [
+                ("ERROR", "codex-skill", ".agents/skills/demo/agents/openai.yaml"),
+                ("WARNING", "inventory", ".agents/skills/demo/agents"),
+            ],
+            found,
+        )
 
     def test_a_canonical_source_behind_a_link_out_is_an_error_so_the_audit_is_not_compliant(self) -> None:
         shutil.move(self.root / ".claude", self.outside / "claude")
