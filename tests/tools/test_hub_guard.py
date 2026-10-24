@@ -1204,6 +1204,11 @@ class CommandReadingTests(GuardTestCase):
             ("PowerShell", "Remove-Item $p", "unknown"),
             ("PowerShell", "Rename-Item env:FOO $n", "unknown"),
             ("PowerShell", "New-Item -Path env: -Name $n -Value x", "unknown"),
+            ("PowerShell", "New-Item $p -Value x", "unknown"),
+            ("PowerShell", "Remove-Item -LiteralPath $p", "unknown"),
+            ("PowerShell", "Rename-Item $p NEW", "unknown"),
+            # A cmdlet that neither writes, removes, nor renames a variable reaches none, whatever path it reads.
+            ("PowerShell", "Get-Content $p", "elsewhere"),
             ("Bash", 'printf x > "$d/out.txt"', "elsewhere"),
             ("PowerShell", 'Set-Content "$d\\out.txt" x', "elsewhere"),
             ("PowerShell", "New-Item -Path C:\\x -Name $n -ItemType Directory", "elsewhere"),

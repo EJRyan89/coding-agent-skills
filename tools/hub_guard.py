@@ -1893,11 +1893,11 @@ def may_name_tracked(word: Mapping[str, Any]) -> bool:
     """Whether a provider path or name the reader reports, and the text does not settle, may name a variable git reads.
 
     It may unless the part after its last separator is literal text naming none: `"$dir\\out.txt"` names the variable
-    out.txt wherever $dir points, and nothing else on the environment provider."""
+    out.txt wherever $dir points, and nothing else on the environment provider. Every expansion the reader reports
+    begins with $, so a last part that holds one holds a $."""
     text = str(word.get("text") or "")
     last = re.split(r"[\\/]", text)[-1]
-    tokens = [str(expansion.get("token")) for expansion in word.get("expansions") or []]
-    if not last or any(token in last for token in tokens) or re.search(r"[$`*?\[\]:]", last):
+    if not last or re.search(r"[$`*?\[\]:]", last):
         return True
     return is_tracked(last)
 
