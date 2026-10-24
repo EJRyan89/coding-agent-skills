@@ -140,9 +140,12 @@ class FakeClaude:
         self.entries = entries or {}
         self.plugins: list[plugin_build.Plugin] = []
         self.calls: list[tuple[list[str], dict[str, str]]] = []
+        # Where each command ran and the limit it was given.
+        self.places: list[tuple[Path, float]] = []
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         self.calls.append((arguments, environment))
+        self.places.append((cwd, timeout))
         command = arguments[1:3]
         if command == ["plugin", "list"]:
             installed = [
@@ -198,6 +201,44 @@ def test_the_plugins_are_built_validated_installed_and_listed_in_the_throwaway_c
     assert root.is_dir()
     # Every command reads and writes the throwaway configuration, never the user's.
     assert {environment["CLAUDE_CONFIG_DIR"] for _, environment in runner.calls} == {str(tmp_path / canary.CONFIG)}
+
+
+def test_every_plugin_command_the_canary_starts_is_one_its_builders_return(tmp_path: Path) -> None:
+    # tools/runtime_command_lines.py starts these builders' command lines weekly, so the canary may start no other.
+    plugins = canary.build(tmp_path, [REPOSITORY_ROOT, FIXTURE_SOURCE])
+    runner = FakeClaude(tmp_path)
+    runner.plugins = plugins
+    list(canary.install(session(tmp_path, runner), "claude", plugins))
+    expected = [canary.validate_command("claude", tmp_path / plugin.name) for plugin in plugins]
+    expected.append(canary.marketplace_command("claude", tmp_path))
+    for plugin in plugins:
+        identifier = f"{plugin.name}@{canary.MARKETPLACE}"
+        expected += [
+            canary.install_command("claude", identifier, canary.option_values(tmp_path, plugin)),
+            canary.list_command("claude"),
+            canary.details_command("claude", identifier),
+        ]
+    assert [arguments for arguments, _ in runner.calls] == expected
+    assert set(runner.places) == {(tmp_path, 30)}
+    configured = next(plugin for plugin in plugins if plugin.name == "coding-agent-skills")
+    assert canary.install_command("claude", "x@canary", canary.option_values(tmp_path, configured)) == [
+        "claude",
+        "plugin",
+        "install",
+        "x@canary",
+        "--config",
+        f"repos_root={tmp_path / canary.OPTIONS / 'repos_root'}",
+    ]
+    assert canary.validate_command("claude", tmp_path / "p") == [
+        "claude",
+        "plugin",
+        "validate",
+        "--strict",
+        str(tmp_path / "p"),
+    ]
+    assert canary.marketplace_command("claude", tmp_path) == ["claude", "plugin", "marketplace", "add", str(tmp_path)]
+    assert canary.list_command("claude") == ["claude", "plugin", "list", "--json"]
+    assert canary.details_command("claude", "x@canary") == ["claude", "plugin", "details", "x@canary"]
 
 
 def test_a_component_the_installed_plugin_does_not_list_is_undiscovered(tmp_path: Path) -> None:
