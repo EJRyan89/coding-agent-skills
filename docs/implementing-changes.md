@@ -52,10 +52,12 @@ which runs it anyway:
 3. For a changed Python file, ruff and mypy through the runner's jobs: `-k ruff`, the format and lint checks, which
    take seconds over the whole tree, and the type check of each root a changed file sits in, as in
    `python -B tests/run_validation.py -k ruff -k '*mypy*deployer*'` for a change under `deployer/`.
-4. Once the title and the body are written, the checks that read them, and only those:
+4. Once the title and the body are written, the checks that read them, and only those. Given without `-k`,
+   `--changed`, `--full`, or `--shard`, `--pr-title` and `--pr-body` limit the run to the title, upgrade-note, and
+   silent-revert checks, start no suite, and say so:
 
 ```powershell
-python -B tests/run_validation.py -k PullRequestTitlePolicies -k UpgradeNotesPolicies -k SilentRevertPolicies --pr-title '<title file>' --pr-body '<body file>'
+python -B tests/run_validation.py --pr-title '<title file>' --pr-body '<body file>'
 ```
 
 `--changed` is optional, never required: from the files changed since `origin/main`, committed, uncommitted, or

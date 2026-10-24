@@ -237,6 +237,82 @@ class SelectionOptions(unittest.TestCase):
                 self.assertIn(message, error.getvalue())
 
 
+class PullRequestOnlySelection(unittest.TestCase):
+    """--pr-title or --pr-body alone runs the checks that judge the pull request and no suite; with -k, --changed,
+    --full, or --shard the run selects as it would without them, as CI's legs, which always pass --shard, do."""
+
+    PULL_REQUEST_CHECKS = {"PullRequestTitlePolicies", "SilentRevertPolicies", "UpgradeNotesPolicies"}
+    LIMITED = "Pull request checks only: PullRequestTitlePolicies, SilentRevertPolicies, UpgradeNotesPolicies, since"
+    EVERY = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
+
+    def run_main(self, argv: list[str], **patches: Any) -> tuple[set[str], list[list[Job]], str]:
+        """The policy check classes main loaded, the jobs it gave the pool, and its output, with the tools held still,
+        every job one suite, and the named functions of this module replaced."""
+        loaded: list[unittest.TestSuite] = []
+        started: list[list[Job]] = []
+
+        def pool_runs(run: Any, jobs: list[Job], *_: object) -> tuple[unittest.TestResult, PoolResult]:
+            started.append(jobs)
+            return run(), PoolResult([], [])
+
+        def policies_run(policies: unittest.TestSuite, *_: object) -> unittest.TestResult:
+            loaded.append(policies)
+            return unittest.TestResult()
+
+        printed = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(run_validation, "tool_versions", return_value={}))
+            stack.enter_context(mock.patch.object(run_validation, "report_prerequisite_problems", return_value=False))
+            stack.enter_context(mock.patch.object(run_validation, "all_jobs", return_value=self.EVERY))
+            stack.enter_context(mock.patch.object(run_validation, "run_policies", side_effect=policies_run))
+            stack.enter_context(mock.patch.object(run_validation, "run_beside", side_effect=pool_runs))
+            for name, replacement in patches.items():
+                stack.enter_context(mock.patch.object(run_validation, name, replacement))
+            code = main(argv, out=printed, errors=io.StringIO(), environment={})
+        self.assertEqual(0, code)
+        return {type(check).__name__ for check in flatten(loaded[0])}, started, printed.getvalue()
+
+    def pull_request_files(self) -> list[list[str]]:
+        body, title = REPOSITORY_ROOT / "tests" / "run_validation.py", REPOSITORY_ROOT / "conftest.py"
+        return [
+            ["--pr-title", str(title)],
+            ["--pr-body", str(body)],
+            ["--pr-title", str(title), "--pr-body", str(body)],
+        ]
+
+    def test_a_title_or_a_body_alone_runs_only_the_pull_request_checks_and_says_so(self) -> None:
+        for files in self.pull_request_files():
+            with self.subTest(files=files[::2]):
+                checks, started, printed = self.run_main(files)
+                self.assertEqual(self.PULL_REQUEST_CHECKS, checks)
+                self.assertEqual([[]], started)
+                self.assertIn(self.LIMITED, printed)
+
+    def test_a_pattern_keeps_its_own_selection(self) -> None:
+        for files in self.pull_request_files():
+            with self.subTest(files=files[::2]):
+                checks, started, printed = self.run_main(["-k", "*", *files])
+                self.assertLess(self.PULL_REQUEST_CHECKS, checks)
+                self.assertEqual(1, len(started[0]))
+                self.assertNotIn("Pull request checks only", printed)
+
+    def test_changed_full_and_a_shard_keep_their_own_selection(self) -> None:
+        reached = [Job("tests/test_b.py", "tests/test_b.py", 1, print)]
+        for option, patches, jobs in (
+            (["--changed"], {"changed_jobs": mock.Mock(return_value=reached)}, reached),
+            (["--full"], {}, self.EVERY),
+            (["--shard", "1/1"], {"deal_to_leg": lambda policies, jobs, _: (policies, jobs, "Shard 1/1.")}, self.EVERY),
+        ):
+            for files in self.pull_request_files():
+                with self.subTest(option=option, files=files[::2]):
+                    checks, started, printed = self.run_main(
+                        [*option, *files], changed_paths=mock.Mock(return_value=["deployer/tools.py"]), **patches
+                    )
+                    self.assertLess(self.PULL_REQUEST_CHECKS, checks)
+                    self.assertEqual(jobs, started[0])
+                    self.assertNotIn("Pull request checks only", printed)
+
+
 class TerminationReport(unittest.TestCase):
     """main's report of a retried job and a terminated one, read through the stream and the environment main is
     given. This check runs beside the pool, which starts each job from os.environ and prints to sys.stdout, so it

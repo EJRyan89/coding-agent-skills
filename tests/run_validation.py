@@ -28,7 +28,9 @@ suites for a tool floor. A change it cannot determine runs everything.
 the notes merged into origin/main since the last tag; CI passes the body this way. Without it, the check reads the
 notes in the commit messages since that tag on HEAD, the branch's own included. --pr-title names a file holding the
 pull request's title, which the title check holds to the typed prefix; CI passes it the same way, and without it the
-check passes.
+check passes. Given with no -k, --changed, --full, or --shard, either one limits the run to the checks that judge the
+pull request, PULL_REQUEST_POLICIES, and starts no suite, so the local check of a title and a body is never a full
+run; CI always passes --shard, so its legs select as they would without them.
 
 --shard 2/4 runs the second of four legs, as CI's runners do: once -k or the documentation path has selected the
 policy checks and suite jobs, tests/validation/job_selection.py deals them across the legs the same way on every leg,
@@ -138,6 +140,18 @@ DOCUMENTATION_FILES = {
     "AGENTS.md",
     ".github/pull_request_template.md",
 }
+
+# The policy checks that judge the pull request, each policy module's own: the title, upgrade-note, and silent-revert
+# checks, which a run given only --pr-title or --pr-body limits itself to.
+PULL_REQUEST_POLICIES = tuple(
+    check
+    for module in POLICY_MODULES
+    for check in vars(module).values()
+    if isinstance(check, type)
+    and issubclass(check, PullRequestChecks)
+    and check is not PullRequestChecks
+    and check.__module__ == module.__name__
+)
 
 
 def is_documentation(path: str) -> bool:
@@ -280,6 +294,13 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
     return arguments
 
 
+def pull_request_only(arguments: argparse.Namespace) -> bool:
+    """Whether the run checks only the pull request: --pr-title or --pr-body was given, and nothing that selects the
+    run's jobs or its leg."""
+    given = arguments.pr_title is not None or arguments.pr_body is not None
+    return given and not (arguments.patterns or arguments.changed or arguments.full or arguments.shard)
+
+
 def select_jobs(arguments: argparse.Namespace, base: str) -> tuple[list[Job], str]:
     """The jobs a run without -k selects and the line that says why: every job with --full; with --changed the static
     checks and suites the change since base reaches; otherwise, when every changed file is documentation, the fence
@@ -388,8 +409,19 @@ def main(
     loader = PolicyLoader(PullRequest(arguments.pr_body, arguments.pr_title))
     if patterns:
         loader.testNamePatterns = patterns
-    policies = unittest.TestSuite(loader.loadTestsFromModule(module) for module in POLICY_MODULES)
-    if patterns:
+    limited = pull_request_only(arguments)
+    if limited:
+        policies = unittest.TestSuite(loader.loadTestsFromTestCase(check) for check in PULL_REQUEST_POLICIES)
+    else:
+        policies = unittest.TestSuite(loader.loadTestsFromModule(module) for module in POLICY_MODULES)
+    if limited:
+        jobs = []
+        mode = (
+            f"Pull request checks only: {', '.join(check.__name__ for check in PULL_REQUEST_POLICIES)}, since "
+            "--pr-title or --pr-body was given with no -k, --changed, --full, or --shard; no suite runs."
+        )
+        print(mode, file=out, flush=True)
+    elif patterns:
         jobs = [job for job in all_jobs() if any(fnmatch.fnmatchcase(job.name, pattern) for pattern in patterns)]
         mode = f"Selected by -k {' '.join(arguments.patterns)}."
     else:
