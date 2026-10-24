@@ -131,7 +131,7 @@ def read(path: Path, source_id: str, dropped: list[str] | None = None) -> dict[s
     try:
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise DeployError(f"ERROR: Config file is not valid UTF-8: {path}", remedy) from exc
+        raise DeployError(f"ERROR: Config file is not valid UTF-8: {platform_support.normalize(path)}", remedy) from exc
     try:
         return parse(text, source_id, dropped)
     except UnknownKey as exc:
@@ -171,7 +171,9 @@ def is_saved(path: Path) -> bool:
 
 def load(path: Path, source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
     if not is_saved(path):
-        raise DeployError(f"ERROR: No config found at {path}", f"Run '{CONFIGURE_COMMAND_LINE}' first.")
+        raise DeployError(
+            f"ERROR: No config found at {platform_support.normalize(path)}", f"Run '{CONFIGURE_COMMAND_LINE}' first."
+        )
     values = {**DEFAULTS, **read(path, source_id)}
     values.update(derived_values(home, source_dir))
     try:

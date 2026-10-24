@@ -11,6 +11,16 @@ CHECK_THE_PATH = "Check that the path exists and that you can read it, then retr
 CANCELLED = "Cancelled; nothing was changed."
 # Ctrl+C after a deployment began, which reconciles its journal before it exits.
 DEPLOYMENT_CANCELLED = "Cancelled after the deployment began; its changes are reconciled before exit."
+# What a recovery stopped by an unexpected error says, and what it says of each run whose journal remains.
+RECOVERY_STOPPED = "Recovery stopped before it finished; the next deployment retries it before deploying anything."
+RUN_COMMITTED = (
+    "Run {run_id} was committed to the manifest, so its changes are installed and the manifest holds them; "
+    "the next deployment finishes its cleanup."
+)
+RUN_NOT_COMMITTED = (
+    "Run {run_id} was not committed to the manifest, so the manifest does not hold its changes; "
+    "the next deployment rolls them back."
+)
 
 RECOVERY_GUIDE = "docs/recovery.md"
 # The section a refusal of a manifest, configuration, or journal the deployer cannot read points at.

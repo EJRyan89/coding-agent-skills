@@ -155,11 +155,25 @@ def test_options_in_version_order_with_a_name_that_is_no_version_hold() -> None:
     assert run(board, "--check") == (0, "IN_SYNC\n", "")
 
 
-def test_an_item_this_reader_cannot_see_is_left_alone() -> None:
+def test_an_item_this_reader_cannot_see_is_left_alone_and_named_so_no_run_claims_it() -> None:
     hidden = {"id": "HIDDEN", "content": None, "release": {"name": "v0.1.0"}}
-    board = FakeBoard([[hidden, node(1, "v0.2.0", "v0.2.0")]])
-    assert run(board) == (0, "SYNCED\nupdated 0, cleared 0\n", "")
+    pages = [[hidden, node(1, "v0.2.0", "v0.1.0")], [{"id": "SECRET", "content": None}]]
+    unseen = "- 2 items this token cannot read, so their Release is not checked: HIDDEN, SECRET\n"
+    board = FakeBoard(pages)
+    assert run(board, "--check") == (1, "DRIFTED\n- #1: Release is v0.1.0, milestone is v0.2.0\n" + unseen, "")
     assert board.mutations == []
+    board = FakeBoard(pages)
+    assert run(board) == (1, "DRIFTED\nupdated 1, cleared 0\n" + unseen, "")
+    assert changes(board) == {"ITEM_1": "OPT_v0.2.0"}
+    one = "DRIFTED\n- 1 item this token cannot read, so its Release is not checked: HIDDEN\n"
+    assert run(FakeBoard([[hidden]]), "--check") == (1, one, "")
+
+
+def test_the_docstring_gives_the_lines_in_the_order_printed() -> None:
+    doc = " ".join((project_release_sync.__doc__ or "").split())
+    assert "SYNCED (exit 0) once every item's Release matches its milestone, then one line saying how many" in doc
+    assert "DRIFTED (exit 1), then that line, then one line per problem left" in doc
+    assert run(FakeBoard([[node(1, "v0.2.0", "v0.2.0")]])) == (0, "SYNCED\nupdated 0, cleared 0\n", "")
 
 
 def test_changes_go_in_batches_with_their_values_as_variables() -> None:

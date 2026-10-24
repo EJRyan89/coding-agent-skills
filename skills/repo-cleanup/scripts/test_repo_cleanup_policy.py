@@ -234,7 +234,7 @@ class PolicyLinesTests(Fixture):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = rc.main(
-                ["sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans"), *extra],
+                ["sweep", "--repos-root", str(self.repos), *extra],
                 rc.Services(gh=self.github),
             )
         return code, output.getvalue().splitlines()
@@ -287,7 +287,7 @@ class PolicyLinesTests(Fixture):
         output = io.StringIO()
         with mock.patch.object(cleanup_policy, "POLICY_FILE", broken), contextlib.redirect_stdout(output):
             code = rc.main(
-                ["sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans")],
+                ["sweep", "--repos-root", str(self.repos)],
                 rc.Services(gh=self.github),
             )
         self.assertEqual(1, code)
@@ -314,7 +314,11 @@ class RecordedPolicyTests(CleanupTestCase):
                 rc.save_plan(plan, {**recorded, "policy": malformed})
                 with self.assertRaisesRegex(rc.CleanupError, "is not a repo-cleanup plan"):
                     rc.load_plan(plan)
-        self.assertEqual(cleanup_policy.configured(), rc.policy_of({}), "a plan an earlier version wrote")
+        without = {field: value for field, value in recorded.items() if field != "policy"}
+        rc.save_plan(plan, without)
+        with self.assertRaisesRegex(rc.CleanupError, "plan must be an object with field policy"):
+            rc.load_plan(plan)
+        self.assertEqual(cleanup_policy.configured(), rc.policy_of({"policy": {}}), "no configured additions")
         self.assertEqual(
             cleanup_policy.configured(".venv", "hotfix/"),
             rc.policy_of({"policy": {"regenerable": ".venv", "protected": "hotfix/"}}),

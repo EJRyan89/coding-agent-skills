@@ -6,7 +6,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, forward
 
-from deployer import config, platform_support
+from deployer import config, configure, platform_support
 
 
 class ConfigureTests(DeployerTestCase):
@@ -51,7 +51,7 @@ class ConfigureTests(DeployerTestCase):
         before = self.digest()
         result = self.configure("--reset", stdin="")
         self.assertEqual(130, result.code)
-        self.assertIn("Configuration cancelled; existing config was not changed.", result.output)
+        self.assertIn(configure.CANCELLED, result.output)
         self.assertEqual(before, self.digest())
 
     def test_an_input_that_ends_early_names_the_variable_it_needed(self) -> None:

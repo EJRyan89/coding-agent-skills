@@ -6,12 +6,14 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import subprocess
 import sys
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -70,7 +72,7 @@ def test_build_writes_the_tags_archive_and_pins_the_marketplace_to_its_release_a
 ) -> None:
     # The checkout moves on after the tag; the archive still holds what the tag holds.
     write(checkout, "skills/alpha/SKILL.md", "---\nname: alpha\ndescription: Changed.\n---\n\nLater.\n")
-    code, lines = run(["--root", str(checkout), "build", "v1.2.3", "--output", str(tmp_path / "assets")])
+    code, lines = run(["build", "v1.2.3", "--root", str(checkout), "--output", str(tmp_path / "assets")])
     assert code == 0, lines
     archive = (tmp_path / "assets").resolve() / "fixture-skills.zip"
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -88,7 +90,7 @@ def test_build_writes_the_tags_archive_and_pins_the_marketplace_to_its_release_a
             "source": {"source": "archive", "url": url, "sha256": digest},
         }
     ]
-    code, lines = run(["--root", str(checkout), "check"])
+    code, lines = run(["check", "--root", str(checkout)])
     assert (code, lines) == (0, ["PIN_MATCHES fixture-skills v1.2.3"])
 
 
@@ -100,7 +102,7 @@ def test_check_reports_a_pin_that_differs_from_the_rebuild_and_an_entry_with_no_
         {"name": "other", "source": "./other"},
     ]
     write(checkout, ".claude-plugin/marketplace.json", json.dumps(document))
-    code, lines = run(["--root", str(checkout), "check"])
+    code, lines = run(["check", "--root", str(checkout)])
     assert code == 1
     assert lines[0].startswith(f"PIN_DIFFERS fixture-skills v1.2.3 {'0' * 64} ")
     assert lines[1] == 'UNPINNED other "its source names no release asset with a sha256"'
@@ -117,7 +119,7 @@ def test_build_refuses_a_tag_that_is_no_release_the_checkout_holds(
     checkout: Path, tmp_path: Path, tag: str, reason: str
 ) -> None:
     before = marketplace(checkout)
-    code, lines = run(["--root", str(checkout), "build", tag, "--output", str(tmp_path / "assets")])
+    code, lines = run(["build", tag, "--root", str(checkout), "--output", str(tmp_path / "assets")])
     assert code == 1
     assert lines[0].startswith("FAILED ")
     assert reason in lines[0]
@@ -129,10 +131,55 @@ def test_build_refuses_an_entry_with_no_repository_before_writing_anything(check
     document = marketplace(checkout)
     del document["plugins"][0]["repository"]
     write(checkout, ".claude-plugin/marketplace.json", json.dumps(document))
-    code, lines = run(["--root", str(checkout), "build", "v1.2.3", "--output", str(tmp_path / "assets")])
+    code, lines = run(["build", "v1.2.3", "--root", str(checkout), "--output", str(tmp_path / "assets")])
     assert code == 1
     assert lines == ["FAILED marketplace entry fixture-skills names no https repository its release assets live under"]
     assert "sha256" not in json.dumps(marketplace(checkout))
+    assert not (tmp_path / "assets").exists()
+
+
+def test_build_refuses_an_entry_after_an_earlier_one_before_writing_anything(checkout: Path, tmp_path: Path) -> None:
+    # A release of two plugins, the second of whose entries names no repository.
+    write(
+        checkout,
+        "skills/solo/SKILL.md",
+        "---\nname: solo\ndescription: Does solo. Use it when asked.\n---\n\nBody.\n",
+    )
+    write(checkout, "deploy-meta/solo.json", json.dumps({"required_vars": [], "shared_deps": [], "opt_in": True}))
+    document = marketplace(checkout)
+    document["plugins"].append({"name": "fixture-skills-solo", "description": "Solo.", "source": "./solo"})
+    write(checkout, ".claude-plugin/marketplace.json", json.dumps(document))
+    git(checkout, "add", "-A")
+    git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "-q", "-m", "solo")
+    git(checkout, "tag", "v1.2.4")
+    before = (checkout / ".claude-plugin" / "marketplace.json").read_bytes()
+    code, lines = run(["build", "v1.2.4", "--root", str(checkout), "--output", str(tmp_path / "assets")])
+    assert code == 1
+    assert lines == [
+        "FAILED marketplace entry fixture-skills-solo names no https repository its release assets live under"
+    ]
+    assert (checkout / ".claude-plugin" / "marketplace.json").read_bytes() == before
+    assert not (tmp_path / "assets").exists()
+
+
+def test_check_of_a_marketplace_listing_no_plugin_fails_with_its_reason(checkout: Path) -> None:
+    write(checkout, ".claude-plugin/marketplace.json", json.dumps({"name": "fixture", "plugins": []}))
+    code, lines = run(["check", "--root", str(checkout)])
+    assert (code, lines) == (1, ["FAILED .claude-plugin/marketplace.json lists no plugin, so there is no pin to check"])
+
+
+def test_each_usage_form_in_the_docstring_parses(checkout: Path, tmp_path: Path) -> None:
+    forms = re.findall(r"^  python tools/plugin_release\.py (.+)$", plugin_release.__doc__ or "", re.MULTILINE)
+    assert [form.split(" ", 1)[0] for form in forms] == ["build", "check"]
+    values = {"--root": str(checkout), "--output": str(tmp_path / "assets")}
+    for form in forms:
+        words = [word.strip("[]") for word in form.split(" ")]
+        arguments = [
+            values[words[index - 1]] if word == "DIR" else "v1.2.3" if word == "vX.Y.Z" else word
+            for index, word in enumerate(words)
+        ]
+        code, lines = run(arguments)
+        assert code == 0, (form, lines)
 
 
 def test_the_asset_url_is_the_repositorys_release_download() -> None:
@@ -157,3 +204,45 @@ def test_the_release_procedure_builds_attaches_pins_and_checks_the_archives_afte
         "never the hub",
     ):
         assert phrase in step
+
+
+def test_each_command_works_on_this_checkout_unless_root_names_another(checkout: Path) -> None:
+    roots: list[Path] = []
+
+    def checked(root: Path) -> tuple[list[str], bool]:
+        roots.append(root)
+        return ["PIN_MATCHES fixture-skills v1.2.3"], True
+
+    def built(root: Path, tag: str, output: Path | None) -> list[str]:
+        roots.append(root)
+        return []
+
+    with (
+        mock.patch.object(plugin_release, "check", side_effect=checked),
+        mock.patch.object(plugin_release, "build", side_effect=built),
+    ):
+        assert run(["check"]) == (0, ["PIN_MATCHES fixture-skills v1.2.3"])
+        assert run(["build", "v1.2.3"])[0] == 0
+        assert run(["check", "--root", str(checkout)])[0] == 0
+    assert roots == [plugin_release.REPOSITORY_ROOT, plugin_release.REPOSITORY_ROOT, checkout]
+
+
+def test_the_help_names_each_command_and_option_with_what_it_does() -> None:
+    for arguments, expected in (
+        (
+            ["--help"],
+            [
+                " build build the tag's archives and pin them in the marketplace"
+                " check compare each pinned digest with a rebuild from its tag "
+            ],
+        ),
+        (["build", "--help"], ["--root DIR", "a directory holding source.json and .claude/skills", "the release tag"]),
+        (["check", "--help"], ["--root DIR", "work on this checkout of the repository instead"]),
+    ):
+        output = io.StringIO()
+        with redirect_stdout(output), pytest.raises(SystemExit) as raised:
+            plugin_release.main(arguments)
+        assert raised.value.code == 0
+        flat = f" {' '.join(output.getvalue().split())} "
+        for text in expected:
+            assert text in flat, (arguments, flat)

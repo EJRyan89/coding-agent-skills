@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import re
 import sys
 import tempfile
 import unittest
@@ -14,7 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import skill_roots
 
+from tools import checkout
 from tools.checkout import checkout_problem, checkout_root
+
+TOOLS = Path(__file__).resolve().parents[2] / "tools"
 
 
 def make_checkout(root: Path) -> Path:
@@ -78,3 +83,29 @@ class CheckoutTestCase(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(argparse.ArgumentTypeError, "lies in the skills directory"):
                     checkout_root(str(root))
+
+
+def root_types(module: Path) -> list[str]:
+    """The `type=` of each `--root` option the module declares, as written, or "" for one with none."""
+    found = []
+    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and any(isinstance(arg, ast.Constant) and arg.value == "--root" for arg in node.args)
+        ):
+            kind = next((keyword.value for keyword in node.keywords if keyword.arg == "type"), None)
+            found.append(ast.unparse(kind) if kind is not None else "")
+    return found
+
+
+def test_every_tool_that_takes_root_parses_it_with_checkout_root_and_the_module_names_it() -> None:
+    rooted = {module.name: root_types(module) for module in sorted(TOOLS.glob("*.py"))}
+    rooted = {name: types for name, types in rooted.items() if types}
+    assert {"new_skill.py", "plugin_release.py", "runtime_prompts.py", "skill_reference.py", "skill_shims.py"} <= set(
+        rooted
+    )
+    assert {name: types for name, types in rooted.items() if set(types) != {"checkout_root"}} == {}
+    named = set(re.findall(r"tools/(\w+\.py)", (checkout.__doc__ or "").split("\n\n", 1)[1]))
+    assert named == set(rooted)

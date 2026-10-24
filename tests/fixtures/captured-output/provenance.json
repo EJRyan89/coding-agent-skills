@@ -7,8 +7,18 @@
     },
     "changelogs/copilot-cli-changelog.md": {
       "versions": {"copilot-cli": "1.0.103"},
-      "captured": "2026-10-23",
-      "how": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md downloaded whole; this is its text from the 1.0.103 heading up to the 1.0.100 heading."
+      "captured": "2026-10-24",
+      "how": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md downloaded whole; this is its text from the 1.0.103 heading up to the 1.0.98 heading, which follows 1.0.100."
+    },
+    "changelogs/copilot-cli-release-without-entries.md": {
+      "versions": {"copilot-cli": "1.0.103"},
+      "captured": "2026-10-24",
+      "how": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md downloaded whole, its latest release being the version named; this is its text from the 1.0.54 heading, a release whose text holds no bullet, up to the 1.0.52 heading."
+    },
+    "changelogs/codex-release-without-entries.json": {
+      "versions": {"codex": "0.164.0"},
+      "captured": "2026-10-24",
+      "how": "https://api.github.com/repos/openai/codex/releases?per_page=100, read page by page, its latest stable release being the version named; kept are the releases rust-v0.149.1, whose body holds no bullet, and rust-v0.149.0, each with its tag_name, name, draft, prerelease, and published_at as returned, rust-v0.149.1's body whole and rust-v0.149.0's cut to its first heading and two bullets, each byte for byte."
     },
     "changelogs/codex-releases.json": {
       "versions": {"codex": "0.164.0"},
