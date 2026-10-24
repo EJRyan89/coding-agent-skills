@@ -147,6 +147,23 @@ class StateFileTests(DeployerTestCase):
                 self.assertTrue((kept / "SKILL.md").is_file())
         self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: Run {RUN_ID} cannot be recovered")
 
+    def test_a_dry_run_lists_a_pending_run_after_a_run_with_no_journal(self) -> None:
+        self.deploy_ok("--all")
+        # pending_runs visits the runs sorted by name, so the run with no journal is always visited first.
+        empty = "20260101-000000-aaa0"
+        self.staging_run(empty)
+        later = "20260101-000000-bad2"
+        self.assertLess(empty, later)
+        self.write(self.staging_run(later) / "journal.jsonl", journal_line(install_entry("alpha", ZERO_HASH)))
+        result = self.deploy_ok("--all", "--dry-run")
+        self.assert_lines(result.output, f"Pending recovery: the next deployment will recover run {later}.")
+        self.assertNotIn(empty, result.output)
+
+    def test_source_json_with_a_byte_order_mark_still_reads(self) -> None:
+        source_json = self.source / "source.json"
+        source_json.write_bytes(b"\xef\xbb\xbf" + source_json.read_bytes())
+        self.deploy_ok("--all", "--dry-run")
+
     def test_a_dry_run_lists_every_run_after_one_whose_journal_is_not_a_file(self) -> None:
         self.deploy_ok("--all")
         (self.staging_run(RUN_ID) / "journal.jsonl").mkdir()
