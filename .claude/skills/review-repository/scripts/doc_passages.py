@@ -24,6 +24,10 @@ line for the rest.
 It reads the diff through conditions.read_files, so a changed file whose path could name a file outside the snapshot
 gives no name, and gets a `REFUSED <path>: ...` line on stdout instead.
 
+A snapshot it cannot read its evidence from, one that is not a directory or, when the diff gives a name, holds none of
+the documents it searches, ends it with `FAILED MissingEvidence: <what is missing>`, so an absent snapshot never reads
+as a change no document names.
+
 Prints `PASSAGES <found> given=<n>`. Exit status 0 means it wrote passages, which opens the route; 1 that no document
 names what changed, which closes it; 2 a usage error or a last line FAILED <reason>, which fails the review.
 """
@@ -46,9 +50,11 @@ from conditions import (
     OUTPUT_VARIABLE,
     SCRIPT_SUFFIXES,
     FileDiff,
+    MissingEvidence,
     is_suite,
     read_files,
     refusal_line,
+    require_snapshot,
     run_condition,
     unset_variables_line,
 )
@@ -303,11 +309,15 @@ def _run() -> int:
     if unset:
         print(unset)
         return FAILURE_STATUS
+    require_snapshot(arguments.source_root)
     diff = Path(os.environ[DIFF_VARIABLE]).read_bytes().decode("utf-8", errors="replace")
     files, refused = read_files(diff, arguments.source_root)
     for path in refused:
         print(refusal_line(path))
-    found = passages(arguments.source_root, names_to_find(files))
+    names = names_to_find(files)
+    if names and not documents(arguments.source_root):
+        raise MissingEvidence("the snapshot holds none of the documents the route searches")
+    found = passages(arguments.source_root, names)
     print(f"PASSAGES {len(found)} given={min(len(found), MAX_PASSAGES)}")
     if not found:
         return 1

@@ -53,6 +53,17 @@ def unset_variables_line() -> str | None:
     return f"FAILED {' and '.join(missing)} not set; a review sets them for a condition" if missing else None
 
 
+class MissingEvidence(Exception):
+    """Evidence a condition reads that the snapshot does not hold. It fails the review, as run_condition reports any
+    failure, rather than closing the route, where "nothing found" would mean "nothing looked at"."""
+
+
+def require_snapshot(root: Path) -> None:
+    """Raise MissingEvidence unless the snapshot at `root` is a directory."""
+    if not root.is_dir():
+        raise MissingEvidence(f"the snapshot {json.dumps(root.as_posix())} is not a directory")
+
+
 def run_condition(run: Callable[[], int]) -> int:
     """A condition's exit status from its work, a failure printed as a FAILED line and ending with FAILURE_STATUS,
     since the exit status 1 run_main would give it closes the route rather than failing the review."""
