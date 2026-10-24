@@ -211,12 +211,14 @@ def _refuse_unpinning(context: Context, replaced_pin: str | None) -> None:
 
     The deployer runs from the checkout's HEAD, so this holds a pin whichever update-coding-agent-skills started the
     run, even one that runs `--all`, or `--all --at refs/tags/<tag>`, over a pin it could not read; another --at may
-    move only that skill's own pin at a release (source_ref.is_release_pin).
+    move only that skill's own pin at a release (source_ref.replaceable_release_pin, which refuses an unreadable one).
     """
     if replaced_pin is None or context.options.unpin or context.selection.deselect_all:
         return
     recorded = (context.manifest.source_ref(context.source_id), context.manifest.source_commit(context.source_id))
-    if context.pin is not None and source_ref.is_release_pin(context.paths.source_dir, *recorded):
+    if context.pin is not None and source_ref.replaceable_release_pin(
+        context.paths.source_dir, replaced_pin, *recorded
+    ):
         return
     # A run at any other commit, with --at or without, is refused here alike, so the pin is kept by changing nothing.
     move, rerun = (
