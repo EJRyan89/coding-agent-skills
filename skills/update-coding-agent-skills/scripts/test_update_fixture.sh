@@ -9,6 +9,10 @@ set -Eeuo pipefail
 # only its status. So the suite runs its body in a child bash that traces every command it runs to a file, and when the
 # body ends without its EXIT trap, this outer run names the exit and the last commands the body ran. A child run of the
 # suite that sets UPDATE_TEST_BODY empty runs its body directly, untraced.
+#
+# The status this run reads for the body is not evidence on Windows: Git Bash reads a child bash that Windows ended, as
+# it ends one with 0x80000004 on a CI runner, as exit 0. So the body's EXIT trap records its own status in the ended file, this run
+# exits with that, and a body that recorded none fails the suite whatever status it was read as.
 if [ -z "${UPDATE_TEST_BODY+set}" ]; then
   TRACE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/update-skills-trace.XXXXXX") || {
     printf 'FAIL: the suite could not make its trace folder\n' >&2
@@ -16,9 +20,12 @@ if [ -z "${UPDATE_TEST_BODY+set}" ]; then
   }
   status=0
   UPDATE_TEST_BODY=$TRACE_DIR bash "$0" "$@" || status=$?
-  if [ ! -e "$TRACE_DIR/ended" ]; then
+  if [ -s "$TRACE_DIR/ended" ]; then
+    status=$(<"$TRACE_DIR/ended")
+  else
     printf 'FAIL: the suite exited %s without its EXIT trap; the last commands it ran:\n' "$status" >&2
     tail -n 20 "$TRACE_DIR/trace" >&2 || true
+    [ "$status" -ne 0 ] || status=1
   fi
   rm -rf -- "$TRACE_DIR"
   exit "$status"
@@ -45,7 +52,7 @@ trap 'FAILED_COMMAND="${BASH_SOURCE[0]##*/} line $LINENO: $BASH_COMMAND"' ERR
 end_suite() {
   local status=$?
   if [ -n "${UPDATE_TEST_BODY:-}" ]; then
-    : >"$UPDATE_TEST_BODY/ended"
+    printf '%s\n' "$status" >"$UPDATE_TEST_BODY/ended"
   fi
   if [ "$status" -ne 0 ] && [ -z "$REPORTED" ]; then
     printf 'FAIL: the suite exited %s in case %s; the last command that failed: %s\n' "$status" "$CASE" \
@@ -411,6 +418,23 @@ grep -q -x -E "\+ test_update_fixture\.sh line [0-9]+: mkdir -p '?[^ ].*/no-hook
 ! grep -q "^END " "$FIXTURE/child.err" || fail "end without the EXIT trap: an END line: $(<"$FIXTURE/child.err")"
 [ -z "$(find "$CHILD_TMP" -maxdepth 1 -name 'update-skills-trace.*')" ] ||
   fail "end without the EXIT trap: the trace folder left behind: $(ls -A "$CHILD_TMP")"
+
+# Git Bash reads a body that Windows ended as exit 0, so a body that recorded no exit fails the suite whatever status it
+# was read as. The wrapper ends the body through Windows with the status a CI runner ended one with, 0x80000004.
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    begin_case 'ended by Windows'
+    run_setup_child mkdir '*"/no-hooks "*' 'python -c "import ctypes, sys
+k = ctypes.windll.kernel32
+k.OpenProcess.restype = ctypes.c_void_p
+k.TerminateProcess(ctypes.c_void_p(k.OpenProcess(1, False, int(sys.argv[1]))), ctypes.c_uint(0x80000004))" \
+  "$(<"/proc/$PPID/winpid")"; exit 0' traced
+    [ "$status" -ne 0 ] || fail "ended by Windows: the suite passed: $(<"$FIXTURE/child.err")"
+    grep -q -x -E "FAIL: the suite exited [0-9]+ without its EXIT trap; the last commands it ran:" "$FIXTURE/child.err" ||
+      fail "ended by Windows: the exit not named: $(<"$FIXTURE/child.err")"
+    ! grep -q "^END " "$FIXTURE/child.err" || fail "ended by Windows: an END line: $(<"$FIXTURE/child.err")"
+    ;;
+esac
 
 # The suite's isolation unsets a git variable named in any case, and keeps the two that locate git itself.
 begin_case 'isolation'
