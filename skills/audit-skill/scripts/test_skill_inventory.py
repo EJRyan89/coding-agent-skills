@@ -1582,7 +1582,7 @@ class StatusLineTests(TemporaryTestCase):
         skill_md = (folder / "SKILL.md").as_posix()
         self.assertEqual(
             [
-                f"SCRIPT_MISSING {skill_md} 7 ${{CLAUDE_SKILL_DIR}}/scripts/missing_tool.py",
+                f"SCRIPT_MISSING {skill_md} 7 {skill_inventory.SKILL_DIR_PREFIX}scripts/missing_tool.py",
                 f"SCRIPT_MISSING {skill_md} 10 tools/gone.py",
             ],
             [line for line in lines if line.startswith("SCRIPT_MISSING ")],
