@@ -32,6 +32,7 @@ from workflows import (
     linux_job_problems,
     linux_verify_log_problems,
     mutation_job_problems,
+    mypy_cache_problems,
     pinned_tool_problems,
     read_workflow,
     required_check_problems,
@@ -285,6 +286,57 @@ def test_a_leg_misnamed_or_off_its_own_shard_fails(drifted: str, problem: str) -
 )
 def test_a_tool_cache_off_its_workflow_pin_fails(drifted: str, problem: str) -> None:
     problems = tool_cache_problems(drifted, CACHES)
+    assert any(problem in found for found in problems), problems
+
+
+MYPY_SETUP = "jobs:\n  suite:\n    steps:\n      - id: python\n        uses: actions/setup-python@SHA # v1\n"
+MYPY_RESTORE = (
+    "      - uses: actions/cache@SHA # v1\n        with:\n"
+    "          path: ${{ runner.temp }}/mypy-cache\n"
+    "          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-"
+    "${{ hashFiles('requirements-dev.txt') }}\n"
+)
+MYPY_VALIDATE = (
+    "      - name: Validate\n        env:\n          SHARD: ${{ matrix.shard }}\n"
+    "          VALIDATION_MYPY_CACHE: ${{ runner.temp }}/mypy-cache\n"
+    "        run: python tests/run_validation.py --shard $env:SHARD\n"
+)
+MYPY_CACHE = MYPY_SETUP + MYPY_RESTORE + MYPY_VALIDATE
+
+
+def test_mypy_cache_restored_before_validation_and_named_to_it_passes() -> None:
+    assert mypy_cache_problems(MYPY_CACHE, "suite") == []
+    # The tool caches' policy leaves mypy's cache, which no pin keys, to this one.
+    assert tool_cache_problems(LEGS.replace("tool-${{ env", "mypy-${{ env"), {}) == []
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        pytest.param(MYPY_CACHE.replace("-${{ strategy.job-index }}", ""), "restores mypy's cache as", id="no leg"),
+        pytest.param(
+            MYPY_CACHE.replace("${{ hashFiles('requirements-dev.txt') }}", "1"), "restores mypy's cache as", id="no pin"
+        ),
+        pytest.param(
+            MYPY_CACHE.replace("path: ${{ runner.temp }}/mypy-cache", "path: .mypy_cache"),
+            "restores mypy's cache as",
+            id="another folder",
+        ),
+        pytest.param(
+            MYPY_CACHE.replace("      - id: python\n", "      - id: setup\n"), "is not the step `python`", id="no id"
+        ),
+        pytest.param(
+            MYPY_CACHE.replace("          VALIDATION_MYPY_CACHE: ${{ runner.temp }}/mypy-cache\n", ""),
+            "does not name",
+            id="not named to validation",
+        ),
+        pytest.param(
+            MYPY_SETUP + MYPY_VALIDATE + MYPY_RESTORE, "after validation runs", id="restored after validation"
+        ),
+    ],
+)
+def test_a_mypy_cache_off_its_key_folder_or_order_fails(drifted: str, problem: str) -> None:
+    problems = mypy_cache_problems(drifted, "suite")
     assert any(problem in found for found in problems), problems
 
 

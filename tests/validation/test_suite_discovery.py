@@ -23,7 +23,6 @@ from job_selection import name_patterns
 from suite_discovery import (
     MAXIMUM_SHARDS,
     PYTEST_CONFIGURATION,
-    TESTS_PER_SHARD,
     assertion_holder_problems,
     defined_tests,
     git_isolation_problems,
@@ -250,12 +249,16 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
     def test_large_python_suites_are_sharded_and_others_run_whole(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for name, tests in (("test_small.py", 3), ("test_large.py", 40), ("test_huge.py", 200)):
+            suites = (("test_small.py", 3), ("test_whole.py", 15), ("test_split.py", 16), ("test_large.py", 40))
+            for name, tests in (*suites, ("test_huge.py", 200)):
                 body = "".join(f"    def test_{number}(self): pass\n" for number in range(tests))
                 (root / name).write_text(f"import unittest\nclass T(unittest.TestCase):\n{body}", encoding="utf-8")
             (root / "test_script.ps1").write_text("exit 0\n", encoding="utf-8")
             self.assertEqual(1, shard_count(root / "test_small.py"))
-            self.assertEqual(40 // TESTS_PER_SHARD, shard_count(root / "test_large.py"))
+            # A shard carries eight tests, so a suite of fewer than sixteen runs in one process.
+            self.assertEqual(1, shard_count(root / "test_whole.py"))
+            self.assertEqual(2, shard_count(root / "test_split.py"))
+            self.assertEqual(5, shard_count(root / "test_large.py"))
             self.assertEqual(MAXIMUM_SHARDS, shard_count(root / "test_huge.py"))
             self.assertEqual(1, shard_count(root / "test_script.ps1"))
             self.assertEqual(["*deployer*", "test_*.py"], name_patterns(["deployer", "test_*.py"]))
@@ -309,8 +312,8 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
             suite = Path(temporary) / "test_costly.py"
             body = "".join(f"    def test_{number}(self): pass\n" for number in range(17))
             suite.write_text(f"import unittest\nclass T(unittest.TestCase):\n{body}", encoding="utf-8")
-            self.assertEqual(17 // TESTS_PER_SHARD, shard_count(suite, {}))
-            self.assertEqual((17 + 12) // TESTS_PER_SHARD, shard_count(suite, {"T::test_4": 13}))
+            self.assertEqual(2, shard_count(suite, {}))
+            self.assertEqual(3, shard_count(suite, {"T::test_4": 13}))
             jobs = suite_jobs([suite], {"test_costly.py": {"T::test_4": 13}}, root=Path(temporary))
             self.assertEqual(shard_count(suite, {"T::test_4": 13}), len(jobs))
             self.assertEqual({(17 + 12) / len(jobs)}, {job.weight for job in jobs})
