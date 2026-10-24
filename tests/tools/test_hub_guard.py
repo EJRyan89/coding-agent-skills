@@ -1938,6 +1938,20 @@ class ContractTests(GuardTestCase):
         self.assertIsNone(self.bash("echo 'unterminated", self.tree))
 
 
+class EnvOptionTests(unittest.TestCase):
+    def test_the_first_unread_option_is_found_past_each_value_given_as_the_next_word(self) -> None:
+        for arguments, expected in (
+            (["-u", "NAME"], "?"),
+            (["-C", "dir"], "?"),
+            (["-u", "NAME", "-q"], "-q"),
+            (["-C", "dir", "-q", "git"], "-q"),
+            (["-uNAME", "-q"], "-q"),
+            (["-x"], "-x"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(expected, hub_guard.first_unread_env_option(list(arguments)))
+
+
 class ContractListTests(unittest.TestCase):
     """Each list of names the guard's section of docs/parallel-sessions.md gives is the set tools/hub_guard.py reads."""
 
