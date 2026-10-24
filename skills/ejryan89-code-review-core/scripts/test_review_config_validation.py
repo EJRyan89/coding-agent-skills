@@ -420,7 +420,7 @@ SUFFIX_MESSAGE = (
 )
 PATTERN_MESSAGE = (
     f"config.{FIELD}.snapshot_exclude[0] must be a repository-relative glob pattern without a backslash, a control "
-    "character, or an empty, '.', or '..' segment, found "
+    "character, a line separator, or an empty, '.', or '..' segment, found "
 )
 
 
@@ -1190,6 +1190,8 @@ REJECTED: list[Case] = [
             ("with a current segment", "./*.resx", 'string "./*.resx"'),
             ("with a control character", "src/*.resx\n", 'string "src/*.resx\\n"'),
             ("with a delete character", "src/\x7f.resx", 'string "src/\\u007f.resx"'),
+            ("with a C1 control character", "src/\x9b.resx", 'string "src/\\u009b.resx"'),
+            ("with a line separator", "src/\u2028.resx", 'string "src/\\u2028.resx"'),
         ]
     ],
     *[

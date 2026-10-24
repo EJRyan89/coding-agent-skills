@@ -346,6 +346,13 @@ class ExtractionTests(unittest.TestCase):
 
         self.assertEqual(lines(content), ["[P1 R1] | one / two |", "[P2] a b c d", "[P3] box"])
 
+    def test_no_control_character_reaches_a_line_of_a_word_document(self) -> None:
+        # DEL and the C1 controls, CSI among them, which a terminal reads as the start of an escape: XML 1.0 allows
+        # them in text, as it allows no C0 control but tab and the line breaks.
+        content = word_document(paragraph("a\x7fb\x80c\x9bd\x9fe\x85f"))
+
+        self.assertEqual(lines(content), ["[P1] a b c d e f"])
+
     def test_runs_of_whitespace_fold_to_one_space_and_empty_tracked_changes_leave_none_behind(self) -> None:
         spaced = "  one \t two\u00a0\u00a0three\u2028four  "
         blank_insertion = '<w:ins w:id="1" w:author="a"><w:r><w:t xml:space="preserve"> </w:t></w:r></w:ins>'
@@ -655,6 +662,11 @@ class PdfExtractionTests(unittest.TestCase):
         # The temporary directory as tempfile names it, which may be an 8.3 short form that resolving would expand.
         self.assertEqual(Path(tempfile.gettempdir()), document.parent.parent, document)
         self.assertFalse(document.parent.exists(), "the throwaway folder is removed")
+
+    def test_no_control_character_reaches_a_line_of_a_pdf(self) -> None:
+        StubPdftotext(self, output="Keep\x1bone\x9b[2Jqueue\x7f\x80\x9f.\n\f")
+
+        self.assertEqual(b"[p1 l1] Keep one [2Jqueue .\n", extract("pdf", PDF))
 
     def test_xpdf_and_poppler_give_a_paragraphs_lines_the_same_labels(self) -> None:
         apart = "Scope\nKeep one queue.\nRetry twice.\n\fSecond page\n\f"

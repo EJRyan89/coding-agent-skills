@@ -79,8 +79,6 @@ HEADING_MARKER = re.compile(r"#{1,6} ")
 HASH_FIRST = re.compile(r"\\*#")
 XML_ENCODING = re.compile(r"""<\?xml[^>]*?\bencoding\s*=\s*["']([^"']*)["']""")
 DECLARATION = re.compile(rb"<!(?:doctype|entity)", re.IGNORECASE)
-# Every C0 control, DEL, and the characters Python's `splitlines` also breaks on: none may split or reshape a line.
-LINE_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 EXTRACTED_NOTES = {
     "docx": (
         "extracted: the text of this Word document, one line per paragraph or table row, each starting with its "
@@ -176,7 +174,7 @@ def extract_pdf(content: bytes) -> list[tuple[str, str]]:
     for page, body in enumerate(text.split("\f"), 1):
         number = 0
         for raw in body.split("\n"):
-            line = _line(raw)
+            line = flat_text(raw)
             if line:
                 number += 1
                 lines.append((f"p{page} l{number}", line))
@@ -520,14 +518,9 @@ class _Body:
             self.block.add(data)
 
 
-def _line(text: str) -> str:
-    """One line: no character that breaks or reshapes it, and no run of spaces."""
-    return flat_text(LINE_UNSAFE.sub(" ", text))
-
-
 def _flat(text: str) -> str:
-    """One line of a Word document: as `_line` makes it, with no empty tracked-change marker."""
-    text = _line(text)
+    """One line of a Word document: as `flat_text` makes it, with no empty tracked-change marker."""
+    text = flat_text(text)
     previous = None
     while previous != text:
         previous = text
