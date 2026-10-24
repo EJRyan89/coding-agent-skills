@@ -89,8 +89,8 @@
         "passage": "Codex supports command and mcp_tool handlers and parses prompt and agent handlers but skips them; an mcp_tool handler requires server and tool, its timeout defaults to 600 seconds, and a background hook, with async set, can't block, approve, rewrite, or otherwise control the operation that triggered it, so tool policies, permission decisions, prompt rejection, and turn continuation use synchronous hooks."
       },
       {
-        "page": "https://github.com/openai/codex/releases/tag/rust-v0.164.0",
-        "passage": "Codex 0.164.0 adds observation-only model request lifecycle hooks, PreModelRequest and PostModelRequest (openai/codex#55144)."
+        "page": "https://github.com/openai/codex/releases",
+        "passage": "Codex's release 0.164.0 adds observation-only model request lifecycle hooks, PreModelRequest and PostModelRequest (openai/codex#55144)."
       }
     ],
     "codex-rule": [
