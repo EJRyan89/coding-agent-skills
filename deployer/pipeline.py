@@ -211,24 +211,15 @@ def _refuse_unpinning(context: Context, replaced_pin: str | None) -> None:
 
     The deployer runs from the checkout's HEAD, so this holds a pin whichever update-coding-agent-skills started the
     run, even one that runs `--all`, or `--all --at refs/tags/<tag>`, over a pin it could not read; another --at may
-    move only that skill's own pin at a release (source_ref.is_release_pin). A pin whose release tags Git cannot read is
-    refused with Git's reason, never taken for the user's, so the refusal names the fault rather than advise --unpin.
+    move only that skill's own pin at a release (source_ref.replaceable_release_pin, which refuses an unreadable one).
     """
     if replaced_pin is None or context.options.unpin or context.selection.deselect_all:
         return
     recorded = (context.manifest.source_ref(context.source_id), context.manifest.source_commit(context.source_id))
-    if context.pin is not None:
-        try:
-            own = source_ref.is_release_pin(context.paths.source_dir, *recorded)
-        except source_ref.TagsUnreadable as error:
-            raise DeployError(
-                f"ERROR: Refusing to replace {replaced_pin}: Git could not read the release tags reaching it, so "
-                f"whether it is update-coding-agent-skills' own pin is unknown: {error}",
-                "Put right what Git reports in the checkout, then retry; nothing was replaced.",
-                see_recovery(source_ref.EARLIER_COMMIT),
-            ) from error
-        if own:
-            return
+    if context.pin is not None and source_ref.replaceable_release_pin(
+        context.paths.source_dir, replaced_pin, *recorded
+    ):
+        return
     # A run at any other commit, with --at or without, is refused here alike, so the pin is kept by changing nothing.
     move, rerun = (
         ("this checkout's HEAD", f"{PROG} --all --unpin")

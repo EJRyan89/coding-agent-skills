@@ -76,11 +76,13 @@ class Stubs:
 
 
 def run_with_deadline(stub: str, seconds: float) -> Any:
-    """run_tool, giving the stub `seconds` and every other tool the deployer's own deadline."""
+    """run_tool, giving the stub `seconds` and every other tool the deadline its caller gives."""
     real = platform_support.run_tool
 
-    def run(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
-        return real(arguments, environment, timeout=seconds if arguments[0] == stub else None)
+    def run(
+        arguments: list[str], environment: dict[str, str] | None = None, *, timeout: float | None = None
+    ) -> platform_support.ToolResult:
+        return real(arguments, environment, timeout=seconds if arguments[0] == stub else timeout)
 
     return mock.patch.object(platform_support, "run_tool", side_effect=run)
 

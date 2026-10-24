@@ -113,6 +113,21 @@ def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> boo
     return release is not None and ref == f"{TAGS}{release}"
 
 
+def replaceable_release_pin(source_dir: Path, replaced: str, ref: str | None, commit: str | None) -> bool:
+    """is_release_pin for a run that would replace the pin `replaced` describes. A pin whose release tags Git cannot
+    read is refused with Git's reason, never taken for the user's, so the refusal names the fault rather than advise
+    --unpin over a pin the user may never have made."""
+    try:
+        return is_release_pin(source_dir, ref, commit)
+    except TagsUnreadable as error:
+        raise DeployError(
+            f"ERROR: Refusing to replace {replaced}: Git could not read the release tags reaching it, so whether it is "
+            f"update-coding-agent-skills' own pin is unknown: {error}",
+            "Put right what Git reports in the checkout, then retry; nothing was replaced.",
+            see_recovery(EARLIER_COMMIT),
+        ) from error
+
+
 def recorded_ref(source_dir: Path, pin: Pin | None, ref: str | None, commit: str | None, *, unpin: bool) -> str | None:
     """The ref the manifest records a deployment pinned with, given the pin it records now: --at's, or None without.
 
