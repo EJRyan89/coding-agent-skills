@@ -40,8 +40,8 @@ The kind is a pull request title type, which the title check then holds the bran
 
 | Column | Meaning |
 |---|---|
-| state | `hub`, `in progress`, `no commits`, `missing`, or `unreadable` when git cannot read the checkout |
-| ahead/behind | Relative to `main`. |
+| state | `hub`, `in progress`, `no commits`, `missing`, `unreadable` when git cannot read the checkout, or `unknown` when git cannot count its commits against `main` |
+| ahead/behind | Relative to `main`; `?` when git cannot count them. |
 | dirty | Number of paths with uncommitted changes, untracked files included and a rename counted once. |
 
 The survey reads each checkout as `repo-cleanup` does, through ejryan89-skill-core's `git_worktrees`, and never writes a
@@ -185,7 +185,7 @@ not, and with an opt-in git cannot read, and holds that it exits 0 with no outpu
 
 With the guard enabled:
 
-- **File tools.** `Edit`, `Write`, `MultiEdit`, or `NotebookEdit` is refused when its target lies in the hub's
+- **File tools.** `Edit`, `Write`, or `NotebookEdit` is refused when its target lies in the hub's
   tracked files or anywhere in its git directory, `.git`, which holds the hub's `HEAD`, index, and configuration
   beside what every worktree shares. This applies whichever session asks, so a worktree session that writes to a hub
   path by absolute path is also stopped. Gitignored files, such as `.claude/settings.local.json`, are exempt.
@@ -320,9 +320,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   `export "$v"=x` or `unset "$v"`; a path whose last part is literal text, as in `"$dir\out.txt"`, can name only the
   variable that part names, so it is passed over when git does not read that one. A command after the programs
   `env`, `nohup`, `nice`, `timeout`, `stdbuf`, and `time` is read as in Bash, as the command it starts. A location
-  set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed string is read
-  as part of the same session. A command that does not parse is allowed: PowerShell parses a whole script before it
-  runs any of it, so none of it runs.
+  set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed
+  string is read as part of the same session. A command that does not parse is allowed: PowerShell parses a whole
+  script before it runs any of it, so none of it runs.
 - **Paths that do not all run.** A command that runs only when another succeeds or fails, only in some branch, or
   any number of times in a loop or script block, is read as running, and afterwards the guard keeps only what every
   path agrees on: a directory or variable one path changes is unknown after it. A directory change whose target is
@@ -363,8 +363,10 @@ The refusal names what it could not settle and asks for the directory to be writ
 itself, once it has found a guarded hub in view, is refused the same way when the command names git, since a failure
 says nothing about where the call acts; a defect before that, such as an event it cannot decode, an event that names
 no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
-stderr, so that it cannot block every tool and is never passed unseen. The hook command reads the project's own opt-in
-before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
+stderr, so that it cannot block every tool and is never passed unseen. A directory below a checkout, which a `.git`
+in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
+a place outside every repository, and the other hubs in view still count. The hook command reads the project's own
+opt-in before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
 
 #### What it does not see
 
@@ -387,9 +389,10 @@ links for this repository, and nothing else. A rule about what a developer must 
 user settings or `settings.local.json`. `tests/run_validation.py` fails if any other top-level key appears, if
 `$schema` names another schema, if `attribution` is anything but `{"commit": "", "pr": "", "sessionUrl": false}`, or
 if a `settings.local.json` is ever committed. It also fails when the guard's hook stops matching any tool that can
-edit a file or run git (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, `PowerShell`, and `Monitor`, whose
+edit a file or run git (`Edit`, `Write`, `NotebookEdit`, `Bash`, `PowerShell`, and `Monitor`, whose
 command runs in the shell the `Bash` tool uses and which the guard reads as Bash). A tool missing from the matcher is
-never shown to the guard, so the hub would be open through it.
+never shown to the guard, so the hub would be open through it. It fails too when the matcher names anything else,
+such as a tool Claude Code no longer has.
 
 ## Session context in a worktree
 

@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
+from git_client import GitError
 from job_tree import process_tree
 
 from deployer import platform_support
@@ -41,7 +42,7 @@ from tools import bash_syntax
 from tools.worktrees import MAIN, checkout_of, git, same_path
 
 GUARD_SETTING = "coding-agent-skills.hubGuard"
-FILE_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
+FILE_TOOLS = {"Edit", "NotebookEdit", "Write"}
 # Git subcommands that can move HEAD or the branch it names, or write the index or the tracked files of the
 # checkout they run in, whichever subcommand or option makes them do it: the plumbing and porcelain that do, the
 # interactive tools that can (difftool and mergetool, gui, citool), and the importers that commit and check
@@ -286,14 +287,18 @@ def hub_protected(path: Path) -> bool:
 
 def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
     """The guarded hubs a session can reach: the hub of its own directory's checkout, a worktree's included, and of
-    its project's."""
+    its project's. A directory whose checkout git cannot read is noted and passed over, so the others still count."""
     directories = [cwd]
     project = environment.get("CLAUDE_PROJECT_DIR")
     if project:
         directories.append(Path(platform_support.from_shell_path(project)))
     found: set[Path] = set()
     for directory in directories:
-        checkout = checkout_of(directory)
+        try:
+            checkout = checkout_of(directory)
+        except GitError as exc:
+            print(f"hub guard could not look up the hub of {directory}: {exc}", file=sys.stderr)
+            continue
         if checkout is not None and guard_enabled(checkout.hub):
             found.add(checkout.hub)
     return found
@@ -1590,8 +1595,13 @@ def may_refuse(command: str, cwd: Path | None, reading: Reading) -> bool:
         return False
     if mentions(MENTIONS_WRITING_SUBCOMMAND, command) or COMPUTED_AFTER_GIT.search(command) or "alias." in command:
         return True
-    if cwd is None or checkout_of(cwd) is None:
+    if cwd is None:
         return True
+    try:
+        if checkout_of(cwd) is None:
+            return True
+    except GitError:
+        return True  # A checkout git cannot read lists no aliases either.
     return mentions_alias(command, [cwd, *sorted(reading.context_hubs)])
 
 
