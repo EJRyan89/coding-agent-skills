@@ -1159,7 +1159,7 @@ class BashReader:
             script = bash_script(arguments, redirects, shell)
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read_bash)
         elif program in POWERSHELL_NAMES:
-            script = powershell_script(arguments)
+            script = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read_powershell)
         elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
             command = started_command(program, arguments, shell.cwd, variables, self.reading)
@@ -1487,6 +1487,60 @@ def powershell_script(arguments: list[Word]) -> list[Word] | None:
     return None
 
 
+def powershell_reads_input(arguments: list[Word]) -> bool:
+    """Whether pwsh runs a script it reads from its standard input, which the text does not hold: -Command - or
+    -File -, or none of an inline command, a script file, or an encoded command. A word the text does not settle
+    before that is decided may be any of them, so it counts too.
+
+    The parameters are spelled as in powershell_takes_value."""
+    encoded = (("encodedcommand", "e"), ("ec", "ec"))
+    file = (("file", "f"),)
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        following = arguments[index + 1] if index + 1 < len(arguments) else None
+        if word is None:
+            return True
+        if POWERSHELL_COMMAND_WITH_ARGUMENTS_SWITCH.fullmatch(word) or powershell_parameter(word, encoded):
+            return False
+        if POWERSHELL_COMMAND_SWITCH.fullmatch(word) or powershell_parameter(word, file):
+            return following == "-"
+        if not word.startswith("-"):
+            return False  # a script file, named without -File
+        index += 2 if powershell_takes_value(word) else 1
+    return True
+
+
+def powershell_takes_value(word: str) -> bool:
+    """Whether a pwsh parameter takes the next word as its value.
+
+    Each is given by its name and the shortest prefix of it pwsh accepts, and each alias by itself. The table sits in
+    the function, not the module, so that it runs in the tests that call the function rather than at import."""
+    takes_value = (
+        ("configurationfile", "configurationfile"),
+        ("configurationname", "config"),
+        ("custompipename", "custompipename"),
+        ("executionpolicy", "ex"),
+        ("ep", "ep"),
+        ("inputformat", "inp"),
+        ("if", "if"),
+        ("outputformat", "o"),
+        ("of", "of"),
+        ("settingsfile", "settings"),
+        ("windowstyle", "w"),
+        ("workingdirectory", "wo"),
+        ("wd", "wd"),
+    )
+    return powershell_parameter(word, takes_value)
+
+
+def powershell_parameter(word: str, forms: Iterable[tuple[str, str]]) -> bool:
+    """Whether a word names one of these pwsh parameters, in any case: a prefix of a name at least as long as its
+    shortest form."""
+    name = word[1:].lower()
+    return word.startswith("-") and any(full.startswith(name) and name.startswith(short) for full, short in forms)
+
+
 def follow(
     name: str,
     script: list[Word] | None,
@@ -1782,6 +1836,11 @@ class PowerShellReader:
             return self.location(name, arguments, parameters, session)
         if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS:
             self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
+        elif name in POWERSHELL_NAMES:
+            # The reader follows a pwsh the session starts with an inline script; one it reads from its standard
+            # input, the text does not hold.
+            if powershell_reads_input(arguments):
+                self.reading.cannot_read(f"could not read the command passed to {name}")
         else:
             self.environment_change(name, parameters, session, reported)
         return session
@@ -1797,7 +1856,8 @@ class PowerShellReader:
             script = bash_script(arguments, [], Shell(None, {}, set()))
             follow(name, script, cwd, variables, self.reading, self.depth, read_bash)
         elif name in POWERSHELL_NAMES:
-            follow(name, powershell_script(arguments), cwd, variables, self.reading, self.depth, read_powershell)
+            script = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
+            follow(name, script, cwd, variables, self.reading, self.depth, read_powershell)
         elif name in ENV_NAMES or name in PREFIX_PROGRAMS:
             command = started_command(name, arguments, cwd, variables, self.reading)
             if command is not None:

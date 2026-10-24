@@ -1189,6 +1189,26 @@ class CommandReadingTests(GuardTestCase):
             self.reach(f"Set-Content env:GIT_WORK_TREE '{self.tree}'; git commit", self.tree, environment=aimed),
         )
 
+    def test_a_script_pwsh_reads_from_its_standard_input_is_one_the_guard_cannot_read(self) -> None:
+        for tool, command, unread in (
+            ("Bash", "echo 'git commit -m x' | pwsh -NoProfile", ["could not read the command passed to pwsh"]),
+            ("Bash", "echo 'git commit -m x' | pwsh -Command -", ["could not read the command passed to pwsh"]),
+            ("Bash", "echo 'git commit -m x' | pwsh -f -", ["could not read the command passed to pwsh"]),
+            ("PowerShell", "'git commit -m x' | pwsh -NoProfile", ["could not read the command passed to pwsh"]),
+            # A pwsh that env or a prefix program starts is read as the one it starts.
+            ("PowerShell", "'git commit -m x' | env pwsh -Command -", ["could not read the command passed to pwsh"]),
+            ("PowerShell", "'git commit -m x' | nohup pwsh -File -", ["could not read the command passed to pwsh"]),
+            ("Bash", "echo 'git commit -m x' | env pwsh -Command -", ["could not read the command passed to pwsh"]),
+            ("Bash", "echo 'git commit -m x' | nice pwsh -File -", ["could not read the command passed to pwsh"]),
+            ("PowerShell", "env pwsh -c 'git status'; git commit -m x", []),
+            ("Bash", "pwsh -File build.ps1; git status", []),
+            ("Bash", "pwsh -ExecutionPolicy Bypass build.ps1; git status", []),
+            ("PowerShell", "pwsh -NoProfile -c 'git status'; git commit -m x", []),
+        ):
+            with self.subTest(tool=tool, command=command):
+                self.read(command, tool=tool)
+                self.assertEqual(unread, self.unread)
+
     def test_a_script_bash_or_sh_reads_from_its_standard_input_is_one_the_guard_cannot_read(self) -> None:
         for tool, command, unread in (
             ("Bash", "echo 'git commit -m x' | bash", ["could not read the command passed to bash"]),
