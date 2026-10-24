@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 # Shepherd pull requests
 
-One tick keeps the open pull requests merging, merging `main` into one armed pull request at a time and leaving the other behind ones for later ticks, since an update cancels the run in flight on the branch it updates. `.claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py` does every deterministic step, and its docstring lists every line. Your part is the messages, the judgment it leaves you, and the hand-off to `repo-cleanup`.
+One tick keeps the open pull requests merging. `.claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py` does every deterministic step, and its docstring lists every line. Your part is the messages, the judgment it leaves you, and the hand-off to `repo-cleanup`.
 
 ## 1. Run the tick
 
@@ -19,7 +19,7 @@ python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.p
 python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py --dry-run
 ```
 
-The second form lists and judges and writes nothing. From anywhere else, such as a worktree, run only that one; its `HUB` line says the hub is left to the hub's own session. Never rebase or force-push a pull request's branch.
+The second form lists and judges and writes nothing. From anywhere else, such as a worktree, run only that one; its `HUB` line says the hub is left to the hub's own session. Never rebase or force-push a pull request's branch, and never update a behind pull request the tick left `next-tick`: it updates one at a time, since an update cancels the run in flight on the branch it updates.
 
 The tick admits only pull requests whose head branch is in this repository. One from any other repository, such as a fork, is never armed, judged, updated, or rerun, and holds no other pull request's update; merging it stays the maintainer's call. Never arm one by hand either.
 
