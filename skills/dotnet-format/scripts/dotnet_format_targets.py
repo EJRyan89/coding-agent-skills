@@ -130,6 +130,38 @@ def read_file_list(path: Path) -> list[str]:
     return files
 
 
+def listed_refusal(root: Path, name: str) -> str | None:
+    """Why a script does not read or write the file a FILE_LIST entry names, or None when it lies inside `root`.
+
+    ejryan89-skill-core's `refusal` judges the entry first as written, before anything touches it, so an absolute
+    entry, one whose `..` segments leave the root, and a network-share or device form are refused unopened; then as
+    resolved, so an entry inside the root that a symbolic link or junction leads out of it is refused too."""
+    base = lexical_absolute(root)
+    path = project_path(base, name)
+    refused = refusal(path, base)
+    if refused:
+        return refused
+    try:
+        leaves = refusal(path.resolve(), base.resolve()) is not None
+    except OSError as error:
+        return f"the path cannot be resolved: {error.strerror or error}"
+    if leaves:
+        return "a symbolic link or junction leads it outside the repository root, which the script does not leave"
+    return None
+
+
+def inside_root(root: Path, names: list[str], emit: Callable[[str], None]) -> list[str]:
+    """The FILE_LIST entries `listed_refusal` keeps, in order; each other entry prints `REFUSED <entry> <reason>`."""
+    kept: list[str] = []
+    for name in names:
+        refused = listed_refusal(root, name)
+        if refused:
+            emit(f"REFUSED\t{name}\t{refused}")
+        else:
+            kept.append(name)
+    return kept
+
+
 def relative(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 

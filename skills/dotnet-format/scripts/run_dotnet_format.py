@@ -7,28 +7,32 @@ Both run whitespace formatting plus the code-style (IDE*) and analyzer (CA*, Sty
 diagnostics the repository configures at --severity or above (default warn). The full detailed log goes to a
 temporary file; standard output gets one fact per line, tab separated:
 
+    REFUSED     <entry> <reason> a FILE_LIST entry outside the repository root, never passed to the formatter
     DIAGNOSTIC  <file> <line> <column> <severity> <rule>
     SUMMARY     <diagnostic count> <file count> <comma-separated rules, or ->
     SAVED       <file>          a failed fix only: a run that finished found this file's fixes and saved them
     UNFINISHED  <file>          a failed fix only: this file's run failed or never started, so its fixes are not saved
     LOG         <log file>
 
-The formatter is the one dotnet_format_targets.py chooses: the .NET SDK's `dotnet format` for a .slnx solution and
-for a .sln whose projects are all SDK-style, and the dotnet-format global tool for any other .sln; both print
-diagnostics in one layout, and both exit 2 from a check that finds changes. The global tool is not run on a file of
-an ASP.NET project, which `resolve` reports as SKIPPED_ASPNET; when it leaves no file to format, nothing runs and no
-LOG line is printed. FILE paths are relative to the repository root when they are inside it. A changed file whose
-name starts with `@` or `-` is passed to the formatter as `./<name>`, since either formatter would read the bare name
-as a response file or an option. Files too many for one command line, which Windows limits to 32,767 characters, are
-formatted in several runs within the one time limit, and the log holds every run's output in order.
+The formatter is the one dotnet_format_targets.py chooses: the .NET SDK's `dotnet format` for a .slnx solution and for a
+.sln whose projects are all SDK-style, and the dotnet-format global tool for any other .sln; both print diagnostics in
+one layout, and both exit 2 from a check that finds changes. The global tool is not run on a file of an ASP.NET project,
+which `resolve` reports as SKIPPED_ASPNET; when it leaves no file to format, nothing runs and no LOG line is printed. An
+entry is passed only when it lies inside the repository root, judged from its text before anything touches it and then
+as resolved: an absolute entry, one whose `..` segments leave the root, one written as a network share or a device, and
+one a symbolic link or junction leads out of the root is REFUSED. FILE paths are relative to the repository root when
+they are inside it. A changed file whose name starts with `@` or `-` is passed to the formatter as `./<name>`, since
+either formatter would read the bare name as a response file or an option. Files too many for one command line, which
+Windows limits to 32,767 characters, are formatted in several runs within the one time limit, and the log holds every
+run's output in order.
 
-`check` exits 1 when it prints a DIAGNOSTIC (findings) and 0 when it prints none. `fix` exits 0 once the formatter
-succeeds: its DIAGNOSTIC lines are what it found to fix, because its log does not say which of them it could not
-fix, so rerun `check` to see what remains. A failure, such as the formatter not being installed, exiting with an
-unexpected code, or not finishing in time, prints `FAILED <reason>` as the last line, after the LOG line when
-the formatter ran, and exits 1. A `fix` that fails tells its runs apart first: each run saves its fixes when it
-finishes, so SAVED names the files the runs before the failed one changed, and UNFINISHED every file of the failed run
-and of the runs after it. A usage error exits 2.
+`check` exits 1 when it prints a DIAGNOSTIC or a REFUSED line (findings) and 0 when it prints neither. `fix` exits 1
+when it prints a REFUSED line, and otherwise 0 once the formatter succeeds: its DIAGNOSTIC lines are what it found to
+fix, because its log does not say which of them it could not fix, so rerun `check` to see what remains. A failure, such
+as the formatter not being installed, exiting with an unexpected code, or not finishing in time, prints `FAILED
+<reason>` as the last line, after the LOG line when the formatter ran, and exits 1. A `fix` that fails tells its runs
+apart first: each run saves its fixes when it finishes, so SAVED names the files the runs before the failed one changed,
+and UNFINISHED every file of the failed run and of the runs after it. A usage error exits 2.
 """
 
 from __future__ import annotations
@@ -49,7 +53,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bounded_process import run_bounded
 from console import run_main
-from dotnet_format_targets import SDK_FORMATTER, SDK_SOLUTION, formatter_for, formatter_skips, read_file_list
+from dotnet_format_targets import (
+    SDK_FORMATTER,
+    SDK_SOLUTION,
+    formatter_for,
+    formatter_skips,
+    inside_root,
+    read_file_list,
+)
 from executable_locator import find_executable, located_command
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
@@ -291,7 +302,8 @@ def run(
     services: Services,
     emit: Callable[[str], None],
 ) -> bool:
-    """Run the formatter and print its diagnostics; return whether a check found any."""
+    """Run the formatter and print its diagnostics; return whether a check found any or an entry was refused. An
+    entry `inside_root` refuses is never passed to the formatter."""
     formatter = formatter_for(root, root / solution)
     if formatter == SDK_FORMATTER:
         if not services.which("dotnet"):
@@ -302,11 +314,13 @@ def run(
         listed = read_file_list(file_list)
     except ValueError as exc:
         raise Failed(str(exc)) from None
-    skipped = formatter_skips(root, formatter, listed)
-    files = [name for name in listed if name not in skipped]
+    inside = inside_root(root, listed, emit)
+    refused = len(inside) < len(listed)
+    skipped = formatter_skips(root, formatter, inside)
+    files = [name for name in inside if name not in skipped]
     if not files:
         emit("SUMMARY\t0\t0\t-")
-        return False
+        return refused
     runs = run_batches(formatter, mode, root, solution, files, severity, timeout, services)
     descriptor, log_path = tempfile.mkstemp(prefix=f"dotnet-format-{mode}-", suffix=".log")
     with os.fdopen(descriptor, "wb") as handle:
@@ -335,7 +349,7 @@ def run(
     if runs.failure:
         raise Failed(runs.failure)
     # A fix run's log lists what it found before fixing, not what is left; the check rerun reports that.
-    return mode == "check" and bool(diagnostics)
+    return (mode == "check" and bool(diagnostics)) or refused
 
 
 def main(argv: Sequence[str] | None = None, services: Services | None = None) -> int:
