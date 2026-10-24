@@ -435,11 +435,32 @@ class ConfigurationTests(unittest.TestCase):
         config["dashboard"] = {"ignored_repositories": ["exam*one/*", "example/x*", "e*/one?"]}
         validate_config(config)
 
+    def test_each_ignored_repositories_refusal_names_the_field_and_what_it_found(self) -> None:
+        field = "config.dashboard.ignored_repositories"
+        for entries, message in (
+            ("x", f'{field} must be an array of at most 1000 items, found string "x"'),
+            ([7], f"{field}[0] must be a non-empty string, found integer 7"),
+            (
+                ["a/b", "other"],
+                f"{field}[1] must be an owner/repo identity, or a pattern of one using only * and ? as wildcards, "
+                'found string "other"',
+            ),
+            (["a/b", "A/B"], f'{field} must be distinct entries, ignoring case, found "a/b" twice'),
+        ):
+            with self.subTest(entries=entries):
+                config = valid_config()
+                config["dashboard"] = {"ignored_repositories": entries}
+                with self.assertRaises(ConfigurationFieldError) as raised:
+                    validate_config(config)
+                self.assertEqual(message, str(raised.exception))
+
     def test_the_default_configuration_file_is_named_config_json(self) -> None:
         # update-pr-dashboard names its tracker record after this name, so a rename would move the record.
         self.assertEqual("config.json", review_config.DEFAULT_CONFIG_NAME)
-        with mock.patch.dict(os.environ, {"CODE_REVIEW_CONFIG": ""}):
-            self.assertEqual("config.json", review_config.default_config_path().name)
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODE_REVIEW_CONFIG": ""}):
+            with mock.patch.object(Path, "home", return_value=Path(home)):
+                path = review_config.default_config_path()
+            self.assertEqual(".coding-agent-skills/code-review/config.json", path.relative_to(home).as_posix())
 
     def test_dashboard_author_names_are_validated(self) -> None:
         for names, message in (
