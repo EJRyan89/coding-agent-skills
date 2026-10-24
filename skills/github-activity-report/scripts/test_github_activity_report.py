@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import csv
 import io
 import json
 import os
@@ -493,7 +494,7 @@ def reviews_of(page_info: dict[str, Any], nodes: list[Any], author: object = Non
     run, calls = bounded(ok(search), ok({"data": {"node": pull}}))
     client = GitHubSearchClient(run, Recorder())
     try:
-        return report._review_dates(client, "acme", "octo", [date(2026, 1, 1)], date(2026, 1, 31), {}), calls
+        return report._review_dates(client, "acme", "octo", date(2026, 1, 1), date(2026, 1, 31), {}), calls
     except GitHubError as exc:
         return exc, calls
 
@@ -977,6 +978,9 @@ class GroupGitHub(FakeGitHub):
         self.scopes = scopes
         self.failing: str | None = None
         self.endpoints: list[str] = []
+        # The stderr every team-members request fails with, and each page's members when not `members` alone.
+        self.team_failure: str | None = None
+        self.member_pages: list[list[str]] | None = None
 
     def __call__(self, arguments: Sequence[str]) -> CommandResult:
         endpoint = arguments[3]
@@ -984,6 +988,11 @@ class GroupGitHub(FakeGitHub):
         if endpoint == "user":
             return ok({}, "" if self.scopes is None else f"X-OAuth-Scopes: {self.scopes}\r\n")
         if endpoint.startswith("orgs/acme/teams/core/members?"):
+            if self.team_failure is not None:
+                return failed(self.team_failure)
+            if self.member_pages is not None:
+                page = int(parse_qs(urlsplit(endpoint).query)["page"][0])
+                return ok([{"login": login} for login in self.member_pages[page - 1]])
             return ok([{"login": login} for login in self.members])
         if self.failing is not None and f"author:{self.failing} " in unquote(" ".join(arguments)):
             return failed("gh: HTTP 401: Bad credentials")
@@ -1192,6 +1201,7 @@ def test_a_history_written_before_the_cap_was_recorded_is_read_and_searched_agai
     assert code == 0, stdout
     assert query_starts(github.queries) >= {"2026-03-01"}, "months with no cap recorded are searched again"
     assert "WARNING: for octo, Commits for 2026-03-09 exceeded GitHub's 1000-result Search API cap" in stdout
+    assert "except once for each month of a file written before the report recorded GitHub's search cap" in stdout
     text = history.read_text(encoding="utf-8")
     assert text.startswith(FIRST_HISTORY.splitlines()[0] + "\n"), "the file is rewritten in the current format"
     rows = history_lines(history)
@@ -1311,3 +1321,178 @@ def test_one_user_named_twice_keeps_the_per_user_table() -> None:
     code, stdout, _ = run_group(["--org", "acme", "--user", "octo", "--user", "Octo"], group_github(), at(TODAY))
     assert code == 0, stdout
     assert stdout.startswith("## GitHub activity for octo in acme")
+
+
+def test_a_history_with_a_gap_searches_only_the_months_it_lacks(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    github = group_github()
+    arguments = ["--org", "acme", "--user", "octo", "--history", str(history)]
+    assert run_group([*arguments, "--months", "3"], github, at(date(2026, 6, 2)))[0] == 0
+    first = history_lines(history)
+    github.queries.clear()
+    code, stdout, stderr = run_group([*arguments, "--months", "6"], github, at(date(2026, 6, 3)))
+    assert code == 0, stdout
+    assert "Querying GitHub for octo (1 of 1): 4 month(s)." in stderr
+    spans = {query: match[0] for query in github.queries if (match := SPAN.search(query)) is not None}
+    assert {span for query, span in spans.items() if not query.startswith(REVIEWED)} == {
+        "2026-01-01..2026-03-31",
+        "2026-06-01..2026-06-03",
+    }, "the closed months the history holds after its gap are not searched again"
+    reviewed = [query for query in github.queries if query.startswith(REVIEWED)]
+    assert reviewed == [f"{REVIEWED}2026-01-01..2026-06-03"], "reviews are found by a pull request's last update"
+    rows = history_lines(history)
+    assert (rows["2026-04,octo"], rows["2026-05,octo"]) == (first["2026-04,octo"], first["2026-05,octo"])
+    assert rows["2026-03,octo"] == "2026-03,octo,1,1,0,0,0,false,2026-06-03T08:00:00Z,"
+    assert "| 2026-03 | 1 |" in stdout
+
+
+def test_month_spans_join_consecutive_months_and_end_the_current_one_today() -> None:
+    firsts = [date(2025, 11, 1), date(2025, 12, 1), date(2026, 1, 1), date(2026, 3, 1), date(2026, 5, 1)]
+    assert report.month_spans(firsts, date(2026, 5, 20)) == [
+        (date(2025, 11, 1), date(2026, 1, 31)),
+        (date(2026, 3, 1), date(2026, 3, 31)),
+        (date(2026, 5, 1), date(2026, 5, 20)),
+    ]
+    assert report.month_spans([date(2024, 2, 1)], date(2026, 5, 20)) == [(date(2024, 2, 1), date(2024, 2, 29))]
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        pytest.param(
+            FIRST_HISTORY.replace("octo,1,1", "octo," + "1" * 5000 + ",1", 1),
+            "has prs_authored of 5000 characters, not a count",
+            id="a-count-past-the-integer-digit-limit",
+        ),
+        pytest.param(FIRST_HISTORY.replace("2026-03,mona,", "2026-03,mo na,", 1), "has user 'mo na'", id="a-bad-user"),
+        pytest.param(
+            FIRST_HISTORY.replace(",2026-05-20T08:00:00Z,", ",2026-05-20T08:00:00,", 1),
+            "has captured_at '2026-05-20T08:00:00', not a timestamp with a UTC offset",
+            id="a-captured-at-without-an-offset",
+        ),
+        pytest.param(
+            FIRST_HISTORY + '2026-03,octo,"' + "x" * (csv.field_size_limit() + 1) + '"\n',
+            "is not CSV the report wrote: field larger than field limit",
+            id="not-csv",
+        ),
+    ],
+)
+def test_a_history_row_the_report_did_not_write_is_refused_by_name(tmp_path: Path, text: str, reason: str) -> None:
+    history = tmp_path / "activity.csv"
+    history.write_text(text, encoding="utf-8", newline="\n")
+    github = group_github()
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert (code, github.endpoints) == (1, [])
+    assert stdout.startswith(f"FAILED History file {history} ")
+    assert reason in stdout
+    assert stdout.endswith(" [history]\n")
+    assert len(stdout) < 400, "a long field is named by its length, not quoted"
+
+
+def test_a_history_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    history.write_bytes(FIRST_HISTORY.encode("utf-8") + b"\xff\n")
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
+    assert (code, stdout) == (1, f"FAILED History file {history} is not UTF-8 text [history]\n")
+
+
+def test_a_history_that_cannot_be_read_is_refused(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    history.write_text(FIRST_HISTORY, encoding="utf-8", newline="\n")
+    denied = PermissionError(13, "Permission denied")
+    with mock.patch.object(Path, "read_bytes", side_effect=denied):
+        code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
+    assert (code, stdout) == (1, f"FAILED History file {history} cannot be read: Permission denied [history]\n")
+
+
+def test_a_history_that_cannot_be_written_is_refused_after_every_search(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    with mock.patch.object(report, "replace_text", side_effect=OSError("disk full")):
+        code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
+    assert (code, stdout) == (1, f"FAILED History file {history} cannot be written: disk full [history]\n")
+    assert not history.exists()
+
+
+def test_a_history_naming_a_folder_is_refused_before_querying(tmp_path: Path) -> None:
+    github = group_github()
+    code, stdout, stderr = run_group([*GROUP, "--history", str(tmp_path)], github, at(TODAY))
+    assert (code, stdout, github.endpoints) == (2, "", [])
+    assert f"{tmp_path} is a folder; name the history file inside it" in stderr
+
+
+def test_a_team_slug_that_is_not_one_is_refused_before_querying() -> None:
+    github = group_github(members=["octo"])
+    code, stdout, stderr = run_group(["--org", "acme", "--team", "core team"], github, at(TODAY))
+    assert (code, stdout, github.endpoints) == (2, "", [])
+    assert "argument --team: not a GitHub team slug: 'core team'" in stderr
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        pytest.param("gh: Not Found (HTTP 404)", id="not-found"),
+        pytest.param("gh: Forbidden (HTTP 403)", id="forbidden"),
+    ],
+)
+def test_a_team_the_token_cannot_see_is_refused(stderr: str) -> None:
+    github = group_github(members=["octo"])
+    github.team_failure = stderr
+    code, stdout, _ = run_group(["--org", "acme", "--team", "core"], github, at(TODAY))
+    assert code == 1
+    assert stdout.startswith("FAILED Team acme/core was not found, or the gh token cannot see it: ")
+    assert stdout.endswith("; check the team's slug [team]\n")
+
+
+def test_a_team_page_that_repeats_earlier_members_is_refused() -> None:
+    github = group_github()
+    page = [f"member{index}" for index in range(100)]
+    github.member_pages = [page, list(reversed(page))]
+    code, stdout, _ = run_group(["--org", "acme", "--team", "core"], github, at(TODAY))
+    assert (code, stdout) == (1, "FAILED Page 2 of team acme/core repeats earlier members [malformed]\n")
+
+
+def test_a_team_member_whose_login_is_not_one_is_refused() -> None:
+    github = group_github()
+    github.member_pages = [["octo", "not a login"]]
+    code, stdout, _ = run_group(["--org", "acme", "--team", "core"], github, at(TODAY))
+    assert (code, stdout) == (
+        1,
+        "FAILED Team members response names 'not a login', which is not a GitHub login [malformed]\n",
+    )
+
+
+def test_the_review_search_names_the_user_and_the_span_it_searches() -> None:
+    dates, calls = reviews_of({"hasNextPage": False}, [review("APPROVED", "2026-01-12T10:00:00Z")])
+    assert dates == {"PR_1": [date(2026, 1, 12)]}
+    assert "user=octo" in calls[0]
+    assert f"q={REVIEWED}2026-01-01..2026-01-31" in calls[0]
+
+
+@pytest.mark.parametrize(
+    ("count", "shown"),
+    [
+        pytest.param("one", "'one'", id="a-short-field-is-quoted"),
+        pytest.param("x" * 40, repr("x" * 40), id="a-field-of-forty-characters-is-quoted"),
+        pytest.param("x" * 41, "of 41 characters", id="a-longer-field-is-named-by-its-length"),
+    ],
+)
+def test_a_refused_count_is_quoted_up_to_forty_characters(tmp_path: Path, count: str, shown: str) -> None:
+    history = tmp_path / "activity.csv"
+    history.write_text(FIRST_HISTORY.replace("octo,1,1", f"octo,{count},1", 1), encoding="utf-8", newline="\n")
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
+    assert (code, stdout) == (
+        1,
+        f"FAILED History file {history} line 3 has prs_authored {shown}, not a count; fix or move the file and rerun "
+        "[history]\n",
+    )
+
+
+def test_a_comparison_with_a_history_says_which_months_it_searches_again(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
+    assert code == 0, stdout
+    assert (
+        "- Closed months already in the history file are read from it, not searched again, except once for each "
+        "month of a file written before the report recorded GitHub's search cap; the current month is searched on "
+        "every run, and a month the history captured while it was partial once more after it ends.\n"
+    ) in stdout
