@@ -125,6 +125,7 @@ def _expected() -> dict[str, Any]:
             "end_marker": "<!-- code-review-pr-tracker:end -->",
             "status_overrides": {},
             "author_names": {},
+            "ignored_repositories": [],
         },
     }
 
@@ -179,6 +180,7 @@ def _full_config() -> dict[str, Any]:
         "verdict_policy": {"should_fix_threshold": 2, "request_changes_for": ["MUST_FIX", "SHOULD_FIX"]},
         "dashboard": {
             "author_names": {"octo-cat": " Octo Cat "},
+            "ignored_repositories": ["Octo-Cat/Sandbox-*"],
             "status_overrides": {"owner/repo#12": " Waiting on design "},
             "end_marker": "<!-- b -->",
             "start_marker": "<!-- a -->",
@@ -269,6 +271,7 @@ def _full_expected() -> dict[str, Any]:
             "end_marker": "<!-- b -->",
             "status_overrides": {"owner/repo#12": " Waiting on design "},
             "author_names": {"octo-cat": "Octo Cat"},
+            "ignored_repositories": ["octo-cat/sandbox-*"],
         },
         "operation_repository_sets": {"review-prs": "work", "update-pr-dashboard": "solo"},
         "reviewer_effort": "high",

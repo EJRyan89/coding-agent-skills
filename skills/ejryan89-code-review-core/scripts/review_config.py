@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import ntpath
 import os
@@ -68,7 +69,12 @@ MAX_UNREVIEWED_SUFFIXES = 100
 MAX_UNREVIEWED_SUFFIX_LENGTH = 32
 UNREVIEWED_SUFFIX = re.compile(r"(?:\.[a-z0-9][a-z0-9_+-]*)+")
 REVIEWER_KEYS = {"id", "protocol_version", "trusted_ref", "scope", "manifest_path", "skill", "manifest"}
-DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names"}
+DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names", "ignored_repositories"}
+# The repositories update-pr-dashboard's `collect` never names as untracked: each entry an `owner/repo` identity, or a
+# pattern of one whose owner and name are each matched on their own, ignoring case, where `*` stands for any run of
+# characters and `?` for any one.
+IGNORED_REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.*?-]{1,100}/[A-Za-z0-9_.*?-]{1,100}")
+MAX_IGNORED_REPOSITORIES = 1000
 # The sections the pull-request tracker computes. update-pr-dashboard renders these names, and they live here, beside
 # the validation that refuses a status override naming one, so the names refused and the names rendered cannot drift:
 # an override named like a computed section rendered that section twice and dropped the rows placed in it.
@@ -114,11 +120,15 @@ class ConfigurationFieldError(FieldError, ConfigurationError):
 READ = FieldReader(ConfigurationFieldError)
 
 
+# The default configuration file's name; update-pr-dashboard names its tracker record after the configuration file.
+DEFAULT_CONFIG_NAME = "config.json"
+
+
 def default_config_path() -> Path:
     override = os.environ.get("CODE_REVIEW_CONFIG")
     if override:
         return Path(override)
-    return Path.home() / ".coding-agent-skills" / "code-review" / "config.json"
+    return Path.home() / ".coding-agent-skills" / "code-review" / DEFAULT_CONFIG_NAME
 
 
 def validate_repository_identity(value: object, field: str = "repository") -> str:
@@ -203,6 +213,7 @@ def validate_config(value: Any) -> dict[str, Any]:
     normalized["verdict_policy"] = verdict_policy
     READ.optional(READ.string, config.get("github_login"), "config.github_login")
     normalized["dashboard"] = _validate_dashboard(config.get("dashboard", {}))
+    _check_ignored_repositories(normalized_sets, normalized["dashboard"]["ignored_repositories"])
     return normalized
 
 
@@ -487,7 +498,53 @@ def _validate_dashboard(value: Any) -> dict[str, Any]:
         "end_marker": end_marker,
         "status_overrides": overrides,
         "author_names": normalize_author_names(dashboard.get("author_names", {})),
+        "ignored_repositories": normalize_ignored_repositories(dashboard.get("ignored_repositories", [])),
     }
+
+
+def normalize_ignored_repository(value: Any, field: str) -> str:
+    """One `dashboard.ignored_repositories` entry, lowercase: an identity or a pattern of one, as
+    `IGNORED_REPOSITORY_PATTERN` describes."""
+    entry = READ.string(value, field)
+    if not IGNORED_REPOSITORY_PATTERN.fullmatch(entry):
+        raise READ.fail(
+            field, "an owner/repo identity, or a pattern of one using only * and ? as wildcards", describe(entry)
+        )
+    return entry.lower()
+
+
+def normalize_ignored_repositories(value: Any) -> list[str]:
+    """The distinct ignored repository entries, lowercase, in the order given."""
+    field = "config.dashboard.ignored_repositories"
+    entries = READ.array(value, field, normalize_ignored_repository, maximum=MAX_IGNORED_REPOSITORIES)
+    for index, entry in enumerate(entries):
+        if entry in entries[:index]:
+            raise READ.fail(field, "distinct entries, ignoring case", f"{json.dumps(entry)} twice")
+    return entries
+
+
+def ignored_repository_match(identity: str, entries: Iterable[str]) -> str | None:
+    """The first ignored repository entry that `identity` matches, its owner and name each matched on their own and
+    ignoring case, or None."""
+    owner, name = identity.lower().split("/", 1)
+    for entry in entries:
+        owner_pattern, name_pattern = entry.lower().split("/", 1)
+        if fnmatch.fnmatchcase(owner, owner_pattern) and fnmatch.fnmatchcase(name, name_pattern):
+            return entry
+    return None
+
+
+def _check_ignored_repositories(normalized_sets: dict[str, list[str]], entries: list[str]) -> None:
+    """Refuse an ignored entry that a repository of any set matches, so a repository is never both tracked and
+    ignored."""
+    for set_name, members in normalized_sets.items():
+        for identity in members:
+            entry = ignored_repository_match(identity, entries)
+            if entry is not None:
+                raise ConfigurationError(
+                    f"Repository {identity} in repository set {set_name} matches "
+                    f"config.dashboard.ignored_repositories entry {entry}; a tracked repository cannot be ignored"
+                )
 
 
 def _validate_status_overrides(value: Any) -> None:
