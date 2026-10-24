@@ -44,6 +44,8 @@ PROBE = "PROBE"
 GUARD_ROOT = Path("/probe-root")
 START = "start"
 DIRECTORIES = ("d1", "d2", "d1/d2")
+# The file in each directory that holds its path below the workspace, which the probe reports as its directory.
+MARKER = ".where"
 # The operands each program takes before its command, as its manual gives them.
 OPERANDS = {"timeout": ["5"]}
 # A value each option that takes one accepts, by program and long name; any other takes VALUE.
@@ -99,7 +101,9 @@ PROBE_SCRIPT = f"""#!/bin/sh
 root=${{0%/*}}
 for last; do :; done
 {{
-  printf '%s\\0' "${{PWD#"$root"/}}"
+  # Each directory names itself in a file, since its path may be spelled two ways, as with a Windows short name.
+  IFS= read -r here < {MARKER} || here=unknown
+  printf '%s\\0' "$here"
   if [ -n "${{{VARIABLE}+x}}" ]; then printf 'set:%s\\0' "${VARIABLE}"; else printf 'unset\\0'; fi
   for argument; do
     if [ "$argument" = "$0" ]; then argument={PROBE}; fi
@@ -283,8 +287,10 @@ def record(path: Path) -> Started | None:
 def real_runs() -> Runs:
     workspace = Path(WORKSPACE.name)
     programs = discover(workspace)
-    for directory in DIRECTORIES:
-        (workspace / START / directory).mkdir(parents=True)
+    for directory in ("", *DIRECTORIES):
+        place = workspace / START / directory
+        place.mkdir(parents=True, exist_ok=True)
+        (place / MARKER).write_bytes(PurePosixPath(START, directory).as_posix().encode("utf-8") + b"\n")
     (workspace / "out").mkdir()
     probe = workspace / "probe"
     probe.write_bytes(PROBE_SCRIPT.encode("utf-8"))

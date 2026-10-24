@@ -1069,6 +1069,8 @@ class CommandReadingTests(GuardTestCase):
             ("cd; git commit; cd -; git add .", [*self.at(Path.home(), "commit"), *self.at(None, "add")]),
             (f"env -C {tree} git commit", self.at(self.tree, "commit")),
             (f"env -C{tree} git commit", self.at(self.tree, "commit")),
+            (f"env --chdir={tree} git commit", self.at(self.tree, "commit")),
+            (f"env --chdir {tree} git commit", self.at(self.tree, "commit")),
             (f"env -v -C{tree} GIT_PAGER=cat git commit", self.at(self.tree, "commit")),
             # env changes directory once, to its last -C, read from where env starts.
             (f"env -C {tree} -C . git commit", self.at(self.hub, "commit")),
@@ -1098,6 +1100,9 @@ class CommandReadingTests(GuardTestCase):
             ("env -i git commit", self.at(self.hub, "commit")),
             ("env -u GIT_WORK_TREE git commit", self.at(self.hub, "commit")),
             ("env --unset=GIT_WORK_TREE git commit", self.at(self.hub, "commit")),
+            ("env --unset GIT_WORK_TREE git commit", self.at(self.hub, "commit")),
+            ("env -uGIT_WORK_TREE git commit", self.at(self.hub, "commit")),
+            ("env -uOTHER git commit", self.at(self.tree, "commit")),
             ("unset GIT_WORK_TREE; git commit", self.at(self.hub, "commit")),
             ('GIT_WORK_TREE="$ELSEWHERE_UNSET"; git commit', self.at(None, "commit")),
         ):
@@ -1110,6 +1115,9 @@ class CommandReadingTests(GuardTestCase):
         )
         self.assertEqual([], self.read("env -S 'git commit'", tool="Bash"))
         self.assertEqual(["could not read the option -S passed to env"], self.unread)
+        # The refusal names the first option it could not read, past every one it reads.
+        self.assertEqual([], self.read("env -uA -u B -CC -C D --unset=E --chdir=F -i -q git commit", tool="Bash"))
+        self.assertEqual(["could not read the option -q passed to env"], self.unread)
 
     def test_powershell_applies_inherited_and_assigned_location_variables(self) -> None:
         inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
