@@ -640,6 +640,28 @@ class HandshakeTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith("CONFIG_ERROR .vscode/mcp.json "), lines)
         self.assertEqual("HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2", lines[1])
 
+    def test_a_config_behind_a_link_out_of_the_repository_is_not_read_and_its_servers_never_start(self) -> None:
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        servers = {"servers": {"elsewhere": self._stdio("ok", cwd="tools")}}
+        (outside / "mcp.json").write_text(json.dumps(servers), encoding="utf-8")
+        codex = f"[mcp_servers.elsewhere]\ncommand = {json.dumps(sys.executable)}\n"
+        (outside / "config.toml").write_text(codex, encoding="utf-8")
+        link_directory(outside, self.root / ".vscode")
+        link_directory(outside, self.root / ".codex")
+        not_followed = "it lies behind {}, a link that leads out of the repository, which the audit does not follow"
+        self.assertEqual(
+            (
+                1,
+                [
+                    f"CONFIG_ERROR .vscode/mcp.json Could not read or parse: {not_followed.format('.vscode')}",
+                    f"CONFIG_ERROR .codex/config.toml Error reading config: {not_followed.format('.codex')}",
+                ],
+            ),
+            self._run(),
+        )
+        self.assertFalse((self.root / "tools" / "initialized.txt").exists())
+
     def test_no_servers_is_a_result(self) -> None:
         self.assertEqual((0, ["NO_SERVERS"]), self._run())
 
