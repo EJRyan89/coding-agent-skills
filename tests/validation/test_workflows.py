@@ -16,16 +16,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from workflows import (
+    DEFENDER_LINES,
+    PINNED_TOOL_LINES,
     WorkflowSyntaxError,
     changelog_job_problems,
     command_line_job_problems,
     configure_answer_problems,
     copilot_auto_update_problems,
+    defender_problems,
     deployable_linux_problems,
     leg_problems,
     linux_job_problems,
     linux_verify_log_problems,
     mutation_job_problems,
+    pinned_tool_problems,
     read_workflow,
     required_check_problems,
     tool_cache_problems,
@@ -282,13 +286,15 @@ def test_a_tool_cache_off_its_workflow_pin_fails(drifted: str, problem: str) -> 
 
 
 LINUX = (
-    "jobs:\n  suite:\n    runs-on: windows-latest\n"
+    "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n    runs-on: windows-latest\n"
     "  linux:\n    name: Validation on Linux, shard ${{ matrix.shard }}\n    runs-on: ubuntu-latest\n"
     "    strategy:\n      fail-fast: false\n      matrix:\n        shard: ['1/2', '2/2']\n    steps:\n"
     "      - uses: actions/checkout@SHA # v1\n        with:\n          fetch-depth: 0\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n          python-version: '3.11'\n"
     "          cache: pip\n          cache-dependency-path: requirements-dev.txt\n"
-    "      - run: |\n          sudo apt-get update\n          sudo apt-get install --yes shellcheck\n"
+    "      - uses: actions/cache@SHA # v1\n        with:\n          key: tool-${{ env.TOOL_VERSION }}\n"
+    "      - run: |\n"
+    '          echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict\n'
     "      - shell: pwsh\n"
     "        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n"
     "      - run: |\n          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt\n"
@@ -307,6 +313,13 @@ LINUX = (
 class LinuxJobFixtures(unittest.TestCase):
     def test_the_linux_job_runs_the_whole_run_across_its_legs_named_as_linux(self) -> None:
         self.assertEqual([], linux_job_problems(LINUX, 2))
+
+    def test_the_linux_job_restores_its_tools_from_caches_keyed_on_the_workflow_pins(self) -> None:
+        caches = {"tool-${{ env.TOOL_VERSION }}": "sha256sum --check --strict"}
+        self.assertEqual([], tool_cache_problems(LINUX, caches, job="linux"))
+        # The Windows legs' caches are not the Linux job's.
+        problems = tool_cache_problems(LINUX, caches)
+        self.assertTrue(any("the cache keys are []" in problem for problem in problems), problems)
 
 
 @pytest.mark.parametrize(
@@ -353,9 +366,9 @@ class LinuxJobFixtures(unittest.TestCase):
         pytest.param(LINUX.replace("'3.11'", "'3.x'"), "sets up Python", id="another Python"),
         pytest.param(LINUX.replace("          cache: pip\n", ""), "sets up Python", id="no pip cache"),
         pytest.param(
-            LINUX.replace("install --yes shellcheck", "install shellcheck"),
-            "sudo apt-get install --yes shellcheck",
-            id="a prompting install",
+            LINUX.replace(" | sha256sum --check --strict", ""),
+            "sha256sum --check --strict",
+            id="an unchecked ShellCheck archive",
         ),
         pytest.param(
             LINUX.replace("-RequiredVersion $env:PSSCRIPTANALYZER_VERSION ", ""),
@@ -402,6 +415,104 @@ def test_a_linux_job_that_runs_less_than_the_whole_run_or_is_misnamed_fails(drif
     count = 3 if problem.startswith("expected") else 2
     problems = linux_job_problems(drifted, count)
     assert any(problem in found for found in problems), problems
+
+
+def _pwsh_step(name: str, lines: tuple[str, ...], condition: str = "") -> str:
+    step = f"      - name: {name}\n" + (f"        if: {condition}\n" if condition else "")
+    return step + "        shell: pwsh\n        run: |\n" + "".join(f"          {line}\n" for line in lines)
+
+
+VALIDATION_STEP = "      - name: Validate\n        run: python tests/run_validation.py\n"
+GALLERY_STEP = (
+    "Show the latest release",
+    ('Write-Host "latest: $((Find-Module PSScriptAnalyzer -ErrorAction Stop).Version)"',),
+    "github.event_name == 'schedule'",
+)
+
+
+def _job(name: str, *steps: str) -> str:
+    return f"jobs:\n  {name}:\n    steps:\n" + "".join(steps)
+
+
+PINNED = _job("suite", _pwsh_step("Verify", PINNED_TOOL_LINES), _pwsh_step(*GALLERY_STEP), VALIDATION_STEP)
+
+
+class PinnedToolFixtures(unittest.TestCase):
+    def test_the_tools_are_verified_at_their_pins_and_the_gallery_queried_on_the_schedule_only(self) -> None:
+        self.assertEqual([], pinned_tool_problems(PINNED, "suite"))
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        pytest.param(
+            _job("suite", VALIDATION_STEP, _pwsh_step("Verify", PINNED_TOOL_LINES)),
+            "verifies the pinned tools before validation runs",
+            id="verified after validation",
+        ),
+        pytest.param(
+            _job("suite", _pwsh_step("Verify", PINNED_TOOL_LINES[1:]), VALIDATION_STEP),
+            "verifies the pinned tools",
+            id="ShellCheck's version unread",
+        ),
+        pytest.param(
+            _job("suite", _pwsh_step("Verify", PINNED_TOOL_LINES[:3]), VALIDATION_STEP),
+            "verifies the pinned tools",
+            id="PSScriptAnalyzer unchecked",
+        ),
+        pytest.param(
+            PINNED.replace("        shell: pwsh\n", "        shell: bash\n", 1),
+            "verifies the pinned tools",
+            id="not PowerShell",
+        ),
+        pytest.param(
+            PINNED.replace("        if: github.event_name == 'schedule'\n", ""),
+            "queries the gallery on every event",
+            id="gallery queried on every event",
+        ),
+        pytest.param(
+            PINNED.replace("github.event_name == 'schedule'", "github.event_name != 'schedule'"),
+            "queries the gallery on every event",
+            id="gallery queried off the schedule",
+        ),
+        pytest.param(
+            _job("linux", _pwsh_step("Verify", PINNED_TOOL_LINES), VALIDATION_STEP),
+            "no pwsh step of the suite job",
+            id="verified in another job",
+        ),
+    ],
+)
+def test_a_tool_off_its_pin_or_a_gallery_query_on_every_event_fails(drifted: str, problem: str) -> None:
+    problems = pinned_tool_problems(drifted, "suite")
+    assert any(problem in found for found in problems), problems
+
+
+DEFENDER = _job("suite", _pwsh_step("Exclude", (*DEFENDER_LINES, "}")), VALIDATION_STEP)
+
+
+class DefenderFixtures(unittest.TestCase):
+    def test_the_windows_legs_read_real_time_protection_and_exclude_their_own_folders(self) -> None:
+        self.assertEqual([], defender_problems(DEFENDER))
+
+
+@pytest.mark.parametrize(
+    "drifted",
+    [
+        pytest.param(_job("suite", VALIDATION_STEP, _pwsh_step("Exclude", DEFENDER_LINES)), id="after validation"),
+        pytest.param(DEFENDER.replace("Get-MpComputerStatus", "Get-MpPreference"), id="the state unread"),
+        pytest.param(
+            DEFENDER.replace('          Write-Host "Defender', '          # "Defender'), id="the state unprinted"
+        ),
+        pytest.param(DEFENDER.replace(", $env:TEMP", ""), id="the temporary folder scanned"),
+        pytest.param(DEFENDER.replace(", $env:GITHUB_WORKSPACE", ""), id="the workspace scanned"),
+        pytest.param(DEFENDER.replace("if ($enabled) {", "if ($true) {"), id="excluded whatever the state"),
+        pytest.param(_job("linux", _pwsh_step("Exclude", DEFENDER_LINES), VALIDATION_STEP), id="another job"),
+    ],
+)
+def test_a_windows_leg_that_does_not_read_and_exclude_before_validation_fails(drifted: str) -> None:
+    assert defender_problems(drifted) == [
+        "no pwsh step of the suite job reads Defender's real-time protection and excludes the runner's folders"
+    ]
 
 
 REQUIRED_CHECK = (
