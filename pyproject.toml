@@ -4,9 +4,10 @@
 # Validation starts each Python regression suite, or each shard of a large one, as `python -B -m pytest <suite>` from
 # this root, which conftest.py beside this file sets up. The cache plugin is off, so a run writes nothing into the
 # checkout; output is not captured, so a suite's own output and its subprocesses' reach the runner as they did under
-# unittest; and strict mode turns on every strictness option pytest has, so a misspelled marker or option and a
-# duplicate parametrization id are errors. Nothing here selects, deselects, or skips a test, which
-# tests/validation/suite_discovery.py holds by pinning this table.
+# unittest; and strict mode turns on every strictness option pytest has, `strict_config`, `strict_markers`,
+# `strict_parametrization_ids`, and `strict_xfail`, so a misspelled marker or option, a duplicate parametrization id,
+# and an expected failure that passes are errors, and it turns on each option a later pytest adds. Nothing here
+# selects, deselects, or skips a test, which tests/validation/suite_discovery.py holds by pinning this table.
 [tool.pytest.ini_options]
 addopts = ["-p", "no:cacheprovider", "--capture=no"]
 strict = true
@@ -113,7 +114,8 @@ max-complexity = 15
 max-args = 17
 max-statements = 50
 
-# Validation runs mypy once per root: deployer/, tools/, deploy.py, and tests/ together from the repository root, and
+# Validation runs mypy once per root: deployer/, tools/, deploy.py, tests/, and conftest.py together from the
+# repository root, and
 # each skill's scripts/ directory from inside it. Default strictness; no module, suite, or import is exempt.
 [tool.mypy]
 python_version = "3.11"
