@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -41,9 +42,16 @@ UNDONE_FILES = [
 ]
 
 
-def missing_git(command: list[str], timeout: float) -> GitResult:
-    """The real client's runner when the locator finds no git."""
-    raise GitError(MISSING_GIT, kind="prerequisite")
+def git_not_on_path() -> contextlib.AbstractContextManager[object]:
+    """PATH and the link folders name a folder that does not exist, so the real locator finds no git and the real
+    client raises its own failure."""
+    nowhere = str(Path(__file__).resolve().parent / "no git here")
+    return mock.patch.dict(os.environ, {"PATH": nowhere, "LOCALAPPDATA": nowhere})
+
+
+def timed_out(command: list[str], timeout: float) -> GitResult:
+    """The real runner's failure when git does not finish within the client's time limit."""
+    raise GitError(f"{' '.join(command)} did not finish within {timeout:g} seconds", kind="timeout")
 
 
 class SilentRevertFixture(unittest.TestCase):
@@ -223,12 +231,12 @@ class SilentRevertFixture(unittest.TestCase):
                 self.assertIn(f"before {merged[:12]} (pull request #11: {subject})", problem)
 
     def test_a_git_that_cannot_run_or_finish_is_a_problem_line(self) -> None:
-        # The real helper's git missing, or given no time: before and after the check finds origin/main.
+        # The real helper's git missing, or out of time: before and after the check finds origin/main.
         self.history()
         self.commit("fix: unrelated, with a stale a.txt", {"a.txt": "one\n"})
         for failing, reason in (
-            (mock.patch.object(release_notes.CLIENT, "runner", missing_git), MISSING_GIT),
-            (mock.patch.object(release_notes.CLIENT, "timeout", 0.0), "did not finish within 0 seconds"),
+            (git_not_on_path(), MISSING_GIT),
+            (mock.patch.object(release_notes.CLIENT, "runner", timed_out), "did not finish within "),
             (
                 mock.patch.object(silent_reverts, "find_reverts", side_effect=ReleaseNotesError("no history")),
                 "no history",

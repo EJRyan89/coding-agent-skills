@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import pull_request_title
-from git_client import MISSING_GIT, GitError, GitResult
+from git_client import GitError, GitResult
 from pull_request_title import head_branch, title_problems, title_types_problems
 
 from tools import release_notes
@@ -31,14 +31,16 @@ def git(repository: Path, *arguments: str) -> None:
     subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, check=True)
 
 
-def missing_git(command: list[str], timeout: float) -> GitResult:
-    """The real client's runner when the locator finds no git."""
-    raise GitError(MISSING_GIT, kind="prerequisite")
+def git_not_on_path() -> contextlib.AbstractContextManager[object]:
+    """PATH and the link folders name a folder that does not exist, so the real locator finds no git and the real
+    client raises its own failure."""
+    nowhere = str(Path(__file__).resolve().parent / "no git here")
+    return mock.patch.dict(os.environ, {"PATH": nowhere, "LOCALAPPDATA": nowhere})
 
 
-def no_time_left() -> contextlib.AbstractContextManager[object]:
-    """The real client and runner given no time, so git does not finish."""
-    return mock.patch.object(release_notes.CLIENT, "timeout", 0.0)
+def timed_out(command: list[str], timeout: float) -> GitResult:
+    """The real runner's failure when git does not finish within the client's time limit."""
+    raise GitError(f"{' '.join(command)} did not finish within {timeout:g} seconds", kind="timeout")
 
 
 class PullRequestTitlePolicy(unittest.TestCase):
@@ -160,6 +162,6 @@ class HeadBranch(unittest.TestCase):
         # Nor does a git that cannot run at all: the real helper's git missing, or not finishing in its time limit.
         self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository))
         self.assertEqual("feat/local-branch", head_branch())
-        for failing in (mock.patch.object(release_notes.CLIENT, "runner", missing_git), no_time_left()):
+        for failing in (git_not_on_path(), mock.patch.object(release_notes.CLIENT, "runner", timed_out)):
             with self.subTest(failing=failing), failing:
                 self.assertIsNone(head_branch())

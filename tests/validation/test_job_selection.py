@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
@@ -49,9 +50,16 @@ from tools import release_notes
 from tools.release_notes import ReleaseNotesError
 
 
-def missing_git(command: list[str], timeout: float) -> GitResult:
-    """The real client's runner when the locator finds no git."""
-    raise GitError(MISSING_GIT, kind="prerequisite")
+def git_not_on_path() -> contextlib.AbstractContextManager[object]:
+    """PATH and the link folders name a folder that does not exist, so the real locator finds no git and the real
+    client raises its own failure."""
+    nowhere = str(Path(__file__).resolve().parent / "no git here")
+    return mock.patch.dict(os.environ, {"PATH": nowhere, "LOCALAPPDATA": nowhere})
+
+
+def timed_out(command: list[str], timeout: float) -> GitResult:
+    """The real runner's failure when git does not finish within the client's time limit."""
+    raise GitError(f"{' '.join(command)} did not finish within {timeout:g} seconds", kind="timeout")
 
 
 def fixture_job(label: str, weight: float) -> Job:
@@ -347,8 +355,8 @@ class JobSelectionFixtures(unittest.TestCase):
                 self.assertEqual(["docs/mine.md"], changed_paths(checkout, "main"))
             # A git that cannot run at all cannot tell either: the real helper's git missing, or out of time.
             for failing, reason in (
-                (mock.patch.object(release_notes.CLIENT, "runner", missing_git), MISSING_GIT),
-                (mock.patch.object(release_notes.CLIENT, "timeout", 0.0), "did not finish within 0 seconds"),
+                (git_not_on_path(), MISSING_GIT),
+                (mock.patch.object(release_notes.CLIENT, "runner", timed_out), "did not finish within "),
             ):
                 with self.subTest(reason=reason), failing, self.assertRaisesRegex(ReleaseNotesError, reason):
                     changed_paths(checkout, "main")
