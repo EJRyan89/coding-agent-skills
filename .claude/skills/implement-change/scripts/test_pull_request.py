@@ -141,6 +141,12 @@ class TitleCheckTests(unittest.TestCase):
     def test_one_line_is_the_title_with_its_line_break_dropped(self) -> None:
         self.assertEqual((AWKWARD_TITLE, []), pull_request.read_title(AWKWARD_TITLE + "\r\n"))
 
+    def test_a_title_file_saved_with_a_byte_order_mark_reads_as_typed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "title.txt"
+            path.write_bytes(b"\xef\xbb\xbf" + AWKWARD_TITLE.encode("utf-8") + b"\n")
+            self.assertEqual((AWKWARD_TITLE, []), pull_request.read_title(pull_request.read_file(path)))
+
     def test_an_empty_title_and_one_of_several_lines_are_refused(self) -> None:
         self.assertEqual(("", ["TITLE_EMPTY"]), pull_request.read_title(" \n"))
         self.assertEqual(["TITLE_LINES 2"], pull_request.read_title("fix: a\nsecond\n")[1])

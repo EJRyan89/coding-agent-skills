@@ -117,13 +117,17 @@ class Failed(Exception):
 def read_file_list(path: Path) -> list[str]:
     """The paths a FILE_LIST names, one per line, without blank lines or a byte order mark.
 
-    Raises OSError when it cannot be read, and ValueError when it is not UTF-8 or names no file: resolve writes a
-    FILE_LIST only when it found files to format, so an empty one did not come from it.
+    Raises OSError when it cannot be read, and ValueError when it is not UTF-8, names no file, or holds a NUL on a
+    line, which no path holds, naming that line: resolve writes a FILE_LIST only when it found files to format, so an
+    empty one did not come from it.
     """
     try:
         text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError:
         raise ValueError(f"{path} is not UTF-8 text") from None
+    for number, line in enumerate(text.splitlines(), start=1):
+        if "\0" in line:
+            raise ValueError(f"{path} line {number} holds a NUL, which no path holds")
     files = [name for name in (line.strip() for line in text.splitlines()) if name]
     if not files:
         raise ValueError(f"{path} lists no files")

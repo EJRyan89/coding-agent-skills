@@ -2555,6 +2555,14 @@ class PluginTests(TemporaryTestCase):
         self.assertEqual(1, code)
         self.assertTrue(lines[-1].startswith(f"FAILED {(root / 'hooks' / 'hooks.json').as_posix()} is not JSON"))
 
+    def test_a_hooks_file_that_is_not_a_json_object_fails_the_scan(self) -> None:
+        for shape, text in (("list", "[]"), ("string", '"hooks"'), ("null", "null")):
+            with self.subTest(shape=shape):
+                root = self.plugin(folder=self.root / shape)
+                hooks = write(root / "hooks" / "hooks.json", text)
+                code, lines, _ = run("scan", str(self.skill(root).parent))
+                self.assertEqual((1, f"FAILED {hooks.as_posix()} is not a JSON object"), (code, lines[-1]))
+
     def test_an_unparseable_hooks_file_fails_the_scan(self) -> None:
         for shape, text in UNPARSEABLE_JSON.items():
             with self.subTest(shape=shape):

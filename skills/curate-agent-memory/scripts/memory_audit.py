@@ -336,7 +336,9 @@ def parse_index_entry(line: str) -> dict[str, str] | None:
 
 
 def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
-    if not path.is_file():
+    """The index's entries and lines, none when no index is there; a directory or anything else in its place raises
+    NotAFile, an OSError, rather than reading as an empty index."""
+    if not is_present(path):
         return [], []
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     entries = []
@@ -589,7 +591,7 @@ def index_line(title: str, file: str, hook: str, *, original_target: str | None 
 def reindex(memory_dir: Path) -> dict[str, Any]:
     """Rebuild MEMORY.md in memory without writing it; see the module docstring for the rules."""
     index_path = memory_dir / INDEX_NAME
-    current = index_path.read_text(encoding="utf-8", errors="replace") if index_path.is_file() else ""
+    current = index_path.read_text(encoding="utf-8", errors="replace") if is_present(index_path) else ""
 
     def frontmatter(file: str) -> tuple[dict[str, str], str]:
         return parse_frontmatter((memory_dir / file).read_text(encoding="utf-8", errors="replace"))
@@ -988,13 +990,18 @@ def store_refusal(memory_dir: Path) -> str | None:
     """Why audit, reindex, and delete must not take memory_dir, or None when it is a memory store.
 
     A deletion is permanent, so they take only a directory holding the MEMORY.md index Claude Code keeps beside its
-    memories, and never one inside a skills directory, where a SKILL.md would pass for a memory. audit takes the same,
+    memories, as a file: a directory or anything else in its place is an index that cannot be read, never an empty
+    one. They never take one inside a skills directory, where a SKILL.md would pass for a memory. audit takes the same,
     so the skill learns that the later commands refuse a directory before it changes anything.
     """
     root = skills_directory_holding(memory_dir)
     if root:
         return f"{memory_dir} is inside the skills directory {root}; name the memory directory resolve printed"
-    if not (memory_dir / INDEX_NAME).is_file():
+    try:
+        present = is_present(memory_dir / INDEX_NAME)
+    except OSError as exc:
+        return f"{memory_dir} is not a memory directory: its {INDEX_NAME} cannot be read: {reason(exc)}"
+    if not present:
         return f"{memory_dir} is not a memory directory: it holds no {INDEX_NAME}"
     return None
 

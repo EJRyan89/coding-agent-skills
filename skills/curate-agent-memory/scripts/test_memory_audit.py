@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import memory_audit
 import skill_roots
+from file_presence import NotAFile
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitClient, GitError, GitResult
 
@@ -1169,6 +1170,22 @@ class MemoryStoreGuardTests(unittest.TestCase):
         failure = f"FAILED {directory} is not a memory directory: it holds no MEMORY.md\n"
         self.assertEqual([(1, failure, "")] * 3, self.run_all(directory))
         self.assertEqual(before, self.snapshot())
+
+    def test_a_directory_in_the_index_place_is_refused_as_an_unreadable_index_and_left_alone(self) -> None:
+        directory = self.root / "store"
+        before = self.populate(directory, index=False)
+        (directory / "MEMORY.md").mkdir()
+        failure = f"FAILED {directory} is not a memory directory: its MEMORY.md cannot be read: not a file\n"
+        self.assertEqual([(1, failure, "")] * 3, self.run_all(directory))
+        self.assertEqual(before, self.snapshot())
+        self.assertTrue((directory / "MEMORY.md").is_dir())
+
+    def test_parse_index_raises_for_a_directory_in_the_index_place_and_reads_no_index_as_empty(self) -> None:
+        index = self.root / "MEMORY.md"
+        self.assertEqual(([], []), memory_audit.parse_index(index))
+        index.mkdir()
+        with self.assertRaises(NotAFile):
+            memory_audit.parse_index(index)
 
     def test_a_directory_inside_a_skills_directory_is_refused_and_left_alone(self) -> None:
         for root in (self.home / ".claude" / "skills", self.home / ".agents" / "skills", self.skills_root):
