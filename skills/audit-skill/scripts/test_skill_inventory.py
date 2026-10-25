@@ -2847,3 +2847,23 @@ def test_a_line_splits_into_sentences_and_clauses_before_a_capital_span_emphasis
         "(Once) more?",
         "*Done* here, e.g. lower stays.",
     ]
+
+
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_a_skill_folder_and_a_link_to_it_are_one_skill(tmp_path: Path) -> None:
+    target = tmp_path / "skills" / "real"
+    target.mkdir(parents=True)
+    link = tmp_path / "linked"
+    link_folder(target, link)
+    assert skill_inventory.identity(link) == skill_inventory.identity(target)
+    assert skill_inventory.identity(tmp_path / "skills" / ".." / "linked") == skill_inventory.identity(target)
+    assert skill_inventory.identity(tmp_path / "skills") != skill_inventory.identity(target)
