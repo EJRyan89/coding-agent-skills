@@ -3749,6 +3749,13 @@ def test_re_review_values_are_checked(spec: dict[str, Any], message: str) -> Non
     assert message in refusal(spec, "re-review")
 
 
+def test_an_entry_refused_names_the_value_it_was_given() -> None:
+    past = "v1" + "0" * 5000 + ":F001"
+    for entry, shown in (("F001", '"F001"'), (5, '"5"'), (past, f'"{past}"')):
+        spec = {"kind": "repeats", "path": "a.go", "lines": [1], "entry": entry}
+        assert refusal(spec, "re-review").endswith(f"entry must look like v1:F001, not {shown}")
+
+
 @pytest.mark.parametrize(
     "spec",
     [
