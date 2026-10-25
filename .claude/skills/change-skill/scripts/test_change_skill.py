@@ -346,6 +346,16 @@ class GateTests(unittest.TestCase):
             self.gates(uncommitted={"agents/helper.md": "---\nname: helper\n---\n\nHelp more.\n"}),
         )
 
+    def test_metadata_saved_with_a_byte_order_mark_is_read_as_utf8(self) -> None:
+        text = json.dumps({"agent_deps": ["helper"], "note": "café"}, ensure_ascii=False) + "\n"
+        (self.root / "deploy-meta" / "gamma.json").write_text(text, encoding="utf-8-sig")
+        git(self.root, "commit", "-q", "-am", "gamma's metadata with a byte order mark")
+        git(self.root, "branch", "-f", "main", "HEAD")
+        self.assertEqual(
+            ["GATE audit-skill gamma", "GATE runtime-canary gamma"],
+            self.gates(uncommitted={"agents/helper.md": "---\nname: helper\n---\n\nHelp more.\n"}),
+        )
+
     def test_a_runtime_prompt_source_owes_the_samples_and_the_evaluation_of_each_skill_reaching_it(self) -> None:
         self.assertEqual(
             [

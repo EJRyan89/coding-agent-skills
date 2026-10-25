@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 
@@ -75,6 +76,11 @@ def git(directory: Path, *arguments: str) -> str:
     if result.returncode != 0:
         raise AssertionError(f"git {' '.join(arguments)} failed: {result.stderr}")
     return result.stdout.strip()
+
+
+def printing(stdout: str, command: Sequence[str], timeout: float) -> GitResult:
+    """A git that prints `stdout` and succeeds, whatever it is asked."""
+    return GitResult(0, stdout, "")
 
 
 class DraftTests(unittest.TestCase):
@@ -341,6 +347,21 @@ class CheckCommandTests(Repository):
             "check", *self.files_arguments(), git_client=self.failing_git("rev-parse", "--verify", result=missing)
         )
         self.assertEqual((1, ["FAILED origin/main names no commit after the fetch"]), (code, lines))
+
+    def test_only_an_exit_of_1_that_says_nothing_names_no_commit(self) -> None:
+        for result, line in (
+            (GitResult(128, "", ""), "FAILED git rev-parse: failed with exit code 128"),
+            (GitResult(1, "", "fatal: ambiguous argument\n"), "FAILED git rev-parse: fatal: ambiguous argument"),
+        ):
+            with self.subTest(result=result):
+                git_client = self.failing_git("rev-parse", "--verify", result=result)
+                self.assertEqual((1, [line]), self.run_script("check", *self.files_arguments(), git_client=git_client))
+
+    def test_the_top_folder_loses_only_the_line_break_git_ends_it_with(self) -> None:
+        for printed, top in (("/srv/tree X \n", "/srv/tree X "), ("/srv/treeX\r\n", "/srv/treeX")):
+            with self.subTest(printed=printed):
+                git_client = GitClient(runner=partial(printing, printed))
+                self.assertEqual(Path(top), pull_request.top_of(git_client, self.root))
 
     def test_a_folder_outside_any_repository_is_a_failed_line(self) -> None:
         outside = self.temporary / "outside"
