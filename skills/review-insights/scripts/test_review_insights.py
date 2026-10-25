@@ -30,6 +30,7 @@ import review_records
 import review_synthesis
 import skill_roots
 import whole_number
+from git_client import GitClient
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import FlagError, add_flag, load_store, resolve_flag
@@ -1841,6 +1842,18 @@ class ScopeTests(InsightFixture):
         code, out, err = self.run_main("scope")
         self.assertEqual((0, ""), (code, err))
         return out.splitlines()
+
+    def test_a_checkout_git_cannot_read_fails_naming_git_instead_of_dropping_the_main_checkout(self) -> None:
+        worktree = self.root / "a checkout"
+        GitClient().output(["init", "--quiet", str(worktree)])
+        (worktree / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        self.services = dataclasses.replace(self.services, cwd=lambda: worktree)
+        code, out, err = self.run_main("scope")
+        self.assertEqual((1, ""), (code, err))
+        lines = out.splitlines()
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED git could not read the checkout at {worktree.as_posix()}: "))
+        self.assertIn("bad config line 1", lines[0])
 
     def test_a_directory_inside_a_checkout_names_its_repository_and_the_set_of_just_it(self) -> None:
         self.assertEqual(

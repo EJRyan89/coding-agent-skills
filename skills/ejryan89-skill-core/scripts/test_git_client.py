@@ -184,14 +184,97 @@ class ClientTests(unittest.TestCase):
             [command for command, _timeout in calls],
         )
 
-    def test_rev_parse_path_is_none_outside_a_repository_or_when_git_cannot_answer(self) -> None:
+    def test_rev_parse_path_is_none_only_when_git_says_not_a_repository(self) -> None:
+        runner, _calls = scripted(GitResult(128, "", NOT_A_REPOSITORY))
+        self.assertIsNone(GitClient(runner).rev_parse_path("--show-toplevel", directory="x"))
+
+    def test_rev_parse_path_raises_every_other_failure_with_gits_reason(self) -> None:
         def failing(command: Sequence[str], timeout: float) -> GitResult:
             raise GitError("git did not finish within 300 seconds", kind="timeout")
 
-        runner, _calls = scripted(GitResult(128, "", NOT_A_REPOSITORY), GitResult(0, "\n", ""))
-        self.assertIsNone(GitClient(runner).rev_parse_path("--show-toplevel", directory="x"))
-        self.assertIsNone(GitClient(runner).rev_parse_path("--show-toplevel", directory="x"))
-        self.assertIsNone(GitClient(failing).rev_parse_path("--git-common-dir", directory="x"))
+        dubious = "fatal: detected dubious ownership in repository at 'C:/a repo'\n"
+        for name, client, kind, reason in (
+            ("dubious ownership", GitClient(scripted(GitResult(128, "", dubious))[0]), "git", "dubious ownership"),
+            ("timeout", GitClient(failing), "timeout", "did not finish"),
+            ("no path", GitClient(scripted(GitResult(0, "\n", ""))[0]), "git", "not one path for each"),
+        ):
+            with self.subTest(name), self.assertRaises(GitError) as context:
+                client.rev_parse_path("--show-toplevel", directory="x")
+            self.assertEqual(kind, context.exception.kind)
+            self.assertIn(reason, str(context.exception))
+
+    def test_rev_parse_paths_names_one_path_per_option_or_raises(self) -> None:
+        runner, calls = scripted(GitResult(0, "C:/a\nC:/a/.git\n", ""), GitResult(0, "C:/a\n", ""))
+        client = GitClient(runner)
+        options = ["--show-toplevel", "--git-common-dir"]
+        self.assertEqual([Path("C:/a"), Path("C:/a/.git")], client.rev_parse_paths(options, directory="d"))
+        self.assertEqual(["git", "-C", "d", "rev-parse", "--path-format=absolute", *options], calls[0][0])
+        with self.assertRaises(GitError) as context:
+            client.rev_parse_paths(options, directory="d")
+        self.assertIn("for --show-toplevel --git-common-dir in d, not one path for each", str(context.exception))
+
+    def test_quiet_output_is_none_only_for_exit_1_with_nothing_on_stderr(self) -> None:
+        runner, calls = scripted(
+            GitResult(0, "found\n", ""),
+            GitResult(1, "", ""),
+            GitResult(1, "", "warning: ignoring broken ref refs/heads/side\n"),
+            GitResult(128, "", "fatal: bad config line 1 in file .git/config\n"),
+            GitResult(128, "", NOT_A_REPOSITORY),
+            GitResult(2, "", ""),
+        )
+        client = GitClient(runner)
+        arguments = ["rev-parse", "--verify", "--quiet", "side"]
+        self.assertEqual("found\n", client.quiet_output(arguments, directory="d", timeout=5))
+        self.assertEqual((["git", "-C", "d", *arguments], 5), calls[0])
+        self.assertIsNone(client.quiet_output(arguments))
+        for kind, returncode, reason in (
+            ("git", 1, "warning: ignoring broken ref refs/heads/side"),
+            ("git", 128, "fatal: bad config line 1 in file .git/config"),
+            ("not_repository", 128, "fatal: not a git repository"),
+            ("git", 2, "git rev-parse failed with exit code 2"),
+        ):
+            with self.subTest(reason), self.assertRaises(GitError) as context:
+                client.quiet_output(arguments)
+            self.assertEqual((kind, returncode), (context.exception.kind, context.exception.returncode))
+            self.assertIn(reason, str(context.exception))
+
+    def test_a_quiet_failure_with_nothing_on_stderr_names_the_subcommand_and_its_exit_code(self) -> None:
+        client = GitClient(scripted(GitResult(2, "", ""))[0])
+        with self.assertRaises(GitError) as context:
+            client.quiet_output(["rev-parse", "--verify", "--quiet", "side"])
+        self.assertEqual("git rev-parse failed with exit code 2", str(context.exception))
+        self.assertEqual(("git", 2), (context.exception.kind, context.exception.returncode))
+
+    def test_a_blob_git_cannot_print_names_the_object_gits_reason_its_kind_and_exit_code(self) -> None:
+        name = "c" * 40
+        runner, calls = scripted(
+            GitResult(0, f"{name}\n", ""), GitResult(128, "", "fatal: not a git repository: '.git'\n")
+        )
+        with self.assertRaises(GitError) as context:
+            GitClient(runner).file_at("HEAD", "a file", directory="d")
+        self.assertEqual("HEAD:a file: fatal: not a git repository: '.git'", str(context.exception))
+        self.assertEqual(("not_repository", 128), (context.exception.kind, context.exception.returncode))
+        self.assertEqual(["git", "-C", "d", "cat-file", "blob", name], calls[1][0])
+
+    def test_a_blob_failure_with_nothing_on_stderr_names_cat_file_and_its_exit_code(self) -> None:
+        runner, _calls = scripted(GitResult(0, "c" * 40 + "\n", ""), GitResult(3, "", ""))
+        with self.assertRaises(GitError) as context:
+            GitClient(runner).file_at("HEAD", "a file", directory="d")
+        self.assertEqual("HEAD:a file: git cat-file failed with exit code 3", str(context.exception))
+        self.assertEqual(("git", 3), (context.exception.kind, context.exception.returncode))
+
+    def test_commit_of_refuses_an_answer_that_is_not_one_object_name(self) -> None:
+        runner, calls = scripted(GitResult(0, "a" * 40 + "\n", ""), GitResult(0, "b" * 64 + "\n", ""))
+        client = GitClient(runner)
+        self.assertEqual("a" * 40, client.commit_of("main", directory="d"))
+        self.assertEqual(
+            ["git", "-C", "d", "rev-parse", "--verify", "--quiet", "--end-of-options", "main^{commit}"], calls[0][0]
+        )
+        self.assertEqual("b" * 64, client.commit_of("main", directory="d"))
+        for printed in ("a" * 39, "A" * 40, "a" * 40 + "\n" + "a" * 40, ""):
+            with self.subTest(printed=printed), self.assertRaises(GitError) as context:
+                GitClient(scripted(GitResult(0, printed, ""))[0]).commit_of("main", directory="d")
+            self.assertIn("not one object name", str(context.exception))
 
     def test_classifier_reads_literal_git_stderr(self) -> None:
         self.assertEqual("not_repository", classify_failure(NOT_A_REPOSITORY))
@@ -514,6 +597,65 @@ class SubprocessRunnerTests(unittest.TestCase):
                 ):
                     GitClient().output(arguments, directory=directory, input_bytes=given)
                 self.assertEqual("not_repository", context.exception.kind)
+
+
+class ThreeAnswerTests(unittest.TestCase):
+    """Found, absent, and could not tell, from real git in a throwaway repository."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="three answers ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repository = self.root / "a repository"
+        self.client = GitClient(timeout=60)
+        self.client.output(["init", "--quiet", str(self.repository)])
+        (self.repository / "a file.txt").write_bytes(b"caf\xe9\r\n")
+        (self.repository / "a folder").mkdir()
+        (self.repository / "a folder" / "inner").write_text("x\n", encoding="utf-8")
+        self.client.output(["add", "--", "a file.txt", "a folder"], directory=self.repository)
+        identity = ["-c", "user.name=Test", "-c", "user.email=test@example.invalid"]
+        self.client.output([*identity, "commit", "--quiet", "-m", "first"], directory=self.repository)
+        self.head = self.client.output(["rev-parse", "HEAD"], directory=self.repository).strip()
+
+    def break_configuration(self) -> None:
+        (self.repository / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+
+    def test_found_and_absent(self) -> None:
+        self.assertEqual(self.head, self.client.commit_of("HEAD", directory=self.repository))
+        self.assertIsNone(self.client.commit_of("no-such-branch", directory=self.repository))
+        self.assertIsNone(self.client.commit_of("-n", directory=self.repository))
+        self.assertEqual(b"caf\xe9\r\n", self.client.file_at("HEAD", "a file.txt", directory=self.repository))
+        self.assertIsNone(self.client.file_at("HEAD", "no such file", directory=self.repository))
+        self.assertIsNone(self.client.file_at("0" * 40, "a file.txt", directory=self.repository))
+        top = self.client.rev_parse_path("--show-toplevel", directory=self.repository / "a folder")
+        self.assertEqual(self.repository.resolve(), top.resolve() if top else None)
+        plain = self.root / "plain folder"
+        plain.mkdir()
+        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}):
+            self.assertIsNone(self.client.rev_parse_path("--show-toplevel", directory=plain))
+
+    def test_a_broken_ref_is_named_not_taken_for_absent(self) -> None:
+        (self.repository / ".git" / "refs" / "heads" / "broken").write_text("nonsense\n", encoding="utf-8")
+        with self.assertRaises(GitError) as context:
+            self.client.commit_of("broken", directory=self.repository)
+        self.assertIn("ignoring broken ref refs/heads/broken", str(context.exception))
+
+    def test_a_folder_is_not_a_file(self) -> None:
+        with self.assertRaises(GitError) as context:
+            self.client.file_at("HEAD", "a folder", directory=self.repository)
+        self.assertIn("HEAD:a folder", str(context.exception))
+
+    def test_a_repository_git_cannot_read_is_named_by_every_form(self) -> None:
+        self.break_configuration()
+        for name, call in (
+            ("rev_parse_path", lambda: self.client.rev_parse_path("--show-toplevel", directory=self.repository)),
+            ("commit_of", lambda: self.client.commit_of("HEAD", directory=self.repository)),
+            ("file_at", lambda: self.client.file_at("HEAD", "a file.txt", directory=self.repository)),
+        ):
+            with self.subTest(name), self.assertRaises(GitError) as context:
+                call()
+            self.assertEqual("git", context.exception.kind)
+            self.assertIn("bad config line 1", str(context.exception))
 
 
 class StreamTests(unittest.TestCase):
