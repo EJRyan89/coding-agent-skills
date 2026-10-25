@@ -57,7 +57,12 @@ from review_vocabularies import DispatchMode
 
 
 def _has_commit(checkout: Path, commit: str, git: Runner) -> bool:
-    return git_in(checkout, git, "cat-file", "-e", f"{commit}^{{commit}}").returncode == 0
+    """Whether the checkout holds `commit`. Only git's answer that it names no commit is no; any other failure, such
+    as a repository git cannot read, raises, so it is never taken for a commit to fetch."""
+    try:
+        return GitClient(git).commit_of(commit, directory=checkout) is not None
+    except GitError as exc:
+        raise PipelineError(f"git cannot tell whether {checkout} holds commit {commit}: {exc}") from exc
 
 
 _FETCH_LOCKS: dict[str, threading.Lock] = {}

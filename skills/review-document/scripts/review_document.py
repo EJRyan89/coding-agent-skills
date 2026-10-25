@@ -66,7 +66,7 @@ import json_reader
 import json_writer
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError, GitResult, classify_failure
+from git_client import GitClient, GitError
 from github_client import GitHubError
 from path_containment import within
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
@@ -240,21 +240,16 @@ def tracked_name(relative: str, path: Path, checkout: Path, git: GitClient) -> s
     return same[0] if same else relative
 
 
-def git_failure(result: GitResult, doing: str) -> GitError:
-    """A git command's failure, classified as GitClient classifies one, with git's reason."""
-    reason = result.stderr.strip() or f"exit code {result.returncode}"
-    return GitError(
-        f"git could not {doing}: {reason}", kind=classify_failure(result.stderr), returncode=result.returncode
-    )
+def git_failure(exc: GitError, doing: str) -> GitError:
+    """A git command's failure, keeping its class and exit code, said as what could not be done."""
+    return GitError(f"git could not {doing}: {exc}", kind=exc.kind, returncode=exc.returncode)
 
 
 def unborn(checkout: Path, git: GitClient) -> bool:
-    """Whether HEAD names a branch that has no commit yet, as before a checkout's first commit."""
-    branch = git.run(["symbolic-ref", "--quiet", "HEAD"], directory=checkout)
-    if branch.returncode != 0:
-        return False
-    # rev-parse --verify --quiet exits 1, saying nothing, for a ref that does not exist.
-    return git.run(["rev-parse", "--verify", "--quiet", branch.stdout.strip()], directory=checkout).returncode == 1
+    """Whether HEAD names a branch that has no commit yet, as before a checkout's first commit. A detached HEAD is
+    none; any git failure raises GitError."""
+    branch = git.quiet_output(["symbolic-ref", "--quiet", "HEAD"], directory=checkout)
+    return branch is not None and git.commit_of(branch.strip(), directory=checkout) is None
 
 
 def committed_blob(commit: str, relative: str, checkout: Path, git: GitClient) -> str | None:
@@ -271,19 +266,23 @@ def committed_blob(commit: str, relative: str, checkout: Path, git: GitClient) -
 def committed_base(relative: str, checkout: Path, git: GitClient, *, text: bool) -> Base:
     """The document as committed at HEAD, a text file's with its line endings as LF, or no base when the checkout has
     no commit yet or HEAD holds no file at `relative`. Any other failure to read either fails with git's reason."""
-    head = git.run(["rev-parse", "--verify", "HEAD^{commit}"], directory=checkout)
-    if head.returncode != 0:
+    try:
+        commit = git.commit_of("HEAD", directory=checkout)
+    except GitError as exc:
+        raise git_failure(exc, "read the checkout's HEAD commit") from exc
+    if commit is None:
         if unborn(checkout, git):
             return Base(None, None, "the checkout has no commit yet")
-        raise git_failure(head, "read the checkout's HEAD commit")
-    commit = head.stdout.strip()
+        raise GitError("git could not read the checkout's HEAD commit: HEAD names no commit the repository holds")
     blob_id = committed_blob(commit, relative, checkout, git)
     if blob_id is None:
         return Base(None, None, "the file is not committed")
-    blob = git.run(["cat-file", "blob", blob_id], directory=checkout)
-    if blob.returncode != 0:
-        raise git_failure(blob, f"read {relative} as committed at {commit}")
-    content = blob.output_bytes()
+    try:
+        content = git.file_at(commit, relative, directory=checkout)
+    except GitError as exc:
+        raise git_failure(exc, f"read {relative} as committed at {commit}") from exc
+    if content is None:
+        raise GitError(f"git could not read {relative} as committed at {commit}: it lists blob {blob_id} there")
     return Base(normalized(content) if text else content, commit, "committed")
 
 
