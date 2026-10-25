@@ -77,6 +77,21 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`.
 - **Examples:** #1443, #1462, #1603, #1821, #1824, #1854
 
+### Evidence a store records leaving out is withheld, not missing
+
+- **Rule:** A reader of a store that records what it leaves out, and why, reads that record before calling an absent
+  file missing: a file the record names is reported with its reason and judged another way, and only a file it does
+  not name is missing.
+- **Why:** Without the record, a deliberate exclusion either fails the run as missing evidence or, softened to skip
+  every absent file, hides a file that should have been there.
+- **Use:** `conditions:snapshot_exclusions`
+- **Guard:** `.claude/skills/review-repository/scripts/test_review_repository.py::SnapshotTests::test_a_changed_script_the_snapshot_excludes_opens_the_route_with_its_reason_and_the_rest_still_run`,
+  `.claude/skills/review-repository/scripts/test_untested_functions.py::ConditionTests::test_a_changed_script_the_snapshot_records_as_excluded_opens_the_route_for_review_from_the_diff`
+- **Search for:** `rg -n "\.(is_file|exists)\(\)" .claude/skills/review-repository/scripts`, a condition testing a
+  snapshot path without `snapshot_exclusions`; a glob over the snapshot for paths its exclusions always leave out, such
+  as anything under `.claude/`.
+- **Examples:** #1918
+
 ### A failure is reported as itself
 
 - **Rule:** A failure names its own cause and the step that stopped, and ends with the exit code its contract gives
