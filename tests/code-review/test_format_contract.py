@@ -7,10 +7,10 @@ through the code-review core, finds each table's objects in them, and checks the
 - every field an object has is a row, and every row's field occurs in some fixture;
 - a `yes` field is in every object and removing it is rejected; a `no` field can be absent or removed; `with X`
   is optional together with X but not alone; `when ...` is optional but required in some fixture;
-- every value has a documented type, every documented type occurs or is accepted, and a value of an undocumented
+- every value has a documented type, every documented type occurs or is accepted, and a value of each undocumented
   type (null included) is rejected;
-- every listed value ("One of ...") occurs or is accepted, every value occurs in the list, and other values are
-  rejected;
+- every listed value ("One of ...") occurs or is accepted, every value occurs in the list, and an unlisted value of
+  each documented type other than null is rejected;
 - an unlisted field is rejected.
 
 The adapter request has no validator, so its tables are checked against what `build_adapter_request` writes, and the
@@ -80,6 +80,7 @@ PROBES: tuple[tuple[str, Any], ...] = (
     ("array", []),
     ("object", {}),
     ("boolean", True),
+    ("number", 0.5),
 )
 
 
@@ -92,7 +93,7 @@ def native(path: str) -> str:
 
 
 # A value of each type, for a documented type no fixture has: the validator must accept it somewhere.
-EXAMPLES = {**dict(PROBES), "number": 0.5}
+EXAMPLES = dict(PROBES)
 UNDOCUMENTED_VALUE = "not-a-documented-value"
 UNDOCUMENTED_FIELD = "undocumented_field"
 HEADER = ["Field", "Type", "Required", "Meaning"]
@@ -328,7 +329,7 @@ def _row_problems(
     if row.types is not None:
         problems += _type_probe_problems(label, name, row.types, values, removable)
     if row.values is not None:
-        problems += _listed_probe_problems(label, name, row.values, values, removable)
+        problems += _listed_probe_problems(label, name, row.types, row.values, values, removable)
     return problems
 
 
@@ -367,7 +368,12 @@ def _type_probe_problems(
 
 
 def _listed_probe_problems(
-    label: str, name: str, listed: tuple[Any, ...], values: list[Any], removable: list[Instance]
+    label: str,
+    name: str,
+    types: frozenset[str] | None,
+    listed: tuple[Any, ...],
+    values: list[Any],
+    removable: list[Instance],
 ) -> list[str]:
     """Listed values no fixture has and no validator accepts, then validators that accept an unlisted value."""
     problems: list[str] = [
@@ -375,15 +381,38 @@ def _listed_probe_problems(
         for value in listed
         if value not in values and not any(item.accepts(_set(name, value)) for item in removable)
     ]
-    accepted = [item.fixture.name for item in removable if item.accepts(_set(name, UNDOCUMENTED_VALUE))]
-    problems += [f"{label} accepts an unlisted value in {fixture}" for fixture in accepted]
+    for probe in _unlisted_probes(types, listed):
+        accepted = [item.fixture.name for item in removable if item.accepts(_set(name, probe))]
+        problems += [f"{label} accepts the unlisted value {probe!r} in {fixture}" for fixture in accepted]
     return problems
 
 
 def _wrong_probes(types: frozenset[str]) -> list[tuple[str, Any]]:
-    """Null unless it is documented, and the first other probe of a type the row does not document."""
-    wrong = [(kind, probe) for kind, probe in PROBES if not has_type(types, probe)]
-    return [item for item in wrong if item[0] == "null"] + [item for item in wrong if item[0] != "null"][:1]
+    """A probe of each type the row does not document, null first."""
+    return [(kind, probe) for kind, probe in PROBES if not has_type(types, probe)]
+
+
+def _is_listed(value: Any, listed: tuple[Any, ...]) -> bool:
+    """Whether the list holds the value as JSON compares them, so `true` is not `1` and `1` is not `1.5`."""
+    return any(json_type(item) == json_type(value) and item == value for item in listed)
+
+
+def _unlisted_probes(types: frozenset[str] | None, listed: tuple[Any, ...]) -> list[Any]:
+    """A value of each allowed type that the list does not hold, in type order; null is never an unlisted value."""
+    kinds = types if types is not None else frozenset(json_type(value) for value in listed)
+    top = max((value for value in listed if json_type(value) in ("integer", "number")), default=0)
+    candidates: dict[str, tuple[Any, ...]] = {
+        "string": (UNDOCUMENTED_VALUE,),
+        "integer": (int(top) + 1,),
+        "number": (top + 0.5,),
+        "boolean": (True, False),
+        "array": (EXAMPLES["array"],),
+        "object": (EXAMPLES["object"],),
+    }
+    probes: list[Any] = []
+    for kind in sorted(kinds - {"null"}):
+        probes += [value for value in candidates[kind] if not _is_listed(value, listed)][:1]
+    return probes
 
 
 def _required(label: str, name: str, row: Row, found: list[Instance], judged: list[Instance]) -> list[str]:
@@ -1980,10 +2009,13 @@ class FormatContractTest(unittest.TestCase):
 
 
 def toy_validator(
-    kinds: tuple[str, ...] = ("x", "y"), note_types: tuple[type, ...] = (str,), notes: tuple[str, ...] | None = None
+    kinds: tuple[str, ...] = ("x", "y"),
+    note_types: tuple[type, ...] = (str,),
+    notes: tuple[str, ...] | None = None,
+    counts: tuple[int, ...] | None = None,
 ) -> Callable[[Any], Any]:
-    """A validator for {"item": {...}}: kind is required and listed, count an optional integer, note optional and
-    nullable but only beside count, and listed when notes is given, and no other field."""
+    """A validator for {"item": {...}}: kind is required and listed, count an optional integer, listed when counts is
+    given, note optional and nullable but only beside count, and listed when notes is given, and no other field."""
 
     def validate(value: Any) -> None:
         item = value["item"]
@@ -1993,6 +2025,8 @@ def toy_validator(
             raise ValueError("kind")
         if "count" in item and (not isinstance(item["count"], int) or isinstance(item["count"], bool)):
             raise ValueError("count")
+        if counts is not None and "count" in item and item["count"] not in counts:
+            raise ValueError("unlisted count")
         if "note" in item and item["note"] is not None and not isinstance(item["note"], note_types):
             raise ValueError("note")
         if notes is not None and isinstance(item.get("note"), str) and item["note"] not in notes:
@@ -2072,19 +2106,64 @@ class CheckTableTests(unittest.TestCase):
                 "toy.item: an unlisted field is accepted in bare",
                 "toy.item: kind is required but removing it is accepted in full",
                 "toy.item: kind is required but removing it is accepted in bare",
-                "toy.item: kind accepts null, which is not documented, in full",
-                "toy.item: kind accepts null, which is not documented, in bare",
-                "toy.item: kind accepts integer, which is not documented, in full",
-                "toy.item: kind accepts integer, which is not documented, in bare",
-                "toy.item: kind accepts an unlisted value in full",
-                "toy.item: kind accepts an unlisted value in bare",
+                *(
+                    f"toy.item: kind accepts {kind}, which is not documented, in {fixture}"
+                    for kind in ("null", "integer", "array", "object", "boolean", "number")
+                    for fixture in ("full", "bare")
+                ),
+                "toy.item: kind accepts the unlisted value 'not-a-documented-value' in full",
+                "toy.item: kind accepts the unlisted value 'not-a-documented-value' in bare",
                 "toy.item: count needs note but removing it alone is accepted in full",
-                "toy.item: count accepts null, which is not documented, in full",
-                "toy.item: count accepts string, which is not documented, in full",
-                "toy.item: note accepts integer, which is not documented, in full",
+                *(
+                    f"toy.item: count accepts {kind}, which is not documented, in full"
+                    for kind in ("null", "string", "array", "object", "boolean", "number")
+                ),
+                *(
+                    f"toy.item: note accepts {kind}, which is not documented, in full"
+                    for kind in ("integer", "array", "object", "boolean", "number")
+                ),
             ],
             self.check(toy_rows(), toy_instances(_judge(lambda value: None))),
         )
+
+    def test_a_validator_that_accepts_what_only_some_probes_try_is_reported(self) -> None:
+        """A listed count checked with isinstance(int) alone takes a boolean and an unlisted integer, which neither
+        null, the first wrong type, nor an unlisted string shows."""
+        rows = toy_rows(count=["`count`", "integer", "with `note`", "One of `1`."])
+
+        def lenient(value: Any) -> None:
+            item = dict(value["item"])
+            if isinstance(item.get("count"), int):
+                item["count"] = 1
+            toy_validator()({"item": item})
+
+        self.assertEqual(
+            [
+                "toy.item: count accepts boolean, which is not documented, in full",
+                "toy.item: count accepts the unlisted value 2 in full",
+            ],
+            self.check(rows, toy_instances(_judge(lenient))),
+        )
+        self.assertEqual([], self.check(rows, toy_instances(_judge(toy_validator(counts=(1,))))))
+
+    def test_an_unlisted_probe_of_each_type_is_one_the_list_does_not_hold(self) -> None:
+        cases: list[tuple[frozenset[str] | None, tuple[Any, ...], list[Any]]] = [
+            (frozenset({"integer"}), (1, 2, 5), [6]),
+            (frozenset({"integer"}), (), [1]),
+            (frozenset({"number"}), (1.5,), [2.0]),
+            (frozenset({"boolean"}), (True,), [False]),
+            (frozenset({"boolean"}), (False,), [True]),
+            (frozenset({"boolean"}), (True, False), []),
+            (frozenset({"boolean", "integer"}), (1, 0), [True, 2]),
+            (frozenset({"string", "null"}), ("a",), ["not-a-documented-value"]),
+            (frozenset({"string"}), ("not-a-documented-value",), []),
+            (frozenset({"array", "object"}), ("a",), [[], {}]),
+            (None, ("a", 3), [4, "not-a-documented-value"]),
+        ]
+        for types, listed, expected in cases:
+            with self.subTest(types=types, listed=listed):
+                typed = [(json_type(value), value) for value in _unlisted_probes(types, listed)]
+                self.assertEqual([(json_type(value), value) for value in expected], typed)
 
     def test_values_of_an_undocumented_type_or_unlisted_value_are_reported_each_time(self) -> None:
         rows = toy_rows(kind=["`kind`", "integer", "yes", "One of `1`."])
@@ -2153,7 +2232,10 @@ class CheckTableTests(unittest.TestCase):
                 "toy.item: kind is required but removing it is accepted in full",
                 "toy.item: kind is required but removing it is accepted in bare",
                 "toy.item: count needs note but removing it alone is accepted in full",
-                "toy.item: note accepts integer, which is not documented, in full",
+                *(
+                    f"toy.item: note accepts {kind}, which is not documented, in full"
+                    for kind in ("integer", "array", "object", "boolean", "number")
+                ),
             ],
             self.check(rows, toy_instances(_judge(lambda value: None))),
         )
