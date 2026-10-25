@@ -207,12 +207,12 @@ def normalized(content: bytes) -> bytes:
 def locate(path: Path, git: GitClient) -> Location:
     """The document's path in its checkout, as git tracks it, or its file name with no checkout."""
     try:
-        top = git.output(["rev-parse", "--show-toplevel"], directory=path.parent).strip()
+        top = git.rev_parse_path("--show-toplevel", directory=path.parent)
     except GitError as exc:
-        if exc.kind == "not_repository":
-            return Location(path.name, None)
         raise DocumentError(f"git could not read the checkout around {path}: {exc}") from exc
-    checkout = Path(top).resolve()
+    if top is None:
+        return Location(path.name, None)
+    checkout = top.resolve()
     relative = PurePosixPath(*path.relative_to(checkout).parts)
     if relative.parts[0] == ".git":
         raise DocumentError(f"{path} is inside the checkout's .git folder")

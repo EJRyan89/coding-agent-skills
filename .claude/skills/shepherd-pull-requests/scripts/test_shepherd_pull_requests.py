@@ -488,7 +488,15 @@ class HubTest(FixtureTestCase):
         outside.mkdir()
         status, lines = self.tick(StubGh(), directory=outside)
         self.assertEqual(1, status)
-        self.assertTrue(lines[0].startswith("FAILED "), lines)
+        self.assertEqual([f"FAILED {outside.as_posix()} is not in a git checkout"], lines)
+
+    def test_a_checkout_git_cannot_read_fails_naming_git_not_as_no_checkout(self) -> None:
+        (self.hub / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        status, lines = self.tick(StubGh())
+        self.assertEqual(1, status)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED git could not read the checkout at {self.hub.as_posix()}: "))
+        self.assertIn("bad config line 1", lines[0])
 
 
 class ListingTest(FixtureTestCase):
