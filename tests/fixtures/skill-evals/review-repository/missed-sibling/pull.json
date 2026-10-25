@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "example/report-exports",
+  "number": 14,
+  "title": "Refuse a report folder that is no longer there",
+  "base_ref": "main",
+  "head_ref": "missing-folder",
+  "threads": [],
+  "body": "Fixes the clean-up of a report folder that was moved: it is refused with `MISSING <folder>` and exit 2, rather than find's error and exit 1, so the scheduled run tells a moved folder from a failed one.\n\n## Upgrade note\n\nNone.\n\n## Validation\n\nSiblings: searched `remove_old_reports` across `tools/`; it has no other caller, so there is nothing else to fix.\n",
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}
