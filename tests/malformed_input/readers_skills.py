@@ -112,6 +112,13 @@ def _plugin_hooks(path: Path) -> object:
     return skill_inventory.plugin_hooks(path.parents[1] / "skills" / "example")
 
 
+def _memory_settings(path: Path) -> object:
+    """The settings as the audit reads them, through blocking_scope, the use that reads their permissions by kind."""
+    settings = memory_audit.read_settings(path)
+    memory_audit.blocking_scope((("project", path),))
+    return settings
+
+
 def _policy(path: Path) -> object:
     cleanup_policy._read.cache_clear()
     return cleanup_policy._read(path)
@@ -428,8 +435,8 @@ READERS = [
     Reader(
         "memory_audit.read_settings",
         "json",
-        b'{"permissions": {}}',
-        memory_audit.read_settings,
+        b'{"permissions": {"blockReadsOutsideWorkingDirectories": false}}',
+        _memory_settings,
         (memory_audit.UnreadableSettings,),
         filename="settings.json",
         accepts={
@@ -437,6 +444,8 @@ READERS = [
             "top_level_list": "a settings file holding another value than an object reads as empty",
             "top_level_string": "a settings file holding another value than an object reads as empty",
             "top_level_null": "a settings file holding another value than an object reads as empty",
+            "wrong_type:permissions.blockReadsOutsideWorkingDirectories": "only a literal true blocks reads, so a "
+            "value of another kind blocks none",
         },
     ),
     Reader(

@@ -276,6 +276,33 @@ class ReaderTests(unittest.TestCase):
             read_assets(self.write("obj/project.assets.json", "{}"))
         self.assertIn("no targets", refused.exception.reason)
 
+    def test_a_section_of_another_kind_makes_the_assets_file_unreadable_by_name(self) -> None:
+        def changed(where: tuple[str, ...], value: object) -> dict[str, object]:
+            document: dict[str, object] = json.loads(json.dumps(ASSETS))
+            parent: Any = document
+            for step in where[:-1]:
+                parent = parent.setdefault(step, {})
+            parent[where[-1]] = value
+            return document
+
+        restore = {"projectPath": "/repo/a.csproj", "frameworks": "net8.0"}
+        cases = {
+            "the assets file's target net8.0 is not an object": changed(("targets", "net8.0"), "text"),
+            "the assets file's target net8.0/win-x64 is not an object": changed(("targets", "net8.0/win-x64"), []),
+            "the assets file's project is not an object": changed(("project",), "text"),
+            "the assets file's project.frameworks is not an object": changed(("project", "frameworks"), ["net8.0"]),
+            "the assets file's project.frameworks.net8.0 is not an object": changed(
+                ("project", "frameworks", "net8.0"), "text"
+            ),
+            "the assets file's project.restore is not an object": changed(("project", "restore"), 1),
+            "the assets file's project.restore.frameworks is not an object": changed(("project", "restore"), restore),
+        }
+        for reason, document in cases.items():
+            with self.subTest(reason=reason):
+                with self.assertRaises(Unreadable) as refused:
+                    read_assets(self.write("obj/project.assets.json", json.dumps(document)))
+                self.assertEqual(reason, refused.exception.reason)
+
     def test_a_framework_version_of_any_length_is_read(self) -> None:
         digits = "9" * 5000
         self.assertEqual(f"net{digits}.0", framework_key(f".NETCoreApp,Version=v{digits}"))

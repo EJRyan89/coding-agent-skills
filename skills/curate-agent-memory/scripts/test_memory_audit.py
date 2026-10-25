@@ -1556,6 +1556,18 @@ class ResolveTests(unittest.TestCase):
         self.block_reads(self.home / ".claude" / "settings.json")
         self.assertEqual(self.blocked_note("user", "project", project), self.resolve()["notes"][-1])
 
+    def test_permissions_of_another_kind_leave_the_directory_unresolved_by_name(self) -> None:
+        (self.home / "chosen").mkdir(parents=True)
+        project = self.repo / ".claude" / "settings.json"
+        user = self.home / ".claude" / "settings.json"
+        for permissions in ("text", ["blockReadsOutsideWorkingDirectories"], None):
+            with self.subTest(permissions=permissions):
+                write(project, json.dumps({"autoMemoryDirectory": "~/chosen"}))
+                write(user, json.dumps({"permissions": permissions}))
+                result = self.resolve()
+                self.assertIsNone(result["memory_dir"])
+                self.assertEqual(f"Cannot read {user}: its permissions is not an object", result["notes"][-1])
+
     def test_an_untracked_local_choice_is_the_user_own_and_used(self) -> None:
         (self.home / "chosen").mkdir(parents=True)
         local = self.repo / ".claude" / "settings.local.json"

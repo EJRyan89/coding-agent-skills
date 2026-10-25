@@ -866,11 +866,14 @@ def blocking_scope(scopes: tuple[tuple[str, Path], ...]) -> str | None:
     """The first scope whose settings turn permissions.blockReadsOutsideWorkingDirectories on, or None.
 
     Claude Code honors `true` from any scope, even over a managed `false` (https://code.claude.com/docs/en/settings,
-    "Exceptions to managed settings precedence").
+    "Exceptions to managed settings precedence"). A `permissions` that is not an object raises UnreadableSettings:
+    whether reads are blocked cannot be known from it.
     """
     for scope, path in scopes:
-        permissions = read_settings(path).get("permissions")
-        if isinstance(permissions, dict) and permissions.get(BLOCK_READS) is True:
+        permissions = read_settings(path).get("permissions", {})
+        if not isinstance(permissions, dict):
+            raise UnreadableSettings(f"Cannot read {path}: its permissions is not an object")
+        if permissions.get(BLOCK_READS) is True:
             return scope
     return None
 

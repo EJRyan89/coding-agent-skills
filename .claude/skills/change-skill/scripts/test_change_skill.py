@@ -335,6 +335,34 @@ class GateTests(unittest.TestCase):
         git(self.root, "branch", "-f", "main", "HEAD")
         self.assertEqual(["GATE audit-skill alpha"], self.gates(uncommitted={"skills/alpha/scripts/alpha.py": "1\n"}))
 
+    def on_main(self, files: Mapping[str, str]) -> None:
+        """The files committed as main's own, so the change the gates read starts from them."""
+        write(self.root, files)
+        git(self.root, "commit", "-q", "-am", "metadata on main")
+        git(self.root, "branch", "-f", "main", "HEAD")
+
+    def test_skill_deps_of_another_kind_owe_the_evaluation_their_reach_could_hold(self) -> None:
+        pipeline = {"skills/ejryan89-code-review-core/scripts/review_pipeline.py": "print('more')\n"}
+        for skill_deps in ('"ejryan89-code-review-core"', "[1]"):
+            with self.subTest(skill_deps=skill_deps):
+                git(self.root, "checkout", "-q", "--", ".")
+                self.on_main({"deploy-meta/review-prs.json": '{"skill_deps": ' + skill_deps + "}\n"})
+                self.assertEqual(
+                    [
+                        "REGENERATE python tools/runtime_prompts.py --write",
+                        "GATE audit-skill ejryan89-code-review-core",
+                        "GATE evaluate-skill review-prs if-prompt",
+                    ],
+                    self.gates(uncommitted=pipeline),
+                )
+
+    def test_agent_deps_of_another_kind_owe_the_canary_when_an_agent_changes(self) -> None:
+        self.on_main({"deploy-meta/gamma.json": '{"agent_deps": "helper"}\n'})
+        self.assertEqual(
+            ["GATE audit-skill gamma", "GATE runtime-canary gamma"],
+            self.gates(uncommitted={"agents/helper.md": "---\nname: helper\n---\n\nHelp more.\n"}),
+        )
+
     def test_a_folder_in_place_of_metadata_reads_as_empty(self) -> None:
         (self.root / "deploy-meta" / "gamma.json").unlink()
         (self.root / "deploy-meta" / "gamma.json").mkdir()

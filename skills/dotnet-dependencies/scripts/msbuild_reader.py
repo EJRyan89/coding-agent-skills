@@ -312,17 +312,25 @@ def assets_assemblies(entry: dict[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(stems, key=str.casefold))
 
 
-def mapping(document: dict[str, Any], key: str) -> dict[str, Any]:
-    """The object under `key`, or an empty one when it is absent or not an object."""
+def mapping(document: dict[str, Any], key: str, path: Path, where: str) -> dict[str, Any]:
+    """The object under `key`, `where` naming it in the assets file at `path`, or an empty one when it is absent;
+    Unreadable when it holds another kind, whose content the reader cannot know."""
     value = document.get(key)
-    return value if isinstance(value, dict) else {}
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise Unreadable(path, f"the assets file's {where} is not an object")
+    return value
 
 
-def assets_direct(frameworks: dict[str, Any]) -> dict[str, list[PackageRef]]:
-    """The packages the project asked for, per framework, from the assets file's project section."""
+def assets_direct(frameworks: dict[str, Any], path: Path) -> dict[str, list[PackageRef]]:
+    """The packages the project asked for, per framework, from the assets file's project section at `path`; a
+    framework's entry of another kind than an object is Unreadable."""
     direct: dict[str, list[PackageRef]] = {}
     for framework, document in frameworks.items():
-        dependencies = document.get("dependencies") if isinstance(document, dict) else None
+        if not isinstance(document, dict):
+            raise Unreadable(path, f"the assets file's project.frameworks.{framework} is not an object")
+        dependencies = document.get("dependencies")
         direct[framework] = [
             PackageRef(package, detail.get("version") if isinstance(detail, dict) else None, "PackageReference")
             for package, detail in (dependencies.items() if isinstance(dependencies, dict) else [])
@@ -347,7 +355,8 @@ def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
     targets = document.get("targets") if isinstance(document, dict) else None
     if not isinstance(targets, dict):
         raise Unreadable(path, "the assets file has no targets")
-    frameworks = mapping(mapping(document, "project"), "frameworks")
+    project = mapping(document, "project", path, "project")
+    frameworks = mapping(project, "frameworks", path, "project.frameworks")
     aliases = [*declared, *frameworks]
 
     def named(written: str) -> str:
@@ -356,7 +365,9 @@ def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
     nodes: dict[str, dict[str, PackageNode]] = {}
     for target, entries in targets.items():
         framework = named(target.split("/", 1)[0])
-        if not isinstance(entries, dict) or framework in nodes:
+        if not isinstance(entries, dict):
+            raise Unreadable(path, f"the assets file's target {target} is not an object")
+        if framework in nodes:
             continue
         nodes[framework] = {}
         for key, entry in entries.items():
@@ -370,8 +381,9 @@ def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
                 {k: str(v) for k, v in dependencies.items()} if isinstance(dependencies, dict) else {},
                 assets_assemblies(entry),
             )
-    direct = {named(framework): refs for framework, refs in assets_direct(frameworks).items()}
-    return Assets(nodes, direct, restored_project_refs(mapping(mapping(document, "project"), "restore"), named, path))
+    direct = {named(framework): refs for framework, refs in assets_direct(frameworks, path).items()}
+    restore = mapping(project, "restore", path, "project.restore")
+    return Assets(nodes, direct, restored_project_refs(restore, named, path))
 
 
 def restored_project_refs(restore: dict[str, Any], named: Callable[[str], str], path: Path) -> dict[str, list[Path]]:
@@ -382,7 +394,7 @@ def restored_project_refs(restore: dict[str, Any], named: Callable[[str], str], 
     if not isinstance(restored, str):
         return {}
     found: dict[str, list[Path]] = {}
-    for framework, section in mapping(restore, "frameworks").items():
+    for framework, section in mapping(restore, "frameworks", path, "project.restore.frameworks").items():
         references = section.get("projectReferences") if isinstance(section, dict) else None
         if isinstance(references, dict):
             # The project's directory holds the obj folder the assets file is in.
