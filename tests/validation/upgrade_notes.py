@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+from git_client import GitError
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from validation_support import (
     OPERATIONS_CONTRACT,
@@ -30,6 +31,7 @@ from validation_support import (
 
 from tools.release_notes import (
     BODY_HEADING,
+    CLIENT,
     RELEASE_BRANCH,
     UPGRADE_NOTES,
     ReleaseNotesError,
@@ -81,7 +83,8 @@ def last_release_tag(root: Path) -> tuple[str | None, str | None]:
     """The last release on origin/main, as ejryan89-skill-core's release_tags reads it, and a problem; no release tag
     reachable means nothing has been released yet."""
     try:
-        if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
+        # Only git's answer that it names no commit means the branch is missing; any other failure names git's reason.
+        if CLIENT.commit_of(RELEASE_BRANCH, directory=root) is None:
             return None, (
                 f"{RELEASE_BRANCH} is missing, so the upgrade-notes check cannot find the last tag; "
                 "fetch it with `git fetch origin main --tags`"
@@ -92,7 +95,7 @@ def last_release_tag(root: Path) -> tuple[str | None, str | None]:
                 "fetch the history with `git fetch --unshallow --tags`"
             )
         return release_reaching(root, RELEASE_BRANCH), None
-    except ReleaseNotesError as error:
+    except (GitError, ReleaseNotesError) as error:
         return None, f"the upgrade-notes check cannot find the last tag: {error}"
 
 

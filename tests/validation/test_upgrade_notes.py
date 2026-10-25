@@ -651,6 +651,17 @@ class UpgradeNotesPolicy(unittest.TestCase):
             upgrade_notes_problems(self.root),
         )
 
+    def test_an_origin_main_git_cannot_read_is_named_not_taken_for_missing(self) -> None:
+        self.release()
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        broken = self.root / ".git" / "refs" / "remotes" / "origin" / "main"
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("nonsense\n", encoding="ascii")
+        problems = upgrade_notes_problems(self.root)
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("the upgrade-notes check cannot find the last tag: "), problems)
+        self.assertIn("ignoring broken ref refs/remotes/origin/main", problems[0])
+
     def test_a_shallow_clone_fails_with_the_fetch_command(self) -> None:
         self.release()
         self.git("commit", "-q", "--allow-empty", "-m", "after")
