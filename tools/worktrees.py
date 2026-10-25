@@ -57,6 +57,19 @@ HUB_GUARD = Path(__file__).with_name("hub_guard.py")
 UNKNOWN = "?"
 
 
+GIT_STATUS_ALLOWED = {
+    "checkout_of": (
+        "reports git's reason to the user: a failure below a checkout raises naming git's stderr, and outside every "
+        "checkout git has no repository to read"
+    ),
+    "new": (
+        "fails closed: a check-ignore git cannot answer refuses the worktree, and a worktree add git refuses raises "
+        "naming git's stderr"
+    ),
+    "row": "a count git cannot take is shown as unknown, never as a branch with commits of its own",
+}
+
+
 class UsageError(Exception):
     pass
 

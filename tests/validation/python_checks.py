@@ -114,6 +114,11 @@ ISSUE_REFERENCE = re.compile(r"(?<![\w/&#])#\d+\b|\bissues?\s+#?\d+\b", re.IGNOR
 ISSUE_REFERENCE_EXCLUDED = ("tests/fixtures",)
 
 
+GH_LIMIT_ALLOWED = {
+    "gh_limit_problems": "the policy names the option it refuses",
+}
+
+
 def comments(source: str) -> list[tokenize.TokenInfo]:
     """Each comment in the Python source, as tokenize reads it, so text in a string never counts as one."""
     return [token for token in tokenize.generate_tokens(io.StringIO(source).readline) if token.type == tokenize.COMMENT]
@@ -1195,8 +1200,8 @@ def git_status_problems(root: Path, files: list[Path]) -> list[str]:
             (
                 node.lineno,
                 scope,
-                "reads a git command's exit status, where a failure can read as absence; use git_client's quiet_output, "
-                f"commit_of, file_at, or rev_parse_paths, or state why in {GIT_STATUS_ALLOWANCE}",
+                "reads a git command's exit status, where a failure can read as absence; use git_client's "
+                f"quiet_output, commit_of, file_at, or rev_parse_paths, or state why in {GIT_STATUS_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
             if isinstance(node, ast.Attribute)

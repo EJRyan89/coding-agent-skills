@@ -54,6 +54,12 @@ from review_specialists import (
 )
 from review_vocabularies import DispatchMode
 
+GIT_STATUS_ALLOWED = {
+    "_default_branch_tip": (
+        "reports git's reason to the user: an ls-remote git refuses fails the setup, naming git's stderr"
+    ),
+}
+
 
 def _generic_reviewer(runtime: str, inline: bool, source: str) -> tuple[str, dict[str, Any], None, None, DispatchMode]:
     """The suite's generic reviewer, as `_materialize_reviewer` returns it: `source` is `generic` when the repository
