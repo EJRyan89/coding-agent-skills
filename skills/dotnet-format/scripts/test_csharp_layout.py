@@ -659,6 +659,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(0, status, "another value is the repository's choice")
         self.assertIn(["insert_final_newline", "true", "other:false"], grouped["SETTING"])
 
+    def test_a_solution_outside_the_root_is_refused_before_it_is_read(self) -> None:
+        outside = outside_directory(self)
+        (outside / "Other.sln").write_text(SOLUTION, encoding="utf-8")
+        link_directory(outside, self.root / "Linked")
+        solutions = {
+            f"../{outside.name}/Other.sln": "the path is outside the examined tree",
+            (outside / "Other.sln").as_posix(): "the path is outside the examined tree",
+            "Linked/Other.sln": "a symbolic link or junction leads it outside the repository root",
+        }
+        for solution, expected in solutions.items():
+            with self.subTest(solution=solution):
+                status, grouped = self.run_config("--apply", solution=solution)
+                self.assertEqual(1, status)
+                (line,) = grouped
+                self.assertTrue(line.startswith(f"FAILED the solution {solution} is refused: {expected}"), line)
+                self.assertEqual([], self.msbuild.calls)
+                self.assertFalse((self.root / ".editorconfig").exists())
+
     def test_an_unwritable_editorconfig_fails_after_reporting(self) -> None:
         denied = PermissionError(13, "Permission denied", ".editorconfig")
         with mock.patch.object(Path, "write_bytes", side_effect=denied):

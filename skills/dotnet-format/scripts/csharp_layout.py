@@ -39,10 +39,11 @@ root, one written as a network share or a device, and one a symbolic link or jun
 `REFUSED <entry> <reason>` and is never read, checked, or fixed, and `config` fails when no entry is left. `config`
 evaluates a project the solution lists only when the entry lies inside the repository root, judged from its text before
 anything touches it; an entry outside the root, or written as a network share or a device, prints `REFUSED <entry>
-<reason>` and is left unread. Neither writes a file that is a symbolic link or a Windows junction, or that lies below
-one inside the repository, since the write would land wherever the link points: `check --fix` prints `REFUSED <file>
-<reason>` and leaves the file unfixed, and `config --apply` prints `REFUSED <.editorconfig> <reason>`, adds nothing
-there, and exits 1, a setting still missing.
+<reason>` and is left unread. A --solution that lies outside the root, judged as a FILE_LIST entry is, fails as
+`FAILED the solution <solution> is refused: <reason>` before the solution is read. Neither writes a file that is a
+symbolic link or a Windows junction, or that lies below one inside the repository, since the write would land wherever
+the link points: `check --fix` prints `REFUSED <file> <reason>` and leaves the file unfixed, and `config --apply`
+prints `REFUSED <.editorconfig> <reason>`, adds nothing there, and exits 1, a setting still missing.
 
 A failure, such as a listed file that does not exist or a file it cannot read or write, prints `FAILED <reason>`
 as the last line and exits 1. A usage error exits 2.
@@ -64,7 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
-from dotnet_format_targets import inside_root, owning_projects, read_file_list
+from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
 from folders_up import folders_up
 from link_probe import is_link_or_junction
@@ -1013,6 +1014,9 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
         if arguments.command == "check":
             findings = check_files(root, names, arguments.fix, print)
         else:
+            refused_solution = solution_refusal(root, arguments.solution)
+            if refused_solution:
+                raise Failed(refused_solution)
             findings = configure(root, root / arguments.solution, names, arguments.apply, services or Services(), print)
     except (Failed, OSError) as error:
         print(f"FAILED {error}")

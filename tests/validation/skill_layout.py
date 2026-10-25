@@ -176,8 +176,8 @@ def own_needs(root: Path, name: str) -> set[str]:
     """The runtime capabilities a skill's own frontmatter, metadata, and scripts show it needs.
 
     A skill that grants Agent and names, in backticks, an agent whose definition declares hooks starts that agent
-    under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash scripts
-    runs a git subcommand that reaches a remote, needs network access.
+    under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash or Python
+    scripts runs a git subcommand that reaches a remote, needs network access.
     """
     import runtime_support
 
@@ -193,11 +193,16 @@ def own_needs(root: Path, name: str) -> set[str]:
     declared = json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
     tools = frozenset([*declared.get("tools", []), *declared.get("optional_tools", [])])
     scripts = skills[name] / "scripts"
+    readers = {
+        ".sh": shell_git_subcommands,
+        ".bash": shell_git_subcommands,
+        ".py": runtime_support.python_git_subcommands,
+    }
     git_subcommands = frozenset(
         subcommand
         for script in (sorted(scripts.iterdir()) if scripts.is_dir() else [])
-        if script.suffix in (".sh", ".bash") and not is_test_script(script)
-        for subcommand in shell_git_subcommands(script.read_text(encoding="utf-8"))
+        if script.suffix in readers and not is_test_script(script)
+        for subcommand in readers[script.suffix](script.read_text(encoding="utf-8"))
     )
     return runtime_support.frontmatter_needs(
         granted if isinstance(granted, list) else [granted], user_only(document), starts_hooked, tools, git_subcommands
@@ -267,6 +272,52 @@ def runtime_support_problems(root: Path) -> list[str]:
                     f"{name} declares {runtime} needs {', '.join(support.needs) or 'nothing'}, "
                     f"but {runtime} lacks {', '.join(lacking)}; see {METADATA_DOC}"
                 )
+    return problems
+
+
+def runtime_page_problems(root: Path) -> list[str]:
+    """Report a runtime's support page that states a skill's support on that runtime otherwise than its metadata.
+
+    A statement is a sentence outside a fence that names one skill and one level, each in backticks (`full`,
+    `partial`, or `none`); its level must be the one the skill's deploy-meta declares for the page's runtime, and the
+    capabilities it names in backticks exactly those the declaration needs. A sentence naming several skills or levels
+    is no statement this reads.
+    """
+    import runtime_support
+
+    pages = {"codex": "docs/codex-support.md", "copilot-cli": "docs/copilot-support.md"}
+    levels = {runtime_support.FULL, runtime_support.PARTIAL, runtime_support.NONE}
+    declared = {
+        metadata.stem: json.loads(metadata.read_text(encoding="utf-8")).get("runtime_support")
+        for metadata in sorted((root / "deploy-meta").glob("*.json"))
+    }
+    problems: list[str] = []
+    for runtime, page in pages.items():
+        path = root / page
+        if not path.is_file():
+            continue
+        lines = path.read_text(encoding="utf-8").splitlines()
+        fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+        prose = "\n".join("" if index in fenced else line for index, line in enumerate(lines))
+        for paragraph in re.split(r"\n\s*\n", prose):
+            for sentence in re.split(r"(?<=[.!?])\s+", " ".join(paragraph.split())):
+                spans = set(re.findall(r"`([^`]+)`", sentence))
+                skills, stated = spans & declared.keys(), spans & levels
+                if len(skills) != 1 or len(stated) != 1:
+                    continue
+                skill, level = next(iter(skills)), next(iter(stated))
+                try:
+                    support = runtime_support.parse(declared[skill])[runtime]
+                except runtime_support.RuntimeSupportError:
+                    continue  # runtime_support_problems reports it
+                named = sorted(spans & runtime_support.CAPABILITIES.keys())
+                if level != support.level or (level != runtime_support.FULL and named != sorted(support.needs)):
+                    problems.append(
+                        f"{page} says {skill} is {level}{' lacking ' + ', '.join(named) if named else ''} on "
+                        f"{runtime}, but its deploy-meta declares {support.level}"
+                        f"{' lacking ' + ', '.join(sorted(support.needs)) if support.needs else ''}; "
+                        f"see {METADATA_DOC}"
+                    )
     return problems
 
 
@@ -503,7 +554,8 @@ def fixture_source_problems(root: Path) -> list[str]:
 PLUGIN_DOC = '"Validation" in docs/adding-a-skill.md'
 # What a template token becomes in a plugin, and where a hook finds the script the deployed agent's hook names under
 # the home, pinned here rather than read from tools/plugin_build.py, so a change to the tool's answers fails this
-# policy until it is made here too.
+# policy until it is made here too. A pinned contract value, as "Validation" in docs/implementing-changes.md allows:
+# the plugin decision on REPOS_ROOT in docs/design.md fixes these answers.
 PLUGIN_ANSWERS = {
     b"{{PYTHON}}": b"python",
     b"{{REPOS_ROOT}}": b"${user_config.repos_root}",
@@ -967,7 +1019,9 @@ class SkillLayoutPolicies(unittest.TestCase):
             skill_menu.PLUGIN_VALUES,
         )
         # An installed plugin's session was seen substituting a stored option in a skill's body but not its
-        # description, so the root is a required option and the frontmatter names it in words.
+        # description, so the root is a required option and the frontmatter names it in words. These are pinned
+        # contract values, as "Validation" in docs/implementing-changes.md allows, which the plugin decision on
+        # REPOS_ROOT in docs/design.md fixes.
         self.assertEqual({"REPOS_ROOT": "your repositories root"}, skill_menu.PLUGIN_FRONTMATTER_VALUES)
         self.assertEqual(
             {"repos_root": {"type": "directory", "title": "Repositories root", "required": True}},
@@ -1020,6 +1074,9 @@ class SkillLayoutPolicies(unittest.TestCase):
 
     def test_runtime_support_follows_from_what_each_skill_needs(self) -> None:
         self.assertEqual([], runtime_support_problems(REPOSITORY_ROOT))
+
+    def test_runtime_pages_state_each_skills_support_as_its_metadata_declares(self) -> None:
+        self.assertEqual([], runtime_page_problems(REPOSITORY_ROOT))
 
     def test_skill_scripts_declare_each_sibling_they_put_on_sys_path(self) -> None:
         self.assertEqual([], script_dependency_problems(REPOSITORY_ROOT))

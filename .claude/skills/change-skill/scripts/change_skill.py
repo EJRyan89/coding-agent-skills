@@ -47,7 +47,6 @@ usage error.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from collections.abc import Callable, Iterable, Sequence
@@ -206,8 +205,10 @@ class Tree:
         return self._base[path]
 
     def head(self, path: str) -> str | None:
+        """The working tree's text, each byte that is not UTF-8 kept as git's output keeps it at the base, so a file
+        no reader can read is compared rather than ending the run."""
         file = self.root / path
-        return file.read_text(encoding="utf-8-sig") if file.is_file() else None
+        return file.read_bytes().decode("utf-8-sig", "surrogateescape") if file.is_file() else None
 
 
 def frontmatter_block(text: str | None) -> list[str] | None:
@@ -239,9 +240,18 @@ def metadata(text: str | None) -> dict[str, object] | None:
         return {}
     try:
         value = json_reader.loads(text)
-    except (json.JSONDecodeError, json_reader.JsonRefused):
+    except ValueError:  # malformed, refused, or an integer past the digit limit
         return None
     return value if isinstance(value, dict) else None
+
+
+def metadata_file(path: Path) -> dict[str, object] | None:
+    """A metadata or scenario file's object, None when it cannot be read, is not UTF-8, or is not a JSON object."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return metadata(text)
 
 
 def metadata_value(text: str | None, key: str) -> object:
@@ -272,7 +282,7 @@ def agent_of(path: str) -> str | None:
 def head_metadata(root: Path) -> dict[str, dict[str, object]]:
     """Every shipped skill's metadata in the working tree, by name; metadata that cannot be read reads as empty."""
     files = (root / METADATA).glob("*.json")
-    return {path.stem: metadata(path.read_text(encoding="utf-8-sig")) or {} for path in files}
+    return {path.stem: metadata_file(path) or {} for path in files}
 
 
 def _names(value: object) -> set[str]:
@@ -351,7 +361,7 @@ def reviews(root: Path, name: str) -> bool:
     """Whether the skill has a review scenario: one whose scenario.json is not a trigger scenario's, an unreadable one
     counted, so the gate is owed rather than lost."""
     for path in (root / SCENARIOS / name).glob("*/scenario.json"):
-        found = metadata(path.read_text(encoding="utf-8-sig"))
+        found = metadata_file(path)
         if found is None or found.get("mode") != TRIGGER_MODE:
             return True
     return False

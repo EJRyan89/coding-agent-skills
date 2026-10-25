@@ -111,6 +111,8 @@ SESSION_STARTED = {
     "copilot": re.compile(r"No authentication information found"),
 }
 FAILING = ("MISSING ", "UNSAFE ", "HELP_FAILED ", "REMOVED ", "REFUSED ", "FAILED ")
+# The summary's verdict when no line failed.
+ALL_ACCEPTED = "Every runtime accepted every command line."
 
 # Starts a program with its arguments, working directory, environment, time limit, and all it reads on stdin, and
 # returns what it did, a failure to start it included, never raising for the run itself.
@@ -402,7 +404,7 @@ def summary(lines: Sequence[str]) -> str:
         name, _, detail = rest.partition(" ")
         rows.append(f"| {runtime} | {name} | {(kind + ' ' + detail).strip().replace('|', '&#124;')} |")
     count = sum(1 for line in lines if line.startswith(FAILING))
-    verdict = f"{count} line(s) failed." if count else "Every runtime accepted every command line."
+    verdict = f"{count} line(s) failed." if count else ALL_ACCEPTED
     return "\n".join([*rows, "", verdict, ""]) + "\n"
 
 
