@@ -1,10 +1,10 @@
 ---
 name: audit-repository
 description: >-
-  Run this repository's audits per release: the release audit of the diff since the last tag, before tagging, and
-  after it the rotation audit of one area read whole and the guidance audit of each runtime's published guidance.
-  Writes the briefs for read-only readers, then files what they confirm.
-argument-hint: "release [--since REF] | rotation [--record TAG] | guidance [--record TAG]"
+  Run this repository's audits per release: before tagging, the release audit of the diff since the last tag and
+  the twin sweep of each fix since it; after it, the rotation audit of one area read whole and the guidance audit
+  of each runtime's published guidance. Writes the briefs for read-only readers, then files what they confirm.
+argument-hint: "release [--since REF] | twins [--since REF] | rotation [--record TAG] | guidance [--record TAG]"
 disable-model-invocation: true
 allowed-tools: ["Bash(python -B .claude/skills/audit-repository/scripts/audit_repository.py *)", "PowerShell(python -B .claude/skills/audit-repository/scripts/audit_repository.py *)"]
 ---

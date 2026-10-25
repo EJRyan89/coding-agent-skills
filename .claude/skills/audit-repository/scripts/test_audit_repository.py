@@ -1728,6 +1728,526 @@ class RepositoryGuidanceTests(unittest.TestCase):
         self.assertEqual("claude-code", subjects.get("https://code.claude.com/docs/en/plugins/org"))
 
 
+class TwinTests(Fixture):
+    """The fixture with two fixes after v0.2.0: one whose construct still stands in another file, and one that removed
+    nothing long enough to search for, around a feature that is no fix."""
+
+    # The construct the first fix corrects, the twin it leaves in another file, and a line of exactly the length a
+    # construct line needs.
+    CONSTRUCT = "value = int(raw_line_text, base=10)"
+    SIXTEEN = "sixteen_chars_ab"
+    # A line the first fix moves into a file it adds, which is no construct.
+    MOVED = 'moved = "a long line the fix moves into a new file"'
+
+    def setUp(self) -> None:
+        super().setUp()
+        write(
+            self.root,
+            {
+                "tools/reader.py": f"import json\n{self.CONSTRUCT}\nkept = moved_around(value)\nx = 1\n{self.SIXTEEN}\n"
+                f"{self.MOVED}\n",
+                # The twin, and the same line in capitals, which a case-sensitive search does not find.
+                "tools/other reader.py": f"{self.CONSTRUCT}\n{self.CONSTRUCT.upper()}\n",
+                # A suite below a nested folder, whose name alone marks it as a suite.
+                "tools/checks/test_reader.py": "assert value == int(raw_line_text, base=16)\n",
+                "docs/notes.md": "-- a removed line that starts with two dashes\n",
+            },
+        )
+        self.commit("feat: add the readers")
+        write(
+            self.root,
+            {
+                "tools/reader.py": "import pathlib\nvalue = parse(raw_line_text)\nx = 2\nkept = moved_around(value)\n",
+                "tools/moved.py": f"{self.MOVED}\n",
+                "tools/checks/test_reader.py": "assert value == parse(raw_line_text)\n",
+                "docs/notes.md": "replaced\n",
+            },
+        )
+        self.commit("fix(tools): read the raw line through the one parser (#12)")
+        self.first_fix = git(self.root, "rev-parse", "HEAD")
+        write(
+            self.root,
+            {"tools/reader.py": "import pathlib\nvalue = parse(raw_line_text)\nx = 3\nkept = moved_around(value)\n"},
+        )
+        self.commit("fix: set x again")
+        self.second_fix = git(self.root, "rev-parse", "HEAD")
+
+    def construct_listed(self, brief: str) -> list[str]:
+        """The construct lines the first fix's section of a brief lists."""
+        section = brief.split(f"### {self.first_fix[:7]} ", 1)[1].split("### ", 1)[0]
+        listed = section.split("the construct as it stood:\n\n", 1)[1].split("\n\n", 1)[0]
+        return [json.loads(line[3:-1]) for line in listed.splitlines() if line.startswith("- `")]
+
+    def test_each_fix_since_the_last_release_is_listed_with_its_construct_and_its_hits(self) -> None:
+        code, lines = self.run_main("twins")
+        self.assertEqual(0, code)
+        head = git(self.root, "rev-parse", "HEAD")
+        base = git(self.root, "rev-parse", "v0.2.0^{commit}")
+        self.assertEqual(f"BASE v0.2.0 {base}", lines[0])
+        self.assertEqual(f"HEAD {head}", lines[1])
+        self.assertEqual(
+            [
+                "FIXES 2",
+                f'FIX {self.first_fix} 12 "fix(tools): read the raw line through the one parser (#12)"',
+                f"CONSTRUCT {self.first_fix} 3",
+                f"HITS {self.first_fix} 1",
+                f'FIX {self.second_fix} none "fix: set x again"',
+                f"CONSTRUCT {self.second_fix} 0",
+                f"HITS {self.second_fix} 0",
+                'MILESTONE defect "v0.3.0"',
+                'MILESTONE drift "v1.0.0"',
+                'MILESTONE polish "v1.0.0"',
+                f'PROVENANCE "Found by the twin sweep of the fixes since v0.2.0, at commit {head[:7]}, on 2026-03-04."',
+                "MECHANISM helper a shared helper every site calls, so the construct has one home",
+                "MECHANISM policy a validation policy under tests/validation/ that refuses the construct",
+                "MECHANISM corpus a corpus case, a fixture every reader or writer of its kind is run against",
+                "TEMPLATE fix the fix's commit and pull request",
+                "TEMPLATE location path:line of the twin, with forward slashes",
+                "TEMPLATE evidence the line the fix corrected and the twin's line, both quoted",
+                "TEMPLATE pattern the pattern it is an instance of, by the name the Patterns section gives it",
+                "TEMPLATE severity defect (a user can hit it), drift (a statement and the code part ways), or polish",
+                "TEMPLATE title a one-line issue title",
+                "TEMPLATE template bug, documentation, or enhancement; advisory for a trust-boundary twin",
+                "SECTION twins each twin confirmed against the fix's diff and the twin's line, as the TEMPLATE fields",
+                "SECTION patterns each pattern the twins share: its name, its twins, the docs/lessons.md pattern it is "
+                "an instance of or new, and the MECHANISM that would stop it recurring, with where it would live",
+                "SECTION dismissed each hit that is not a twin, and why: sanctioned, held by a policy, already fixed, "
+                "or unrelated",
+                "SECTION coverage each fix: the construct named and searched, or why not",
+                "READERS twins 1",
+            ],
+            lines[2:28],
+        )
+        brief = self.briefs(lines)["twins"]
+        # The removed lines a search finds the construct by: not an import, a short line, a line the fix moved, even
+        # into a file it added, or a suite's line, but a line whose diff starts with three dashes, and one of exactly
+        # the shortest length searched.
+        self.assertEqual(
+            ["-- a removed line that starts with two dashes", self.CONSTRUCT, self.SIXTEEN],
+            self.construct_listed(brief),
+        )
+        self.assertIn(f'- `"tools/other reader.py:1"`: `{json.dumps(self.CONSTRUCT)}`', brief)
+        self.assertIn(f'merged between `"v0.2.0"` ({base}) and {head}.', brief)
+        self.assertNotIn("This brief is part", brief)
+        self.assertNotIn("feat: add the readers", brief)
+
+    def test_since_a_ref_reads_its_fixes_and_none_is_no_failure(self) -> None:
+        code, lines = self.run_main("twins", "--since", self.second_fix)
+        self.assertEqual(0, code)
+        self.assertEqual(["FIXES 0"], lines[2:])
+
+    def test_a_construct_no_line_at_head_holds_has_no_hit(self) -> None:
+        (self.root / "tools" / "other reader.py").unlink()
+        self.commit("chore: remove the twin")
+        code, lines = self.run_main("twins")
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                f"CONSTRUCT {self.first_fix} 3",
+                f"HITS {self.first_fix} 0",
+                f'FIX {self.second_fix} none "fix: set x again"',
+            ],
+            lines[4:7],
+        )
+
+    def test_a_title_holding_the_field_separator_is_read_whole(self) -> None:
+        write(self.root, {"README.md": "readme, changed again\n"})
+        self.commit("fix: a unit\x1fseparator in the title")
+        _, lines = self.run_main("twins", "--since", self.second_fix)
+        self.assertEqual("FIXES 1", lines[2])
+        self.assertTrue(lines[3].startswith(f"FIX {git(self.root, 'rev-parse', 'HEAD')} none "), lines[3])
+
+    def test_a_fix_inside_a_merged_branch_is_read_as_its_merge(self) -> None:
+        git(self.root, "checkout", "--quiet", "-b", "side")
+        write(self.root, {"README.md": "a side fix of the readme line\n"})
+        self.commit("fix: a side branch commit")
+        git(self.root, "checkout", "--quiet", "main")
+        git(self.root, "merge", "--quiet", "--no-ff", "-m", "Merge the side branch", "side")
+        _, lines = self.run_main("twins", "--since", self.second_fix)
+        self.assertEqual(["FIXES 0"], lines[2:])
+
+    def test_each_batch_of_pathspecs_adds_its_removed_and_added_lines(self) -> None:
+        with mock.patch.object(audit, "PATHSPEC_CHARS", 1):
+            _, lines = self.run_main("twins")
+        self.assertIn(f"CONSTRUCT {self.first_fix} 3", lines)
+        self.assertEqual(
+            ["-- a removed line that starts with two dashes", self.CONSTRUCT, self.SIXTEEN],
+            self.construct_listed(self.briefs(lines)["twins"]),
+        )
+
+    def test_lines_and_hits_at_their_limits_are_not_cut(self) -> None:
+        write(self.root, {"tools/third reader.py": f"{self.CONSTRUCT}\n"})
+        self.commit("chore: another twin")
+        with mock.patch.object(audit, "MAX_CONSTRUCT_LINES", 3), mock.patch.object(audit, "MAX_HITS", 2):
+            _, lines = self.run_main("twins")
+        self.assertIn(f"HITS {self.first_fix} 2", lines)
+        self.assertFalse([line for line in lines if "_CUT " in line], lines)
+        brief = self.briefs(lines)["twins"]
+        self.assertNotIn("searched too", brief)
+        self.assertNotIn("run the search yourself", brief)
+
+    def test_too_many_lines_hits_or_fixes_are_cut_and_split_and_say_so(self) -> None:
+        write(self.root, {"tools/third reader.py": f"{self.CONSTRUCT}\n"})
+        self.commit("chore: another twin")
+        with (
+            mock.patch.object(audit, "MAX_CONSTRUCT_LINES", 1),
+            mock.patch.object(audit, "MAX_HITS", 1),
+            mock.patch.object(audit, "FIXES_PER_READER", 1),
+        ):
+            _, lines = self.run_main("twins")
+        # Every removed line is searched for, though the brief lists only the first.
+        self.assertIn(f"CONSTRUCT {self.first_fix} 3", lines)
+        self.assertIn(f"CONSTRUCT_CUT {self.first_fix} 1", lines)
+        self.assertIn(f"HITS {self.first_fix} 1", lines)
+        self.assertIn(f"HITS_CUT {self.first_fix} 1", lines)
+        self.assertIn("READERS twins 2", lines)
+        briefs = self.briefs(lines)
+        self.assertEqual(["twins-1", "twins-2"], list(briefs))
+        self.assertIn("This brief is part 1 of 2 of the sweep", briefs["twins-1"])
+        self.assertIn("This brief is part 2 of 2 of the sweep", briefs["twins-2"])
+        self.assertIn("- and 2 more, searched too: read them in its diff", briefs["twins-1"])
+        self.assertIn("- and more past these 1: run the search yourself", briefs["twins-1"])
+
+    def test_past_the_reader_limit_each_reader_is_given_more_fixes_and_none_is_left_out(self) -> None:
+        with mock.patch.object(audit, "FIXES_PER_READER", 1), mock.patch.object(audit, "MAX_TWIN_READERS", 1):
+            _, lines = self.run_main("twins")
+        self.assertIn("READERS twins 1", lines)
+        brief = self.briefs(lines)["twins"]
+        self.assertIn(f"### {self.first_fix[:7]} (#12)", brief)
+        self.assertIn(f"### {self.second_fix[:7]} (no pull request)", brief)
+
+    def test_each_milestone_a_sweep_cannot_find_is_none(self) -> None:
+        for milestones, expected in (
+            (("v0.3.0",), ['MILESTONE defect "v0.3.0"', "MILESTONE drift none", "MILESTONE polish none"]),
+            ((), ["MILESTONE defect none", "MILESTONE drift none", "MILESTONE polish none"]),
+        ):
+            with self.subTest(milestones=milestones):
+                _, lines = self.run_main("twins", github=StubGitHub(milestones=milestones))
+                self.assertEqual(expected, [line for line in lines if line.startswith("MILESTONE ")])
+
+    def test_a_search_git_cannot_run_is_reported_with_its_reason(self) -> None:
+        real_run = GitClient.run
+        for error, failed in (
+            (
+                GitError("git grep did not finish within 60 seconds", kind="timeout"),
+                "FAILED git grep: git grep did not finish within 60 seconds",
+            ),
+            (
+                GitError("fatal: not a git repository", kind="not_repository"),
+                f"FAILED {self.root.as_posix()} is not a Git repository",
+            ),
+        ):
+
+            def run(client: GitClient, arguments: Sequence[str], error: GitError = error, **options: Any) -> GitResult:
+                if arguments[0] == "grep":
+                    raise error
+                return real_run(client, arguments, **options)
+
+            with self.subTest(failed=failed), mock.patch.object(GitClient, "run", run):
+                code, lines = self.run_main("twins")
+                self.assertEqual((1, [failed]), (code, lines))
+
+    def test_no_release_tag_and_a_failed_search_are_reported(self) -> None:
+        git(self.root, "tag", "-d", "v0.1.0")
+        git(self.root, "tag", "-d", "v0.2.0")
+        code, lines = self.run_main("twins")
+        self.assertEqual((1, ["FAILED no release tag is reachable from HEAD; pass --since <ref>"]), (code, lines))
+        real_run = GitClient.run
+        for stderr, failed in (
+            ("fatal: grep broke", "FAILED git grep: fatal: grep broke"),
+            ("fatal: not a git repository", f"FAILED {self.root.as_posix()} is not a Git repository"),
+        ):
+
+            def run(client: GitClient, arguments: Sequence[str], stderr: str = stderr, **options: Any) -> GitResult:
+                if arguments[0] == "grep":
+                    return GitResult(returncode=128, stdout="", stderr=stderr)
+                return real_run(client, arguments, **options)
+
+            with self.subTest(stderr=stderr), mock.patch.object(GitClient, "run", run):
+                code, lines = self.run_main("twins", "--since", self.first_fix + "^")
+                self.assertEqual((1, [failed]), (code, lines))
+
+
+# A twin brief's whole text, written here rather than read from the script: part 1 of 2, a fix with a hit and more,
+# one with nothing to search, and one with more removed lines than a brief lists and no hit. A backtick in a title is
+# written as JSON_BACKTICK, its JSON escape.
+JSON_BACKTICK = "\\" + "u0060"
+TWIN_BRIEF = "\n".join(
+    [
+        "# Twin sweep",
+        "",
+        "Sweep this repository read-only: do not edit, commit, deploy, or open issues. Report what you find.",
+        "",
+        (
+            'Each fix below merged between `"v1.0.0"` (dddddddddddddddddddddddddddddddddddddddd) and '
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee. For each, read its diff and name the construct it "
+            "corrected, then find the same construct still uncorrected at HEAD: the lines listed are where its "
+            "removed lines still stand, a start and not the whole search. Search also for its other forms: the "
+            "other callers of the same reader or writer, the same call with other names, and its twin in the "
+            "other shell or runtime, as the Search for of its pattern in `docs/lessons.md` says."
+        ),
+        "",
+        "This brief is part 1 of 2 of the sweep: other readers read the other fixes.",
+        "",
+        (
+            "A twin is a site that does what the fix stopped doing. A site is not a twin when a `*_ALLOWED` table"
+            " sanctions it beside the code, when a validation policy under `tests/validation/` already holds it, "
+            "when a regression suite holds it as the case the fix refuses, or when the fix itself, or a later "
+            "one, keeps it."
+        ),
+        "",
+        (
+            "Each path and ref in this brief is a JSON string in code formatting: unquote it before you use it, "
+            "and quote it again for the shell."
+        ),
+        "",
+        "## Fixes",
+        "",
+        "### aaaaaaa (#7)",
+        "",
+        # A backtick in the title is written as its JSON escape, so it cannot close the code span.
+        f'Title: `"fix: one {JSON_BACKTICK}tick{JSON_BACKTICK} (#7)"`',
+        "",
+        "Read it whole with `git show aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`.",
+        "",
+        "Lines it removed, the construct as it stood:",
+        "",
+        '- `"line one is long enough"`',
+        '- `"line two is long enough"`',
+        "",
+        "Lines HEAD still holds that contain one of them:",
+        "",
+        '- `"x/y.py:3"`: `"line one is long enough here"`',
+        "- and more past these 1: run the search yourself",
+        "",
+        "### bbbbbbb (no pull request)",
+        "",
+        'Title: `"fix: nothing to search"`',
+        "",
+        "Read it whole with `git show bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`.",
+        "",
+        "No removed line was long enough to search for: name the construct from its diff and search.",
+        "",
+        "### ccccccc (#9)",
+        "",
+        'Title: `"fix: three lines (#9)"`',
+        "",
+        "Read it whole with `git show cccccccccccccccccccccccccccccccccccccccc`.",
+        "",
+        "Lines it removed, the construct as it stood:",
+        "",
+        '- `"first removed line here"`',
+        '- `"second removed line here"`',
+        "- and 1 more, searched too: read them in its diff",
+        "",
+        "Lines HEAD still holds that contain one of them:",
+        "",
+        "- none",
+        "",
+        "## Mechanisms",
+        "",
+        ("Group the twins by pattern, and for each pattern propose the one mechanism that would stop it recurring:"),
+        "",
+        "- **helper**: a shared helper every site calls, so the construct has one home.",
+        "- **policy**: a validation policy under tests/validation/ that refuses the construct.",
+        "- **corpus**: a corpus case, a fixture every reader or writer of its kind is run against.",
+        "",
+        "## Report",
+        "",
+        "Report these sections in this order:",
+        "",
+        "- **Twins**: each twin confirmed against the fix's diff and the twin's line, as the TEMPLATE fields.",
+        (
+            "- **Patterns**: each pattern the twins share: its name, its twins, the docs/lessons.md pattern it is"
+            " an instance of or new, and the MECHANISM that would stop it recurring, with where it would live."
+        ),
+        (
+            "- **Dismissed**: each hit that is not a twin, and why: sanctioned, held by a policy, already fixed, "
+            "or unrelated."
+        ),
+        "- **Coverage**: each fix: the construct named and searched, or why not.",
+        "",
+        "Give each twin these fields:",
+        "",
+        "- **fix**: the fix's commit and pull request.",
+        "- **location**: path:line of the twin, with forward slashes.",
+        "- **evidence**: the line the fix corrected and the twin's line, both quoted.",
+        "- **pattern**: the pattern it is an instance of, by the name the Patterns section gives it.",
+        "- **severity**: defect (a user can hit it), drift (a statement and the code part ways), or polish.",
+        "- **title**: a one-line issue title.",
+        "- **template**: bug, documentation, or enhancement; advisory for a trust-boundary twin.",
+        "",
+    ]
+)
+
+
+def test_each_grep_record_is_read_whole_and_one_it_cannot_read_is_skipped() -> None:
+    head = "f" * 40
+    stdout = "".join(
+        [
+            # A line number that is no number, and a record without the tree's prefix, are each skipped, and the scan
+            # goes on past them.
+            f"{head}:a.py\0x\0not a number\n",
+            "other:b.py\x007\0no prefix\n",
+            # The text is everything after the second separator, a separator of its own included.
+            f"{head}:c.py\x003\0one\0two \n",
+            f"{head}:d.py\x004\0last\n",
+        ]
+    )
+
+    def run(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
+        return GitResult(returncode=0, stdout=stdout, stderr="")
+
+    with mock.patch.object(GitClient, "run", run):
+        hits, cut = audit.search_construct(GitClient(), Path(), head, ["a construct line"])
+    assert (hits, cut) == ([audit.Hit("c.py", 3, "one\0two"), audit.Hit("d.py", 4, "last")], False)
+
+
+def test_a_twin_brief_is_written_whole() -> None:
+    fixes = [
+        audit.Fix(
+            "a" * 40,
+            "fix: one `tick` (#7)",
+            7,
+            ("line one is long enough", "line two is long enough"),
+            (audit.Hit("x/y.py", 3, "line one is long enough here"),),
+            True,
+        ),
+        audit.Fix("b" * 40, "fix: nothing to search", None, (), (), False),
+        audit.Fix(
+            "c" * 40,
+            "fix: three lines (#9)",
+            9,
+            ("first removed line here", "second removed line here", "third removed line here"),
+            (),
+            False,
+        ),
+    ]
+    # Two lines listed of the first fix's two, so the limit itself is no cut.
+    with mock.patch.object(audit, "MAX_CONSTRUCT_LINES", 2), mock.patch.object(audit, "MAX_HITS", 1):
+        assert audit.twin_brief(fixes, "v1.0.0", "d" * 40, "e" * 40, 1, 2) == TWIN_BRIEF
+
+
+def test_the_sweeps_limits_are_the_documented_ones() -> None:
+    assert (
+        audit.MIN_CONSTRUCT_CHARS,
+        audit.MAX_CONSTRUCT_LINES,
+        audit.MAX_HITS,
+        audit.PATHSPEC_CHARS,
+        audit.FIXES_PER_READER,
+        audit.MAX_TWIN_READERS,
+    ) == (16, 12, 30, 8000, 10, 8)
+
+
+def test_removed_lines_are_read_by_each_hunks_counts() -> None:
+    diff = "\n".join(
+        [
+            # No line before the first header is on either side.
+            "-before any header",
+            "+before any header",
+            "@@ -1 +0,0 @@",
+            "-first, with no header before it",
+            "diff --git a/x b/x",
+            "--- a/x",
+            "+++ b/x",
+            "@@ -1,2 +1 @@",
+            "---- a line that starts with three dashes",
+            "-  second  ",
+            "\\ No newline at end of file",
+            "+added",
+            "@@ -5 +4,0 @@",
+            "-lone",
+            "@@ -9,0 +9 @@",
+            "+only added",
+            "-not in a hunk",
+            # Counts, not order, say which side a line is on, and a line of neither ends the hunk.
+            "@@ -30,2 +30 @@",
+            "-before",
+            "+added among the removed",
+            "-after",
+            "@@ -40,3 +40 @@",
+            "-ended",
+            " context ends the hunk",
+            "-not counted",
+            # A header inside a hunk cut short starts the next hunk.
+            "@@ -50,3 +50 @@",
+            "-cut by a header",
+            "@@ -60 +59,0 @@",
+            "-after the early header",
+            # A line past either side's count is outside the hunk.
+            "@@ -70 +70 @@",
+            "-one removed",
+            "+one added",
+            "-past the removed count",
+            "@@ -80,0 +80,2 @@",
+            "+first of two added",
+            "+second of two added",
+            "+past the added count",
+            "@@ -20,3 +20 @@",
+            "-cut short",
+        ]
+    )
+    removed, added = audit.removed_lines(diff)
+    assert removed == [
+        "first, with no header before it",
+        "--- a line that starts with three dashes",
+        "second",
+        "lone",
+        "before",
+        "after",
+        "ended",
+        "cut by a header",
+        "after the early header",
+        "one removed",
+        "cut short",
+    ]
+    assert added == {
+        "added",
+        "only added",
+        "added among the removed",
+        "one added",
+        "first of two added",
+        "second of two added",
+    }
+
+
+def test_a_hunk_count_past_the_digit_limit_is_refused_with_its_header() -> None:
+    for header in (f"@@ -1,{'9' * 5000} +1 @@", f"@@ -1 +1,{'9' * 5000} @@"):
+        with pytest.raises(audit.AuditError) as refused:
+            audit.removed_lines(f"diff --git a/x b/x\n{header}\n-x")
+        assert str(refused.value) == f"git diff printed the hunk header {header}"
+
+
+def test_a_construct_line_is_searchable_only_when_distinctive() -> None:
+    assert audit.searchable("value = int(raw_line_text)")
+    assert audit.searchable("x" * 16)
+    for line in (
+        "x" * 15,
+        "return None",
+        "-" * 40,
+        "import pathlib, json, os, sys",
+        "from deployer import fsops, plan",
+    ):
+        assert not audit.searchable(line), line
+
+
+def test_pathspecs_are_batched_inside_the_limit_and_a_long_path_stands_alone() -> None:
+    # Each pathspec here is 11 characters, and a batch counts one more for each separator.
+    with mock.patch.object(audit, "PATHSPEC_CHARS", 30):
+        assert audit.pathspec_batches(["a", "b", "c" * 40, "d"]) == [
+            [":(literal)a", ":(literal)b"],
+            [f":(literal){'c' * 40}"],
+            [":(literal)d"],
+        ]
+    # A batch that reaches the limit exactly still holds the pathspec.
+    with mock.patch.object(audit, "PATHSPEC_CHARS", 23):
+        assert audit.pathspec_batches(["a", "b"]) == [[":(literal)a", ":(literal)b"]]
+    with mock.patch.object(audit, "PATHSPEC_CHARS", 35):
+        assert audit.pathspec_batches(["a", "b", "c"]) == [[":(literal)a", ":(literal)b", ":(literal)c"]]
+    with mock.patch.object(audit, "PATHSPEC_CHARS", 34):
+        assert audit.pathspec_batches(["a", "b", "c"]) == [[":(literal)a", ":(literal)b"], [":(literal)c"]]
+
+
 def link_folder(target: Path, link: Path) -> None:
     """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
     if sys.platform == "win32":
