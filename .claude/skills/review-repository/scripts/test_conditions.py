@@ -16,6 +16,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import conditions
 
 
+class GlobTests(unittest.TestCase):
+    def test_a_glob_matches_a_whole_path_by_segment_ignoring_case_as_a_lazy_snapshot_matches_reads(self) -> None:
+        cases = {
+            "*.md": {"CLAUDE.md": True, "readme.MD": True, "docs/guide.md": False},
+            "docs/**/*.md": {"docs/guide.md": True, "docs/a/b/guide.md": True, "docs.md": False, "tools/x.md": False},
+            ".claude/skills/*/SKILL.md": {
+                ".claude/skills/demo/SKILL.md": True,
+                ".claude/skills/demo/nested/SKILL.md": False,
+                ".claude/skills/SKILL.md": False,
+            },
+            "skills/?/[ab].md": {"skills/x/a.md": True, "skills/xy/a.md": False, "skills/x/c.md": False},
+        }
+        for pattern, paths in cases.items():
+            matches = conditions.glob_matcher(pattern)
+            for path, expected in paths.items():
+                with self.subTest(pattern=pattern, path=path):
+                    self.assertEqual(expected, matches(path))
+
+
 class FailureTests(unittest.TestCase):
     def test_a_failure_prints_its_failed_line_and_exits_2_since_1_closes_the_route(self) -> None:
         def broken() -> int:
