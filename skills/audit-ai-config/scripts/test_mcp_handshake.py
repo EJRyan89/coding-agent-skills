@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import json
@@ -813,3 +814,27 @@ def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.
     refusal = capsys.readouterr().err.splitlines()[-1]
     assert "argument --timeout: " in refusal
     assert refusal.endswith(f" seconds, not {value}")
+
+
+class Parsed(Exception):
+    """Raised in place of returning from parse_args, carrying the namespace it parsed, so main runs nothing after."""
+
+
+def test_the_timeout_defaults_to_30_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    parse = argparse.ArgumentParser.parse_args
+
+    def parsed(parser: argparse.ArgumentParser, *arguments: Any, **options: Any) -> None:
+        raise Parsed(parse(parser, *arguments, **options))
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parsed)
+    with pytest.raises(Parsed) as stopped:
+        mcp_handshake.main([])
+    assert stopped.value.args[0].timeout == 30.0
+
+
+def test_the_help_names_the_timeout_in_seconds(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        mcp_handshake.main(["--help"])
+    assert exited.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "--timeout TIMEOUT seconds per server, from its start to its stop (default 30)" in help_text
