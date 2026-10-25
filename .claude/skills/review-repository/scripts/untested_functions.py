@@ -34,9 +34,14 @@ it through a caller, followed by that hunk, cut at MAX_HUNK_CHARACTERS; at most 
 It reads the diff through conditions.read_files, so a changed file whose path could name a file outside the snapshot
 is neither read nor listed, and gets a `REFUSED <path>: ...` line on stdout instead.
 
-A snapshot it cannot read its evidence from, one that is not a directory or lacks a changed script the diff leaves at
-the head, ends it with `FAILED MissingEvidence: <what is missing>`, so an
-absent snapshot never reads as every changed definition tested.
+A changed script the snapshot leaves out by an exclusion its manifest records, as it leaves out every path under
+`.claude/` as `agent-instruction`, cannot be read, so it gets an `EXCLUDED <file>: the snapshot leaves it out
+(<reason>), so no definition in it was read; review its hunks from the diff, hunks <headers>` entry followed by its
+first hunk, cut at MAX_HUNK_CHARACTERS, which opens the route for the reviewer to judge it from the diff.
+
+A snapshot it cannot read its evidence from, one that is not a directory, whose manifest cannot be read, or that lacks
+a changed script the diff leaves at the head with no exclusion recorded for it, ends it with `FAILED MissingEvidence:
+<what is missing>`, so an absent snapshot never reads as every changed definition tested.
 
 Prints `UNTESTED <found> given=<n>`. Exit status 0 means it wrote entries, which opens the route; 1 that every
 changed definition is named by a test, or none changed, which closes it; 2 a usage error or a last line
@@ -70,6 +75,7 @@ from conditions import (
     refusal_line,
     require_snapshot,
     run_condition,
+    snapshot_exclusions,
     unset_variables_line,
 )
 from console import failed_line, run_main
@@ -130,6 +136,7 @@ class Removal:
 class FileChange:
     path: str
     head: Path  # where the snapshot holds it
+    hunks: list[Hunk] = field(default_factory=list)  # in diff order
     added: dict[int, Hunk] = field(default_factory=dict)  # each non-blank added head line, and its hunk
     removals: list[Removal] = field(default_factory=list)
 
@@ -178,6 +185,7 @@ def read_diff(text: str, root: Path) -> tuple[list[FileChange], list[str]]:
 def _read_hunk(change: FileChange, line_number: int, lines: list[str]) -> None:
     """Record a hunk's added lines and removed blocks; `line_number` is its first head line."""
     hunk = Hunk(lines[0].split(" @@", 1)[0] + " @@", "\n".join(lines).rstrip("\n"))
+    change.hunks.append(hunk)
     removed: list[str] = []
     for line in lines[1:]:
         marker, body = line[:1], line[1:]
@@ -502,9 +510,19 @@ def _excerpt(text: str) -> str:
     return text if len(text) <= MAX_HUNK_CHARACTERS else text[:MAX_HUNK_CHARACTERS] + "…"
 
 
+def excluded_entry(change: FileChange, reason: str) -> str:
+    """The block for a changed script the snapshot leaves out for `reason`, which the reviewer judges from the diff."""
+    headers = ", ".join(hunk.header for hunk in change.hunks)
+    return (
+        f"EXCLUDED {change.path}: the snapshot leaves it out ({reason}), so no definition in it was read; review its "
+        f"hunks from the diff, hunks {headers}\n{_excerpt(change.hunks[0].text)}\n"
+    )
+
+
 def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | None = None) -> list[str]:
-    """One block for each changed definition no test names, and for each changed Python file `ast` cannot read;
-    `unreadable` gains each test it consulted and could not read, with the reason."""
+    """One block for each changed script the snapshot leaves out by a recorded exclusion, then for each changed
+    definition no test names, and for each changed Python file `ast` cannot read; `unreadable` gains each test it
+    consulted and could not read, with the reason."""
     changes = [
         change
         for change in files
@@ -512,11 +530,14 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
     ]
     if not changes:
         return []
-    absent = [change.path for change in changes if not change.head.is_file()]
+    excluded = snapshot_exclusions(root)
+    withheld = [change for change in changes if not change.head.is_file() and change.path in excluded]
+    absent = [change.path for change in changes if not change.head.is_file() and change.path not in excluded]
     if absent:
         raise MissingEvidence(f"the snapshot holds no {json.dumps(absent[0])}, which the diff leaves at the head")
+    blocks = [excluded_entry(change, excluded[change.path]) for change in withheld]
+    changes = [change for change in changes if change not in withheld]
     tests = Tests(suites(root), {} if unreadable is None else unreadable)
-    blocks: list[str] = []
     for change in changes:
         text = change.head.read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n")
         try:

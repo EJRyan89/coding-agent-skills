@@ -1,5 +1,6 @@
 """What this skill's conditions share: the variables a review sets for a condition, the reader of the diff it names,
-the scripts they read, this repository's rule for a suite, and how a condition fails.
+the scripts they read, the paths the snapshot records it leaves out, this repository's rule for a suite, and how a
+condition fails.
 
 doc_passages.py and untested_functions.py import it, and the specialists manifest declares it as a resource, so it
 sits beside them in the reviewer folder a review materializes.
@@ -32,11 +33,19 @@ DUPLICATION_ALLOWED = {
         "reviewer folder holding only the manifest's declared resources, and that module's imports reach most of "
         "ejryan89-code-review-core, so each side of the protocol names it"
     ),
+    "SNAPSHOT_MANIFEST": (
+        "skills/ejryan89-code-review-core/scripts/review_runtime.py writes the manifest by this name at a snapshot's "
+        "root; a condition runs from a reviewer folder holding only the manifest's declared resources, where that "
+        "module and its imports are not, so each side names it"
+    ),
 }
 
 # The pull request's unified diff, and the file a condition writes for its route's reviewer.
 DIFF_VARIABLE = "CODE_REVIEW_DIFF_FILE"
 OUTPUT_VARIABLE = "CODE_REVIEW_CONDITION_OUTPUT"
+# The manifest a review writes at the snapshot's root, whose `excluded_paths` records each path the snapshot leaves out
+# and why.
+SNAPSHOT_MANIFEST = "source-snapshot.json"
 SCRIPT_SUFFIXES = (".py", ".ps1", ".sh")
 # A condition's exit status 1 closes its route, so a failure exits with this instead and fails the review.
 FAILURE_STATUS = 2
@@ -62,6 +71,26 @@ def require_snapshot(root: Path) -> None:
     """Raise MissingEvidence unless the snapshot at `root` is a directory."""
     if not root.is_dir():
         raise MissingEvidence(f"the snapshot {json.dumps(root.as_posix())} is not a directory")
+
+
+def snapshot_exclusions(root: Path) -> dict[str, str]:
+    """Each path the snapshot at `root` leaves out, with the reason its manifest records, such as `agent-instruction`
+    for every path under `.claude/`; empty when the snapshot holds no manifest, so a file it lacks is still missing.
+    A manifest that cannot be read, or whose `excluded_paths` does not map each path to a reason, raises
+    MissingEvidence: an exclusion is never assumed."""
+    manifest = root / SNAPSHOT_MANIFEST
+    if not manifest.exists() and not manifest.is_symlink():
+        return {}
+    try:
+        metadata = json.loads(manifest.read_bytes().decode("utf-8"))
+    except (OSError, ValueError) as error:  # UnicodeDecodeError is a ValueError
+        raise MissingEvidence(f"the snapshot's {SNAPSHOT_MANIFEST} cannot be read: {error}") from error
+    excluded = metadata.get("excluded_paths") if isinstance(metadata, dict) else None
+    if not isinstance(excluded, dict) or not all(
+        isinstance(path, str) and isinstance(reason, str) for path, reason in excluded.items()
+    ):
+        raise MissingEvidence(f"the snapshot's {SNAPSHOT_MANIFEST} records no excluded_paths mapping paths to reasons")
+    return excluded
 
 
 def run_condition(run: Callable[[], int]) -> int:

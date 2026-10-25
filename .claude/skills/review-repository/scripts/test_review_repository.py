@@ -832,6 +832,11 @@ class UntestedChangesTests(unittest.TestCase):
         self.assertEqual("CODE_REVIEW_CONDITION_OUTPUT", conditions.OUTPUT_VARIABLE)
         self.assertEqual(review_specialists.CONDITION_DIFF_VARIABLE, conditions.DIFF_VARIABLE)
         self.assertEqual(review_specialists.CONDITION_OUTPUT_VARIABLE, conditions.OUTPUT_VARIABLE)
+        # The manifest whose exclusions a condition reads is the one a snapshot writes.
+        import review_runtime
+
+        self.assertEqual("source-snapshot.json", conditions.SNAPSHOT_MANIFEST)
+        self.assertEqual(review_runtime.SOURCE_SNAPSHOT_MANIFEST, conditions.SNAPSHOT_MANIFEST)
         # Every suite this repository holds is a path the route reads, so a lazy snapshot gives the condition it.
         matchers = [glob_matcher(pattern) for pattern in MANIFEST["conditions"]["untested-functions"]["reads"]]
         suites = [
@@ -907,6 +912,82 @@ class RealDiffTests(unittest.TestCase):
         self.assertEqual((0, "PASSAGES 2 given=2\n"), (code, out))
         self.assertIn("PASSAGE docs/guide.md:3 names report age.py (script in tools/report age.py)", written)
         self.assertIn("PASSAGE docs/guide.md:5 names résumé.py (script in tools/résumé.py)", written)
+
+
+class SnapshotTests(unittest.TestCase):
+    """The untested route reads a snapshot taken as a review takes one: lazy, from a checkout, holding the changed
+    files and the paths the route reads, and leaving out what the snapshot excludes, its agent instructions among
+    them."""
+
+    REPOSITORY = "example/demo"
+    SCRIPT = ".claude/skills/demo/scripts/demo.py"
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.scratch = Path(temporary.name)
+        self.reviewer, self.checkout = self.scratch / "reviewer", self.scratch / "checkout"
+        for path in declared_reviewer_files(MANIFEST):
+            (self.reviewer / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPOSITORY / path, self.reviewer / path)
+        self.checkout.mkdir()
+        self.git = GitClient()
+        self.git.output(["init", "--quiet"], directory=self.checkout)
+        self.git.output(
+            ["remote", "add", "origin", f"https://github.com/{self.REPOSITORY}.git"], directory=self.checkout
+        )
+
+    def commit(self, files: dict[str, str]) -> str:
+        for path, text in files.items():
+            (self.checkout / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.checkout / path).write_bytes(text.encode("utf-8"))
+        self.git.output(["add", "--all"], directory=self.checkout)
+        self.git.output(["commit", "--quiet", "--message", "change"], directory=self.checkout)
+        return self.git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
+
+    def snapshot(self, head: str, changed: list[str]) -> Path:
+        from review_runtime import materialize_source_snapshot
+        from review_snapshot import lazy_upfront
+
+        source = self.scratch / "source"
+        reads = MANIFEST["conditions"]["untested-functions"]["reads"]
+        materialize_source_snapshot(
+            self.checkout, self.REPOSITORY, head, source, changed_paths=changed, upfront=lazy_upfront(reads)
+        )
+        return source
+
+    def test_a_changed_script_the_snapshot_excludes_opens_the_route_with_its_reason_and_the_rest_still_run(
+        self,
+    ) -> None:
+        self.commit({self.SCRIPT: "def days():\n    return 30\n", "tools/sweep.py": "def weeks():\n    return 4\n"})
+        head = self.commit(
+            {self.SCRIPT: "def days():\n    return 7\n", "tools/sweep.py": "def weeks():\n    return 2\n"}
+        )
+        source = self.snapshot(head, [self.SCRIPT, "tools/sweep.py"])
+        self.assertFalse((source / self.SCRIPT).exists(), "the snapshot leaves out every agent-instruction path")
+        diff = self.git.output(["diff", "HEAD~1", "HEAD"], directory=self.checkout)
+        code, out, written = run_condition(self.reviewer / UNTESTED, source, diff, self.scratch)
+        self.assertEqual((0, "UNTESTED 2 given=2\n"), (code, out))
+        self.assertIn(
+            f"EXCLUDED {self.SCRIPT}: the snapshot leaves it out (agent-instruction), so no definition in it was "
+            "read; review its hunks from the diff, hunks @@ -1,2 +1,2 @@\n@@ -1,2 +1,2 @@\n def days():\n",
+            written,
+        )
+        self.assertIn("UNTESTED tools/sweep.py:1 function weeks, added lines 2, ", written)
+
+    def test_a_changed_script_the_snapshot_lacks_with_no_recorded_exclusion_still_fails_the_review(self) -> None:
+        self.commit({"tools/sweep.py": "def weeks():\n    return 4\n"})
+        head = self.commit({"tools/sweep.py": "def weeks():\n    return 2\n"})
+        source = self.snapshot(head, ["tools/sweep.py"])
+        (source / "tools" / "sweep.py").unlink()
+        diff = self.git.output(["diff", "HEAD~1", "HEAD"], directory=self.checkout)
+        code, out, written = run_condition(self.reviewer / UNTESTED, source, diff, self.scratch)
+        self.assertEqual(
+            (2, 'FAILED MissingEvidence: the snapshot holds no "tools/sweep.py", which the diff leaves at the head\n'),
+            (code, out),
+        )
+        self.assertEqual("", written)
 
 
 class RecommendedConfigurationTests(unittest.TestCase):

@@ -347,6 +347,52 @@ class ConditionTests(unittest.TestCase):
                 )
                 self.assertFalse(self.output.exists())
 
+    def test_a_changed_script_the_snapshot_records_as_excluded_opens_the_route_for_review_from_the_diff(self) -> None:
+        before = {"app/service.py": SERVICE, "app/other.py": SERVICE}
+        after = {
+            "app/service.py": SERVICE.replace("check=False", "check=True"),
+            "app/other.py": SERVICE.replace("sum(values)", "sum(values) or 0"),
+        }
+        self.diff.write_bytes(diff_of(before, after).encode("utf-8"))
+        self.head({"app/other.py": after["app/other.py"]})
+        manifest = {"excluded_paths": {"app/service.py": "file-size-limit"}}
+        (self.root / "source-snapshot.json").write_bytes(json.dumps(manifest).encode("utf-8"))
+        environment = {"CODE_REVIEW_DIFF_FILE": str(self.diff), "CODE_REVIEW_CONDITION_OUTPUT": str(self.output)}
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("CODE_REVIEW_")}
+        finished = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "--source-root", str(self.root)],
+            env={**clean, **environment},
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        self.assertEqual((0, "UNTESTED 2 given=2\n"), (finished.returncode, finished.stdout.decode("utf-8")))
+        written = self.output.read_bytes().decode("utf-8")
+        self.assertTrue(
+            written.startswith(
+                "EXCLUDED app/service.py: the snapshot leaves it out (file-size-limit), so no definition in it was "
+                "read; review its hunks from the diff, hunks @@ -6,4 +6,4 @@\n@@ -6,4 +6,4 @@\n"
+            ),
+            written,
+        )
+        self.assertIn("\n\nUNTESTED app/other.py:4 function total, added lines 5, ", written)
+        # Recorded for another path, the exclusion excuses nothing: a file the snapshot lacks is still missing.
+        manifest = {"excluded_paths": {"app/elsewhere.py": "file-size-limit"}}
+        (self.root / "source-snapshot.json").write_bytes(json.dumps(manifest).encode("utf-8"))
+        self.output.unlink()
+        finished = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "--source-root", str(self.root)],
+            env={**clean, **environment},
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        self.assertEqual(
+            (2, 'FAILED MissingEvidence: the snapshot holds no "app/service.py", which the diff leaves at the head\n'),
+            (finished.returncode, finished.stdout.decode("utf-8")),
+        )
+        self.assertFalse(self.output.exists())
+
     def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
         self.assertEqual(
             (
