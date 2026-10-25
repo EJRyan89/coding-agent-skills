@@ -45,6 +45,10 @@ class GuidanceRecordError(ValueError):
     """A guidance record that is missing, cannot be read, or is not in the shape the module docstring gives."""
 
 
+# What `read` raises on a record that is missing, unreadable, or malformed.
+CONTENT_ERRORS: tuple[type[Exception], ...] = (GuidanceRecordError,)
+
+
 @dataclass(frozen=True)
 class Page:
     """One page of a runtime's, or Python's, published guidance, and the release tags at which it was read."""
@@ -137,6 +141,10 @@ def _url(value: object, path: str) -> str:
     url = READ.string(value, path, single_line=True, trimmed=True)
     if not url.startswith(PAGE_SCHEME) or any(character.isspace() for character in url):
         raise READ.fail(path, f"a URL starting {PAGE_SCHEME} without whitespace", json.dumps(url))
+    try:
+        urlsplit(url)
+    except ValueError:  # such as a host opening an IPv6 address it never closes, which canonical_url would raise
+        raise READ.fail(path, "a URL urllib can split", json.dumps(url)) from None
     return url
 
 

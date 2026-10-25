@@ -37,6 +37,10 @@ class ProvenanceError(ValueError):
     entry for each check."""
 
 
+# What `load` raises on a provenance file that cannot be read or is not in its shape.
+CONTENT_ERRORS: tuple[type[Exception], ...] = (ProvenanceError,)
+
+
 class ProvenanceFieldError(FieldError, ProvenanceError):
     """A field of a provenance file that is not of the kind the shape gives."""
 

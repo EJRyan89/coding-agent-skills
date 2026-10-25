@@ -24,7 +24,6 @@ import skill_roots
 from file_presence import NotAFile
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitClient, GitError, GitResult
-from json_writer import JsonWriteRefused
 
 
 def temporary_store_folds_case() -> bool:
@@ -459,14 +458,17 @@ class MemoryAuditTests(unittest.TestCase):
         write(self.memory_dir / "MEMORY.md", "")
         write(self.memory_dir / "one.md", memory("one", "Body."))
         target = self.root / "report.json"
-        with (
-            mock.patch.object(memory_audit, "audit", return_value={"score": float("nan")}),
-            self.assertRaisesRegex(
-                JsonWriteRefused, "^the value holds NaN or an infinity, which JSON does not define$"
-            ),
+        # A memory's text or a path may hold a lone surrogate, which no UTF-8 file can hold.
+        for value, refusal in (
+            (float("nan"), "the value holds NaN or an infinity, which JSON does not define"),
+            ("\udc80", "the value holds a lone surrogate U+DC80, which UTF-8 cannot encode"),
         ):
-            run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
-        self.assertFalse(target.exists())
+            with self.subTest(refusal=refusal), mock.patch.object(memory_audit, "audit", return_value={"x": value}):
+                self.assertEqual(
+                    (1, f"FAILED the audit report cannot be written: {refusal}\n", ""),
+                    run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
+                )
+            self.assertFalse(target.exists())
 
     def test_an_existing_output_is_refused_and_left_alone(self) -> None:
         write(self.memory_dir / "MEMORY.md", "- [one](one.md) — one\n")

@@ -12,7 +12,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from diff_paths import HUNK_HEADER, DiffPathError, header_path, header_text, quote, snapshot_path, unquote
+from diff_paths import (
+    CONTENT_ERRORS,
+    HUNK_HEADER,
+    DiffPathError,
+    header_path,
+    header_text,
+    quote,
+    snapshot_path,
+    unquote,
+)
 from git_client import GitClient
 
 SPACED = "tools/report age.py"
@@ -228,3 +237,9 @@ def test_a_line_that_is_not_a_hunk_header_does_not_match(line: str) -> None:
 def test_a_quoted_value_git_does_not_write_is_refused(value: str) -> None:
     with pytest.raises(DiffPathError, match=r"^Malformed quoted diff path: "):
         unquote(value)
+
+
+def test_the_family_is_the_path_error_and_covers_a_quoted_header_path_git_does_not_write() -> None:
+    assert (DiffPathError,) == CONTENT_ERRORS
+    with pytest.raises(CONTENT_ERRORS):
+        header_path('"b/a.py\n')

@@ -115,8 +115,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A caller handles every error its callee raises for bad content, by the family the callee exports or a
   superclass of it, never by one member.
 - **Why:** The member left out escapes as an unhandled error where the caller promised a refusal.
-- **Use:** `json_reader:JsonRefused`, `review_io:CONTENT_ERRORS`, `file_presence:NotAFile`; a content-error family
-  for each shared reader, and a policy that a handler names it, is the mechanism in #1907.
+- **Use:** each shared reader's family, `json_reader:CONTENT_ERRORS`, `json_writer:CONTENT_ERRORS`,
+  `xml_reader:CONTENT_ERRORS`, `frontmatter:CONTENT_ERRORS`, `typed_text:CONTENT_ERRORS`,
+  `guidance_record:CONTENT_ERRORS`, `check_provenance:CONTENT_ERRORS`, and `diff_paths:CONTENT_ERRORS`, named whole in
+  the handler; `review_io:CONTENT_ERRORS` and `file_presence:NotAFile`.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
@@ -297,6 +299,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   number, a lone surrogate, and what `json_reader:loads` refuses on the read-back, by name, at the write;
   `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_writer_is_the_one_writer_of_json`,
+  `tests/validation/test_python_checks.py::test_json_write_policy_refuses_a_json_write_outside_json_writer`,
   `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
 - **Search for:** `rg -n "json\.dumps?\(" | rg -v allow_nan=False`; `write_text(json.dumps(`; input written back
   without the later reader's pass.

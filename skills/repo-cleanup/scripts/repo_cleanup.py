@@ -79,6 +79,10 @@ PLAN_SCHEMA_VERSION = 1
 # lie outside every plans directory, so no directory a plan sits in carries a seal for it: a sweep's plans go to a new
 # directory mkdtemp makes, or one a sweep made and recorded, and save_plan refuses a path inside this folder.
 SEALS = Path(tempfile.gettempdir()) / "repo-cleanup-seals"
+JSON_WRITE_ALLOWED = {
+    "save_plan": "a plan holds a branch name git gave as bytes that are not UTF-8 as its surrogate escapes, which "
+    "json_writer refuses and the plan's reader restores, so the later commands name the branch git knows"
+}
 # The fields a plan holds, as build_plan writes them, and those a plan built outside a sweep, or a command that never
 # stopped, leaves out: the sync a sweep adds, and the stopped marker of a command that failed partway.
 PLAN_FIELDS = (
