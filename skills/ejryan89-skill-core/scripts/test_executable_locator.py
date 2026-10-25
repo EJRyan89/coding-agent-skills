@@ -246,6 +246,17 @@ class LinkFoldersTests(LocatorTestCase):
         with mock.patch.object(sys, "platform", "win32"):
             self.assertEqual([self.local / "Microsoft" / "WinGet" / "Links"], link_folders())
 
+    def test_an_unset_or_relative_local_application_data_folder_links_no_folder(self) -> None:
+        environment = {key: value for key, value in os.environ.items() if key.upper() != "LOCALAPPDATA"}
+        for local in (None, "", "local app data"):
+            variables = environment if local is None else {**environment, "LOCALAPPDATA": local}
+            with (
+                self.subTest(local=local),
+                mock.patch.object(sys, "platform", "win32"),
+                mock.patch.dict(os.environ, variables, clear=True),
+            ):
+                self.assertEqual([], link_folders())
+
     def test_another_platform_has_no_link_folder_yet(self) -> None:
         self.program(self.links)
         with (
@@ -254,3 +265,29 @@ class LinkFoldersTests(LocatorTestCase):
         ):
             self.assertEqual([], link_folders())
             self.assertIsNone(find_executable(PROGRAM))
+
+
+class EnvironmentPathTests(unittest.TestCase):
+    """An environment variable names a path a lookup may use only when the path is absolute."""
+
+    VARIABLE = "FIXTURE_LOCATOR_FOLDER"
+
+    def path(self, value: str | None) -> Path | None:
+        environment = {key: item for key, item in os.environ.items() if key != self.VARIABLE}
+        if value is not None:
+            environment[self.VARIABLE] = value
+        with mock.patch.dict(os.environ, environment, clear=True):
+            return executable_locator.environment_path(self.VARIABLE)
+
+    def test_an_absolute_path_is_the_path_it_names(self) -> None:
+        folder = Path(tempfile.gettempdir()).resolve()
+        self.assertEqual(folder, self.path(str(folder)))
+
+    def test_an_unset_empty_or_relative_variable_names_no_path(self) -> None:
+        relative = ["", ".", "bin", "Git/bin/bash.exe", "bash.exe"]
+        # Windows resolves a drive-relative path against the drive's working directory and a rooted one against the
+        # working directory's drive, so neither is absolute there.
+        relative += ["C:bin", r"\bin"] if WINDOWS else []
+        for value in [None, *relative]:
+            with self.subTest(value=value):
+                self.assertIsNone(self.path(value))
