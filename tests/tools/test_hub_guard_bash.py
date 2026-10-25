@@ -250,12 +250,21 @@ class NameReferenceTests(unittest.TestCase):
             ("declare -n CDPATH; cd tools", None),
             ("read $name <<< /elsewhere; cd tools", None),
             ("declare -n CDPATH=other; other=/elsewhere; cd ./tools", START),
+            # Bash searches CDPATH for neither an absolute directory, nor . and .. and those under them.
+            ("CDPATH=/elsewhere; cd .", START.parent),
+            ("CDPATH=/elsewhere; cd ..", START.parent.parent),
+            ("CDPATH=/elsewhere; cd ../tests/tools", START),
+            (f"CDPATH=/elsewhere; cd '{START.as_posix()}'", START),
+            ("CDPATH=/elsewhere; cd ~", Path.home()),
+            # A ~ left after expansion was quoted, and is searched like any other name.
+            ("CDPATH=/elsewhere; cd '~'", None),
         ):
             text = f"{command}; git status"
             reading = hub_guard.Reading({}, text)
             hub_guard.read_bash(text, START.parent, reading, 0, {})
             with self.subTest(command=command):
-                self.assertEqual([expected], [call.place.start for call in reading.calls])
+                starts = [None if call.place.start is None else call.place.start.resolve() for call in reading.calls]
+                self.assertEqual([None if expected is None else expected.resolve()], starts)
 
     def test_functions_are_followed_four_calls_deep(self) -> None:
         definitions = "f1() { f2; }; f2() { f3; }; f3() { f4; }; f4() { git --git-dir after status; }; "

@@ -1353,8 +1353,10 @@ def bash_cd(reader: BashReader, arguments: list[Word], _: object, shell: Shell, 
     # unset CDPATH, unlike one the text does not settle, searches nothing.
     variable = None if shell.opaque else shell.target("CDPATH")
     path = None if variable is None else shell.variables.get(variable, "")
-    searched = path != "" and not target.startswith((".", "/", "~"))
-    if searched and not is_absolute(target):
+    # Bash searches it for any directory but an absolute one, . and .., and one under them; a ~ left after expansion
+    # was quoted, and is searched too.
+    searched = not is_absolute(target) and target not in (".", "..") and not target.startswith(("./", "../"))
+    if searched and path != "":
         return change_directory(shell, None)
     return change_directory(shell, moved(shell.cwd, target))
 
