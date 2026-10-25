@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import json
 import os
 import sys
 from collections.abc import Callable
@@ -11,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, TypeGuard, assert_never
 
+import json_writer
 from path_containment import posix_within
 
 from . import fsops, hashing, manifest, platform_support, state_files
@@ -87,7 +87,7 @@ class Journal:
         fsops.write_file(self.path, b"")
 
     def write(self, entry: JournalEntry) -> None:
-        fsops.append_line(self.path, json.dumps(entry, separators=(",", ":")))
+        fsops.append_line(self.path, json_writer.dumps(entry, separators=(",", ":")))
         self.entries.append(entry)
 
     def backup(self, root: str, item: str, backup_hash: str, retain: bool) -> None:

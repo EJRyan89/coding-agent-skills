@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from github_client import CommandResult, GitHubClient
+from json_writer import JsonWriteRefused
 
 from tools import record_job_seconds
 
@@ -187,6 +188,14 @@ class ParseTests(unittest.TestCase):
             "    }\n  }\n}\n",
             text,
         )
+
+    def test_a_time_json_cannot_hold_is_refused_at_the_table_by_name(self) -> None:
+        for seconds in (float("nan"), float("inf")):
+            with (
+                self.subTest(seconds=seconds),
+                self.assertRaisesRegex(JsonWriteRefused, "^the value holds NaN or an infinity"),
+            ):
+                record_job_seconds.render_table([7], {"Linux": {"tests/a.py": seconds}})
 
     def test_only_a_leg_s_three_field_ok_line_counts(self) -> None:
         # A line with the leg and the text but no step, and a line with a step but no leg, are no leg's result.

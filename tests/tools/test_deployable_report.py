@@ -602,7 +602,7 @@ class DeployableReportTests(unittest.TestCase):
                 self.assertEqual(2, code, output)
                 self.assertIn(f"ERROR: Cannot read the results file: {self.results_file}: ", output)
         self.results_file.rmdir()
-        with mock.patch.object(Path, "write_text", side_effect=PermissionError("denied")):
+        with mock.patch.object(Path, "replace", side_effect=PermissionError("denied")):
             code, output = self.results_command("layout")
         self.assertEqual(2, code, output)
         self.assertIn(f"ERROR: Cannot write the results file: {self.results_file}: denied", output)

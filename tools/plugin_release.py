@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 from console import run_main
 from flat_text import flat_text
 from release_tags import is_release_tag
@@ -116,8 +117,7 @@ def build(root: Path, tag: str, output: Path | None) -> list[str]:
         path.write_bytes(built[name])
         entry["source"] = {"source": "archive", "url": asset_url(repository, tag, name), "sha256": digest}
         lines += [f'ARCHIVE {name} "{path}" {digest}', f"PINNED {name} {tag} {digest}"]
-    text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
-    (root / plugin_build.MARKETPLACE).write_text(text, encoding="utf-8", newline="\n")
+    json_writer.write(root / plugin_build.MARKETPLACE, document, indent=2, ensure_ascii=False, mode=0o644)
     return lines
 
 

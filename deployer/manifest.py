@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
+
+import json_writer
 
 from . import fsops, platform_support, state_files
 from .errors import STATE_FILE, DeployError, os_error, see_recovery
@@ -246,7 +247,7 @@ class Manifest:
 
     def save(self) -> None:
         self.data["manifest_version"] = MANIFEST_VERSION
-        fsops.write_atomic(self.path, (json.dumps(self.data, indent=2) + "\n").encode("utf-8"))
+        fsops.write_atomic(self.path, (json_writer.dumps(self.data, indent=2) + "\n").encode("utf-8"))
 
 
 def _hash_of(value: object) -> str:
