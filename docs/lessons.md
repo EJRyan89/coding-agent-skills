@@ -408,8 +408,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 - **Rule:** A defect's fix starts by searching for the same construct elsewhere, the other callers of the same reader
   or writer, and its twin in the other shell or runtime, and fixes each sibling or files it.
-- **Why:** A fix that reaches only the reported instance leaves the rest to be found again.
-- **Guard:** `.claude/skills/implement-change/SKILL.md#3-bug-class`
+- **Why:** A fix that reaches only the reported instance leaves the rest to be found again; the twin sweep before each
+  tag searches every fix since the last one again, for the twins its own search missed.
+- **Guard:** `.claude/skills/implement-change/SKILL.md#3-bug-class`,
+  `.claude/skills/audit-repository/SKILL.md#4-confirm-before-filing`
 - **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
   and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the **Search for** of the
   pattern above that the defect is an instance of.

@@ -1676,6 +1676,179 @@ class RepositoryGuidanceTests(unittest.TestCase):
         self.assertEqual("claude-code", subjects.get("https://code.claude.com/docs/en/plugins/org"))
 
 
+class TwinTests(Fixture):
+    """The fixture with two fixes after v0.2.0: one whose construct still stands in another file, and one that removed
+    nothing long enough to search for, around a feature that is no fix."""
+
+    # The construct the first fix corrects, and the twin it leaves in another file.
+    CONSTRUCT = "value = int(raw_line_text, base=10)"
+
+    def setUp(self) -> None:
+        super().setUp()
+        write(
+            self.root,
+            {
+                "tools/reader.py": f"import json\n{self.CONSTRUCT}\nkept = moved_around(value)\nx = 1\n",
+                "tools/other reader.py": f"{self.CONSTRUCT}\n",
+                "tools/test_reader.py": "assert value == int(raw_line_text, base=16)\n",
+                "docs/notes.md": "-- a removed line that starts with two dashes\n",
+            },
+        )
+        self.commit("feat: add the readers")
+        write(
+            self.root,
+            {
+                "tools/reader.py": "import pathlib\nvalue = parse(raw_line_text)\nx = 2\nkept = moved_around(value)\n",
+                "tools/test_reader.py": "assert value == parse(raw_line_text)\n",
+                "docs/notes.md": "replaced\n",
+            },
+        )
+        self.commit("fix(tools): read the raw line through the one parser (#12)")
+        self.first_fix = git(self.root, "rev-parse", "HEAD")
+        write(
+            self.root,
+            {"tools/reader.py": "import pathlib\nvalue = parse(raw_line_text)\nx = 3\nkept = moved_around(value)\n"},
+        )
+        self.commit("fix: set x again")
+        self.second_fix = git(self.root, "rev-parse", "HEAD")
+
+    def test_each_fix_since_the_last_release_is_listed_with_its_construct_and_its_hits(self) -> None:
+        code, lines = self.run_main("twins")
+        self.assertEqual(0, code)
+        head = git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(f"BASE v0.2.0 {git(self.root, 'rev-parse', 'v0.2.0^{commit}')}", lines[0])
+        self.assertEqual(f"HEAD {head}", lines[1])
+        self.assertEqual(
+            [
+                "FIXES 2",
+                f'FIX {self.first_fix} 12 "fix(tools): read the raw line through the one parser (#12)"',
+                f"CONSTRUCT {self.first_fix} 2",
+                f"HITS {self.first_fix} 1",
+                f'FIX {self.second_fix} none "fix: set x again"',
+                f"CONSTRUCT {self.second_fix} 0",
+                f"HITS {self.second_fix} 0",
+            ],
+            lines[2:9],
+        )
+        self.assertIn('MILESTONE defect "v0.3.0"', lines)
+        self.assertIn(
+            f'PROVENANCE "Found by the twin sweep of the fixes since v0.2.0, at commit {head[:7]}, on 2026-03-04."',
+            lines,
+        )
+        self.assertEqual(
+            ["helper", "policy", "corpus"], [line.split(" ")[1] for line in lines if line.startswith("MECHANISM ")]
+        )
+        self.assertEqual(
+            ["fix", "location", "evidence", "pattern", "severity", "title", "template"],
+            [line.split(" ")[1] for line in lines if line.startswith("TEMPLATE ")],
+        )
+        self.assertEqual(
+            ["twins", "patterns", "dismissed", "coverage"],
+            [line.split(" ")[1] for line in lines if line.startswith("SECTION ")],
+        )
+        self.assertIn("READERS twins 1", lines)
+        brief = self.briefs(lines)["twins"]
+        # The removed lines a search finds the construct by: not an import, a short line, a line the fix moved, or a
+        # suite's line, but a line whose diff starts with three dashes.
+        self.assertIn(f"- `{json.dumps(self.CONSTRUCT)}`", brief)
+        self.assertIn('- `"-- a removed line that starts with two dashes"`', brief)
+        for left_out in ("import json", "x = 1", "moved_around", "base=16"):
+            self.assertNotIn(left_out, brief.split("## Fixes", 1)[1].split("### ", 2)[1])
+        self.assertIn(f'- `"tools/other reader.py:1"`: `{json.dumps(self.CONSTRUCT)}`', brief)
+        self.assertIn(f"`git show {self.first_fix}`", brief)
+        self.assertIn("No removed line was long enough to search for", brief)
+        self.assertIn("`*_ALLOWED` table", brief)
+        self.assertIn("read-only", brief)
+        self.assertNotIn("feat: add the readers", brief)
+
+    def test_since_a_ref_reads_its_fixes_and_none_is_no_failure(self) -> None:
+        code, lines = self.run_main("twins", "--since", self.second_fix)
+        self.assertEqual(0, code)
+        self.assertEqual(["FIXES 0"], lines[2:])
+
+    def test_a_fix_inside_a_merged_branch_is_read_as_its_merge(self) -> None:
+        git(self.root, "checkout", "--quiet", "-b", "side")
+        write(self.root, {"README.md": "a side fix of the readme line\n"})
+        self.commit("fix: a side branch commit")
+        git(self.root, "checkout", "--quiet", "main")
+        git(self.root, "merge", "--quiet", "--no-ff", "-m", "Merge the side branch", "side")
+        _, lines = self.run_main("twins", "--since", self.second_fix)
+        self.assertEqual(["FIXES 0"], lines[2:])
+
+    def test_too_many_lines_hits_or_fixes_are_cut_and_split_and_say_so(self) -> None:
+        write(self.root, {"tools/third reader.py": f"{self.CONSTRUCT}\n"})
+        self.commit("chore: another twin")
+        with (
+            mock.patch.object(audit, "MAX_CONSTRUCT_LINES", 1),
+            mock.patch.object(audit, "MAX_HITS", 1),
+            mock.patch.object(audit, "FIXES_PER_READER", 1),
+        ):
+            _, lines = self.run_main("twins")
+        # Every removed line is searched for, though the brief lists only the first.
+        self.assertIn(f"CONSTRUCT {self.first_fix} 2", lines)
+        self.assertIn(f"CONSTRUCT_CUT {self.first_fix} 1", lines)
+        self.assertIn(f"HITS {self.first_fix} 1", lines)
+        self.assertIn(f"HITS_CUT {self.first_fix} 1", lines)
+        self.assertIn("READERS twins 2", lines)
+        briefs = self.briefs(lines)
+        self.assertEqual(["twins-1", "twins-2"], list(briefs))
+        self.assertIn("This brief is part 1 of 2", briefs["twins-1"])
+        self.assertIn("and 1 others, searched too: read them in its diff", briefs["twins-1"])
+        self.assertIn("and more than 1 others: run the search yourself", briefs["twins-1"])
+
+    def test_past_the_reader_limit_each_reader_is_given_more_fixes_and_none_is_left_out(self) -> None:
+        with mock.patch.object(audit, "FIXES_PER_READER", 1), mock.patch.object(audit, "MAX_TWIN_READERS", 1):
+            _, lines = self.run_main("twins")
+        self.assertIn("READERS twins 1", lines)
+        brief = self.briefs(lines)["twins"]
+        self.assertIn(f"### {self.first_fix[:7]} (#12)", brief)
+        self.assertIn(f"### {self.second_fix[:7]} (no pull request)", brief)
+
+    def test_no_release_tag_and_a_failed_search_are_reported(self) -> None:
+        git(self.root, "tag", "-d", "v0.1.0")
+        git(self.root, "tag", "-d", "v0.2.0")
+        code, lines = self.run_main("twins")
+        self.assertEqual((1, ["FAILED no release tag is reachable from HEAD; pass --since <ref>"]), (code, lines))
+        failing = GitResult(returncode=128, stdout="", stderr="fatal: grep broke")
+        real_run = GitClient.run
+
+        def run(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
+            return failing if arguments[0] == "grep" else real_run(client, arguments, **options)
+
+        with mock.patch.object(GitClient, "run", run):
+            code, lines = self.run_main("twins", "--since", self.first_fix + "^")
+        self.assertEqual((1, ["FAILED git grep: fatal: grep broke"]), (code, lines))
+
+
+def test_removed_lines_are_read_by_each_hunks_counts() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/x b/x",
+            "--- a/x",
+            "+++ b/x",
+            "@@ -1,2 +1 @@",
+            "---- a line that starts with three dashes",
+            "-  second  ",
+            "\\ No newline at end of file",
+            "+added",
+            "@@ -5 +4,0 @@",
+            "-lone",
+            "@@ -9,0 +9 @@",
+            "+only added",
+            "-not in a hunk",
+        ]
+    )
+    removed, added = audit.removed_lines(diff)
+    assert removed == ["--- a line that starts with three dashes", "second", "lone"]
+    assert added == {"added", "only added"}
+
+
+def test_a_construct_line_is_searchable_only_when_distinctive() -> None:
+    assert audit.searchable("value = int(raw_line_text)")
+    for line in ("return None", "-" * 40, "import pathlib, json, os, sys", "from deployer import fsops, plan"):
+        assert not audit.searchable(line), line
+
+
 def link_folder(target: Path, link: Path) -> None:
     """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
     if sys.platform == "win32":
@@ -1699,3 +1872,9 @@ def test_the_main_checkout_is_known_however_git_spells_its_top_or_common_directo
     ):
         with mock.patch.object(audit, "git_output", return_value=f"{top}\n{common}\n"):
             assert audit.checkout_top(GitClient(), real) == (top, main), (top, common)
+
+
+def test_pathspecs_are_batched_inside_the_limit_and_a_long_path_stands_alone() -> None:
+    with mock.patch.object(audit, "PATHSPEC_CHARS", 30):
+        batches = audit.pathspec_batches(["a", "b", "c" * 40, "d"])
+    assert batches == [[":(literal)a", ":(literal)b"], [f":(literal){'c' * 40}"], [":(literal)d"]]

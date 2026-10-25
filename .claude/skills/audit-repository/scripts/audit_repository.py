@@ -18,8 +18,14 @@ the readers, confirms what they find, and files it.
                    skills/ejryan89-skill-core/scripts/runtime_support.py lists, or none for Python. With --record TAG,
                    append TAG to every page's reads instead, from a worktree as rotation --record does, keeping the
                    record's changelogs, whose read_through the maintainer moves forward by hand in the same pull request
+    twins          list each fix merged since the last release HEAD holds (or --since REF): each commit of HEAD's
+                   first-parent history whose title is typed fix, with the lines it removed from files that are not
+                   regression suites, which name the construct it corrected, and the lines HEAD still holds that
+                   contain one of them, then write the briefs a reader judges twins and their patterns from, for the
+                   twin sweep before tagging; a release with no fix prints FIXES 0 and writes no brief
     duplicates     search the open issues for each QUERY, so a finding already filed is not filed twice
-    remove-briefs  delete a briefs directory a release, rotation, or guidance run printed as BRIEFS, and nothing else:
+    remove-briefs  delete a briefs directory a release, rotation, guidance, or twins run printed as BRIEFS, and nothing
+                   else:
                    one holding the BRIEFS_MARKER file the run wrote before its first brief, naming the directory
 
 Both records hold release tags only, as release_tags.py defines them, and a read's recency is its tag's place among
@@ -27,12 +33,16 @@ releases, whatever order a record lists its reads in: an area's last read and a 
 release, and NEXT and SUBJECT name the earliest of them.
 
 An area holding more than MAX_FILES_PER_READER files is split between readers by directory: one brief per part, no
-part above that size, and a directory split only when it alone holds more than a part. A release or rotation run
+part above that size, and a directory split only when it alone holds more than a part. A twin sweep gives each reader
+FIXES_PER_READER fixes, in the order they merged, and more each when that would need more than MAX_TWIN_READERS
+readers, so the readers stay bounded and every fix is still read. A removed line is searched for when it is at least
+MIN_CONSTRUCT_CHARS long once stripped, holds a letter or digit, is no Python import, and is not added back elsewhere
+in the fix; a brief lists at most MAX_CONSTRUCT_LINES of them and MAX_HITS places. A release, rotation, or twins run
 reads the open milestones and, for rotation, the next milestone's open issues through gh, from the checkout audited.
 
 Every line is one fact:
 
-    BASE <ref> <commit>                release: where the diff starts
+    BASE <ref> <commit>                release and twins: where the diff or the fixes start
     HEAD <commit>                      the commit the briefs describe
     CHANGED <count>                    release: the files changed since the base
     AREA <area> <count>                release: the files changed in each area, every area listed
@@ -56,10 +66,18 @@ Every line is one fact:
                                        finding names in its question field when it found the finding
     TEMPLATE <field> <what it holds>   each field of a finding the briefs ask for
     SECTION <name> <what it holds>     each section of the report, in order
-    READERS <area> <count>             the briefs, one per reader, an area's files are split into
+    READERS <area> <count>             the briefs, one per reader, an area's files, or twins' fixes, are split into
     BRIEFS "<directory>"               the new directory holding the briefs
     BRIEF <name> "<file>"              one brief, the whole prompt for one read-only reader: <area> for a whole
-                                       area, <area>-<part> for one part of it, <subject> for a guidance brief
+                                       area, <area>-<part> for one part of it, <subject> for a guidance brief,
+                                       twins or twins-<part> for the twin sweep
+    FIXES <count>                      twins: the fixes merged since the base
+    FIX <commit> <pull> "<title>"      twins: one fix, oldest first, with its pull request's number, or none
+    CONSTRUCT <commit> <count>         twins: the removed lines of the fix searched for
+    CONSTRUCT_CUT <commit> <limit>     twins: the brief lists only the first <limit> of them
+    HITS <commit> <count>              twins: the lines HEAD holds that contain one, up to MAX_HITS
+    HITS_CUT <commit> <limit>          twins: HEAD holds more than the <limit> listed
+    MECHANISM <name> <what it is>      twins: each mechanism a pattern may propose to stop it recurring
     MATCHES <query> <count>            duplicates: how many open issues the query numbered <query>, from 1, found
     MATCH <query> <number> "<title>"   duplicates: one of them
     MATCHES_CUT <query> <limit>        duplicates: the query found more open issues than the <limit> listed
@@ -103,6 +121,7 @@ from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRe
 from link_probe import is_plain_directory, is_plain_file
 from path_keys import path_key
 from release_tags import is_release_tag, last_release, release_order
+from suite_names import is_suite_name
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
@@ -265,6 +284,51 @@ REPORT_SECTIONS = (
     ("findings", "each finding confirmed against both sides, as the TEMPLATE fields"),
     ("unconfirmed", "each suspicion not confirmed against both sides, and why"),
     ("coverage", "each file: read whole, skimmed, or not read"),
+)
+
+# A squash commit's title that names a fix, as "Pull requests" in docs/implementing-changes.md types one, and the pull
+# request number GitHub appends to it.
+FIX_TITLE = re.compile(r"fix(\([^()]*\))?: ")
+PULL_NUMBER = re.compile(r"\(#(\d+)\)$")
+# A hunk header of `git diff -U0`: the old side's count, then the new side's, each 1 when omitted.
+HUNK_HEADER = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+# A removed line shorter than this, once stripped, is too common to search for, such as `return None` or `)`.
+MIN_CONSTRUCT_CHARS = 16
+IMPORT_LINE = re.compile(r"(import \S|from \S+ import )")
+# The most removed lines of one fix a brief lists, though every one is searched for, and the most places at HEAD a
+# brief lists for one fix.
+MAX_CONSTRUCT_LINES = 12
+MAX_HITS = 30
+# The most characters of pathspecs one git diff is given, well inside the Windows command line's limit.
+PATHSPEC_CHARS = 8000
+# The fixes one reader is given, and the most readers a sweep starts: past FIXES_PER_READER * MAX_TWIN_READERS fixes,
+# each reader is given more, so no fix goes unread.
+FIXES_PER_READER = 10
+MAX_TWIN_READERS = 8
+# A twin's fields, the mechanisms a pattern may propose, and the sweep's report sections, in order.
+TWIN_FIELDS = (
+    ("fix", "the fix's commit and pull request"),
+    ("location", "path:line of the twin, with forward slashes"),
+    ("evidence", "the line the fix corrected and the twin's line, both quoted"),
+    ("pattern", "the pattern it is an instance of, by the name the Patterns section gives it"),
+    ("severity", "defect (a user can hit it), drift (a statement and the code part ways), or polish"),
+    ("title", "a one-line issue title"),
+    ("template", "bug, documentation, or enhancement; advisory for a trust-boundary twin"),
+)
+MECHANISMS = (
+    ("helper", "a shared helper every site calls, so the construct has one home"),
+    ("policy", "a validation policy under tests/validation/ that refuses the construct"),
+    ("corpus", "a corpus case, a fixture every reader or writer of its kind is run against"),
+)
+TWIN_SECTIONS = (
+    ("twins", "each twin confirmed against the fix's diff and the twin's line, as the TEMPLATE fields"),
+    (
+        "patterns",
+        "each pattern the twins share: its name, its twins, the docs/lessons.md pattern it is an instance of or new, "
+        "and the MECHANISM that would stop it recurring, with where it would live",
+    ),
+    ("dismissed", "each hit that is not a twin, and why: sanctioned, held by a policy, already fixed, or unrelated"),
+    ("coverage", "each fix: the construct named and searched, or why not"),
 )
 
 
@@ -943,13 +1007,220 @@ def short(commit: str) -> str:
     return commit[:7]
 
 
+# --- the twin sweep -------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Hit:
+    path: str
+    line: int
+    text: str
+
+
+@dataclass(frozen=True)
+class Fix:
+    commit: str
+    title: str
+    pull: int | None
+    construct: tuple[str, ...]
+    hits: tuple[Hit, ...]
+    hits_cut: bool
+
+
+def merged_fixes(git: GitClient, repository: Path, base: str, head: str) -> list[tuple[str, str]]:
+    """Each commit `main`'s first-parent history merged after base whose title names a fix, oldest first, with its
+    title."""
+    log = git_output(
+        git, repository, ["log", "--first-parent", "--reverse", "-z", "--format=%H%x1f%s", f"{base}..{head}"]
+    )
+    found = []
+    for record in log.split("\0"):
+        commit, _, title = record.strip("\n").partition("\x1f")
+        if commit and FIX_TITLE.match(title):
+            found.append((commit, title))
+    return found
+
+
+def removed_lines(diff: str) -> tuple[list[str], set[str]]:
+    """The lines a `git diff -U0` removes, in order, and the lines it adds, each stripped, read by each hunk's counts
+    so a removed line that starts with `---` is never taken for a header."""
+    removed: list[str] = []
+    added: set[str] = set()
+    lines = diff.split("\n")
+    index = 0
+    while index < len(lines):
+        header = HUNK_HEADER.match(lines[index])
+        index += 1
+        if header is None:
+            continue
+        old = whole_number.read(
+            header.group(1) or "1", AuditError(f"git diff printed the hunk header {lines[index - 1]}")
+        )
+        new = whole_number.read(
+            header.group(2) or "1", AuditError(f"git diff printed the hunk header {lines[index - 1]}")
+        )
+        while (old or new) and index < len(lines):
+            line = lines[index]
+            index += 1
+            if line.startswith("-") and old:
+                removed.append(line[1:].strip())
+                old -= 1
+            elif line.startswith("+") and new:
+                added.add(line[1:].strip())
+                new -= 1
+            elif not line.startswith("\\"):
+                break
+    return removed, added
+
+
+def searchable(line: str) -> bool:
+    """Whether a removed line is distinctive enough to search for: long enough, more than punctuation, and not a
+    Python import, which a fix rewrites as its callers change and every module repeats."""
+    if IMPORT_LINE.match(line):
+        return False
+    return len(line) >= MIN_CONSTRUCT_CHARS and any(char.isalnum() for char in line)
+
+
+def construct_of(git: GitClient, repository: Path, commit: str) -> list[str]:
+    """The lines a fix removed from files that are not regression suites, long enough to search for and not added back
+    elsewhere in it, in the order its diff gives them. The pathspecs go to git in batches, so a fix that touched many
+    files stays inside the command line's limit."""
+    paths = [
+        change.path
+        for change in changes(git, repository, f"{commit}^", commit)
+        if change.status != "A" and not is_suite_name(change.path.rpartition("/")[2])
+    ]
+    removed: list[str] = []
+    added: set[str] = set()
+    for batch in pathspec_batches(paths):
+        diff = git_output(
+            git, repository, ["diff", "-U0", "--no-renames", "--no-color", f"{commit}^", commit, "--", *batch]
+        )
+        batch_removed, batch_added = removed_lines(diff)
+        removed += batch_removed
+        added |= batch_added
+    construct: list[str] = []
+    for line in removed:
+        if searchable(line) and line not in added and line not in construct:
+            construct.append(line)
+    return construct
+
+
+def pathspec_batches(paths: Sequence[str]) -> list[list[str]]:
+    """Each path as a literal pathspec, in batches of at most PATHSPEC_CHARS characters, or one path alone when it is
+    longer."""
+    batches: list[list[str]] = []
+    size = 0
+    for path in paths:
+        pathspec = f":(literal){path}"
+        if not batches or size + len(pathspec) > PATHSPEC_CHARS:
+            batches.append([])
+            size = 0
+        batches[-1].append(pathspec)
+        size += len(pathspec) + 1
+    return batches
+
+
+def search_construct(git: GitClient, repository: Path, head: str, construct: Sequence[str]) -> tuple[list[Hit], bool]:
+    """Each line HEAD's tree holds that contains a line of the construct, as fixed text, at most MAX_HITS, and whether
+    there were more. The patterns reach git grep on its stdin, so no command line limits them, and it exits 1 when
+    nothing matches, which is no hit, not a failure."""
+    if not construct:
+        return [], False
+    arguments = ["grep", "-n", "-I", "-F", "-z", "--full-name", "-f", "-", head, "--"]
+    patterns = "".join(f"{line}\n" for line in construct).encode("utf-8")
+    try:
+        result = git.run(arguments, directory=repository, input_bytes=patterns)
+    except GitError as exc:
+        raise git_failure(repository, "grep", exc) from exc
+    if result.returncode == 1 and not result.stderr.strip():
+        return [], False
+    if result.returncode != 0:
+        raise git_failure(repository, "grep", GitError(result.stderr.strip(), kind=classify_failure(result.stderr)))
+    hits = []
+    prefix = f"{head}:"
+    for record in result.stdout.split("\n"):
+        fields = record.split("\0", 2)
+        number = whole_number.parse(fields[1]) if len(fields) == 3 else None
+        if number is None or not fields[0].startswith(prefix):
+            continue
+        hits.append(Hit(fields[0][len(prefix) :], number, fields[2].strip()))
+    return hits[:MAX_HITS], len(hits) > MAX_HITS
+
+
+def sweep_fix(git: GitClient, repository: Path, head: str, commit: str, title: str) -> Fix:
+    construct = construct_of(git, repository, commit)
+    hits, hits_cut = search_construct(git, repository, head, construct)
+    number = PULL_NUMBER.search(title)
+    pull = whole_number.parse(number.group(1)) if number else None
+    return Fix(commit, title, pull, tuple(construct), tuple(hits), hits_cut)
+
+
+def fix_section(fix: Fix) -> list[str]:
+    pull = f"#{fix.pull}" if fix.pull is not None else "no pull request"
+    lines = ["", f"### {short(fix.commit)} ({pull})", "", f"Title: {code_literal(fix.title)}", ""]
+    lines.append(f"Read it whole with `git show {fix.commit}`.")
+    if not fix.construct:
+        lines += ["", "No removed line was long enough to search for: name the construct from its diff and search."]
+        return lines
+    lines += ["", "Lines it removed, the construct as it stood:", ""]
+    lines += [f"- {code_literal(line)}" for line in fix.construct[:MAX_CONSTRUCT_LINES]]
+    if len(fix.construct) > MAX_CONSTRUCT_LINES:
+        lines.append(f"- and {len(fix.construct) - MAX_CONSTRUCT_LINES} others, searched too: read them in its diff")
+    lines += ["", "Lines HEAD still holds that contain one of them:", ""]
+    lines += [f"- {code_literal(f'{hit.path}:{hit.line}')}: {code_literal(hit.text)}" for hit in fix.hits] or ["- none"]
+    if fix.hits_cut:
+        lines.append(f"- and more than {MAX_HITS} others: run the search yourself")
+    return lines
+
+
+def twin_brief(fixes: Sequence[Fix], base: str, base_commit: str, head: str, part: int = 1, parts: int = 1) -> str:
+    lines = [
+        "# Twin sweep",
+        "",
+        "Sweep this repository read-only: do not edit, commit, deploy, or open issues. Report what you find.",
+        "",
+        f"Each fix below merged between {code_literal(base)} ({base_commit}) and {head}. For each, read its diff and "
+        "name the construct it corrected, then find the same construct still uncorrected at HEAD: the lines listed "
+        "are where its removed lines still stand, a start and not the whole search. Search also for its other forms: "
+        "the other callers of the same reader or writer, the same call with other names, and its twin in the other "
+        "shell or runtime, as the Search for of its pattern in `docs/lessons.md` says.",
+        *part_note(part, parts),
+        "",
+        "A twin is a site that does what the fix stopped doing. A site is not a twin when a `*_ALLOWED` table "
+        "sanctions it beside the code, when a validation policy under `tests/validation/` already holds it, when a "
+        "regression suite holds it as the case the fix refuses, or when the fix itself, or a later one, keeps it.",
+        "",
+        QUOTING_NOTE,
+        "",
+        "## Fixes",
+        *(line for fix in fixes for line in fix_section(fix)),
+        "",
+        "## Mechanisms",
+        "",
+        "Group the twins by pattern, and for each pattern propose the one mechanism that would stop it recurring:",
+        "",
+        *(f"- **{name}**: {what}." for name, what in MECHANISMS),
+        "",
+        "## Report",
+        "",
+        "Report these sections in this order:",
+        "",
+        *(f"- **{section.capitalize()}**: {what}." for section, what in TWIN_SECTIONS),
+        "",
+        "Give each twin these fields:",
+        "",
+        *(f"- **{field}**: {what}." for field, what in TWIN_FIELDS),
+    ]
+    return "\n".join(lines) + "\n"
+
+
 # --- commands -------------------------------------------------------------------------------------
 
 
-def release(
-    git: GitClient, github: GitHubClient, repository: Path, since: str | None, today: Callable[[], date]
-) -> list[str]:
-    head = commit_of(git, repository, "HEAD")
+def release_base(git: GitClient, repository: Path, head: str, since: str | None) -> tuple[str | None, str, str]:
+    """The last release HEAD holds, or None, and the base a run reads from, `since` or that release, with its
+    commit."""
     released = released_tag(git, repository, head)
     if since is not None:
         base = since
@@ -957,7 +1228,14 @@ def release(
         base = released
     else:
         raise AuditError("no release tag is reachable from HEAD; pass --since <ref>")
-    base_commit = commit_of(git, repository, base)
+    return released, base, commit_of(git, repository, base)
+
+
+def release(
+    git: GitClient, github: GitHubClient, repository: Path, since: str | None, today: Callable[[], date]
+) -> list[str]:
+    head = commit_of(git, repository, "HEAD")
+    released, base, base_commit = release_base(git, repository, head, since)
     found = changes(git, repository, base_commit, head)
     if not found:
         raise AuditError(f"no file changed since {base}, so a release audit would read nothing; pass --since <ref>")
@@ -1081,6 +1359,48 @@ def guidance(
     return lines + write_briefs(briefs)
 
 
+def twins(
+    git: GitClient, github: GitHubClient, repository: Path, since: str | None, today: Callable[[], date]
+) -> list[str]:
+    head = commit_of(git, repository, "HEAD")
+    released, base, base_commit = release_base(git, repository, head, since)
+    fixes = [
+        sweep_fix(git, repository, head, commit, title)
+        for commit, title in merged_fixes(git, repository, base_commit, head)
+    ]
+    lines = [f"BASE {base} {base_commit}", f"HEAD {head}", f"FIXES {len(fixes)}"]
+    for fix in fixes:
+        lines += [
+            f"FIX {fix.commit} {fix.pull if fix.pull is not None else 'none'} {json_text(fix.title)}",
+            f"CONSTRUCT {fix.commit} {len(fix.construct)}",
+            *(
+                [f"CONSTRUCT_CUT {fix.commit} {MAX_CONSTRUCT_LINES}"]
+                if len(fix.construct) > MAX_CONSTRUCT_LINES
+                else []
+            ),
+            f"HITS {fix.commit} {len(fix.hits)}",
+            *([f"HITS_CUT {fix.commit} {MAX_HITS}"] if fix.hits_cut else []),
+        ]
+    if not fixes:
+        return lines
+    milestones = open_milestones_after(github, released)
+    lines += milestone_lines(milestones[0] if milestones else None, milestones[1] if len(milestones) > 1 else None)
+    sentence = f"Found by the twin sweep of the fixes since {base}, at commit {short(head)}, on {today()}."
+    lines.append(f"PROVENANCE {json_text(sentence)}")
+    lines += [f"MECHANISM {name} {what}" for name, what in MECHANISMS]
+    lines += [f"TEMPLATE {field} {what}" for field, what in TWIN_FIELDS]
+    lines += [f"SECTION {section} {what}" for section, what in TWIN_SECTIONS]
+    size = max(FIXES_PER_READER, -(-len(fixes) // MAX_TWIN_READERS))
+    parts = [fixes[start : start + size] for start in range(0, len(fixes), size)]
+    lines.append(f"READERS twins {len(parts)}")
+    names = ["twins"] if len(parts) == 1 else [f"twins-{number}" for number in range(1, len(parts) + 1)]
+    briefs = [
+        (name, twin_brief(part, base, base_commit, head, number, len(parts)))
+        for number, (name, part) in enumerate(zip(names, parts, strict=True), start=1)
+    ]
+    return lines + write_briefs(briefs)
+
+
 def record_reads(git: GitClient, repository: Path, path: Path, record: GuidanceRecord, tag: str) -> str:
     """Append `tag` to every page's reads, refusing a tag a page already holds or that names no tag, and keep the
     record's changelogs as they are."""
@@ -1181,6 +1501,8 @@ def build_parser() -> argparse.ArgumentParser:
     rotation_parser.add_argument("--record", metavar="TAG", help="append the next area to the record for TAG")
     guidance_parser = commands.add_parser("guidance", parents=[common], help="brief each runtime's published guidance")
     guidance_parser.add_argument("--record", metavar="TAG", help="append TAG to every page's reads")
+    twins_parser = commands.add_parser("twins", parents=[common], help="brief each fix since a tag for its twins")
+    twins_parser.add_argument("--since", metavar="REF", help="the base (default: the last release HEAD holds)")
     duplicates_parser = commands.add_parser("duplicates", parents=[common], help="search the open issues")
     duplicates_parser.add_argument("queries", nargs="+", metavar="QUERY", help="a GitHub issue search")
     remove_parser = commands.add_parser("remove-briefs", help="delete a briefs directory a run printed")
@@ -1208,6 +1530,8 @@ def main(
                 lines = rotation(client, gh, options.repository, options.record, today)
             elif options.command == "guidance":
                 lines = guidance(client, gh, options.repository, options.record, today)
+            elif options.command == "twins":
+                lines = twins(client, gh, options.repository, options.since, today)
             else:
                 lines = duplicates(gh, options.queries)
     except AuditError as exc:
