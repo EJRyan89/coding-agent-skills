@@ -74,6 +74,7 @@ from conditions import (
 )
 from console import failed_line, run_main
 from diff_paths import HUNK_HEADER
+from suite_names import SUITE_NAME_PATTERNS
 
 DUPLICATION_ALLOWED = {
     "EXIT_CONTRACT_EXEMPT": (
@@ -89,8 +90,9 @@ EXIT_CONTRACT_EXEMPT = (
 # Where validation looks for suites: tests/, and each shipped skill's and each repository skill's scripts/.
 SUITE_ROOTS = ("tests", "skills/**/scripts", ".claude/skills/*/scripts")
 # The route's `reads` in specialists.json: each file under a suite root whose name a suite's may be, with any
-# extension, since a glob cannot test a stem; the suite rule then picks the suites from what the snapshot holds.
-SUITE_READ_NAMES = ("test_*", "test-*", "*_test.*", "*-test.*", "*.test.*")
+# extension, since a glob cannot test a stem, so a suite-name pattern that ends in its stem takes any extension; the
+# suite rule then picks the suites from what the snapshot holds.
+SUITE_READ_NAMES = tuple(pattern if pattern.endswith("*") else f"{pattern}.*" for pattern in SUITE_NAME_PATTERNS)
 # Review inputs: their trees are other repositories, and validation runs no suite there.
 FIXTURES = "tests/fixtures/"
 # A reviewer asks for a test for each entry in turn; past this many, the change is one to review whole.

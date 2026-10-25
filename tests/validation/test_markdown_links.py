@@ -21,6 +21,7 @@ from markdown_links import (
     THREAT_MODEL_SUITES,
     TRUST_MODEL_DOC,
     cited_test_problems,
+    lessons_ledger_problems,
     markdown_link_problems,
     threat_model_test_problems,
     trust_model_area_problems,
@@ -193,6 +194,114 @@ class CitedTestPolicy(unittest.TestCase):
         self.assertEqual(
             [f"{THREAT_MODEL_DOC}:1 cites test_a.py::test_alone, but {THREAT_MODEL_SUITES}/test_a.py does not exist"],
             self.problems({THREAT_MODEL_DOC: contract, f"{THREAT_MODEL_SUITES}/test_b.py": self.SUITE}),
+        )
+
+
+class LessonsLedgerPolicy(unittest.TestCase):
+    SUITE = (
+        "import unittest\n\n\ndef helper() -> None:\n    pass\n\n\n"
+        "class GuardTests(unittest.TestCase):\n    def test_held(self) -> None:\n        pass\n"
+    )
+    SKILL = "---\nname: a\n---\n\n# A\n\n## 3. Bug class\n\nSearch.\n"
+    ENTRY = "- **Found in:** #12\n- **Lesson:** Text.\n"
+
+    def problems(self, ledger: str | None, files: Mapping[str, str] | None = None) -> list[str]:
+        tree = {
+            "tests/test_a.py": self.SUITE,
+            ".claude/skills/a/SKILL.md": self.SKILL,
+            ".github/workflows/watch.yml": "on: workflow_dispatch\n",
+            **(files or {}),
+        }
+        if ledger is not None:
+            tree["docs/lessons.md"] = ledger
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, tree)
+            return lessons_ledger_problems(root)
+
+    def test_entries_whose_guards_resolve_or_that_give_a_reason_pass(self) -> None:
+        ledger = (
+            "# Lessons\n\nPreamble with `tests/test_a.py::helper`, which no entry cites.\n\n## Lessons\n\n"
+            f"### Every reference resolves\n\n{self.ENTRY}"
+            "- **Guard:** `tests/test_a.py::GuardTests::test_held`, `tests/test_a.py::GuardTests`,"
+            " `tests/test_a.py::test_held`, `.claude/skills/a/SKILL.md#3-bug-class`,\n"
+            "  and `.github/workflows/watch.yml`.\n\n"
+            f"### No check can tell\n\n{self.ENTRY}- **No guard:** A reader cannot tell it from the code.\n\n"
+            "```markdown\n### A fenced heading is no entry\n```\n"
+        )
+        self.assertEqual([], self.problems(ledger))
+
+    def test_an_entry_with_neither_a_guard_nor_a_reason_fails(self) -> None:
+        ledger = (
+            f"# Lessons\n\n## Lessons\n\n### Nothing holds it\n\n{self.ENTRY}\n"
+            f"### An empty reason\n\n{self.ENTRY}- **No guard:**\n\n"
+            f"### No reference\n\n{self.ENTRY}- **Guard:** the review\n\n"
+            f"### Both\n\n{self.ENTRY}- **Guard:** `.github/workflows/watch.yml`\n- **No guard:** None is possible.\n"
+        )
+        self.assertEqual(
+            [
+                "docs/lessons.md:5 the lesson 'Nothing holds it' names neither a guard nor the reason no guard is "
+                "possible",
+                "docs/lessons.md:10 the lesson 'An empty reason' names neither a guard nor the reason no guard is "
+                "possible",
+                "docs/lessons.md:20 the lesson 'No reference' names no guard in a code span",
+                "docs/lessons.md:22 the lesson 'Both' names both a guard and the reason no guard is possible",
+            ],
+            self.problems(ledger),
+        )
+
+    def test_a_guard_that_does_not_resolve_fails(self) -> None:
+        ledger = (
+            f"# Lessons\n\n## Lessons\n\n### Gone\n\n{self.ENTRY}- **Guard:**"
+            " `tests/test_a.py::test_gone`, `tests/test_a.py::helper`, `tests/test_gone.py::test_held`,"
+            " `test_a.py::test_held`, `.claude/skills/a/SKILL.md#4-gone`, `.claude/skills/b/SKILL.md#a`,"
+            " `docs/guide.md#a`, `.github/workflows/gone.yml`, and `GuardTests`,\n"
+            "  and on its continuation line `tests/test_a.py::GoneTests`.\n"
+            "- **Lesson:** Not a guard: `tests/test_a.py::GoneTests`.\n"
+        )
+        prefix = "docs/lessons.md:9 the lesson 'Gone'"
+        self.assertEqual(
+            [
+                f"{prefix} cites tests/test_a.py::test_gone, which tests/test_a.py does not define as a test or a "
+                "test class",
+                f"{prefix} cites tests/test_a.py::helper, which tests/test_a.py does not define as a test or a test "
+                "class",
+                f"{prefix} cites tests/test_gone.py::test_held, but tests/test_gone.py does not exist",
+                f"{prefix} names test_a.py::test_held, which is not a test ID, a skill's step, or a workflow by its "
+                "path from the repository root",
+                f"{prefix} cites .claude/skills/a/SKILL.md#4-gone, which names no heading of .claude/skills/a/SKILL.md",
+                f"{prefix} cites .claude/skills/b/SKILL.md#a, but .claude/skills/b/SKILL.md does not exist",
+                f"{prefix} names docs/guide.md#a, which is not a test ID, a skill's step, or a workflow by its path "
+                "from the repository root",
+                f"{prefix} cites .github/workflows/gone.yml, but .github/workflows/gone.yml does not exist",
+                f"{prefix} names GuardTests, which is not a test ID, a skill's step, or a workflow by its path from "
+                "the repository root",
+                "docs/lessons.md:10 the lesson 'Gone' cites tests/test_a.py::GoneTests, which tests/test_a.py does not "
+                "define as a test or a test class",
+            ],
+            self.problems(ledger, {"docs/guide.md": "# A\n"}),
+        )
+
+    def test_an_entry_that_names_no_issue_fails(self) -> None:
+        ledger = (
+            "# Lessons\n\n## Lessons\n\n### Unsourced\n\n- **Found in:** the audit\n- **Guard:**"
+            " `.github/workflows/watch.yml`\n\n### Unfielded\n\n- **Guard:** `.github/workflows/watch.yml`\n"
+        )
+        self.assertEqual(
+            [
+                "docs/lessons.md:5 the lesson 'Unsourced' names no issue it was found in",
+                "docs/lessons.md:10 the lesson 'Unfielded' names no issue it was found in",
+            ],
+            self.problems(ledger),
+        )
+
+    def test_a_missing_ledger_section_or_an_empty_one_fails(self) -> None:
+        self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))
+        self.assertEqual(["docs/lessons.md has no '## Lessons' section"], self.problems("# Lessons\n\nProse.\n"))
+        self.assertEqual(
+            ["docs/lessons.md has no lesson under '## Lessons'"],
+            self.problems("# Lessons\n\n## Lessons\n\nProse.\n\n## After\n\n### Not a lesson\n"),
         )
 
 

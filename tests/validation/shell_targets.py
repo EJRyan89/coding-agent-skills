@@ -19,6 +19,7 @@ from validation_support import (
     TEMPLATE_TOKEN,
     find_fences,
     is_shell_script,
+    is_test_script,
     prose_code_spans,
     python_trees,
     relative,
@@ -206,7 +207,8 @@ def _executed_shell_tokens(root: Path, unreadable: list[str]) -> set[tuple[str, 
     the rendered result with that context's finder through run_tool, and asserts the run's output against that value.
     """
     executed: set[tuple[str, str]] = set()
-    for _, _, tree in python_trees(sorted((root / "tests" / "deployer").glob("test_*.py")), root, unreadable):
+    suites = sorted(path for path in (root / "tests" / "deployer").glob("*.py") if is_test_script(path))
+    for _, _, tree in python_trees(suites, root, unreadable):
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue

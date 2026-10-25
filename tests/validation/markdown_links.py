@@ -1,5 +1,6 @@
 """Documents that point elsewhere keep pointing at something: relative Markdown links and their fragments, the
-tests a document cites, and the security-sensitive area SECURITY.md gives each boundary of docs/design.md's trust model.
+tests a document cites, the guard each lesson of docs/lessons.md names, and the security-sensitive area SECURITY.md
+gives each boundary of docs/design.md's trust model.
 """
 
 from __future__ import annotations
@@ -263,6 +264,94 @@ def cited_test_problems(root: Path) -> list[str]:
     return problems
 
 
+def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> str | None:
+    """Why a guard a lesson names does not resolve, or None when it does: a test ID by its path from the repository
+    root, a heading of a skill's SKILL.md by its fragment, or a workflow file."""
+    skill_step = re.compile(r"((?:\.claude/)?skills/[\w.-]+/SKILL\.md)#([\w-]+)")
+    workflow = re.compile(r"\.github/workflows/[\w.-]+\.ya?ml")
+    if (citation := CITED_ID.fullmatch(span)) and "/" in citation.group(1):
+        return _id_problem(index, document, citation)
+    if step := skill_step.fullmatch(span):
+        path = root / step.group(1)
+        if not path.is_file():
+            return f"cites {span}, but {step.group(1)} does not exist"
+        if step.group(2) not in heading_slugs(path.read_text(encoding="utf-8")):
+            return f"cites {span}, which names no heading of {step.group(1)}"
+        return None
+    if workflow.fullmatch(span):
+        return None if (root / span).is_file() else f"cites {span}, but {span} does not exist"
+    return f"names {span}, which is not a test ID, a skill's step, or a workflow by its path from the repository root"
+
+
+def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]]) -> list[str]:
+    """The problems of one lesson, its heading line first and then its lines up to the next heading."""
+    document = "docs/lessons.md"
+    field_line = re.compile(r"^- \*\*(Found in|Guard|No guard):\*\*(.*)$")
+    heading_number, heading = entry[0]
+    where = f"{document}:{heading_number} the lesson {heading[4:].strip()!r}"
+    fields: dict[str, list[tuple[int, str]]] = {}
+    current: list[tuple[int, str]] | None = None
+    for number, line in entry[1:]:
+        if match := field_line.match(line):
+            current = fields.setdefault(match.group(1), [])
+            current.append((number, match.group(2).strip()))
+        elif current is not None and line[:1].isspace() and line.strip():
+            # A field's continuation line, indented under its list item, is read with the line it continues.
+            current.append((number, line.strip()))
+        else:
+            current = None
+    problems: list[str] = []
+    if not any(re.search(r"#\d+\b", text) for _, text in fields.get("Found in", [])):
+        problems.append(f"{where} names no issue it was found in")
+    guards = fields.get("Guard", [])
+    reasons = [text for _, text in fields.get("No guard", []) if text]
+    if guards and reasons:
+        return [*problems, f"{where} names both a guard and the reason no guard is possible"]
+    if not guards and not reasons:
+        return [*problems, f"{where} names neither a guard nor the reason no guard is possible"]
+    for number, text in guards:
+        spans = [match.group(2).strip() for match in COMMONMARK_CODE_SPAN.finditer(text)]
+        located = f"{document}:{number} the lesson {heading[4:].strip()!r}"
+        if not spans:
+            problems.append(f"{located} names no guard in a code span")
+        problems += [
+            f"{located} {problem}" for span in spans if (problem := _guard_problem(root, index, document, span))
+        ]
+    return problems
+
+
+def lessons_ledger_problems(root: Path) -> list[str]:
+    """Report each lesson of docs/lessons.md, a `###` heading under its `## Lessons` section, that names no issue it
+    was found in after merge, names neither the guard that now refuses its mistake nor the reason no guard is possible,
+    or names both, and each guard it names that does not resolve: a test ID, `<path>::<test>`, `<path>::<class>`, or
+    `<path>::<class>::<test>`, that names a test or a test class of that file, a skill's step,
+    `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, or a workflow, `.github/workflows/<file>`,
+    that exists."""
+    document = "docs/lessons.md"
+    path = root / document
+    if not path.is_file():
+        return [f"{document} does not exist"]
+    lines = _outside_fences(path.read_text(encoding="utf-8"))
+    start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Lessons"), None)
+    if start is None:
+        return [f"{document} has no '## Lessons' section"]
+    entries: list[list[tuple[int, str]]] = []
+    for number, line in enumerate(lines[start + 1 :], start=start + 2):
+        if line.startswith("## "):
+            break
+        if line.startswith("### "):
+            entries.append([])
+        if entries:
+            entries[-1].append((number, line))
+    if not entries:
+        return [f"{document} has no lesson under '## Lessons'"]
+    problems: list[str] = []
+    index = _TestIndex(root, problems)
+    for entry in entries:
+        problems += _entry_problems(root, index, entry)
+    return problems
+
+
 def threat_model_test_problems(root: Path) -> list[str]:
     """Report each row of the code-review threat model that names no test in test_adversarial_inputs.py by its test
     ID; cited_test_problems holds each test the rows cite to its suite."""
@@ -325,6 +414,9 @@ class MarkdownLinksPolicies(unittest.TestCase):
 
     def test_every_test_a_document_cites_exists(self) -> None:
         self.assertEqual([], cited_test_problems(REPOSITORY_ROOT))
+
+    def test_every_lesson_names_a_guard_that_resolves_or_why_none_is_possible(self) -> None:
+        self.assertEqual([], lessons_ledger_problems(REPOSITORY_ROOT))
 
     def test_every_trust_model_boundary_has_a_security_sensitive_area(self) -> None:
         self.assertEqual([], trust_model_area_problems(REPOSITORY_ROOT))
