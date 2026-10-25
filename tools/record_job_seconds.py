@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import functools
-import json
 import re
 import statistics
 import sys
@@ -40,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 from console import run_main
 from github_client import GitHubClient, GitHubError, subprocess_runner
 
@@ -163,7 +163,7 @@ def render_table(runs: Sequence[int], seconds: Mapping[str, Mapping[str, float]]
     """The table's text: the runs it came from, oldest first, and each platform's seconds by job name, the platforms
     and the jobs in name order."""
     platforms = {platform: dict(sorted(jobs.items())) for platform, jobs in sorted(seconds.items())}
-    return json.dumps({"runs": sorted(runs), "seconds": platforms}, indent=2) + "\n"
+    return json_writer.dumps({"runs": sorted(runs), "seconds": platforms}, indent=2) + "\n"
 
 
 def latest_runs(client: GitHubClient, count: int) -> list[int]:

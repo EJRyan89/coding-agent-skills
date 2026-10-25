@@ -218,8 +218,9 @@ class ExecuteTests(unittest.TestCase):
                 "check_includes(src, [])",
                 "check_source_forced_items(src, [])",
                 "_print_source(src, canary)",
-                "claim_canary_home(canary)",
+                # The values are checked before the claim marks the home, so a refused one leaves it unmarked.
                 f"canary('{SOURCE_ID}', canary, source)",
+                "claim_canary_home(canary)",
                 "acquire(paths(canary), probe)",
                 f"_reject_other_checkout(paths(canary), '{SOURCE_ID}', False)",
                 "recover_incomplete(paths(canary))",
@@ -386,7 +387,7 @@ class ExecuteTests(unittest.TestCase):
                 "claim_canary_home",
                 OSError(5, "Access is denied", "C:/x/canary"),
                 1,
-                ["claim_canary_home(canary)"],
+                [f"canary('{SOURCE_ID}', canary, source)", "claim_canary_home(canary)"],
                 ["", "ERROR: Could not prepare the deployment: C:/x/canary: Access is denied", CHECK, HINT, ""],
             ),
             (
@@ -394,7 +395,8 @@ class ExecuteTests(unittest.TestCase):
                 "canary",
                 DeployError("ERROR: canary values"),
                 1,
-                ["claim_canary_home(canary)", f"canary('{SOURCE_ID}', canary, source)"],
+                # Refused values stop the run before the claim marks the home.
+                [f"canary('{SOURCE_ID}', canary, source)"],
                 ["", "ERROR: canary values", ""],
             ),
         ]
