@@ -107,9 +107,11 @@ class Machine:
         codex_probe: tuple[int, str] = (0, prompt_input("workspace-write")),
         statuses: dict[str, int] | None = None,
         describe_failure: str | None = None,
+        rev_parse_failure: str | None = None,
     ) -> None:
         # describe is what git describe prints for the deployed commit, which the checkout holds; None makes git answer
-        # that it holds no such commit. describe_failure is what git describe prints when it fails instead.
+        # that it holds no such commit. describe_failure is what git describe prints when it fails instead, and
+        # rev_parse_failure what the lookup of the commit prints when it exits 128.
         # settings says whether this machine's platform has the machine settings check reports, as Windows does: then
         # python_command is what the skills' Python command runs, pwsh_command what pwsh runs, and codex_probe what
         # Codex's sandbox probe prints. statuses is the exit status of each named tool's version probe, 0 if unnamed.
@@ -120,6 +122,7 @@ class Machine:
         self.git = None if "git" in missing else GIT
         self.describe = describe
         self.describe_failure = describe_failure
+        self.rev_parse_failure = rev_parse_failure
         self.python = python
         self.git_calls: list[list[str]] = []
         self.installed = {name: entry for name, entry in INSTALLED.items() if name not in missing}
@@ -188,6 +191,8 @@ class Machine:
         if arguments[1:] == ["--version"]:
             return platform_support.ToolResult(0, GIT_VERSION)
         self.git_calls.append(arguments)
+        if "rev-parse" in arguments and self.rev_parse_failure is not None:
+            return platform_support.ToolResult(128, self.rev_parse_failure)
         if "rev-parse" in arguments:
             return platform_support.ToolResult(*((1, "") if self.describe is None else (0, f"{COMMIT}\n")))
         if self.describe_failure is not None:
@@ -784,6 +789,23 @@ class CheckCommandTests(DeployerTestCase):
         self.assertEqual(f"Deployed commit: {COMMIT}", self.deployed_line(self.check(machine).output))
         self.assertEqual(1, len(machine.git_calls), "git describe is not asked about a commit git says is not there")
         self.assertEqual(f"Deployed commit: {COMMIT}", self.deployed_line(self.check(Machine(missing=("git",))).output))
+
+    def test_the_deployed_commit_is_the_full_hash_when_git_answers_the_source_is_no_repository(self) -> None:
+        self.record_commit()
+        machine = Machine(describe="v0.1.0", rev_parse_failure="fatal: not a git repository: .git\n")
+        result = self.check(machine)
+        self.assertEqual(0, result.code, result.output)
+        self.assertEqual(f"Deployed commit: {COMMIT}", self.deployed_line(result.output))
+        self.assertEqual(1, len(machine.git_calls), "git describe is not asked in a folder git says is no repository")
+
+    def test_the_deployed_commit_is_the_full_hash_when_git_describe_warns_beside_the_name(self) -> None:
+        # run_tool captures stderr with stdout, so a warning beside a describe that succeeds is a second line.
+        self.record_commit()
+        for answer in ("warning: tag 'v1' is really 'v1.0' here\nv1-0-g71ad815", ""):
+            with self.subTest(answer=answer):
+                result = self.check(Machine(describe=answer))
+                self.assertEqual(0, result.code, result.output)
+                self.assertEqual(f"Deployed commit: {COMMIT}", self.deployed_line(result.output))
 
     def test_a_deployed_commit_git_cannot_describe_fails_the_check_with_gits_reason(self) -> None:
         self.record_commit()
