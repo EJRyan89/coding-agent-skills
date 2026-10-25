@@ -89,7 +89,7 @@
         "(?i)^skills/ejryan89-code-review-core/scripts/review_(?:analyzers|batches|canary|dispatch|documents|github|guard|hosts|io|pipeline|process|records|reporting|reviewer_setup|reviewers|run|runtime|snapshot|source|specialists|vocabularies)\\.py$",
         "(?i)^skills/ejryan89-code-review-core/scripts/test_adversarial_inputs\\.py$",
         "(?i)^skills/review-document/scripts/review_document\\.py$",
-        "(?i)^skills/ejryan89-skill-core/scripts/(?:bounded_process|device_names|diff_paths|dotnet_solution|executable_locator|flat_text|git_client|git_worktrees|github_client|github_remote|job_tree|json_reader|link_probe|markdown_literal|msbuild_xml|path_keys|pdf_tool|process_identity|typed_fields|versions|whole_number|xml_reader)\\.py$"
+        "(?i)^skills/ejryan89-skill-core/scripts/(?:bounded_process|device_names|diff_paths|dotnet_solution|executable_locator|flat_text|git_client|git_worktrees|github_client|github_remote|job_tree|json_reader|json_writer|link_probe|markdown_literal|msbuild_xml|path_keys|pdf_tool|process_identity|typed_fields|versions|whole_number|xml_reader)\\.py$"
       ],
       "exclude": [],
       "resources": ["docs/code-review-operations-contract.md"],

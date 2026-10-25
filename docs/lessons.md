@@ -261,9 +261,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   writer cannot hold, such as a non-finite number or text UTF-8 cannot encode.
 - **Why:** A value the first step accepted and a later one cannot write ends the run part-way, after state has
   changed.
-- **Use:** `review_io:atomic_write_json`, `review_io:read_json`, `typed_fields:FieldReader`; one JSON writer and a
-  policy refusing a direct write are the mechanism in #1906.
-- **Guard:** `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
+- **Use:** `json_writer:dumps` for JSON text and `json_writer:write` for a JSON file, which refuse a non-finite
+  number, a lone surrogate, and what `json_reader:loads` refuses on the read-back, by name, at the write;
+  `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests`,
+  `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
 - **Search for:** `rg -n "json\.dumps?\(" | rg -v allow_nan=False`; `write_text(json.dumps(`; input written back
   without the later reader's pass.
 - **Examples:** #1552, #1634, #1874, #1906

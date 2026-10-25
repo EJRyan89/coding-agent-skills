@@ -137,6 +137,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 import json_reader
+import json_writer
 import runtime_support
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
@@ -1346,7 +1347,7 @@ def claim_home(home: Path) -> None:
     deployments, a failed one included."""
     (home / STATE).mkdir(exist_ok=True)
     record = {"made_by": "tools/runtime_canary.py", "home": forward(home)}
-    (home / STATE / HOME_MARKER).write_text(json.dumps(record) + "\n", encoding="utf-8")
+    json_writer.write(home / STATE / HOME_MARKER, record)
 
 
 def claimed(home: Path) -> bool:

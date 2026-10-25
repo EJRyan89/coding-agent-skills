@@ -434,6 +434,22 @@ class StateAndLockTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(0o600, path.stat().st_mode & 0o777)
 
+    def test_atomic_json_refuses_a_value_the_writer_refuses_naming_the_file_and_leaves_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            atomic_write_json(path, {"answer": 42})
+            for value, held in (
+                ({"answer": float("nan")}, "NaN or an infinity"),
+                ({"answer": "\ud800"}, r"a lone surrogate U\+D800"),
+            ):
+                with (
+                    self.subTest(held=held),
+                    self.assertRaisesRegex(PersistenceError, f"^Cannot write {re.escape(str(path))}: .*{held}"),
+                ):
+                    atomic_write_json(path, value)
+            self.assertEqual({"answer": 42}, read_json(path))
+            self.assertEqual(["state.json"], sorted(item.name for item in Path(temporary).iterdir()))
+
     def test_atomic_json_gives_the_replacement_the_mode_it_is_asked_for(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "state.json"

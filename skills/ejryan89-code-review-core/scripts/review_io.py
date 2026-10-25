@@ -21,6 +21,7 @@ from typing import IO, Any, TypeVar
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 from atomic_file import UnfinishedCopyError, replace_bytes
 from process_identity import ProcessStatus, process_status
 from review_process import same_process
@@ -207,14 +208,17 @@ def atomic_write_json(
     validator: Callable[[Any], object] | None = None,
     mode: int = 0o600,
 ) -> None:
+    """Replace `path` with `value` as ejryan89-skill-core's json_writer writes it, indented with sorted keys, as
+    atomic_write_text does. A value the writer refuses, such as one holding NaN or a lone surrogate, leaves `path`
+    untouched and is a PersistenceError naming it; `validator` judges the value and the text read back."""
     if validator is not None:
         validator(value)
-    content = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    # Validate the exact serialized representation before replacement, read as every reader of the file reads it, so
-    # a NaN or an infinity the value holds is refused here rather than by them.
-    parsed = json_reader.loads(content)
+    try:
+        content = json_writer.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    except json_writer.JsonWriteRefused as exc:
+        raise PersistenceError(f"Cannot write {path}: {exc}") from exc
     if validator is not None:
-        validator(parsed)
+        validator(json_reader.loads(content))
     atomic_write_text(path, content, mode=mode)
 
 
