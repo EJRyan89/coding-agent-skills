@@ -12,14 +12,15 @@ the readers, confirms what they find, and files it.
                    record as it was
     guidance       write one brief per runtime the deployer supports and for Python, naming the pages of its published
                    guidance the guidance record lists, the files of this repository that state facts about it, and
-                   the questions a reader answers for each page, for the guidance audit after tagging; refused while
-                   the record names no page for a runtime
-                   skills/ejryan89-skill-core/scripts/runtime_support.py lists. With --record TAG, append TAG to every
-                   page's reads instead, from a worktree as rotation --record does, keeping the record's changelogs,
-                   whose read_through the maintainer moves forward by hand in the same pull request
+                   the questions a reader answers for each page, and for a runtime the changelog the
+                   runtime-changelogs.yml workflow watches and the release it was read through, for the guidance audit
+                   after tagging; refused while the record names no page for a runtime
+                   skills/ejryan89-skill-core/scripts/runtime_support.py lists, or none for Python. With --record TAG,
+                   append TAG to every page's reads instead, from a worktree as rotation --record does, keeping the
+                   record's changelogs, whose read_through the maintainer moves forward by hand in the same pull request
     duplicates     search the open issues for each QUERY, so a finding already filed is not filed twice
-    remove-briefs  delete a briefs directory a release or rotation run printed as BRIEFS, and nothing else: one
-                   holding the BRIEFS_MARKER file the run wrote before its first brief, naming the directory
+    remove-briefs  delete a briefs directory a release, rotation, or guidance run printed as BRIEFS, and nothing else:
+                   one holding the BRIEFS_MARKER file the run wrote before its first brief, naming the directory
 
 Both records hold release tags only, as release_tags.py defines them, and a read's recency is its tag's place among
 releases, whatever order a record lists its reads in: an area's last read and a page's are those of the latest
@@ -98,7 +99,7 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
-from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, GuidanceRecord, GuidanceRecordError, Page
+from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
 from release_tags import is_release_tag, last_release, release_order
 
@@ -236,6 +237,25 @@ AUDIT_QUESTIONS = (
         "invalid UTF-8, and a directory in the file's place",
     ),
     ("sibling", "for each fix that touched these files since their last audit, the fixed construct's twin elsewhere"),
+    (
+        "successive-runs",
+        "for each record a run writes that a later run reads (the deployment manifest's pin, owned items, and each "
+        "skill's skill_deps; the journal; code-review records and run files; repo-cleanup's plans, seals, and sweep "
+        "record; a reporting skill's history file), follow it through two runs: after run N, who owns each field, the "
+        "user or the tool, and does run N+1 read it as the documents promise, including when run N was given the value "
+        "in another form (a short name, another case, an equivalent path)? A test that asserts the state after one run "
+        "without the next run's behavior is a finding, as the pin recorded as refs/tags/<tag> after one update, which "
+        "the next release's update moved without --unpin, was (#1689)",
+    ),
+    (
+        "installed-copy",
+        "for each deployer refusal, flag, status line, or path the installed update-coding-agent-skills reads: how "
+        "does the previous release's installed copy, which runs this deployer from the fast-forwarded clone, behave "
+        "with it, and does each way out the documents name work for that first update? A route only the new copy can "
+        "take is a finding, and the upgrade note must name the way past it, as the installed copy whose advice to "
+        "rerun with --unpin repeated its stop over a user's pin showed; the test #1607 proposes, the latest release's "
+        "installed update run against a newer clone, is what holds the answer",
+    ),
 )
 # A release or rotation finding's fields: the shared ones, and the question that found it.
 AUDIT_FINDING_FIELDS = (*FINDING_FIELDS, ("question", "the question that found it, by its name, or none"))
@@ -817,8 +837,34 @@ def write_briefs(briefs: list[tuple[str, str]]) -> list[str]:
     return lines
 
 
-def guidance_brief(subject: str, title: str, pages: Sequence[Page], facts: Sequence[tuple[str, str]], head: str) -> str:
-    """The brief for one reader of a runtime's, or Python's, published guidance."""
+def changelog_section(changelog: Changelog | None) -> list[str]:
+    """What a guidance brief tells its reader about the subject's changelog, which the runtime-changelogs.yml workflow
+    watches: nothing for a subject with none."""
+    if changelog is None:
+        return []
+    return [
+        "",
+        "## Changelog",
+        "",
+        "Start from the latest run of the `runtime-changelogs.yml` workflow. Its step summary lists the entries of "
+        f"{changelog.url} for each release after {changelog.read_through}, the release this changelog was last read "
+        "through, that mention a flag, environment variable, path, or frontmatter key this repository's code uses; "
+        "each such release it could not read, as UNREAD, for you to read in the changelog yourself; and each page of "
+        "the record that moved or is gone. Answer questions 2 to 5 for each entry it lists, as for a page.",
+        "",
+        "When the audit is recorded, the maintainer moves this changelog's read_through to the latest release whose "
+        "entries you read, so name that release under Coverage, with each listed entry you did not judge.",
+    ]
+
+
+def guidance_brief(
+    title: str,
+    pages: Sequence[Page],
+    facts: Sequence[tuple[str, str]],
+    head: str,
+    changelog: Changelog | None = None,
+) -> str:
+    """The brief for one reader of a runtime's, or Python's, published guidance, each page with its latest read."""
     lines = [
         f"# Guidance audit: {title}",
         "",
@@ -832,9 +878,11 @@ def guidance_brief(subject: str, title: str, pages: Sequence[Page], facts: Seque
         "## Pages",
         "",
         *(
-            f"- {page.url}: {page.governs}. Last read at {page.read[-1] if page.read else 'no release yet'}."
+            f"- {page.url}: {page.governs}. "
+            f"Last read at {max(page.read, key=release_key) if page.read else 'no release yet'}."
             for page in pages
         ),
+        *changelog_section(changelog),
         "",
         f"## What this repository states about {title}",
         "",
@@ -990,6 +1038,8 @@ def guidance(
             f"{GUIDANCE_PATH} names no page for {', '.join(unread)}, which {RUNTIME_CATALOGUE} supports; add the "
             "runtime's pages before the audit"
         )
+    if not any(page.subject == PYTHON_SUBJECT for page in pages):
+        raise AuditError(f"{GUIDANCE_PATH} names no page for {PYTHON_SUBJECT}; add Python's pages before the audit")
     unlisted = [runtime for runtime in runtimes if runtime not in RUNTIME_FACTS]
     if unlisted:
         raise AuditError(
@@ -998,7 +1048,7 @@ def guidance(
         )
     lines = [f'GUIDANCE_RECORD "{GUIDANCE_PATH}"', f"HEAD {head}"]
     by_subject = {subject: [page for page in pages if page.subject == subject] for subject in titles}
-    lines += [f"SUBJECT {subject} {len(found)} {oldest_read(found)}" for subject, found in by_subject.items() if found]
+    lines += [f"SUBJECT {subject} {len(found)} {oldest_read(found)}" for subject, found in by_subject.items()]
     if record is not None:
         if main_checkout:
             raise AuditError(
@@ -1014,10 +1064,13 @@ def guidance(
     lines += [*milestone_lines(following, following), f"PROVENANCE {json_text(sentence)}"]
     lines += guidance_lines(GUIDANCE_KINDS, guidance_audit=True)
     tracked = set(tracked_files(git, repository, head))
+    changelogs = {changelog.subject: changelog for changelog in record_read.changelogs}
     briefs = [
-        (subject, guidance_brief(subject, titles[subject], found, subject_facts(subject, tracked), head))
+        (
+            subject,
+            guidance_brief(titles[subject], found, subject_facts(subject, tracked), head, changelogs.get(subject)),
+        )
         for subject, found in by_subject.items()
-        if found
     ]
     return lines + write_briefs(briefs)
 
