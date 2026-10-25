@@ -1892,6 +1892,38 @@ class DefaultBranchTests(CleanupTestCase):
                 git(root, "update-ref", f"refs/remotes/origin/{branch}", "HEAD")
                 self.assertEqual(rc.DefaultBranch(branch), rc.default_branch(rc.Services(), root))
 
+    def test_a_repository_git_cannot_read_is_named_not_taken_for_one_without_a_default_branch(self) -> None:
+        root = self.repository("topic")
+        git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        (root / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        with self.assertRaisesRegex(rc.CleanupError, "^git symbolic-ref failed in .*bad config line 1"):
+            rc.default_branch(rc.Services(), root)
+
+    def test_a_broken_ref_is_named_not_taken_for_no_commit(self) -> None:
+        root = self.repository("topic")
+        broken = root / ".git" / "refs" / "heads" / "broken"
+        broken.write_text("nonsense\n", encoding="utf-8")
+        with self.assertRaisesRegex(
+            rc.CleanupError, "^git rev-parse failed in .*ignoring broken ref refs/heads/broken"
+        ):
+            rc.branch_tip(rc.Services(), root, "broken")
+        self.assertIsNone(rc.branch_tip(rc.Services(), root, "missing"))
+        self.assertEqual(git(root, "rev-parse", "HEAD"), rc.branch_tip(rc.Services(), root, "topic"))
+
+    def test_git_that_cannot_run_is_unavailable_not_absent(self) -> None:
+        def stalled(command: Sequence[str], timeout: float) -> GitResult:
+            raise git_client.GitError("git did not finish within 300 seconds", kind="timeout")
+
+        services = rc.Services(git=GitClient(stalled))
+        root = self.repository("topic")
+        for name, call in (
+            ("resolve", lambda: rc.resolve(services, root, "HEAD")),
+            ("origin_has", lambda: rc.origin_has(services, root, "main")),
+            ("current_branch", lambda: rc.current_branch(services, root)),
+        ):
+            with self.subTest(name), self.assertRaisesRegex(rc.GitUnavailable, "^could not run git: git did not"):
+                call()
+
     def test_no_default_branch_skips_the_repository_on_its_branch(self) -> None:
         pattern = (
             "^cannot determine default branch: origin/HEAD is unset and origin has no main or master; left on topic$"

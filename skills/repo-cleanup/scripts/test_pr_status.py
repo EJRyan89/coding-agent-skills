@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from bounded_process import Finished
-from git_client import GitClient, GitResult, subprocess_runner
+from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult, GitHubError
 from pr_status import (
     COMMIT_LIMIT,
@@ -549,8 +549,27 @@ class BranchTipTests(GitFixture):
         self.assertEqual((tip, tip), branch_tips(str(self.clone), "topic"), "not origin/a, at main")
 
     def test_missing_branch_fails_closed(self) -> None:
-        with self.assertRaisesRegex(QueryError, "cannot resolve local branch"):
+        with self.assertRaisesRegex(QueryError, "^cannot resolve local branch 'missing': it names no commit$"):
             branch_tips(str(self.clone), "missing")
+
+    def test_a_branch_or_repository_git_cannot_read_fails_naming_gits_reason(self) -> None:
+        tip = self.tracking_branch()
+        local = self.clone / ".git" / "refs" / "heads" / "topic"
+        local.write_text("nonsense\n", encoding="utf-8")
+        pattern = "^cannot resolve local branch 'topic': warning: ignoring broken ref refs/heads/topic"
+        with self.assertRaisesRegex(QueryError, pattern):
+            branch_tips(str(self.clone), "topic")
+        local.write_text(f"{tip}\n", encoding="utf-8")
+        (self.clone / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        with self.assertRaisesRegex(QueryError, "^cannot resolve local branch 'topic': .*bad config line 1"):
+            branch_tips(str(self.clone), "topic")
+
+    def test_git_that_cannot_run_is_named_as_such(self) -> None:
+        def stalled(command: Sequence[str], timeout: float) -> GitResult:
+            raise GitError("git rev-parse did not finish within 300 seconds", kind="timeout")
+
+        with self.assertRaisesRegex(QueryError, "^could not run git: git rev-parse did not finish"):
+            branch_tips(str(self.clone), "topic", GitClient(stalled))
 
 
 class BranchTipListingTests(unittest.TestCase):
@@ -593,6 +612,13 @@ class BaseContainsTests(GitFixture):
         self.assertTrue(contains(base))
         self.assertFalse(contains(tip))
         self.assertFalse(contains("f" * 40), "a commit missing locally is not in the base")
+
+    def test_a_repository_git_cannot_read_is_not_a_commit_missing_locally(self) -> None:
+        base = self.git("-C", str(self.clone), "rev-parse", "main")
+        contains = base_contains(str(self.clone), "refs/remotes/origin/main")
+        (self.clone / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        with self.assertRaisesRegex(QueryError, f"^cannot resolve commit {base}: .*bad config line 1"):
+            contains(base)
 
     def test_an_unresolvable_base_fails_closed(self) -> None:
         base = self.git("-C", str(self.clone), "rev-parse", "main")

@@ -241,10 +241,28 @@ def git_output(services: Services, directory: str | Path, *arguments: str) -> st
     return result.stdout
 
 
+def git_failure(root: str | Path, command: str, exc: git_client.GitError) -> GitUnavailable | CleanupError:
+    """GitUnavailable when git could not run or finish, else a CleanupError naming git's reason."""
+    if exc.returncode is None:
+        return GitUnavailable(f"could not run git: {exc}")
+    return CleanupError(f"git {command} failed in {root}: {one_line(str(exc)).strip()}")
+
+
+def quiet(services: Services, root: str | Path, *arguments: str) -> str | None:
+    """The stdout of a git command run with `--quiet`, or None when git answers that what it reads is not there; any
+    other failure raises, so a broken ref or an unreadable repository is never taken for one that is absent."""
+    try:
+        return services.git.quiet_output(["--no-optional-locks", *arguments], directory=root)
+    except git_client.GitError as exc:
+        raise git_failure(root, arguments[0], exc) from exc
+
+
 def resolve(services: Services, root: str | Path, ref: str) -> str | None:
-    result = git(services, root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
-    sha = result.stdout.strip()
-    return sha if result.returncode == 0 and pr_status.SHA_PATTERN.fullmatch(sha) else None
+    """The commit `ref` names, or None when git answers that it names none."""
+    try:
+        return services.git.commit_of(ref, directory=root)
+    except git_client.GitError as exc:
+        raise git_failure(root, "rev-parse", exc) from exc
 
 
 def branch_tip(services: Services, root: str | Path, branch: str) -> str | None:
@@ -332,15 +350,15 @@ class DefaultBranch:
 
 
 def origin_has(services: Services, root: str | Path, name: str) -> bool:
-    return git(services, root, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}").returncode == 0
+    return quiet(services, root, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}") is not None
 
 
 def origin_head(services: Services, root: str | Path) -> str | None:
     """The branch refs/remotes/origin/HEAD names, whether or not origin has it, or None when it is unset."""
-    head = git(services, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-    target = head.stdout.strip()
+    head = quiet(services, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    target = (head or "").strip()
     name = target.removeprefix("refs/remotes/origin/")
-    return name if head.returncode == 0 and name and name != target else None
+    return name if name and name != target else None
 
 
 def refresh_origin_head(services: Services, root: str | Path) -> tuple[str | None, str]:
@@ -360,8 +378,8 @@ def refresh_origin_head(services: Services, root: str | Path) -> tuple[str | Non
 
 
 def current_branch(services: Services, root: str | Path) -> str:
-    head = git(services, root, "symbolic-ref", "--quiet", "--short", "HEAD")
-    return head.stdout.strip() if head.returncode == 0 and head.stdout.strip() else "a detached HEAD"
+    head = (quiet(services, root, "symbolic-ref", "--quiet", "--short", "HEAD") or "").strip()
+    return head or "a detached HEAD"
 
 
 def default_branch(services: Services, root: str | Path) -> DefaultBranch:
