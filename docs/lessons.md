@@ -325,7 +325,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
   `deployer.platform_support:path_key`; `guidance_record:canonical_url`.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
-  which fails a version's numbers read by hand outside the version reader;
+  which fails a version's numbers read by hand outside the version reader, and a path made absolute, normalized,
+  or resolved, then case-folded by hand outside the path key;
   `skills/ejryan89-skill-core/scripts/test_versions.py::OrderTests::test_versions_order_by_number_never_as_text`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,

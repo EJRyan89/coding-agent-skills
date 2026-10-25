@@ -341,6 +341,7 @@ class SharedFactPolicy(unittest.TestCase):
     TYPED_TEXT = "skills/ejryan89-skill-core/scripts/typed_text.py"
     SKILL_LAYOUT = "tests/validation/skill_layout.py"
     VERSIONS = "skills/ejryan89-skill-core/scripts/versions.py"
+    PATH_KEYS = "skills/ejryan89-skill-core/scripts/path_keys.py"
     OWNERS: ClassVar[dict[str, str]] = {
         GIT_CLIENT: (
             'GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--attr-source", "--config-env", "--git-dir", '
@@ -368,6 +369,7 @@ class SharedFactPolicy(unittest.TestCase):
             'SEPARATOR = "."\n\n\ndef read(text):\n'
             "    return tuple(whole_number.parse(part) for part in text.split(SEPARATOR))\n"
         ),
+        PATH_KEYS: "def path_key(path):\n    return os.path.normcase(os.path.abspath(path))\n",
     }
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -517,6 +519,29 @@ class SharedFactPolicy(unittest.TestCase):
         )
         self.assertEqual([], self.problems({tools: shared}))
 
+    def test_a_path_case_folded_by_hand_fails_and_the_shared_key_passes(self) -> None:
+        canary = "tools/runtime_canary.py"
+        for folding, line in (
+            ("key = os.path.normcase(os.path.abspath(path))\n", 1),
+            ("key = os.path.normcase(os.path.normpath(path))\n", 1),
+            ("same = os.path.normcase(os.path.realpath(first)) == second\n", 1),
+            ("from os.path import normcase\n\nkey = normcase(str(path.resolve()))\n", 3),
+            ("key = os.path.normcase(os.fspath(Path(candidate).absolute()))\n", 1),
+            ("key = str(path.resolve()).casefold()\n", 1),
+            ("key = os.path.abspath(path).lower()\n", 1),
+        ):
+            with self.subTest(folding=folding):
+                self.assertEqual(
+                    [self.restated(canary, line, "path_key", self.PATH_KEYS)], self.problems({canary: folding})
+                )
+        shared = (
+            "key = platform_support.path_key(path)\nsame = path_key(first, resolve=True) == path_key(second)\n"
+            # A name folded against another name, or a path already normalized, builds no key.
+            'git = os.path.normcase(directory.name) == ".git"\nfolder = os.path.normcase(str(part))\n'
+            "suffix = path.suffix.casefold()\nlabel = name.lower()\n"
+        )
+        self.assertEqual([], self.problems({canary: shared}))
+
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'
         self.assertEqual(
@@ -560,13 +585,16 @@ class SharedFactPolicy(unittest.TestCase):
                 'def default_config_path():\n    return HOME / "code-review" / "config.json"\n', encoding="utf-8"
             )
             (root / self.GIT_CLIENT).unlink()
+            # The function renamed, so a re-derived key would go unseen.
+            (root / self.PATH_KEYS).write_text("def comparable(path):\n    return path\n", encoding="utf-8")
             self.assertEqual(
                 [
-                    f"{owner} no longer holds {fact} as a literal; name its new home in the shared facts of "
-                    "tests/validation/duplication.py"
+                    f"{owner} no longer holds {fact} as a literal or a function; name its new home in the shared "
+                    "facts of tests/validation/duplication.py"
                     for owner, fact in (
                         (self.GIT_CLIENT, "GLOBAL_VALUE_OPTIONS"),
                         (self.REVIEW_CONFIG, "DEFAULT_CONFIG_NAME"),
+                        (self.PATH_KEYS, "path_key"),
                     )
                 ],
                 shared_fact_owner_problems(root),
