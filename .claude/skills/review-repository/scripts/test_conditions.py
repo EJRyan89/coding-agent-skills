@@ -101,6 +101,50 @@ class ReadFilesTests(unittest.TestCase):
         )
 
 
+class SnapshotExclusionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.manifest = self.root / "source-snapshot.json"
+
+    def test_the_exclusions_are_the_ones_the_snapshot_s_manifest_records(self) -> None:
+        self.manifest.write_bytes(
+            b'{"excluded_paths": {".claude/x.py": "agent-instruction", "big.py": "file-size-limit"}}'
+        )
+        self.assertEqual(
+            {".claude/x.py": "agent-instruction", "big.py": "file-size-limit"},
+            conditions.snapshot_exclusions(self.root),
+        )
+
+    def test_a_snapshot_with_no_manifest_records_no_exclusion(self) -> None:
+        self.assertEqual({}, conditions.snapshot_exclusions(self.root))
+
+    def test_a_manifest_it_cannot_read_raises_missing_evidence_rather_than_excluding_nothing(self) -> None:
+        unreadable = "the snapshot's source-snapshot.json cannot be read: "
+        unmapped = "the snapshot's source-snapshot.json records no excluded_paths mapping paths to reasons"
+        for content, message in (
+            (b"not json", unreadable),
+            (b"\xff", unreadable),
+            (b'{"excluded_paths": {"a": "configured"}, "excluded_paths": {}}', unreadable),
+            (b"[]", unmapped),
+            (b"{}", unmapped),
+            (b'{"excluded_paths": []}', unmapped),
+            (b'{"excluded_paths": {"a": 1}}', unmapped),
+        ):
+            with self.subTest(content=content):
+                self.manifest.write_bytes(content)
+                with self.assertRaises(conditions.MissingEvidence) as raised:
+                    conditions.snapshot_exclusions(self.root)
+                self.assertTrue(str(raised.exception).startswith(message), str(raised.exception))
+                self.assertEqual(message == unmapped, str(raised.exception) == unmapped)
+        self.manifest.unlink()
+        self.manifest.mkdir()
+        with self.assertRaises(conditions.MissingEvidence) as raised:
+            conditions.snapshot_exclusions(self.root)
+        self.assertTrue(str(raised.exception).startswith(unreadable), str(raised.exception))
+
+
 @pytest.mark.parametrize(
     "path",
     [
