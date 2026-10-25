@@ -382,14 +382,15 @@ def foreign_checkout(git: GitClient, directory: Path) -> str | None:
     """Why the checkout at `directory` follows another repository's pull request, or None when it does not: its
     branch's upstream is a pull request's ref or a remote other than origin, or its HEAD is detached at a commit no
     branch of origin holds. Raises GitError when git cannot read the checkout."""
-    branch = git.run(["symbolic-ref", "-q", "--short", "HEAD"], directory=directory)
-    if branch.returncode != 0:
+    # Each read exits 1 saying nothing for what is not there: a detached HEAD, or a branch that follows nothing.
+    branch = git.quiet_output(["symbolic-ref", "-q", "--short", "HEAD"], directory=directory)
+    if branch is None:
         if origin_branches_holding_head(git, directory):
             return None
         return "its HEAD is detached at a commit no branch of origin holds"
-    name = branch.stdout.strip()
-    remote = git.run(["config", "--get", f"branch.{name}.remote"], directory=directory).stdout.strip()
-    merge = git.run(["config", "--get", f"branch.{name}.merge"], directory=directory).stdout.strip()
+    name = branch.strip()
+    remote = (git.quiet_output(["config", "--get", f"branch.{name}.remote"], directory=directory) or "").strip()
+    merge = (git.quiet_output(["config", "--get", f"branch.{name}.merge"], directory=directory) or "").strip()
     if merge.startswith("refs/pull/"):
         return f"its branch {name} follows {merge}, a pull request's ref"
     if remote not in OWN_REMOTES:
