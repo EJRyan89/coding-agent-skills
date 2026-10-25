@@ -1,6 +1,6 @@
 """What this skill's conditions share: the variables a review sets for a condition, the reader of the diff it names,
-the scripts they read, the paths the snapshot records it leaves out, this repository's rule for a suite, and how a
-condition fails.
+the scripts they read, the paths the snapshot records it leaves out and how a route's `reads` glob matches one, this
+repository's rule for a suite, and how a condition fails.
 
 doc_passages.py and untested_functions.py import it, and the specialists manifest declares it as a resource, so it
 sits beside them in the reviewer folder a review materializes.
@@ -8,6 +8,7 @@ sits beside them in the reviewer folder a review materializes.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -39,6 +40,12 @@ DUPLICATION_ALLOWED = {
         "root; a condition runs from a reviewer folder holding only the manifest's declared resources, where that "
         "module and its imports are not, so each side names it"
     ),
+    "glob_matcher": (
+        "skills/ejryan89-code-review-core/scripts/review_runtime.py matches a route's `reads` globs with it when it "
+        "takes a lazy snapshot, and a condition must match a recorded exclusion against its own globs the same way; "
+        "a condition runs from a reviewer folder holding only the manifest's declared resources, where that module "
+        "and its imports are not, so each side holds it"
+    ),
 }
 
 # The pull request's unified diff, and the file a condition writes for its route's reviewer.
@@ -48,6 +55,8 @@ OUTPUT_VARIABLE = "CODE_REVIEW_CONDITION_OUTPUT"
 # and why.
 SNAPSHOT_MANIFEST = "source-snapshot.json"
 SCRIPT_SUFFIXES = (".py", ".ps1", ".sh")
+# Whether a snapshot-relative path matches a glob.
+Exclusion = Callable[[str], bool]
 # A condition's exit status 1 closes its route, so a failure exits with this instead and fails the review.
 FAILURE_STATUS = 2
 
@@ -92,6 +101,32 @@ def snapshot_exclusions(root: Path) -> dict[str, str]:
     ):
         raise MissingEvidence(f"the snapshot's {SNAPSHOT_MANIFEST} records no excluded_paths mapping paths to reasons")
     return excluded
+
+
+def glob_matcher(pattern: str) -> Exclusion:
+    """Whether a snapshot-relative path matches one glob, ignoring case, as a whole path, as a lazy snapshot matches a
+    route's `reads`.
+
+    `*`, `?`, and `[...]` match within one segment, as fnmatch does; a `**` segment matches any number of segments,
+    none included. So `*.resx` matches only a root file, and `**/*.resx` one at any depth.
+    """
+    segments = [
+        None if part == "**" else re.compile(fnmatch.translate(part), re.IGNORECASE) for part in pattern.split("/")
+    ]
+
+    def matches(relative: str) -> bool:
+        parts = relative.split("/")
+        reached = {0}  # how many of the path's segments the pattern's segments so far can consume
+        for segment in segments:
+            if segment is None:
+                reached = set(range(min(reached), len(parts) + 1))
+            else:
+                reached = {index + 1 for index in reached if index < len(parts) and segment.match(parts[index])}
+            if not reached:
+                return False
+        return len(parts) in reached
+
+    return matches
 
 
 def run_condition(run: Callable[[], int]) -> int:

@@ -352,12 +352,20 @@ class CheckCommandTests(Repository):
 
     def test_only_an_exit_of_1_that_says_nothing_names_no_commit(self) -> None:
         for result, line in (
-            (GitResult(128, "", ""), "FAILED git rev-parse: failed with exit code 128"),
+            (GitResult(128, "", ""), "FAILED git rev-parse: git rev-parse failed with exit code 128"),
             (GitResult(1, "", "fatal: ambiguous argument\n"), "FAILED git rev-parse: fatal: ambiguous argument"),
         ):
             with self.subTest(result=result):
                 git_client = self.failing_git("rev-parse", "--verify", result=result)
                 self.assertEqual((1, [line]), self.run_script("check", *self.files_arguments(), git_client=git_client))
+
+    def test_a_holding_test_git_warns_about_is_a_failed_line_not_behind(self) -> None:
+        warned = GitResult(1, "", "warning: ignoring broken ref refs/heads/side\n")
+        git_client = self.failing_git("merge-base", "--is-ancestor", result=warned)
+        self.assertEqual(
+            (1, ["FAILED git merge-base: warning: ignoring broken ref refs/heads/side"]),
+            self.run_script("check", *self.files_arguments(), git_client=git_client),
+        )
 
     def test_the_top_folder_loses_only_the_line_break_git_ends_it_with(self) -> None:
         for printed, top in (("/srv/tree X \n", "/srv/tree X "), ("/srv/treeX\r\n", "/srv/treeX")):

@@ -581,7 +581,7 @@ def main(arguments: list[str] | None = None) -> int:
     home = create_home()
     try:
         code = canary(home, discovery_only=options.discovery_only, timeout=options.timeout)
-    except (plugin_build.BuildError, OSError) as exc:
+    except (plugin_build.BuildError, OSError, json_writer.JsonWriteRefused) as exc:
         print(f"FAILED {quote(str(exc))}")
         code = 1
     return finish(home, code, options.keep_home)
