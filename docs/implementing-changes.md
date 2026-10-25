@@ -113,29 +113,30 @@ validation") holds
 the rules validation enforces.
 
 The `Mutation gate` job of the `Mutation` workflow runs on every pull request and is not a required check. It mutates
-the lines the pull request adds or changes in each Python module under `deployer/`, `tools/`, a skill's `scripts/`, or
-a repository skill's `scripts/`, suites and `conftest.py` left out, with mutmut's operators, and runs each mutant
-against the suites that executed the statement holding its line unmutated, as coverage.py measured them, until one
-fails, so a mutant on a continuation line of a multi-line statement is reached when that statement ran. Of each such
-suite it runs only the tests that ran the statement, as coverage.py's test-function contexts recorded them, and the
-whole suite when code outside a test function ran it too: a process the suite started, a set-up, a fixture, or an
-import. A mutant of a module-level assignment, such as a table or a compiled pattern, runs at import, so it runs
+the lines the pull request adds or changes in each Python module under `deployer/`, `tools/`, a skill's `scripts/`, or a
+repository skill's `scripts/`, suites and `conftest.py` left out, with mutmut's operators, and runs each mutant against
+the suites that executed the statement holding its line unmutated, as coverage.py measured them, until one fails, so a
+mutant on a continuation line of a multi-line statement is reached when that statement ran. Of each such suite it runs
+only the tests that ran the statement, as coverage.py's test-function contexts recorded them, or that started, while
+their test ran, the process that ran it, and the whole suite when anything else ran it too: a set-up, a fixture, an
+import, or a process started outside a test's call. Before the reach pass it measures a canary suite, and a reach run
+that no longer measures the suite's own process and the process its test starts, each line named with that test, fails
+the job. A mutant of a module-level assignment, such as a table or a compiled pattern, runs at import, so it runs
 instead the tests that ran a line reading a name it binds, when only the module's functions read those names and no
-other file names one, and the whole of each reaching suite otherwise. A mutation
-anchored on an expression that starts on an unchanged line, such as removing an argument from a call that opens above
-the change, is left out. Its step summary gives each module's changed lines and kill ratio, names each changed module whose
-changed lines yield no mutant, and names each surviving mutant by its line, the mutation, and the suites it passed, with how many of a suite's tests ran
-when not all did; a
-pull request that changes no such module gets one line saying so. The mutants run from one queue that takes one from
-each module in turn, and the run is capped by `DEFAULT_MINUTES` in the gate. A run the cap cuts short, leaving a
-mutant not run or a suite's reach unmeasured, is unfinished: its summary's first line says so, naming each module's
-mutants not run and how many lie on lines that run at import, and the job fails. An unfinished gate is not a verdict,
-whatever its table shows. Split the pull request, or move the module-level tables its changed lines hold into the
-functions that use them, until its gate finishes. The summary of a finished run is the record: read it, and for a surviving mutant on a
-line the pull request changed that alters behavior a caller relies on, such as a refusal or a line a document or
-test treats as a contract, add the test that kills it, or name it in the pull request with why it is equivalent.
-A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere. It runs on Linux only, because mutmut refuses Windows; the gate's docstring
-in `tools/mutation_gate.py` gives the details.
+other file names one, and the whole of each reaching suite otherwise. A mutation anchored on an expression that starts
+on an unchanged line, such as removing an argument from a call that opens above the change, is left out. Its step
+summary gives each module's changed lines and kill ratio, names each changed module whose changed lines yield no mutant,
+and names each surviving mutant by its line, the mutation, and the suites it passed, with how many of a suite's tests
+ran when not all did; a pull request that changes no such module gets one line saying so. The mutants run from one queue
+that takes one from each module in turn, and the run is capped by `DEFAULT_MINUTES` in the gate. A run the cap cuts
+short, leaving a mutant not run or a suite's reach unmeasured, is unfinished: its summary's first line says so, naming
+each module's mutants not run and how many lie on lines that run at import, and the job fails. An unfinished gate is not
+a verdict, whatever its table shows. Split the pull request, or move the module-level tables its changed lines hold into
+the functions that use them, until its gate finishes. The summary of a finished run is the record: read it, and for a
+surviving mutant on a line the pull request changed that alters behavior a caller relies on, such as a refusal or a line
+a document or test treats as a contract, add the test that kills it, or name it in the pull request with why it is
+equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere. It
+runs on Linux only, because mutmut refuses Windows; the gate's docstring in `tools/mutation_gate.py` gives the details.
 
 ## Contract files
 
