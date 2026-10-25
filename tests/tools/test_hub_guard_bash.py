@@ -118,6 +118,8 @@ class BuiltinAssignmentTests(unittest.TestCase):
                 ("printf -x GIT_DIR", before),
                 ("printf -v", before),
                 ("printf -vother", before),
+                # Only the name after -v is set; the format after it is not.
+                ("printf -v other GIT_DIR", before),
                 # The program printf sets no variable of the shell.
                 ("env printf -v GIT_DIR %s after", before),
             )

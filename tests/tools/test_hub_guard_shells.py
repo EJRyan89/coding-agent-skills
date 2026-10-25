@@ -94,6 +94,8 @@ BASH_COMMANDS = (
     "getopts ab other GIT_DIR",
     "sleep 0 & wait -p GIT_DIR",
     "wait -p other",
+    "wait -p other GIT_DIR",
+    "printf -v other GIT_DIR",
     "declare -n ref=GIT_DIR; unset ref; export GIT_DIR",
     "declare -n ref=GIT_DIR; unset ref; GIT_DIR=after",
     "declare -n GIT_DIR=other; unset -n GIT_DIR",
