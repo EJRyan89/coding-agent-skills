@@ -1231,7 +1231,7 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
-        for name in ("deployable.yml", "mutation.yml", "runtime-command-lines.yml", "runtime-changelogs.yml"):
+        for name in sorted(set(WORKFLOW_GUARDS) - {"validate.yml"}):
             workflow = (workflows / name).read_text(encoding="utf-8")
             # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
             shared = {action for action, _, _ in action_pins(workflow)} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
@@ -1242,6 +1242,12 @@ class WorkflowsPolicies(unittest.TestCase):
                         required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
                         required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
                     )
+
+    def test_the_dependency_document_names_every_workflow_that_shares_validates_action_pins(self) -> None:
+        document = (REPOSITORY_ROOT / "docs" / "dependency-updates.md").read_text(encoding="utf-8")
+        paragraph = next(part for part in document.split("\n\n") if "pin their actions the same way" in part)
+        named = re.findall(r"`\.github/workflows/([^`]+)`", paragraph)
+        self.assertEqual(sorted(set(WORKFLOW_GUARDS) - {"validate.yml"}), sorted(named))
 
     def test_runtime_command_lines_workflow_checks_the_latest_runtimes_on_both_platforms(self) -> None:
         workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "runtime-command-lines.yml").read_text(encoding="utf-8")

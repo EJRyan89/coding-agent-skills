@@ -41,10 +41,10 @@ Development and deployment are supported on Windows, and the whole validation ru
 Install the development dependencies into the Python that runs validation:
 
 ```powershell
-python -m pip install -r requirements-dev.txt
+python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
 ```
 
-`requirements-dev.in` pins the only ones, `ruff`, `mypy`, and `pytest`, as contributor and CI tools, and `requirements-dev.txt` is its lock, every package they install pinned and hashed, while the deployer and every shipped skill stay standard-library. [Python checks](#python-checks) states what validation runs with them, and [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
+`requirements-dev.in` pins the only ones, `ruff`, `mypy`, and `pytest`, as contributor and CI tools, and `requirements-dev.txt` is its lock, every package they install pinned and hashed, which the command installs as CI does, checking every hash and building no source distribution, while the deployer and every shipped skill stay standard-library. [Python checks](#python-checks) states what validation runs with them, and [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
 
 Install PSScriptAnalyzer from PowerShell 7; `-Force` also upgrades an older version and answers the untrusted-repository prompt:
 
@@ -66,7 +66,7 @@ Validation runs on Linux as it does on Windows, and CI runs the whole of it ther
 sudo apt-get update && sudo apt-get install --yes git shellcheck python3-venv
 pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'
 python3 -m venv ~/.venvs/coding-agent-skills
-~/.venvs/coding-agent-skills/bin/python -m pip install -r requirements-dev.txt
+~/.venvs/coding-agent-skills/bin/python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
 ```
 
 Then run validation with that environment's interpreter, `~/.venvs/coding-agent-skills/bin/python -B tests/run_validation.py`.
