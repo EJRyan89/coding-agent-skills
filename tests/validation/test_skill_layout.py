@@ -456,6 +456,43 @@ class SkillLayoutFixtures(unittest.TestCase):
                 skill_path_problems(root),
             )
 
+    def test_an_install_path_is_refused_under_every_spelling_of_the_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            (root / "agents").mkdir()
+            for skill in ("alpha", "beta"):
+                (root / "skills" / skill).mkdir(parents=True)
+                (root / "deploy-meta" / f"{skill}.json").write_text("{}", encoding="utf-8")
+            (root / "skills" / "beta" / "SKILL.md").write_text("# beta\n", encoding="utf-8")
+            (root / "skills" / "alpha" / "SKILL.md").write_text(
+                "Read `{{HOME}}/.claude/skills/beta/a.md`.\n"
+                "Read `$HOME/.claude/skills/beta/a.md`.\n"
+                "Read `${HOME}/.claude/skills/beta/a.md`.\n"
+                "Read `~/.claude/skills/beta/a.md`.\n"
+                "Read `$HOMEPAGE/.claude/skills/beta/a.md` and `{{HOME}}/.claude/skills/stranger/a.md`.\n"
+                "Run `os.path.expanduser('~/.claude/skills/beta/scripts/b.py')`.\n",
+                encoding="utf-8",
+            )
+            # An agent's hook runs a skill's script through expanduser, the form a plugin build rewrites; a skill has
+            # ${CLAUDE_SKILL_DIR} instead, and an agent's prose has no hook to excuse it.
+            (root / "agents" / "helper.md").write_text(
+                "          runpy.run_path(os.path.expanduser('~/.claude/skills/beta/scripts/b.py'))\n"
+                "Read `~/.claude/skills/beta/a.md`.\n",
+                encoding="utf-8",
+            )
+            doc = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"agents/helper.md:2 names skill beta by its install path; see {doc}",
+                    *(
+                        f"skills/alpha/SKILL.md:{line} names skill beta by its install path; see {doc}"
+                        for line in (1, 2, 3, 4, 6)
+                    ),
+                ],
+                skill_path_problems(root),
+            )
+
     def test_skill_path_policy_reads_each_document_once_and_each_check_only_where_it_applies(self) -> None:
         """Which documents skill_path_problems reads (every agent, grouped skills, nested files, never a directory
         without SKILL.md), and where each check is off: fence openers, non-shell fences, prose, agents, skills."""

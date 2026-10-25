@@ -139,9 +139,9 @@ def label(source_id: str, name: str) -> str:
 
 
 NAME_RULES = (
-    "Rename it with only lowercase letters, digits, and hyphens, no leading or trailing hyphen, at most 64 characters, "
-    "not a Windows device name such as con or nul, and, for a skill, without the reserved words anthropic or claude; "
-    'see "Files" in docs/adding-a-skill.md.'
+    "Rename it with only lowercase letters, digits, and hyphens, no leading or trailing hyphen, at most "
+    f"{MAX_NAME} characters, not a Windows device name such as con or nul, and, for a skill, without the reserved "
+    'words anthropic or claude; see "Files" in docs/adding-a-skill.md.'
 )
 XML_TAG_REMEDY = 'Remove the tag, or write it without angle brackets; see "Files" in docs/adding-a-skill.md.'
 METADATA_SHAPE = (
@@ -153,7 +153,7 @@ METADATA_SHAPE = (
 
 def is_valid_name(name: str) -> bool:
     return (
-        len(name) <= 64
+        len(name) <= MAX_NAME
         and bool(SKILL_NAME_PATTERN.fullmatch(name))
         and not platform_support.is_reserved_device_name(name)
     )

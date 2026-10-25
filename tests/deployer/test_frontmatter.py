@@ -108,6 +108,14 @@ class SequenceTests(unittest.TestCase):
         with self.assertRaisesRegex(FrontmatterError, "must be a single value"):
             frontmatter.parse("---\ndisable-model-invocation: [true]\n---\n").user_only()
 
+    def test_a_user_only_value_from_another_reader_is_read_alike(self) -> None:
+        cases: dict[object, bool] = {" TRUE ": True, "true": True, "yes": False, "": False, None: False}
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertIs(expected, frontmatter.user_only_value(value))
+        self.assertFalse(frontmatter.user_only_value(["true"]))
+        self.assertEqual("disable-model-invocation", frontmatter.USER_ONLY_KEY)
+
     def test_string_refuses_a_sequence(self) -> None:
         with self.assertRaisesRegex(FrontmatterError, "key must be a single value"):
             parse("key: [a]").string("key")

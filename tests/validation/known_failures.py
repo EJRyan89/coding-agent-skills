@@ -11,12 +11,12 @@ removes the entry with it.
 
 from __future__ import annotations
 
-import json
 import re
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+import json_reader
 from markdown_sections import HTML_COMMENT
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
@@ -54,10 +54,10 @@ def _entry(index: int, raw: object) -> KnownFailure:
 def read_known_failures(path: Path) -> list[KnownFailure]:
     """The list's entries, in its order, or KnownFailuresUnreadable naming why it cannot be read."""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json_reader.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError) as error:
         raise KnownFailuresUnreadable(f"cannot be read: {error}") from error
-    except (ValueError, RecursionError) as error:
+    except ValueError as error:
         raise KnownFailuresUnreadable(f"is not JSON this module reads: {type(error).__name__}") from error
     if not isinstance(raw, list):
         raise KnownFailuresUnreadable("must be a list of entries")

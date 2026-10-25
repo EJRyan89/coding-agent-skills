@@ -236,6 +236,18 @@ class SkillReferenceTestCase(unittest.TestCase):
             skill_reference.problems(self.root),
         )
 
+    def test_a_user_only_skill_is_read_as_the_deployer_reads_it_in_any_case(self) -> None:
+        # The deployer writes an adapter user-only for a true in any case, so the reference reads the key alike.
+        self.add_skill(
+            "alpha",
+            "description: Sweeps every repository.\ndisable-model-invocation: True",
+            {"required_vars": ["UPDATE_CHANNEL"]},
+        )
+        self.written_and_explained()
+
+        self.assertEqual([], skill_reference.problems(self.root))
+        self.assertIn("| [`alpha`](#alpha) | You |", self.reference.read_text(encoding="utf-8"))
+
     def test_the_readme_must_list_every_menu_item_and_link_the_reference(self) -> None:
         self.written_and_explained()
         (self.root / "README.md").write_text(

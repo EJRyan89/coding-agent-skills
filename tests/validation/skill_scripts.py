@@ -7,7 +7,6 @@ from __future__ import annotations
 import ast
 import contextlib
 import functools
-import json
 import re
 import shlex
 import unittest
@@ -16,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import git_client
+import json_reader
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from skill_roots import SKILL_CORE
@@ -1268,7 +1268,7 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     skills: list[tuple[str, set[str], list[Path], list[Path]]] = []
     directories = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        document = json.loads(metadata.read_text(encoding="utf-8"))
+        document = json_reader.loads(metadata.read_text(encoding="utf-8"))
         declared = set(document.get("tools", [])) | set(document.get("optional_tools", []))
         own = _skill_files(directories[metadata.stem]) if metadata.stem in directories else []
         skills.append((metadata.stem, declared, own, _reached_dependency_scripts(root, metadata.stem, own)))
@@ -1319,7 +1319,7 @@ def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> l
     """
     problems: list[str] = []
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        document = json.loads(metadata.read_text(encoding="utf-8"))
+        document = json_reader.loads(metadata.read_text(encoding="utf-8"))
         problems.extend(
             f"skill {metadata.stem} lists {name} under tools, which the catalogue makes optional for every "
             f"skill; declare it in optional_tools; see {COMMANDS_DOC}"

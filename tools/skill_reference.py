@@ -45,8 +45,9 @@ SUMMARY = "summary"
 RUNTIME_SUPPORT = "runtime-support"
 SECTION_HEADING = re.compile(r"^## `([^`]+)`$")
 TOKEN = re.compile(r"\{\{([A-Z_]+)\}\}")
-# Frontmatter keys this tool reads; the shared reader never parses the others.
-READ_KEYS = ("name", "description", "argument-hint", "disable-model-invocation")
+# Frontmatter keys this tool reads as values; the shared reader never parses the others, and reads whether only the
+# user starts the skill itself.
+READ_KEYS = ("name", "description", "argument-hint")
 # The clause that tells the model when to start a skill, as "Description" in docs/adding-a-skill.md asks.
 WHEN_CLAUSE = re.compile(r"(?i)\buse (?:it |this skill )?(?:when|whenever|before|after)\b")
 WHEN_RULE = 'say what it does, then when to use it ("Use it when ..."); see "Description" in docs/adding-a-skill.md'
@@ -83,14 +84,16 @@ def end_marker(block: str) -> str:
     return f"<!-- /generated:{block} -->"
 
 
-def read_frontmatter(skill_md: Path) -> dict[str, str]:
-    """The values of READ_KEYS that the skill declares, each of which must be a single value."""
+def read_frontmatter(skill_md: Path) -> tuple[dict[str, str], bool]:
+    """The values of READ_KEYS that the skill declares, each of which must be a single value, and whether only the user
+    starts the skill, as the shared reader reads it."""
     try:
         document = frontmatter.read(skill_md)
         values = {key: document.string(key) for key in READ_KEYS}
+        user_only = document.user_only()
     except frontmatter.FrontmatterError as exc:
         raise SkillReferenceError(f"{skill_md}: {exc}") from exc
-    return {key: value for key, value in values.items() if value is not None}
+    return {key: value for key, value in values.items() if value is not None}, user_only
 
 
 def _needs(source: deploy_source.Source, name: str) -> list[str]:
@@ -134,7 +137,7 @@ def entries(source: deploy_source.Source) -> list[Entry]:
         skill = source.skills[name]
         if not skill.selectable:
             continue
-        frontmatter = read_frontmatter(skill.directory / "SKILL.md")
+        frontmatter, user_only = read_frontmatter(skill.directory / "SKILL.md")
         description = frontmatter.get("description", "").strip()
         if not description:
             raise SkillReferenceError(f"skills/{name}/SKILL.md: no description")
@@ -145,7 +148,7 @@ def entries(source: deploy_source.Source) -> list[Entry]:
                 name=name,
                 description=TOKEN.sub(r"`\1`", description),
                 argument_hint=hint,
-                user_only=frontmatter.get("disable-model-invocation", "").strip() == "true",
+                user_only=user_only,
                 bundle=bundle,
                 opt_in=deploy_source.is_opt_in(source, bundle or name),
                 needs=_needs(source, name),
