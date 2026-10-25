@@ -239,6 +239,24 @@ class NameReferenceTests(unittest.TestCase):
         hub_guard.read_bash(text, START, reading, 0, {})
         self.assertEqual([START / "elsewhere"], [call.place.repository for call in reading.calls])
 
+    def test_cd_reads_cdpath_through_a_reference_and_where_the_text_does_not_settle_it(self) -> None:
+        # tests/tools is a directory below the start, tests, so cd reaches it unless CDPATH may search elsewhere.
+        for command, expected in (
+            ("cd tools", START),
+            ("CDPATH=; cd tools", START),
+            ("CDPATH=/elsewhere; cd tools", None),
+            ("declare -n CDPATH=other; other=/elsewhere; cd tools", None),
+            ("declare -n CDPATH=other; cd tools", START),
+            ("declare -n CDPATH; cd tools", None),
+            ("read $name <<< /elsewhere; cd tools", None),
+            ("declare -n CDPATH=other; other=/elsewhere; cd ./tools", START),
+        ):
+            text = f"{command}; git status"
+            reading = hub_guard.Reading({}, text)
+            hub_guard.read_bash(text, START.parent, reading, 0, {})
+            with self.subTest(command=command):
+                self.assertEqual([expected], [call.place.start for call in reading.calls])
+
     def test_functions_are_followed_four_calls_deep(self) -> None:
         definitions = "f1() { f2; }; f2() { f3; }; f3() { f4; }; f4() { git --git-dir after status; }; "
         reading = hub_guard.Reading({}, definitions + "f1")
@@ -277,6 +295,11 @@ class NameReferenceTests(unittest.TestCase):
                 ("declare -n ref=GIT_DIR; declare -n ref=other; ref=after", before),
                 # unset through a reference removes its variable and the variable's export.
                 ("declare -n ref=GIT_DIR; unset ref; export GIT_DIR", UNSET),
+                # An assignment through an exported reference does not export the variable it reaches.
+                ("unset GIT_DIR; declare -nx ref=GIT_DIR; ref=after", UNSET),
+                ("unset GIT_DIR; declare -n ref=GIT_DIR; export ref; ref=after", START / "after"),
+                # A reference as a loop's variable stands for each word in turn and sets none of them.
+                ("declare -n ref=GIT_DIR; for ref in one two; do :; done", before),
                 ("declare -n ref=GIT_DIR; unset ref; GIT_DIR=after", UNSET),
                 ("declare -n ref=other; unset ref", before),
                 # unset -n removes the reference itself, with its own value and export.

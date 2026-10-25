@@ -931,7 +931,8 @@ class Shell:
         self.exported.discard(target)
 
     def program_variables(self, local: Mapping[str, Word]) -> dict[str, Word]:
-        """The variables a program the shell starts sees: those exported, and the command's own assignments."""
+        """The variables a program the shell starts sees: those exported, and the command's own assignments. Each is
+        read by its own name, not through a reference: an exported reference gives a program its own value."""
         return {**{name: self.variables.get(name) for name in self.exported if name in self.variables}, **local}
 
 
@@ -1155,7 +1156,8 @@ class BashReader:
         if index == len(words):
             assigned = [(assignment.name, assigned_value(assignment, shell)) for assignment in assignments]
             for name, value in assigned:
-                shell.assign(name, value, export=name in shell.exported)
+                # A variable already exported stays so, but one reached through an exported reference is not exported.
+                shell.assign(name, value, export=False)
             return certain(shell)
         # Before a command's name Bash refuses an element's assignment, NAME[SUBSCRIPT]=, sets nothing for it, and
         # runs the command all the same. Each other one reaches its variable through any name reference.
@@ -1347,7 +1349,11 @@ def bash_cd(reader: BashReader, arguments: list[Word], _: object, shell: Shell, 
     target = operands[0] if operands else str(Path.home())
     if target is None or target == "-":
         return change_directory(shell, None)
-    searched = shell.variables.get("CDPATH", "") != "" and not target.startswith((".", "/", "~"))
+    # CDPATH is read through any name reference, and may be set where the text does not settle which variable is; an
+    # unset CDPATH, unlike one the text does not settle, searches nothing.
+    variable = None if shell.opaque else shell.target("CDPATH")
+    path = None if variable is None else shell.variables.get(variable, "")
+    searched = path != "" and not target.startswith((".", "/", "~"))
     if searched and not is_absolute(target):
         return change_directory(shell, None)
     return change_directory(shell, moved(shell.cwd, target))
