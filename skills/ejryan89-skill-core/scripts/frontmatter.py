@@ -31,6 +31,8 @@ import json_reader
 Value = str | list[str] | None
 
 DELIMITER = "---"
+# The key whose value true, in any case, lets only the user start a skill; user_only is its one reading.
+USER_ONLY_KEY = "disable-model-invocation"
 KEY = re.compile(r"^([A-Za-z0-9_][A-Za-z0-9_.-]*)[ \t]*:(?:[ \t]+(.*?))?[ \t]*$")
 NESTED_KEY = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*[ \t]*:(?:[ \t]|$)")
 BLOCK_HEADER = re.compile(r"^([|>])([+-]?)$")
@@ -146,7 +148,14 @@ class Frontmatter:
     def user_only(self) -> bool:
         """Whether a SKILL.md's frontmatter lets only the user start the skill: its disable-model-invocation is true,
         ignoring case, as the deployer writes it into each runtime adapter."""
-        return (self.string("disable-model-invocation") or "").casefold() == "true"
+        return user_only_value(self.string(USER_ONLY_KEY))
+
+
+def user_only_value(value: object) -> bool:
+    """Whether a value of USER_ONLY_KEY lets only the user start the skill: true, ignoring case and the space around it,
+    as the deployer writes it into each runtime adapter. A reader of another frontmatter reader's values reads the key
+    through this, so the two never disagree."""
+    return isinstance(value, str) and value.strip().casefold() == "true"
 
 
 def parse(text: str) -> Frontmatter:

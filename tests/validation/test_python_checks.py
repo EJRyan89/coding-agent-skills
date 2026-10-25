@@ -52,7 +52,7 @@ from python_checks import (
     type_ignore_without_reason,
 )
 from toolchain import PREREQUISITES, find_mypy, missing_prerequisites
-from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, relative, write_fixture_tree
+from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, relative, scope_problems, write_fixture_tree
 
 from deployer import journal, platform_support, report
 
@@ -962,6 +962,33 @@ def test_json_parse_policy_refuses_a_parse_outside_json_reader() -> None:
         *(f"{alpha}:10 parses JSON with json.decoder.JSONDecoder{remedy}" for _ in range(2)),
         f"{alpha}: JSON_PARSE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: JSON_PARSE_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+def test_claim_policies_read_the_policies_their_runner_and_the_root_modules() -> None:
+    # The claims speak of the repository's Python, so a policy's own reader is held to them as a skill's is; a suite
+    # and the suites' support trees stay out.
+    parse = "import json\n\njson.loads('1')\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        held = ["conftest.py", "deploy.py", "tests/run_validation.py", "tests/validation/policy.py"]
+        write_fixture_tree(
+            root, dict.fromkeys([*held, "tests/validation/test_policy.py", "tests/deployer/harness.py"], parse)
+        )
+        found = python_checks.json_parse_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"{name}:3" for name in held]
+
+
+def test_a_policy_scope_fails_for_each_module_it_skips_and_each_stale_omission() -> None:
+    modules = ["deploy.py", "skills/a/scripts/a.py", "tests/deployer/harness.py", "tests/validation/policy.py"]
+    assert scope_problems("p", modules, ("skills", "deploy.py", "tests/validation"), {"tests": "support"}) == []
+    assert scope_problems("p", modules, ("skills", "tests"), {"tools": "gone", "deploy.py": " "}) == [
+        "p leaves out deploy.py without a reason",
+        "p leaves out tools, which holds no module the policy does not already read",
+    ]
+    assert scope_problems("p", modules, ("skills", "tests/validation"), {}) == [
+        f"p does not read {name}; add its root to the policy's scope, or state why it is left out"
+        for name in ("deploy.py", "tests/deployer/harness.py")
     ]
 
 

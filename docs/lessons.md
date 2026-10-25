@@ -141,8 +141,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   normalizer, lives in one place, and every other place reads it from there or is compared with it.
 - **Why:** A copy begins identical and then drifts, so a document, a test, or a second module keeps the old fact while
   the owner moves on.
-- **Use:** `tests.validation.duplication:_shared_facts`, the registry of facts each read from its owner, and #1882
-  registers more. A module more than one part of the repository needs moves to skill-core.
+- **Use:** `tests.validation.duplication:_shared_facts`, the registry of facts each read from its owner; where a fact
+  is a behavior, the owner's function, such as `frontmatter:Frontmatter.user_only`, `frontmatter:user_only_value` for
+  another reader's values, and `typed_text:read_typed`, the read of a title or body file without its byte-order mark.
+  A module more than one part of the repository needs moves to skill-core.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_owners_hold_every_shared_fact`,
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   `tests/validation/test_duplication.py::SharedFactPolicy`,
@@ -347,10 +349,18 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A policy, an audit brief, or a gate reaches every place its rule covers, in every language the fact is
   written in and through every indirection that carries it, never a narrower set its author swept by area.
 - **Why:** A rule held only where a sweep reached keeps failing in the places it missed, and passes them as checked.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
+- **Use:** `tests.validation.validation_support:scope_problems`, which holds a policy's scope, named as data, to every
+  non-test module ruff checks, each part it leaves out stated with its reason, as
+  `tests.validation.python_checks:claim_omissions` and `tests.validation.duplication:duplication_omissions` state them.
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_claim_policies_read_every_module_their_rules_speak_of`,
+  `tests/validation/duplication.py::DuplicationPolicies::test_the_duplication_policy_reads_every_module_its_rule_speaks_of`,
+  `tests/validation/test_python_checks.py::test_a_policy_scope_fails_for_each_module_it_skips_and_each_stale_omission`,
+  `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_an_install_path_is_refused_under_every_spelling_of_the_home`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
   `tests/tools/test_mutation_gate.py::test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::ReleaseTests::test_every_brief_carries_the_kinds_of_drift_and_the_report_template`
-- **Search for:** a policy whose file list is a hand-kept tuple of directories, such as a `CLAIM_ROOTS`, or a `glob(`
+- **Search for:** a policy whose file list is a hand-kept tuple of directories, such as a `*_ROOTS`, that no
+  `scope_problems` test holds, or a `glob(`
   narrower than the rule's statement in `CLAUDE.md` or `docs/`; `rg -n "glob\(\"\*\.sh\"\)|suffix == \"\.sh\"" tests/validation/`,
   a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; an
   audit brief that asks only for drift.

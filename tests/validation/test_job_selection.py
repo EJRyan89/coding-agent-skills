@@ -284,6 +284,7 @@ class JobSecondsFixtures(unittest.TestCase):
             for value in ("NaN", "Infinity", "-Infinity", "1e999")
         ),
         '{"runs": [NaN], "seconds": {"Linux": {}, "Windows": {}}}',
+        '{"runs": [7], "seconds": {"Linux": {}, "Windows": {"tests/test_a.py": -1, "tests/test_a.py": 1}}}',
         '{"runs": [' + "9" * 5000 + '], "seconds": {"Linux": {}, "Windows": {}}}',
         "[" * 100_000 + "]" * 100_000,
     ],

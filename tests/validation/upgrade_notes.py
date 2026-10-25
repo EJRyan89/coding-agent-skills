@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import json
 import re
 import sys
 from collections.abc import Callable
@@ -15,6 +14,7 @@ from pathlib import Path, PurePosixPath
 # states the path itself.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from validation_support import (
     OPERATIONS_CONTRACT,
@@ -191,7 +191,7 @@ def _required_variables(snapshot: Snapshot) -> dict[str, object]:
     values: dict[str, object] = {}
     for name in sorted(filter(DEPLOY_META.fullmatch, snapshot.names)):
         try:
-            variables = json.loads(snapshot.text(name) or "").get("required_vars")
+            variables = json_reader.loads(snapshot.text(name) or "").get("required_vars")
         # ValueError covers a decode error and an over-long integer; AttributeError, a document that is no object;
         # RecursionError, nesting too deep
         except (ValueError, AttributeError, RecursionError):
@@ -207,7 +207,7 @@ def _review_schemas(snapshot: Snapshot) -> dict[str, object]:
     values: dict[str, object] = {}
     for name in sorted(filter(REVIEW_SCHEMA.fullmatch, snapshot.names)):
         try:
-            values[name] = json.loads(snapshot.text(name) or "")
+            values[name] = json_reader.loads(snapshot.text(name) or "")
         except ValueError:
             values[name] = snapshot.text(name)
     return values

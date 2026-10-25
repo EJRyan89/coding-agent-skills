@@ -1561,7 +1561,7 @@ def listing(document: frontmatter.Frontmatter) -> list[str]:
     def flag(key: str) -> str:
         return (document.string(key) or "").strip().casefold()
 
-    model_invocable = flag("disable-model-invocation") != "true"
+    model_invocable = not document.user_only()
     user_invocable = flag("user-invocable") != "false"
     invocation = "model" if model_invocable else ("user-only" if user_invocable else "hidden")
     lines = [f"DESCRIPTION {len(text)} {-(-len(text) // 4)}", f"INVOCATION {invocation}"]

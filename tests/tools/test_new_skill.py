@@ -105,7 +105,7 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             "---\n\n# Widget report\n",
             skill_md.read_text(encoding="utf-8"),
         )
-        frontmatter = skill_reference.read_frontmatter(skill_md)
+        frontmatter, _ = skill_reference.read_frontmatter(skill_md)
         self.assertEqual(DESCRIPTION, frontmatter["description"])
         # The default grant names the skill's script, ending at its closing quote, so no `..` path matches it.
         own_scripts = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/widget_report.py" *'

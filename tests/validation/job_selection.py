@@ -8,13 +8,13 @@ from __future__ import annotations
 import ast
 import fnmatch
 import functools
-import json
 import math
 import unittest
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 
+import json_reader
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from python_checks import static_format_check, static_lint_check, type_check_jobs
@@ -285,24 +285,21 @@ def name_patterns(patterns: list[str]) -> list[str]:
     return [pattern if any(character in pattern for character in "*?[") else f"*{pattern}*" for pattern in patterns]
 
 
-def _no_constant(name: str) -> float:
-    raise ValueError(f"{name} is not a number of seconds")
-
-
 def job_seconds(path: Path = JOB_SECONDS) -> dict[str, dict[str, float]]:
     """The measured seconds by platform and job name: a JSON object of the runs they came from and the seconds, an
     object for each platform the deployer supports, each value a finite number above zero. A file that cannot be read,
-    is not UTF-8 JSON, nests past the parser's depth, or holds NaN or Infinity is refused by name, as ValueError.
+    is not UTF-8 JSON, nests past the parser's depth, repeats a key, or holds NaN or Infinity is refused by name, as
+    ValueError.
 
     A table from before the runs were several, which records one run under "run", or from before each platform had its
     own seconds, whose seconds are by job name alone, is refused rather than read: the release step that writes it
     rewrites it whole, so a reader of both would only keep the old shape alive.
     """
     try:
-        table = json.loads(path.read_text(encoding="utf-8"), parse_constant=_no_constant)
-    # ValueError covers the decode errors, UnicodeError, an over-long integer, and NaN or Infinity; RecursionError,
-    # nesting too deep
-    except (OSError, ValueError, RecursionError) as error:
+        table = json_reader.loads(path.read_text(encoding="utf-8"))
+    # ValueError covers the decode errors, UnicodeError, an over-long integer, and what json_reader refuses: a repeated
+    # key, NaN or Infinity, and nesting too deep
+    except (OSError, ValueError) as error:
         raise ValueError(f"{path.name} cannot be read as JSON: {error}") from error
     if isinstance(table, dict) and "run" in table and "runs" not in table:
         raise ValueError(

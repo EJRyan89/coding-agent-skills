@@ -10,7 +10,6 @@ from __future__ import annotations
 import ast
 import builtins
 import codecs
-import json
 import re
 import sys
 import unittest
@@ -20,6 +19,7 @@ from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from markdown_sections import CODE_SPAN as CODE_SPAN
 from markdown_sections import COMMONMARK_CODE_SPAN as COMMONMARK_CODE_SPAN
 from markdown_sections import Fence as Fence
@@ -30,6 +30,7 @@ from skill_menu import MenuEntry, SourceMenu, expand
 from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
 from suite_names import is_suite_name
+from typed_text import read_typed
 
 from deployer import platform_support
 
@@ -863,7 +864,7 @@ def skill_dependency_closure(root: Path, skill: str) -> list[str]:
     with no metadata of its own is reached and depends on nothing; the metadata policies report both."""
     menu = SourceMenu("")
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        declared = json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", [])
+        declared = json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", [])
         menu.skills[metadata.stem] = MenuEntry(skill_deps=tuple(declared))
     for entry in list(menu.skills.values()):
         menu.skills.update({name: MenuEntry() for name in entry.skill_deps if name not in menu.skills})
@@ -874,6 +875,32 @@ def is_test_script(path: PurePath) -> bool:
     """Whether a file is a regression suite, by ejryan89-skill-core's rule for one, which the review conditions also
     read."""
     return is_suite_name(path.name)
+
+
+def under(name: str, roots: Iterable[str]) -> bool:
+    """Whether the repository path is one of roots, each a folder or a file, or lies inside one."""
+    return any(name == top or name.startswith(f"{top}/") for top in roots)
+
+
+def scope_problems(policy: str, modules: Iterable[str], roots: Sequence[str], omitted: Mapping[str, str]) -> list[str]:
+    """Each module, by repository path, that a policy whose rule speaks of the repository's Python does not read: one
+    neither under its roots nor under a part it leaves out with a stated reason. A part left out with no reason, or
+    that no unread module lies under, is reported too, so an omission cannot outlive what it excused."""
+    names = sorted(modules)
+    unread = [name for name in names if not under(name, roots)]
+    problems = [
+        f"{policy} does not read {name}; add its root to the policy's scope, or state why it is left out"
+        for name in unread
+        if not under(name, omitted)
+    ]
+    problems += [
+        f"{policy} leaves out {part} without a reason"
+        if not reason.strip()
+        else f"{policy} leaves out {part}, which holds no module the policy does not already read"
+        for part, reason in sorted(omitted.items())
+        if not reason.strip() or not any(under(name, [part]) for name in unread)
+    ]
+    return problems
 
 
 def path_order(path: PurePath) -> tuple[str, ...]:
@@ -977,10 +1004,10 @@ class PullRequest:
     title: Path | None = None
 
     def body_text(self) -> str | None:
-        return None if self.body is None else self.body.read_text(encoding="utf-8")
+        return None if self.body is None else read_typed(self.body)
 
     def title_text(self) -> str | None:
-        return None if self.title is None else self.title.read_text(encoding="utf-8")
+        return None if self.title is None else read_typed(self.title)
 
 
 class PullRequestChecks(unittest.TestCase):

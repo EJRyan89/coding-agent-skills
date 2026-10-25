@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import json_reader
 from job_pool import Terminated, refuse_termination
 from validation_support import REPOSITORY_ROOT, find_fences, markdown_section, repository_files
 
@@ -89,7 +90,7 @@ def powershell_json(
     refuse_termination(command, result.returncode, result.output)
     lines = [line for line in result.output.splitlines() if line.strip()]
     try:
-        found = json.loads(lines[-1]) if result.returncode == 0 and lines else None
+        found = json_reader.loads(lines[-1]) if result.returncode == 0 and lines else None
     except json.JSONDecodeError:
         found = None
     if not isinstance(found, list):

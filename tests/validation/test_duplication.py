@@ -335,6 +335,10 @@ class SharedFactPolicy(unittest.TestCase):
     GIT_CLIENT = "skills/ejryan89-skill-core/scripts/git_client.py"
     SUITE_NAMES = "skills/ejryan89-skill-core/scripts/suite_names.py"
     REVIEW_CONFIG = "skills/ejryan89-code-review-core/scripts/review_config.py"
+    AGENT_SKILLS = "skills/ejryan89-skill-core/scripts/agent_skills.py"
+    FRONTMATTER = "skills/ejryan89-skill-core/scripts/frontmatter.py"
+    TYPED_TEXT = "skills/ejryan89-skill-core/scripts/typed_text.py"
+    SKILL_LAYOUT = "tests/validation/skill_layout.py"
     OWNERS: ClassVar[dict[str, str]] = {
         GIT_CLIENT: (
             'GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--attr-source", "--config-env", "--git-dir", '
@@ -344,6 +348,19 @@ class SharedFactPolicy(unittest.TestCase):
         REVIEW_CONFIG: (
             'DEFAULT_CONFIG_NAME = "config.json"\n\n\ndef default_config_path():\n'
             '    return HOME / "code-review" / DEFAULT_CONFIG_NAME\n'
+        ),
+        AGENT_SKILLS: "MAX_NAME = 64\n",
+        FRONTMATTER: (
+            'USER_ONLY_KEY = "disable-model-invocation"\n\n\ndef user_only(document):\n'
+            '    return (document.string(USER_ONLY_KEY) or "").casefold() == "true"\n'
+        ),
+        TYPED_TEXT: (
+            'TYPED_ENCODING = "utf-8-sig"\n\n\ndef read_typed(path):\n'
+            "    return path.read_text(encoding=TYPED_ENCODING)\n"
+        ),
+        SKILL_LAYOUT: (
+            'HOME_SPELLINGS = ("{{HOME}}", "$HOME", "${HOME}", "~")\n'
+            "INSTALL_PATH = re.compile('|'.join(map(re.escape, HOME_SPELLINGS)))\n"
         ),
     }
 
@@ -400,6 +417,80 @@ class SharedFactPolicy(unittest.TestCase):
                 }
             ),
         )
+
+    def test_a_restated_name_limit_fails_as_a_number_in_an_importer_or_a_message_anywhere(self) -> None:
+        source = "deployer/source.py"
+        restated = (
+            "from agent_skills import RESERVED_WORDS\n\n\n"
+            "def valid(name):\n    return len(name) <= 64\n\n\n"
+            'RULES = "at most 64 characters"\n'
+        )
+        self.assertEqual(
+            [
+                *(self.restated(source, line, "MAX_NAME", self.AGENT_SKILLS) for line in (5, 8)),
+                self.restated("tools/other.py", 1, "MAX_NAME", self.AGENT_SKILLS),
+            ],
+            self.problems({source: restated, "tools/other.py": 'MESSAGE = f"{name} is at most 64 letters"\n'}),
+        )
+        imported = (
+            "from agent_skills import MAX_NAME\n\n\n"
+            "def valid(name):\n    return len(name) <= MAX_NAME\n\n\n"
+            'RULES = f"at most {MAX_NAME} characters"\nHASH = re.compile("[0-9a-f]{64}")\n'
+        )
+        # A module that does not import the owner may hold the number for another reason, such as a hash's length.
+        self.assertEqual([], self.problems({source: imported, "tools/other.py": "SHA256_HEX = 64\n"}))
+
+    def test_a_reading_of_the_user_only_key_fails_outside_the_shared_reader(self) -> None:
+        reference = "tools/skill_reference.py"
+        readings = {
+            'user_only = values.get("disable-model-invocation", "").strip() == "true"\n': 1,
+            'flag = document.string("disable-model-invocation")\n': 1,
+            'user_only = values.get(USER_ONLY_KEY) == "True"\n': 1,
+            'user_only = frontmatter.parse(text).value(frontmatter.USER_ONLY_KEY) != "false"\n': 1,
+        }
+        for reading, line in readings.items():
+            with self.subTest(reading=reading):
+                self.assertEqual(
+                    [self.restated(reference, line, "USER_ONLY_KEY", self.FRONTMATTER)],
+                    self.problems({reference: reading}),
+                )
+        writes = (
+            'user_only = frontmatter.parse(text).user_only()\nLINES = ["disable-model-invocation: true"]\n'
+            'lines.append("disable-model-invocation: true")\nvalue = values.get(USER_ONLY_KEY)\n'
+        )
+        self.assertEqual([], self.problems({reference: writes}))
+
+    def test_a_title_or_body_read_with_another_codec_fails_and_the_typed_read_passes(self) -> None:
+        support = "tests/validation/validation_support.py"
+        reads = (
+            'title = self.title.read_text(encoding="utf-8")\n',
+            'body = Path(body_file).read_text("utf-8")\n',
+            'handle = open(title_path, "r", encoding="utf-8")\n',
+            'handle = open(self.body, encoding="UTF-8-SIG")\n',
+        )
+        for read in reads:
+            with self.subTest(read=read):
+                self.assertEqual(
+                    [self.restated(support, 1, "TYPED_ENCODING", self.TYPED_TEXT)], self.problems({support: read})
+                )
+        typed = (
+            "title = read_typed(self.title)\n"
+            'body = self.body.read_text(encoding="utf-8-sig")\n'
+            'notes = notes_file.read_text(encoding="utf-8")\n'
+            "raw = self.body.read_text()\n"
+        )
+        self.assertEqual([], self.problems({support: typed}))
+
+    def test_a_pattern_re_deriving_a_home_spelling_fails_and_prose_passes(self) -> None:
+        guard = "tests/validation/agent_paths.py"
+        for pattern in (r"\{\{HOME\}\}/\.claude", r"\$HOME/x", r"\$\{HOME\}/x"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(
+                    [self.restated(guard, 1, "HOME_SPELLINGS", self.SKILL_LAYOUT)],
+                    self.problems({guard: f"PATH = re.compile(r'{pattern}')\n"}),
+                )
+        prose = 'MESSAGE = "finds a file through $HOME or ~/.claude"\n'
+        self.assertEqual([], self.problems({guard: prose}))
 
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'
