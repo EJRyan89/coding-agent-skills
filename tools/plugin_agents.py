@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
+import whole_number
 
 HOOKS_KEY = "hooks"
 KEY_LINE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(?P<value>.*))?$")
@@ -47,9 +48,10 @@ def _scalar(key: str, inline: str, following: list[str]) -> str | int:
         raise AgentError(f"hooks: {exc}") from exc
     if value is None:
         raise AgentError(f"hooks: {key} has no value")
-    if value.isdigit() and not value.isascii():
-        raise AgentError(f"hooks: {key} is not a number of ASCII digits: {value}")
-    return int(value) if value.isdigit() else value
+    if not value.isdigit():
+        return value
+    refused = AgentError(f"hooks: {key} is not a number of at most {whole_number.DIGIT_LIMIT} ASCII digits: {value}")
+    return whole_number.read(value, refused)
 
 
 def _node(lines: list[str], start: int, end: int) -> Node:
