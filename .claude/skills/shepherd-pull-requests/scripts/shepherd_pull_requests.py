@@ -114,6 +114,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import whole_number
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -322,7 +323,8 @@ def malformed(what: str) -> GitHubError:
 
 def run_of(entry: dict[str, Any]) -> int | None:
     match = RUN_URL.search(str(entry.get("detailsUrl") or ""))
-    return int(match.group(1)) if match else None
+    refused = malformed(f"a run id of more than {whole_number.DIGIT_LIMIT} digits")
+    return whole_number.read(match.group(1), refused) if match else None
 
 
 def required_check(rollup: Any) -> Check:
