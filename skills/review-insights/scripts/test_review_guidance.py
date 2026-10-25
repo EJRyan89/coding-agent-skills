@@ -322,6 +322,21 @@ class ReadTests(unittest.TestCase):
         )
         self.assertIn("bad config line 1", str(context.exception))
 
+    def test_a_committed_copy_of_exactly_the_read_bound_is_read_and_one_byte_more_is_not(self) -> None:
+        git = GitClient()
+        git.output(["init", "--quiet"], directory=self.checkout)
+        git.output(["add", "."], directory=self.checkout)
+        git.output(["commit", "--quiet", "-m", "Guidance"], directory=self.checkout)
+        commit = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
+        size = len(CHECKLIST.encode("utf-8"))
+        with mock.patch.object(rg, "READ_BYTES", size):
+            self.assertEqual(
+                CHECKLIST.encode("utf-8"),
+                rg.read_committed(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST)),
+            )
+        with mock.patch.object(rg, "READ_BYTES", size - 1):
+            self.assertIsNone(rg.read_committed(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST)))
+
     def test_a_path_that_leaves_the_checkout_is_never_read(self) -> None:
         outside = self.checkout.parent / "outside.md"
         outside.write_text(CHECKLIST, encoding="utf-8", newline="\n")

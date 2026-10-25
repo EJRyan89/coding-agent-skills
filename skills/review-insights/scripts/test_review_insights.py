@@ -25,6 +25,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import review_guidance
 import review_insights as ri
 import review_records
 import review_synthesis
@@ -656,9 +657,7 @@ class ReportTests(InsightFixture):
     def test_guidance_git_cannot_read_fails_the_report_naming_git(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])
         reason = "git could not read docs/checklist.md at 1111111 in C:/checkout: fatal: bad config line 1"
-        with mock.patch.object(
-            ri.review_guidance, "read_guidance", side_effect=ri.review_guidance.GuidanceError(reason)
-        ):
+        with mock.patch.object(review_guidance, "read_guidance", side_effect=review_guidance.GuidanceError(reason)):
             self.assertFailed(self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"), reason)
 
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
