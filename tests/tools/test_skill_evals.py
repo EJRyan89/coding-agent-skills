@@ -3323,9 +3323,14 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("| description | 7/9 | 7/9 | 7/9 |", self.cited)
         # Every model's run failed a judgment, so no passing transcript is sampled.
         self.assertIn("SAMPLE none", lines)
-        record = json.loads(
-            (self.homes / "haiku" / skill_evals_runs.STATE / "description" / "trigger.json").read_text(encoding="utf-8")
-        )
+        state = self.homes / "haiku" / skill_evals_runs.STATE
+        # The trigger record, the reviewer agents, and the review configuration are written indented by two spaces,
+        # in the order their keys were made, each with a newline after it.
+        for written in (state / "description" / "trigger.json", state / skill_evals_runs.AGENTS, state / "config.json"):
+            with self.subTest(written=written.name):
+                text = written.read_text(encoding="utf-8")
+                self.assertEqual(json.dumps(json.loads(text), indent=2) + "\n", text)
+        record = json.loads((state / "description" / "trigger.json").read_text(encoding="utf-8"))
         self.assertEqual(
             {
                 "models": ["claude-haiku-5-5"],
