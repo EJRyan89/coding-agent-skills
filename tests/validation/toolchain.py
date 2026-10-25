@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import json_reader
+import json_writer
 from job_pool import Terminated, refuse_termination
 from validation_support import REPOSITORY_ROOT, find_fences, markdown_section, repository_files
 
@@ -85,7 +86,7 @@ def powershell_json(
     command = [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
     with tempfile.TemporaryDirectory(prefix="powershell-json-") as directory:
         request = Path(directory) / "inputs.json"
-        request.write_text(json.dumps(inputs), encoding="utf-8")
+        json_writer.write(request, inputs)
         result = platform_support.run_tool(command, {**(environment or {}), variable: str(request)})
     refuse_termination(command, result.returncode, result.output)
     lines = [line for line in result.output.splitlines() if line.strip()]

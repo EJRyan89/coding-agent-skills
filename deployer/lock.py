@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import secrets
 import sys
@@ -12,6 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
+
+import json_writer
 
 from . import fsops, platform_support, state_files
 from .errors import DeployError, see_recovery
@@ -71,7 +72,7 @@ def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
         pid = platform_support.current_process_id()
         info = {"pid": pid, "token": token, "start_time": probe(pid).start_time}
         fsops.write_atomic(paths.lock_dir / "token", token.encode("utf-8"))
-        fsops.write_atomic(paths.lock_dir / "info.json", json.dumps(info).encode("utf-8"))
+        fsops.write_atomic(paths.lock_dir / "info.json", json_writer.dumps(info).encode("utf-8"))
     except OSError as exc:
         try:
             fsops.remove(paths.lock_dir)

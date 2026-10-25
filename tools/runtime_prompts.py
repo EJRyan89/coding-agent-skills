@@ -19,7 +19,6 @@ The entrypoint sample replaces the fixture's generated commit IDs with <base-com
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import shutil
 import sys
@@ -37,6 +36,7 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 
 import json_reader
+import json_writer
 import review_dispatch
 import review_document
 import review_hosts
@@ -71,7 +71,7 @@ def _prepared_prompts(fixture: Path, directory: Path) -> dict[str, str]:
     through the pipeline's own removal, since it holds the fixture repository whose object files git leaves
     read-only."""
     config = directory / "config.json"
-    config.write_text(json.dumps(skill_evals_runs.review_config(directory), indent=2), encoding="utf-8")
+    json_writer.write(config, skill_evals_runs.review_config(directory), indent=2)
     run = directory / "run"
     try:
         prepared = review_pipeline.prepare_fixture(fixture, host="claude-code", config_path=config, run_directory=run)
@@ -105,7 +105,7 @@ def copilot_fixture(directory: Path) -> Path:
     for tree in ("base", "head"):
         reviewer = fixture / tree / "review"
         reviewer.mkdir()
-        (reviewer / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        json_writer.write(reviewer / "manifest.json", manifest)
         (reviewer / "SKILL.md").write_text("Review the change for correctness and report defects.\n", encoding="utf-8")
     pull_path = fixture / "pull.json"
     pull = json_reader.read_file(pull_path)
@@ -120,7 +120,7 @@ def copilot_fixture(directory: Path) -> Path:
             "outdated": False,
         }
     ]
-    pull_path.write_text(json.dumps(pull), encoding="utf-8")
+    json_writer.write(pull_path, pull)
     return fixture
 
 
@@ -130,7 +130,7 @@ def copilot_entrypoint(directory: Path) -> str:
     config = directory / "config.json"
     configuration = skill_evals_runs.review_config(directory)
     configuration["runtime"] = "copilot-cli"
-    config.write_text(json.dumps(configuration), encoding="utf-8")
+    json_writer.write(config, configuration)
     run = directory / "run"
     prompts: list[str] = []
 
