@@ -5461,8 +5461,10 @@ class LocalCommitTests(unittest.TestCase):
 
         def runner(arguments: Sequence[str], timeout: float) -> GitResult:
             calls.append(list(arguments))
-            if "cat-file" in arguments:
-                return GitResult(0 if arguments[-1].split("^")[0] in present else 1, "", "")
+            if "rev-parse" in arguments:
+                # rev-parse --verify --quiet names the commit, or exits 1 saying nothing for one it does not hold.
+                held = arguments[-1].split("^")[0] in present
+                return GitResult(0, "a" * 40 + "\n", "") if held else GitResult(1, "", "")
             present.add("fetched")
             return GitResult(0, "", "")
 
@@ -5476,6 +5478,18 @@ class LocalCommitTests(unittest.TestCase):
         with self.assertRaisesRegex(review_run.PipelineError, "not available after fetching"):
             review_snapshot.ensure_local_commit(Path("C:/checkout"), "missing", "refs/pull/2/head", runner)
 
+    def test_a_commit_git_cannot_look_up_is_named_not_fetched(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(arguments: Sequence[str], timeout: float) -> GitResult:
+            calls.append(list(arguments))
+            return GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
+
+        pattern = "^git cannot tell whether .* holds commit have: fatal: bad config line 1"
+        with self.assertRaisesRegex(review_run.PipelineError, pattern):
+            review_snapshot.ensure_local_commit(Path("C:/checkout"), "have", "refs/pull/1/head", runner)
+        self.assertFalse(any("fetch" in call for call in calls), calls)
+
     def test_fetches_into_one_checkout_are_serialized_and_not_repeated(self) -> None:
         present: set[str] = set()
         fetches: list[str] = []
@@ -5484,12 +5498,12 @@ class LocalCommitTests(unittest.TestCase):
         guard = threading.Lock()
 
         def runner(arguments: Sequence[str], timeout: float) -> GitResult:
-            if "cat-file" in arguments:
+            if "rev-parse" in arguments:
                 with guard:
                     checkers.add(threading.get_ident())
                     if len(checkers) == 2:
                         both_checked.set()
-                return GitResult(0 if "shared" in present else 1, "", "")
+                return GitResult(0, "a" * 40 + "\n", "") if "shared" in present else GitResult(1, "", "")
             self.assertTrue(both_checked.wait(timeout=10), "both pull requests check before either fetches")
             fetches.append(arguments[-1])
             present.add("shared")
@@ -5514,8 +5528,8 @@ class LocalCommitTests(unittest.TestCase):
 
         def runner(arguments: Sequence[str], timeout: float) -> GitResult:
             checkout = arguments[2]
-            if "cat-file" in arguments:
-                return GitResult(0 if checkout in present else 1, "", "")
+            if "rev-parse" in arguments:
+                return GitResult(0, "a" * 40 + "\n", "") if checkout in present else GitResult(1, "", "")
             together.wait()  # breaks, failing a thread, if the two fetches were serialized
             present.add(checkout)
             return GitResult(0, "", "")
@@ -5541,7 +5555,7 @@ class LocalCommitTests(unittest.TestCase):
         timeouts: list[float] = []
 
         def runner(arguments: Sequence[str], timeout: float) -> GitResult:
-            if "cat-file" in arguments:
+            if "rev-parse" in arguments:
                 return GitResult(1, "", "")
             timeouts.append(timeout)
             raise GitError("git fetch did not finish within 300 seconds", kind="timeout")

@@ -39,7 +39,7 @@ import review_pipeline as rp
 import review_run
 import review_runtime
 from flat_text import flat_text
-from git_client import GitClient, GitResult, subprocess_runner
+from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
@@ -396,6 +396,99 @@ class CheckoutTests(DocumentTestCase):
         self.assertEqual((1, 1), (code, len(lines)), lines)
         self.assertTrue(lines[0].startswith("FAILED git could not read the checkout's HEAD commit: "), lines)
         self.assertFalse(self.output.exists())
+
+    def test_a_branch_git_cannot_read_is_named_not_taken_for_a_checkout_with_no_commit_yet(self) -> None:
+        broken = "warning: ignoring broken ref refs/heads/main\n"
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            if "symbolic-ref" in command:
+                return GitResult(0, "refs/heads/main\n", "")
+            if command[-1] == "refs/heads/main^{commit}":
+                return GitResult(1, "", broken)
+            return GitResult(1, "", "")  # HEAD names no commit
+
+        client = GitClient(answering)
+        with self.assertRaises(GitError) as context:
+            review_document.unborn(self.root, client)
+        self.assertIn("ignoring broken ref refs/heads/main", str(context.exception))
+        with self.assertRaises(GitError):
+            review_document.committed_base("plan.md", self.root, client, text=True)
+
+    def test_a_git_failure_keeps_its_kind_and_exit_code_when_reworded(self) -> None:
+        reworded = review_document.git_failure(GitError("fatal: no", kind="not_repository", returncode=128), "read it")
+        self.assertEqual(
+            ("git could not read it: fatal: no", "not_repository", 128),
+            (str(reworded), reworded.kind, reworded.returncode),
+        )
+
+    def test_a_branch_with_no_commit_is_looked_up_in_the_checkout(self) -> None:
+        commands: list[list[str]] = []
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            commands.append(list(command))
+            if "symbolic-ref" in command:
+                return GitResult(0, "refs/heads/main\n", "")
+            return GitResult(1, "", "")
+
+        self.assertTrue(review_document.unborn(self.root, GitClient(answering)))
+        self.assertEqual(
+            ["-C", str(self.root), "rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/main^{commit}"],
+            commands[1][1:],
+        )
+
+    def test_a_head_git_cannot_read_fails_keeping_gits_kind_and_exit_code(self) -> None:
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
+
+        with self.assertRaises(GitError) as context:
+            review_document.committed_base("plan.md", self.root, GitClient(answering), text=True)
+        self.assertEqual(
+            (
+                "git could not read the checkout's HEAD commit: fatal: bad config line 1 in file .git/config",
+                "git",
+                128,
+            ),
+            (str(context.exception), context.exception.kind, context.exception.returncode),
+        )
+
+    def test_a_branch_with_no_commit_yet_has_no_base(self) -> None:
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            if "symbolic-ref" in command:
+                return GitResult(0, "refs/heads/main\n", "")
+            return GitResult(1, "", "")  # neither HEAD nor its branch names a commit yet
+
+        self.assertEqual(
+            review_document.Base(None, None, "the checkout has no commit yet"),
+            review_document.committed_base("plan.md", self.root, GitClient(answering), text=True),
+        )
+
+    def test_a_listed_blob_git_then_finds_no_file_for_fails_naming_it(self) -> None:
+        head, blob = "a" * 40, "b" * 40
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            if command[-1] == "HEAD^{commit}":
+                return GitResult(0, f"{head}\n", "")
+            if "ls-tree" in command:
+                return GitResult(0, f"100644 blob {blob}\tplan.md\0", "")
+            return GitResult(1, "", "")  # the file at the commit names nothing
+
+        with self.assertRaises(GitError) as context:
+            review_document.committed_base("plan.md", self.root, GitClient(answering), text=True)
+        self.assertEqual(
+            f"git could not read plan.md as committed at {head}: it lists blob {blob} there", str(context.exception)
+        )
+
+    def test_a_detached_head_is_not_a_checkout_with_no_commit_yet(self) -> None:
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(1, "", "")  # a detached HEAD, which names no commit the repository holds
+
+        self.assertFalse(review_document.unborn(self.root, GitClient(answering)))
+        with self.assertRaises(GitError) as context:
+            review_document.committed_base("plan.md", self.root, GitClient(answering), text=True)
+        self.assertEqual(
+            "git could not read the checkout's HEAD commit: HEAD names no commit the repository holds",
+            str(context.exception),
+        )
 
     def test_an_unchanged_document_is_refused_with_the_way_to_review_it_whole(self) -> None:
         checkout = self.checkout()
