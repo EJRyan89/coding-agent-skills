@@ -1678,6 +1678,11 @@ class StatusLineTests(TemporaryTestCase):
         folder = self.skill(f"It exits with code {code} when the plan is stale.\n", "import sys\n\nsys.exit(1)\n")
         self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 {code}"], self.status(folder))
 
+    def test_an_exit_code_stated_as_exit_code_of_is_read_from_its_own_group(self) -> None:
+        # The second form of a stated code, whose number is the pattern's second group, the first being None.
+        folder = self.skill("A stale plan is exit code of 5.\n", "import sys\n\nsys.exit(1)\n")
+        self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 5"], self.status(folder))
+
     def test_a_shell_exit_past_the_digit_limit_or_in_other_digits_is_no_exit_code(self) -> None:
         script = "exit 3\nexit 1" + "0" * 5000 + "\nexit " + chr(0x0663) + "\n"
         self.assertEqual(skill_inventory.shell_facts("exit 3\n").codes, skill_inventory.shell_facts(script).codes)
