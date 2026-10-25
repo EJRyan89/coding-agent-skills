@@ -427,6 +427,19 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual((1, ""), (code, stderr))
         self.assertRegex(stdout, rf"\AFAILED cannot write {re.escape(str(target))}: [^\n]+\n\Z")
 
+    def test_the_report_is_two_space_indented_in_its_keys_order_escaped_past_ascii(self) -> None:
+        # The agent and the person it reports to read the file as text, so its bytes are fixed.
+        write(self.memory_dir / "MEMORY.md", "")
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        target = self.root / "report.json"
+        with mock.patch.object(memory_audit, "audit", return_value={"name": "café", "counts": [1]}):
+            code, _, _ = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
+        self.assertEqual(0, code)
+        # Written in text mode, so each line ends as the platform ends one; read back the same way.
+        self.assertEqual(
+            '{\n  "name": "caf\\u00e9",\n  "counts": [\n    1\n  ]\n}\n', target.read_text(encoding="utf-8")
+        )
+
     def test_a_report_json_cannot_hold_is_refused_by_name_before_the_output_exists(self) -> None:
         write(self.memory_dir / "MEMORY.md", "")
         write(self.memory_dir / "one.md", memory("one", "Body."))
