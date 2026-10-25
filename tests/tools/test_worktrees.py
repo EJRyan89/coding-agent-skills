@@ -117,6 +117,22 @@ class NewWorktreeTests(WorktreesTestCase):
                 self.assertEqual(1, result.returncode)
                 self.assertIn(message, result.stderr)
 
+    def test_new_refuses_a_branch_git_cannot_look_up_rather_than_take_it_for_none(self) -> None:
+        run = worktrees.CLIENT.run
+        refused = git_client.GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
+
+        def answering(arguments: Sequence[str], **options: Any) -> git_client.GitResult:
+            return refused if "show-ref" in arguments else run(arguments, **options)
+
+        with (
+            mock.patch.object(worktrees, "current_hub", return_value=self.hub),
+            mock.patch.object(worktrees.CLIENT, "run", side_effect=answering),
+            self.assertRaises(git_client.GitError) as raised,
+        ):
+            worktrees.new("fix", "unreadable")
+        self.assertIn("bad config line 1", str(raised.exception))
+        self.assertFalse((self.worktrees / "fix-unreadable").exists())
+
     def test_new_accepts_every_title_type_and_inv_as_the_kind(self) -> None:
         # The kinds pinned as literals, independently of the constant new reads.
         for kind in ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build", "inv"):

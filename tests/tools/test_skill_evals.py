@@ -41,7 +41,7 @@ import review_run
 import review_source
 import review_specialists
 import skill_inventory
-from git_client import GitClient, GitError, GitResult
+from git_client import GitClient, GitError, GitResult, subprocess_runner
 from review_config import write_config
 from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
@@ -1486,6 +1486,17 @@ class CheckoutTests(unittest.TestCase):
             self.assertEqual(
                 "its branch main follows refs/pull/7/head, a pull request's ref", skill_evals.this_checkout()
             )
+
+    def test_a_setting_or_head_git_cannot_read_raises_never_read_as_unset(self) -> None:
+        refused = GitResult(1, "", "error: could not lock config file .git/config\n")
+        for word in ("branch.main.remote", "branch.main.merge", "symbolic-ref"):
+
+            def run(command: Sequence[str], timeout: float, word: str = word) -> GitResult:
+                return refused if word in command else subprocess_runner(command, timeout)
+
+            with self.subTest(word=word), self.assertRaises(GitError) as raised:
+                skill_evals.foreign_checkout(GitClient(run), self.root)
+            self.assertIn("could not lock config file", str(raised.exception))
 
     def test_a_folder_git_cannot_read_raises(self) -> None:
         outside = self.root.parent / "not a checkout"
