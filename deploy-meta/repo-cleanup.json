@@ -3,5 +3,5 @@
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["ejryan89-skill-core"],
     "tools": ["gh"],
-    "runtime_support": {"claude-code": "full", "codex": {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls and its git fetch need network access, which Codex's default sandbox turns off: unless [sandbox_workspace_write] network_access is true, an interactive session asks to approve each call and codex exec fails it."}, "copilot-cli": {"level": "partial", "needs": ["user-only-start"], "reason": "A headless copilot -p session cannot start it; start it from an interactive session."}}
+    "runtime_support": {"claude-code": "full", "codex": {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls and its git fetch need network access, which Codex's default sandbox turns off, so an interactive session asks to approve each call and codex exec fails it. See \"Network access\" in docs/codex-support.md for the ways to open the network."}, "copilot-cli": {"level": "partial", "needs": ["user-only-start"], "reason": "A headless copilot -p session cannot start it; start it from an interactive session."}}
 }

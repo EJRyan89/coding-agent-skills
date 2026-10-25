@@ -894,6 +894,13 @@ class CodexSettingsFixtures(unittest.TestCase):
     def test_the_workflow_writes_the_guides_codex_settings_in_any_order(self) -> None:
         self.assertEqual([], codex_settings_problems(CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE))
 
+    def test_config_may_be_joined_through_a_folder_variable(self) -> None:
+        workflow = CODEX_SETTINGS_WORKFLOW.replace(
+            "$config = Join-Path $env:USERPROFILE '.codex/config.toml'",
+            "$directory = Join-Path $env:USERPROFILE '.codex'\n          $config = Join-Path $directory 'config.toml'",
+        )
+        self.assertEqual([], codex_settings_problems(workflow, CODEX_GUIDE))
+
     def test_each_departure_from_the_guides_codex_settings_fails(self) -> None:
         for workflow, guide, problem in (
             (CODEX_SETTINGS_WORKFLOW.replace("          prefer_mxc = true\n", ""), CODEX_GUIDE, "but docs/"),
@@ -901,6 +908,30 @@ class CodexSettingsFixtures(unittest.TestCase):
             (CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("prefer_mxc = true", "prefer_mxc = false"), "but docs/"),
             (CODEX_SETTINGS_WORKFLOW.replace("sandbox settings and", "settings and"), CODEX_GUIDE, "0 steps named"),
             (CODEX_SETTINGS_WORKFLOW.replace("$settings = @'", "$written = @'"), CODEX_GUIDE, "no Codex settings"),
+            (CODEX_SETTINGS_WORKFLOW + CODEX_SETTINGS_WORKFLOW.split("steps:\n")[1], CODEX_GUIDE, "2 steps named"),
+            (
+                CODEX_SETTINGS_WORKFLOW.replace("'.codex/config.toml'", "'.codex/other.toml'"),
+                CODEX_GUIDE,
+                "set $config",
+            ),
+            (CODEX_SETTINGS_WORKFLOW.replace("$env:USERPROFILE", "$env:TEMP"), CODEX_GUIDE, "set $config"),
+            (
+                CODEX_SETTINGS_WORKFLOW.replace("Join-Path $env:USERPROFILE '.codex/config.toml'", "'config.toml'"),
+                CODEX_GUIDE,
+                "set $config",
+            ),
+            (
+                CODEX_SETTINGS_WORKFLOW.replace(
+                    "          $settings = @'", "          $config = 'elsewhere.toml'\n          $settings = @'"
+                ),
+                CODEX_GUIDE,
+                "set $config",
+            ),
+            (
+                CODEX_SETTINGS_WORKFLOW.replace("$env:USERPROFILE '.codex", "$config '.codex"),
+                CODEX_GUIDE,
+                "set $config",
+            ),
             (CODEX_SETTINGS_WORKFLOW.replace("-Value $settings", "-Value $other"), CODEX_GUIDE, "does not write"),
             (CODEX_SETTINGS_WORKFLOW.replace("prefer_mxc = true", "prefer_mxc ="), CODEX_GUIDE, "are not TOML"),
             (CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("For MXC with", "For"), "docs/codex-support.md has no"),

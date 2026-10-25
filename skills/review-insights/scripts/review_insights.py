@@ -69,6 +69,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 import review_guidance
 import review_signals
 import review_synthesis as synthesis_stage
+import whole_number
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient
@@ -414,7 +415,9 @@ def _evidence(record: Mapping[str, Any], finding: Mapping[str, Any]) -> dict[str
 
 def next_rec_number(items: Iterable[dict[str, Any]]) -> int:
     """The first `REC-` number after every one these recommendations use, so no ID is ever given twice."""
-    used = [int(match.group(1)) for item in items if (match := REC_ID.fullmatch(str(item.get("id", ""))))]
+    refused = InsightError(f"a recommendation ID's number is not at most {whole_number.DIGIT_LIMIT} ASCII digits")
+    found = (REC_ID.fullmatch(str(item.get("id", ""))) for item in items)
+    used = [whole_number.read(match.group(1), refused) for match in found if match]
     return max(used, default=0) + 1
 
 
