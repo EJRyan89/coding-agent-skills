@@ -22,6 +22,7 @@ from typing import TypeGuard
 
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
+from path_containment import posix_within, within
 from shell_targets import run_bash_suite
 from skill_scripts import ASSIGNMENT, STANDARD_STREAMS, split_operators
 from toolchain import find_powershell
@@ -102,7 +103,9 @@ RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
 def _needs_a_test(name: str, scripts: list[str]) -> bool:
     """Whether a repository path is a module under a skill's scripts/, deployer/, or tools/ that a test must import."""
     parts = name.split("/")
-    in_scope = parts[0] in {"deployer", "tools"} or any(name.startswith(f"{directory}/") for directory in scripts)
+    in_scope = parts[0] in {"deployer", "tools"} or any(
+        posix_within(name, directory, strict=True) for directory in scripts
+    )
     return in_scope and name.endswith(".py") and parts[-1] != "__init__.py" and not is_test_script(Path(name))
 
 
@@ -172,7 +175,7 @@ def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
         for top in roots
         if top.is_dir()
         for path in top.rglob("*")
-        if path.is_file() and is_test_script(path) and not path.is_relative_to(root / FIXTURE_ROOT)
+        if path.is_file() and is_test_script(path) and not within(path, root / FIXTURE_ROOT)
     )
     return sorted(found, key=lambda path: path.relative_to(root).as_posix().casefold())
 
@@ -522,9 +525,7 @@ def suite_python_modules(root: Path) -> list[Path]:
     found = {root / CONFTEST} if (root / CONFTEST).is_file() else set()
     tests = root / "tests"
     if tests.is_dir():
-        found |= {
-            path for path in tests.rglob("*.py") if path.is_file() and not path.is_relative_to(root / FIXTURE_ROOT)
-        }
+        found |= {path for path in tests.rglob("*.py") if path.is_file() and not within(path, root / FIXTURE_ROOT)}
     found |= {path for path in regression_suites(root) if path.suffix.casefold() == ".py"}
     return sorted(found, key=lambda path: path.relative_to(root).as_posix().casefold())
 
@@ -665,7 +666,7 @@ class RepositoryModules:
                     found.append(candidate.resolve())
             if found and not level:
                 break
-        return [file for file in found if file.is_relative_to(self.root.resolve())]
+        return [file for file in found if within(file, self.root.resolve())]
 
     def loaded_files(self, path: Path, unique: bool) -> list[Path]:
         """The repository files path loads by their path, each found by the literal end of the path it names: beside
@@ -772,7 +773,7 @@ def _suite_python_files(root: Path) -> list[Path]:
         for top in tops
         if top.is_dir()
         for path in top.rglob("*.py")
-        if not path.is_relative_to(root / FIXTURE_ROOT) and "__pycache__" not in path.parts
+        if not within(path, root / FIXTURE_ROOT) and "__pycache__" not in path.parts
     )
 
 

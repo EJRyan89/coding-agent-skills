@@ -65,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import json_reader
 from console import run_main
 from executable_locator import PYTHON
+from path_containment import within
 from skill_roots import plugin_name
 from typed_fields import FieldError, FieldReader
 
@@ -173,7 +174,12 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
     pattern is not a read of a file, so only a Read, or a Grep naming one file, counts."""
     run, role = claim[0], claim[1]["id"]
     source = run / SOURCE
-    if tool == "Glob" or not ROLE_ID.fullmatch(role) or not _inside(path, source) or not path.is_file():
+    if (
+        tool == "Glob"
+        or not ROLE_ID.fullmatch(role)
+        or not within(path, source.resolve(strict=False))
+        or not path.is_file()
+    ):
         return
     root = Path(os.path.normcase(str(source.resolve(strict=False))))
     relative = Path(os.path.normcase(str(path))).relative_to(root)
@@ -201,23 +207,13 @@ def _resolve_local(path: Path) -> Path:
     its hook times out, so such a path is denied by its text alone."""
     if NETWORK_OR_DEVICE.match(str(path)):
         raise Denied(f"give a local path, not a network or device path; {path} is one")
-    if not any(_lexically_inside(path, root) for root in LOCAL_ROOTS):
+    if not any(within(path, root) for root in LOCAL_ROOTS):
         raise Denied(f"give an absolute path inside your review run folder; {path} is outside every folder it may use")
     return Path(os.path.normpath(path.resolve(strict=False)))
 
 
-def _lexically_inside(path: Path, root: Path) -> bool:
-    """Whether a normalized path lies in a root `_spellings` gave, by text alone."""
-    return Path(os.path.normcase(str(path))).is_relative_to(root)
-
-
 def _same(first: Path, second: Path) -> bool:
     return os.path.normcase(str(first)) == os.path.normcase(str(second))
-
-
-def _inside(path: Path, root: Path) -> bool:
-    root = Path(os.path.normcase(str(root.resolve(strict=False))))
-    return Path(os.path.normcase(str(path))).is_relative_to(root)
 
 
 def run_root(path: Path) -> Path | None:
@@ -228,7 +224,7 @@ def run_root(path: Path) -> Path | None:
         candidate
         for candidate in (path, *path.parents)
         if candidate.name.startswith(RUN_PREFIX)
-        and any(_lexically_inside(candidate, root) for root in TEMPORARY_ROOTS)
+        and any(within(candidate, root) for root in TEMPORARY_ROOTS)
         and (candidate / RUN_FILE).is_file()
     ]
     if len(runs) > 1:
@@ -315,7 +311,7 @@ def _claim(agent: str, path: Path) -> None:
 
 
 def _check_in_run(tool: str, path: Path, run: Path) -> None:
-    if _inside(path, REFERENCES) or _inside(path, run):
+    if within(path, REFERENCES.resolve(strict=False)) or within(path, run.resolve(strict=False)):
         return
     raise Denied(f"{tool} may only look inside your own review run folder; {path} is outside it")
 

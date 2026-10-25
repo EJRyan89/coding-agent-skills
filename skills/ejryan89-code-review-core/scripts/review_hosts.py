@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 from bounded_process import run_bounded, without_repository_variables
 from executable_locator import find_executables
 from job_tree import JobRefused, process_tree
+from path_containment import within
 from process_identity import ProcessStatus
 from review_config import REVIEWER_EFFORTS
 from review_io import (
@@ -333,7 +334,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
         READ.hex_digest(expected_hash, f"materialization.source_hashes.{declared_path}", 64)
         target = materialized_root.joinpath(*PurePosixPath(declared_path).parts)
         _require_safe_snapshot_path(materialized_root, target)
-        if not target.is_file() or not target.resolve(strict=True).is_relative_to(materialized_resolved):
+        if not target.is_file() or not within(target.resolve(strict=True), materialized_resolved):
             raise RuntimeContractError(f"Copilot reviewer materialization file is invalid: {declared_path}")
         actual_hash = hashlib.sha256(target.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
@@ -383,7 +384,7 @@ def copilot_command(
         raise RuntimeContractError("Copilot result path must be absolute")
     run_directory_resolved = run_directory.resolve(strict=True)
     result_path_resolved = result_path.resolve(strict=False)
-    if not result_path_resolved.is_relative_to(run_directory_resolved):
+    if not within(result_path_resolved, run_directory_resolved):
         raise RuntimeContractError("Copilot result path must be inside the run directory")
     # No prompt argument: the prompt, which carries review-comment bodies, prior findings, and diff paths, goes on
     # stdin, which Copilot CLI reads as its prompt in non-interactive mode when no -p is given. A command line holds
@@ -535,9 +536,9 @@ def _verified_copilot_source(run_directory: Path, request: _CopilotRequest, stam
         diff_resolved = request.diff_path.resolve(strict=True)
     except OSError as exc:
         raise RuntimeContractError(f"Copilot request artifacts are invalid: {exc}") from exc
-    if not diff_resolved.is_file() or not diff_resolved.is_relative_to(run_resolved):
+    if not diff_resolved.is_file() or not within(diff_resolved, run_resolved):
         raise RuntimeContractError("Copilot request diff must be a file inside the run directory")
-    if not source_resolved.is_relative_to(run_resolved):
+    if not within(source_resolved, run_resolved):
         raise RuntimeContractError("Copilot source snapshot must be inside the run directory")
     if request.source_manifest != request.source_root / SOURCE_SNAPSHOT_MANIFEST:
         raise RuntimeContractError("Copilot source snapshot manifest path is invalid")

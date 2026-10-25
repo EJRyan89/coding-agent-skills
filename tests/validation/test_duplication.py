@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from duplication import (
+    containment_problems,
     duplicated_definition_problems,
     shared_fact_owner_problems,
     skill_core_copy_problems,
@@ -744,3 +745,65 @@ def test_the_deployer_states_the_path_first_and_relative_to_itself(tmp_path: Pat
         tmp_path, {**SkillCoreHomePolicy.CORE, "deployer/__init__.py": SkillCoreHomePolicy.HEADER + statement}
     )
     assert expected == skill_core_import_problems(tmp_path)
+
+
+CONTAINMENT_SOURCE = """import os
+import os.path as osp
+from os.path import commonpath
+from pathlib import Path
+
+from path_containment import posix_within, within
+
+
+def hand_written(path: Path, root: Path, name: str, top: str) -> list[bool]:
+    return [
+        path.is_relative_to(root),
+        os.path.commonpath([path, root]) == root,
+        osp.commonprefix([str(path), str(root)]) == str(root),
+        commonpath([path, root]) == root,
+        name.startswith(f"{top}/"),
+        name.startswith(top + "/"),
+        str(path).startswith(str(root) + os.sep),
+        path.parts[: len(root.parts)] == root.parts,
+    ]
+
+
+def conforms(path: Path, root: Path, name: str, top: str) -> list[bool]:
+    return [within(path, root), posix_within(name, top), name.startswith(top), name.startswith("prefix-")]
+
+
+def told_apart(name: str, top: str) -> bool:
+    return name.startswith(top + "/")
+
+
+CONTAINMENT_ALLOWED = {"told_apart": "a reason", "stale": "a reason"}
+"""
+
+
+def test_containment_policy_refuses_a_containment_test_outside_path_containment(tmp_path: Path) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "skills/alpha/scripts/alpha.py": CONTAINMENT_SOURCE,
+            # A suite tests the refusals with the forms it refuses, and the module holds the one test.
+            "skills/alpha/scripts/test_alpha.py": CONTAINMENT_SOURCE,
+            "skills/ejryan89-skill-core/scripts/path_containment.py": CONTAINMENT_SOURCE,
+            "tools/broken.py": "CONTAINMENT_ALLOWED = {'scope': ''}\n",
+        },
+    )
+    remedy = (
+        "; call ejryan89-skill-core's path_containment, the one containment test, or state why in CONTAINMENT_ALLOWED"
+    )
+    alpha = "skills/alpha/scripts/alpha.py"
+    prefix = "a startswith of a folder and its separator"
+    found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
+    assert found == [
+        f"{alpha}:11 tests containment with is_relative_to{remedy}",
+        f"{alpha}:12 tests containment with commonpath{remedy}",
+        f"{alpha}:13 tests containment with commonprefix{remedy}",
+        f"{alpha}:14 tests containment with commonpath{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (15, 16, 17)),
+        f"{alpha}:18 tests containment with a comparison of a path's leading parts{remedy}",
+        f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
+    ]

@@ -18,6 +18,7 @@ import git_client
 import json_reader
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
+from path_containment import posix_within
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
@@ -1772,7 +1773,7 @@ def client_command_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for path in sorted(path for scripts in skill_script_directories(root) for path in scripts.rglob("*.py")):
         name = path.relative_to(root).as_posix()
-        if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
+        if is_test_script(path) or posix_within(name, SKILL_CORE_SCRIPTS, strict=True):
             continue
         try:
             reader = command_reader(path)

@@ -90,6 +90,7 @@ from agent_skills import CODEX_METADATA
 from console import run_main
 from flat_text import single_line
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError
+from path_containment import within
 from runtime_support import RUNTIMES as SUBJECTS
 from seconds_option import positive_seconds
 from suite_names import is_suite_name
@@ -310,7 +311,7 @@ def path_terms(top: Path) -> list[Term]:
     for name in dir(Paths):
         if isinstance(getattr(Paths, name), property):
             value = getattr(paths, name)
-            if isinstance(value, Path) and value.is_relative_to(home) and value != home:
+            if isinstance(value, Path) and within(value, home, strict=True):
                 found.add(value.relative_to(home).as_posix())
     for value in paths.managed_roots:
         found.add(value.relative_to(home).as_posix())

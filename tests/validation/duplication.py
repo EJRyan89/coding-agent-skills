@@ -1,4 +1,6 @@
-"""No definition is copied between files, and shared code lives in ejryan89-skill-core and is imported from there."""
+"""No definition is copied between files, and shared code lives in ejryan89-skill-core and is imported from there:
+among it the one containment test of a path in a tree.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +12,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
-from python_checks import formatted_modules
+from path_containment import posix_within
+from python_checks import claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
 from validation_support import (
     MODULE_LOADERS,
@@ -18,14 +21,17 @@ from validation_support import (
     VALIDATION_DOC,
     CallableResolver,
     call_argument,
+    import_aliases,
     is_test_script,
     listed,
     module_allowance,
     module_imports,
     module_statements,
     python_trees,
+    qualified_name,
     repository_files,
     scope_problems,
+    scoped_nodes,
     scripts_put_on_path,
     skill_dependency_closure,
 )
@@ -449,7 +455,11 @@ def skill_core_copy_problems(root: Path) -> list[str]:
     for top in DUPLICATION_ROOTS:
         for path in sorted((root / top).rglob("*.py")):
             name = path.relative_to(root).as_posix()
-            if path.stem in shared and not is_test_script(path) and not name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
+            if (
+                path.stem in shared
+                and not is_test_script(path)
+                and not posix_within(name, SKILL_CORE_SCRIPTS, strict=True)
+            ):
                 problems.append(
                     f"{name} has the name of {SKILL_CORE_SCRIPTS}/{path.stem}.py; import {path.stem} from "
                     f"{SKILL_CORE} instead of keeping another copy; see {SKILL_CORE_DOC}"
@@ -586,6 +596,91 @@ def skill_script_import_problems(root: Path) -> list[str]:
     return sorted(problems)
 
 
+# ejryan89-skill-core's path_containment is the one test of whether a path lies in a tree, so a fix to it reaches every
+# caller. Any other containment test, an is_relative_to, an os.path.commonpath, or a prefix test written by hand, states
+# why in a module-level CONTAINMENT_ALLOWED = {scope: reason}.
+PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
+CONTAINMENT_ALLOWANCE = "CONTAINMENT_ALLOWED"
+
+
+def _containment_test(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    """The containment test `node` writes, or None: an is_relative_to, an os.path.commonpath, a startswith of a text
+    ending in a separator, or a comparison of a path's leading parts."""
+
+    def separator(value: ast.expr) -> bool:
+        return (isinstance(value, ast.Constant) and value.value in {"/", "\\"}) or qualified_name(value, aliases) in {
+            "os.sep",
+            "os.altsep",
+            "os.path.sep",
+            "os.path.altsep",
+        }
+
+    def ends_in_separator(value: ast.expr) -> bool:
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            return separator(value.right) or (
+                isinstance(value.right, ast.Constant)
+                and isinstance(value.right.value, str)
+                and value.right.value.endswith(("/", "\\"))
+            )
+        return (
+            isinstance(value, ast.JoinedStr)
+            and bool(value.values)
+            and isinstance(last := value.values[-1], ast.Constant)
+            and isinstance(last.value, str)
+            and last.value.endswith(("/", "\\"))
+        )
+
+    def leading_parts(value: ast.expr) -> bool:
+        return (
+            isinstance(value, ast.Subscript)
+            and isinstance(value.value, ast.Attribute)
+            and value.value.attr == "parts"
+            and isinstance(value.slice, ast.Slice)
+            and value.slice.lower is None
+            and isinstance(value.slice.upper, ast.Call)
+            and qualified_name(value.slice.upper.func, aliases) == "len"
+        )
+
+    if isinstance(node, ast.Attribute) and node.attr == "is_relative_to":
+        return "is_relative_to"
+    if isinstance(node, ast.Attribute | ast.Name) and qualified_name(node, aliases) in {
+        "os.path.commonpath",
+        "os.path.commonprefix",
+    }:
+        return qualified_name(node, aliases).removeprefix("os.path.")
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "startswith"
+        and node.args
+        and ends_in_separator(node.args[0])
+    ):
+        return "a startswith of a folder and its separator"
+    if isinstance(node, ast.Compare) and any(leading_parts(side) for side in (node.left, *node.comparators)):
+        return "a comparison of a path's leading parts"
+    return None
+
+
+def containment_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each containment test outside path_containment that no CONTAINMENT_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != PATH_CONTAINMENT]
+    for _, name, tree in python_trees(paths, root, problems):
+        aliases = import_aliases(tree)
+        found = [
+            (
+                node.lineno,
+                scope,
+                f"tests containment with {test}; call ejryan89-skill-core's path_containment, the one containment "
+                f"test, or state why in {CONTAINMENT_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.expr) and (test := _containment_test(node, aliases))
+        ]
+        problems += sanctioned_problems(name, tree, CONTAINMENT_ALLOWANCE, found)
+    return problems
+
+
 class DuplicationPolicies(unittest.TestCase):
     def test_repository_copies_only_what_it_sanctions(self) -> None:
         # Copied helpers began identical and then drifted, so a copy is caught while it is still identical.
@@ -600,6 +695,9 @@ class DuplicationPolicies(unittest.TestCase):
 
     def test_shipped_skill_scripts_import_only_what_a_deployment_holds(self) -> None:
         self.assertEqual([], skill_script_import_problems(REPOSITORY_ROOT))
+
+    def test_path_containment_is_the_one_containment_test(self) -> None:
+        self.assertEqual([], containment_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_the_duplication_policy_reads_every_module_its_rule_speaks_of(self) -> None:
         modules = formatted_modules(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))

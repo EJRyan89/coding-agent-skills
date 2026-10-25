@@ -143,6 +143,7 @@ from console import run_main
 from file_presence import is_present
 from git_client import GitClient, GitError
 from link_probe import is_plain_directory
+from path_containment import within
 from release_tags import last_release
 from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
@@ -416,13 +417,12 @@ def quote(value: str) -> str:
 
 
 def lexical(path: str | os.PathLike[str]) -> str:
-    # Lexical: Path.absolute keeps "..", which would pass commonpath, and Path.resolve follows junctions.
+    # Lexical: Path.absolute keeps "..", and Path.resolve follows junctions.
     return os.path.normcase(os.path.abspath(path))  # noqa: PTH100 - lexical, as the comment says
 
 
 def inside(path: str, directory: Path) -> bool:
-    candidate, root = lexical(path), lexical(directory)
-    return candidate != root and os.path.commonpath([candidate, root]) == root
+    return within(lexical(path), lexical(directory), strict=True)
 
 
 class RecordRefused(ValueError):

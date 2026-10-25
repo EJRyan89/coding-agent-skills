@@ -105,6 +105,8 @@ class SiblingScriptsTests(unittest.TestCase):
             "flat_text.py",
             "json_reader.py",
             "whole_number.py",
+            "path_containment.py",
+            "link_probe.py",
         ):
             (core / module).write_text(
                 (Path(__file__).resolve().parent / module).read_text(encoding="utf-8"), encoding="utf-8"

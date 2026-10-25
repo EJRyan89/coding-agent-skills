@@ -107,6 +107,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import CODE_SPAN
+from path_containment import within
 from skill_roots import skills_directory_holding
 
 INDEX_NAME = "MEMORY.md"
@@ -994,7 +995,7 @@ def output_refusal(explicit: Path, memory_dir: Path, projects: Path) -> str | No
         )
     target = explicit.resolve()
     for kind, store in (("the memory directory", memory_dir), ("Claude Code's projects folder", projects)):
-        if target.is_relative_to(store.resolve()):
+        if within(target, store.resolve()):
             return f"{explicit} is inside {kind} {store}; omit --output to write a new temporary file"
     return None
 

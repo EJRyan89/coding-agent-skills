@@ -21,6 +21,7 @@ import stat
 from pathlib import Path
 
 from folder_walk import SKIPPED_FOLDERS
+from path_containment import within
 from xml_reader import read_xml
 
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
@@ -103,7 +104,7 @@ def refusal(path: Path, tree: Path) -> str | None:
     """Why a skill does not read `path`, a path a file names, made absolute by `project_path`, or None when it lies
     inside `tree`, the tree the skill examines. The test is lexical, so it decides before anything touches the path:
     a device or network form, or any other path outside the tree, is refused unopened."""
-    if Path(same_path(path)).is_relative_to(same_path(tree)):
+    if within(path, tree):
         return None
     written = str(path).replace("\\", "/")
     if written.startswith(DEVICE_PREFIXES):

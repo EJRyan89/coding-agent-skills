@@ -29,6 +29,7 @@ from git_client import GitClient, GitError, GitResult, GitStream, Runner, subpro
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
 from link_probe import is_link_or_junction
+from path_containment import posix_within, within
 from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_guard import ROLE_ID as SLUG
@@ -795,7 +796,9 @@ def _ls_tree_calls(paths: Iterable[str]) -> list[list[str]]:
     for path in dict.fromkeys(paths):
         size = _utf16_units(path) + 3  # its quotes and the space before it
         for index, call in enumerate(calls):
-            nested = any(path.startswith(f"{other}/") or other.startswith(f"{path}/") for other in call)
+            nested = any(
+                posix_within(path, other, strict=True) or posix_within(other, path, strict=True) for other in call
+            )
             if not nested and units[index] + size <= LS_TREE_PATH_UNITS:
                 call.append(path)
                 units[index] += size
@@ -1105,7 +1108,7 @@ def _require_safe_snapshot_path(root: Path, target: Path) -> None:
             raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
         current = current.parent
     resolved = target.resolve(strict=True)
-    if not resolved.is_relative_to(resolved_root):
+    if not within(resolved, resolved_root):
         raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
 
 
@@ -1171,7 +1174,7 @@ def _walk_snapshot(root: Path) -> _SnapshotTree:
     while pending:
         folder, prefix = pending.pop()
         try:
-            if prefix and not folder.resolve(strict=True).is_relative_to(resolved_root):
+            if prefix and not within(folder.resolve(strict=True), resolved_root):
                 tree.escaping.add(prefix.removesuffix("/"))
                 tree.faults.append(f"Source snapshot path escapes its root: {folder}")
                 continue
