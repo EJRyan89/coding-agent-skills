@@ -1052,7 +1052,7 @@ def g(*arguments: str) -> tuple[str, ...]:
 # The snapshot verifies origin again, which one prepare answers from its first check, since nothing in between wrote.
 LOCAL_SNAPSHOT = [
     g("remote", "get-url", "origin"),
-    g("cat-file", "-e", "<head>^{commit}"),
+    g("rev-parse", "--verify", "--quiet", "--end-of-options", "<head>^{commit}"),
     g("rev-parse", "--verify", "<head>^{commit}"),
     g("ls-tree", "-r", "-z", "-l", "--full-tree", "<head>"),
 ]
@@ -1755,7 +1755,7 @@ class FailureCleanupTests(PrepareFixture):
 class LocalCommitTests(PrepareFixture):
     """The pull request's head comes from the checkout's object store, fetched only when it is missing."""
 
-    HEAD_PRESENT = ("cat-file", "-e", "<head>^{commit}")
+    HEAD_PRESENT = ("rev-parse", "--verify", "--quiet", "--end-of-options", "<head>^{commit}")
     FETCH_HEAD = ("fetch", "--no-tags", "--quiet", "origin", "refs/pull/12/head")
 
     def test_a_missing_head_is_fetched_once_and_checked_again(self) -> None:
@@ -2108,7 +2108,7 @@ SPECIALIST_HASHES = {
 # guidelines at the base first, and their bytes come from one `git cat-file --batch`, which the runner does not run.
 # The base resolves once: the guidelines' check of it is answered from the reviewer's.
 SPECIALIST_GIT = [
-    g("cat-file", "-e", "<base>^{commit}"),
+    g("rev-parse", "--verify", "--quiet", "--end-of-options", "<base>^{commit}"),
     g("rev-parse", "--verify", "<base>^{commit}"),
     g("ls-tree", "-z", "<base>", "--", "review/specialists.json"),
     g("cat-file", "blob", blob(BASE_FILES["review/specialists.json"])),
@@ -2267,7 +2267,7 @@ class RepositoryReviewerTests(PrepareFixture):
         self.assertEqual(
             [
                 *LOCAL_SNAPSHOT,
-                g("cat-file", "-e", "<base>^{commit}"),
+                g("rev-parse", "--verify", "--quiet", "--end-of-options", "<base>^{commit}"),
                 g("rev-parse", "--verify", "<base>^{commit}"),
                 g("ls-tree", "-z", "<base>", "--", "review/entrypoint.json"),
                 g("cat-file", "blob", blob(BASE_FILES["review/entrypoint.json"])),
@@ -2305,7 +2305,7 @@ class RepositoryReviewerTests(PrepareFixture):
         )
         self.assertEqual(
             [
-                g("cat-file", "-e", "<base>^{commit}"),
+                g("rev-parse", "--verify", "--quiet", "--end-of-options", "<base>^{commit}"),
                 g("rev-parse", "--verify", "refs/heads/reviewers^{commit}"),
                 g("ls-tree", "-z", "<trusted>", "--", "review/specialists.json"),
                 g("cat-file", "blob", blob(BASE_FILES["review/specialists.json"])),
@@ -2318,7 +2318,7 @@ class RepositoryReviewerTests(PrepareFixture):
 
     def test_a_missing_base_is_fetched_by_its_branch(self) -> None:
         self.configure(self.repository("review/specialists.json"))
-        base = ("cat-file", "-e", "<base>^{commit}")
+        base = ("rev-parse", "--verify", "--quiet", "--end-of-options", "<base>^{commit}")
         fetch = ("fetch", "--no-tags", "--quiet", "origin", "refs/heads/main")
         self.git.answers = {base: [failed(), failed()], fetch: [GitResult(0, "", "")]}
         self.prepare()
@@ -2571,11 +2571,11 @@ class ReviewerFallbackTests(PrepareFixture):
         self.assertEqual("Trusted rules\n", self.text_file("reviewer/review/rules.md"))
         self.assertEqual(
             [
-                g("cat-file", "-e", "<base>^{commit}"),
+                g("rev-parse", "--verify", "--quiet", "--end-of-options", "<base>^{commit}"),
                 g("rev-parse", "--verify", "<base>^{commit}"),
                 g("ls-tree", "-r", "--name-only", "-z", "<base>"),
                 g(*self.LS_REMOTE),
-                g("cat-file", "-e", "<trusted>^{commit}"),
+                g("rev-parse", "--verify", "--quiet", "--end-of-options", "<trusted>^{commit}"),
                 g("ls-tree", "-r", "--name-only", "-z", "<trusted>"),
                 g("ls-tree", "-z", "<trusted>", "--", "review/late.md"),
                 g("cat-file", "blob", blob(LATE_SKILL)),
@@ -2588,7 +2588,7 @@ class ReviewerFallbackTests(PrepareFixture):
     def test_a_tip_that_is_not_local_is_fetched_by_its_branch(self) -> None:
         self.skill("review/late.md")
         self.tip(self.commits["trusted"])
-        tip = ("cat-file", "-e", "<trusted>^{commit}")
+        tip = ("rev-parse", "--verify", "--quiet", "--end-of-options", "<trusted>^{commit}")
         fetch = ("fetch", "--no-tags", "--quiet", "origin", "refs/heads/main")
         self.git.answers.update({tip: [failed(), failed()], fetch: [GitResult(0, "", "")]})
         result, _ = self.prepare()
@@ -2617,7 +2617,7 @@ class ReviewerFallbackTests(PrepareFixture):
         self.assertEqual("generic-fallback", result["adapter"]["source"])
         self.assertEqual(
             [
-                g("cat-file", "-e", "<base>^{commit}"),
+                g("rev-parse", "--verify", "--quiet", "--end-of-options", "<base>^{commit}"),
                 g("rev-parse", "--verify", "<base>^{commit}"),
                 g("ls-tree", "-r", "--name-only", "-z", "<base>"),
                 g(*self.LS_REMOTE),
