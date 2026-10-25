@@ -303,6 +303,40 @@ class ReadTests(unittest.TestCase):
         self.assertIsNone(rg.read_committed(self.checkout, commit, "docs/checklist.md", "0" * 64))
         self.assertEqual("included", self.statuses(self.read_at(commit))["docs/checklist.md"][1])
 
+    def test_a_version_git_cannot_read_is_named_not_taken_for_one_not_at_its_commit(self) -> None:
+        git = GitClient()
+        git.output(["init", "--quiet"], directory=self.checkout)
+        git.output(["add", "."], directory=self.checkout)
+        git.output(["commit", "--quiet", "-m", "Guidance"], directory=self.checkout)
+        commit = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
+        self.assertIsNone(rg.read_committed(self.checkout, "f" * 40, "docs/checklist.md", digest(CHECKLIST)))
+        self.assertIsNone(rg.read_committed(self.checkout, commit, "docs/missing.md", digest(CHECKLIST)))
+        (self.checkout / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        with self.assertRaises(rg.GuidanceError) as context:
+            rg.read_committed(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST))
+        self.assertTrue(
+            str(context.exception).startswith(
+                f"git could not read docs/checklist.md at {commit} in {self.checkout.as_posix()}: "
+            ),
+            context.exception,
+        )
+        self.assertIn("bad config line 1", str(context.exception))
+
+    def test_a_committed_copy_of_exactly_the_read_bound_is_read_and_one_byte_more_is_not(self) -> None:
+        git = GitClient()
+        git.output(["init", "--quiet"], directory=self.checkout)
+        git.output(["add", "."], directory=self.checkout)
+        git.output(["commit", "--quiet", "-m", "Guidance"], directory=self.checkout)
+        commit = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
+        size = len(CHECKLIST.encode("utf-8"))
+        with mock.patch.object(rg, "READ_BYTES", size):
+            self.assertEqual(
+                CHECKLIST.encode("utf-8"),
+                rg.read_committed(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST)),
+            )
+        with mock.patch.object(rg, "READ_BYTES", size - 1):
+            self.assertIsNone(rg.read_committed(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST)))
+
     def test_a_path_that_leaves_the_checkout_is_never_read(self) -> None:
         outside = self.checkout.parent / "outside.md"
         outside.write_text(CHECKLIST, encoding="utf-8", newline="\n")
@@ -449,6 +483,7 @@ class ReadTests(unittest.TestCase):
             Path("b.json"): reviewed("style", "2026-01-03T00:00:00+00:00", {"docs/checklist.md": CHECKLIST}, "2" * 40),
             Path("c.json"): reviewed("docs", "2026-01-04T00:00:00+00:00", {"docs/checklist.md": CONVENTIONS}, "3" * 40),
         }
+        GitClient().output(["init", "--quiet"], directory=self.checkout)
         (self.checkout / "docs" / "checklist.md").write_text("Rewritten since.\n", encoding="utf-8")
         with mock.patch.object(rg, "_working_copy", side_effect=rg._working_copy) as read:
             guidance = self.read()

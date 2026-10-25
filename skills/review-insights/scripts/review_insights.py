@@ -140,7 +140,14 @@ class InsightError(ValueError):
     pass
 
 
-EXPECTED_ERRORS = (InsightError, ConfigurationError, FlagError, PersistenceError, OSError)
+EXPECTED_ERRORS = (
+    InsightError,
+    ConfigurationError,
+    FlagError,
+    PersistenceError,
+    review_guidance.GuidanceError,
+    OSError,
+)
 SCRIPT = Path(__file__).resolve()
 
 
@@ -686,10 +693,21 @@ def _validate_subject(item: dict[str, Any], path: Path) -> None:
     ):
         raise InsightError(f"{item['id']} has an invalid analyzer subject")
     evidence = item.get("evidence")
-    if not isinstance(evidence, list) or any(
-        not isinstance(entry, dict) or set(entry) != EVIDENCE_FIELDS for entry in evidence
-    ):
+    if not isinstance(evidence, list) or not all(valid_evidence(entry) for entry in evidence):
         raise InsightError(f"{item['id']}.evidence must be a list of findings")
+
+
+def valid_evidence(entry: Any) -> bool:
+    """Whether `entry` is a finding an analyzer recommendation cites, of the kinds `_example` and the `EXAMPLE` lines
+    read: its repository, finding ID, and path as text, its pull number, review version, and line as counts from 1,
+    and its title as text or null."""
+    return (
+        isinstance(entry, dict)
+        and set(entry) == EVIDENCE_FIELDS
+        and all(isinstance(entry[name], str) for name in ("repository", "finding_id", "path"))
+        and all(type(entry[name]) is int and entry[name] >= 1 for name in ("pull_number", "review_version", "line"))
+        and (entry["title"] is None or isinstance(entry["title"], str))
+    )
 
 
 def _upgrade_recommendation(item: Any, version: int, path: Path) -> None:
