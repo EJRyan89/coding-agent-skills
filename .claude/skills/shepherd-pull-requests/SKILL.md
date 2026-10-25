@@ -1,8 +1,8 @@
 ---
 name: shepherd-pull-requests
-description: "Run one merge-shepherd tick from the hub over this repository's open pull requests: fast-forward main, arm auto-merge, merge main into behind branches, judge each red Validation check as a rerun or a defect, and name each merged worktree to retire."
+description: "Run one merge-shepherd tick from the hub over this repository's open pull requests: fast-forward main, arm auto-merge, merge main into behind branches, judge each red Validation check as a rerun or a defect, review each head report-only once, and name each merged worktree to retire."
 argument-hint: "[--dry-run]"
-allowed-tools: ["Bash(python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py *)", "PowerShell(python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py *)"]
+allowed-tools: ["Bash(python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py *)", "PowerShell(python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py *)", "Bash(gh pr comment *)", "PowerShell(gh pr comment *)", "Skill"]
 disable-model-invocation: true
 ---
 
@@ -38,6 +38,16 @@ The tick admits only pull requests whose head branch is in this repository. One 
 
 `JUDGED`, `RERUN`, `PR`, and any other `HUB` lines, such as one from a linked worktree, need nothing from you, nor do `REPOSITORY <owner>/<name>`, the repository the tick reads, and `DRY_RUN`, which opens a `--dry-run` tick.
 
-## 3. Hand off each merge
+## 3. Review each head
+
+The pre-merge review is report-only: it never holds, disarms, or delays a pull request. The tick reads this machine's code-review archive and names each admitted head in step, not in conflict, and with a check neither red nor missing:
+
+- `REVIEWED #<number> ...`: a `review-repository` review covers the head; nothing to do.
+- `REVIEW_DUE #<number> ...`: none does yet. The tick also prints one `REVIEW_ARGUMENTS <arguments>` line covering every due head. From the hub's own session only, invoke `review-prs` through the `Skill` tool once with exactly those arguments. The record it writes covers each head from the next tick on, so a tick without that line starts no review.
+- For each pull request `review-prs` reports recorded, with its verdict and the path of its Markdown report, post that report once as a plain comment, never a review: `gh pr comment <number> --repo <owner/repo> --body-file "<report>"`. Then tell the session whose worktree holds the branch the verdict, and that each SHOULD FIX needs its disposition.
+- A pull request `review-prs` fails stays due. Try it again on the next tick, at most once per head, then tell the user.
+- `REVIEW_UNREAD <reason>`: tell the user once. The review needs the configuration entry "Configure" in the `review-repository` repository skill gives.
+
+## 4. Hand off each merge
 
 Each `MERGED #<number> worktree "<path>" branch <branch>` names a worktree whose pull request merged, matched by its branch or by its commit when the session pushed under another name, and each local branch to delete: one `branch <branch>` for the worktree's own, and another for the pull request's when one of that name exists. First confirm that no live session still works in `<path>` or on a named branch, and archive the owning session once it is idle. Then invoke the `repo-cleanup` skill on the hub, from a session that is not inside `<path>`; it proves the merge again before it removes the worktree and deletes each branch, and offers one it cannot prove, such as an unpushed worktree branch.

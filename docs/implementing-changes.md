@@ -202,6 +202,35 @@ hit, fixed here, filed as #N, or not a sibling and why. A fix that reaches one i
 author, with the code in hand, is the one placed to look. It is the author's judgment, never an automated result, and
 no check reads it: `review-repository`'s `sibling-search` reviewer holds the search against a change to a script.
 
+Before merge, `review-prs` reviews each pull request with `review-repository`, once the machine's code-review
+configuration names it, as "Configure" in that repository skill says. The shepherd runs the review once per head on
+every admitted pull request, so every one that reaches a trust-boundary route is reviewed, and posts the report on the
+pull request as a comment ([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)).
+An author may run `review-prs --pull` first; its record then covers that head. The result is the review record
+`review-prs` writes in the configured archive, which `review-insights` and `update-pr-dashboard` read. The review is
+report-only: no finding or verdict holds, disarms, or blocks a merge.
+
+The author answers the report. A SHOULD FIX needs a disposition: fixed, which the pull request's next review judges
+`addressed`, or not applicable, recorded with its reason through `flag-review-finding` against that finding. A MUST
+FIX is answered the same way while its kind is report-only, and a SUGGESTION needs no answer.
+
+A kind of finding is one of the reviewer manifest's `finding_categories`, and its acceptance rate is read from a
+`review-insights` report over this repository: the `REVIEWER` rows of that category's `RECOMMENDATION` count the
+findings a later review judged `addressed` and those `flagged` through `flag-review-finding`, and the rate is the
+addressed findings over both. These rules move a kind:
+
+- A kind's MUST FIX findings are promoted to blocking once a report spanning at least 30 days shows at least 10 of
+  them answered, addressed or flagged, at a rate of at least 90%.
+- A blocking kind is demoted to report-only when a later report shows its rate below that bar, or when the
+  maintainer judges one of its flagged findings a false positive that blocked a merge.
+- Each promotion and each demotion is the maintainer's approval, in a pull request of its own that cites the report
+  and changes the blocking kinds below. The first promotion also makes the shepherd hold a pull request whose latest
+  review leaves a MUST FIX of a blocking kind open.
+- SHOULD FIX findings never block, and suggestions never block. A new kind of finding starts as an experiment: its
+  reviewer's profile asks for it as a SUGGESTION until a report shows how often it is accepted.
+
+Blocking kinds: none.
+
 A pull request that returns a file to its state before a commit on `main` reverts that commit's change to it, and
 validation's silent-revert check, in `tests/validation/silent_reverts.py`, names each such file with the commit and
 its pull request. A branch left behind, or a conflict resolved by taking the branch's side of a file it never set out
