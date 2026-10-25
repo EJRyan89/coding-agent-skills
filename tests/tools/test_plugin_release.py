@@ -187,6 +187,24 @@ def test_build_refuses_an_entry_after_an_earlier_one_before_writing_anything(che
     assert not (tmp_path / "assets").exists()
 
 
+def test_build_refuses_a_marketplace_no_json_file_can_hold_before_writing_anything(
+    checkout: Path, tmp_path: Path
+) -> None:
+    # json_reader reads an escaped lone surrogate, which the writer refuses, so the pinned file could not be written.
+    document = marketplace(checkout)
+    document["owner"] = "\ud800"
+    write(checkout, ".claude-plugin/marketplace.json", json.dumps(document))
+    before = (checkout / ".claude-plugin" / "marketplace.json").read_bytes()
+    code, lines = run(["build", "v1.2.3", "--root", str(checkout), "--output", str(tmp_path / "assets")])
+    assert code == 1
+    assert lines == [
+        "FAILED .claude-plugin/marketplace.json cannot be written: the value holds a lone surrogate U+D800, which "
+        "UTF-8 cannot encode"
+    ]
+    assert (checkout / ".claude-plugin" / "marketplace.json").read_bytes() == before
+    assert not (tmp_path / "assets").exists()
+
+
 def test_check_of_a_marketplace_listing_no_plugin_fails_with_its_reason(checkout: Path) -> None:
     write(checkout, ".claude-plugin/marketplace.json", json.dumps({"name": "fixture", "plugins": []}))
     code, lines = run(["check", "--root", str(checkout)])

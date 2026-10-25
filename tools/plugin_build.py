@@ -219,7 +219,16 @@ def _agents(source: deploy_source.Source, plugin: Plugin, closure: list[str]) ->
         for event, entries in declared.items():
             hooks.setdefault(event, []).extend(entries if isinstance(entries, list) else [entries])
     if hooks:
-        plugin.files[PLUGIN_HOOKS] = (json_writer.dumps({"hooks": hooks}, indent=2) + "\n").encode("utf-8")
+        plugin.files[PLUGIN_HOOKS] = _json_file(plugin.name, PLUGIN_HOOKS, {"hooks": hooks})
+
+
+def _json_file(plugin: str, relative: str, value: object) -> bytes:
+    """A plugin's JSON file as json_writer writes it, two-space indented with a newline, or a BuildError naming the
+    file for a value no JSON file can hold, such as a lone surrogate an escape in the marketplace spells."""
+    try:
+        return (json_writer.dumps(value, indent=2) + "\n").encode("utf-8")
+    except json_writer.JsonWriteRefused as exc:
+        raise BuildError(f"plugin {plugin}: {relative} cannot be written: {exc}") from exc
 
 
 def _plugin(
@@ -239,7 +248,7 @@ def _plugin(
     options = plugin_options(source, plugin)
     if options:
         manifest["userConfig"] = options
-    plugin.files[PLUGIN_MANIFEST] = (json_writer.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    plugin.files[PLUGIN_MANIFEST] = _json_file(name, PLUGIN_MANIFEST, manifest)
     leftover = leftover_tokens(plugin.files)
     if leftover:
         raise BuildError(f"plugin {name} keeps template tokens: {'; '.join(leftover)}")
