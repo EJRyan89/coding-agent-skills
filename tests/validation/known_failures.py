@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import json_reader
+import whole_number
 from markdown_sections import HTML_COMMENT
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
@@ -83,8 +84,10 @@ def known_failure_problems(root: Path) -> list[str]:
 
 
 def closed_issues(body: str) -> set[int]:
-    """The issues a pull request body closes when it merges."""
-    return {int(number) for number in CLOSING.findall(HTML_COMMENT.sub("", body))}
+    """The issues a pull request body closes when it merges; a number past the digit limit, or in digits other than
+    ASCII, names no issue."""
+    numbers = (whole_number.parse(number) for number in CLOSING.findall(HTML_COMMENT.sub("", body)))
+    return {number for number in numbers if number is not None}
 
 
 def closed_known_failure_problems(root: Path, body: str | None) -> list[str]:

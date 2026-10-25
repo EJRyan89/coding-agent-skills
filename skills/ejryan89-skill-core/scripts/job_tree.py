@@ -457,6 +457,11 @@ def end_group(group: int) -> None:
         time.sleep(GROUP_POLL_SECONDS)
 
 
+INT_PARSE_ALLOWED = {
+    "group_members": "the kernel names each process's /proc entry by its ID",
+}
+
+
 def group_members(group: int) -> list[int]:
     """The IDs of the processes of `group` still running, as /proc lists them: a process that has ended and waits only
     to be reaped holds nothing and runs nothing, so it is not one. Without /proc, the group itself is asked with a

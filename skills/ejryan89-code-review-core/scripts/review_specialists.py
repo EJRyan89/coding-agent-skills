@@ -176,6 +176,11 @@ def parse_unified_diff(text: str) -> dict[str, dict[str, Any]]:
     return split_unified_diff(text)[0]
 
 
+INT_PARSE_ALLOWED = {
+    "split_unified_diff": "git writes a hunk header's numbers, and a diff prefixes each line of a file's text",
+}
+
+
 def split_unified_diff(text: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """The parsed diff of every safe path, as `parse_unified_diff` returns it, and each path `reviewable_path` rejects,
     once, in diff order. A rejected path's block is left out whole: no reviewer prompt, work file, or link may

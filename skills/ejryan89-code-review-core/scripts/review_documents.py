@@ -347,6 +347,11 @@ def _heading_styles(data: bytes) -> dict[str, int]:
     return levels
 
 
+INT_PARSE_ALLOWED = {
+    "_style_level": "the pattern takes one digit from 1 to 9",
+}
+
+
 def _style_level(style: str, named: dict[str, str], outline: dict[str, int], based: dict[str, str]) -> int | None:
     seen: set[str] = set()
     current: str | None = style

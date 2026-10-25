@@ -810,8 +810,12 @@ class SkillScriptsFixtures(unittest.TestCase):
             )
             (scripts / "vague.py").write_text("EXIT_CONTRACT_EXEMPT = ' '\n", encoding="utf-8")
             (scripts / "test_run.py").write_text("import sys\nsys.exit(5)\n", encoding="utf-8")
+            # An Arabic-Indic one, which int() reads as 1, and a code past the digit limit are outside the contract.
+            unreadable = (chr(0x0661), "1" + "0" * 5000)
             (scripts / "tool.sh").write_text(
-                'set -e\n[ -n "$1" ] || exit 3\nexit 0  # exit 6 in a comment\n', encoding="utf-8"
+                'set -e\n[ -n "$1" ] || exit 3\nexit 0  # exit 6 in a comment\n'
+                + "".join(f"exit {code}\n" for code in unreadable),
+                encoding="utf-8",
             )
             (scripts / "test_tool.sh").write_text("exit 7\n", encoding="utf-8")
             doc = '"Script results" in docs/adding-a-skill.md'
@@ -824,6 +828,10 @@ class SkillScriptsFixtures(unittest.TestCase):
                     f"skills/alpha/scripts/run.py:10 exits 3; scripts exit only 0, 1, or 2; see {doc}",
                     f"skills/alpha/scripts/run.py:15 exits 4; scripts exit only 0, 1, or 2; see {doc}",
                     f"skills/alpha/scripts/tool.sh:2 exits 3; scripts exit only 0, 1, or 2; see {doc}",
+                    *(
+                        f"skills/alpha/scripts/tool.sh:{line} exits {code}; scripts exit only 0, 1, or 2; see {doc}"
+                        for line, code in enumerate(unreadable, 4)
+                    ),
                     "skills/alpha/scripts/vague.py: EXIT_CONTRACT_EXEMPT must be a non-empty string saying why",
                 ],
                 script_contract_problems(mark_skills(root)),

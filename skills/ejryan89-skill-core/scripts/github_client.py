@@ -360,6 +360,11 @@ class Response(NamedTuple):
     body: str
 
 
+INT_PARSE_ALLOWED = {
+    "split_response": "gh writes the HTTP status line's code",
+}
+
+
 def split_response(stdout: str) -> Response:
     """Separate the status line and headers `gh api -i` prints from the body; other output is all body."""
     if not stdout.startswith("HTTP/"):

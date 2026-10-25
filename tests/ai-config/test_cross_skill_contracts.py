@@ -32,6 +32,7 @@ import review_pipeline
 import review_run
 import review_source
 import runtime_support
+from module_closure import copy_with_imports, imports_of
 from review_config import COMPUTED_DASHBOARD_STATES
 
 from deployer import platform_support
@@ -579,13 +580,16 @@ class CrossSkillContractTests(unittest.TestCase):
             guard = broken / ".claude/skills/ejryan89-code-review-core/scripts/review_guard.py"
             guard.parent.mkdir(parents=True)
             guard.write_text("raise RuntimeError('the guard failed to load')\n", encoding="utf-8")
-            # A guard deployed without the ejryan89-skill-core it imports cannot load either.
-            coreless = root / "profile without ejryan89-skill-core"
+            # A guard deployed beside an ejryan89-skill-core that lacks a module it imports cannot load either.
+            coreless = root / "profile without a module of ejryan89-skill-core"
             real_guard = coreless / ".claude/skills/ejryan89-code-review-core/scripts/review_guard.py"
             real_guard.parent.mkdir(parents=True)
             real_guard.write_bytes(
                 (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_guard.py").read_bytes()
             )
+            core = coreless / ".claude/skills/ejryan89-skill-core/scripts"
+            copy_with_imports(core, *imports_of(real_guard))
+            (core / "json_reader.py").unlink()
             cases = {
                 "missing": (missing, "review_guard.py", "FileNotFoundError"),
                 "broken": (broken, "the guard failed to load", "RuntimeError"),
@@ -633,25 +637,9 @@ class CrossSkillContractTests(unittest.TestCase):
             guard.write_bytes(
                 (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_guard.py").read_bytes()
             )
-            # The guard imports ejryan89-skill-core's runner, the flattener the runner imports, its typed-field reader,
-            # the locator that names Python's command with the path key it compares folders by, and the lookup that
-            # tells a plugin from the deployed home with the file probe it reads the plugin's manifest through, and the
-            # JSON reader both parse with, from the sibling skill the deployer installs beside it.
-            core = profile / ".claude/skills/ejryan89-skill-core/scripts"
-            core.mkdir(parents=True)
-            modules = (
-                "console.py",
-                "executable_locator.py",
-                "file_presence.py",
-                "flat_text.py",
-                "link_probe.py",
-                "path_containment.py",
-                "skill_roots.py",
-            )
-            for module in (*modules, "path_keys.py", "typed_fields.py", "json_reader.py", "whole_number.py"):
-                (core / module).write_bytes(
-                    (REPOSITORY_ROOT / "skills/ejryan89-skill-core/scripts" / module).read_bytes()
-                )
+            # The guard imports ejryan89-skill-core's modules, and they theirs, from the sibling skill the deployer
+            # installs beside it.
+            copy_with_imports(profile / ".claude/skills/ejryan89-skill-core/scripts", *imports_of(guard))
             # A session's working directory is untrusted: its modules must never shadow the standard library or the
             # core.
             cwd = root / "session"

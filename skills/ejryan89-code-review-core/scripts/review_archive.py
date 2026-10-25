@@ -52,6 +52,11 @@ def record_files(root: Path, repository: str) -> list[Path]:
     return sorted(pulls.glob("*/review*.json")) if pulls.exists() else []
 
 
+INT_PARSE_ALLOWED = {
+    "_version_from_name": "the digits lie in a file name, which a file system holds far below the digit limit",
+}
+
+
 def _version_from_name(path: Path) -> int | None:
     if path.name == "review.json":
         return 1
