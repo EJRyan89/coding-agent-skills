@@ -118,7 +118,7 @@ The CLI checks `args.root / ".git"` exists (not equivalent to `git rev-parse --s
 
 ## Read-only contract
 
-The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. All file access uses `read_text()`, `exists()`, `is_file()`, `is_dir()`, `resolve()`, `iterdir()`, `glob()`, `rglob()`, `os.walk()`, `json.loads()`, and `tomllib.load()` on a file opened in read-binary mode.
+The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. All file access uses `read_text()`, `exists()`, `is_file()`, `is_dir()`, `resolve()`, `iterdir()`, `glob()`, `rglob()`, `os.walk()`, ejryan89-skill-core's `json_reader.loads()`, and `tomllib.load()` on a file opened in read-binary mode.
 
 ## Behavioral checks are heuristics
 

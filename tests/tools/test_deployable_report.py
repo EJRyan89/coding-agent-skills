@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 
 from deployer import discovery, manifest, platform_support
+from deployer.errors import DeployError
 from deployer.paths import Paths
 from tools import deployable_report as report
 
@@ -606,6 +607,19 @@ class DeployableReportTests(unittest.TestCase):
             code, output = self.results_command("layout")
         self.assertEqual(2, code, output)
         self.assertIn(f"ERROR: Cannot write the results file: {self.results_file}: denied", output)
+
+    def test_a_result_no_json_file_can_hold_is_the_write_refusal_and_leaves_the_file_untouched(self) -> None:
+        # A runtime's detail is its output, which may hold a lone surrogate no UTF-8 file can hold.
+        self.results_file.write_bytes(b"[]\n")
+        with self.assertRaises(DeployError) as raised:
+            report._write_results(self.results_file, [{"label": "first deploy", "detail": "\ud800"}])
+        self.assertEqual(report.INPUT_ERROR, raised.exception.exit_code)
+        self.assertEqual(
+            f"ERROR: Cannot write the results file: {self.results_file}: "
+            "the value holds a lone surrogate U+D800, which UTF-8 cannot encode",
+            str(raised.exception),
+        )
+        self.assertEqual(b"[]\n", self.results_file.read_bytes())
 
     def test_the_results_file_is_two_space_indented_text_readable_by_all(self) -> None:
         # The workflow uploads the results file for a person to read and compare across runs, so its bytes are fixed.

@@ -11,7 +11,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from check_provenance import PROVENANCE_FILE, ProvenanceError, Source, lines, load
+from check_provenance import CONTENT_ERRORS, PROVENANCE_FILE, ProvenanceError, Source, lines, load
 
 PAGE = {"page": "https://example.com/docs/skills", "passage": "Keep the body short."}
 DECISION = {"decision": "This source grants each script by name (docs/design.md, Decisions)."}
@@ -113,3 +113,14 @@ class LinesTests(unittest.TestCase):
 
 def test_the_file_sits_in_the_skill_references() -> None:
     assert PROVENANCE_FILE.as_posix() == "references/provenance.json"
+
+
+class ContentErrorsTests(unittest.TestCase):
+    def test_the_family_is_the_provenance_error_and_covers_an_unreadable_and_a_malformed_file(self) -> None:
+        self.assertEqual((ProvenanceError,), CONTENT_ERRORS)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "provenance.json"
+            for text in ("{", '{"checks": []}'):
+                path.write_text(text, encoding="utf-8")
+                with self.subTest(text=text), self.assertRaises(CONTENT_ERRORS):
+                    load(path, ["a"])
