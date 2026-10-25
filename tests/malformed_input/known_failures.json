@@ -1,1 +1,72 @@
-[]
+[
+  {
+    "reader": "change_skill.metadata",
+    "case": "wrong_type:skill_deps",
+    "issue": 1880
+  },
+  {
+    "reader": "change_skill.metadata",
+    "case": "wrong_type:skill_deps.0",
+    "issue": 1880
+  },
+  {
+    "reader": "csharp_layout.section_glob",
+    "case": "deep_nesting",
+    "issue": 1886
+  },
+  {
+    "reader": "deployer.discovery.parse_codex",
+    "case": "wrong_type:result.data.0",
+    "issue": 1892
+  },
+  {
+    "reader": "deployer.discovery.parse_codex_refusals",
+    "case": "wrong_type:result.data.0",
+    "issue": 1892
+  },
+  {
+    "reader": "deployer.discovery.parse_codex_refusals",
+    "case": "wrong_type:result.data.0.errors.0.message",
+    "issue": 1892
+  },
+  {
+    "reader": "memory_audit.read_settings",
+    "case": "wrong_type:permissions",
+    "issue": 1880
+  },
+  {
+    "reader": "msbuild_conditions.condition_value",
+    "case": "deep_nesting",
+    "issue": 1886
+  },
+  {
+    "reader": "msbuild_conditions.expanded",
+    "case": "deep_nesting",
+    "issue": 1880
+  },
+  {
+    "reader": "msbuild_reader.read_assets",
+    "case": "wrong_type:project",
+    "issue": 1880
+  },
+  {
+    "reader": "msbuild_reader.read_assets",
+    "case": "wrong_type:project.frameworks",
+    "issue": 1880
+  },
+  {
+    "reader": "msbuild_reader.read_assets",
+    "case": "wrong_type:project.frameworks.net8.0",
+    "issue": 1880
+  },
+  {
+    "reader": "msbuild_reader.read_assets",
+    "case": "wrong_type:targets.net8.0",
+    "issue": 1880
+  },
+  {
+    "reader": "untested_functions.python_definitions",
+    "case": "deep_nesting",
+    "issue": 1880
+  }
+]

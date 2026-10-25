@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from reader_table import REPOSITORY, Reader, Refused
+from reader_table import REPOSITORY, Reader, Refused, text_of
 
 sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"))
 
@@ -29,6 +29,7 @@ sys.path.insert(0, str(sibling_scripts("audit-skill")))
 sys.path.insert(0, str(sibling_scripts("curate-agent-memory")))
 sys.path.insert(0, str(sibling_scripts("dotnet-dependencies")))
 sys.path.insert(0, str(sibling_scripts("dotnet-format")))
+sys.path.insert(0, str(sibling_scripts("flag-review-finding")))
 sys.path.insert(0, str(sibling_scripts("repo-cleanup")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
@@ -40,8 +41,10 @@ import cleanup_policy
 import csharp_layout
 import dashboard_pipeline
 import dotnet_format_targets
+import flag_review_finding
 import github_activity_report
 import memory_audit
+import msbuild_conditions
 import msbuild_reader
 import repo_cleanup
 import review_document
@@ -50,6 +53,7 @@ import review_synthesis
 import skill_inventory
 import update_pr_dashboard
 from pr_change import CHANGED, UNCHANGED
+from review_flags import FlagError
 from review_io import PersistenceError
 
 UTF8_SIG = "the file is decoded as UTF-8 with an optional byte-order mark"
@@ -214,6 +218,47 @@ DASHBOARD_ITEM = {
     "user_review_sha": None,
 }
 
+# A file system that answers every question, so a condition or a property function is settled by its text alone.
+FILES = msbuild_conditions.FileSystem("/repo", lambda path: True, lambda name, start: "/repo")
+GLOB = "every section name is a glob, matched as written"
+NOT_A_LABEL = "text that is not a report label is a finding ID, which validate_target checks against the archive"
+PYTHON_TEXT = "the case is still a valid Python module, whose facts are measured"
+NO_STATED_CODE = "a line that states no exit code states none a script must exit with"
+
+
+def _section_glob(path: Path) -> object:
+    return csharp_layout.section_glob(text_of(path))
+
+
+def _condition(path: Path) -> object:
+    value = msbuild_conditions.condition_value(text_of(path), lambda name: ("Debug",), FILES)
+    if value is None:
+        raise Refused("the condition is malformed or cannot be settled, which the evaluation reports as UNREADABLE")
+    return value
+
+
+def _expanded(path: Path) -> object:
+    value = msbuild_conditions.expanded(text_of(path), lambda name: ("Debug",), FILES)
+    if value == msbuild_conditions.UNKNOWN:
+        raise Refused("the text cannot be expanded, which the evaluation reports as UNREADABLE")
+    return value
+
+
+def _named_finding(path: Path) -> object:
+    return flag_review_finding.named_finding(None, text_of(path))
+
+
+def _stated_codes(path: Path) -> object:
+    mismatches = skill_inventory.stated_codes(path, text_of(path).splitlines(), {1})
+    if mismatches:
+        raise Refused(" ".join(mismatches))
+    return mismatches
+
+
+def _script_facts(path: Path) -> object:
+    return skill_inventory.script_facts(path)
+
+
 HISTORY = (
     ",".join(github_activity_report.HISTORY_COLUMNS) + "\n2026-03,mona,0,0,0,0,0,false,2026-05-20T08:00:00Z,\n"
 ).encode()
@@ -266,6 +311,70 @@ READERS = [
         _policy,
         (cleanup_policy.PolicyError,),
         filename="cleanup-policy.json",
+    ),
+    Reader(
+        "csharp_layout.section_glob",
+        "text",
+        b"*.{cs,csx}",
+        _section_glob,
+        (csharp_layout.Failed,),
+        accepts=dict.fromkeys(("empty", "bom", "nul_bytes", "truncated", "long_line"), GLOB),
+        nesting=lambda levels: b"{a," * levels + b"b" + b"}" * levels,
+        number=lambda digits: b"*.{1.." + digits + b"}",
+    ),
+    Reader(
+        "flag_review_finding.named_finding",
+        "text",
+        b"v1 F001",
+        _named_finding,
+        (FlagError,),
+        accepts=dict.fromkeys(("empty", "bom", "nul_bytes", "truncated", "long_line"), NOT_A_LABEL),
+        number=lambda digits: b"v" + digits + b" F001",
+    ),
+    Reader(
+        "msbuild_conditions.condition_value",
+        "text",
+        b"'$(Configuration)' == 'Debug'",
+        _condition,
+        (Refused,),
+        nesting=lambda levels: b"!(" * levels + b"'a' == 'a'" + b")" * levels,
+    ),
+    Reader(
+        "msbuild_conditions.expanded",
+        "text",
+        b"$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '/repo'))",
+        _expanded,
+        (Refused,),
+        accepts=dict.fromkeys(
+            ("empty", "bom", "nul_bytes", "truncated", "long_line"), "text that names no property expands to itself"
+        ),
+        nesting=lambda levels: b"$([MSBuild]::GetPathOfFileAbove('a', " * levels + b"'/repo'" + b"))" * levels,
+    ),
+    Reader(
+        "skill_inventory.script_facts",
+        "text",
+        b"import sys\n\nsys.exit(1)\n",
+        _script_facts,
+        (skill_inventory.InputError,),
+        filename="scripts/example.py",
+        accepts={
+            "empty": "an empty script prints nothing and exits 0",
+            "bom": UTF8_SIG,
+            "truncated": PYTHON_TEXT,
+            "long_line": PYTHON_TEXT,
+        },
+        # A unary chain long enough to overflow the parser's own stack, which nests far deeper than a Python walk.
+        nesting=lambda levels: b"x = " + b"-" * (levels * 50) + b"1\n",
+    ),
+    Reader(
+        "skill_inventory.stated_codes",
+        "text",
+        b"It exits with code 1.\n",
+        _stated_codes,
+        (Refused,),
+        filename="SKILL.md",
+        accepts=dict.fromkeys(("empty", "bom", "nul_bytes", "truncated", "long_line"), NO_STATED_CODE),
+        number=lambda digits: b"It exits with code " + digits + b".\n",
     ),
     Reader(
         "csharp_layout.read_source",
@@ -337,7 +446,10 @@ READERS = [
         msbuild_reader.read_assets,
         (msbuild_reader.Unreadable,),
         filename="project.assets.json",
-        accepts={"bom": UTF8_SIG},
+        accepts={
+            "bom": UTF8_SIG,
+            "wrong_type:version": "the reader reads the targets and the project section, never the version",
+        },
     ),
     Reader(
         "msbuild_reader.read_packages_config",
@@ -373,6 +485,8 @@ READERS = [
         _document_json,
         (Refused,),
         filename="pull.json",
+        open_fields="it returns the object whole, and its caller compares each field with the record's, so a field of "
+        "another type fails as the review of another fixture",
     ),
     Reader(
         "review_insights.load_report",
@@ -385,10 +499,37 @@ READERS = [
                 "start_date": "2026-01-01",
                 "end_date": "2026-01-31",
                 "record_count": 0,
-                "finding_count": 0,
+                "finding_count": 1,
                 "severity_counts": {},
                 "category_counts": {},
-                "recommendations": [],
+                # An analyzer recommendation, whose evidence entries the report renders field by field.
+                "recommendations": [
+                    {
+                        "id": "REC-001",
+                        "kind": "analyzer",
+                        "coverage": "available",
+                        "tool": "ruff",
+                        "rule": "E501",
+                        "repositories": ["owner/repo"],
+                        "evidence": [
+                            {
+                                "repository": "owner/repo",
+                                "pull_number": 1,
+                                "review_version": 1,
+                                "finding_id": "F001",
+                                "path": "a.py",
+                                "line": 1,
+                                "title": "Long line",
+                            }
+                        ],
+                        "finding_count": 1,
+                        "recommendation": "Enable the rule.",
+                        "decision": "deferred",
+                        "decision_history": [],
+                        "linked_flags": [],
+                        "reviewers": [],
+                    }
+                ],
                 "records": [],
             }
         ).encode(),

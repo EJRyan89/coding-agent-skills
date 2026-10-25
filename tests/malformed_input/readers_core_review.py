@@ -34,6 +34,7 @@ import review_analyzers
 import review_canary
 import review_config
 import review_flags
+import review_operation
 import review_records
 import review_run
 import review_runtime
@@ -68,6 +69,10 @@ def _menu(path: Path) -> object:
 def _plugin_name(path: Path) -> object:
     with mock.patch.object(skill_roots, "SKILLS_ROOT", path.parents[1] / "skills"):
         return skill_roots.plugin_name()
+
+
+def _pull_selector(path: Path) -> object:
+    return review_operation.parse_pull_selector(text_of(path))
 
 
 def _gh_output(path: Path) -> object:
@@ -266,6 +271,11 @@ def _materialized(path: Path) -> object:
 UTF8_SIG = "the file is decoded as UTF-8 with an optional byte-order mark"
 ANY_JSON = "it returns any JSON value, and each caller checks the shape it expects"
 NO_ANALYZER = "a file that configures no analyzer names none, so the inventory lists nothing for it"
+OWNER_FIELDS = (
+    "it returns the owner record whole, and _stale reads its pid as a positive integer, holding a lock whose pid is "
+    "not one as still held, and its start time as unknown when it is not an integer"
+)
+MATERIALIZATION_UNREAD = "the loader reads the manifest, the adapter, and the hashes by kind, and never this field"
 
 READERS = [
     Reader(
@@ -310,6 +320,7 @@ READERS = [
             "top_level_string": f"json_body is the JSON gh printed, whatever its shape: {ANY_JSON}",
             "top_level_null": f"json_body is the JSON gh printed, whatever its shape: {ANY_JSON}",
         },
+        open_fields=ANY_JSON,
     ),
     Reader(
         "guidance_record.read",
@@ -341,6 +352,9 @@ READERS = [
             "top_level_list": NO_ANALYZER,
             "top_level_string": NO_ANALYZER,
             "top_level_null": NO_ANALYZER,
+            "wrong_type:devDependencies": "npm installs nothing from devDependencies that is not an object, so it "
+            "declares no analyzer",
+            "wrong_type:devDependencies.eslint": "a dependency is declared whatever its version specifier holds",
         },
     ),
     Reader(
@@ -384,7 +398,10 @@ READERS = [
         _owner,
         (Refused,),
         filename="lock/owner.json",
-        accepts={"bom": UTF8_SIG},
+        accepts={
+            "bom": UTF8_SIG,
+            **{f"wrong_type:{field}": OWNER_FIELDS for field in ("pid", "created_unix", "start_time")},
+        },
     ),
     Reader(
         "review_io.read_json",
@@ -398,6 +415,16 @@ READERS = [
             "top_level_string": ANY_JSON,
             "top_level_null": ANY_JSON,
         },
+        open_fields=ANY_JSON,
+    ),
+    Reader(
+        "review_operation.parse_pull_selector",
+        "text",
+        b"owner/repo#12",
+        _pull_selector,
+        # A repository part that is not one, such as one behind a byte-order mark, is refused as a configuration error.
+        (review_operation.ReviewOperationError, review_config.ConfigurationError),
+        number=lambda digits: b"owner/repo#" + digits,
     ),
     Reader(
         "review_records.validate_record_pair",
@@ -435,7 +462,11 @@ READERS = [
         _materialized,
         (review_specialists.SpecialistError,),
         filename="materialization.json",
-        accepts={"bom": UTF8_SIG},
+        accepts={
+            "bom": UTF8_SIG,
+            "wrong_type:schema_version": MATERIALIZATION_UNREAD,
+            "wrong_type:entrypoint": MATERIALIZATION_UNREAD,
+        },
         prepare=_profile,
     ),
     Reader(
@@ -461,5 +492,6 @@ READERS = [
         _plugin_name,
         (ValueError,),
         filename=str(skill_roots.PLUGIN_MANIFEST.as_posix()),
+        accepts={"wrong_type:version": "it reads the manifest's name alone"},
     ),
 ]

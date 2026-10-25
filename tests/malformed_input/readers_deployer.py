@@ -70,6 +70,27 @@ def _copilot_listing(path: Path) -> object:
     return discovery.parse_copilot(text_of(path))
 
 
+def _codex_listing(path: Path) -> object:
+    return discovery.parse_codex(text_of(path).splitlines())
+
+
+def _codex_refusals(path: Path) -> object:
+    return discovery.parse_codex_refusals(text_of(path).splitlines())
+
+
+# The app server writes one JSON-RPC message a line, and the readers take the last answer to their request.
+CODEX_LINES = {
+    "bom": "a line that is not a message, such as the initialize answer behind a byte-order mark, is passed over",
+    "torn_line": "a line cut off part way is not a message, and the answer is read from the complete line before it",
+    "blank_lines": "a blank line holds no message and is passed over",
+}
+
+
+# The Codex app server's answer to skills/list as a run captured it: its initialize answer, a notification, and the
+# answer whose groups and skills the reader reads, the last line.
+CODEX_LISTING = (REPOSITORY / "tests/fixtures/captured-output/codex/app-server-skills-list.jsonl").read_bytes()
+
+
 READERS = [
     Reader(
         "deployer.config.read",
@@ -84,7 +105,59 @@ READERS = [
         b'[{"name": "example", "source": "personal-agents", "path": "skills/example", "enabled": true}]',
         _copilot_listing,
         (discovery.ListingError,),
-        accepts={"top_level_list": "an empty array is Copilot's listing of no skills, which verify reports as missing"},
+        accepts={
+            "top_level_list": "an empty array is Copilot's listing of no skills, which verify reports as missing",
+            "wrong_type:0.source": "it reads each skill's name, path, and enabled flag, and never this field",
+        },
+    ),
+    Reader(
+        "deployer.discovery.parse_codex",
+        "json-lines",
+        CODEX_LISTING,
+        _codex_listing,
+        (discovery.ListingError,),
+        accepts={
+            **CODEX_LINES,
+            **{
+                f"wrong_type:result.data.0.{field}": "it reads each group's skills alone, and each skill's name, path, "
+                "and enabled flag"
+                for field in (
+                    "cwd",
+                    "skills.0.description",
+                    "skills.0.scope",
+                    "skills.0.pluginId",
+                    "errors",
+                    "errors.0",
+                    "errors.0.path",
+                    "errors.0.message",
+                )
+            },
+        },
+    ),
+    Reader(
+        "deployer.discovery.parse_codex_refusals",
+        "json-lines",
+        CODEX_LISTING,
+        _codex_refusals,
+        (discovery.ListingError,),
+        accepts={
+            **CODEX_LINES,
+            **{
+                f"wrong_type:result.data.0.{field}": "it reads each group's errors alone, and each error's path and "
+                "message"
+                for field in (
+                    "cwd",
+                    "skills",
+                    "skills.0",
+                    "skills.0.name",
+                    "skills.0.description",
+                    "skills.0.path",
+                    "skills.0.scope",
+                    "skills.0.enabled",
+                    "skills.0.pluginId",
+                )
+            },
+        },
     ),
     Reader(
         "deployer.journal.pending_runs",
@@ -106,6 +179,10 @@ READERS = [
         _read_lock,
         (DeployError,),
         filename="home/.claude/deployer/.deploy.lock.d/info.json",
+        accepts={
+            "wrong_type:start_time": "the holder is not running, so its start time is never read",
+            "wrong_type:token": "the token is compared whole with the one the reclaim reads back, never read as text",
+        },
     ),
     Reader(
         "deployer.manifest.load",
