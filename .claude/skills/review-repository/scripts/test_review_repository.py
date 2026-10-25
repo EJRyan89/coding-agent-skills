@@ -38,21 +38,6 @@ UNTESTED = f"{SKILL}/scripts/untested_functions.py"
 SKILL_CORE = "skills/ejryan89-skill-core/scripts"
 SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
-# The ending an evaluation scenario holds a Python file under, which the evaluation's copy of the fixture drops.
-HELD = ".fixture"
-# Each evaluation scenario and the specialists its change starts: none but the generic reviewer for a clean change.
-SCENARIO_ROUTES = {
-    "branch-name-command": {"skill-scripts", "trust-boundary"},
-    "build-grant": {"documentation-drift", "skill-contract", "skill-scripts", "upgrade-notes"},
-    "drifted-guide": {"documentation-drift"},
-    "misstated-exit-status": {"documentation"},
-    "tested-change": set(),
-    "text-read-policy": {"validation-policy"},
-    "undocumented-change": set(),
-    "unnoted-flag-rename": {"deployer", "upgrade-notes"},
-    "untested-change": {"untested-changes"},
-    "write-before-refusal": {"deployer"},
-}
 PIPELINE_SCRIPTS = "skills/ejryan89-code-review-core/scripts"
 # The scripts the trust-boundary route holds, written out here rather than read from the manifest or the brief,
 # which describes them by kind, so a script the route gains or loses is a choice this list records too.
@@ -573,9 +558,6 @@ class DocumentationDriftScenarioTests(unittest.TestCase):
             tree_diff(directory / "base", directory / "head"),
         )
 
-    def test_the_scenarios(self) -> None:
-        self.assertEqual(sorted(SCENARIO_ROUTES), sorted(p.name for p in SCENARIOS.iterdir()))
-
     def test_each_route_s_scenarios_leave_the_other_condition_closed(self) -> None:
         # So each scenario's expectations are its own route's: the drift scenarios change no function, and the
         # untested scenarios' guide names no script.
@@ -682,74 +664,6 @@ class DocumentationDriftScenarioTests(unittest.TestCase):
             [{"kind": "no_finding_above", "severity": "SUGGESTION"}, {"kind": "verdict", "verdict": "APPROVED"}],
             spec["expectations"],
         )
-
-
-def restored(name: str, into: Path) -> Path:
-    """A copy of the scenario in `into`, each file held under HELD renamed without it, as an evaluation run's copy."""
-    copy = into / name
-    shutil.copytree(SCENARIOS / name, copy)
-    for held in sorted(copy.rglob(f"*{HELD}")):
-        held.rename(held.with_name(held.name.removesuffix(HELD)))
-    return copy
-
-
-def changed_paths(diff: str) -> list[str]:
-    return re.findall(r"^diff --git a/(\S+) b/", diff, re.MULTILINE)
-
-
-class RouteScenarioTests(unittest.TestCase):
-    """Every specialist is started by an evaluation scenario, so a change to its brief cites a run that reviews with
-    it. Each scenario is routed as a review routes it: its changed files through the manifest, and each condition run
-    on its head, restored as the evaluation's copy restores it."""
-
-    copies: Path
-    # Each scenario's changed files, and the specialists they start.
-    paths: dict[str, list[str]]
-    reached: dict[str, list[str]]
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
-        temporary = tempfile.TemporaryDirectory()
-        cls.addClassCleanup(temporary.cleanup)
-        cls.copies, cls.reached, cls.paths = Path(temporary.name), {}, {}
-        for name in sorted(SCENARIO_ROUTES):
-            copy = restored(name, cls.copies)
-            diff = tree_diff(copy / "base", copy / "head")
-            opened: dict[str, bool] = {}
-            for condition, entry in MANIFEST["conditions"].items():
-                code, _, _ = run_condition(REPOSITORY / entry["script"], copy / "head", diff, cls.copies)
-                opened[condition] = code == 0
-            cls.paths[name] = changed_paths(diff)
-            cls.reached[name] = sorted(route(MANIFEST, cls.paths[name], opened.__getitem__))
-
-    def test_each_scenario_starts_the_routes_its_change_reaches(self) -> None:
-        self.assertEqual({name: sorted(routes) for name, routes in SCENARIO_ROUTES.items()}, self.reached)
-
-    def test_every_specialist_is_started_by_a_scenario(self) -> None:
-        started = {specialist for routes in self.reached.values() for specialist in routes}
-        self.assertEqual([], [item["id"] for item in MANIFEST["specialists"] if item["id"] not in started])
-
-    def test_each_expected_finding_sits_on_a_line_of_a_file_the_change_reaches(self) -> None:
-        for name in SCENARIO_ROUTES:
-            spec = json.loads((SCENARIOS / name / "scenario.json").read_text(encoding="utf-8"))
-            head = self.copies / name / "head"
-            for item in spec["expectations"]:
-                if item["kind"] != "finding":
-                    continue
-                with self.subTest(scenario=name, path=item["path"]):
-                    self.assertIn(item["path"], self.paths[name])
-                    length = len((head / item["path"]).read_text(encoding="utf-8").splitlines())
-                    self.assertEqual([], [line for line in item["lines"] if not 1 <= line <= length])
-
-    def test_only_python_is_held_and_every_python_file_is(self) -> None:
-        # Validation lints and type-checks the Python under tests/, each module by its bare name, so a fixture's
-        # Python would shadow this repository's module of the same name; held, it is restored only in a copy.
-        files = [path for path in SCENARIOS.rglob("*") if path.is_file()]
-        self.assertEqual([], [path for path in files if path.suffix == ".py"])
-        held = [path for path in files if path.name.endswith(HELD)]
-        self.assertIn(SCENARIOS / "write-before-refusal" / "head" / "deployer" / f"install.py{HELD}", held)
-        self.assertEqual([], [path for path in held if not path.name.endswith(f".py{HELD}")])
 
 
 def untested_route() -> dict[str, Any]:

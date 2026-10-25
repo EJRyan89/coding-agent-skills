@@ -9,7 +9,9 @@
   ],
   "near_misses": [
     "Which pull requests need my attention?",
-    "Review octocat's open pull request octo-org/widgets#7.",
+    "Review octocat's open pull request octo-org/widgets#7."
+  ],
+  "unserved": [
     "Show the commits in this repository from the last week."
   ]
 }

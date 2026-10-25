@@ -7,7 +7,9 @@
     "Prune the project memories that no longer apply."
   ],
   "near_misses": [
-    "Check whether this repository's agent instructions are set up well for Codex too.",
+    "Check whether this repository's agent instructions are set up well for Codex too."
+  ],
+  "unserved": [
     "Remember that I prefer tabs over spaces in this project.",
     "Explain what the regular expression ^[a-z]+$ matches."
   ]

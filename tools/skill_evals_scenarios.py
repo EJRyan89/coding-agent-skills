@@ -21,6 +21,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 
+import json_reader
 from git_client import GitClient
 from review_document import specialists_manifest
 from review_records import LEDGER_ID
@@ -49,8 +50,7 @@ DISPOSITIONS = tuple(sorted(RECORD_DISPOSITIONS))
 TRIGGER = "trigger"
 MODES = ("initial", "re-review", TRIGGER)
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
-# A trigger scenario's fields, and where its shipped skills are.
-TRIGGER_FIELDS = frozenset({"skill", "mode", "requests", "near_misses"})
+# Where a trigger scenario's shipped skills are.
 SHIPPED_SKILLS = "skills"
 # The folder in a run's own folder where a document scenario's document is written for the skill to review.
 DOCUMENT_FOLDER = "document"
@@ -97,7 +97,8 @@ class Scenario:
     stage: str | None = None
     # A repository reviewer's fixture's held files, each by its path in the fixture, which the copy restores.
     held: tuple[str, ...] = ()
-    # A trigger scenario's requests that should start its skill, and its near misses, which should not.
+    # A trigger scenario's requests that should start its skill, and its near misses, which should not: its
+    # neighbours' requests, then its requests no skill serves.
     requests: tuple[str, ...] = ()
     near_misses: tuple[str, ...] = ()
 
@@ -322,7 +323,7 @@ def expectation(spec: object, mode: str) -> Expectation:
     if not isinstance(spec, dict):
         raise ScenarioError("each expectation must be an object")
     kind = spec.get("kind")
-    if kind not in KINDS:
+    if not isinstance(kind, str) or kind not in KINDS:
         raise ScenarioError(f"unknown expectation kind {quote(str(kind))}")
     if kind in RE_REVIEW_KINDS and mode != "re-review":
         raise ScenarioError(f"a {kind} expectation needs a re-review")
@@ -382,7 +383,7 @@ def _reviewer_folder(checkout: Path, folder: PurePosixPath) -> list[str]:
 def _manifest_path(directory: Path) -> str | None:
     """The reviewer manifest a fixture's pull.json names, or None for the generic reviewer."""
     try:
-        manifest_path = json.loads((directory / "pull.json").read_text(encoding="utf-8")).get("manifest_path")
+        manifest_path = json_reader.read_file(directory / "pull.json").get("manifest_path")
     except (OSError, ValueError, AttributeError) as exc:
         raise ScenarioError(f"cannot read pull.json's manifest_path: {exc}") from exc
     return None if manifest_path is None else _path(manifest_path)
@@ -390,7 +391,7 @@ def _manifest_path(directory: Path) -> str | None:
 
 def _manifest(tree: Path, manifest_path: str, what: str) -> dict[str, Any]:
     try:
-        return validate_adapter_manifest(json.loads((tree / manifest_path).read_text(encoding="utf-8")))
+        return validate_adapter_manifest(json_reader.read_file(tree / manifest_path))
     except (OSError, ValueError, RuntimeContractError) as exc:
         raise ScenarioError(f"{what} {manifest_path} cannot be read: {exc}") from exc
 
@@ -535,9 +536,10 @@ def trigger_expectation(skill: str, request: str, starts: bool) -> Expectation:
 
 def load_trigger(skill: str, directory: Path, spec: Mapping[str, object], checkout: Path) -> Scenario:
     """A trigger scenario: requests that should start a shipped, model-invocable skill and near misses that should
-    not, one expectation each."""
-    if set(spec) != TRIGGER_FIELDS:
-        raise ScenarioError(f"a trigger scenario.json must have exactly {', '.join(sorted(TRIGGER_FIELDS))}")
+    not, its neighbours' requests and then requests no skill serves, one expectation each."""
+    fields = ("mode", "near_misses", "requests", "skill", "unserved")
+    if sorted(spec) != list(fields):
+        raise ScenarioError(f"a trigger scenario.json must have exactly {', '.join(fields)}")
     if spec["skill"] != skill:
         raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
     skill_file = checkout / SHIPPED_SKILLS / skill / "SKILL.md"
@@ -547,10 +549,13 @@ def load_trigger(skill: str, directory: Path, spec: Mapping[str, object], checko
         )
     if runtime_canary.starts_only_by_user(skill_file):
         raise ScenarioError(f"{skill} sets disable-model-invocation, so no request can start it")
-    requests, near_misses = _requests(spec["requests"], "requests"), _requests(spec["near_misses"], "near_misses")
+    requests, neighbours = _requests(spec["requests"], "requests"), _requests(spec["near_misses"], "near_misses")
+    near_misses = (*neighbours, *_requests(spec["unserved"], "unserved"))
     both = [item for item in requests if item in near_misses]
     if both:
         raise ScenarioError(f"{quote(both[0])} is both a request and a near miss")
+    if len(set(near_misses)) != len(near_misses):
+        raise ScenarioError("near_misses and unserved name a request twice")
     expectations = [trigger_expectation(skill, item, True) for item in requests]
     expectations += [trigger_expectation(skill, item, False) for item in near_misses]
     return Scenario(
@@ -567,7 +572,7 @@ def load_trigger(skill: str, directory: Path, spec: Mapping[str, object], checko
 
 def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT) -> Scenario:
     try:
-        spec = json.loads((directory / "scenario.json").read_text(encoding="utf-8"))
+        spec = json_reader.read_file(directory / "scenario.json")
     except (OSError, ValueError) as exc:
         raise ScenarioError(f"{directory.name}: cannot read scenario.json: {exc}") from exc
     try:

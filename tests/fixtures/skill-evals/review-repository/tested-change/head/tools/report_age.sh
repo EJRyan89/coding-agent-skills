@@ -15,6 +15,7 @@ days_old() {
 
 main() {
   local folder="${1:?usage: report_age.sh <folder>}" path age
+  shopt -s nullglob
   for path in "$folder"/*.csv; do
     age=$(days_old "$path")
     echo "$age $path"

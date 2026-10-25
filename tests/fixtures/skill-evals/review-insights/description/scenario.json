@@ -8,7 +8,9 @@
   ],
   "near_misses": [
     "That review finding about logging was noise; record it.",
-    "Review pull request octo-org/widgets#42.",
+    "Review pull request octo-org/widgets#42."
+  ],
+  "unserved": [
     "Count the TODO comments in this repository."
   ]
 }

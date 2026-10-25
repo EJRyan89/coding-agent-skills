@@ -8,7 +8,6 @@
   {"reader": "skill_menu.read_menu", "case": "deep_nesting", "issue": 1664},
   {"reader": "skill_roots.plugin_name", "case": "deep_nesting", "issue": 1664},
   {"reader": "tools.runtime_changelogs.read_record", "case": "deep_nesting", "issue": 1664},
-  {"reader": "tools.skill_evals_scenarios.load_scenario", "case": "deep_nesting", "issue": 1747},
   {"reader": "update_pr_dashboard.update_dashboard_rows", "case": "deep_nesting", "issue": 1664},
   {"reader": "update_pr_dashboard.update_dashboard_rows", "case": "long_integer", "issue": 1664}
 ]

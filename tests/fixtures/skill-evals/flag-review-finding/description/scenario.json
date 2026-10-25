@@ -8,7 +8,9 @@
   ],
   "near_misses": [
     "What have our code reviews kept flagging over the last three months?",
-    "Review pull request octo-org/widgets#42.",
+    "Review pull request octo-org/widgets#42."
+  ],
+  "unserved": [
     "Fix the null check the reviewer pointed out in parser.py."
   ]
 }

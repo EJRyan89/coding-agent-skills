@@ -12,5 +12,8 @@
     "Audit this repository's agent instructions.",
     "Check the AI agent setup of this repository.",
     "Review pull request 12 in this repository."
+  ],
+  "unserved": [
+    "Fix the typo in the dotnet-format skill's description."
   ]
 }

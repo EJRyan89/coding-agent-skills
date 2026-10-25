@@ -96,6 +96,16 @@ class SequenceTests(unittest.TestCase):
             with self.subTest(block=block):
                 self.assertEqual(expected, parse(block).value("key"))
 
+    def test_only_a_true_disable_model_invocation_makes_a_skill_user_only(self) -> None:
+        cases = {"true": True, "True": True, '"TRUE"': True, "false": False, "yes": False, "": False}
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                document = frontmatter.parse(f"---\nname: a\ndisable-model-invocation: {value}\n---\n")
+                self.assertIs(expected, document.user_only())
+        self.assertFalse(frontmatter.parse("---\nname: a\n---\n").user_only())
+        with self.assertRaisesRegex(FrontmatterError, "must be a single value"):
+            frontmatter.parse("---\ndisable-model-invocation: [true]\n---\n").user_only()
+
     def test_string_refuses_a_sequence(self) -> None:
         with self.assertRaisesRegex(FrontmatterError, "key must be a single value"):
             parse("key: [a]").string("key")

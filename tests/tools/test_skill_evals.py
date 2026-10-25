@@ -76,18 +76,22 @@ def review_scenarios(*arguments: Any, **options: Any) -> list[Scenario]:
     return [scenario for scenario in loaded if scenario.mode != skill_evals_scenarios.TRIGGER] or loaded
 
 
-REVIEW_REPOSITORY_SCENARIOS = (
-    "branch-name-command",
-    "build-grant",
-    "drifted-guide",
-    "misstated-exit-status",
-    "tested-change",
-    "text-read-policy",
-    "undocumented-change",
-    "unnoted-flag-rename",
-    "untested-change",
-    "write-before-refusal",
-)
+# The roles each review-repository scenario's review starts on the copy a run reviews, as the sweep below finds them
+# on it, and so the specialists its change reaches: the one record of the routes, which the reviewer's own suite reads
+# nowhere, since only the copy holds the reviewer's files a condition reads.
+REVIEW_REPOSITORY_ROLES = {
+    "branch-name-command": "skill-scripts,trust-boundary",
+    "build-grant": "documentation-drift,generic-review,skill-contract,skill-scripts,upgrade-notes",
+    "drifted-guide": "documentation-drift,generic-review",
+    "misstated-exit-status": "documentation",
+    "tested-change": "generic-review",
+    "text-read-policy": "validation-policy",
+    "undocumented-change": "generic-review",
+    "unnoted-flag-rename": "deployer,upgrade-notes",
+    "untested-change": "generic-review,untested-changes",
+    "write-before-refusal": "deployer",
+}
+REVIEW_REPOSITORY_SCENARIOS = tuple(REVIEW_REPOSITORY_ROLES)
 # The Python files the write-before-refusal scenario holds in both trees, each by its path once restored.
 WRITE_BEFORE_REFUSAL_HELD = ("deployer/fsops.py", "deployer/install.py", "tests/deployer/test_install.py")
 REVIEWER_FOLDER = ".claude/skills/review-repository"
@@ -312,6 +316,42 @@ class LoaderTests(unittest.TestCase):
         selected = ["two", "one", "two", "three", "one"]
         names = [scenario.name for scenario in skill_evals_scenarios.load_scenarios("demo", selected, root=self.root)]
         self.assertEqual(["two", "one", "three"], names)
+
+    def test_an_expectation_kind_that_is_no_name_is_refused_by_the_scenario_s_name(self) -> None:
+        for kind in (["finding"], {"finding": 1}, 3, None):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    f"case: unknown expectation kind {skill_evals_scenarios.quote(str(kind))}",
+                    self.load_error(scenario_spec({"kind": kind})),
+                )
+
+    def test_a_scenario_json_nested_past_the_parser_s_depth_is_refused_by_the_scenario_s_name(self) -> None:
+        directory = write_scenario(self.root, "case", scenario_spec())
+        (directory / "scenario.json").write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertEqual(
+            "case: cannot read scenario.json: the JSON nests deeper than the parser can read", str(raised.exception)
+        )
+
+    def test_a_pull_json_or_manifest_nested_past_the_parser_s_depth_is_refused_by_the_scenario_s_name(self) -> None:
+        deep = '{"a":' * 100_000 + "{}" + "}" * 100_000
+        directory = write_scenario(self.root, "case", scenario_spec())
+        (directory / "pull.json").write_text(deep, encoding="utf-8")
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertEqual(
+            "case: cannot read pull.json's manifest_path: the JSON nests deeper than the parser can read",
+            str(raised.exception),
+        )
+        (directory / "pull.json").write_text(json.dumps({"manifest_path": "manifest.json"}), encoding="utf-8")
+        (directory / "base" / "manifest.json").write_text(deep, encoding="utf-8")
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertEqual(
+            "case: the manifest manifest.json cannot be read: the JSON nests deeper than the parser can read",
+            str(raised.exception),
+        )
 
     def test_a_held_file_in_a_fixture_reviewed_in_place_is_refused(self) -> None:
         # Only a repository reviewer's run copies its fixture, so any other would be reviewed under the held name.
@@ -1184,18 +1224,39 @@ class ReviewPrsScenarioTests(unittest.TestCase):
             )
             for item in prior["ledger"]
         ]
+        severities = {f"v{item['version']}:{item['id']}": item["severity"] for item in prior["ledger"]}
         repeats = [item for item in expectations if item["kind"] == "repeats"]
         found += [
             finding(
                 item["path"],
                 item["lines"][0],
-                "MUST_FIX",
+                severities[item["entry"]],
                 f"F{index:03}",
                 repeats={"version": 1, "id": item["entry"][3:]},
             )
             for index, item in enumerate(repeats, 1)
         ]
         return record(found, verdict, version=2, ledger=ledger)
+
+    def test_every_entry_still_present_is_pinned_as_a_repeat_on_its_prior_line(self) -> None:
+        # A still-present entry the re-review restates without its link would count the problem twice, so each one
+        # the scenario expects still present names the lines its prior finding was raised on, whatever its severity.
+        expectations = self.specs["re-review"]["expectations"]
+        prior = prior_of(self.scenarios["re-review"])
+        raised = {f"v{prior['review']['version']}:{item['id']}": item for item in prior["findings"]}
+        still = [
+            item["entry"]
+            for item in expectations
+            if item["kind"] == "disposition" and item["disposition"] == "still_present"
+        ]
+        repeats = {item["entry"]: item for item in expectations if item["kind"] == "repeats"}
+        self.assertEqual(sorted(still), sorted(repeats))
+        severities = {raised[entry]["severity"] for entry in still}
+        self.assertEqual({"MUST_FIX", "SUGGESTION"}, severities, "a repeat at more than the highest severity")
+        for entry_name in still:
+            with self.subTest(entry=entry_name):
+                self.assertEqual(raised[entry_name]["path"], repeats[entry_name]["path"])
+                self.assertIn(raised[entry_name]["line"], repeats[entry_name]["lines"])
 
     def test_an_ideal_run_passes_every_expectation(self) -> None:
         for name, scenario in self.scenarios.items():
@@ -1780,10 +1841,21 @@ class NoGitHub:
         raise AssertionError(f"a fixture canary called gh: {arguments}")
 
 
-def stub_result(spec: dict[str, Any]) -> dict[str, Any]:
+def prior_severities(prepare: Sequence[str]) -> dict[str, str]:
+    """Each ledger entry of the prior record a re-review's prepare arguments name, with its severity; none otherwise."""
+    if "--prior" not in prepare:
+        return {}
+    prior = json.loads(Path(prepare[list(prepare).index("--prior") + 1]).read_text(encoding="utf-8"))
+    return {f"v{item['version']}:{item['id']}": item["severity"] for item in prior["ledger"]}
+
+
+def stub_result(spec: dict[str, Any], severities: dict[str, str] | None = None) -> dict[str, Any]:
     """A reviewer result that does what the scenario expects: each expected finding at the first of its lines, each
-    expected disposition, and each expected repeat as a finding linked to its entry. A document scenario's design
-    reviewer gives every finding a category, so one its expectation leaves open is `other`, the fallback."""
+    expected disposition, and each expected repeat as a finding linked to its entry, at the entry's severity in
+    `severities`, the prior record's, since a repeat may not be more severe than what it repeats. A document
+    scenario's design reviewer gives every finding a category, so one its expectation leaves open is `other`, the
+    fallback."""
+    severities = severities or {}
     expectations = spec["expectations"]
     fallback = {"category": "other"} if "document" in spec else {}
     found = [
@@ -1802,7 +1874,7 @@ def stub_result(spec: dict[str, Any]) -> dict[str, Any]:
         {
             "path": item["path"],
             "line": item["lines"][0],
-            "severity": "MUST_FIX",
+            "severity": severities[item["entry"]],
             "title": "Still there",
             "body": "x",
             "repeats": item["entry"],
@@ -1873,7 +1945,7 @@ class Pipeline:
         for role in review_run.load_run(run)["roles"]:
             if guarded:
                 review_guard.read_log(run, role["id"]).touch()
-            result = stub_result(spec)
+            result = stub_result(spec, prior_severities(prepare))
             if role["id"] in files:
                 result["findings"] = [item for item in result["findings"] if item["path"] in files[role["id"]]]
             Path(role["result_file"]).write_text(json.dumps(result), encoding="utf-8")
@@ -2370,6 +2442,11 @@ RESULTS_TEXT = "\n".join(
         "",
         "Written by hand after the table.",
         "",
+        skill_evals_results.samples_layout()[0][0],
+        *skill_evals_results.samples_layout()[1],
+        "| alpha | one | opus | 1 | 2026-01-01 | agrees |",
+        skill_evals_results.samples_layout()[0][1],
+        "",
     ]
 )
 
@@ -2540,7 +2617,8 @@ class ResultsTests(unittest.TestCase):
             [*skill_evals_results.RESULTS_HEADER, original[5], rows[0], original[7]], written[begin + 1 : end]
         )
         self.assertEqual(original[:begin], written[:begin])
-        self.assertEqual(["", "Written by hand after the table.", ""], written[end + 1 :])
+        self.assertEqual(original[original.index(skill_evals_results.RESULTS_END) + 1 :], written[end + 1 :])
+        self.assertEqual("Written by hand after the table.", written[end + 2])
 
     def test_another_skills_row_and_its_order_are_kept_as_written(self) -> None:
         lines = RESULTS_TEXT.split("\n")
@@ -2699,6 +2777,15 @@ class EvaluateTests(unittest.TestCase):
         self.cited = self.output[begin + 1 : end]
         return status, self.output[:begin] + self.output[end + 1 :]
 
+    def test_a_passing_run_that_samples_nothing_removes_its_home(self) -> None:
+        # Without --write nothing is sampled, so a run that passed leaves no transcript to read.
+        status, lines = self.evaluate(["--jobs", "1"], self.seams(StubClaude(self)), only=["clean-change"])
+        self.assertEqual(0, status, lines)
+        self.assertEqual([], [line for line in lines if line.startswith("SAMPLE")])
+        self.assertEqual(f"REMOVED {forward(self.homes)}", lines[-1])
+        self.assertFalse(self.homes.exists())
+        self.assertEqual(RESULTS_TEXT, self.results.read_text(encoding="utf-8"))
+
     def test_every_scenario_runs_on_every_model_and_the_result_is_recorded(self) -> None:
         claude = StubClaude(self)
         status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude))
@@ -2724,7 +2811,11 @@ class EvaluateTests(unittest.TestCase):
         )
         self.assertEqual([], [line for line in lines if line.startswith(("FAIL", "NOT_COUNTED"))])
         self.assertIn("PASS review-prs re-review haiku ledger addressed=1 still_present=2", lines)
-        self.assertEqual(f"REMOVED {forward(self.homes)}", lines[-1])
+        # Every run passed and the skill had no sample, so the first is sampled and the home kept for its transcript.
+        self.assertEqual(
+            ["SAMPLE clean-change haiku", f"WROTE {runtime_canary.forward(self.results)}"],
+            self.output[self.output.index("CITATION END") + 1 :],
+        )
         # The citation: the command, the table, and the runtime, reviewer, and guard lines in a text fence.
         reviewers = [line for line in lines if line.startswith("REVIEWER ")]
         self.assertEqual(
@@ -2737,7 +2828,7 @@ class EvaluateTests(unittest.TestCase):
                 "| design-clean | 2/2 | 2/2 | 2/2 |",
                 "| design-gaps | 5/5 | 5/5 | 5/5 |",
                 "| planted-defects | 5/5 | 5/5 | 5/5 |",
-                "| re-review | 7/7 | 7/7 | 7/7 |",
+                "| re-review | 8/8 | 8/8 | 8/8 |",
                 "",
                 "```text",
                 "RUNTIME claude 2.1.291",
@@ -2748,13 +2839,19 @@ class EvaluateTests(unittest.TestCase):
             self.cited,
         )
         self.assertEqual(3, len(reviewers))
-        self.assertTrue(self.output[self.output.index("CITATION END") + 1].startswith("WROTE "))
-        self.assertFalse(self.homes.exists())
+        self.assertTrue(self.homes.exists())
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | claude-haiku-5-5 | 21/21 | 1 | clean-change 2/2, design-clean 2/2, "
-            "design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            "| review-prs | haiku | claude-haiku-5-5 | 22/22 | 1 | clean-change 2/2, design-clean 2/2, "
+            "design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
+        )
+        self.assertEqual(
+            [
+                "| alpha | one | opus | 1 | 2026-01-01 | agrees |",
+                "| review-prs | clean-change | haiku | 1 | 2026-10-08 | unread |",
+            ],
+            skill_evals_results.samples_table(written)[2],
         )
         self.assertNotIn("| review-prs | opus | old |", written)
         for arguments, cwd, environment in claude.calls:
@@ -2921,16 +3018,24 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(lines[first + 15].startswith("FAIL "), lines[first + 15])
         self.assertEqual(told, [line for line in self.cited if line.startswith("NOT_COUNTED ")])
         self.assertTrue(self.output[self.output.index("CITATION BEGIN") - 1].startswith("FAIL "))
-        self.assertTrue(self.output[self.output.index("CITATION END") + 1].startswith("WROTE "))
+        # No run passed, so nothing is sampled and the skill's samples row, which it has none of, is not written.
+        self.assertEqual(
+            ["SAMPLE none", f"WROTE {runtime_canary.forward(self.results)}"],
+            self.output[self.output.index("CITATION END") + 1 :],
+        )
         self.assertTrue(self.homes.is_dir())
-        self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | 0/21 |", self.results.read_text(encoding="utf-8"))
+        written = self.results.read_text(encoding="utf-8")
+        self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | 0/22 |", written)
+        self.assertEqual(
+            ["| alpha | one | opus | 1 | 2026-01-01 | agrees |"], skill_evals_results.samples_table(written)[2]
+        )
 
     def test_a_model_none_of_whose_reviewers_ran_is_recorded_as_not_run(self) -> None:
         status, lines = self.evaluate(["--write"], self.seams(StubClaude(self, review=False, reviewer="<synthetic>")))
         self.assertEqual(1, status)
         self.assertIn("REVIEWER haiku none", lines)
         self.assertIn(
-            "| review-prs | haiku | not run | 0/21 | 1 | the run recorded no review |",
+            "| review-prs | haiku | not run | 0/22 | 1 | the run recorded no review |",
             self.results.read_text(encoding="utf-8"),
         )
 
@@ -2959,7 +3064,7 @@ class EvaluateTests(unittest.TestCase):
         )
         results = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | not run | 0/21 | 1 | the run recorded no review; Claude Code exited with code 1; "
+            "| review-prs | haiku | not run | 0/22 | 1 | the run recorded no review; Claude Code exited with code 1; "
             "denied 1 command |",
             results,
         )
@@ -3136,8 +3241,9 @@ class EvaluateTests(unittest.TestCase):
     def test_a_trigger_scenario_judges_whether_each_request_started_the_skill_and_records_it(self) -> None:
         scenario = skill_evals_scenarios.load_scenarios("audit-skill", ["description"])[0]
         first, second, third, fourth, fifth = scenario.requests
-        near, other, last = scenario.near_misses
-        # The third request starts nothing, and the second near miss starts the skill: two judgments fail.
+        near, other, last, unserved = scenario.near_misses
+        # The third request starts nothing, and the second near miss starts the skill: two judgments fail. The
+        # unserved near miss starts nothing, as it should.
         claude = StubTrigger(
             self,
             {
@@ -3153,7 +3259,7 @@ class EvaluateTests(unittest.TestCase):
         status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "audit-skill")
         self.assertEqual(1, status, lines)
         ended = [line.split(" ")[1:3] for line in lines if line.startswith("TRANSCRIPT ")]
-        self.assertEqual([["description", model] for model in skill_evals_records.MODELS for _ in range(8)], ended)
+        self.assertEqual([["description", model] for model in skill_evals_records.MODELS for _ in range(9)], ended)
         self.assertEqual(
             [f"REVIEWER {model} {model_id}" for model, model_id in skill_evals_records.MODELS.items()],
             [line for line in lines if line.startswith("REVIEWER ")],
@@ -3172,10 +3278,13 @@ class EvaluateTests(unittest.TestCase):
                 f"FAIL audit-skill description haiku does_not_start {json.dumps(other)} judgment "
                 '"the session started audit-skill"',
                 f"PASS audit-skill description haiku does_not_start {json.dumps(last)}",
+                f"PASS audit-skill description haiku does_not_start {json.dumps(unserved)}",
             ],
-            haiku[:8],
+            haiku[:9],
         )
-        self.assertIn("| description | 6/8 | 6/8 | 6/8 |", self.cited)
+        self.assertIn("| description | 7/9 | 7/9 | 7/9 |", self.cited)
+        # Every model's run failed a judgment, so no passing transcript is sampled.
+        self.assertIn("SAMPLE none", lines)
         record = json.loads(
             (self.homes / "haiku" / skill_evals_runs.STATE / "description" / "trigger.json").read_text(encoding="utf-8")
         )
@@ -3191,12 +3300,13 @@ class EvaluateTests(unittest.TestCase):
                     {"request": near, "started": ["audit-ai-config"]},
                     {"request": other, "started": ["audit-skill"]},
                     {"request": last, "started": ["review-prs"]},
+                    {"request": unserved, "started": []},
                 ],
             },
             record,
         )
         self.assertIn(
-            "| audit-skill | haiku | claude-haiku-5-5 | 6/8 | 1 | description 6/8 | claude-haiku-5-5 | 2.1.291 "
+            "| audit-skill | haiku | claude-haiku-5-5 | 7/9 | 1 | description 7/9 | claude-haiku-5-5 | 2.1.291 "
             "| 2026-10-08 |",
             self.results.read_text(encoding="utf-8"),
         )
@@ -3227,7 +3337,7 @@ class EvaluateTests(unittest.TestCase):
                 self.assertEqual(1, status, lines)
                 self.assertIn(f"NOT_COUNTED description haiku {kind} {json.dumps(reason)}", lines)
                 failed = [line for line in lines if line.startswith("FAIL ")]
-                self.assertEqual(8, len(failed))
+                self.assertEqual(9, len(failed))
                 self.assertTrue(all(line.endswith(f"{kind} {json.dumps(reason)}") for line in failed), failed)
 
     def test_write_records_only_a_full_run(self) -> None:
@@ -3322,20 +3432,7 @@ def test_a_document_scenario_runs_the_skill_on_its_staged_document(scenario: str
     case.assertIn("| review-prs | opus | old |", written)
 
 
-# The specialists each review-repository scenario's route starts, and the expectations each scenario passes on each
-# model.
-REVIEW_REPOSITORY_ROLES = {
-    "branch-name-command": "skill-scripts,trust-boundary",
-    "build-grant": "documentation-drift,generic-review,skill-contract,skill-scripts,upgrade-notes",
-    "drifted-guide": "documentation-drift,generic-review",
-    "misstated-exit-status": "documentation",
-    "tested-change": "generic-review",
-    "text-read-policy": "validation-policy",
-    "undocumented-change": "generic-review",
-    "unnoted-flag-rename": "deployer,upgrade-notes",
-    "untested-change": "generic-review,untested-changes",
-    "write-before-refusal": "deployer",
-}
+# The expectations each review-repository scenario passes on each model.
 REVIEW_REPOSITORY_EXPECTATIONS = {
     "branch-name-command": 1,
     "build-grant": 1,
@@ -3428,7 +3525,91 @@ def test_the_parametrized_sweeps_name_every_scenario_and_add_up_to_the_skills_wh
         assert [scenario.name for scenario in review_scenarios(skill)] == list(cases)
         assert sum(cases.values()) == total
     assert list(REVIEW_DOCUMENT_STAGED) == list(REVIEW_DOCUMENT_EXPECTATIONS)
-    assert list(REVIEW_REPOSITORY_ROLES) == list(REVIEW_REPOSITORY_EXPECTATIONS) == list(REVIEW_REPOSITORY_SCENARIOS)
+    assert list(REVIEW_REPOSITORY_ROLES) == list(REVIEW_REPOSITORY_EXPECTATIONS)
+
+
+def test_every_specialist_of_review_repository_is_started_by_a_scenario() -> None:
+    # So a change to a specialist's brief cites a run that reviews with it.
+    manifest = validate_adapter_manifest(
+        json.loads((skill_evals_scenarios.REPOSITORY_ROOT / MANIFEST_PATH).read_text(encoding="utf-8"))
+    )
+    started = {role for roles in REVIEW_REPOSITORY_ROLES.values() for role in roles.split(",")}
+    assert [item["id"] for item in manifest["specialists"] if item["id"] not in started] == []
+
+
+def changed_files(fixture: Path) -> list[str]:
+    """Each file a fixture's head adds, removes, or changes from its base, by its path in the trees."""
+    base, head = fixture / "base", fixture / "head"
+    paths = {path.relative_to(tree).as_posix() for tree in (base, head) for path in tree.rglob("*") if path.is_file()}
+    return sorted(
+        path
+        for path in paths
+        if not (base / path).is_file()
+        or not (head / path).is_file()
+        or (base / path).read_bytes() != (head / path).read_bytes()
+    )
+
+
+@pytest.mark.parametrize("name", REVIEW_REPOSITORY_SCENARIOS)
+def test_each_expected_finding_sits_on_a_line_of_a_file_the_reviewed_copy_changes(name: str, tmp_path: Path) -> None:
+    (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", [name])
+    with (
+        mock.patch.object(tempfile, "tempdir", str(tmp_path)),
+        skill_evals_scenarios.reviewed_fixture(scenario) as fixture,
+    ):
+        changed = changed_files(fixture)
+        for item in spec_of(scenario)["expectations"]:
+            if item["kind"] != "finding":
+                continue
+            assert item["path"] in changed
+            length = len((fixture / "head" / item["path"]).read_text(encoding="utf-8").splitlines())
+            assert [line for line in item["lines"] if not 1 <= line <= length] == []
+
+
+def test_only_python_is_held_in_review_repository_s_fixtures_and_every_python_file_is() -> None:
+    # Validation lints and type-checks the Python under tests/, each module by its bare name, so a fixture's Python
+    # would shadow this repository's module of the same name; held, it is restored only in a run's copy.
+    held_ending = skill_evals_scenarios.HELD
+    files = [path for path in REVIEW_REPOSITORY.rglob("*") if path.is_file()]
+    assert [path for path in files if path.suffix == ".py"] == []
+    held = [path for path in files if path.name.endswith(held_ending)]
+    assert REVIEW_REPOSITORY / "write-before-refusal" / "head" / "deployer" / f"install.py{held_ending}" in held
+    assert [path for path in held if not path.name.endswith(f".py{held_ending}")] == []
+
+
+def report_age(bash: str, script: Path, folder: Path) -> tuple[int, str]:
+    """The report script's exit status and output, run as a program on the folder."""
+    ran = platform_support.run_tool([bash, script.as_posix(), folder.as_posix()], timeout=60)
+    return ran.returncode, ran.output
+
+
+@pytest.mark.parametrize("name", ["tested-change", "untested-change"])
+def test_the_report_script_s_base_and_head_agree_on_a_folder_with_no_report_and_one_with_a_new_report(
+    name: str, tmp_path: Path
+) -> None:
+    # A clean scenario's head adds nothing a correct review flags, so the change may refuse only what its suite
+    # tests, a report that is not there: a folder whose glob matches nothing prints nothing on both sides, rather
+    # than the head refusing the unmatched pattern with a status no test names.
+    bash = platform_support.find_bash()
+    assert bash is not None, "Git Bash is required"
+    empty, reports = tmp_path / "no reports", tmp_path / "reports"
+    empty.mkdir()
+    reports.mkdir()
+    (reports / "today.csv").touch()
+    for folder, expected in ((empty, (0, "")), (reports, (0, f"0 {(reports / 'today.csv').as_posix()}\n"))):
+        ran = {
+            side: report_age(bash, REVIEW_REPOSITORY / name / side / "tools" / "report_age.sh", folder)
+            for side in ("base", "head")
+        }
+        assert ran == {"base": expected, "head": expected}, folder.name
+
+
+def test_the_tested_change_s_suite_passes_on_its_head() -> None:
+    bash = platform_support.find_bash()
+    assert bash is not None, "Git Bash is required"
+    suite = REVIEW_REPOSITORY / "tested-change" / "head" / "tests" / "test_report_age.sh"
+    ran = platform_support.run_tool([bash, suite.as_posix()], timeout=60)
+    assert (ran.returncode, ran.output) == (0, "PASS report_age\n")
 
 
 @pytest.mark.parametrize(
@@ -3627,6 +3808,191 @@ def test_the_markers_are_required_once_each_in_order(text: str) -> None:
         skill_evals_results.results_table(text)
 
 
+def samples_text(*rows: str) -> str:
+    (begin, end), header = skill_evals_results.samples_layout()
+    return "\n".join(["# Skill evaluations", "", begin, *header, *rows, end, ""])
+
+
+def named_scenarios(*names: str) -> list[Scenario]:
+    return [
+        Scenario(skill="alpha", name=name, directory=Path(name), mode="initial", prior=None, expectations=())
+        for name in names
+    ]
+
+
+def sampled_outcomes(passed: dict[tuple[str, str, int | None], bool]) -> list[Outcome]:
+    """One outcome per run, passing or failing as given, and a second, passing, expectation of each run."""
+    outcomes = []
+    for (scenario, model, run), ok in passed.items():
+        failure = None if ok else "verdict is INCOMPLETE"
+        outcomes.append(Outcome(scenario, model, "verdict APPROVED", failure, None if ok else "judgment", run))
+        outcomes.append(Outcome(scenario, model, "no_finding_above SUGGESTION *", None, None, run))
+    return outcomes
+
+
+@pytest.mark.parametrize(
+    ("previous", "failing", "expected"),
+    [
+        ((), (), ("one", "haiku", None)),
+        (("| alpha | one | haiku | 1 | 2026-01-01 | agrees |",), (), ("one", "opus", None)),
+        (("| alpha | two | opus | 1 | 2026-01-01 | agrees |",), (), ("one", "haiku", None)),
+        (("| alpha | one | haiku | 1 | 2026-01-01 | agrees |",), (("one", "opus"),), ("two", "haiku", None)),
+        (("| alpha | gone | haiku | 1 | 2026-01-01 | agrees |",), (), ("one", "haiku", None)),
+        (("| zeta | one | haiku | 1 | 2026-01-01 | agrees |",), (), ("one", "haiku", None)),
+        ((), (("one", "haiku"), ("one", "opus"), ("two", "haiku"), ("two", "opus")), None),
+    ],
+    ids=[
+        "no row",
+        "the next model",
+        "wrapping round",
+        "past a failing run",
+        "a scenario gone",
+        "another skill's row",
+        "nothing passed",
+    ],
+)
+def test_the_sample_is_the_first_passing_run_after_the_last_one_sampled(
+    previous: tuple[str, ...], failing: tuple[tuple[str, str], ...], expected: tuple[str, str, None] | None
+) -> None:
+    passed: dict[tuple[str, str, int | None], bool] = {
+        (scenario, model, None): (scenario, model) not in failing
+        for scenario in ("one", "two")
+        for model in ("haiku", "opus")
+    }
+    picked = skill_evals_results.pick_sample(
+        "alpha", named_scenarios("one", "two"), ["haiku", "opus"], sampled_outcomes(passed), samples_text(*previous)
+    )
+    assert picked == expected
+
+
+def test_of_several_runs_the_sample_is_the_first_that_passed_every_expectation() -> None:
+    outcomes = sampled_outcomes({("one", "haiku", 1): False, ("one", "haiku", 2): True, ("one", "haiku", 3): True})
+    assert skill_evals_results.pick_sample("alpha", named_scenarios("one"), ["haiku"], outcomes, samples_text()) == (
+        "one",
+        "haiku",
+        2,
+    )
+
+
+def test_the_sample_replaces_the_skill_s_row_unread_and_keeps_the_others_sorted() -> None:
+    text = samples_text(
+        "| alpha | one | opus | 1 | 2026-01-01 | agrees |", "| zeta | one | opus | 1 | 2026-01-01 | agrees |"
+    )
+    written = skill_evals_results.replace_sample(text, "beta", ("two", "haiku", 2), datetime.date(2026, 10, 8))
+    assert written == samples_text(
+        "| alpha | one | opus | 1 | 2026-01-01 | agrees |",
+        "| beta | two | haiku | 2 | 2026-10-08 | unread |",
+        "| zeta | one | opus | 1 | 2026-01-01 | agrees |",
+    )
+    again = skill_evals_results.replace_sample(written, "alpha", ("one", "haiku", None), datetime.date(2026, 10, 9))
+    assert skill_evals_results.samples_table(again)[2][0] == "| alpha | one | haiku | 1 | 2026-10-09 | unread |"
+
+
+def test_a_reading_marks_the_skill_s_unread_row_once() -> None:
+    text = samples_text(
+        "| alpha | one | opus | 1 | 2026-01-01 | agrees |", "| beta | two | haiku | 2 | 2026-10-08 | unread |"
+    )
+    read = skill_evals_results.read_sample(text, "beta", "disagrees")
+    assert read == samples_text(
+        "| alpha | one | opus | 1 | 2026-01-01 | agrees |", "| beta | two | haiku | 2 | 2026-10-08 | disagrees |"
+    )
+    with pytest.raises(ScenarioError, match="beta's sampled transcript is already read: disagrees"):
+        skill_evals_results.read_sample(read, "beta", "agrees")
+    with pytest.raises(ScenarioError, match="the samples table has no row of gamma"):
+        skill_evals_results.read_sample(text, "gamma", "agrees")
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("no markers", "the results file needs one <!-- skill-evals-samples:begin --> line"),
+        (samples_text("| alpha | one |"), "line 6 of the results file is not a row of the table's 6 columns"),
+        (samples_text().replace("| Transcript |", "| Read |"), "the samples table must start with the header"),
+    ],
+    ids=["no markers", "a short row", "another header"],
+)
+def test_a_samples_table_it_cannot_read_is_refused(text: str, message: str) -> None:
+    with pytest.raises(ScenarioError, match=re.escape(message)):
+        skill_evals_results.samples_table(text)
+
+
+def test_sample_read_records_the_reading_in_the_results_file_and_runs_nothing(tmp_path: Path) -> None:
+    results = tmp_path / "skill-evaluations.md"
+    results.write_text(samples_text("| alpha | one | opus | 1 | 2026-01-01 | unread |"), encoding="utf-8")
+    seams = skill_evals.Seams(results=results, runner=lambda *_: pytest.fail("ran something"))
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = skill_evals.main(["alpha", "--sample-read", "agrees"], seams=seams)
+    assert (status, output.getvalue()) == (0, f"WROTE {runtime_canary.forward(results)}\n")
+    assert skill_evals_results.samples_table(results.read_text(encoding="utf-8"))[2] == [
+        "| alpha | one | opus | 1 | 2026-01-01 | agrees |"
+    ]
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = skill_evals.main(["alpha", "--sample-read", "agrees"], seams=seams)
+    assert (status, output.getvalue()) == (1, 'FAILED "alpha\'s sampled transcript is already read: agrees"\n')
+
+
+@pytest.mark.parametrize("extra", [["--write"], ["--model", "opus"], ["--scenario", "one"], ["--runs", "2"]])
+def test_sample_read_takes_the_skill_alone(extra: list[str], tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+        skill_evals.main(["alpha", "--sample-read", "agrees", *extra], seams=skill_evals.Seams(results=tmp_path / "x"))
+    assert raised.value.code == 2
+
+
+def test_no_committed_sample_is_left_unread() -> None:
+    rows = skill_evals_results.samples_table(skill_evals.RESULTS.read_text(encoding="utf-8"))[2]
+    assert [row for row in rows if row.rstrip().endswith("| unread |")] == []
+
+
+def notes_problems(text: str) -> list[str]:
+    """Each scenario a row of the results table shows `not run` that no note explains, and each note saying a
+    scenario was not run that every row of its skill ran, as docs/skill-evaluations.md's notes promise."""
+    shown = set()
+    for row in skill_evals_results.results_table(text)[2]:
+        cells = [cell.strip() for cell in row.strip()[1:-1].split("|")]
+        shown |= {
+            (cells[0], part.removesuffix(" not run")) for part in cells[5].split(", ") if part.endswith(" not run")
+        }
+    notes = text.split("### Notes", 1)[1].split("\n## ", 1)[0]
+    noted = {
+        (skill, scenario)
+        for skill, scenario, body in re.findall(r"^- \*\*`([^`]+)`, `([^`]+)`:\*\*(.*?)(?=^- |\Z)", notes, re.M | re.S)
+        if "not run" in body
+    }
+    return [f"{skill} {scenario} not run, with no note" for skill, scenario in sorted(shown - noted)] + [
+        f"{skill} {scenario} noted as not run, though every row ran it" for skill, scenario in sorted(noted - shown)
+    ]
+
+
+def test_the_notes_explain_each_scenario_not_run_and_no_other() -> None:
+    assert notes_problems(skill_evals.RESULTS.read_text(encoding="utf-8")) == []
+
+
+def test_a_note_that_disagrees_with_the_rows_is_found_either_way() -> None:
+    row = (
+        "| review-document | haiku | claude-haiku-5-5 | 5/5 | 1 | pdf-gaps 5/5, word-gaps {} | x | 2.1.0 | 2026-01-01 |"
+    )
+    note = "- **`review-document`, `pdf-gaps`:** not run on any model, because no `pdftotext` met the floor.\n"
+    text = "\n".join(
+        [
+            skill_evals_results.RESULTS_BEGIN,
+            *skill_evals_results.RESULTS_HEADER,
+            row.format("not run"),
+            skill_evals_results.RESULTS_END,
+            "",
+            "### Notes",
+            "",
+            note,
+        ]
+    )
+    assert notes_problems(text) == [
+        "review-document word-gaps not run, with no note",
+        "review-document pdf-gaps noted as not run, though every row ran it",
+    ]
+    assert notes_problems(text.replace("`pdf-gaps`", "`word-gaps`")) == []
+
+
 class StubTrigger:
     """Claude Code as a trigger run starts it: `--version`, or one request's session, whose init event lists the
     skills a deployment of the worked example's two skills would, without the started skill when `listed` is false,
@@ -3678,7 +4044,13 @@ def demo_checkout(root: Path, frontmatter: str = "") -> Path:
     return root / "checkout"
 
 
-TRIGGER_SPEC = {"skill": "demo", "mode": "trigger", "requests": ["Run the demo."], "near_misses": ["Run a test."]}
+TRIGGER_SPEC = {
+    "skill": "demo",
+    "mode": "trigger",
+    "requests": ["Run the demo."],
+    "near_misses": ["Run a test."],
+    "unserved": ["Write a poem."],
+}
 
 
 def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_near_miss_not_to(tmp_path: Path) -> None:
@@ -3686,17 +4058,20 @@ def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_nea
     scenario = trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
     assert scenario.mode == skill_evals_scenarios.TRIGGER
     assert scenario.requests == ("Run the demo.", "Show the demo.")
-    assert scenario.near_misses == ("Run a test.",)
+    # The neighbours' near misses, then the ones no skill serves.
+    assert scenario.near_misses == ("Run a test.", "Write a poem.")
     assert [item.label for item in scenario.expectations] == [
         'starts "Run the demo."',
         'starts "Show the demo."',
         'does_not_start "Run a test."',
+        'does_not_start "Write a poem."',
     ]
     record = {
         "requests": [
             {"request": "Run the demo.", "started": ["demo"]},
             {"request": "Show the demo.", "started": ["other"]},
             {"request": "Run a test.", "started": ["demo", "other"]},
+            {"request": "Write a poem.", "started": []},
         ],
         "models": ["claude-haiku-5-5"],
     }
@@ -3704,6 +4079,7 @@ def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_nea
         None,
         "the session started other",
         "the session started demo, other",
+        None,
     ]
     with pytest.raises(RecordError, match="no session of"):
         scenario.expectations[0].check({"requests": [], "models": []})
@@ -3712,8 +4088,12 @@ def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_nea
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"expectations": []}, "must have exactly mode, near_misses, requests, skill"),
+        ({"expectations": []}, "must have exactly mode, near_misses, requests, skill, unserved"),
         ({"near_misses": None}, "must have exactly"),
+        ({"unserved": None}, "must have exactly"),
+        ({"unserved": []}, "unserved must be a non-empty list"),
+        ({"unserved": ["Run a test."]}, "near_misses and unserved name a request twice"),
+        ({"unserved": ["Run the demo."]}, '"Run the demo." is both a request and a near miss'),
         ({"skill": "other"}, 'names skill "other", not demo'),
         ({"requests": []}, "requests must be a non-empty list"),
         ({"near_misses": ["Run a test.", 3]}, "near_misses must be a non-empty list"),
@@ -3727,6 +4107,10 @@ def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_nea
     ids=[
         "expectations",
         "a missing field",
+        "no unserved field",
+        "no unserved request",
+        "a near miss twice",
+        "an unserved request",
         "another skill",
         "no request",
         "a request not text",
@@ -3768,7 +4152,11 @@ def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s(
     )
     assert len(scenario.requests) == 5
     assert all("skill" in request for request in scenario.requests), scenario.requests
-    assert all("repository" in request for request in scenario.near_misses), scenario.near_misses
+    neighbours, unserved = spec_of(scenario)["near_misses"], spec_of(scenario)["unserved"]
+    assert all("repository" in request for request in neighbours), neighbours
+    assert scenario.near_misses == (*neighbours, *unserved)
+    # A request no skill serves, which names a skill as the requests do, so only the description tells them apart.
+    assert unserved == ["Fix the typo in the dotnet-format skill's description."]
 
 
 # Every committed trigger scenario's folder: validation holds that each skill the model may start has one.
@@ -3857,7 +4245,11 @@ def test_a_trigger_session_runs_on_the_judged_model_with_a_turn_limit_and_no_gra
 def test_records_hold_a_trigger_record_to_its_scenario_and_model(tmp_path: Path) -> None:
     scenario = trigger_scenario(tmp_path, TRIGGER_SPEC, demo_checkout(tmp_path))
     good: dict[str, Any] = {
-        "requests": [{"request": "Run a test.", "started": []}, {"request": "Run the demo.", "started": ["demo"]}],
+        "requests": [
+            {"request": "Run a test.", "started": []},
+            {"request": "Write a poem.", "started": []},
+            {"request": "Run the demo.", "started": ["demo"]},
+        ],
         "models": ["claude-haiku-5-5-20261001"],
     }
     records = tmp_path / "records" / "triggers"

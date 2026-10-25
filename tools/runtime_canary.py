@@ -603,8 +603,7 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
 def starts_only_by_user(skill_file: Path) -> bool:
     """Whether the SKILL.md, a skill's or its runtime adapter's, lets only the user start the skill."""
     try:
-        document = frontmatter.read(skill_file)
-        return (document.string("disable-model-invocation") or "").casefold() == "true"
+        return frontmatter.read(skill_file).user_only()
     except (OSError, UnicodeError, frontmatter.FrontmatterError):
         return False
 
