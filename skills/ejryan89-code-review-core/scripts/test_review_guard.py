@@ -947,3 +947,25 @@ class EvidenceAbsentTests(GuardFixture):
         self.assert_denied(self.decide("Read", file_path=self.prompt()), "is not a reviewer prompt")
         self.assertFalse(self.claims.exists(), "a denied read claims nothing")
         self.assert_denied(self.decide("Write", file_path=self.result()), "read the prompt file your task names first")
+
+
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_a_read_in_a_run_reached_through_a_link_is_logged_by_its_place_in_the_snapshot(tmp_path: Path) -> None:
+    real = tmp_path / "real run"
+    read = real / guard.SOURCE / "src" / "a.py"
+    read.parent.mkdir(parents=True)
+    read.write_text("x\n", encoding="utf-8")
+    (real / "work").mkdir()
+    link = tmp_path / "linked run"
+    link_folder(real, link)
+    guard._log_read("Read", read.resolve(), (link, {"id": "csharp-review"}))
+    assert guard.read_log(link, "csharp-review").read_text(encoding="utf-8").splitlines() == ['"src/a.py"']
