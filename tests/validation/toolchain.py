@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 import sysconfig
@@ -92,7 +91,7 @@ def powershell_json(
     lines = [line for line in result.output.splitlines() if line.strip()]
     try:
         found = json_reader.loads(lines[-1]) if result.returncode == 0 and lines else None
-    except json.JSONDecodeError:
+    except json_reader.CONTENT_ERRORS:
         found = None
     if not isinstance(found, list):
         raise AssertionError(f"{failure} (exit code {result.returncode}):\n{result.output}")

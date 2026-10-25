@@ -13,6 +13,8 @@ from pathlib import Path
 TYPED_ENCODING = "utf-8-sig"
 # What `read_typed` raises on bad content: text that is not UTF-8.
 CONTENT_ERRORS: tuple[type[Exception], ...] = (UnicodeDecodeError,)
+# The functions that raise CONTENT_ERRORS on content.
+CONTENT_READERS = ("read_typed",)
 
 
 def read_typed(path: Path) -> str:

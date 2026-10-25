@@ -33,6 +33,12 @@ from typed_fields import FieldError, FieldReader
 # interpreter's recursion limit. A reader of a file it did not just write catches all of them around the parse alone,
 # since most of this package's own errors are ValueErrors too.
 CONTENT_ERRORS = (ValueError, RecursionError)
+CONTENT_ERRORS_ALLOWED = {
+    "atomic_write_json": (
+        "its one read reads back the text json_writer.dumps just wrote and read back itself, which cannot fail, and "
+        "a value dumps refuses is the PersistenceError it promises"
+    ),
+}
 # A JSON escape of a UTF-16 surrogate, paired or not.
 SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
 

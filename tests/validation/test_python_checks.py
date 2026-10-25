@@ -6,6 +6,8 @@ Each policy fails on a violating input and passes on a conforming one.
 from __future__ import annotations
 
 import copy
+import importlib
+import json
 import re
 import sys
 import tempfile
@@ -1066,6 +1068,329 @@ def test_a_policy_scope_fails_for_each_module_it_skips_and_each_stale_omission()
         f"p does not read {name}; add its root to the policy's scope, or state why it is left out"
         for name in ("deploy.py", "tests/deployer/harness.py")
     ]
+
+
+CONTENT_READER_SOURCE = """\
+import json
+
+
+class Refused(ValueError):
+    pass
+
+
+CONTENT_ERRORS = (Refused, json.JSONDecodeError)
+CONTENT_READERS = ("read",)
+
+
+def read(text):
+    return text
+
+
+def quote(text):
+    return text
+
+
+def _private(text):
+    return text
+"""
+
+CONTENT_CALLER_SOURCE = """\
+import contextlib
+import json
+
+import reader
+from reader import read
+
+FAMILY = (*reader.CONTENT_ERRORS, OSError)
+
+
+class Mine(reader.Refused):
+    pass
+
+
+def narrow(text):
+    try:
+        return reader.read(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def io_only(path):
+    with contextlib.suppress(OSError):
+        read(path)
+
+
+def through(text):
+    return read(text)
+
+
+def via(text):
+    try:
+        return through(text)
+    except reader.Refused:
+        return None
+
+
+def subclass(text):
+    try:
+        return read(text)
+    except Mine:
+        return None
+
+
+def reraised(text):
+    try:
+        return read(text)
+    except reader.Refused:
+        raise
+    except json.JSONDecodeError:
+        return None
+
+
+def whole(text):
+    try:
+        return read(text)
+    except FAMILY:
+        return None
+
+
+def wider(text):
+    with contextlib.suppress(ValueError):
+        return through(text)
+
+
+def unrelated(text):
+    try:
+        return read(text)
+    except KeyError:
+        return None
+
+
+def nested(text):
+    try:
+        def inner():
+            return read(text)
+        return inner
+    except OSError:
+        return None
+
+
+def unread(text):
+    try:
+        return reader.quote(text), reader._private(text)
+    except OSError:
+        return None
+
+
+def in_handler(text):
+    try:
+        return text.upper()
+    except AttributeError:
+        return read(text)
+
+
+def own(text):
+    try:
+        return read(text)
+    except reader.Refused:
+        return None
+
+
+def trusted(text):
+    return read(text)
+
+
+def sealed(text):
+    try:
+        return trusted(text)
+    except OSError:
+        return None
+
+
+class Holder:
+    def method(self, text):
+        try:
+            return read(text)
+        except OSError:
+            return None
+
+
+def bare(text):
+    try:
+        return read(text)
+    except:
+        return None
+
+
+def broad(text):
+    try:
+        return read(text)
+    except Exception:
+        return None
+
+
+def grouped(text):
+    try:
+        read(text)
+    except* json.JSONDecodeError:
+        pass
+
+
+async def waited(text):
+    try:
+        return read(text)
+    except reader.Refused:
+        return None
+
+
+def finally_only(text):
+    try:
+        try:
+            return read(text)
+        finally:
+            text = ""
+    except json.JSONDecodeError:
+        return None
+
+
+def entered(text):
+    try:
+        with contextlib.nullcontext():
+            return read(text)
+    except reader.Refused:
+        return None
+
+
+def in_finally(text):
+    try:
+        try:
+            text = text.strip()
+        finally:
+            read(text)
+    except json.JSONDecodeError:
+        return None
+
+
+async def entered_async(text):
+    try:
+        async with contextlib.AsyncExitStack():
+            return read(text)
+    except reader.Refused:
+        return None
+
+
+CONTENT_ERRORS_ALLOWED = {
+    "own": "reads text it wrote",
+    "trusted": "reads text it wrote",
+    "stale": "a reason",
+}
+"""
+
+
+CONTENT_PACKAGE_CALLER_SOURCE = """\
+import json
+
+from . import load
+from .helper import fetch
+
+
+def first(text):
+    try:
+        return load(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def second(text):
+    try:
+        return fetch(text)
+    except json.JSONDecodeError:
+        return None
+"""
+
+
+def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_family() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/ejryan89-skill-core/scripts/unresolved.py": "CONTENT_ERRORS = (missing.Error,)\n",
+                "skills/ejryan89-skill-core/scripts/unnamed.py": (
+                    "CONTENT_ERRORS = (ValueError,)\nCONTENT_READERS = ('gone',)\n\n\n"
+                    "def read(text):\n    return text\n"
+                ),
+                "skills/alpha/scripts/alpha.py": CONTENT_CALLER_SOURCE,
+                "skills/alpha/scripts/test_alpha.py": CONTENT_CALLER_SOURCE,
+                # Another skill's script imported by the same name, which the model could not tell apart.
+                "skills/beta/scripts/alpha.py": "",
+                # A package's own module and a relative import of each form.
+                "tools/__init__.py": "from reader import read\n\n\ndef load(text):\n    return read(text)\n",
+                "tools/helper.py": "from reader import read\n\n\ndef fetch(text):\n    return read(text)\n",
+                "tools/caller.py": CONTENT_PACKAGE_CALLER_SOURCE,
+                "tools/broken.py": "CONTENT_ERRORS_ALLOWED = {'scope': ''}\n",
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    alpha = "skills/alpha/scripts/alpha.py"
+
+    def remedy(missing: str) -> str:
+        return (
+            f"catches part of what a reader it calls raises, or its OSError, but not {missing}; catch the whole "
+            "family, reader.CONTENT_ERRORS, or state why in CONTENT_ERRORS_ALLOWED"
+        )
+
+    both = "json.decoder.JSONDecodeError, reader.Refused"
+    assert found == [
+        f"skills/beta/scripts/alpha.py: {alpha} is imported as alpha too, so the content-errors policy, which reads "
+        "modules by the name they are imported as, cannot read both; rename one",
+        "skills/ejryan89-skill-core/scripts/unnamed.py: CONTENT_READERS must be a tuple naming each function the "
+        "module defines that raises its CONTENT_ERRORS on content",
+        "skills/ejryan89-skill-core/scripts/unresolved.py: CONTENT_ERRORS must be a tuple of exception classes its "
+        "imports name",
+        f"{alpha}:15 {remedy('reader.Refused')}",
+        f"{alpha}:22 {remedy(both)}",
+        f"{alpha}:31 {remedy('json.decoder.JSONDecodeError')}",
+        f"{alpha}:38 {remedy(both)}",
+        f"{alpha}:45 {remedy('reader.Refused')}",
+        f"{alpha}:115 {remedy(both)}",
+        f"{alpha}:136 {remedy('reader.Refused')}",
+        f"{alpha}:143 {remedy('json.decoder.JSONDecodeError')}",
+        f"{alpha}:150 {remedy('reader.Refused')}",
+        f"{alpha}:160 {remedy('json.decoder.JSONDecodeError')}",
+        # A finally block runs inside the try that holds its statement, so the outer handler judges its reader call.
+        f"{alpha}:168 {remedy('reader.Refused')}",
+        f"{alpha}:178 {remedy('json.decoder.JSONDecodeError')}",
+        f"{alpha}: CONTENT_ERRORS_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: CONTENT_ERRORS_ALLOWED must map each function, class, or assignment to its reason",
+        f"tools/caller.py:8 {remedy('reader.Refused')}",
+        f"tools/caller.py:15 {remedy('reader.Refused')}",
+    ]
+
+
+def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader() -> None:
+    # With no reader every handler would pass, so a tree that lost its readers fails rather than passing empty.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": CONTENT_CALLER_SOURCE})
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    assert found[0] == (
+        "skills/ejryan89-skill-core/scripts names no reader in a CONTENT_READERS beside its CONTENT_ERRORS, so the "
+        "content-errors policy could check no handler"
+    )
+
+
+def test_a_standard_class_is_found_only_through_a_module_that_imports_and_defines_it() -> None:
+    assert python_checks._standard_class("ValueError") is ValueError
+    assert python_checks._standard_class("json.JSONDecodeError") is json.JSONDecodeError
+    # A name that is no class, a class the module lacks, and a module outside the standard library are none the policy
+    # can compare, so a handler naming one is taken to catch everything.
+    for name in ("print", "json.NoSuchError", "reader.Refused"):
+        assert python_checks._standard_class(name) is None, name
+    # Nor is a class of a standard-library module that will not import here, such as one for another platform.
+    with mock.patch.object(importlib, "import_module", side_effect=ImportError("no module named winreg")):
+        assert python_checks._standard_class("winreg.HKEYType") is None
 
 
 INT_SOURCE = """\

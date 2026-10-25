@@ -111,6 +111,11 @@ from tools.runtime_canary import (
 
 MARKETPLACE = "canary"
 CONFIG = "claude-config"
+CONTENT_ERRORS_ALLOWED = {
+    "expected": "it reads back the hooks file plugin_build wrote through json_writer, which read it back already",
+    "option_values": "it reads back the manifest plugin_build wrote through json_writer, which read it back already",
+    "checks": "it reads back the PATHS line install wrote with json.dumps; what else it writes, main catches",
+}
 # The folder of the home holding a folder for each option a plugin declares, as its value at install.
 OPTIONS = "options"
 GUARD_MARKER = "PLUGIN-CANARY-OUTSIDE"
