@@ -22,7 +22,6 @@ deployer, the repository tools, and the tests all import it from here as `frontm
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -70,6 +69,10 @@ UNSUPPORTED = {
 
 class FrontmatterError(ValueError):
     """The frontmatter, or the value of a key that was read, is not in a form this reader supports."""
+
+
+# What `split`, `parse`, `read`, and a `Frontmatter`'s readers raise on bad content.
+CONTENT_ERRORS: tuple[type[Exception], ...] = (FrontmatterError,)
 
 
 def split(lines: list[str]) -> tuple[list[str], int] | None:
@@ -304,7 +307,7 @@ def _scalar(text: str) -> str:
         try:
             # The match holds no unescaped quote, so the text decoded is one JSON string, which decodes to a str.
             decoded: str = json_reader.loads('"' + match.group(1).replace("\t", "\\t") + '"')
-        except json.JSONDecodeError:
+        except json_reader.CONTENT_ERRORS:
             raise FrontmatterError("a double-quoted value uses an escape this reader does not support") from None
         return decoded
     if text.startswith("'"):

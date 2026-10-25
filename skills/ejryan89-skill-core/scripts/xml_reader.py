@@ -23,6 +23,10 @@ class XmlRefused(ValueError):
     """A document the reader would not parse; the message names the declaration it carried or the parser's reason."""
 
 
+# What `read_xml` raises on bad content.
+CONTENT_ERRORS: tuple[type[Exception], ...] = (XmlRefused,)
+
+
 def read_xml(text: str) -> ElementTree.Element:
     """The root element of `text`, or `XmlRefused` when it declares a DOCTYPE or an entity, is not well-formed, or
     nests elements past `DEPTH_LIMIT`."""

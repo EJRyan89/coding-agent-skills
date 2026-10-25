@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import nesting_depth
 import whole_number
-from json_reader import JsonRefused, loads, raw_decode, read_file
+from json_reader import CONTENT_ERRORS, JsonRefused, loads, raw_decode, read_file
 
 
 class RefusalTests(unittest.TestCase):
@@ -156,3 +156,30 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_keys_keep_their_order(self) -> None:
         self.assertEqual(["b", "a"], list(loads('{"b": 1, "a": 2}')))
+
+
+class ContentErrorsTests(unittest.TestCase):
+    def test_the_family_is_the_refusal_the_parse_error_and_the_codec_error(self) -> None:
+        self.assertEqual((JsonRefused, json.JSONDecodeError, UnicodeDecodeError), CONTENT_ERRORS)
+
+    def test_each_member_is_what_one_kind_of_bad_content_raises(self) -> None:
+        for text, member in (
+            ('{"k": 1, "k": 2}', JsonRefused),
+            ("{", json.JSONDecodeError),
+            (b'"\xff"', UnicodeDecodeError),
+        ):
+            with self.subTest(text=text), self.assertRaises(CONTENT_ERRORS) as raised:
+                loads(text)
+            self.assertIs(member, type(raised.exception))
+        for text, member in (('{"k": 1, "k": 2}', JsonRefused), ("{", json.JSONDecodeError)):
+            with self.subTest(text=text), self.assertRaises(CONTENT_ERRORS) as raised:
+                raw_decode(text)
+            self.assertIs(member, type(raised.exception))
+
+    def test_a_file_that_is_not_utf_8_raises_a_member_of_the_family(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "value.json"
+            path.write_bytes(b'"\xff"')
+            with self.assertRaises(CONTENT_ERRORS) as raised:
+                read_file(path)
+        self.assertIs(UnicodeDecodeError, type(raised.exception))

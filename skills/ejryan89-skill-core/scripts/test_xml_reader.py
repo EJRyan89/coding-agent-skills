@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import nesting_depth
-from xml_reader import XmlRefused, read_xml
+from xml_reader import CONTENT_ERRORS, XmlRefused, read_xml
 
 DOCTYPE_REFUSED = "the document declares a DOCTYPE, which could expand entities without bound"
 ENTITY_REFUSED = "the document declares an ENTITY, which could expand without bound"
@@ -122,3 +122,10 @@ class ParseTests(ReaderTestCase):
 def test_a_declaration_naming_another_encoding_never_overrides_the_decoded_text(encoding: str) -> None:
     root = read_xml(f'  <?xml version="1.0" encoding="{encoding}"?>\n<NoWarn>CS1591;\u00e9</NoWarn>')
     assert root.text == "CS1591;\u00e9"
+
+
+def test_the_family_is_the_refusal_and_it_covers_a_declaration_and_a_malformed_document() -> None:
+    assert (XmlRefused,) == CONTENT_ERRORS
+    for text in ("<!DOCTYPE a><a/>", "<a>"):
+        with pytest.raises(CONTENT_ERRORS):
+            read_xml(text)
