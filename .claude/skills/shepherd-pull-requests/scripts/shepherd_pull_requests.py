@@ -386,12 +386,13 @@ def pull_of(item: Any) -> Pull:
 
 
 def read_pulls(client: GitHubClient, repository: str) -> list[Pull]:
-    """The open pull requests, drafts included, oldest first."""
-    arguments = ["pr", "list", "--repo", repository, "--state", "open", "--limit", str(OPEN_LISTED)]
-    payload = client.json([*arguments, "--json", PULL_FIELDS])
-    if not isinstance(payload, list):
-        raise malformed("a pull request listing that is not a list")
-    return sorted((pull_of(item) for item in payload), key=lambda pull: pull.number)
+    """The open pull requests, drafts included, oldest first. More than OPEN_LISTED raises an `incomplete`
+    GitHubError, since a tick that judged only some of them would say nothing of the rest."""
+    arguments = ["pr", "list", "--repo", repository, "--state", "open", "--json", PULL_FIELDS]
+    listing = client.capped_list(arguments, OPEN_LISTED)
+    if listing.cut:
+        raise GitHubError(f"more than {OPEN_LISTED} are open, more than one tick lists", kind="incomplete")
+    return sorted((pull_of(item) for item in listing.items), key=lambda pull: pull.number)
 
 
 def branch_heads(git: GitClient, top: Path) -> dict[str, str]:
@@ -560,10 +561,9 @@ def judge(client: GitHubClient, repository: str, pull: Pull) -> Judgement:
 def newest_run(client: GitHubClient, repository: str, head: str) -> int:
     """The newest pull request run of the required check's workflow on `head`, by its id, or 0 when none is listed."""
     arguments = ["run", "list", "--repo", repository, "--workflow", REQUIRED_CHECK, "--commit", head]
-    payload = client.json([*arguments, "--event", PULL_EVENT, "--limit", str(RUNS_LISTED), "--json", "databaseId"])
-    if not isinstance(payload, list):
-        raise malformed("a workflow run listing that is not a list")
-    ids = [item.get("databaseId") for item in payload if isinstance(item, dict)]
+    # GitHub lists the newest run first, so a listing cut at RUNS_LISTED leaves out only older runs.
+    listing = client.capped_list([*arguments, "--event", PULL_EVENT, "--json", "databaseId"], RUNS_LISTED)
+    ids = [item.get("databaseId") for item in listing.items if isinstance(item, dict)]
     return max((each for each in ids if isinstance(each, int)), default=0)
 
 
@@ -681,14 +681,14 @@ def update(
 
 
 def read_merged(client: GitHubClient, repository: str) -> list[Merged]:
-    """The most recently merged pull requests, with each one's head branch and head commit."""
-    arguments = ["pr", "list", "--repo", repository, "--state", "merged", "--limit", str(MERGED_LISTED)]
-    payload = client.json([*arguments, "--json", "number,headRefName,headRefOid"])
-    if not isinstance(payload, list):
-        raise malformed("a merged pull request listing that is not a list")
+    """The MERGED_LISTED most recently merged pull requests, with each one's head branch and head commit. GitHub lists
+    the newest first, so a listing cut there leaves out only pull requests merged before them, which earlier ticks
+    saw."""
+    arguments = ["pr", "list", "--repo", repository, "--state", "merged", "--json", "number,headRefName,headRefOid"]
+    listing = client.capped_list(arguments, MERGED_LISTED)
     return [
         Merged(item["number"], item["headRefName"], str(item.get("headRefOid") or ""))
-        for item in payload
+        for item in listing.items
         if isinstance(item, dict) and isinstance(item.get("number"), int) and isinstance(item.get("headRefName"), str)
     ]
 
