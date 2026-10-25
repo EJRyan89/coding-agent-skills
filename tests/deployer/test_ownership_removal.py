@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -670,6 +671,33 @@ class ManagedRootTests(DeployerTestCase):
             self.deploy_fails(*arguments, pattern="Deployment path contains a symlink or junction")
         self.assertEqual(["20260101-000000-keep"], sorted(path.name for path in outside.iterdir()))
         self.assertEqual("external data\n", (outside / "20260101-000000-keep" / "data.txt").read_text(encoding="utf-8"))
+
+    def test_a_home_or_checkout_path_the_records_cannot_hold_is_refused_before_anything_is_written(self) -> None:
+        # A lone surrogate is how Python spells a POSIX name's byte that is not UTF-8, and an unpaired UTF-16 unit of a
+        # Windows name. The manifest and the journal, which the JSON writer refuses one in, record these paths, so
+        # the allowlist HOME and SOURCE_ROOT are held to refuses it before the lock is taken.
+        self.fixture()
+        # The home holds its configuration, so only that check stops a run that would otherwise deploy into it.
+        home = self.root / "home \udcff"
+        shutil.copytree(self.home, home)
+        self.deploy_fails("--all", home=home, pattern=r"ERROR: HOME \(the home folder\) contains disallowed character")
+        self.assertEqual([".claude"], sorted(path.name for path in home.iterdir()))
+        source = self.root / "source \udcff"
+        shutil.copytree(self.source, source)
+        self.deploy_fails("--all", source=source, pattern=r"ERROR: SOURCE_ROOT \(.*\) contains disallowed character")
+        # A canary home's values are checked before its claim marks it, so a refused one is left as empty as it came.
+        canary = Path(tempfile.mkdtemp(prefix="canary \udcff "))
+        try:
+            self.deploy_fails(
+                "--all",
+                "--canary-home",
+                str(canary),
+                refusal_home=canary,
+                pattern=r"ERROR: Config key REPOS_ROOT contains disallowed character",
+            )
+            self.assertEqual([], list(canary.iterdir()))
+        finally:
+            shutil.rmtree(canary)
 
     def test_linked_staging_root_is_not_recovered(self) -> None:
         self.assert_linked_root_blocks_deployment(self.home / ".claude" / "deployer" / "staging")

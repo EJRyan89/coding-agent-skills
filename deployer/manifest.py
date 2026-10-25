@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
+
+import json_writer
 
 from . import fsops, platform_support, state_files
 from .errors import STATE_FILE, DeployError, os_error, see_recovery
@@ -245,8 +246,17 @@ class Manifest:
         return self.data.get("last_run_id", "")
 
     def save(self) -> None:
+        """Replace the manifest file. A value the JSON writer refuses is a DeployError naming the file, which the
+        run's journaled recovery handles. The paths the manifest records are refused before any write by the allowlist
+        `config.derived_values` holds HOME and SOURCE_ROOT to, so none reaches it holding a lone surrogate."""
         self.data["manifest_version"] = MANIFEST_VERSION
-        fsops.write_atomic(self.path, (json.dumps(self.data, indent=2) + "\n").encode("utf-8"))
+        try:
+            text = json_writer.dumps(self.data, indent=2)
+        except json_writer.JsonWriteRefused as exc:
+            raise DeployError(
+                f"ERROR: Cannot write the manifest {platform_support.normalize(self.path)}: {exc}"
+            ) from exc
+        fsops.write_atomic(self.path, (text + "\n").encode("utf-8"))
 
 
 def _hash_of(value: object) -> str:
