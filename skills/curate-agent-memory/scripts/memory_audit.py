@@ -506,7 +506,7 @@ def destination_files(repo: Path | None, instructions: list[Path], user_dir: Pat
             )
     unique: dict[str, Path] = {}
     for path in files:
-        unique.setdefault(str(path.resolve()).casefold(), path)
+        unique.setdefault(path_key(path, resolve=True), path)
     return list(unique.values())
 
 
