@@ -302,28 +302,6 @@ def interpreter_problems(root: Path) -> list[str]:
     return problems
 
 
-def shell_quote(value: str) -> str:
-    return "'" + value.replace("'", "'\"'\"'") + "'"
-
-
-def run_git_bash(command: str) -> None:
-    environment: dict[str, str] = {}
-    prefix = ""
-    shellcheck = find_shellcheck()
-    if shellcheck is not None:
-        # ShellCheck can be found in a package manager's link folder that PATH does not name.
-        environment["SHELLCHECK_BIN_DIR"] = platform_support.to_shell_path(str(Path(shellcheck).parent))
-        prefix = 'export PATH="$SHELLCHECK_BIN_DIR:$PATH"; '
-    root = shell_quote(platform_support.to_shell_path(str(REPOSITORY_ROOT)))
-    # Not a login shell: Git for Windows' bin/bash.exe puts its own /mingw64/bin and /usr/bin first on PATH, so a plain
-    # shell finds the same commands, and it skips the profile, which starts more MSYS processes before the command and
-    # sets nothing a job reads. Every other start of this Bash in the repository is a plain one too.
-    run_process(
-        [find_git_bash(), "-c", f"{prefix}set -euo pipefail; cd {root}; {command}"],
-        environment,
-    )
-
-
 def run_bash_suite(target: str) -> None:
     """Start a Bash suite as Git Bash's own program, from the repository root, with no shell above it.
 
@@ -346,9 +324,16 @@ def static_shell_check() -> None:
     scripts = shell_script_targets(REPOSITORY_ROOT)
     if not scripts:
         raise AssertionError("No shell scripts were found to validate.")
-    checks = " && ".join(f"bash -n {shell_quote(relative(path))}" for path in scripts)
-    arguments = " ".join(shell_quote(relative(path)) for path in scripts)
-    run_git_bash(f"{checks} && shellcheck --severity=warning {arguments}")
+    shellcheck = find_shellcheck()
+    if shellcheck is None:
+        raise AssertionError(f"ShellCheck was not found: {platform_support.install_hint('ShellCheck')}")
+    # Each syntax check and ShellCheck start as their own programs, with no shell above them, for the reason
+    # run_bash_suite gives: a Bash above a child that Windows ends reads that end as exit 0, so `set -e` went on and an
+    # ended check passed. Started directly, each one's own status reaches the runner, which names a termination.
+    bash = find_git_bash()
+    for path in scripts:
+        run_process([bash, "-n", relative(path)])
+    run_process([shellcheck, "--severity=warning", *(relative(path) for path in scripts)])
 
 
 # PSScriptAnalyzer reads every .ps1 under these roots, and every PowerShell fence in Markdown outside tests/.

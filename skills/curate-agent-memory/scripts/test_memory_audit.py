@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,6 @@ import skill_roots
 from file_presence import NotAFile
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitClient, GitError, GitResult
-from json_writer import JsonWriteRefused
 
 
 def temporary_store_folds_case() -> bool:
@@ -458,14 +458,17 @@ class MemoryAuditTests(unittest.TestCase):
         write(self.memory_dir / "MEMORY.md", "")
         write(self.memory_dir / "one.md", memory("one", "Body."))
         target = self.root / "report.json"
-        with (
-            mock.patch.object(memory_audit, "audit", return_value={"score": float("nan")}),
-            self.assertRaisesRegex(
-                JsonWriteRefused, "^the value holds NaN or an infinity, which JSON does not define$"
-            ),
+        # A memory's text or a path may hold a lone surrogate, which no UTF-8 file can hold.
+        for value, refusal in (
+            (float("nan"), "the value holds NaN or an infinity, which JSON does not define"),
+            ("\udc80", "the value holds a lone surrogate U+DC80, which UTF-8 cannot encode"),
         ):
-            run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
-        self.assertFalse(target.exists())
+            with self.subTest(refusal=refusal), mock.patch.object(memory_audit, "audit", return_value={"x": value}):
+                self.assertEqual(
+                    (1, f"FAILED the audit report cannot be written: {refusal}\n", ""),
+                    run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
+                )
+            self.assertFalse(target.exists())
 
     def test_an_existing_output_is_refused_and_left_alone(self) -> None:
         write(self.memory_dir / "MEMORY.md", "- [one](one.md) — one\n")
@@ -1599,6 +1602,42 @@ class ResolveTests(unittest.TestCase):
         directory_link(claude, outside)
         self.assertTrue(memory_audit.repository_supplied(self.repo, "local"))
 
+    def test_local_settings_git_cannot_tell_about_are_the_repository_own(self) -> None:
+        local = self.repo / ".claude" / "settings.local.json"
+        write(local, "{}")
+        self.assertFalse(memory_audit.repository_supplied(self.repo, "local"), "untracked")
+        git("-C", str(self.repo), "add", "--force", ".claude/settings.local.json")
+        self.assertTrue(memory_audit.repository_supplied(self.repo, "local"), "tracked")
+        git("-C", str(self.repo), "rm", "--cached", "-q", ".claude/settings.local.json")
+        (self.repo / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        self.assertTrue(memory_audit.repository_supplied(self.repo, "local"), "a configuration git cannot parse")
+
+    def test_local_settings_in_no_repository_are_the_users(self) -> None:
+        plain = self.root / "plain folder"
+        write(plain / ".claude" / "settings.local.json", "{}")
+        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}):
+            self.assertFalse(memory_audit.repository_supplied(plain, "local"))
+
+    def test_the_main_worktree_core_worktree_names_is_read_whole(self) -> None:
+        common = self.root / "shared git"
+        paths = [self.root / "linked", self.root / "shared git" / "worktrees" / "linked", common]
+
+        def main_worktree_given(configured: str | None) -> Path | None:
+            with (
+                mock.patch.object(GitClient, "rev_parse_paths", return_value=paths),
+                mock.patch.object(GitClient, "quiet_output", return_value=configured),
+            ):
+                return memory_audit.main_worktree(self.root / "linked")
+
+        # Only the line end git prints is cut: a name may end in another space or in any letter.
+        self.assertEqual((common / "../work\tX").resolve(), main_worktree_given("../work\tX\r\n"))
+        self.assertEqual((common / "../work\t").resolve(), main_worktree_given("../work\t\n"))
+        with self.assertRaises(GitError) as context:
+            main_worktree_given("\r\n")
+        self.assertEqual(f"git config gave core.worktree in {common / 'config'} an empty value", str(context.exception))
+        with self.assertRaises(memory_audit.UnknownMainWorktree):
+            main_worktree_given(None)
+
     def test_a_used_repository_choice_states_the_block_rule(self) -> None:
         self.store(self.home / "chosen")
         project = self.repo / ".claude" / "settings.json"
@@ -1752,6 +1791,38 @@ class ResolveTests(unittest.TestCase):
             "names no main worktree; run resolve with --repo naming the main worktree, or pass --memory-dir.",
             result["notes"][-1],
         )
+
+    def test_an_empty_core_worktree_is_reported_not_followed(self) -> None:
+        separate = self.new_repository(self.root / "separate", f"--separate-git-dir={self.root / 'separate git'}")
+        linked = self.root / "separate worktree"
+        git("-C", str(separate), "worktree", "add", "-q", "-b", "feature", str(linked))
+        shared = (self.root / "separate git").resolve()
+        with (shared / "config").open("a", encoding="utf-8") as config:
+            config.write("[core]\n\tworktree =\n")
+        lines = self.resolve_lines("--repo", str(linked), cwd=self.root, code=1)
+        self.assertEqual(
+            [
+                "FAILED git could not read the repository: "
+                f"git config gave core.worktree in {shared / 'config'} an empty value"
+            ],
+            lines,
+        )
+
+    def test_a_core_worktree_git_cannot_read_is_reported_not_taken_for_none(self) -> None:
+        separate = self.new_repository(self.root / "separate", f"--separate-git-dir={self.root / 'separate git'}")
+        linked = self.root / "separate worktree"
+        git("-C", str(separate), "worktree", "add", "-q", "-b", "feature", str(linked))
+        run = GitClient.run
+        refused = "warning: unable to access 'config': Permission denied\n"
+
+        def answering(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
+            if "core.worktree" in arguments:
+                return GitResult(1, "", refused)
+            return run(client, arguments, **options)
+
+        with mock.patch.object(GitClient, "run", autospec=True, side_effect=answering):
+            lines = self.resolve_lines("--repo", str(linked), cwd=self.root, code=1)
+        self.assertEqual([f"FAILED git could not read the repository: {flat_text(refused)}"], lines)
 
     def test_a_git_failure_is_reported_by_its_own_reason(self) -> None:
         worktree = self.root / "wt"

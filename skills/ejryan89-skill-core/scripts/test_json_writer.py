@@ -13,7 +13,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from json_reader import loads
-from json_writer import JsonWriteRefused, dumps, write
+from json_writer import CONTENT_ERRORS, JsonWriteRefused, dumps, write
 
 # A record of every JSON type, with a character past ASCII and one past the Basic Multilingual Plane.
 RECORD: dict[str, Any] = {"z": ["café", "\U0001f600"], "a": {"n": 1, "f": 1.5, "t": True, "none": None}}
@@ -125,3 +125,15 @@ class WriteTests(unittest.TestCase):
                     write(path, value)
             self.assertEqual(b'{"previous": true}\n', path.read_bytes())
             self.assertEqual(["record.json"], sorted(item.name for item in Path(temporary).iterdir()))
+
+
+class ContentErrorsTests(unittest.TestCase):
+    def test_the_family_is_the_refusal(self) -> None:
+        self.assertEqual((JsonWriteRefused,), CONTENT_ERRORS)
+
+    def test_a_value_no_json_file_can_hold_raises_a_member_and_a_value_of_no_json_type_does_not(self) -> None:
+        for value in (float("nan"), "\ud800", {1: 1, "1": 2}):
+            with self.subTest(value=value), self.assertRaises(CONTENT_ERRORS):
+                dumps(value)
+        with self.assertRaises(TypeError):
+            dumps(object())

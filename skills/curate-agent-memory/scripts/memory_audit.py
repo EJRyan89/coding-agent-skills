@@ -764,16 +764,16 @@ def main_worktree(repo: Path) -> Path | None:
     if common.name == ".git":
         return common.parent
     # core.worktree, relative to the Git directory when relative, is git's own record of a submodule's working tree.
-    configured = GitClient().run(["config", "--file", str(common / "config"), "--get", "core.worktree"])
-    if configured.returncode == 1:
+    # Exit 1 with nothing on stderr is git's answer that the setting is unset; any other failure raises.
+    configured = GitClient().quiet_output(["config", "--file", str(common / "config"), "--get", "core.worktree"])
+    if configured is None:
         raise UnknownMainWorktree(
             f"{top} is a linked worktree whose shared Git directory {common} names no main worktree; run resolve "
             "with --repo naming the main worktree, or pass --memory-dir."
         )
-    value = configured.stdout.rstrip("\r\n")
-    if configured.returncode != 0 or not value:
-        message = configured.stderr.strip() or f"git config failed with exit code {configured.returncode}"
-        raise GitError(message, returncode=configured.returncode)
+    value = configured.rstrip("\r\n")
+    if not value:
+        raise GitError(f"git config gave core.worktree in {common / 'config'} an empty value")
     return (common / value).resolve()
 
 
@@ -854,11 +854,12 @@ def repository_supplied(repo: Path, scope: str) -> bool:
         pass
     except OSError:
         return True
+    # ls-files lists a tracked file and prints nothing for one git does not track, so only a failure cannot tell.
     try:
-        listed = GitClient().run(["ls-files", "--error-unmatch", "--", ".claude/settings.local.json"], directory=repo)
-    except GitError:
-        return True
-    return listed.returncode == 0
+        listed = GitClient().output(["ls-files", "-z", "--", ".claude/settings.local.json"], directory=repo)
+    except GitError as exc:
+        return exc.kind != "not_repository"
+    return bool(listed)
 
 
 def blocking_scope(scopes: tuple[tuple[str, Path], ...]) -> str | None:
@@ -1128,7 +1129,11 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
 def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     """Write the JSON audit report to a new file, --output or a temporary one, and name it."""
     user_dir = args.user_dir or config_directory(Path.home(), dict(os.environ))
-    report = json_writer.dumps(audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir), indent=2) + "\n"
+    found = audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir)
+    try:
+        report = json_writer.dumps(found, indent=2) + "\n"
+    except json_writer.JsonWriteRefused as exc:
+        return 1, [f"FAILED the audit report cannot be written: {flat_text(str(exc))}"]
     if args.output:
         try:
             # Created exclusively, so a file that appeared since the check is never replaced either.
