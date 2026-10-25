@@ -11,9 +11,9 @@ script refuses an explicit output path inside its own skills directory or one th
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+import json_reader
 from console import failed_line, use_utf8_output
 from file_presence import is_present
 
@@ -93,7 +93,7 @@ def plugin_name() -> str | None:
     try:
         if not is_present(manifest):
             return None
-        document: object = json.loads(manifest.read_text(encoding="utf-8"))
+        document: object = json_reader.read_file(manifest)
     except OSError as error:
         raise ValueError(f"{manifest} cannot be read: {error.strerror or error}") from error
     except ValueError as error:

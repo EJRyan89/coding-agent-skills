@@ -23,6 +23,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import frontmatter
+import json_reader
 from git_client import GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
@@ -203,8 +204,8 @@ def skills_in_stream(output: str) -> list[str]:
     found: list[str] = []
     for line in output.splitlines():
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+            event = json_reader.loads(line)
+        except ValueError:
             continue
         if not isinstance(event, dict) or event.get("type") != "assistant" or event.get("parent_tool_use_id"):
             continue
@@ -337,8 +338,8 @@ def stream_models(output: str) -> tuple[frozenset[str], frozenset[str]]:
     subagents: set[str] = set()
     for line in output.splitlines():
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+            event = json_reader.loads(line)
+        except ValueError:
             continue
         if (
             not isinstance(event, dict)

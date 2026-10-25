@@ -26,6 +26,8 @@ import json
 import re
 from pathlib import Path
 
+import json_reader
+
 Value = str | list[str] | None
 
 DELIMITER = "---"
@@ -287,7 +289,7 @@ def _scalar(text: str) -> str:
             raise FrontmatterError("a double-quoted value is not closed")
         try:
             # The match holds no unescaped quote, so the text decoded is one JSON string, which decodes to a str.
-            decoded: str = json.loads('"' + match.group(1).replace("\t", "\\t") + '"')
+            decoded: str = json_reader.loads('"' + match.group(1).replace("\t", "\\t") + '"')
         except json.JSONDecodeError:
             raise FrontmatterError("a double-quoted value uses an escape this reader does not support") from None
         return decoded

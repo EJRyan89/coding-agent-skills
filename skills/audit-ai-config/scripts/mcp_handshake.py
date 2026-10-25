@@ -31,7 +31,9 @@ configuration or a server supplies is flattened onto it with ejryan89-skill-core
                                         names neither a command nor a url, or its cwd or relative command is
                                         outside the repository (Server '<name>': cwd '<cwd>' is outside the
                                         repository, or command '<command>' is), which is then SKIPPED while
-                                        the others run
+                                        the others run, or its definition nests too deep to read (Server
+                                        '<name>': its definition nests too deep to compare with the others),
+                                        which is never started while the others run
     CONFIG_WARNING <file> <reason>      .mcp.json or .github/mcp.json lacks its servers key, or an entry is
                                         not an object (a table in TOML) and is not a server; the others run
     HANDSHAKE_OK <name> source=<files> protocol=<version> tools=<count|none>
@@ -61,6 +63,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from audit_ai_config import (
     CODEX_CONFIG,
     MCP_JSON_FILES,
@@ -86,6 +89,8 @@ EXIT_WAIT_SECONDS = 2.0
 
 
 Problem = tuple[str, str, str]  # (ERROR or WARNING, source, message)
+# Why a server whose definition nests past the recursion limit, which json.dumps cannot write, is never started.
+TOO_DEEP = "its definition nests too deep to compare with the others"
 
 
 def declared_servers(root: Path) -> tuple[list[tuple[str, str, dict[str, Any]]], list[Problem]]:
@@ -129,7 +134,11 @@ def group_servers(root: Path, only: str | None) -> tuple[list[tuple[str, list[st
             continue
         # A TOML date or time has no JSON form; repr keeps such a definition distinct, and the handshake then
         # rejects the value as it rejects any other of the wrong type.
-        key = (name, json.dumps(connection(entry), sort_keys=True, default=repr))
+        try:
+            key = (name, json.dumps(connection(entry), sort_keys=True, default=repr))
+        except RecursionError:
+            problems.append(("ERROR", source, f"Server '{name}': {TOO_DEEP}"))
+            continue
         if key in groups:
             groups[key][1].append(source)
         else:
@@ -159,7 +168,7 @@ class Session:
             if not line:
                 raise RuntimeError(self.exited() or "server exited before responding")
             try:
-                message = json.loads(line.decode("utf-8", "replace"))
+                message = json_reader.loads(line.decode("utf-8", "replace"))
             # ValueError covers a decode error and an over-long integer; RecursionError, nesting too deep
             except (ValueError, RecursionError):
                 continue

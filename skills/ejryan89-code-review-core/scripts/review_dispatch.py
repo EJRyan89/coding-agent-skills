@@ -12,6 +12,7 @@ from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from review_config import ConfigurationError, load_config
 from review_guard import PLUGIN, UNGUARDED, claimed, read_log, reviewer_agent_type
 from review_hosts import (
@@ -104,7 +105,7 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
         sizes: dict[str, int] = {}
         for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
             with contextlib.suppress(*CONTENT_ERRORS):
-                relative = json.loads(line)
+                relative = json_reader.loads(line)
                 target = source.joinpath(relative) if isinstance(relative, str) else source
                 key = os.path.normcase(os.path.normpath(target))
                 if key not in sizes and key != manifest and _inside(target, source) and target.is_file():

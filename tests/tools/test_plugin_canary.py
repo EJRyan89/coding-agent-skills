@@ -96,6 +96,18 @@ def test_a_main_session_the_guard_denied_or_that_never_read_fails() -> None:
     assert canary.failed(unread)
 
 
+def test_a_plugin_expects_the_hooks_its_hooks_file_names_and_none_without_one() -> None:
+    hooks: dict[str, list[object]] = {"PreToolUse": [], "PostToolUse": []}
+    cases: list[tuple[dict[str, bytes], set[str]]] = [
+        ({"hooks/hooks.json": json.dumps({"hooks": hooks}).encode()}, set(hooks)),
+        ({"hooks/hooks.json": b"{}"}, set()),
+        ({}, set()),
+    ]
+    for files, found in cases:
+        plugin = plugin_build.Plugin("suite", skills=["alpha"], agents=["reviewer"], files=files)
+        assert canary.expected(plugin) == {"skill": {"alpha"}, "agent": {"reviewer"}, "hook": found}
+
+
 def test_the_component_inventory_is_read_from_plugin_details() -> None:
     text = (
         "coding-agent-skills 0.0.0-dev\n\nComponent inventory\n"

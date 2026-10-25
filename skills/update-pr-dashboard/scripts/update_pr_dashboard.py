@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import json
 import re
 import stat
 import sys
@@ -38,7 +37,7 @@ from review_config import (
     validate_repository_identity,
 )
 from review_github import GitHubClient
-from review_io import atomic_write_json, atomic_write_text
+from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_json
 from review_vocabularies import SEVERITIES as SEVERITY_KEYS
 from typed_fields import FieldError, FieldReader
 
@@ -89,7 +88,8 @@ TRACKER_SCHEMA_VERSIONS = (1, TRACKER_SCHEMA_VERSION)
 CANDIDATE_STATES = frozenset({DASHBOARD_AI_REVIEW_MISSING, DASHBOARD_AI_REVIEW_STALE})
 # A new file the tracker writes is readable by its owner alone; a file it replaces keeps the mode it had.
 NEW_FILE_MODE = 0o600
-PULL_KEY_PATTERN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]*)")
+# A pull request's number has at most ten digits, as GitHub's 32-bit numbers do, so int() never meets the digit limit.
+PULL_KEY_PATTERN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]{0,9})")
 
 
 class TrackerError(ValueError):
@@ -694,9 +694,10 @@ def update_dashboard_rows(
     call asks it. Each write replaces the file its path leads to, through any symbolic link, and keeps that file's
     mode."""
     try:
-        items = validate_items(json.loads(input_path.read_text(encoding="utf-8-sig")))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        document = read_json(input_path)
+    except PersistenceError as exc:
         raise TrackerError(str(exc)) from exc
+    items = validate_items(document)
     if not start_marker or not end_marker or start_marker == end_marker:
         raise TrackerError("Dashboard markers must be distinct non-empty strings")
     # Refuse a dashboard without its markers, or one a write would not reach, before asking GitHub anything.

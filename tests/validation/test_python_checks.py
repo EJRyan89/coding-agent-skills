@@ -919,6 +919,52 @@ def test_link_test_policy_refuses_a_link_test_outside_link_probe() -> None:
     ]
 
 
+JSON_SOURCE = """\
+import json
+import json as j
+from json import JSONDecoder, load
+from json.decoder import JSONDecoder as Decoder
+
+import json_reader
+
+
+def parses(text, handle):
+    return json.loads(text), j.load(handle), load(handle), JSONDecoder(), Decoder(), json.decoder.JSONDecoder()
+
+
+def conforms(text):
+    return json_reader.loads(text), json_reader.raw_decode(text), json.dumps(text), json.JSONDecodeError
+
+
+def own(value):
+    return json.loads(json.dumps(value))
+
+
+JSON_PARSE_ALLOWED = {"own": "parses the text it just serialized", "stale": "a reason"}
+"""
+
+
+def test_json_parse_policy_refuses_a_parse_outside_json_reader() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.json_parse_problems,
+        "JSON_PARSE_ALLOWED",
+        JSON_SOURCE,
+        "skills/ejryan89-skill-core/scripts/json_reader.py",
+    )
+    remedy = (
+        ", which keeps a repeated key's last value and reads NaN; call ejryan89-skill-core's json_reader, the one "
+        "parse of JSON, or state why in JSON_PARSE_ALLOWED"
+    )
+    parsers = ("json.loads", "json.load", "json.load", "json.JSONDecoder")
+    assert found == [
+        *(f"{alpha}:10 parses JSON with {parser}{remedy}" for parser in parsers),
+        *(f"{alpha}:10 parses JSON with json.decoder.JSONDecoder{remedy}" for _ in range(2)),
+        f"{alpha}: JSON_PARSE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: JSON_PARSE_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
 CLOSE_HANDLE_ARGUMENTS = "    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]\n"
 CTYPES_SOURCE = """\
 import ctypes

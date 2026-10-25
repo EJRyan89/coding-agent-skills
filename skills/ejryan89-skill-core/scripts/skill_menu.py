@@ -20,12 +20,13 @@ source says, and fails only on what names no skill or cannot be read at all.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+import json_reader
 
 # What each template value becomes in a plugin, which has no deployer to render it. A plugin is one tree for every
 # platform, so the interpreter is the command the deployer renders on Windows, and the plugin's README states that it
@@ -206,7 +207,7 @@ def carriers(menu: Menu, skill: str) -> tuple[list[str], dict[str, str]]:
 
 def _json_object(path: Path) -> dict[str, object]:
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.read_file(path)
     except (OSError, UnicodeError, ValueError) as exc:
         raise MenuError(f"{path.as_posix()} cannot be read: {exc}") from exc
     if not isinstance(document, dict):

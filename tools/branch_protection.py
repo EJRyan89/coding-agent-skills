@@ -15,7 +15,6 @@ release procedure in docs/releasing.md runs it before tagging.
 from __future__ import annotations
 
 import base64
-import json
 import re
 import sys
 from collections.abc import Mapping
@@ -24,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from console import run_main
 from github_client import GitHubClient, GitHubError
 
@@ -155,8 +155,8 @@ def _read(client: GitHubClient, endpoint: str) -> dict[str, object]:
             return {}
         raise ValueError(f"gh api {endpoint} failed: {error}") from error
     try:
-        document = json.loads(output)
-    except json.JSONDecodeError as error:
+        document = json_reader.loads(output)
+    except ValueError as error:
         raise ValueError(f"gh api {endpoint} did not return JSON: {error}") from error
     if not isinstance(document, dict):
         raise ValueError(f"gh api {endpoint} did not return a JSON object")

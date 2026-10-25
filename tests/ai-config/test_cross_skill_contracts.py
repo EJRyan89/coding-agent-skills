@@ -589,7 +589,7 @@ class CrossSkillContractTests(unittest.TestCase):
             cases = {
                 "missing": (missing, "review_guard.py", "FileNotFoundError"),
                 "broken": (broken, "the guard failed to load", "RuntimeError"),
-                "coreless": (coreless, "No module named 'console'", "ModuleNotFoundError"),
+                "coreless": (coreless, "No module named 'json_reader'", "ModuleNotFoundError"),
             }
             for case, (profile, traceback, error) in cases.items():
                 environment = {**os.environ, HOME_VARIABLE: str(profile)}
@@ -635,12 +635,12 @@ class CrossSkillContractTests(unittest.TestCase):
             )
             # The guard imports ejryan89-skill-core's runner, the flattener the runner imports, its typed-field reader,
             # the locator that names Python's command, and the lookup that tells a plugin from the deployed home with
-            # the file probe it reads the plugin's manifest through, from the sibling skill the deployer installs beside
-            # it.
+            # the file probe it reads the plugin's manifest through, and the JSON reader both parse with, from the
+            # sibling skill the deployer installs beside it.
             core = profile / ".claude/skills/ejryan89-skill-core/scripts"
             core.mkdir(parents=True)
             modules = ("console.py", "executable_locator.py", "file_presence.py", "flat_text.py", "skill_roots.py")
-            for module in (*modules, "typed_fields.py"):
+            for module in (*modules, "typed_fields.py", "json_reader.py"):
                 (core / module).write_bytes(
                     (REPOSITORY_ROOT / "skills/ejryan89-skill-core/scripts" / module).read_bytes()
                 )

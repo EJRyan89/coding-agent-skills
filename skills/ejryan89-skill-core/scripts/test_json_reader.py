@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from json_reader import JsonRefused, loads, read_file
+from json_reader import JsonRefused, loads, raw_decode, read_file
 
 
 class RefusalTests(unittest.TestCase):
@@ -46,6 +46,29 @@ class RefusalTests(unittest.TestCase):
     def test_malformed_json_raises_what_json_raises(self) -> None:
         with self.assertRaises(json.JSONDecodeError):
             loads("{")
+
+    def test_an_integer_past_the_digit_limit_is_a_value_error(self) -> None:
+        # A caller turns a ValueError from its parse into its own refusal; this one is neither of the others.
+        with self.assertRaises(ValueError) as raised:
+            loads("1" * 5000)
+        self.assertNotIsInstance(raised.exception, json.JSONDecodeError | JsonRefused)
+
+
+class RawDecodeTests(unittest.TestCase):
+    def test_a_value_followed_by_other_text_reads_with_the_index_past_it(self) -> None:
+        self.assertEqual(({"a": 1}, 8), raw_decode('{"a": 1} {"b": 2}'))
+        self.assertEqual(({"b": 2}, 17), raw_decode('{"a": 1} {"b": 2}', 9))
+
+    def test_each_shape_loads_refuses_is_refused(self) -> None:
+        for text, refusal in (
+            ('{"k": 1, "k": 2} rest', "the JSON repeats the key 'k' in one object"),
+            ('{"value": NaN} rest', "the JSON holds NaN, which JSON does not define"),
+            ("[" * 100_000 + "]" * 100_000, "the JSON nests deeper than the parser can read"),
+        ):
+            with self.subTest(text=text[:12]):
+                with self.assertRaises(JsonRefused) as raised:
+                    raw_decode(text)
+                self.assertEqual(refusal, str(raised.exception))
 
 
 class ReadFileTests(unittest.TestCase):

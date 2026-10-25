@@ -70,7 +70,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import json
 import re
 import sys
 import tempfile
@@ -86,6 +85,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 import guidance_record
+import json_reader
 from agent_skills import CODEX_METADATA
 from console import run_main
 from flat_text import single_line
@@ -453,7 +453,7 @@ def changelog_releases(changelog: Changelog, fetcher: Fetcher, timeout: float) -
         if fetched.status != 200:
             raise WatchError(f"cannot fetch the {changelog.subject} releases {url}: {fetched.reason or fetched.status}")
         try:
-            payload = json.loads(fetched.body)
+            payload = json_reader.loads(fetched.body)
         except ValueError as exc:
             raise WatchError(f"{url} did not return JSON: {exc}") from exc
         releases = github_releases(payload, url)
@@ -574,12 +574,11 @@ def summary(lines: Sequence[str]) -> str:
                 rows += ["| Release | Terms | Entry |", "| --- | --- | --- |"]
         elif line.startswith("UNREAD "):
             _, _, release, reason = line.split(" ", 3)
-            rows.append(f"| {release} | none read | {markdown_cell(json.loads(reason))} |")
+            rows.append(f"| {release} | none read | {markdown_cell(json_reader.loads(reason))} |")
         elif line.startswith("ENTRY "):
             _, _, release, rest = line.split(" ", 3)
-            decoder = json.JSONDecoder()
-            found, end = decoder.raw_decode(rest)
-            entry, _ = decoder.raw_decode(rest, end + 1)
+            found, end = json_reader.raw_decode(rest)
+            entry, _ = json_reader.raw_decode(rest, end + 1)
             rows.append(f"| {release} | {markdown_cell(found)} | {markdown_cell(entry)} |")
     behind = [line for line in lines if line.startswith("SAMPLE_BEHIND ")]
     rows += ["", "### Captured samples", ""]

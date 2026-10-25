@@ -27,6 +27,7 @@ from functools import partial
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import json_reader
 from release_tags import is_release_tag
 from typed_fields import FieldError, FieldReader
 
@@ -81,7 +82,7 @@ def read(path: Path, subjects: Sequence[str]) -> GuidanceRecord:
     with it."""
     name = path.as_posix()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.read_file(path)
     except FileNotFoundError as exc:
         raise GuidanceRecordError(f"no guidance record at {name}") from exc
     except (OSError, UnicodeDecodeError, ValueError) as exc:
