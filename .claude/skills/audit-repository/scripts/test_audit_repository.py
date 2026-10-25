@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import audit_repository as audit
+import json_writer
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import Backoff, CommandResult, GitHubClient
 from guidance_record import PYTHON_SUBJECT, Page
@@ -693,6 +694,10 @@ class RotationTests(Fixture):
         for name, failure in (
             ("a write that cannot be synced", mock.patch("os.fsync", side_effect=OSError("disk full"))),
             ("a replace refused", mock.patch("pathlib.Path.replace", side_effect=OSError("disk full"))),
+            (
+                "a record the JSON writer refuses",
+                mock.patch("json_writer.dumps", side_effect=json_writer.JsonWriteRefused("disk full")),
+            ),
         ):
             with self.subTest(name=name):
                 with failure:

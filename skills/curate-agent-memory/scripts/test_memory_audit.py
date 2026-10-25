@@ -23,6 +23,7 @@ import skill_roots
 from file_presence import NotAFile
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitClient, GitError, GitResult
+from json_writer import JsonWriteRefused
 
 
 def temporary_store_folds_case() -> bool:
@@ -425,6 +426,19 @@ class MemoryAuditTests(unittest.TestCase):
         code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
         self.assertEqual((1, ""), (code, stderr))
         self.assertRegex(stdout, rf"\AFAILED cannot write {re.escape(str(target))}: [^\n]+\n\Z")
+
+    def test_a_report_json_cannot_hold_is_refused_by_name_before_the_output_exists(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "")
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        target = self.root / "report.json"
+        with (
+            mock.patch.object(memory_audit, "audit", return_value={"score": float("nan")}),
+            self.assertRaisesRegex(
+                JsonWriteRefused, "^the value holds NaN or an infinity, which JSON does not define$"
+            ),
+        ):
+            run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
+        self.assertFalse(target.exists())
 
     def test_an_existing_output_is_refused_and_left_alone(self) -> None:
         write(self.memory_dir / "MEMORY.md", "- [one](one.md) — one\n")
