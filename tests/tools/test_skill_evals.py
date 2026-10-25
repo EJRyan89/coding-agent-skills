@@ -80,16 +80,17 @@ def review_scenarios(*arguments: Any, **options: Any) -> list[Scenario]:
 # on it, and so the specialists its change reaches: the one record of the routes, which the reviewer's own suite reads
 # nowhere, since only the copy holds the reviewer's files a condition reads.
 REVIEW_REPOSITORY_ROLES = {
-    "branch-name-command": "skill-scripts,trust-boundary",
-    "build-grant": "documentation-drift,generic-review,skill-contract,skill-scripts,upgrade-notes",
-    "drifted-guide": "documentation-drift,generic-review",
+    "branch-name-command": "sibling-search,skill-scripts,trust-boundary",
+    "build-grant": "documentation-drift,generic-review,sibling-search,skill-contract,skill-scripts,upgrade-notes",
+    "drifted-guide": "documentation-drift,generic-review,sibling-search",
+    "missed-sibling": "generic-review,sibling-search",
     "misstated-exit-status": "documentation",
-    "tested-change": "generic-review",
-    "text-read-policy": "validation-policy",
-    "undocumented-change": "generic-review",
-    "unnoted-flag-rename": "deployer,upgrade-notes",
-    "untested-change": "generic-review,untested-changes",
-    "write-before-refusal": "deployer",
+    "tested-change": "generic-review,sibling-search",
+    "text-read-policy": "sibling-search,validation-policy",
+    "undocumented-change": "generic-review,sibling-search",
+    "unnoted-flag-rename": "deployer,sibling-search,upgrade-notes",
+    "untested-change": "generic-review,sibling-search,untested-changes",
+    "write-before-refusal": "deployer,sibling-search",
 }
 REVIEW_REPOSITORY_SCENARIOS = tuple(REVIEW_REPOSITORY_ROLES)
 # The Python files the write-before-refusal scenario holds in both trees, each by its path once restored.
@@ -3464,6 +3465,7 @@ REVIEW_REPOSITORY_EXPECTATIONS = {
     "branch-name-command": 1,
     "build-grant": 1,
     "drifted-guide": 2,
+    "missed-sibling": 1,
     "misstated-exit-status": 1,
     "tested-change": 2,
     "text-read-policy": 1,
@@ -3544,10 +3546,10 @@ def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_hold
 
 def test_the_parametrized_sweeps_name_every_scenario_and_add_up_to_the_skills_whole_rows() -> None:
     # Each sweep's cases together are its skill's whole run: every scenario once, whose counts are the totals a full
-    # run's row gives, 25 for review-document and 13 for review-repository on each model.
+    # run's row gives, 25 for review-document and 14 for review-repository on each model.
     for skill, cases, total in (
         ("review-document", REVIEW_DOCUMENT_EXPECTATIONS, 25),
-        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 13),
+        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 14),
     ):
         assert [scenario.name for scenario in review_scenarios(skill)] == list(cases)
         assert sum(cases.values()) == total

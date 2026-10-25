@@ -977,3 +977,13 @@ def test_usage_errors_exit_2_with_usage_on_stderr(arguments: list[str]) -> None:
     assert output.getvalue() == ""
     assert "usage:" in errors.getvalue()
     assert runner.calls == []
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1"])
+def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        formatter.main(["check", "--repo-root", ".", "--solution", "a.sln", "--include-file", "f", "--timeout", value])
+    assert exited.value.code == 2
+    refusal = capsys.readouterr().err.splitlines()[-1]
+    assert "argument --timeout: " in refusal
+    assert refusal.endswith(f" seconds, not {value}")

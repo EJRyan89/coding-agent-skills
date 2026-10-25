@@ -67,6 +67,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from console import run_main
 from flat_text import single_line
 from runtime_support import RUNTIMES as RUNTIME_NAMES
+from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -434,7 +435,7 @@ def run(
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--runtime", action="append", choices=RUNTIMES, help="check only this runtime; repeatable")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, metavar="SECONDS")
+    parser.add_argument("--timeout", type=positive_seconds, default=DEFAULT_TIMEOUT, metavar="SECONDS")
     parser.add_argument("--summary", type=Path, metavar="FILE", help="append a Markdown table of the facts to FILE")
     namespace = parser.parse_args(arguments)
     with tempfile.TemporaryDirectory(prefix="runtime-command-lines-") as directory:
