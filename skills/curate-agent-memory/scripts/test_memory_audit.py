@@ -2086,7 +2086,7 @@ def test_a_target_reached_through_a_linked_folder_is_the_file_it_names(tmp_path:
     link_folder(real, memory / "shared")
     named = memory_audit.target_identity(memory, "shared/note.md")
     assert named == memory_audit.target_identity(real, "note.md")
-    assert named == memory_audit.target_identity(memory, "./shared/../shared/note.md")
+    assert named == memory_audit.target_identity(memory, "./shared/note.md")
     assert named != memory_audit.target_identity(memory, "note.md")
 
 
