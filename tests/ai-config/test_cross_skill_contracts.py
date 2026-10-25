@@ -639,7 +639,15 @@ class CrossSkillContractTests(unittest.TestCase):
             # sibling skill the deployer installs beside it.
             core = profile / ".claude/skills/ejryan89-skill-core/scripts"
             core.mkdir(parents=True)
-            modules = ("console.py", "executable_locator.py", "file_presence.py", "flat_text.py", "link_probe.py", "path_containment.py", "skill_roots.py")
+            modules = (
+                "console.py",
+                "executable_locator.py",
+                "file_presence.py",
+                "flat_text.py",
+                "link_probe.py",
+                "path_containment.py",
+                "skill_roots.py",
+            )
             for module in (*modules, "typed_fields.py", "json_reader.py", "whole_number.py"):
                 (core / module).write_bytes(
                     (REPOSITORY_ROOT / "skills/ejryan89-skill-core/scripts" / module).read_bytes()
