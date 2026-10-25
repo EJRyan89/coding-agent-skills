@@ -121,36 +121,17 @@ VERSION_NAME = re.compile(r"v\d+(?:\.\d+)*", re.IGNORECASE)
 # What the reader does instead of applying an item it cannot settle, by the item's operation.
 NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied", "Remove": "it is not removed"}
 
-# How deep Choose elements may nest: the evaluation walks into each, a few frames a level, well inside the recursion
-# limit, and far deeper than a project file nests them.
-MAX_CHOOSE_DEPTH = 100
-
 # Whether an item, or a metadata value, applies: True, False, or the condition that cannot be settled.
 Decision = bool | str
 
 
-def choose_depth(root: Element) -> int:
-    """How many Choose elements the deepest element of `root` sits in, counted without recursing."""
-    deepest = 0
-    pending = [(root, 0)]
-    while pending:
-        element, outer = pending.pop()
-        depth = outer + (local_name(element) == "Choose")
-        deepest = max(deepest, depth)
-        pending.extend((child, depth) for child in element)
-    return deepest
-
-
 def evaluation_root(path: Path) -> Element:
-    """The root of the MSBuild file at `path`, `Unreadable` when it cannot be read, MSBuild refuses its Choose, or its
-    Choose elements nest deeper than the evaluation, which walks each one it enters, can follow."""
+    """The root of the MSBuild file at `path`, `Unreadable` when it cannot be read or MSBuild refuses its Choose. The
+    evaluation walks into each Choose it enters, a few frames a level, and `parse_xml` refuses elements nested past
+    the shared depth limit, so no file it returns nests deeper than that walk can follow."""
     root = parse_xml(path)
     if any(local_name(element) == "When" and not (element.get("Condition") or "").strip() for element in root.iter()):
         raise Unreadable(path, "a When has no Condition, which MSBuild refuses, so the file does not evaluate")
-    if choose_depth(root) > MAX_CHOOSE_DEPTH:
-        raise Unreadable(
-            path, f"its Choose elements nest more than {MAX_CHOOSE_DEPTH} deep, past what the reader follows"
-        )
     return root
 
 

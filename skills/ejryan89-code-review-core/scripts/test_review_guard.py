@@ -402,6 +402,15 @@ class ReadLogTests(GuardFixture):
         self.claim()
         self.assertIsNone(self.decide("Read", file_path=str(self.source / "app" / "Service.cs")))
 
+    def test_a_read_the_log_cannot_hold_is_allowed_uncounted_and_the_boundary_still_holds(self) -> None:
+        # A path holding a lone surrogate, which a file name on Linux may, is a line no UTF-8 log can hold.
+        self.claim()
+        refused = json_writer.JsonWriteRefused("the value holds a lone surrogate U+DC80, which UTF-8 cannot encode")
+        with mock.patch.object(json_writer, "dumps", side_effect=refused):
+            self.assertIsNone(self.decide("Read", file_path=str(self.source / "app" / "Service.cs")))
+            self.assert_denied(self.decide("Read", file_path=str(self.checkout / "app" / "Service.cs")))
+        self.assertEqual([], self.logged())
+
 
 class WriteTests(GuardFixture):
     def test_a_reviewer_writes_only_its_own_roles_result_in_its_own_run(self) -> None:

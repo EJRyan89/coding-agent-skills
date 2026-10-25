@@ -1880,6 +1880,13 @@ class ContractTests(GuardTestCase):
         self.assertIsNone(self.bash(f'git --git-dir="{other}" commit -m x', self.tree))
         self.assertIsNone(self.bash(f'GIT_DIR="{self.root / "no repository"}" git commit -m x', self.tree))
 
+    def test_a_git_directory_git_cannot_read_is_refused_never_taken_for_no_hub(self) -> None:
+        other = self.other_repository() / ".git"
+        (other / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        self.assertEqual("deny", self.bash(f'git --git-dir="{other}" commit -m x', self.tree))
+        self.assertIn("cannot place it while a hub is guarded", self.reason)
+        self.assertEqual("deny", self.edit(other / "HEAD", tool="Write"))
+
     def test_a_here_document_body_is_data_not_commands(self) -> None:
         command = f"cat > run.sh <<EOF\ncd '{self.tree}'\ngit status\nEOF\ngit add run.sh"
         self.assertEqual("deny", self.bash(command, self.hub))

@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import nesting_depth
 from xml_reader import CONTENT_ERRORS, XmlRefused, read_xml
 
 DOCTYPE_REFUSED = "the document declares a DOCTYPE, which could expand entities without bound"
@@ -79,6 +80,23 @@ class RefusalTests(ReaderTestCase):
 
     def test_the_error_is_a_value_error(self) -> None:
         self.assertTrue(issubclass(XmlRefused, ValueError))
+
+
+class DepthTests(ReaderTestCase):
+    def test_elements_nested_one_level_past_the_shared_limit_are_refused(self) -> None:
+        past = nesting_depth.DEPTH_LIMIT + 1
+        for levels in (past, 100_000):
+            with self.subTest(levels=levels):
+                self.assert_refused(
+                    "<a>" * levels + "</a>" * levels, "the document nests elements deeper than 100 levels"
+                )
+
+    def test_elements_nested_to_the_shared_limit_parse(self) -> None:
+        limit = nesting_depth.DEPTH_LIMIT
+        element = read_xml("<a>" * (limit - 1) + "<b/>" + "</a>" * (limit - 1))
+        for _ in range(limit - 1):
+            element = element[0]
+        self.assertEqual("b", element.tag)
 
 
 class ParseTests(ReaderTestCase):

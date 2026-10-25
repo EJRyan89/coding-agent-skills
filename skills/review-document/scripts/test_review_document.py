@@ -1971,3 +1971,20 @@ class JsonObjectTests(unittest.TestCase):
             with self.subTest(start=content[:4]):
                 self.path.write_bytes(content)
                 self.assertIsNone(review_document.json_object(self.path))
+
+
+class FixtureRefusalTests(DocumentTestCase):
+    def test_a_value_no_json_file_can_hold_is_refused_before_anything_of_the_fixture_is_written(self) -> None:
+        # json_reader reads an escaped lone surrogate in a GitHub response, which no UTF-8 file can hold.
+        fixture = self.output / "fixture"
+        base = review_document.Base(None, None, "the document is added")
+        for relative in ("docs/design/plan.md", "notes/plan.md"):
+            document = review_document.Document(relative, b"# Plan\n", None, base)
+            with self.subTest(relative=relative), self.assertRaises(review_document.DocumentError) as raised:
+                review_document.write_fixture(fixture, document, {"repository": "octo-org/widgets\ud800"}, None)
+            self.assertEqual(
+                f"{relative} cannot be held in a fixture: the value holds a lone surrogate U+D800, which UTF-8 "
+                "cannot encode",
+                str(raised.exception),
+            )
+            self.assertFalse(fixture.exists())

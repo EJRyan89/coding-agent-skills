@@ -25,6 +25,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import json_writer
 import review_guidance
 import review_insights as ri
 import review_records
@@ -663,6 +664,13 @@ class ReportTests(InsightFixture):
                 self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
                 f"FAILED {history}owner/repo#7: Access is denied",
             )
+
+    def test_a_value_the_json_writer_refuses_fails_the_report_naming_it(self) -> None:
+        # The synthesis stage writes the report's evidence and the run's paths, which may hold what no JSON file can.
+        self.commit("owner/repo", 7, ["Correctness"])
+        reason = "the value holds a lone surrogate U+DC80, which UTF-8 cannot encode"
+        with mock.patch.object(review_synthesis, "prepare", side_effect=json_writer.JsonWriteRefused(reason)):
+            self.assertFailed(self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"), reason)
 
     def test_guidance_git_cannot_read_fails_the_report_naming_git(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])
