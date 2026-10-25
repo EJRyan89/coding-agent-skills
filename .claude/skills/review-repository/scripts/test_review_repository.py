@@ -552,7 +552,7 @@ class DocumentationDriftTests(unittest.TestCase):
             diff = "diff --git a/tools/sweep.py b/tools/sweep.py\n--- a/tools/sweep.py\n+++ b/tools/sweep.py\n"
             diff += "@@ -1 +1 @@\n-DAYS = 30\n+DAYS = 7\n"
             code, out, written = run_condition(reviewer / CONDITION, source, diff, scratch)
-        self.assertEqual((0, "PASSAGES 1 given=1\n"), (code, out))
+        self.assertEqual((0, "PASSAGES 1 given=1 excluded=0\n"), (code, out))
         self.assertTrue(written.startswith("PASSAGE docs/guide.md:1 names sweep.py (script in tools/sweep.py)"))
 
 
@@ -589,7 +589,7 @@ class DocumentationDriftScenarioTests(unittest.TestCase):
         self.assertIn("documentation-drift", route(MANIFEST, ["tools/export_sweep.sh"], lambda name: True))
         with tempfile.TemporaryDirectory() as temporary:
             code, out, written = run_condition(REPOSITORY / CONDITION, directory / "head", diff, Path(temporary))
-        self.assertEqual((0, "PASSAGES 2 given=2\n"), (code, out))
+        self.assertEqual((0, "PASSAGES 2 given=2 excluded=0\n"), (code, out))
         self.assertIn("PASSAGE docs/exports.md:3 names export_sweep.sh (script in tools/export_sweep.sh)", written)
         head = (directory / "head" / "tools" / "export_sweep.sh").read_text(encoding="utf-8").splitlines()
         base = (directory / "base" / "tools" / "export_sweep.sh").read_text(encoding="utf-8").splitlines()
@@ -604,7 +604,7 @@ class DocumentationDriftScenarioTests(unittest.TestCase):
         self.assertIn("+++ b/tools/cache_trim.sh", diff)
         with tempfile.TemporaryDirectory() as temporary:
             self.assertEqual(
-                (1, "PASSAGES 0 given=0\n", ""),
+                (1, "PASSAGES 0 given=0 excluded=0\n", ""),
                 run_condition(REPOSITORY / CONDITION, directory / "head", diff, Path(temporary)),
             )
         self.assertEqual(
@@ -916,15 +916,14 @@ class RealDiffTests(unittest.TestCase):
         self.commit({"docs/guide.md": guide, self.SPACED: "DAYS = 30\n", self.ACCENTED: "WEEKS = 4\n"})
         self.commit({self.SPACED: "DAYS = 7\n", self.ACCENTED: "WEEKS = 2\n"})
         code, out, written = run_condition(self.reviewer / CONDITION, self.source, self.diff(), self.scratch)
-        self.assertEqual((0, "PASSAGES 2 given=2\n"), (code, out))
+        self.assertEqual((0, "PASSAGES 2 given=2 excluded=0\n"), (code, out))
         self.assertIn("PASSAGE docs/guide.md:3 names report age.py (script in tools/report age.py)", written)
         self.assertIn("PASSAGE docs/guide.md:5 names résumé.py (script in tools/résumé.py)", written)
 
 
 class SnapshotTests(unittest.TestCase):
-    """The untested route reads a snapshot taken as a review takes one: lazy, from a checkout, holding the changed
-    files and the paths the route reads, and leaving out what the snapshot excludes, its agent instructions among
-    them."""
+    """Each condition reads a snapshot taken as a review takes one: lazy, from a checkout, holding the changed files
+    and the paths its route reads, and leaving out what the snapshot excludes, its agent instructions among them."""
 
     REPOSITORY = "example/demo"
     SCRIPT = ".claude/skills/demo/scripts/demo.py"
@@ -953,12 +952,12 @@ class SnapshotTests(unittest.TestCase):
         self.git.output(["commit", "--quiet", "--message", "change"], directory=self.checkout)
         return self.git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
 
-    def snapshot(self, head: str, changed: list[str]) -> Path:
+    def snapshot(self, head: str, changed: list[str], condition: str = "untested-functions") -> Path:
         from review_runtime import materialize_source_snapshot
         from review_snapshot import lazy_upfront
 
         source = self.scratch / "source"
-        reads = MANIFEST["conditions"]["untested-functions"]["reads"]
+        reads = MANIFEST["conditions"][condition]["reads"]
         materialize_source_snapshot(
             self.checkout, self.REPOSITORY, head, source, changed_paths=changed, upfront=lazy_upfront(reads)
         )
@@ -995,6 +994,24 @@ class SnapshotTests(unittest.TestCase):
             (code, out),
         )
         self.assertEqual("", written)
+
+    def test_the_drift_route_names_each_agent_instruction_document_it_could_not_search(self) -> None:
+        naming = "Run `python -B tools/sweep.py` weekly.\n"
+        documents = {"CLAUDE.md": naming, ".claude/skills/demo/SKILL.md": naming, "docs/guide.md": "Nothing here.\n"}
+        self.commit({**documents, "tools/sweep.py": "def weeks():\n    return 4\n"})
+        head = self.commit({"tools/sweep.py": "def weeks():\n    return 2\n"})
+        source = self.snapshot(head, ["tools/sweep.py"], "doc-passages")
+        self.assertTrue((source / "docs" / "guide.md").is_file(), "a lazy snapshot holds the documents the route reads")
+        self.assertFalse((source / "CLAUDE.md").exists(), "the snapshot leaves out every agent-instruction path")
+        diff = self.git.output(["diff", "HEAD~1", "HEAD"], directory=self.checkout)
+        code, out, written = run_condition(self.reviewer / CONDITION, source, diff, self.scratch)
+        self.assertEqual((0, "PASSAGES 0 given=0 excluded=2\n"), (code, out))
+        reason = "so no passage in it was searched; judge from the diff whether it may name what changed\n"
+        self.assertEqual(
+            f"EXCLUDED .claude/skills/demo/SKILL.md: the snapshot leaves it out (agent-instruction), {reason}"
+            f"EXCLUDED CLAUDE.md: the snapshot leaves it out (agent-instruction), {reason}",
+            written,
+        )
 
 
 class RecommendedConfigurationTests(unittest.TestCase):

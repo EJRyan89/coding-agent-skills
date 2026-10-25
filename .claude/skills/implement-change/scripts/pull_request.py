@@ -194,21 +194,17 @@ def quiet_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> 
     """The stdout of a git command run with `--quiet`, or None when it exits 1 and says nothing, which such a command
     does only when what it reads is not there; any other failure is git's, with its reason."""
     try:
-        result = git.run(arguments, directory=repository)
+        return git.quiet_output(arguments, directory=repository)
     except GitError as exc:
         raise PullRequestError(f"git {arguments[0]}: {flat_text(str(exc))}") from exc
-    if result.returncode == 0:
-        return result.stdout
-    if result.returncode == 1 and not result.stderr.strip():
-        return None
-    reason = flat_text(result.stderr) or f"failed with exit code {result.returncode}"
-    raise PullRequestError(f"git {arguments[0]}: {reason}")
 
 
 def commit_of(git: GitClient, repository: Path, reference: str) -> str | None:
     """The commit `reference` names, or None when it names none."""
-    output = quiet_output(git, repository, ["rev-parse", "--verify", "--quiet", f"{reference}^{{commit}}"])
-    return None if output is None else output.strip()
+    try:
+        return git.commit_of(reference, directory=repository)
+    except GitError as exc:
+        raise PullRequestError(f"git rev-parse: {flat_text(str(exc))}") from exc
 
 
 def top_of(git: GitClient, repository: Path) -> Path:
@@ -254,11 +250,9 @@ def branch_facts(git: GitClient, repository: Path, base: Base) -> tuple[list[str
     if commit is None:
         raise PullRequestError(f"{base} names no commit after the fetch")
     problems = []
-    holds = git.run(["merge-base", "--is-ancestor", commit, "HEAD"], directory=repository)
-    if holds.returncode == 1:
+    # merge-base --is-ancestor exits 1 saying nothing when HEAD does not hold the base; any other failure is git's.
+    if quiet_output(git, repository, ["merge-base", "--is-ancestor", commit, "HEAD"]) is None:
         problems.append(f"BEHIND {base} {commit}")
-    elif holds.returncode != 0:
-        raise PullRequestError(f"git merge-base: {flat_text(holds.stderr)}")
     if git_output(git, repository, ["rev-list", "--count", f"{commit}..HEAD"]).strip() == "0":
         problems.append(f"NO_COMMITS {base}")
     changed = git_output(git, repository, ["status", "--porcelain"]).splitlines()

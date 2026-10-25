@@ -268,12 +268,13 @@ def locate(git: GitClient, directory: Path) -> Place:
     worktrees = tuple(list_worktrees(git, top))
     if not worktrees:
         raise ShepherdError(f"git lists no worktree for {top.as_posix()}")
-    url = git.run(["config", "--get", f"remote.{REMOTE}.url"], directory=top)
-    if url.returncode != 0:
+    # Exit 1 with nothing on stderr is git's answer that the URL is unset; any other failure raises with git's reason.
+    url = git.quiet_output(["config", "--get", f"remote.{REMOTE}.url"], directory=top)
+    if url is None:
         raise ShepherdError(f"{top.as_posix()} has no {REMOTE} remote")
-    repository = github_repository(url.stdout)
+    repository = github_repository(url)
     if repository is None:
-        raise ShepherdError(f"{REMOTE} names no GitHub repository: {flat_text(url.stdout)}")
+        raise ShepherdError(f"{REMOTE} names no GitHub repository: {flat_text(url)}")
     return Place(top, Path(worktrees[0].path), worktrees, repository)
 
 
@@ -295,8 +296,8 @@ def hub_line(git: GitClient, place: Place, dry_run: bool) -> tuple[str, bool]:
 
 def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
     """Fast-forward the hub to origin's main, or with `dry_run` compare it with origin's main, and say what happened."""
-    branch = git.run(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=hub)
-    name = branch.stdout.strip() if branch.returncode == 0 else ""
+    # None only for a detached HEAD; a HEAD git cannot read raises, which the HUB line names.
+    name = (git.quiet_output(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=hub) or "").strip()
     if name != BASE:
         return f"not fast-forwarded: it is on {name or 'a detached HEAD'}, not {BASE}"
     if git.output(["status", "--porcelain", "--untracked-files=no"], directory=hub).strip():
@@ -423,8 +424,8 @@ def is_behind(git: GitClient, top: Path, pull: Pull, base: str | None) -> bool:
     if pull.merge_state != "UNKNOWN" or base is None:
         return False
     try:
-        # merge-base --is-ancestor exits 1 for "not an ancestor", and 128 for a commit it cannot read.
-        return git.run(["merge-base", "--is-ancestor", base, pull.head], directory=top).returncode == 1
+        # merge-base --is-ancestor exits 1 saying nothing for "not an ancestor"; any other failure cannot tell.
+        return git.quiet_output(["merge-base", "--is-ancestor", base, pull.head], directory=top) is None
     except GitError:
         return False
 
@@ -697,12 +698,12 @@ def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | Non
     """The parents of each commit `heads` reach that origin's main, `base`, does not, by the commit. A head git does
     not hold is passed over. Raises ShepherdError when origin has no main, or git does not hold `base`, as when the hub
     was not fetched since main moved, since every commit main gained since the last fetch would then count as a head's
-    own."""
+    own, and GitError naming git's reason when git cannot tell whether it holds `base`."""
     if not heads:
         return {}
     if base is None:
         raise ShepherdError(f"{REMOTE} has no {BASE}, so a merged head's own commits cannot be told from {BASE}'s")
-    if git.run(["cat-file", "-e", f"{base}^{{commit}}"], directory=top).returncode:
+    if git.commit_of(base, directory=top) is None:
         raise ShepherdError(
             f"git does not hold {REMOTE}'s {BASE} {short(base)}, so a merged head's own commits cannot be told "
             f"from {BASE}'s; fetch {REMOTE} in the hub"

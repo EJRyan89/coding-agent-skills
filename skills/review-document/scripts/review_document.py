@@ -449,25 +449,37 @@ def refuse_unwritable(fixture: Path, relative: str) -> None:
         fixture_target(fixture / "head", MANIFEST_PATH)
 
 
+def _json_file(value: object) -> bytes:
+    """A fixture's JSON file as json_writer writes one, two-space indented with a newline."""
+    return (json_writer.dumps(value, indent=2) + "\n").encode("utf-8")
+
+
 def write_fixture(fixture: Path, document: Document, pull: dict[str, Any], stage: str | None) -> list[str]:
     """Write the one-file fixture of `document` at `fixture`, around the pull request `pull` describes, and return
     the lines that name it. A document the design reviewer reviews is recorded at `stage`, review by default."""
     relative, base = document.relative, document.base
     design = reviewed_by_design(relative)
     refuse_unwritable(fixture, relative)
+    pull = {"schema_version": 1, **pull, "threads": []}
+    if design:
+        pull["manifest_path"] = MANIFEST_PATH
+        pull["document_stage"] = stage or DEFAULT_DOCUMENT_STAGE
+    # Each JSON file is made before anything of the fixture is written, so a value the JSON writer refuses, such as
+    # a path holding a lone surrogate, leaves no fixture behind.
+    try:
+        manifest = _json_file(specialists_manifest(relative)) if design else None
+        pull_file = _json_file(pull)
+    except json_writer.JsonWriteRefused as exc:
+        raise DocumentError(f"{relative} cannot be held in a fixture: {exc}") from exc
     for tree in ("base", "head"):
         (fixture / tree).mkdir(parents=True)
     if base.content is not None:
         write_file(fixture / "base", relative, base.content)
     write_file(fixture / "head", relative, document.content)
-    pull = {"schema_version": 1, **pull, "threads": []}
-    if design:
-        manifest = (json_writer.dumps(specialists_manifest(relative), indent=2) + "\n").encode("utf-8")
+    if manifest is not None:
         for tree in ("base", "head"):
             write_file(fixture / tree, MANIFEST_PATH, manifest)
-        pull["manifest_path"] = MANIFEST_PATH
-        pull["document_stage"] = stage or DEFAULT_DOCUMENT_STAGE
-    json_writer.write(fixture / "pull.json", pull, indent=2)
+    write_file(fixture, "pull.json", pull_file)
     return [
         f"DOCUMENT {relative}",
         f"BASE committed {base.commit}" if base.commit else f"BASE none {base.reason}",

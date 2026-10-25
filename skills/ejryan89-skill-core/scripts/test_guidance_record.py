@@ -141,3 +141,16 @@ def test_a_missing_or_unreadable_record_fails_with_the_reason(tmp_path: Path) ->
     (tmp_path / "broken.json").write_text("{", encoding="utf-8")
     with pytest.raises(GuidanceRecordError, match="cannot read the guidance record"):
         guidance_record.read(tmp_path / "broken.json", ["alpha"])
+
+
+def test_the_family_is_the_record_error() -> None:
+    assert (GuidanceRecordError,) == guidance_record.CONTENT_ERRORS
+
+
+def test_a_url_urllib_cannot_split_is_a_record_error_naming_the_field(tmp_path: Path) -> None:
+    for document in (
+        {"pages": [page("https://[example.com/a")]},
+        {"pages": [page("https://example.com/a")], "changelogs": [changelog("alpha", url="https://[example.com")]},
+    ):
+        with pytest.raises(GuidanceRecordError, match=r"url must be a URL urllib can split, found \"https://\["):
+            guidance_record.read(write(tmp_path, document), ["alpha"])

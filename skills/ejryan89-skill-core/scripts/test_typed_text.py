@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from typed_text import TYPED_ENCODING, read_typed
+from typed_text import CONTENT_ERRORS, TYPED_ENCODING, read_typed
 
 # The bytes a Windows editor may save before UTF-8 text, written out so the read is held to them.
 BYTE_ORDER_MARK = b"\xef\xbb\xbf"
@@ -40,3 +40,13 @@ class TypedTextTests(unittest.TestCase):
             read_typed(self.path)
         with self.assertRaises(FileNotFoundError):
             read_typed(self.path.with_name("missing.txt"))
+
+
+class ContentErrorsTests(unittest.TestCase):
+    def test_the_family_is_the_codec_error_and_covers_text_that_is_not_utf_8(self) -> None:
+        self.assertEqual((UnicodeDecodeError,), CONTENT_ERRORS)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "body.md"
+            path.write_bytes(b"\xff")
+            with self.assertRaises(CONTENT_ERRORS):
+                read_typed(path)

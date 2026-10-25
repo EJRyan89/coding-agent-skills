@@ -329,7 +329,7 @@ def _read_results(path: Path) -> list[dict[str, Any]]:
 def _write_results(path: Path, passes: list[dict[str, Any]]) -> None:
     try:
         json_writer.write(path, passes, indent=2, mode=0o644)
-    except OSError as exc:
+    except (OSError, json_writer.JsonWriteRefused) as exc:
         raise DeployError(f"ERROR: Cannot write the results file: {path}: {exc}", exit_code=INPUT_ERROR) from exc
 
 

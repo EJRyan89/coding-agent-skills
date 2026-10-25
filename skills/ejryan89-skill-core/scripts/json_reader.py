@@ -7,7 +7,8 @@ define and other readers refuse, and which then reach code that compares numbers
 refuses these alike. Nesting past the interpreter's recursion limit, which `json.loads` raises as a `RecursionError`
 that such a reader lets escape, is refused the same way, and so is an integer of more digits than `whole_number`'s
 `DIGIT_LIMIT`, the one cap on a number read from text, whatever limit the interpreter is configured with. It bounds
-nothing else: whatever else `json.loads` raises, such as its `JSONDecodeError`, it raises.
+nothing else: whatever else `json.loads` raises, such as its `JSONDecodeError`, it raises. `CONTENT_ERRORS` is
+every error it raises on bad content, the family a caller's handler names whole.
 """
 
 from __future__ import annotations
@@ -21,6 +22,11 @@ import whole_number
 
 class JsonRefused(ValueError):
     """JSON the reader would not take; the message names the repeated key or the constant."""
+
+
+# What `loads`, `raw_decode`, and `read_file` raise on bad content, each a ValueError: the reader's own refusal, the
+# json module's for text that is not JSON, and the codec's for bytes that are not UTF-8.
+CONTENT_ERRORS: tuple[type[Exception], ...] = (JsonRefused, json.JSONDecodeError, UnicodeDecodeError)
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

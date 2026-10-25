@@ -147,6 +147,8 @@ EXPECTED_ERRORS = (
     PersistenceError,
     review_guidance.GuidanceError,
     OSError,
+    # A value the report or its synthesis stage writes that no JSON file can hold.
+    json_writer.JsonWriteRefused,
 )
 SCRIPT = Path(__file__).resolve()
 
