@@ -75,7 +75,7 @@ def git(cwd: Path, *arguments: str, timeout: float | None = GUARD_GIT_TIMEOUT_SE
 
 
 def same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
+    return platform_support.path_key(left) == platform_support.path_key(right)
 
 
 @dataclass(frozen=True)

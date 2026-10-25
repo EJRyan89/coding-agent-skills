@@ -16,6 +16,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from path_keys import path_key
+
 # The command name Python answers to here, which the deployer renders into the skills as their interpreter token and
 # the skills' own scripts write into the commands they hand an agent: python on Windows, where python3 is often a
 # Microsoft Store placeholder, and python3 elsewhere, where a distribution may install no python command.
@@ -60,9 +62,9 @@ def path_programs(name: str, search_path: str | None = None) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
     for folder in (os.environ.get("PATH", "") if search_path is None else search_path).split(os.pathsep):
-        if not Path(folder).is_absolute() or os.path.normcase(folder) in seen:
+        if not Path(folder).is_absolute() or path_key(folder) in seen:
             continue
-        seen.add(os.path.normcase(folder))
+        seen.add(path_key(folder))
         found.extend(
             str(candidate)
             for candidate in (Path(folder) / file for file in names)
@@ -79,7 +81,7 @@ def find_executables(name: str) -> list[str]:
     # WinGet links each command it installs as `<name>.exe`.
     linked = [folder / f"{name}.exe" for folder in link_folders()]
     for candidate in [*path_programs(name), *(str(program) for program in linked if program.is_file())]:
-        key = os.path.normcase(Path(candidate).absolute())
+        key = path_key(candidate)
         if key not in seen:
             seen.add(key)
             found.append(candidate)
