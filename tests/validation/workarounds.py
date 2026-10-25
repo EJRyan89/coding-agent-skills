@@ -16,6 +16,7 @@ import re
 import unittest
 from pathlib import Path
 
+from path_containment import posix_within
 from python_checks import FORMAT_ROOTS, ISSUE_REFERENCE_EXCLUDED, file_comments
 from validation_support import (
     MODULE_SCOPE,
@@ -150,8 +151,8 @@ def checked(root: Path, path: Path) -> bool:
     name = path.relative_to(root).as_posix()
     return (
         path.suffix == ".py"
-        and any(name == prefix or name.startswith(f"{prefix}/") for prefix in FORMAT_ROOTS)
-        and not any(name.startswith(f"{prefix}/") for prefix in ISSUE_REFERENCE_EXCLUDED)
+        and any(posix_within(name, prefix) for prefix in FORMAT_ROOTS)
+        and not any(posix_within(name, prefix, strict=True) for prefix in ISSUE_REFERENCE_EXCLUDED)
     )
 
 
