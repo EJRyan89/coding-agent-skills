@@ -99,6 +99,11 @@ def _changed_file(value: Any, path: str) -> dict[str, Any]:
     }
 
 
+INT_PARSE_ALLOWED = {
+    "_diff_limit": "GitHub writes the limit its diff endpoint names in the error gh prints",
+}
+
+
 def _diff_limit(error: GitHubError) -> str | None:
     """The limit an HTTP 406 from GitHub's diff endpoint names, as in `300 files`, or None for any other failure."""
     message = str(error)
