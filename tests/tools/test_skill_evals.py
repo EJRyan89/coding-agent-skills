@@ -2777,6 +2777,33 @@ class EvaluateTests(unittest.TestCase):
         self.cited = self.output[begin + 1 : end]
         return status, self.output[:begin] + self.output[end + 1 :]
 
+    def test_a_recorded_run_samples_the_run_after_the_skill_s_last_sample_and_names_it(self) -> None:
+        # The skill's own row names clean-change on haiku, so the next model's passing run is read, and with several
+        # runs the line names which. Another skill's row naming the same scenario and model changes nothing.
+        text = RESULTS_TEXT.replace(
+            "| alpha | one | opus | 1 | 2026-01-01 | agrees |",
+            "| alpha | clean-change | haiku | 1 | 2026-01-01 | agrees |\n"
+            "| review-prs | clean-change | haiku | 1 | 2026-01-01 | agrees |",
+        )
+        self.results.write_text(text, encoding="utf-8")
+        claude = StubClaude(self)
+        with file_calls(self.results) as calls:
+            status, lines = self.evaluate(
+                ["--write", "--runs", "2", "--jobs", "1"], self.seams(claude), only=["clean-change"]
+            )
+        self.assertEqual(0, status, lines)
+        self.assertEqual(
+            ["SAMPLE clean-change sonnet run=1", f"WROTE {runtime_canary.forward(self.results)}"],
+            self.output[self.output.index("CITATION END") + 1 :],
+        )
+        self.assertEqual(
+            [("read_text", {"encoding": "utf-8"}), ("write_text", {"encoding": "utf-8", "newline": "\n"})], calls
+        )
+        self.assertIn(
+            "| review-prs | clean-change | sonnet | 1 | 2026-10-08 | unread |",
+            skill_evals_results.samples_table(self.results.read_text(encoding="utf-8"))[2],
+        )
+
     def test_a_passing_run_that_samples_nothing_removes_its_home(self) -> None:
         # Without --write nothing is sampled, so a run that passed leaves no transcript to read.
         status, lines = self.evaluate(["--jobs", "1"], self.seams(StubClaude(self)), only=["clean-change"])
@@ -3906,14 +3933,46 @@ def test_a_reading_marks_the_skill_s_unread_row_once() -> None:
     ("text", "message"),
     [
         ("no markers", "the results file needs one <!-- skill-evals-samples:begin --> line"),
+        (
+            samples_text().replace("<!-- skill-evals-samples:end -->", ""),
+            "the results file needs one <!-- skill-evals-samples:begin --> line and one "
+            "<!-- skill-evals-samples:end --> line",
+        ),
+        (
+            samples_text().replace("<!-- skill-evals-samples:begin -->", ""),
+            "the results file needs one <!-- skill-evals-samples:begin --> line and one "
+            "<!-- skill-evals-samples:end --> line",
+        ),
+        (
+            "<!-- skill-evals-samples:end -->\n<!-- skill-evals-samples:begin -->",
+            "<!-- skill-evals-samples:end --> comes before <!-- skill-evals-samples:begin --> in the results file",
+        ),
         (samples_text("| alpha | one |"), "line 6 of the results file is not a row of the table's 6 columns"),
-        (samples_text().replace("| Transcript |", "| Read |"), "the samples table must start with the header"),
+        (
+            samples_text().replace("| Transcript |", "| Read |"),
+            "the samples table must start with the header | Skill | Scenario | Model | Run | Date | Transcript |",
+        ),
     ],
-    ids=["no markers", "a short row", "another header"],
+    ids=["no markers", "no end marker", "no begin marker", "out of order", "a short row", "another header"],
 )
 def test_a_samples_table_it_cannot_read_is_refused(text: str, message: str) -> None:
-    with pytest.raises(ScenarioError, match=re.escape(message)):
+    with pytest.raises(ScenarioError) as raised:
         skill_evals_results.samples_table(text)
+    assert str(raised.value).startswith(message)
+
+
+def test_the_results_table_s_refusal_names_the_results_table_and_its_header() -> None:
+    text = RESULTS_TEXT.replace(skill_evals_results.RESULTS_HEADER[0], "| Skill | Model |")
+    with pytest.raises(ScenarioError) as raised:
+        skill_evals_results.results_table(text)
+    assert str(raised.value) == f"the results table must start with the header {skill_evals_results.RESULTS_HEADER[0]}"
+
+
+def test_a_near_miss_named_in_both_lists_is_refused_in_those_words(tmp_path: Path) -> None:
+    spec = {**TRIGGER_SPEC, "unserved": ["Run a test."]}
+    with pytest.raises(ScenarioError) as raised:
+        trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
+    assert str(raised.value) == "triggers: near_misses and unserved name a request twice"
 
 
 def test_sample_read_records_the_reading_in_the_results_file_and_runs_nothing(tmp_path: Path) -> None:
@@ -3935,9 +3994,64 @@ def test_sample_read_records_the_reading_in_the_results_file_and_runs_nothing(tm
 
 @pytest.mark.parametrize("extra", [["--write"], ["--model", "opus"], ["--scenario", "one"], ["--runs", "2"]])
 def test_sample_read_takes_the_skill_alone(extra: list[str], tmp_path: Path) -> None:
-    with pytest.raises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+    error = io.StringIO()
+    with pytest.raises(SystemExit) as raised, contextlib.redirect_stderr(error):
         skill_evals.main(["alpha", "--sample-read", "agrees", *extra], seams=skill_evals.Seams(results=tmp_path / "x"))
     assert raised.value.code == 2
+    assert error.getvalue().endswith("error: --sample-read takes the skill alone and runs nothing\n")
+
+
+def test_sample_read_takes_agrees_or_disagrees_and_nothing_else(tmp_path: Path) -> None:
+    results = tmp_path / "skill-evaluations.md"
+    results.write_text(samples_text("| alpha | one | opus | 1 | 2026-01-01 | unread |"), encoding="utf-8")
+    error = io.StringIO()
+    with pytest.raises(SystemExit) as raised, contextlib.redirect_stderr(error):
+        skill_evals.main(["alpha", "--sample-read", "maybe"], seams=skill_evals.Seams(results=results))
+    assert raised.value.code == 2
+    # argparse quotes the choices from Python 3.12 on and not before, so the message is read without the quotes.
+    assert (
+        "argument --sample-read: invalid choice: 'maybe' (choose from agrees, disagrees)"
+        in error.getvalue().replace("'agrees'", "agrees").replace("'disagrees'", "disagrees")
+    )
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert skill_evals.main(["alpha", "--sample-read", "disagrees"], seams=skill_evals.Seams(results=results)) == 0
+    assert skill_evals_results.samples_table(results.read_text(encoding="utf-8"))[2] == [
+        "| alpha | one | opus | 1 | 2026-01-01 | disagrees |"
+    ]
+    help_text = skill_evals.parser().format_help()
+    assert "record what the transcript the last --write run sampled shows, and run nothing" in " ".join(
+        help_text.split()
+    )
+
+
+@contextlib.contextmanager
+def file_calls(target: Path) -> Iterator[list[tuple[str, dict[str, Any]]]]:
+    """Each Path.read_text and Path.write_text call on `target`, by its name and keyword arguments, the calls still
+    made: a dropped encoding or newline changes nothing on a platform whose default is UTF-8 with LF, so only the call
+    shows it."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+    read, write = Path.read_text, Path.write_text
+
+    def reading(path: Path, *arguments: Any, **options: Any) -> str:
+        if path == target:
+            calls.append(("read_text", options))
+        return read(path, *arguments, **options)
+
+    def writing(path: Path, *arguments: Any, **options: Any) -> int:
+        if path == target:
+            calls.append(("write_text", options))
+        return write(path, *arguments, **options)
+
+    with mock.patch.object(Path, "read_text", reading), mock.patch.object(Path, "write_text", writing):
+        yield calls
+
+
+def test_sample_read_reads_and_writes_the_results_file_as_utf_8_with_lf_endings(tmp_path: Path) -> None:
+    results = tmp_path / "skill-evaluations.md"
+    results.write_text(samples_text("| alpha | one | opus | 1 | 2026-01-01 | unread |"), encoding="utf-8")
+    with file_calls(results) as calls, contextlib.redirect_stdout(io.StringIO()):
+        assert skill_evals.main(["alpha", "--sample-read", "agrees"], seams=skill_evals.Seams(results=results)) == 0
+    assert calls == [("read_text", {"encoding": "utf-8"}), ("write_text", {"encoding": "utf-8", "newline": "\n"})]
 
 
 def test_no_committed_sample_is_left_unread() -> None:
