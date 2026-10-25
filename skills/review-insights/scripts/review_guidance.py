@@ -38,6 +38,7 @@ from typing import Any
 
 from flat_text import flat_text
 from git_client import GitClient, GitError
+from path_containment import refusal
 from review_config import safe_repository_path
 from review_records import is_suite_profile
 
@@ -172,9 +173,12 @@ def is_prose(path: str) -> bool:
 
 
 def _working_copy(root: Path, path: str) -> bytes | None:
-    """The working tree's copy of `path`, or None when it is no file inside the checkout or is too large to read."""
-    target = root.joinpath(*PurePosixPath(path).parts).resolve()
-    if target.is_relative_to(root) and target.is_file() and target.stat().st_size <= READ_BYTES:
+    """The working tree's copy of `path`, or None when it is no file inside the checkout, is reached through a link, or
+    is too large to read."""
+    if refusal(path, root) is not None:
+        return None
+    target = root.joinpath(*PurePosixPath(path).parts)
+    if target.is_file() and target.stat().st_size <= READ_BYTES:
         return target.read_bytes()
     return None
 

@@ -50,3 +50,20 @@ class PathKeyTests(unittest.TestCase):
         self.assertNotEqual(path_key(link), path_key(target))
         self.assertEqual(path_key(link, resolve=True), path_key(target, resolve=True))
         self.assertEqual(path_key(self.root / "missing" / ".."), path_key(self.root, resolve=True))
+
+    def test_the_textual_key_folds_dots_and_case_and_keeps_what_windows_would_strip(self) -> None:
+        folder = self.root / "a folder"
+        self.assertEqual(path_key(folder), path_key(self.root / "other" / ".." / "a folder", textual=True))
+        self.assertEqual(path_key(Path.cwd() / "x"), path_key("x", textual=True))
+        self.assertEqual(path_key(Path.cwd().parent / "x"), path_key(Path("..") / "x", textual=True))
+        upper, lower = path_key(self.root / "Work", textual=True), path_key(self.root / "work", textual=True)
+        self.assertEqual(sys.platform == "win32", upper == lower)
+        trailing = str(self.root / "name. ")
+        self.assertEqual(os.path.normcase(trailing), path_key(trailing, textual=True))
+        # Windows' own parsing drops a name's trailing dots and spaces; the lexical key follows it, the textual not.
+        self.assertEqual(sys.platform == "win32", path_key(trailing) != path_key(trailing, textual=True))
+
+    def test_a_key_is_never_both_resolved_and_textual(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            path_key(self.root, resolve=True, textual=True)
+        self.assertEqual("a path key is resolved or textual, not both", str(raised.exception))

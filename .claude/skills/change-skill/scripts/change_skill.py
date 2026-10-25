@@ -61,6 +61,7 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from markdown_sections import find_fences
+from path_containment import within
 
 # The paths and commands validation and the tools also name: this script runs from the checkout without the
 # deployer, which tests/validation and tools/skill_shims.py import.
@@ -166,7 +167,7 @@ def document_path(root: Path, relative: str) -> Path:
     outside the checkout it ships in."""
     top = root.resolve()
     path = (top / relative).resolve()
-    if path.suffix.lower() != ".md" or not path.is_relative_to(top) or not path.is_file():
+    if path.suffix.lower() != ".md" or not within(path, top) or not path.is_file():
         raise StepError(f"{flat_text(relative)} is not a Markdown file in this checkout")
     return path
 

@@ -31,8 +31,9 @@ from harness import (
     probe_returning,
 )
 
-from deployer import errors, fsops, platform_support
+from deployer import errors, fsops, journal, platform_support
 from deployer.errors import DeployError
+from deployer.paths import Paths
 
 NAME_RULES = (
     "Rename it with only lowercase letters, digits, and hyphens, no leading or trailing hyphen, at most 64 characters, "
@@ -641,3 +642,13 @@ class RecoveryGuideTests(unittest.TestCase):
 
     def test_readme_links_the_guide(self) -> None:
         self.assertIn("[Recovery](docs/recovery.md)", (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8"))
+
+
+def test_a_backup_goes_below_a_deployment_root_whose_path_holds_an_uppercase_letter(tmp_path: Path) -> None:
+    # The root's key and its backups' key are made alike, so a case-sensitive root with uppercase in its path is not
+    # read as one its backups leave.
+    paths = Paths(tmp_path / "source", tmp_path / "Home")
+    paths.dest_dir.mkdir(parents=True)
+    destination = journal.prepare_backup_destination(paths, "run-1", "demo", "claude")
+    assert destination == paths.dest_dir / ".backups" / "run-1" / "demo"
+    assert destination.parent.is_dir()

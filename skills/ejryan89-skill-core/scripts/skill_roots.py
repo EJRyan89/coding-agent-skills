@@ -16,6 +16,7 @@ from pathlib import Path
 import json_reader
 from console import failed_line, use_utf8_output
 from file_presence import is_present
+from path_containment import within
 
 # This skill's own folder name, which every dependent's fixed sys.path line and every check of that line names.
 SKILL_CORE = "ejryan89-skill-core"
@@ -133,7 +134,7 @@ def skills_directory_holding(path: Path) -> Path | None:
         (
             root
             for root in (SKILLS_ROOT, *deployed_skill_roots())
-            if target.is_relative_to(_without_extended_prefix(root.resolve()))
+            if within(target, _without_extended_prefix(root.resolve()))
         ),
         None,
     )

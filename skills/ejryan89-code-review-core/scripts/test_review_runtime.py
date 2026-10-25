@@ -1452,6 +1452,13 @@ class CommittedReadTests(unittest.TestCase):
         self.assertEqual(1, len(self.batches))
         self.assertEqual([name.encode() for name in names], [(destination / name).read_bytes() for name in names])
 
+    def test_no_listing_holds_a_path_and_a_path_under_it_in_either_order(self) -> None:
+        calls = review_runtime._ls_tree_calls
+        self.assertEqual([["docs", "other"], ["docs/a.md", "docs/b"]], calls(["docs", "docs/a.md", "other", "docs/b"]))
+        self.assertEqual([["docs/a.md", "other"], ["docs"]], calls(["docs/a.md", "docs", "other"]))
+        # A name that only starts with a folder's name is no path under it.
+        self.assertEqual([["docs", "docs-x", "docsy/a.md"]], calls(["docs", "docs-x", "docsy/a.md", "docs"]))
+
     def test_a_single_reviewer_file_is_read_by_its_listed_blob_through_the_runner(self) -> None:
         content = b"{\r\n}\r\n"
         trusted = self.commit({".review/manifest.json": content})

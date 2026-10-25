@@ -73,6 +73,7 @@ import whole_number
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient
+from path_containment import within
 from review_archive import list_versions, pull_directory, record_files, record_paths
 from review_config import (
     RUNTIME_HOSTS,
@@ -183,7 +184,7 @@ def current_repository(config: dict[str, Any], services: Services) -> str | None
         (len(str(Path(entry["checkout_path"]).resolve())), identity)
         for identity, entry in config["repositories"].items()
         if entry.get("checkout_path")
-        and any(item.resolve().is_relative_to(Path(entry["checkout_path"]).resolve()) for item in candidates)
+        and any(within(item.resolve(), Path(entry["checkout_path"]).resolve()) for item in candidates)
     ]
     return max(matches)[1] if matches else None
 

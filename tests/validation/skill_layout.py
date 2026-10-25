@@ -17,6 +17,7 @@ import json_reader
 import skill_menu
 from agent_skills import MAX_NAME
 from markdown_sections import EXECUTABLE_FENCES, markdown_section
+from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
 from skill_scripts import shell_git_subcommands
@@ -519,7 +520,7 @@ def _sibling_path_files(root: Path) -> list[Path]:
     """The Python under the roots a sibling lookup applies to, outside tests/fixtures, which are other trees."""
     files = [root / "deploy.py"] if (root / "deploy.py").is_file() else []
     for top in SIBLING_PATH_ROOTS:
-        files += [path for path in (root / top).rglob("*.py") if not path.is_relative_to(root / "tests" / "fixtures")]
+        files += [path for path in (root / top).rglob("*.py") if not within(path, root / "tests" / "fixtures")]
     return sorted(files)
 
 
