@@ -466,3 +466,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a judge in `tools/skill_evals.py` or a scenario's check that sets a pass from a field's presence
   alone; a scenario whose expectation reads only the report the run wrote.
 - **Examples:** #1738, #1774
+
+### A literal says what its test means
+
+- **Rule:** A string literal meant as a path or a pattern is raw, or escapes each backslash, so no control escape
+  hides in it.
+- **Why:** `"\bin"` is a backspace and `in`, and `"C:\temp"` holds a tab, so a test of a rooted path passes without
+  ever trying one, and neither ruff nor the interpreter warns.
+- **Guard:** `tests/validation/literal_escapes.py::LiteralEscapePolicies::test_no_literal_writes_a_control_escape_where_it_reads_as_a_path_or_pattern`
+- **Search for:** `rg -n '"[^"]*\\[abfnrtv][A-Za-z]'` in non-raw strings, where the escape follows a drive letter
+  and colon or a slash, or `\a`, `\b`, or `\v` sits beside a word; a non-raw pattern given to `re` holding `\b`; a
+  non-raw literal given to `Path` holding any control escape.
+- **Examples:** #1904, #1924
