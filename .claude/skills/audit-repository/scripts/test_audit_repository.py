@@ -1873,17 +1873,27 @@ class TwinTests(Fixture):
                 _, lines = self.run_main("twins", github=StubGitHub(milestones=milestones))
                 self.assertEqual(expected, [line for line in lines if line.startswith("MILESTONE ")])
 
-    def test_a_search_git_cannot_finish_is_reported_with_its_reason(self) -> None:
+    def test_a_search_git_cannot_run_is_reported_with_its_reason(self) -> None:
         real_run = GitClient.run
+        for error, failed in (
+            (
+                GitError("git grep did not finish within 60 seconds", kind="timeout"),
+                "FAILED git grep: git grep did not finish within 60 seconds",
+            ),
+            (
+                GitError("fatal: not a git repository", kind="not_repository"),
+                f"FAILED {self.root.as_posix()} is not a Git repository",
+            ),
+        ):
 
-        def run(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
-            if arguments[0] == "grep":
-                raise GitError("git grep did not finish within 60 seconds", kind="timeout")
-            return real_run(client, arguments, **options)
+            def run(client: GitClient, arguments: Sequence[str], error: GitError = error, **options: Any) -> GitResult:
+                if arguments[0] == "grep":
+                    raise error
+                return real_run(client, arguments, **options)
 
-        with mock.patch.object(GitClient, "run", run):
-            code, lines = self.run_main("twins")
-        self.assertEqual((1, ["FAILED git grep: git grep did not finish within 60 seconds"]), (code, lines))
+            with self.subTest(failed=failed), mock.patch.object(GitClient, "run", run):
+                code, lines = self.run_main("twins")
+                self.assertEqual((1, [failed]), (code, lines))
 
     def test_no_release_tag_and_a_failed_search_are_reported(self) -> None:
         git(self.root, "tag", "-d", "v0.1.0")
@@ -2160,6 +2170,8 @@ def test_pathspecs_are_batched_inside_the_limit_and_a_long_path_stands_alone() -
     # A batch that reaches the limit exactly still holds the pathspec.
     with mock.patch.object(audit, "PATHSPEC_CHARS", 23):
         assert audit.pathspec_batches(["a", "b"]) == [[":(literal)a", ":(literal)b"]]
+    with mock.patch.object(audit, "PATHSPEC_CHARS", 35):
+        assert audit.pathspec_batches(["a", "b", "c"]) == [[":(literal)a", ":(literal)b", ":(literal)c"]]
     with mock.patch.object(audit, "PATHSPEC_CHARS", 34):
         assert audit.pathspec_batches(["a", "b", "c"]) == [[":(literal)a", ":(literal)b"], [":(literal)c"]]
 
