@@ -85,7 +85,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import itertools
-import json
 import os
 import re
 import string
@@ -100,6 +99,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 from console import run_main
 from executable_locator import environment_path
 from file_presence import is_present
@@ -1128,7 +1128,7 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
 def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     """Write the JSON audit report to a new file, --output or a temporary one, and name it."""
     user_dir = args.user_dir or config_directory(Path.home(), dict(os.environ))
-    report = json.dumps(audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir), indent=2) + "\n"
+    report = json_writer.dumps(audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir), indent=2) + "\n"
     if args.output:
         try:
             # Created exclusively, so a file that appeared since the check is never replaced either.

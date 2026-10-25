@@ -202,7 +202,12 @@ def repository_root(services: Services, cwd: Path) -> Path:
 
 
 def ref_exists(services: Services, root: Path, ref: str) -> bool:
-    return git(services, root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode == 0
+    """Whether `ref` names a commit. Any git failure but its answer that `ref` names none, such as a broken ref or a
+    configuration git cannot parse, fails the resolution with git's reason."""
+    try:
+        return services.git.commit_of(ref, directory=root) is not None
+    except GitError as exc:
+        raise Failed(f"git could not resolve {ref}: {flat_text(str(exc))}") from exc
 
 
 def pull_request_base(services: Services, root: Path) -> str | None:
@@ -221,11 +226,16 @@ def pull_request_base(services: Services, root: Path) -> str | None:
     return name.strip()
 
 
-def remote_default_branch(result: GitResult) -> str | None:
-    """origin/<name> from `git symbolic-ref refs/remotes/origin/HEAD` output, or None when origin has no HEAD."""
-    if result.returncode != 0:
+def remote_default_branch(services: Services, root: Path) -> str | None:
+    """origin/<name> from `git symbolic-ref refs/remotes/origin/HEAD`, or None when git answers that origin has no
+    HEAD. Any other git failure fails the resolution with git's reason."""
+    try:
+        output = services.git.quiet_output(["symbolic-ref", "--quiet", f"{REMOTE_REFS}HEAD"], directory=root)
+    except GitError as exc:
+        raise Failed(f"git could not read {REMOTE_REFS}HEAD: {flat_text(str(exc))}") from exc
+    if output is None:
         return None
-    target = result.stdout.strip()
+    target = output.strip()
     name = target.removeprefix(REMOTE_REFS)
     return f"origin/{name}" if name and name != target else None
 
@@ -256,7 +266,7 @@ def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str
         name = pull_request_base(services, root)
         if name:
             candidates.append(f"origin/{name}")
-    default = remote_default_branch(git(services, root, "symbolic-ref", "--quiet", f"{REMOTE_REFS}HEAD"))
+    default = remote_default_branch(services, root)
     if default:
         candidates.append(default)
     candidates += ["origin/main", "origin/master"]

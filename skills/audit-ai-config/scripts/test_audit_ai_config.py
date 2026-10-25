@@ -1794,6 +1794,16 @@ class OutputFormatTests(unittest.TestCase):
         self.assertEqual(0, data["exitCode"])
         self.assertIsInstance(data["findings"], list)
 
+    def test_json_output_is_two_space_indented_in_its_fields_order_with_text_past_ascii_kept(self) -> None:
+        # references/report-schema.md documents the report, which a person reads, so its bytes are fixed.
+        result = dataclasses.replace(audit.audit(self.root), repository="C:/caf\u00e9", findings=[])
+        self.assertEqual(
+            '{\n  "repository": "C:/caf\u00e9",\n  "authority": "conforming",\n  "scopeStatus": '
+            + json.dumps(result.scope_status)
+            + ',\n  "exitCode": 0,\n  "findings": []\n}\n',
+            audit.format_json(result),
+        )
+
     def test_reports_reject_an_undeclared_status_from_the_audit_engine(self) -> None:
         with mock.patch.object(audit, "check_scope_and_roles", return_value=("undeclared", [])):
             result = audit.audit(self.root)
