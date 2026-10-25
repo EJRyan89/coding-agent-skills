@@ -116,7 +116,7 @@ import whole_number
 from atomic_file import UnfinishedCopyError
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError, classify_failure
+from git_client import GitClient, GitError
 from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
@@ -1142,16 +1142,14 @@ def search_construct(git: GitClient, repository: Path, head: str, construct: Seq
     arguments = ["grep", "-n", "-I", "-F", "-z", "--full-name", "-f", "-", head, "--"]
     patterns = "".join(f"{line}\n" for line in construct).encode("utf-8")
     try:
-        result = git.run(arguments, directory=repository, input_bytes=patterns)
+        found = git.quiet_output(arguments, directory=repository, input_bytes=patterns)
     except GitError as exc:
         raise git_failure(repository, "grep", exc) from exc
-    if result.returncode == 1 and not result.stderr.strip():
+    if found is None:
         return [], False
-    if result.returncode != 0:
-        raise git_failure(repository, "grep", GitError(result.stderr.strip(), kind=classify_failure(result.stderr)))
     hits = []
     prefix = f"{head}:"
-    for record in result.stdout.split("\n"):
+    for record in found.split("\n"):
         fields = record.split("\0", 2)
         number = whole_number.parse(fields[1]) if len(fields) == 3 else None
         if number is None or not fields[0].startswith(prefix):

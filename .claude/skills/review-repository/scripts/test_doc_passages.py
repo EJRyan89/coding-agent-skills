@@ -95,7 +95,7 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual(
             (
                 0,
-                "PASSAGES 1 given=1\n",
+                "PASSAGES 1 given=1 excluded=0\n",
                 "PASSAGE docs/guide.md:5 names skill_evals.py (script in tools/skill_evals.py), hunk @@ -1,2 +1,2 @@ "
                 "at new lines 1-2\n"
                 "After a change, run `python -B tools/skill_evals.py --write`\nand commit what it wrote.\n",
@@ -118,7 +118,7 @@ class ConditionTests(unittest.TestCase):
             ),
         )
         code, out, written = self.run_condition(diff)
-        self.assertEqual((0, "PASSAGES 1 given=1\n"), (code, out))
+        self.assertEqual((0, "PASSAGES 1 given=1 excluded=0\n"), (code, out))
         self.assertEqual(
             "PASSAGE docs/code-review-operations-contract.md:3 names evaluate_condition (function in "
             "skills/ejryan89-code-review-core/scripts/review_specialists.py), hunk @@ -1,2 +1,2 @@ at new lines 1-2\n"
@@ -131,7 +131,7 @@ class ConditionTests(unittest.TestCase):
         self.document("CLAUDE.md", "Call `sweep.Sweeper` to plan it.\n")
         diff = changed("skills/demo/scripts/sweep.py", ("", ["+class Sweeper:", "+    pass"]))
         code, out, written = self.run_condition(diff)
-        self.assertEqual((0, "PASSAGES 2 given=2\n"), (code, out))
+        self.assertEqual((0, "PASSAGES 2 given=2 excluded=0\n"), (code, out))
         self.assertIn("PASSAGE CLAUDE.md:1 names Sweeper (class in skills/demo/scripts/sweep.py)", written)
         self.assertIn("PASSAGE skills/demo/SKILL.md:4 names sweep.py (script in skills/demo/scripts/sweep.py)", written)
 
@@ -151,7 +151,7 @@ class ConditionTests(unittest.TestCase):
         self.document("skills/demo/notes.md", "Run `python -B tools/sweep.py` daily.\n")
         diff = changed("tools/sweep.py", ("", ["-DAYS = 30", "+DAYS = 7"]))
         code, out, written = self.run_condition(diff)
-        self.assertEqual((0, f"PASSAGES {len(searched)} given={len(searched)}\n"), (code, out))
+        self.assertEqual((0, f"PASSAGES {len(searched)} given={len(searched)} excluded=0\n"), (code, out))
         self.assertEqual(
             sorted(f"{path}:3" for path in searched),
             sorted(line.split(" ", 2)[1] for line in written.splitlines() if line.startswith("PASSAGE ")),
@@ -162,7 +162,66 @@ class ConditionTests(unittest.TestCase):
         # A release's notes record what it shipped, so a name there is history, not a passage to keep current.
         self.document("docs/upgrade-notes.md", "Changed `tools/skill_evals.py`.\n")
         diff = changed("tools/skill_evals.py", ("def judge(record):", ["-    return 1", "+    return 2"]))
-        self.assertEqual((1, "PASSAGES 0 given=0\n", ""), self.run_condition(diff))
+        self.assertEqual((1, "PASSAGES 0 given=0 excluded=0\n", ""), self.run_condition(diff))
+
+    def exclude(self, excluded: object) -> None:
+        """Write the snapshot manifest a review writes, recording `excluded` as the paths it leaves out."""
+        manifest = {"schema_version": 1, "source_hashes": {}, "excluded_paths": excluded}
+        (self.root / "source-snapshot.json").write_bytes(json.dumps(manifest).encode("utf-8"))
+
+    def test_a_document_the_snapshot_leaves_out_opens_the_route_unsearched_and_listed_first(self) -> None:
+        # The snapshot never holds an agent instruction document, so the condition cannot read whether one names the
+        # change; it names each, rather than closing the route as though none did.
+        self.document("docs/guide.md", "Run `python -B tools/other.py` first.\n")
+        self.exclude(
+            {
+                ".claude/skills/demo/SKILL.md": "agent-instruction",
+                ".claude/skills/demo/references/brief.md": "agent-instruction",
+                ".claude/settings.json": "agent-instruction",
+                "CLAUDE.md": "agent-instruction",
+                "docs/huge.md": "file-size-limit",
+                "docs/upgrade-notes.md": "configured",
+                "tools/data.bin": "configured",
+            }
+        )
+        diff = changed("tools/skill_evals.py", ("def judge(record):", ["-    return 1", "+    return 2"]))
+        code, out, written = self.run_condition(diff)
+        self.assertEqual((0, "PASSAGES 0 given=0 excluded=4\n"), (code, out))
+        reason = "so no passage in it was searched; judge from the diff whether it may name what changed\n"
+        self.assertEqual(
+            f"EXCLUDED .claude/skills/demo/SKILL.md: the snapshot leaves it out (agent-instruction), {reason}"
+            f"EXCLUDED .claude/skills/demo/references/brief.md: the snapshot leaves it out (agent-instruction), "
+            f"{reason}"
+            f"EXCLUDED CLAUDE.md: the snapshot leaves it out (agent-instruction), {reason}"
+            f"EXCLUDED docs/huge.md: the snapshot leaves it out (file-size-limit), {reason}",
+            written,
+        )
+        # A passage still follows the documents it could not search.
+        self.document("docs/guide.md", "Then `judge` reads it.\n")
+        code, out, written = self.run_condition(diff)
+        self.assertEqual((0, "PASSAGES 1 given=1 excluded=4\n"), (code, out))
+        self.assertIn(
+            f"EXCLUDED docs/huge.md: the snapshot leaves it out (file-size-limit), {reason}\nPASSAGE ", written
+        )
+        # A diff that gives no name needs no document, read or not.
+        self.output.unlink()
+        self.assertEqual(
+            (1, "PASSAGES 0 given=0 excluded=0\n", ""), self.run_condition(changed("data.json", ("", ["+{}"])))
+        )
+
+    def test_a_manifest_it_cannot_read_fails_the_review_rather_than_closing_the_route(self) -> None:
+        self.document("docs/guide.md", "Run `python -B tools/other.py` first.\n")
+        self.exclude(["CLAUDE.md"])
+        diff = changed("tools/skill_evals.py", ("", ["+y = 3"]))
+        self.assertEqual(
+            (
+                2,
+                "FAILED MissingEvidence: the snapshot's source-snapshot.json records no excluded_paths mapping paths "
+                "to reasons\n",
+                "",
+            ),
+            self.run_condition(diff),
+        )
 
     def test_a_name_that_is_also_a_common_word_matches_only_as_code(self) -> None:
         self.document(
@@ -175,10 +234,10 @@ class ConditionTests(unittest.TestCase):
             ("def main() -> int:", ["-    return 1", "+    return 0"]),
             ("", ["+def run():", "+    pass", "+def check():", "+    pass"]),
         )
-        self.assertEqual((1, "PASSAGES 0 given=0\n", ""), self.run_condition(diff))
+        self.assertEqual((1, "PASSAGES 0 given=0 excluded=0\n", ""), self.run_condition(diff))
         self.document("docs/guide.md", "Its `check()` does it.\n")
         code, out, written = self.run_condition(diff)
-        self.assertEqual((0, "PASSAGES 1 given=1\n"), (code, out))
+        self.assertEqual((0, "PASSAGES 1 given=1 excluded=0\n"), (code, out))
         self.assertTrue(written.startswith("PASSAGE docs/guide.md:1 names check (function in app/service.py)"))
 
     def test_the_passages_are_bounded_and_the_rest_named(self) -> None:
@@ -188,7 +247,7 @@ class ConditionTests(unittest.TestCase):
         for number in range(25):
             self.document(f"docs/guide-{number:02}.md", f"{long} `tools/skill_evals.py` {long}\n")
         code, out, written = self.run_condition(changed("tools/skill_evals.py", ("", ["+y = 3"])))
-        self.assertEqual((0, "PASSAGES 25 given=20\n"), (code, out))
+        self.assertEqual((0, "PASSAGES 25 given=20 excluded=0\n"), (code, out))
         self.assertEqual(20, written.count("\nPASSAGE ") + written.startswith("PASSAGE "))
         self.assertTrue(written.endswith("\nOMITTED 5 more passages past the first 20\n"), written[-200:])
         self.assertLess(len(written.encode("utf-8")), 32 * 1024)
@@ -200,7 +259,7 @@ class ConditionTests(unittest.TestCase):
         self.document("docs/b.md", "Then `judge_record` reads it.\n")
         diff = changed("tools/skill_evals.py", ("def judge_record(record):", ["-    return 1", "+    return 2"]))
         code, out, written = self.run_condition(diff)
-        self.assertEqual((0, "PASSAGES 31 given=20\n"), (code, out))
+        self.assertEqual((0, "PASSAGES 31 given=20 excluded=0\n"), (code, out))
         self.assertTrue(
             written.startswith("PASSAGE docs/b.md:1 names judge_record (function in tools/skill_evals.py)"), written
         )
@@ -208,7 +267,7 @@ class ConditionTests(unittest.TestCase):
     def test_a_test_file_s_names_are_left_to_the_validation_that_holds_them(self) -> None:
         self.document("docs/contract.md", "Held by `test_specialists.py::test_route`, `test_route`.\n")
         diff = changed("tests/test_specialists.py", ("", ["+def test_route():", "+    pass"]))
-        self.assertEqual((1, "PASSAGES 0 given=0\n", ""), self.run_condition(diff))
+        self.assertEqual((1, "PASSAGES 0 given=0 excluded=0\n", ""), self.run_condition(diff))
 
     def test_every_suite_name_validation_runs_is_left_out_and_another_script_is_not(self) -> None:
         for path in (
@@ -252,7 +311,7 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual(
             (
                 0,
-                "PASSAGES 1 given=1\n",
+                "PASSAGES 1 given=1 excluded=0\n",
                 "PASSAGE docs/guide.md:1 names old_name.py (script in tools/new_name.py, renamed from "
                 "tools/old_name.py), hunk (no hunk) at new lines 0-0\nRun `python -B tools/old_name.py` first.\n",
             ),
@@ -272,7 +331,7 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual(
             (
                 0,
-                "PASSAGES 1 given=1\n",
+                "PASSAGES 1 given=1 excluded=0\n",
                 "PASSAGE docs/guide.md:1 names old_name (module in tools/new_name.py, renamed from "
                 "tools/old_name.py), hunk @@ -3,2 +3,2 @@ at new lines 3-4\nThe `old_name.report` call writes it.\n",
             ),
@@ -306,7 +365,7 @@ class ConditionTests(unittest.TestCase):
                     (
                         0,
                         f"REFUSED {json.dumps(path)}: a path that could name a file outside the snapshot\n"
-                        "PASSAGES 1 given=1\n",
+                        "PASSAGES 1 given=1 excluded=0\n",
                     ),
                     self.run_condition(section + changed("tools/report_tool.py", ("", ["+y = 2"])))[:2],
                 )
@@ -320,7 +379,9 @@ class ConditionTests(unittest.TestCase):
             (code, out, written),
         )
         # A diff that gives no name needs no document.
-        self.assertEqual((1, "PASSAGES 0 given=0\n", ""), self.run_condition(changed("data.json", ("", ["+{}"]))))
+        self.assertEqual(
+            (1, "PASSAGES 0 given=0 excluded=0\n", ""), self.run_condition(changed("data.json", ("", ["+{}"])))
+        )
         self.root.rmdir()
         code, out, _ = self.run_condition(diff)
         self.assertEqual(2, code)

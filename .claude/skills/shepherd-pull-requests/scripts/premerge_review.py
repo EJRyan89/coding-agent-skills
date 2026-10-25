@@ -35,7 +35,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 from flat_text import flat_text
-from git_client import GitClient
+from git_client import GitClient, GitError
 from review_archive import ArchiveError
 from review_config import ConfigurationError, load_config, validate_repository_identity
 from review_io import PersistenceError
@@ -96,13 +96,17 @@ def archive_reader(repository: str) -> Reader:
 
 def merges_only(git: GitClient, top: Path, reviewed: str, head: str, base: str | None) -> bool:
     """Whether `head` descends from `reviewed` and every commit between them that main does not hold is a merge. A
-    commit git does not hold is never carried."""
+    commit git does not hold, and any git failure, carries no review: the pull request is reviewed again."""
     if base is None:
         return False
-    if git.run(["merge-base", "--is-ancestor", reviewed, head], directory=top).returncode != 0:
+    try:
+        # merge-base --is-ancestor exits 1 saying nothing for a head that does not descend from the reviewed commit.
+        if git.quiet_output(["merge-base", "--is-ancestor", reviewed, head], directory=top) is None:
+            return False
+        listed = git.output(["rev-list", "--no-merges", head, f"^{reviewed}", f"^{base}"], directory=top)
+    except GitError:
         return False
-    listed = git.run(["rev-list", "--no-merges", head, f"^{reviewed}", f"^{base}"], directory=top)
-    return listed.returncode == 0 and not listed.stdout.strip()
+    return not listed.strip()
 
 
 def review_lines(

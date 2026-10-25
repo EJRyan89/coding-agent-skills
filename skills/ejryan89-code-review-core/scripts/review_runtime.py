@@ -45,6 +45,11 @@ DUPLICATION_ALLOWED = {
         ".claude/skills/review-repository/scripts/conditions.py reads the manifest by this name, from a reviewer "
         "folder that holds only the resources its manifest declares, where this module and its imports are not"
     ),
+    "glob_matcher": (
+        ".claude/skills/review-repository/scripts/conditions.py matches a snapshot's recorded exclusions against a "
+        "route's `reads` globs with it, from a reviewer folder that holds only the resources its manifest declares, "
+        "where this module and its imports are not"
+    ),
 }
 
 ADAPTER_PROTOCOL_VERSION = 1

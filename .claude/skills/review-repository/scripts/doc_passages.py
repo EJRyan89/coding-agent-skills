@@ -15,6 +15,13 @@ name counts as the whole span, a call (`name(`), or a dotted part (`module.name`
 which every entry point defines, nor a name shorter than MIN_NAME_LENGTH, so a name that is also a common word does
 not match every sentence that uses the word. A suite's names, by validation's rule, are left out.
 
+A document the snapshot records leaving out, such as `CLAUDE.md`, `AGENTS.md`, and every repository skill's SKILL.md
+and references, which it leaves out as `agent-instruction` so no reviewer reads them, cannot be searched. When the diff
+gives a name, each such document its globs match gets an `EXCLUDED <document>: the snapshot leaves it out (<reason>),
+so no passage in it was searched; judge from the diff whether it may name what changed` line, listed first, which
+opens the route as a passage does, so a route never closes as "no passage names the change" over a document it never
+read.
+
 It writes each matching passage (a paragraph, a list item, a table row, a heading, or a fenced block) as
 `PASSAGE <document>:<line> names <name> (<kind> in <changed file>), hunk <header> at new lines <first>-<last>`, with
 `, renamed from <old path>` after the changed file when the name is a renamed script's old one, then the passage, at
@@ -25,11 +32,12 @@ It reads the diff through conditions.read_files, so a changed file whose path co
 gives no name, and gets a `REFUSED <path>: ...` line on stdout instead.
 
 A snapshot it cannot read its evidence from, one that is not a directory or, when the diff gives a name, holds none of
-the documents it searches, ends it with `FAILED MissingEvidence: <what is missing>`, so an absent snapshot never reads
-as a change no document names.
+the documents it searches, or whose manifest cannot be read, ends it with `FAILED MissingEvidence: <what is missing>`,
+so an absent snapshot never reads as a change no document names.
 
-Prints `PASSAGES <found> given=<n>`. Exit status 0 means it wrote passages, which opens the route; 1 that no document
-names what changed, which closes it; 2 a usage error or a last line FAILED <reason>, which fails the review.
+Prints `PASSAGES <found> given=<n> excluded=<n>`. Exit status 0 means it wrote passages or excluded documents, which
+opens the route; 1 that every document it searches was read and none names what changed, which closes it; 2 a
+usage error or a last line FAILED <reason>, which fails the review.
 """
 
 from __future__ import annotations
@@ -51,11 +59,13 @@ from conditions import (
     SCRIPT_SUFFIXES,
     FileDiff,
     MissingEvidence,
+    glob_matcher,
     is_suite,
     read_files,
     refusal_line,
     require_snapshot,
     run_condition,
+    snapshot_exclusions,
     unset_variables_line,
 )
 from console import run_main
@@ -223,6 +233,17 @@ def documents(root: Path) -> list[tuple[str, Path]]:
     return sorted(found.items())
 
 
+def unsearched(root: Path) -> list[tuple[str, str]]:
+    """Each document the route searches that the snapshot at `root` records leaving out, with the reason it records,
+    in path order: every one under `.claude/` and every agent instruction file among them."""
+    matchers = [glob_matcher(pattern) for pattern in DOCUMENTS]
+    return sorted(
+        (relative, reason)
+        for relative, reason in snapshot_exclusions(root).items()
+        if relative not in RECORDS and any(matches(relative) for matches in matchers)
+    )
+
+
 def units(text: str) -> Iterator[Unit]:
     """A document's passages: each heading, table row, list item, paragraph, and fenced block, with its first line."""
     block: list[str] = []
@@ -291,9 +312,18 @@ def excerpt(passage: Passage) -> str:
     return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
 
 
-def render(found: list[Passage]) -> str:
-    """The file the route's reviewer reads: each passage given, then how many past the bound were not."""
+def render(found: list[Passage], excluded: list[tuple[str, str]]) -> str:
+    """The file the route's reviewer reads: each document the snapshot leaves out, first so no bound cuts one, then
+    each passage given, then how many past the bound were not."""
     blocks = []
+    if excluded:
+        blocks.append(
+            "".join(
+                f"EXCLUDED {document}: the snapshot leaves it out ({reason}), so no passage in it was searched; judge "
+                "from the diff whether it may name what changed\n"
+                for document, reason in excluded
+            )
+        )
     for passage in found[:MAX_PASSAGES]:
         name, hunk = passage.name, passage.name.hunk
         renamed = f", renamed from {name.renamed_from}" if name.renamed_from else ""
@@ -322,11 +352,12 @@ def _run() -> int:
     names = names_to_find(files)
     if names and not documents(arguments.source_root):
         raise MissingEvidence("the snapshot holds none of the documents the route searches")
+    excluded = unsearched(arguments.source_root) if names else []
     found = passages(arguments.source_root, names)
-    print(f"PASSAGES {len(found)} given={min(len(found), MAX_PASSAGES)}")
-    if not found:
+    print(f"PASSAGES {len(found)} given={min(len(found), MAX_PASSAGES)} excluded={len(excluded)}")
+    if not found and not excluded:
         return 1
-    Path(os.environ[OUTPUT_VARIABLE]).write_bytes(render(found).encode("utf-8"))
+    Path(os.environ[OUTPUT_VARIABLE]).write_bytes(render(found, excluded).encode("utf-8"))
     return 0
 
 

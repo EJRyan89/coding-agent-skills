@@ -327,6 +327,31 @@ def test_the_plugins_name_and_version_win_over_an_entry_that_sets_them(source: S
     assert manifest == {"name": "fixture-skills", "version": "1.2.3", "description": "The fixture-skills plugin."}
 
 
+def test_a_manifest_value_no_json_file_can_hold_is_the_plugins_build_refusal(source: Source) -> None:
+    # json_reader reads an escaped lone surrogate in the marketplace, which no UTF-8 file can hold.
+    source.skill("alpha")
+    catalogue = plugin_build.load_catalogue(source.root)
+    catalogue["fixture-skills"] = {**catalogue["fixture-skills"], "description": "\ud800"}
+    with pytest.raises(plugin_build.BuildError) as raised:
+        plugin_build.assemble(plugin_build.load_source(source.root), catalogue, "1.2.3")
+    assert str(raised.value) == (
+        "plugin fixture-skills: .claude-plugin/plugin.json cannot be written: the value holds a lone surrogate "
+        "U+D800, which UTF-8 cannot encode"
+    )
+
+
+def test_a_hook_value_no_json_file_can_hold_is_the_plugins_build_refusal(source: Source) -> None:
+    # A double-quoted frontmatter value reads JSON's escapes, a lone surrogate's among them.
+    source.agent("guarded", extra=GUARD_HOOK.replace('matcher: "Read|Bash"', 'matcher: "Read\\ud800"'))
+    source.skill("beta", agent_deps=["guarded"])
+    with pytest.raises(plugin_build.BuildError) as raised:
+        assembled(source)
+    assert str(raised.value) == (
+        "plugin fixture-skills: hooks/hooks.json cannot be written: the value holds a lone surrogate U+D800, which "
+        "UTF-8 cannot encode"
+    )
+
+
 @pytest.mark.parametrize(
     ("listed", "problem"),
     [
