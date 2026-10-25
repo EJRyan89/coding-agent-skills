@@ -53,6 +53,13 @@ own tests ran each such line it ran, and the whole suite otherwise. A suite that
 tell the mutant apart and is left out, unless no suite ran one, when every reaching suite runs whole, which still kills
 a mutant that breaks the import.
 
+A sanction table, a module-level assignment to one name ending in _ALLOWED such as FSOPS_ALLOWED, makes no mutant: no
+suite of its module reads it, and the validation policy that owns it, which the gate does not run, fails an entry that
+does not match what the module holds, so its mutants would all survive and spend the run. The policy is the module
+under tests/validation, not a suite, that binds the table's name as a string to a module-level name ending in
+ALLOWANCE, as FSOPS_ALLOWANCE = "FSOPS_ALLOWED"; the summary names each table skipped and its policy, and a changed
+table no policy reads stops the gate, since nothing would check it.
+
 When no changed line yields a mutant, no suite runs. Otherwise the run is bounded by --minutes (DEFAULT_MINUTES): the
 reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
 one queue that takes one mutant from each module in turn, each module's in line order, so a module late in the list
@@ -68,7 +75,8 @@ GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one
 gate has run to its end, whatever survived, and 1 when the run was unfinished, after its summary and an error
 annotation repeating its first line, or when it cannot run: mutmut no longer makes the mutant its canary expects on the
 canary's line alone, the reach run no longer measures its canary suite's own process and the process the suite's test
-starts, each line named with that test, which a missing coverage.py .pth file would cause, or a git command fails.
+starts, each line named with that test, which a missing coverage.py .pth file would cause, a changed sanction table is
+one no policy reads, or a git command fails.
 """
 
 from __future__ import annotations
@@ -105,6 +113,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import json_reader
 from bounded_process import run_bounded
 from console import run_main
+from duplication import SANCTION_SUFFIX
 from flat_text import flat_text
 from git_client import GitClient
 from job_pool import append_step_summary, worker_count
@@ -171,6 +180,10 @@ COVERAGE_WARNINGS = (
     "no-sysmon",
 )
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+# The folder of the validation policies, each of which names the sanction table it reads as a module-level string
+# bound to a name ending in POLICY_TABLE_SUFFIX, such as FSOPS_ALLOWANCE = "FSOPS_ALLOWED".
+POLICY_FOLDER = "tests/validation"
+POLICY_TABLE_SUFFIX = "ALLOWANCE"
 
 
 @dataclass(frozen=True)
@@ -214,6 +227,8 @@ class ModuleReport:
     cut_short: bool
     # How many lines the pull request adds or changes in the module.
     lines: int
+    # Each sanction table holding a changed line, which made no mutant, with the policy that reads it.
+    tables: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -237,6 +252,8 @@ SuiteRunner = Callable[[Path, str, float, Sequence[str]], str]
 ReachRunner = Callable[[Path, str, Sequence[str], float], "Reach | str"]
 Clock = Callable[[], float]
 T = TypeVar("T")
+# A module's count of changed lines, the mutants of those lines, and each changed sanction table with its policy.
+Selection = tuple[int, list[Mutant], tuple[tuple[str, str], ...]]
 
 
 def is_gate_module(path: str) -> bool:
@@ -317,6 +334,63 @@ def bound_names(statement: ast.stmt) -> frozenset[str]:
         elif not isinstance(node, ast.Tuple | ast.List | ast.Starred | ast.expr_context):
             return frozenset()
     return frozenset(names)
+
+
+def sanction_table(statement: ast.stmt | None) -> str | None:
+    """The name a module-level sanction table binds, an assignment to one name ending in SANCTION_SUFFIX, such as
+    FSOPS_ALLOWED; None for any other statement."""
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        target = statement.targets[0]
+    elif isinstance(statement, ast.AnnAssign):
+        target = statement.target
+    else:
+        return None
+    return target.id if isinstance(target, ast.Name) and target.id.endswith(SANCTION_SUFFIX) else None
+
+
+def changed_tables(tree: ast.Module, changed: frozenset[int]) -> list[str]:
+    """The sanction tables of a module's body that hold a changed line, in line order."""
+    return [
+        name
+        for statement in tree.body
+        if (name := sanction_table(statement))
+        and any(statement.lineno <= line <= (statement.end_lineno or statement.lineno) for line in changed)
+    ]
+
+
+def policy_tables(tree: Path) -> dict[str, str]:
+    """Each sanction table name a validation policy reads, with the policy's path: a module under POLICY_FOLDER, not a
+    suite, that binds the name as a string at module level to a name ending in POLICY_TABLE_SUFFIX."""
+    found: dict[str, str] = {}
+    for path in sorted((tree / POLICY_FOLDER).glob("*.py")):
+        if is_suite_name(path.name):
+            continue
+        for statement in ast.parse(path.read_bytes().decode("utf-8"), str(path)).body:
+            if (
+                isinstance(statement, ast.Assign)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+                and statement.value.value.endswith(SANCTION_SUFFIX)
+                and any(
+                    isinstance(target, ast.Name) and target.id.endswith(POLICY_TABLE_SUFFIX)
+                    for target in statement.targets
+                )
+            ):
+                found.setdefault(statement.value.value, f"{POLICY_FOLDER}/{path.name}")
+    return found
+
+
+def unread_tables(module: str, tables: Iterable[str], policies: Mapping[str, str]) -> str | None:
+    """Why the gate cannot run when a changed sanction table is one no policy reads, which no mutant of it would be
+    checked by; None when a policy reads each."""
+    unread = [name for name in tables if name not in policies]
+    if not unread:
+        return None
+    names = ", ".join(unread)
+    return (
+        f"{module} changes {names}, which no validation policy under {POLICY_FOLDER} reads, so the gate would leave "
+        f"it unchecked: add the policy that reads it, or rename the table so its name does not end in {SANCTION_SUFFIX}"
+    )
 
 
 class NameReaders(ast.NodeVisitor):
@@ -400,7 +474,10 @@ def module_mutants(
     mentioned_elsewhere: Callable[[str], bool] = lambda name: True,
 ) -> list[Mutant]:
     """Every distinct mutant of a module whose first changed line is one the pull request changed, in line order, each
-    marked when its line runs at import, with the lines that read what a module-level assignment binds."""
+    marked when its line runs at import, with the lines that read what a module-level assignment binds.
+
+    A line of a sanction table makes none: the module's suites never read the table, and the validation policy that
+    owns it, which the gate does not run, fails an entry that does not match what the module holds."""
     if not changed:
         return []
     tree = ast.parse(source)
@@ -416,6 +493,8 @@ def module_mutants(
             # A line in a function's body lies in a top statement that defines a function or a class, which binds
             # no name an assignment would, so it gets no readers.
             statement = top_statement(tree, line)
+            if sanction_table(statement):
+                continue
             if statement and statement.lineno not in readers:
                 readers[statement.lineno] = name_readers(tree, source, statement, mentioned_elsewhere)
             found = readers[statement.lineno] if statement else None
@@ -926,6 +1005,15 @@ def empty_selection_line(module: ModuleReport) -> str:
     )
 
 
+def table_line(module: ModuleReport) -> str:
+    """The sanction tables whose changed lines made no mutant, each named with the validation policy that holds it."""
+    held = ", ".join(f"`{name}` (`{policy}`)" for name, policy in module.tables)
+    return (
+        f"`{module.module}`: the changed lines of its sanction tables made no mutant, since the validation policy "
+        f"that reads each holds it, not the module's suites: {held}."
+    )
+
+
 def unfinished_line(report: Report) -> str | None:
     """The line that leads the summary of a run the cap cut short, naming each module's mutants not run, how many of
     them run at import, and the suites whose reach was not measured; None for a finished run."""
@@ -971,7 +1059,9 @@ def summary(report: Report) -> str:
         cells = [str(module.lines), str(len(module.outcomes)), *(str(found[status]) for status in found)]
         lines.append(f"| `{module.module}` | {' | '.join([*cells, kill_ratio(found)])} |")
     for module in report.modules:
-        if not module.outcomes:
+        if module.tables:
+            lines += ["", table_line(module)]
+        elif not module.outcomes:
             lines += ["", empty_selection_line(module)]
     for module in report.modules:
         if module.cut_short:
@@ -1029,8 +1119,10 @@ class Gate:
     clock: Clock = time.monotonic
     measure: Callable[[ReachRunner], str | None] = measurement_problem
 
-    def select(self, tree: Path, modules: Sequence[str]) -> dict[str, tuple[int, list[Mutant]]]:
-        """Each module's count of changed lines and the mutants of those lines."""
+    def select(self, tree: Path, modules: Sequence[str]) -> dict[str, Selection]:
+        """Each module's count of changed lines, the mutants of those lines, and the sanction tables holding one, each
+        with the policy that reads it; a changed table no policy reads stops the run."""
+        policies = policy_tables(tree)
         selected = {}
         for module in modules:
             diff = self.git.output(
@@ -1038,12 +1130,17 @@ class Gate:
             )
             lines = frozenset(changed_lines(diff))
             source = (tree / module).read_bytes().decode("utf-8")
+            tables = changed_tables(ast.parse(source), lines)
+            problem = unread_tables(module, tables, policies)
+            if problem:
+                raise RuntimeError(problem)
             others = other_sources(tree, module)
             selected[module] = (
                 len(lines),
                 module_mutants(
                     module, source, lines, self.generate, functools.cache(functools.partial(named_in, others))
                 ),
+                tuple((name, policies[name]) for name in tables),
             )
         return selected
 
@@ -1069,12 +1166,13 @@ class Gate:
             reach, failed, unmeasured = measure_reach(
                 workers, suites, mutated, reach_deadline(started, deadline), self.reach
             )
-        ordered = queue_order(mutants for _, mutants in selected.values())
+        ordered = queue_order(mutants for _, mutants, _ in selected.values())
         outcomes = try_mutants(workers, ordered, reach, deadline, self.run)
         reports = []
-        for module, (lines, _) in selected.items():
+        for module, (lines, _, tables) in selected.items():
             found = [outcome for outcome in outcomes if outcome.mutant.module == module]
-            reports.append(ModuleReport(module, found, any(outcome.status == NOT_RUN for outcome in found), lines))
+            cut_short = any(outcome.status == NOT_RUN for outcome in found)
+            reports.append(ModuleReport(module, found, cut_short, lines, tables))
         version = importlib.metadata.version("mutmut") if self.generate is mutmut_mutants else "(a test's generator)"
         return Report(self.base, self.minutes, self.clock() - started, len(trees), version, reports, failed, unmeasured)
 

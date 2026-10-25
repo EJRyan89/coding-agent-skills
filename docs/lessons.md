@@ -489,3 +489,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   and colon or a slash, or `\a`, `\b`, or `\v` sits beside a word; a non-raw pattern given to `re` holding `\b`; a
   non-raw literal given to `Path` holding any control escape.
 - **Examples:** #1904, #1924
+
+### A gate runs the check that owns what it mutates
+
+- **Rule:** A gate that tests a change against checks runs, for each part it changes, the check that reads that part,
+  or leaves the part to that check and names it, never a check that cannot see it.
+- **Why:** A mutant no run check reads survives every time, costs run time, and is ruled equivalent by hand on every
+  pull request that touches it.
+- **Use:** `tools.mutation_gate:sanction_table`, `tools.mutation_gate:policy_tables`, which find a module-level
+  sanction table and the validation policy that reads it.
+- **Guard:** `tests/tools/test_mutation_gate.py::SanctionTableFixtures`
+- **Search for:** a mutant of a module-level `*_ALLOWED` table in the `Mutation gate` step summary; a gate or audit
+  that runs a module's suites on what only a policy under `tests/validation/` reads; a new `*_ALLOWED` name with no
+  `*_ALLOWANCE` constant naming it in a policy.
+- **Examples:** #1933, #1938
