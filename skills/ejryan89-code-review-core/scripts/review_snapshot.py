@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import re
 import shutil
 import sys
@@ -19,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 from diff_paths import header_text, quote
 from git_client import GitClient, GitError, Runner
 from github_client import GitHubError, replace_undecodable
+from path_keys import path_key
 from review_analyzers import reads_settings
 from review_documents import EXTRACTED_WHEN_TEXT, ExtractionRefused, document_diff, document_format, extract, locations
 from review_github import DiffOverLimit
@@ -68,7 +68,7 @@ _FETCH_LOCKS_GUARD = threading.Lock()
 
 def _fetch_lock(checkout: Path) -> threading.Lock:
     """One lock per checkout: concurrent fetches into one repository contend for FETCH_HEAD and ref locks."""
-    key = os.path.normcase(str(checkout.resolve()))
+    key = path_key(checkout, resolve=True)
     with _FETCH_LOCKS_GUARD:
         return _FETCH_LOCKS.setdefault(key, threading.Lock())
 
