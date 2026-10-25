@@ -156,6 +156,14 @@ class FindExecutablesTests(LocatorTestCase):
     def test_nothing_found_is_an_empty_list(self) -> None:
         self.assertEqual([], find_executables(PROGRAM))
 
+    def test_a_path_folder_spelled_several_ways_is_searched_once(self) -> None:
+        program = self.program(self.path_folder)
+        folder = str(self.path_folder)
+        spellings = (folder, folder + os.sep, str(self.path_folder / ".." / self.path_folder.name))
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(spellings)}):
+            self.assertEqual([program], [Path(path) for path in path_programs(PROGRAM)])
+            self.assertEqual([program], [Path(path) for path in find_executables(PROGRAM)])
+
 
 class LocatedCommandTests(LocatorTestCase):
     def test_the_program_is_replaced_by_the_absolute_path_the_locator_finds(self) -> None:
