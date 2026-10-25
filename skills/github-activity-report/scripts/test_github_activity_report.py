@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import contextlib
 import csv
 import io
@@ -959,6 +960,8 @@ def test_a_pull_request_author_must_be_an_object_with_a_login(author: object) ->
         pytest.param(["--org", "-acme", "--user", "octo"], id="an-org-starting-with-a-hyphen"),
         pytest.param(["--org", "acme", "--user", "octo", "--months", "0"], id="zero-months"),
         pytest.param(["--org", "acme", "--user", "octo", "--months", "37"], id="37-months"),
+        pytest.param(["--org", "acme", "--user", "octo", "--months", "\u00b2"], id="superscript-months"),
+        pytest.param(["--org", "acme", "--user", "octo", "--months", "1" * 5000], id="months-past-the-digit-limit"),
     ],
 )
 def test_invalid_arguments_are_rejected_before_querying(arguments: list[str]) -> None:
@@ -966,6 +969,16 @@ def test_invalid_arguments_are_rejected_before_querying(arguments: list[str]) ->
     code, _, _ = run_report(arguments, GitHubSearchClient(run, Recorder()))
     assert code == 2
     assert calls == []
+
+
+@pytest.mark.parametrize("value", ["0", "37", "²", "1" * 5000, "", "+3", " 3"])
+def test_months_refuses_what_is_no_whole_number_in_range_with_its_own_message(value: str) -> None:
+    # argparse would turn int()'s ValueError into a usage error too, but one that names no range.
+    with pytest.raises(argparse.ArgumentTypeError) as raised:
+        report._months(value)
+    assert str(raised.value) == f"must be an integer from 1 to {report.MAX_MONTHS}"
+    assert report._months("1") == 1
+    assert report._months(str(report.MAX_MONTHS)) == report.MAX_MONTHS
 
 
 class GroupGitHub(FakeGitHub):

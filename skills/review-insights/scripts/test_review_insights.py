@@ -29,6 +29,7 @@ import review_insights as ri
 import review_records
 import review_synthesis
 import skill_roots
+import whole_number
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import FlagError, add_flag, load_store, resolve_flag
@@ -775,6 +776,20 @@ class ReportTests(InsightFixture):
                 result = self.execute(*arguments)
                 self.assertEqual((2, ""), (result.returncode, result.stdout))
                 self.assertIn("usage:", result.stderr)
+
+
+class RecommendationNumberTests(unittest.TestCase):
+    def test_the_next_number_follows_every_one_used(self) -> None:
+        self.assertEqual(1, ri.next_rec_number([]))
+        self.assertEqual(13, ri.next_rec_number([{"id": "REC-012"}, {"id": "REC-003"}, {"id": "other"}, {}]))
+
+    def test_an_id_past_the_digit_limit_or_in_other_digits_is_refused_by_name(self) -> None:
+        # The pattern's `\d` admits Arabic-Indic digits, which no ID this writes holds.
+        for number in ("1" * 5000, chr(0x0663) * 3):
+            with self.subTest(number=number[:4]), self.assertRaises(ri.InsightError) as raised:
+                ri.next_rec_number([{"id": "REC-001"}, {"id": f"REC-{number}"}])
+            refusal = f"a recommendation ID's number is not at most {whole_number.DIGIT_LIMIT} ASCII digits"
+            self.assertEqual(refusal, str(raised.exception))
 
 
 class DecideTests(InsightFixture):

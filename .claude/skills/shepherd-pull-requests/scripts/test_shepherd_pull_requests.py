@@ -968,14 +968,16 @@ class JudgementTest(FixtureTestCase):
                 self.assertEqual([], gh.writes())
                 self.assertFalse(any(line.startswith(("RERUN", "DEFECT")) for line in lines))
 
-    def test_a_run_id_past_the_digit_limit_is_malformed(self) -> None:
-        url = "https://github.com/o/r/actions/runs/" + "1" * 5000 + "/job/2"
-        with self.assertRaises(GitHubError) as raised:
-            shepherd.run_of({"detailsUrl": url})
-        self.assertEqual(
-            ("malformed", f"GitHub returned a run id of more than {whole_number.DIGIT_LIMIT} digits"),
-            (raised.exception.kind, str(raised.exception)),
-        )
+    def test_a_run_id_past_the_digit_limit_or_in_other_digits_is_malformed(self) -> None:
+        # The pattern's `\d` admits an Arabic-Indic three, which is no run id either.
+        for run in ("1" * 5000, chr(0x0663)):
+            url = f"https://github.com/o/r/actions/runs/{run}/job/2"
+            with self.subTest(run=run[:4]), self.assertRaises(GitHubError) as raised:
+                shepherd.run_of({"detailsUrl": url})
+            self.assertEqual(
+                ("malformed", f"GitHub returned a run id that is not at most {whole_number.DIGIT_LIMIT} ASCII digits"),
+                (raised.exception.kind, str(raised.exception)),
+            )
         self.assertEqual(RUN, shepherd.run_of({"detailsUrl": f"https://github.com/o/r/actions/runs/{RUN}/job/2"}))
         self.assertIsNone(shepherd.run_of({"detailsUrl": None}))
 

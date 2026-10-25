@@ -323,7 +323,7 @@ def malformed(what: str) -> GitHubError:
 
 def run_of(entry: dict[str, Any]) -> int | None:
     match = RUN_URL.search(str(entry.get("detailsUrl") or ""))
-    refused = malformed(f"a run id of more than {whole_number.DIGIT_LIMIT} digits")
+    refused = malformed(f"a run id that is not at most {whole_number.DIGIT_LIMIT} ASCII digits")
     return whole_number.read(match.group(1), refused) if match else None
 
 
