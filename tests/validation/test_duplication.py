@@ -520,7 +520,7 @@ class SharedFactPolicy(unittest.TestCase):
         self.assertEqual([], self.problems({tools: shared}))
 
     def test_a_path_case_folded_by_hand_fails_and_the_shared_key_passes(self) -> None:
-        canary = "tools/runtime_canary.py"
+        canary = "tools/path_tool.py"
         for folding, line in (
             ("key = os.path.normcase(os.path.abspath(path))\n", 1),
             ("key = os.path.normcase(os.path.normpath(path))\n", 1),
