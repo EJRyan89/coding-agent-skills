@@ -27,6 +27,8 @@ class GlobTests(unittest.TestCase):
                 ".claude/skills/SKILL.md": False,
             },
             "skills/?/[ab].md": {"skills/x/a.md": True, "skills/xy/a.md": False, "skills/x/c.md": False},
+            # A `**` resumes where the segments before it stopped, so they are never matched twice.
+            "*/**/*.md": {"docs/guide.md": True, "docs/a/guide.md": True, "guide.md": False},
         }
         for pattern, paths in cases.items():
             matches = conditions.glob_matcher(pattern)
