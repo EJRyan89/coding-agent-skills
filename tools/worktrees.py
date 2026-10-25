@@ -43,6 +43,13 @@ TITLE_TYPES = ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build"
 # The kinds new accepts: a title type, or an investigation's, which may produce no commits and so no pull request.
 INVESTIGATION = "inv"
 KINDS = (*TITLE_TYPES, INVESTIGATION)
+# Folds made without skills/ejryan89-skill-core/scripts/path_keys.py's path_key, with the reason.
+DUPLICATION_ALLOWED = {
+    "path_key": (
+        "below_a_checkout folds one segment of a path, a name, to compare it with .git; a key from "
+        "skills/ejryan89-skill-core/scripts/path_keys.py is the key of a whole path"
+    ),
+}
 # A Claude Code session keeps the hook command it loaded when it started, so one started before the hub guard
 # moved into hub_guard.py still runs this script's guard subcommand, which runs the guard as its own program.
 HUB_GUARD = Path(__file__).with_name("hub_guard.py")
