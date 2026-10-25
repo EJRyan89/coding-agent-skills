@@ -241,6 +241,21 @@ class GateTests(unittest.TestCase):
             self.gates(committed=scenario, uncommitted={"skills/alpha/scripts/alpha.py": "print('more')\n"}),
         )
 
+    def test_a_scenario_no_reader_can_read_counts_as_a_review_scenario(self) -> None:
+        folder = self.root / "tests" / "fixtures" / "skill-evals" / "alpha"
+        (folder / "codec").mkdir(parents=True)
+        (folder / "codec" / "scenario.json").write_bytes(b'{"mode": "\xff"}\n')
+        (folder / "folder" / "scenario.json").mkdir(parents=True)
+        for kept in ("codec", "folder"):
+            with self.subTest(kept=kept):
+                other = "folder" if kept == "codec" else "codec"
+                shutil.move(folder / other, self.root / other)
+                self.assertIn(
+                    "GATE evaluate-skill alpha if-prompt",
+                    self.gates(uncommitted={"skills/alpha/scripts/alpha.py": f"print({kept!r})\n"}),
+                )
+                shutil.move(self.root / other, folder / other)
+
     def test_a_user_only_skills_description_owes_no_trigger_run(self) -> None:
         text = "---\nname: zeta\ndescription: Zeta deploys.\ndisable-model-invocation: true\n---\n\n# Zeta\n"
         new = {"skills/zeta/SKILL.md": text, "deploy-meta/zeta.json": "{}\n"}
@@ -288,6 +303,36 @@ class GateTests(unittest.TestCase):
     def test_metadata_that_cannot_be_read_owes_the_canary(self) -> None:
         self.assertIn("GATE runtime-canary alpha", self.gates(uncommitted={"deploy-meta/alpha.json": "{not json\n"}))
 
+    def test_metadata_past_the_integer_digit_limit_reads_as_empty_and_owes_the_canary(self) -> None:
+        digits = '{"tools": [' + "1" * 5000 + "]}\n"
+        self.assertIn("GATE runtime-canary alpha", self.gates(uncommitted={"deploy-meta/alpha.json": digits}))
+
+    def test_metadata_nested_past_the_recursion_limit_reads_as_empty_and_owes_the_canary(self) -> None:
+        nested = '{"tools": ' + "[" * 100_000 + "]" * 100_000 + "}\n"
+        self.assertIn("GATE runtime-canary alpha", self.gates(uncommitted={"deploy-meta/alpha.json": nested}))
+
+    def test_metadata_that_is_not_utf8_reads_as_empty_and_owes_the_canary(self) -> None:
+        (self.root / "deploy-meta" / "alpha.json").write_bytes(b'{"tools": ["\xff"]}\n')
+        self.assertIn("GATE runtime-canary alpha", self.gates())
+
+    def test_unchanged_metadata_that_is_not_utf8_reads_as_empty(self) -> None:
+        (self.root / "deploy-meta" / "gamma.json").write_bytes(b'{"agent_deps": ["\xff"]}\n')
+        git(self.root, "commit", "-q", "-am", "gamma's metadata in another codec")
+        git(self.root, "branch", "-f", "main", "HEAD")
+        self.assertEqual(["GATE audit-skill alpha"], self.gates(uncommitted={"skills/alpha/scripts/alpha.py": "1\n"}))
+
+    def test_a_folder_in_place_of_metadata_reads_as_empty(self) -> None:
+        (self.root / "deploy-meta" / "gamma.json").unlink()
+        (self.root / "deploy-meta" / "gamma.json").mkdir()
+        self.assertEqual(
+            [
+                "REGENERATE python tools/skill_reference.py --write",
+                "GATE audit-skill gamma",
+                "GATE runtime-canary gamma",
+            ],
+            self.gates(),
+        )
+
     def test_a_repository_skills_frontmatter_owes_its_shim_and_never_the_canary(self) -> None:
         changed = skill_text("Beta does another thing. Use it when asked.")
         self.assertEqual(
@@ -296,6 +341,16 @@ class GateTests(unittest.TestCase):
         )
 
     def test_a_changed_agent_owes_the_canary_and_the_audit_of_each_skill_declaring_it(self) -> None:
+        self.assertEqual(
+            ["GATE audit-skill gamma", "GATE runtime-canary gamma"],
+            self.gates(uncommitted={"agents/helper.md": "---\nname: helper\n---\n\nHelp more.\n"}),
+        )
+
+    def test_metadata_saved_with_a_byte_order_mark_is_read_as_utf8(self) -> None:
+        text = json.dumps({"agent_deps": ["helper"], "note": "café"}, ensure_ascii=False) + "\n"
+        (self.root / "deploy-meta" / "gamma.json").write_text(text, encoding="utf-8-sig")
+        git(self.root, "commit", "-q", "-am", "gamma's metadata with a byte order mark")
+        git(self.root, "branch", "-f", "main", "HEAD")
         self.assertEqual(
             ["GATE audit-skill gamma", "GATE runtime-canary gamma"],
             self.gates(uncommitted={"agents/helper.md": "---\nname: helper\n---\n\nHelp more.\n"}),
@@ -352,6 +407,27 @@ class GateTests(unittest.TestCase):
         self.assertIn("is not a ref", stderr.getvalue())
 
 
+def tools_reached(tool: Path) -> set[str]:
+    """The modules of `tools/` that `tool` imports, read through `ast`, and each of those imports in turn."""
+    reached: set[str] = set()
+    pending = [tool]
+    while pending:
+        for node in ast.walk(ast.parse(pending.pop().read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ImportFrom) or node.module is None:
+                continue
+            if node.module == "tools":
+                names = [alias.name for alias in node.names]
+            elif node.module.startswith("tools."):
+                names = [node.module.removeprefix("tools.")]
+            else:
+                continue
+            for name in names:
+                if name not in reached and (tool.parent / f"{name}.py").is_file():
+                    reached.add(name)
+                    pending.append(tool.parent / f"{name}.py")
+    return reached
+
+
 class RuntimePromptSourceTests(unittest.TestCase):
     def test_the_sources_are_the_skills_and_fixtures_the_sample_tool_renders_from(self) -> None:
         tool = REPOSITORY / "tools" / "runtime_prompts.py"
@@ -371,9 +447,12 @@ class RuntimePromptSourceTests(unittest.TestCase):
         self.assertEqual(siblings, skills)
         source = tool.read_text(encoding="utf-8")
         self.assertIn('"tests" / "fixtures" / "skill-evals" / "review-prs"', source)
-        self.assertIn("from tools import skill_evals", source)
         self.assertIn("tests/fixtures/skill-evals/review-prs/", change_skill.RUNTIME_PROMPT_SOURCES)
-        self.assertIn("tools/skill_evals.py", change_skill.RUNTIME_PROMPT_SOURCES)
+        reached = tools_reached(tool)
+        self.assertIn("skill_evals_runs", reached)
+        for module in sorted(name for name in reached if name.startswith("skill_evals")):
+            with self.subTest(module=module):
+                self.assertIn(f"tools/{module}.py", change_skill.RUNTIME_PROMPT_SOURCES)
 
 
 @pytest.mark.parametrize(
