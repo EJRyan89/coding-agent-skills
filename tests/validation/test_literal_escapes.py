@@ -6,6 +6,7 @@ control character.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -46,11 +47,19 @@ def problems(root: Path, source: str, name: str = "tests/test_sample.py") -> lis
         pytest.param('BIN = b"\\bin"\n', "\\b", id="bytes"),
         pytest.param('BIN = ("ok\\n"\n    "\\bin")\n', "\\b", id="a later piece of a concatenation"),
         pytest.param('TEMP = "D:\\tmp and C:\\new"\n', "\\n, \\t", id="two escapes in one literal"),
+        pytest.param('import re\nW = re.sub(repl="", pattern="x \\b", string="")\n', "\\b", id="a pattern by keyword"),
+        pytest.param('import re\nW = re.split(" \\b", "")\n', "\\b", id="another re function"),
+        pytest.param('BIN = ("ok"  # a comment\n    "\\bin")\n', "\\b", id="a piece after a comment"),
+        pytest.param('BIN = "ok" \\\n    "\\bin"\n', "\\b", id="a piece after a line continuation"),
+        pytest.param("BIN = '''one\n\\bin'''\n", "\\b", id="a triple-quoted literal"),
+        pytest.param("BIN = 'C:\\temp'\n", "\\t", id="single quotes"),
         pytest.param('def f() -> str:\n    """Reads C:\\temp."""\n    return ""\n', "\\t", id="a docstring"),
     ],
 )
 def test_a_literal_that_reads_as_a_path_or_pattern_fails(tmp_path: Path, source: str, escapes: str) -> None:
-    line = source.count("\n", 0, source.index('"')) + 1
+    first_quote = re.search("[\"']", source)
+    assert first_quote is not None
+    line = source.count("\n", 0, first_quote.start()) + 1
     assert problems(tmp_path, source) == [f"tests/test_sample.py:{line} {REFUSAL.format(escapes=escapes)}"]
 
 
@@ -76,6 +85,9 @@ def test_a_literal_that_reads_as_a_path_or_pattern_fails(tmp_path: Path, source:
         pytest.param('def f() -> None:\n    """Joins C:\\\\temp."""\n', id="an escaped docstring"),
         pytest.param('BELL = "\\a"\n', id="a bell alone"),
         pytest.param('SPACE = " \\t\\f\\v"\n', id="whitespace escapes side by side"),
+        pytest.param('import re\nW = re.sub("x", " \\b", "")\n', id="a replacement, not a pattern"),
+        pytest.param('TEXT = """\nline one\n"""  # a "\\bin" in a comment\n', id="a comment after a literal"),
+        pytest.param("TEXT = '''say \"\"\" \\n'''\n", id="other quotes inside a triple-quoted literal"),
     ],
 )
 def test_a_literal_that_means_the_control_character_passes(tmp_path: Path, source: str) -> None:
@@ -96,6 +108,18 @@ def test_an_allowance_sanctions_its_scope_and_an_unused_entry_fails(tmp_path: Pa
         "tests/test_sample.py:3 " + REFUSAL.format(escapes="\\b"),
         "tests/test_sample.py: ESCAPE_ALLOWED allows f, which holds nothing it sanctions; remove the entry",
     ]
+
+
+def test_a_file_no_policy_can_parse_is_reported_and_an_empty_read_fails(tmp_path: Path) -> None:
+    assert problems(tmp_path, 'BIN = "\\bin\n') == [
+        "tests/test_sample.py does not parse: unterminated string literal (detected at line 1) at line 1"
+    ]
+    outside = tmp_path / "docs" / "example.py"
+    outside.parent.mkdir(parents=True)
+    outside.write_text('BIN = "\\bin"\n', encoding="utf-8")
+    refusal = ["no Python file was read, so the literal policy could not judge anything"]
+    assert literal_escape_problems(tmp_path, []) == refusal
+    assert literal_escape_problems(tmp_path, [outside]) == refusal
 
 
 def test_the_policy_reads_every_formatted_file_suites_included(tmp_path: Path) -> None:

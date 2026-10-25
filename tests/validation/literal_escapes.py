@@ -160,9 +160,13 @@ def escape_files(root: Path, files: list[Path]) -> list[Path]:
 
 def literal_escape_problems(root: Path, files: list[Path]) -> list[str]:
     """Each non-raw string literal whose control escape reads as part of a path or a pattern, by its line, unless its
-    scope's ESCAPE_ALLOWED entry states why."""
+    scope's ESCAPE_ALLOWED entry states why, and that no file was read when none was, since a policy that read nothing
+    found nothing."""
+    read = escape_files(root, files)
+    if not read:
+        return ["no Python file was read, so the literal policy could not judge anything"]
     problems: list[str] = []
-    for path, name, tree in python_trees(escape_files(root, files), root, problems):
+    for path, name, tree in python_trees(read, root, problems):
         lines = [line.encode("utf-8") for line in python_source(path).split("\n")]
         context = literal_context(tree)
         found: list[tuple[int, str, str]] = []
