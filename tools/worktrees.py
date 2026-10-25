@@ -156,7 +156,7 @@ def new(kind: str, name: str) -> int:
     hub = current_hub()
     branch = f"{kind}/{name}"
     path = hub / WORKTREES / f"{kind}-{name}"
-    if git(hub, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
+    if CLIENT.quiet_output(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], directory=hub) is not None:
         raise UsageError(f"Branch {branch} already exists.")
     if path.exists():
         raise UsageError(f"{platform_support.normalize(path)} already exists.")

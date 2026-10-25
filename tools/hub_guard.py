@@ -41,7 +41,7 @@ from job_tree import process_tree
 
 from deployer import platform_support
 from tools import bash_syntax
-from tools.worktrees import MAIN, checkout_of, git, same_path
+from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, checkout_of, git, same_path
 
 GUARD_SETTING = "coding-agent-skills.hubGuard"
 FILE_TOOLS = {"Edit", "NotebookEdit", "Write"}
@@ -243,15 +243,24 @@ def guarded_hub_at(path: Path) -> Path | None:
 @functools.cache
 def guarded_hub_of_repository(path: Path) -> Path | None:
     """The guarded hub whose own git directory path names, as --git-dir or GIT_DIR does; None for a worktree's, another
-    repository's, or a path that names no repository, where git runs nothing."""
+    repository's, or a path git answers names no repository, where git runs nothing.
+
+    Raises GitError when git cannot tell, so each caller refuses rather than read the path as no guarded hub's.
+    """
     directory = path if path.is_dir() else path.parent
     if not directory.is_dir():
         return None
-    result = git(
-        directory, "--git-dir", str(path), "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"
-    )
-    lines = result.stdout.splitlines()
-    if result.returncode != 0 or len(lines) != 2 or not same_path(Path(lines[0]), Path(lines[1])):
+    arguments = ["--git-dir", str(path), "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]
+    try:
+        output = CLIENT.output(arguments, directory=directory, timeout=GUARD_GIT_TIMEOUT_SECONDS)
+    except GitError as exc:
+        if exc.kind == "not_repository":
+            return None
+        raise
+    lines = output.splitlines()
+    if len(lines) != 2:
+        raise GitError(f"git rev-parse answered {len(lines)} lines for the git directory {path}, not two")
+    if not same_path(Path(lines[0]), Path(lines[1])):
         return None
     common = Path(lines[1])
     if os.path.normcase(common.name) != ".git":
@@ -278,7 +287,11 @@ def hub_protected(path: Path) -> bool:
     normalized = Path(os.path.normpath(path))
     for directory in (normalized, *normalized.parents):
         if os.path.normcase(directory.name) == ".git" and directory.is_dir():
-            return guarded_hub_of_repository(directory) is not None
+            try:
+                return guarded_hub_of_repository(directory) is not None
+            except GitError:
+                return True  # a git directory git cannot read may be a guarded hub's
+
     hub = guarded_hub_at(normalized)
     if hub is None:
         return False
@@ -702,7 +715,10 @@ def reached_hub(place: Place) -> tuple[Path | None, bool]:
         if place.repository is None:
             unknown = True
         else:
-            hub = hub or guarded_hub_of_repository(place.repository)
+            try:
+                hub = hub or guarded_hub_of_repository(place.repository)
+            except GitError:
+                unknown = True  # a repository git cannot read may be a guarded hub
     elif place.start is None:
         unknown = True
     else:

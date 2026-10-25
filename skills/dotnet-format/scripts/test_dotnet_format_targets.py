@@ -637,7 +637,7 @@ class ResolveTests(unittest.TestCase):
         services.git = GitClient(lambda command, timeout: GitResult(128, "", message))
         with mock.patch.object(targets, "flat_text", wraps=flat_text) as flatten:
             self.assertEqual("Cannot read café 設計 repository.", self.failed(services=services))
-        flatten.assert_called_once_with(message)
+        flatten.assert_called_once_with(message.strip())
 
     def test_a_fetch_that_succeeds_reports_nothing(self) -> None:
         services = Services()
@@ -676,7 +676,7 @@ class ResolveTests(unittest.TestCase):
             self.failed(services=services),
         )
         services.git = GitClient(lambda command, timeout: GitResult(129, "", ""))
-        self.assertEqual("git rev-parse --show-toplevel exited with code 129", self.failed(services=services))
+        self.assertEqual("git rev-parse failed with exit code 129", self.failed(services=services))
 
     def test_an_unreadable_project_fails(self) -> None:
         self.repository.write("Lib/Lib.csproj", SDK_PROJECT)
