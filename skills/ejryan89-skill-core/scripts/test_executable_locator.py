@@ -287,7 +287,7 @@ class EnvironmentPathTests(unittest.TestCase):
         relative = ["", ".", "bin", "Git/bin/bash.exe", "bash.exe"]
         # Windows resolves a drive-relative path against the drive's working directory and a rooted one against the
         # working directory's drive, so neither is absolute there.
-        relative += ["C:bin", "\bin"] if WINDOWS else []
+        relative += ["C:bin", r"\bin"] if WINDOWS else []
         for value in [None, *relative]:
             with self.subTest(value=value):
                 self.assertIsNone(self.path(value))
