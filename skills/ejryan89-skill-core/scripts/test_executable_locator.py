@@ -254,3 +254,29 @@ class LinkFoldersTests(LocatorTestCase):
         ):
             self.assertEqual([], link_folders())
             self.assertIsNone(find_executable(PROGRAM))
+
+
+class EnvironmentPathTests(unittest.TestCase):
+    """An environment variable names a path a lookup may use only when the path is absolute."""
+
+    VARIABLE = "FIXTURE_LOCATOR_FOLDER"
+
+    def path(self, value: str | None) -> Path | None:
+        environment = {key: item for key, item in os.environ.items() if key != self.VARIABLE}
+        if value is not None:
+            environment[self.VARIABLE] = value
+        with mock.patch.dict(os.environ, environment, clear=True):
+            return executable_locator.environment_path(self.VARIABLE)
+
+    def test_an_absolute_path_is_the_path_it_names(self) -> None:
+        folder = Path(tempfile.gettempdir()).resolve()
+        self.assertEqual(folder, self.path(str(folder)))
+
+    def test_an_unset_empty_or_relative_variable_names_no_path(self) -> None:
+        relative = ["", ".", "bin", "Git/bin/bash.exe", "bash.exe"]
+        # Windows resolves a drive-relative path against the drive's working directory and a rooted one against the
+        # working directory's drive, so neither is absolute there.
+        relative += ["C:bin", "\bin"] if WINDOWS else []
+        for value in [None, *relative]:
+            with self.subTest(value=value):
+                self.assertIsNone(self.path(value))

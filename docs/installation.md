@@ -67,7 +67,7 @@ Use whichever installer your machine allows. [winget](https://learn.microsoft.co
 
 Install PowerShell 7's MSI build, as the table's `--installer-type wix` does: WinGet's default is now the packaged (MSIX) PowerShell, whose `pwsh` is an app execution alias that Codex CLI's sandbox cannot start, which stops every command Codex runs ([PowerShell app execution alias](codex-support.md#powershell-app-execution-alias)).
 
-The deployer finds Git Bash in `C:\Program Files\Git`, or next to the `git` on your `PATH`, which covers Scoop and per-user Git installs. It never uses another `bash`, such as WSL's. If Git isn't on your `PATH`, set `GIT_BASH` to its `bin\bash.exe`.
+The deployer finds Git Bash in `C:\Program Files\Git`, or next to the `git` on your `PATH`, which covers Scoop and per-user Git installs. It never uses another `bash`, such as WSL's. If Git isn't on your `PATH`, set `GIT_BASH` to the absolute path of its `bin\bash.exe`. A `GIT_BASH` or `PROGRAMFILES` that is not an absolute path is ignored, so Git Bash is never found relative to the folder you run from.
 
 ### On Linux
 
