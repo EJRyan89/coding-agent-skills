@@ -66,6 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 import skill_menu
 from console import run_main
 from seconds_option import positive_seconds
@@ -163,9 +164,7 @@ def build(home: Path, sources: list[Path]) -> list[plugin_build.Plugin]:
             entries.append({**entry, "source": f"./{plugin.name}"})
     marketplace = {"name": MARKETPLACE, "description": "The plugin canary's", "owner": {"name": "canary"}}
     (home / ".claude-plugin").mkdir()
-    (home / ".claude-plugin" / "marketplace.json").write_text(
-        json.dumps({**marketplace, "plugins": entries}, indent=2), encoding="utf-8"
-    )
+    json_writer.write(home / ".claude-plugin" / "marketplace.json", {**marketplace, "plugins": entries}, indent=2)
     return plugins
 
 
@@ -479,7 +478,7 @@ def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugi
         f'Write the JSON text {{"canary": true}} to {result} with the Write tool. Do nothing else.\n', encoding="utf-8"
     )
     role = {"id": UNGUARDED_ROLE, "prompt_file": str(prompt), "result_file": str(result)}
-    (run / RUN_FILE).write_text(json.dumps({"roles": [role]}), encoding="utf-8")
+    json_writer.write(run / RUN_FILE, {"roles": [role]})
     agent = f"{plugin}:{REVIEWER}"
     task = REVIEWER_TASK.format(prompt=prompt)
     request = (

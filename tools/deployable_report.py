@@ -43,7 +43,6 @@ Nothing here starts a model.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -59,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import file_presence
 import json_reader
+import json_writer
 from console import run_main
 
 from deployer import discovery, journal, manifest, platform_support, tools, verify
@@ -328,7 +328,7 @@ def _read_results(path: Path) -> list[dict[str, Any]]:
 
 def _write_results(path: Path, passes: list[dict[str, Any]]) -> None:
     try:
-        path.write_text(json.dumps(passes, indent=2) + "\n", encoding="utf-8")
+        json_writer.write(path, passes, indent=2, mode=0o644)
     except OSError as exc:
         raise DeployError(f"ERROR: Cannot write the results file: {path}: {exc}", exit_code=INPUT_ERROR) from exc
 

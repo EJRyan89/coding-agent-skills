@@ -45,7 +45,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
-import json
 import re
 import sys
 import tempfile
@@ -59,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 import json_reader
+import json_writer
 from console import run_main
 from flat_text import flat_text
 from path_containment import within
@@ -219,7 +219,7 @@ def _agents(source: deploy_source.Source, plugin: Plugin, closure: list[str]) ->
         for event, entries in declared.items():
             hooks.setdefault(event, []).extend(entries if isinstance(entries, list) else [entries])
     if hooks:
-        plugin.files[PLUGIN_HOOKS] = (json.dumps({"hooks": hooks}, indent=2) + "\n").encode("utf-8")
+        plugin.files[PLUGIN_HOOKS] = (json_writer.dumps({"hooks": hooks}, indent=2) + "\n").encode("utf-8")
 
 
 def _plugin(
@@ -239,7 +239,7 @@ def _plugin(
     options = plugin_options(source, plugin)
     if options:
         manifest["userConfig"] = options
-    plugin.files[PLUGIN_MANIFEST] = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    plugin.files[PLUGIN_MANIFEST] = (json_writer.dumps(manifest, indent=2) + "\n").encode("utf-8")
     leftover = leftover_tokens(plugin.files)
     if leftover:
         raise BuildError(f"plugin {name} keeps template tokens: {'; '.join(leftover)}")

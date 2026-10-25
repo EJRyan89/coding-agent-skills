@@ -66,6 +66,7 @@ import json_reader
 from console import run_main
 from executable_locator import PYTHON
 from path_containment import within
+from path_keys import path_key
 from skill_roots import plugin_name
 from typed_fields import FieldError, FieldReader
 
@@ -109,6 +110,14 @@ REVIEWER = "code-review-reviewer"
 PLUGIN = plugin_name()
 FIRST = "read the prompt file your task names first"
 ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+# Folds the guard makes without skills/ejryan89-skill-core/scripts/path_keys.py's path_key, with the reason.
+DUPLICATION_ALLOWED = {
+    "path_key": (
+        "the guard matches a run record's prompt file by its exact spelling on purpose, so _same folds case alone and "
+        "never normalizes that spelling as a key from skills/ejryan89-skill-core/scripts/path_keys.py would; and each "
+        "fold, in _same and the path side of _log_read, follows only _path's own normalization of the path it judges"
+    ),
+}
 
 Claim = tuple[Path, dict[str, str]]
 
@@ -116,7 +125,7 @@ Claim = tuple[Path, dict[str, str]]
 def _spellings(root: Path) -> tuple[Path, ...]:
     """A trusted local folder as it is given and as it resolves, each in the case the file system compares, so a path
     in either spelling is held to it by its text."""
-    return tuple(Path(os.path.normcase(os.path.normpath(form))) for form in (root.absolute(), root.resolve()))
+    return tuple(Path(path_key(form, textual=True)) for form in (root.absolute(), root.resolve()))
 
 
 # The folders every path the guard accepts lies under: the temporary directory, where prepare makes every run, and
@@ -181,7 +190,7 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
         or not path.is_file()
     ):
         return
-    root = Path(os.path.normcase(str(source.resolve(strict=False))))
+    root = Path(path_key(source, resolve=True))
     relative = Path(os.path.normcase(str(path))).relative_to(root)
     with contextlib.suppress(OSError), read_log(run, role).open("a", encoding="utf-8") as log:
         log.write(json.dumps(relative.as_posix()) + "\n")

@@ -29,8 +29,8 @@ from harness import (
     tree_state,
 )
 
-from deployer import fsops, hashing, journal, platform_support, render
-from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED
+from deployer import fsops, hashing, journal, manifest, platform_support, render
+from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED, DeployError
 from deployer.kinds import KINDS
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
@@ -188,6 +188,37 @@ class RecoveryTests(RecoveryTestCase):
 
     def test_runtime_adapter_journal_from_before_the_adapter_rename_still_rolls_back(self) -> None:
         self.assert_adapter_journal_rolls_back("staging-wrappers")
+
+    def test_an_entry_or_a_manifest_the_json_writer_refuses_is_a_deploy_error_naming_its_file(self) -> None:
+        # validate_recorded_paths keeps such a path out before the first write; whatever is left is a DeployError,
+        # which the run's journaled recovery handles, and the file is left as it was.
+        record = journal.Journal(self.home / "journal.jsonl", "20260101-000000-label")
+        record.create()
+        with self.assertRaisesRegex(
+            DeployError, r"^ERROR: Cannot write the journal .*journal\.jsonl: .*lone surrogate"
+        ):
+            record.install("claude", "alpha \udcff", ZERO_HASH)
+        self.assertEqual(b"", (self.home / "journal.jsonl").read_bytes())
+        self.assertEqual([], record.entries)
+        recorded = manifest.Manifest(self.home / "manifest.json", {"manifest_version": 1, "sources": {}})
+        recorded.data["sources"]["checkout"] = {"source_dir": "/home/caf\udce9"}
+        with self.assertRaisesRegex(
+            DeployError, r"^ERROR: Cannot write the manifest .*manifest\.json: .*lone surrogate"
+        ):
+            recorded.save()
+        self.assertFalse((self.home / "manifest.json").exists())
+
+    def test_the_manifest_is_written_two_space_indented_in_its_keys_order_escaped_past_ascii(self) -> None:
+        # A user diffs the manifest between runs, and recovery's reader is not its only reader, so its bytes are fixed.
+        recorded = manifest.Manifest(self.home / "manifest.json", {"manifest_version": 0, "sources": {}})
+        recorded.data["sources"]["test/skills"] = {"source_dir": "C:/caf\u00e9", "skills": {"alpha": {"hash": "0"}}}
+        recorded.save()
+        self.assertEqual(
+            b'{\n  "manifest_version": %d,\n  "sources": {\n    "test/skills": {\n' % manifest.MANIFEST_VERSION
+            + b'      "source_dir": "C:/caf\\u00e9",\n'
+            + b'      "skills": {\n        "alpha": {\n          "hash": "0"\n        }\n      }\n    }\n  }\n}\n',
+            (self.home / "manifest.json").read_bytes(),
+        )
 
     def test_journal_staging_labels_name_the_staging_tree(self) -> None:
         # A reader of journal.jsonl during manual recovery finds a staged item where its "from" says: the run's

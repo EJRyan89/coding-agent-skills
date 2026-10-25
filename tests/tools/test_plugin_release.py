@@ -94,6 +94,31 @@ def test_build_writes_the_tags_archive_and_pins_the_marketplace_to_its_release_a
     assert (code, lines) == (0, ["PIN_MATCHES fixture-skills v1.2.3"])
 
 
+def test_the_pinned_marketplace_is_written_as_committed_text_two_space_indented_with_text_past_ascii_kept(
+    checkout: Path, tmp_path: Path
+) -> None:
+    # The marketplace is a committed file a diff reads, so its bytes are its format, and it stays readable by all.
+    document = marketplace(checkout)
+    document["plugins"][0]["description"] = "Fixture café."
+    write(checkout, ".claude-plugin/marketplace.json", json.dumps(document) + "\n")
+    code, lines = run(["build", "v1.2.3", "--root", str(checkout), "--output", str(tmp_path / "assets")])
+    assert code == 0, lines
+    digest = lines[-1].rsplit(" ", 1)[1]
+    url = f"{REPOSITORY}/releases/download/v1.2.3/fixture-skills.zip"
+    path = checkout / ".claude-plugin" / "marketplace.json"
+    assert (
+        path.read_bytes()
+        == (
+            '{\n  "name": "fixture",\n  "plugins": [\n    {\n      "name": "fixture-skills",\n'
+            '      "description": "Fixture café.",\n'
+            f'      "repository": "{REPOSITORY}",\n      "source": {{\n        "source": "archive",\n'
+            f'        "url": "{url}",\n        "sha256": "{digest}"\n      }}\n    }}\n  ]\n}}\n'
+        ).encode()
+    )
+    if sys.platform != "win32":  # Windows keeps no permission bits but read-only
+        assert path.stat().st_mode & 0o777 == 0o644
+
+
 def test_check_reports_a_pin_that_differs_from_the_rebuild_and_an_entry_with_no_pin(checkout: Path) -> None:
     document = marketplace(checkout)
     url = f"{REPOSITORY}/releases/download/v1.2.3/fixture-skills.zip"
