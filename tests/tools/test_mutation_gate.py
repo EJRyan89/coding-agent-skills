@@ -1054,9 +1054,7 @@ def policy_tree(root: Path) -> None:
     (root / "tools" / "table.py").write_text(SANCTIONED_MODULE, encoding="utf-8")
     (root / "tests" / "validation").mkdir(parents=True)
     (root / "tests" / "validation" / "policy.py").write_text(POLICY, encoding="utf-8")
-    (root / "tests" / "validation" / "test_policy.py").write_text(
-        'SUITE_ALLOWANCE = "SUITE_ALLOWED"\n', encoding="utf-8"
-    )
+    (root / "tests" / "validation" / "a_test.py").write_text('SUITE_ALLOWANCE = "SUITE_ALLOWED"\n', encoding="utf-8")
 
 
 class SanctionTableFixtures(unittest.TestCase):
@@ -1078,12 +1076,26 @@ class SanctionTableFixtures(unittest.TestCase):
         self.assertIsNone(sanction_table(None))
         tree = ast.parse(SANCTIONED_MODULE)
         self.assertEqual(["FSOPS_ALLOWED"], changed_tables(tree, frozenset({5, 10})))
+        # A table's first and last lines are its own.
+        self.assertEqual(["FSOPS_ALLOWED"], changed_tables(tree, frozenset({3})))
+        self.assertEqual(["FSOPS_ALLOWED"], changed_tables(tree, frozenset({5})))
         self.assertEqual([], changed_tables(tree, frozenset({2, 6, 10})))
 
     def test_a_policy_reads_the_table_it_names_under_a_name_ending_in_allowance_and_a_suite_reads_none(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             policy_tree(Path(temporary))
             self.assertEqual({"FSOPS_ALLOWED": "tests/validation/policy.py"}, policy_tables(Path(temporary)))
+
+    def test_each_unread_table_is_named_and_a_read_one_is_no_problem(self) -> None:
+        policies = {"FSOPS_ALLOWED": "tests/validation/policy.py"}
+        self.assertIsNone(mutation_gate.unread_tables("tools/t.py", ["FSOPS_ALLOWED"], policies))
+        problem = mutation_gate.unread_tables("tools/t.py", ["A_ALLOWED", "FSOPS_ALLOWED", "B_ALLOWED"], policies)
+        self.assertEqual(
+            "tools/t.py changes A_ALLOWED, B_ALLOWED, which no validation policy under tests/validation reads, so the "
+            "gate would leave it unchecked: add the policy that reads it, or rename the table so its name does not "
+            "end in _ALLOWED",
+            problem,
+        )
 
     def test_the_repositorys_policies_read_the_tables_their_rules_name(self) -> None:
         found = policy_tables(REPOSITORY)
@@ -1203,12 +1215,17 @@ class SummaryFixtures(unittest.TestCase):
 
     def test_a_skipped_sanction_table_is_named_with_its_policy_in_place_of_an_empty_selection(self) -> None:
         report = self.report([])
-        report.modules[0].tables = (("FSOPS_ALLOWED", "tests/validation/fsops_platform.py"),)
+        report.modules[0].tables = (
+            ("FSOPS_ALLOWED", "tests/validation/fsops_platform.py"),
+            ("KINDS_ALLOWED", "tests/validation/kinds_table.py"),
+        )
         text = summary(report)
+        # The table's line is added after the module table, never in place of the summary.
+        self.assertIn("\n## Mutation gate\n", text)
         self.assertIn(
-            "\n`tools/calc.py`: the changed lines of its sanction tables made no mutant, since the validation policy "
-            "that reads each holds it, not the module's suites: `FSOPS_ALLOWED` "
-            "(`tests/validation/fsops_platform.py`).\n",
+            "|\n\n`tools/calc.py`: the changed lines of its sanction tables made no mutant, since the validation "
+            "policy that reads each holds it, not the module's suites: `FSOPS_ALLOWED` "
+            "(`tests/validation/fsops_platform.py`), `KINDS_ALLOWED` (`tests/validation/kinds_table.py`).\n",
             text,
         )
         self.assertNotIn("mutmut made no mutant", text)
@@ -1343,6 +1360,7 @@ class WholeRunFixtures(unittest.TestCase):
         self.assertTrue(result.finished)
         self.assertEqual("## Mutation gate", text.splitlines()[0])
         self.assertNotIn("Unfinished", text)
+        self.assertNotIn("cap cut", text)
         self.assertIn("| `tools/calc.py` | 6 | 2 | 1 | 0 | 1 | 0 | 0 | 50% (1 of 2) |", text)
         self.assertIn(
             "- Line 6: `return a * 2` became `return a * 3`; passed `tests/tools/test_calc.py`",
@@ -1364,6 +1382,29 @@ class WholeRunFixtures(unittest.TestCase):
         self.assertTrue(
             result.text.startswith("**Unfinished, so not a verdict:** the 5-minute cap cut the run short: 2")
         )
+
+    def test_a_changed_sanction_table_is_named_with_its_policy_and_its_modules_other_lines_still_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            (root / "tests" / "validation").mkdir()
+            (root / "tests" / "validation" / "policy.py").write_text(POLICY, encoding="utf-8")
+            git(root, "add", ".")
+            git(root, "commit", "--quiet", "-m", "policy")
+            git(root, "switch", "--quiet", "-c", "table", "feature")
+            change_calc(root, CALC.replace("return a * 2", "return a * 2 + 0") + 'FSOPS_ALLOWED = {"add": "a + b"}\n')
+
+            def generate(module: str, source: str, lines: frozenset[int]) -> list[str]:
+                """Each line's mutant, the table's entry among them, as mutmut would make it."""
+                if module == "canary.py":
+                    return stub_generator(module, source, lines)
+                return [source.replace("a * 2 + 0", "a * 3 + 0"), source.replace('"a + b"', '"a - b"')]
+
+            text = Gate(root, "feature", 5, 2, GitClient(), generate, stub_reach, measure=measured).report().text
+        self.assertIn("| `tools/calc.py` | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
+        self.assertIn("- Line 6: `return a * 2 + 0` became `return a * 3 + 0`", text)
+        self.assertIn("its sanction tables made no mutant", text)
+        self.assertIn("`FSOPS_ALLOWED` (`tests/validation/policy.py`)", text)
 
     def test_a_mutant_on_a_line_the_pull_request_did_not_change_is_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
