@@ -107,7 +107,6 @@ from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import CODE_SPAN
-from path_keys import path_key
 from skill_roots import skills_directory_holding
 
 INDEX_NAME = "MEMORY.md"
@@ -357,7 +356,7 @@ def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
 
 def target_identity(memory_dir: Path, file: str) -> str:
     """Compare targets relative to the store, resolving ./ prefixes and normalizing case on Windows."""
-    return path_key(memory_dir / file, resolve=True)
+    return os.path.normcase(str((memory_dir / file).resolve()))
 
 
 # What entry_problem gives for a path that names nothing, such as an index entry whose file is gone.

@@ -65,7 +65,6 @@ from github_client import GitHubClient, GitHubError, replace_undecodable, subpro
 from github_client import Runner as GhRunner
 from github_remote import github_repository
 from link_probe import is_plain_directory, is_plain_file
-from path_keys import path_key
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
@@ -292,7 +291,7 @@ def checkouts(services: Services, root: str | Path) -> dict[str, Worktree]:
 
 def same_path(first: str, second: str) -> bool:
     # Lexical: Path.absolute keeps ".." and Path.resolve follows junctions, which would change what matches.
-    return path_key(first) == path_key(second)
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))  # noqa: PTH100 - lexical
 
 
 def dirty_count(services: Services, directory: str | Path) -> int:
@@ -794,7 +793,7 @@ def save_plan(path: str | Path, document: dict[str, Any]) -> None:
 def seal_file(path: str | Path) -> Path:
     """Where the seal of the plan or record at `path` lies: named by its path resolved through links, in any letter
     case the file system treats as the same."""
-    resolved = path_key(path, resolve=True)
+    resolved = os.path.normcase(os.path.realpath(path))
     return SEALS / hashlib.sha256(resolved.encode("utf-8", "surrogatepass")).hexdigest()
 
 

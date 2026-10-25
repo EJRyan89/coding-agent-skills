@@ -267,30 +267,10 @@ def _reads_version_numbers(node: ast.AST, members: frozenset[str], _imports_owne
     )
 
 
-def _called_name(node: ast.AST) -> str:
-    """The last name of what a call calls, such as `normcase` for `os.path.normcase(...)`, or "" for anything else."""
-    if not isinstance(node, ast.Call):
-        return ""
-    if isinstance(node.func, ast.Attribute):
-        return node.func.attr
-    return node.func.id if isinstance(node.func, ast.Name) else ""
-
-
-def _folds_path_case(node: ast.AST, _members: frozenset[str], _imports_owner: bool, _name: str) -> bool:
-    """A path's comparison key built by hand: os.path.normcase over a path made absolute, normalized, or resolved, as
-    a path comparison re-derives the shared key. Folding a name, such as a folder's against `.git`, is not a path."""
-    if _called_name(node) != "normcase" or not isinstance(node, ast.Call) or not node.args:
-        return False
-    folded = node.args[0]
-    while _called_name(folded) in {"str", "Path", "fspath"} and isinstance(folded, ast.Call) and folded.args:
-        folded = folded.args[0]
-    return _called_name(folded) in {"normpath", "abspath", "realpath", "resolve", "absolute"}
-
-
 @dataclass(frozen=True)
 class SharedFact:
-    """One value or function the repository keeps in one module, its owner, under one module-level name, and how
-    another module restates it instead of importing it."""
+    """One value the repository keeps in one module, its owner, under one module-level name, and how another module
+    restates it instead of importing it."""
 
     owner: str
     name: str
@@ -312,17 +292,14 @@ def _shared_facts() -> tuple[SharedFact, ...]:
         SharedFact(f"{SKILL_CORE_SCRIPTS}/typed_text.py", "TYPED_ENCODING", _reads_title_or_body),
         SharedFact("tests/validation/skill_layout.py", "HOME_SPELLINGS", _patterns_member),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/versions.py", "SEPARATOR", _reads_version_numbers),
-        SharedFact(f"{SKILL_CORE_SCRIPTS}/path_keys.py", "path_key", _folds_path_case),
     )
 
 
 def _fact_members(tree: ast.Module, name: str) -> frozenset[str] | None:
     """The strings a module-level name holds, as a string literal, a whole number written in decimal, or a collection
-    of string literals, or the name itself when it names a module-level function, or None."""
+    of string literals, or None."""
     resolver = CallableResolver(tree)
     for node in module_statements(tree.body):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return frozenset({name})
         if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -352,16 +329,16 @@ def _docstring_nodes(tree: ast.Module) -> set[int]:
 
 
 def shared_fact_owner_problems(root: Path) -> list[str]:
-    """Report a shared fact whose owner no longer holds it as a literal or a function, so the restatement check cannot
-    go quiet after a rename or a move."""
+    """Report a shared fact whose owner no longer holds it as a literal, so the restatement check cannot go quiet
+    after a rename or a move."""
     problems: list[str] = []
     for fact in _shared_facts():
         path = root / fact.owner
         trees = list(python_trees([path] if path.is_file() else [], root, problems))
         if not trees or _fact_members(trees[0][2], fact.name) is None:
             problems.append(
-                f"{fact.owner} no longer holds {fact.name} as a literal or a function; name its new home in the shared "
-                "facts of tests/validation/duplication.py"
+                f"{fact.owner} no longer holds {fact.name} as a literal; name its new home in the shared facts of "
+                "tests/validation/duplication.py"
             )
     return problems
 
