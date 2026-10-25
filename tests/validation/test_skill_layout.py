@@ -766,6 +766,28 @@ class SkillLayoutFixtures(unittest.TestCase):
                 capability_guide_problems(root),
             )
 
+    def test_the_guide_policy_cannot_pass_when_it_reads_no_guided_declaration(self) -> None:
+        unmeasured = (
+            "could not measure: no readable deploy-meta declaration lacks a capability "
+            "runtime_support.CAPABILITY_GUIDES names, so no reason was held to its guide"
+        )
+        guide = "# Codex support\n\n## Network access\n\nProse.\n"
+        unguided = {"level": "partial", "needs": ["workflow"], "reason": "It uses the Workflow tool."}
+        for files in (
+            {"docs/codex-support.md": guide},
+            {"docs/codex-support.md": guide, "deploy-meta/malformed.json": json.dumps({"runtime_support": {}})},
+            {
+                "docs/codex-support.md": guide,
+                "deploy-meta/unguided.json": json.dumps(
+                    {"runtime_support": {"claude-code": "full", "codex": unguided, "copilot-cli": "full"}}
+                ),
+            },
+        ):
+            with self.subTest(files=sorted(files)), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(root, files)
+                self.assertEqual([unmeasured], capability_guide_problems(root))
+
     def test_runtime_page_policy_holds_each_support_statement_to_the_metadata(self) -> None:
         partial = {"level": "partial", "needs": ["fail-closed-agent-hooks"], "reason": "No guard."}
         support = {"claude-code": "full", "codex": partial, "copilot-cli": partial}

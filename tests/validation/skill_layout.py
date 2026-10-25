@@ -334,6 +334,7 @@ def capability_guide_problems(root: Path) -> list[str]:
     import runtime_support
 
     problems: list[str] = []
+    checked = 0
     for document, heading, _gives in sorted(set(runtime_support.CAPABILITY_GUIDES.values())):
         path = root / document
         if not path.is_file() or markdown_section(path.read_text(encoding="utf-8"), f"## {heading}") is None:
@@ -346,11 +347,17 @@ def capability_guide_problems(root: Path) -> list[str]:
         for runtime, support in declared.items():
             for need in support.needs:
                 pointer = runtime_support.guide_pointer(runtime, need)
+                checked += pointer is not None
                 if pointer is not None and pointer not in support.reason:
                     problems.append(
                         f"deploy-meta/{metadata.name}: the {runtime} reason for lacking {need} does not carry "
                         f"{pointer!r}; point to the guide rather than restating its settings"
                     )
+    if not checked:
+        problems.append(
+            "could not measure: no readable deploy-meta declaration lacks a capability "
+            "runtime_support.CAPABILITY_GUIDES names, so no reason was held to its guide"
+        )
     return problems
 
 
