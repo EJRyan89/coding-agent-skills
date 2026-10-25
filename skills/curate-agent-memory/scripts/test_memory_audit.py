@@ -23,6 +23,7 @@ import skill_roots
 from file_presence import NotAFile
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitClient, GitError, GitResult
+from json_writer import JsonWriteRefused
 
 
 def temporary_store_folds_case() -> bool:
@@ -425,6 +426,46 @@ class MemoryAuditTests(unittest.TestCase):
         code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
         self.assertEqual((1, ""), (code, stderr))
         self.assertRegex(stdout, rf"\AFAILED cannot write {re.escape(str(target))}: [^\n]+\n\Z")
+
+    def test_the_report_is_two_space_indented_in_its_keys_order_escaped_past_ascii(self) -> None:
+        # The agent and the person it reports to read the file as text, so its bytes are fixed.
+        write(self.memory_dir / "MEMORY.md", "")
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        target = self.root / "report.json"
+        instructions = self.root / "CLAUDE.md"
+        write(instructions, "- A rule.\n")
+        with mock.patch.object(memory_audit, "audit", return_value={"name": "café", "counts": [1]}) as audited:
+            code, _, _ = run_main(
+                "audit",
+                "--memory-dir",
+                str(self.memory_dir),
+                "--repo",
+                str(self.root),
+                "--instructions",
+                str(instructions),
+                "--output",
+                str(target),
+            )
+        self.assertEqual(0, code)
+        # The report is the audit of the memory directory, the repository, and the instruction files it was given.
+        self.assertEqual((self.memory_dir, self.root, [instructions]), audited.call_args.args)
+        # Written in text mode, so each line ends as the platform ends one; read back the same way.
+        self.assertEqual(
+            '{\n  "name": "caf\\u00e9",\n  "counts": [\n    1\n  ]\n}\n', target.read_text(encoding="utf-8")
+        )
+
+    def test_a_report_json_cannot_hold_is_refused_by_name_before_the_output_exists(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "")
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        target = self.root / "report.json"
+        with (
+            mock.patch.object(memory_audit, "audit", return_value={"score": float("nan")}),
+            self.assertRaisesRegex(
+                JsonWriteRefused, "^the value holds NaN or an infinity, which JSON does not define$"
+            ),
+        ):
+            run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
+        self.assertFalse(target.exists())
 
     def test_an_existing_output_is_refused_and_left_alone(self) -> None:
         write(self.memory_dir / "MEMORY.md", "- [one](one.md) — one\n")

@@ -32,7 +32,6 @@ import argparse
 import ast
 import contextlib
 import hashlib
-import json
 import re
 import sys
 import tomllib
@@ -47,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import check_provenance
 import folder_walk
 import json_reader
+import json_writer
 from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from check_provenance import Source
 from console import run_main
@@ -3605,7 +3605,7 @@ def format_json(result: AuditResult, sources: dict[str, tuple[Source, ...]] | No
             check: [{"page": s.page, "passage": s.text} if s.page else {"decision": s.text} for s in found]
             for check, found in sources.items()
         }
-    return json.dumps(output, indent=2, ensure_ascii=False) + "\n"
+    return json_writer.dumps(output, indent=2, ensure_ascii=False) + "\n"
 
 
 # ---------------------------------------------------------------------------

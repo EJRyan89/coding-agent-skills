@@ -311,12 +311,14 @@ class StubGh:
             self.requested.setdefault(verb, set()).update(fields)
         if verb == "pr list":
             state = arguments[arguments.index("--state") + 1]
-            return CommandResult(0, json.dumps(self.pulls if state == "open" else self.merged), "")
+            return CommandResult(0, json.dumps(limited(arguments, self.pulls if state == "open" else self.merged)), "")
         if verb == "run list":
             self.check_run_list(arguments)
             commit = arguments[arguments.index("--commit") + 1]
             listed = [{"databaseId": number} for number, run in self.runs.items() if run["headSha"] == commit]
-            return CommandResult(0, json.dumps(listed), "")
+            return CommandResult(
+                0, json.dumps(limited(arguments, sorted(listed, key=lambda run: -run["databaseId"]))), ""
+            )
         if verb == "run view" and "--log-failed" in arguments:
             return CommandResult(0, self.logs[int(arguments[arguments.index("--job") + 1])], "")
         if verb == "run view":
@@ -334,6 +336,13 @@ class StubGh:
 
     def writes(self) -> list[list[str]]:
         return [call[1:] for call in self.calls if " ".join(call[1:3]) in ("pr merge", "pr update-branch", "run rerun")]
+
+
+def limited(arguments: Sequence[str], items: list[Any]) -> list[Any]:
+    """The first items a gh listing given `--limit` prints, as gh cuts a listing at its limit."""
+    if "--limit" not in arguments:
+        raise AssertionError(f"a gh listing without --limit: {arguments}")
+    return items[: int(arguments[arguments.index("--limit") + 1])]
 
 
 def git(*arguments: str, directory: Path) -> str:
@@ -523,6 +532,52 @@ class ListingTest(FixtureTestCase):
         self.assertEqual([["pr", "merge", "10", "--repo", REPOSITORY, "--auto", "--squash"]], gh.writes())
         self.assertTrue(self.line(lines, "PR #10 ").endswith("auto-merge off head aaaaaaa Validation SUCCESS armed"))
         self.assertTrue(self.line(lines, "PR #11 ").endswith(" none"))
+
+    def test_more_open_pull_requests_than_one_tick_lists_ends_the_tick_naming_the_cap(self) -> None:
+        gh = StubGh([pull(10), pull(11), pull(12)])
+        with mock.patch.object(shepherd, "OPEN_LISTED", 2):
+            status, lines = self.tick(gh)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "FAILED cannot list the open pull requests: more than 2 are open, more than one tick lists", lines[-1]
+        )
+        self.assertEqual([], gh.writes())
+        listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
+        self.assertEqual("3", listing[listing.index("--limit") + 1])
+
+    def test_a_cut_open_listing_is_an_incomplete_answer(self) -> None:
+        client = GitHubClient(StubGh([pull(10), pull(11)]), backoff=NO_WAIT, sleeper=lambda _: None)
+        with mock.patch.object(shepherd, "OPEN_LISTED", 1), self.assertRaises(GitHubError) as context:
+            shepherd.read_pulls(client, REPOSITORY)
+        self.assertEqual("incomplete", context.exception.kind)
+
+    def test_the_merged_listing_asks_for_the_newest_merged_pull_requests_of_the_repository(self) -> None:
+        gh = StubGh(merged=[{"number": 9, "headRefName": "fix/old", "headRefOid": "b" * 40}])
+        client = GitHubClient(gh, backoff=NO_WAIT, sleeper=lambda _: None)
+        self.assertEqual([shepherd.Merged(9, "fix/old", "b" * 40)], shepherd.read_merged(client, REPOSITORY))
+        self.assertEqual(
+            [
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    REPOSITORY,
+                    "--state",
+                    "merged",
+                    "--json",
+                    "number,headRefName,headRefOid",
+                    "--limit",
+                    str(shepherd.MERGED_LISTED + 1),
+                ]
+            ],
+            gh.calls,
+        )
+
+    def test_exactly_as_many_open_pull_requests_as_one_tick_lists_are_all_judged(self) -> None:
+        with mock.patch.object(shepherd, "OPEN_LISTED", 2):
+            status, lines = self.tick(StubGh([pull(10), pull(11)]))
+        self.assertEqual((0, "REMAINING 2"), (status, lines[-1]))
 
     def test_a_listing_that_fails_ends_the_tick(self) -> None:
         status, lines = self.tick(StubGh(failing=["pr list"]))

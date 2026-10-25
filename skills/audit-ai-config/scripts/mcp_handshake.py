@@ -64,6 +64,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 from audit_ai_config import (
     CODEX_CONFIG,
     MCP_JSON_FILES,
@@ -157,7 +158,7 @@ class Session:
 
     def send(self, message: dict[str, Any]) -> None:
         # Stdin is binary, so each message ends with exactly the newline the stdio transport frames it with.
-        self.running.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
+        self.running.stdin.write(json_writer.dumps(message).encode("utf-8") + b"\n")
         self.running.stdin.flush()
 
     def response(self, request_id: int) -> dict[str, Any]:
