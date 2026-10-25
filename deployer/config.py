@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import fsops, platform_support, state_files
 from .arguments import CONFIGURE_COMMAND_LINE
-from .errors import STATE_FILE, DeployError, see_recovery
+from .errors import STATE_FILE, DeployError, os_error, see_recovery
 
 ALLOW_PATH = "[A-Za-z0-9 /:.@_()-]"
 # repo-cleanup's additions to its shipped lists: words separated by spaces, which the skill passes quoted to its
@@ -125,13 +125,15 @@ def read(path: Path, source_id: str, dropped: list[str] | None = None) -> dict[s
     """Parse a saved configuration.
 
     `configure` reads it too, passing a dropped list, so it drops a key no longer declared; only `--reset` gets past
-    any other failure.
+    any other failure. A file that cannot be read ends as the deployer's refusal naming the read.
     """
     remedy = f"Run '{CONFIGURE_COMMAND_LINE} --reset' to write a new configuration for this source."
     try:
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as exc:
         raise DeployError(f"ERROR: Config file is not valid UTF-8: {platform_support.normalize(path)}", remedy) from exc
+    except OSError as exc:
+        raise os_error(exc, "read the configuration") from exc
     try:
         return parse(text, source_id, dropped)
     except UnknownKey as exc:

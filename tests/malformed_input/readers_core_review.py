@@ -213,10 +213,12 @@ def _record_pair() -> tuple[bytes, str]:
 RECORD, REPORT = _record_pair()
 
 
+def _report(path: Path) -> None:
+    path.with_name("review.md").write_bytes(REPORT.encode("utf-8"))
+
+
 def _record(path: Path) -> object:
-    markdown = path.with_name("review.md")
-    markdown.write_bytes(REPORT.encode("utf-8"))
-    return review_records.validate_record_pair(path, markdown)
+    return review_records.validate_record_pair(path, path.with_name("review.md"))
 
 
 # A materialized specialist reviewer: its one declared file, the profile, written beside the metadata.
@@ -251,10 +253,13 @@ MATERIALIZATION = {
 }
 
 
-def _materialized(path: Path) -> object:
+def _profile(path: Path) -> None:
     profile = path.parent / "agents" / "python.md"
     profile.parent.mkdir(exist_ok=True)
     profile.write_bytes(PROFILE)
+
+
+def _materialized(path: Path) -> object:
     return review_specialists.load_materialized_manifest(path.parent)
 
 
@@ -402,6 +407,7 @@ READERS = [
         (PersistenceError, review_records.RecordError),
         filename="review.json",
         accepts={"bom": UTF8_SIG},
+        prepare=_report,
     ),
     Reader(
         "review_run.load_run",
@@ -430,6 +436,7 @@ READERS = [
         (review_specialists.SpecialistError,),
         filename="materialization.json",
         accepts={"bom": UTF8_SIG},
+        prepare=_profile,
     ),
     Reader(
         "review_state.load_state",

@@ -2,14 +2,20 @@
 
 A case is placed where a reader expects its file: bytes written to the path, a directory made there, or a link put
 there. The bytes cases are given per format, since a truncation or a nesting is only one in the format it truncates
-or nests, and a format leaves out a case it cannot express, such as an integer in XML. test_malformed_input.py holds
-every reader in readers.py to every case of its format.
+or nests, and a format leaves out a case it cannot express, such as an integer in XML. A JSON reader also takes the
+field cases, each built from its own well-formed document by removing one field, putting {} in an object's place, or
+putting a value of another type in a field's place, an object for a scalar and a string for an object or a list.
+test_malformed_input.py holds every reader in readers.py to every case of its format.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sys
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # Past the int-to-string limit Python applies to a decimal integer, 4300 digits by default.
@@ -22,6 +28,7 @@ NOT_UTF8 = b"\xff\xfe\xc3\x28"
 # The shapes that are not bytes, which place() builds at the path.
 DIRECTORY = "directory"
 LINK = "link"
+UNREADABLE = "unreadable"
 
 
 @dataclass(frozen=True)
@@ -32,6 +39,8 @@ class Case:
     name: str
     content: bytes | str
     about: str
+    # A field case, which a reader may accept where its contract leaves the field optional or open, never by escaping.
+    field: bool = False
 
 
 def _common(valid: bytes) -> list[Case]:
@@ -43,7 +52,71 @@ def _common(valid: bytes) -> list[Case]:
         Case("nul_bytes", valid + b"\x00\x00", "NUL bytes after a well-formed document"),
         Case(DIRECTORY, DIRECTORY, "a directory in the file's place"),
         Case(LINK, LINK, "a link in the file's place, for a reader that refuses links"),
+        *([Case(UNREADABLE, UNREADABLE, "a file the reader is not allowed to open")] if can_deny_reading() else []),
     ]
+
+
+def can_deny_reading() -> bool:
+    """Whether a file can be made unreadable to this process: always on Windows, where a handle that shares nothing
+    holds it, and elsewhere for any user but root, whom no file mode stops."""
+    return sys.platform == "win32" or os.geteuid() != 0
+
+
+def _field_paths(value: object, path: tuple[str | int, ...] = ()) -> Iterator[tuple[tuple[str | int, ...], object]]:
+    """Each field below value with its path: an object's keys in order, and a list's first item for the rest."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield (*path, key), item
+            yield from _field_paths(item, (*path, key))
+    elif isinstance(value, list) and value:
+        yield from _field_paths(value[0], (*path, 0))
+
+
+def _changed(document: object, path: tuple[str | int, ...], change: str) -> object:
+    """A copy of document with the field at path removed, made {}, or given a value of another type."""
+    copy = json.loads(json.dumps(document))
+    parent = copy
+    for step in path[:-1]:
+        parent = parent[step]
+    if change == "missing":
+        del parent[path[-1]]
+    elif change == "empty_object":
+        parent[path[-1]] = {}
+    else:
+        parent[path[-1]] = "text" if isinstance(parent[path[-1]], (dict, list)) else {"value": 1}
+    return copy
+
+
+def fields(valid: bytes, before: bytes = b"", after: bytes = b"") -> list[Case]:
+    """The field cases of a JSON document, each between before and after: each field missing, each object empty, and
+    each field of another type. A document that is not JSON, such as a file of several lines, has none."""
+    try:
+        document = json.loads(valid)
+    except ValueError:
+        return []
+    found = []
+    for path, value in _field_paths(document):
+        name = ".".join(str(step) for step in path)
+        about = {
+            "missing": f"the document without its field {name}, which the code may index later",
+            "empty_object": f"{{}} in place of the object {name}, its required keys missing",
+            "wrong_type": f"a value of another type in place of {name}",
+        }
+        changes = [
+            *(["missing"] if isinstance(path[-1], str) else []),
+            *(["empty_object"] if isinstance(value, dict) else []),
+            "wrong_type",
+        ]
+        found += [
+            Case(
+                f"{change}:{name}",
+                before + json.dumps(_changed(document, path, change)).encode() + after,
+                about[change],
+                field=True,
+            )
+            for change in changes
+        ]
+    return found
 
 
 def _json(valid: bytes) -> list[Case]:
@@ -57,6 +130,7 @@ def _json(valid: bytes) -> list[Case]:
         Case("deep_nesting", b"[" * DEPTH + b"]" * DEPTH, "nesting past the recursion limit"),
         Case("duplicate_keys", b'{"value": 1, "value": 2}', "one key twice in an object"),
         Case("nan", b'{"value": NaN}', "NaN, which Python's JSON reader takes and JSON does not define"),
+        *fields(valid),
     ]
 
 
@@ -67,10 +141,12 @@ def _ended(content: bytes | str) -> bytes | str:
 
 def _json_lines(valid: bytes) -> list[Case]:
     """The JSON cases as a record's last line, each ended by its newline, since a last line without one is a torn
-    write, and the cases a file of lines adds."""
+    write, and the cases a file of lines adds. The field cases change the last record, after the lines before it."""
     valid = valid.rstrip(b"\n")
+    head, _, last = valid.rpartition(b"\n")
     return [
-        *(Case(case.name, _ended(case.content), case.about) for case in _json(valid)),
+        *(replace(case, content=_ended(case.content)) for case in _json(valid) if not case.field),
+        *fields(last, head + b"\n" if head else b"", b"\n"),
         Case("torn_line", valid + b"\n" + valid[: len(valid) // 2], "a last line cut off part way"),
         Case("blank_lines", b"\n\n" + valid + b"\n\n", "blank lines around a record"),
     ]
@@ -172,23 +248,50 @@ def link(target: Path, path: Path) -> None:
         path.symlink_to(target)
 
 
-def place(case: Case, path: Path, valid: bytes) -> None:
-    """Put the case at path, its parent made: its bytes, a directory, or a link to a well-formed file beside it."""
+@contextmanager
+def denied(path: Path) -> Iterator[None]:
+    """The file at path unreadable to this process while the context lasts: held by a handle that shares nothing on
+    Windows, else given no permissions."""
+    if sys.platform == "win32":
+        import _winapi
+
+        handle = _winapi.CreateFile(str(path), _winapi.GENERIC_READ, 0, 0, _winapi.OPEN_EXISTING, 0, 0)
+        try:
+            yield
+        finally:
+            _winapi.CloseHandle(handle)
+    else:
+        path.chmod(0)
+        try:
+            yield
+        finally:
+            path.chmod(0o600)
+
+
+@contextmanager
+def placed(case: Case, path: Path, valid: bytes) -> Iterator[None]:
+    """The case at path while the context lasts, its parent made: its bytes, a directory, a link to a well-formed file
+    beside it, removed afterwards and never what it points to, or a well-formed file the process cannot read."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if case.content == DIRECTORY:
         path.mkdir()
+        yield
     elif case.content == LINK:
         target = path.with_name(f"{path.name}.target")
         target.write_bytes(valid)
         link(target, path)
+        try:
+            yield
+        finally:
+            if path.is_dir():
+                path.rmdir()
+            else:
+                path.unlink()
+    elif case.content == UNREADABLE:
+        path.write_bytes(valid)
+        with denied(path):
+            yield
     else:
         assert isinstance(case.content, bytes)
         path.write_bytes(case.content)
-
-
-def remove_link(path: Path) -> None:
-    """Remove a link place() made, never what it points to."""
-    if path.is_dir():
-        path.rmdir()
-    else:
-        path.unlink()
+        yield
