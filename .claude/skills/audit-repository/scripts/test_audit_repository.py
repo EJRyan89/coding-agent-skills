@@ -2136,6 +2136,28 @@ def test_each_grep_record_is_read_whole_and_one_it_cannot_read_is_skipped() -> N
     assert (hits, cut) == ([audit.Hit("c.py", 3, "one\0two"), audit.Hit("d.py", 4, "last")], False)
 
 
+def test_a_search_with_no_hit_is_empty_and_any_other_failure_is_named() -> None:
+    head = "f" * 40
+
+    def answering(answer: GitResult) -> Callable[..., GitResult]:
+        def run(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
+            return answer
+
+        return run
+
+    with mock.patch.object(GitClient, "run", answering(GitResult(1, "", ""))):
+        assert audit.search_construct(GitClient(), Path(), head, ["a construct line"]) == ([], False)
+    assert audit.search_construct(GitClient(), Path(), head, []) == ([], False)
+    for answer, reason in (
+        (GitResult(1, "", "warning: ignoring broken ref refs/heads/main\n"), "warning: ignoring broken ref"),
+        (GitResult(128, "", "fatal: bad config line 1 in file .git/config\n"), "fatal: bad config line 1"),
+    ):
+        with mock.patch.object(GitClient, "run", answering(answer)), pytest.raises(audit.AuditError) as raised:
+            audit.search_construct(GitClient(), Path(), head, ["a construct line"])
+        assert str(raised.value).startswith("git grep: ")
+        assert reason in str(raised.value)
+
+
 def test_a_twin_brief_is_written_whole() -> None:
     fixes = [
         audit.Fix(

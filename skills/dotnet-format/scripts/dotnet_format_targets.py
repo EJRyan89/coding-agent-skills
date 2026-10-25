@@ -69,7 +69,7 @@ from executable_locator import find_executable
 from flat_text import flat_text
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
 from folders_up import folders_up
-from git_client import GitClient, GitError, GitResult, classify_failure
+from git_client import GitClient, GitError, GitResult
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 from xml_reader import XmlRefused, read_xml
@@ -193,12 +193,13 @@ def git_paths(services: Services, root: Path, *arguments: str) -> list[str]:
 
 
 def repository_root(services: Services, cwd: Path) -> Path:
-    result = git(services, cwd, "rev-parse", "--show-toplevel")
-    if result.returncode != 0:
-        if classify_failure(result.stderr) == "not_repository":
-            raise Failed(f"{cwd} is not inside a Git repository")
-        raise Failed(flat_text(result.stderr) or f"git rev-parse --show-toplevel exited with code {result.returncode}")
-    return Path(result.stdout.strip()).resolve()
+    try:
+        top = services.git.rev_parse_path("--show-toplevel", directory=cwd)
+    except GitError as exc:
+        raise Failed(flat_text(str(exc))) from exc
+    if top is None:
+        raise Failed(f"{cwd} is not inside a Git repository")
+    return top.resolve()
 
 
 def ref_exists(services: Services, root: Path, ref: str) -> bool:

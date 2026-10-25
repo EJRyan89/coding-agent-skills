@@ -108,6 +108,12 @@ def build(root: Path, tag: str, output: Path | None) -> list[str]:
             raise ReleaseError(
                 f"marketplace entry {entry['name']} names no https repository its release assets live under"
             )
+    # The pins add only ASCII text, so a marketplace the writer takes now it takes once pinned: refused here, before
+    # the first archive is written.
+    try:
+        json_writer.dumps(document)
+    except json_writer.JsonWriteRefused as exc:
+        raise ReleaseError(f"{plugin_build.MARKETPLACE.as_posix()} cannot be written: {exc}") from exc
     folder = plugin_build.output_directory(output, root)
     lines = []
     for entry in entries:
@@ -168,7 +174,7 @@ def main(arguments: list[str] | None = None) -> int:
             print("\n".join(build(options.root, options.tag, options.output)))
             return 0
         lines, matched = check(options.root)
-    except (ReleaseError, plugin_build.BuildError, OSError) as exc:
+    except (ReleaseError, plugin_build.BuildError, OSError, json_writer.JsonWriteRefused) as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))
