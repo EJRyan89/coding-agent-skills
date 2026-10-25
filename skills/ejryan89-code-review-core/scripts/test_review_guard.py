@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -21,6 +23,7 @@ import review_dispatch
 import review_guard as guard
 import review_pipeline as rp
 import review_run
+import review_runtime
 from executable_locator import PYTHON
 from review_source import source_commands
 from test_review_io import UNPARSEABLE_JSON
@@ -947,3 +950,64 @@ class EvidenceAbsentTests(GuardFixture):
         self.assert_denied(self.decide("Read", file_path=self.prompt()), "is not a reviewer prompt")
         self.assertFalse(self.claims.exists(), "a denied read claims nothing")
         self.assert_denied(self.decide("Write", file_path=self.result()), "read the prompt file your task names first")
+
+
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_a_read_in_a_run_reached_through_a_link_is_logged_by_its_place_in_the_snapshot(tmp_path: Path) -> None:
+    real = tmp_path / "real run"
+    read = real / guard.SOURCE / "src" / "a.py"
+    read.parent.mkdir(parents=True)
+    read.write_text("x\n", encoding="utf-8")
+    (real / "work").mkdir()
+    link = tmp_path / "linked run"
+    link_folder(real, link)
+    guard._log_read("Read", read.resolve(), (link, {"id": "csharp-review"}))
+    assert guard.read_log(link, "csharp-review").read_text(encoding="utf-8").splitlines() == ['"src/a.py"']
+
+
+# Windows drops a name's trailing dots and spaces when it makes a path absolute; the guard and the read count judge a
+# path by its exact spelling, so these hold the textual key where the platform alone can tell it from the lexical one.
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows drops a name's trailing dots")
+def test_a_trusted_folder_keeps_its_spelling_where_windows_would_drop_a_trailing_dot(tmp_path: Path) -> None:
+    given = guard._spellings(tmp_path / "trusted.")[0]
+    assert str(given) == os.path.normcase(str(tmp_path / "trusted."))
+
+
+def counted_reads(run: Path, lines: list[str]) -> dict[str, int]:
+    """The read counts `check` gives a role whose log names `lines`, relative to the run's snapshot."""
+    log = guard.read_log(run, "csharp-review")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    state: Any = {"reads": {}}
+    review_dispatch.count_reads(run, state, ["csharp-review"])
+    return dict(state["reads"]["csharp-review"])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows drops a name's trailing dots")
+def test_a_read_is_counted_by_the_spelling_the_log_gives_it(tmp_path: Path) -> None:
+    read = tmp_path / "run" / "source" / "app" / "a.py"
+    read.parent.mkdir(parents=True)
+    read.write_text("x\n", encoding="utf-8")
+    counts = counted_reads(tmp_path / "run", ["app/a.py", "app/a.py."])
+    assert counts == {"files": 2, "bytes": 2 * read.stat().st_size}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows drops a name's trailing dots")
+def test_the_manifest_is_left_out_of_a_run_whose_folder_ends_in_a_dot(tmp_path: Path) -> None:
+    # Windows makes `run.` as `run`; the run is still named `run.`, and its manifest is judged by that spelling.
+    run = tmp_path / "run."
+    manifest = run / "source" / review_runtime.SOURCE_SNAPSHOT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}\n", encoding="utf-8")
+    assert counted_reads(run, [review_runtime.SOURCE_SNAPSHOT_MANIFEST]) == {"files": 0, "bytes": 0}

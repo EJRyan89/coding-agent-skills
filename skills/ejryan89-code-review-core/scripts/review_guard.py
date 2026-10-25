@@ -67,6 +67,7 @@ import json_writer
 from console import run_main
 from executable_locator import PYTHON
 from path_containment import within
+from path_keys import path_key
 from skill_roots import plugin_name
 from typed_fields import FieldError, FieldReader
 
@@ -117,7 +118,7 @@ Claim = tuple[Path, dict[str, str]]
 def _spellings(root: Path) -> tuple[Path, ...]:
     """A trusted local folder as it is given and as it resolves, each in the case the file system compares, so a path
     in either spelling is held to it by its text."""
-    return tuple(Path(os.path.normcase(os.path.normpath(form))) for form in (root.absolute(), root.resolve()))
+    return tuple(Path(path_key(form, textual=True)) for form in (root.absolute(), root.resolve()))
 
 
 # The folders every path the guard accepts lies under: the temporary directory, where prepare makes every run, and
@@ -182,7 +183,7 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
         or not path.is_file()
     ):
         return
-    root = Path(os.path.normcase(str(source.resolve(strict=False))))
+    root = Path(path_key(source, resolve=True))
     relative = Path(os.path.normcase(str(path))).relative_to(root)
     with contextlib.suppress(OSError), read_log(run, role).open("a", encoding="utf-8") as log:
         log.write(json_writer.dumps(relative.as_posix()) + "\n")

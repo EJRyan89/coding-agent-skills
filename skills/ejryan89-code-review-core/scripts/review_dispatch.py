@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_reader
 import json_writer
+from path_keys import path_key
 from review_config import ConfigurationError, load_config
 from review_guard import PLUGIN, UNGUARDED, claimed, read_log, reviewer_agent_type
 from review_hosts import (
@@ -96,7 +97,7 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     if "reads" not in state:
         return False
     source = run / "source"
-    manifest = os.path.normcase(os.path.normpath(source / SOURCE_SNAPSHOT_MANIFEST))
+    manifest = path_key(source / SOURCE_SNAPSHOT_MANIFEST, textual=True)
     counted = False
     for role in roles:
         log = read_log(run, role)
@@ -107,7 +108,7 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
             with contextlib.suppress(*CONTENT_ERRORS):
                 relative = json_reader.loads(line)
                 target = source.joinpath(relative) if isinstance(relative, str) else source
-                key = os.path.normcase(os.path.normpath(target))
+                key = path_key(target, textual=True)
                 if key not in sizes and key != manifest and _inside(target, source) and target.is_file():
                     sizes[key] = target.stat().st_size
         total = state["reads"].get(role, {"files": 0, "bytes": 0})
