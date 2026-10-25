@@ -866,6 +866,9 @@ def json_write_problems(root: Path, files: list[Path]) -> list[str]:
     entry sanctions."""
     problems: list[str] = []
     paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != JSON_WRITER]
+    if not paths:
+        # No module read is no evidence that none writes JSON outside the writer.
+        return [f"could not measure: no module the claims read was given, so no {JSON_DUMPS} write was looked for"]
     remedy = (
         "; call ejryan89-skill-core's json_writer, the one writer of JSON, which refuses NaN and a lone surrogate at "
         f"the write, or state why in {JSON_WRITE_ALLOWANCE}"

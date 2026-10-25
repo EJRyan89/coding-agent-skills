@@ -1025,6 +1025,22 @@ def test_json_write_policy_refuses_a_json_write_outside_json_writer() -> None:
     ]
 
 
+def test_json_write_policy_with_no_module_to_read_could_not_measure() -> None:
+    # Only the writer itself, a suite, and a file outside the claim roots: nothing the policy reads.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/json_writer.py": "import json\n\njson.dump(1, None)\n",
+                "skills/alpha/scripts/test_alpha.py": "import json\n\njson.dump(1, None)\n",
+                "docs/notes.py": "import json\n\njson.dump(1, None)\n",
+            },
+        )
+        found = python_checks.json_write_problems(root, sorted(root.rglob("*.py")))
+    assert found == ["could not measure: no module the claims read was given, so no json.dumps write was looked for"]
+
+
 def test_claim_policies_read_the_policies_their_runner_and_the_root_modules() -> None:
     # The claims speak of the repository's Python, so a policy's own reader is held to them as a skill's is; a suite
     # and the suites' support trees stay out.
