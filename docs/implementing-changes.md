@@ -117,9 +117,9 @@ the lines the pull request adds or changes in each Python module under `deployer
 a repository skill's `scripts/`, suites and `conftest.py` left out, with mutmut's operators, and runs each mutant
 against the suites that executed the statement holding its line unmutated, as coverage.py measured them, until one
 fails, so a mutant on a continuation line of a multi-line statement is reached when that statement ran. Of each such
-suite it runs only the tests that ran the statement, as coverage.py's test-function contexts recorded them, and the
-whole suite when code outside a test function ran it too: a process the suite started, a set-up, a fixture, or an
-import. A mutant of a module-level assignment, such as a table or a compiled pattern, runs at import, so it runs
+suite it runs only the tests that ran the statement, as coverage.py's test-function contexts recorded them, or that
+started, while their test ran, the process that ran it, and the whole suite when anything else ran it too: a set-up, a
+fixture, an import, or a process started outside a test's call. A mutant of a module-level assignment, such as a table or a compiled pattern, runs at import, so it runs
 instead the tests that ran a line reading a name it binds, when only the module's functions read those names and no
 other file names one, and the whole of each reaching suite otherwise. A mutation
 anchored on an expression that starts on an unchanged line, such as removing an argument from a call that opens above

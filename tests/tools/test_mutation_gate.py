@@ -192,10 +192,11 @@ def test_add() -> None:
     assert calc.add(1, 2) == 3
 """
 CONTEXT_SUITE_PATH = "tests/tools/test_calc.py"
-# What coverage.py 7.16.2's `coverage json --show-contexts` wrote for CONTEXT_CALC after `coverage run` of
-# CONTEXT_SUITE with `dynamic_context = test_function` and `patch = subprocess`, its other fields left out. The empty
-# context is code that ran outside every test function: at import, in setUp(), and in the process that
-# test_square_in_a_process() started; the inherited test_negate() is named by Base, the class that defines it.
+# What coverage.py 7.16.2's `coverage json --show-contexts` wrote for CONTEXT_CALC after pytest ran CONTEXT_SUITE with
+# COVERAGE_PROCESS_START naming coverage_settings()'s file, its other fields left out. The empty context is code that
+# ran outside every test function: at import and in setUp(). The inherited test_negate() is named by Base, the class
+# that defines it, and the process test_square_in_a_process() started by that test's node id and phase.
+SQUARE_CALL = "tests/tools/test_calc.py::CalcTests::test_square_in_a_process (call)"
 CONTEXT_REPORT = {
     "files": {
         "tools/calc.py": {
@@ -203,15 +204,15 @@ CONTEXT_REPORT = {
             "missing_lines": [],
             "excluded_lines": [],
             "contexts": {
-                "1": [""],
-                "4": [""],
+                "1": ["", SQUARE_CALL],
+                "4": ["", SQUARE_CALL],
                 "5": ["", "test_calc.CalcTests.test_double", "test_calc.test_add"],
-                "8": [""],
-                "15": [""],
-                "19": [""],
-                "20": [""],
-                "23": [""],
-                "24": [""],
+                "8": ["", SQUARE_CALL],
+                "15": ["", SQUARE_CALL],
+                "19": ["", SQUARE_CALL],
+                "20": [SQUARE_CALL],
+                "23": ["", SQUARE_CALL],
+                "24": [SQUARE_CALL],
                 "16": ["test_calc.Base.test_negate"],
                 "9": ["test_calc.CalcTests.test_double"],
                 "10": ["test_calc.CalcTests.test_double"],
@@ -228,9 +229,14 @@ CONTEXT_COLLECTED = [
     "tests/tools/test_calc.py::CalcTests::test_square_in_a_process",
     "tests/tools/test_calc.py::test_add",
 ]
-# double()'s statement, lines 9 to 14, is the one only a test function ran: every other line runs the whole suite.
+# double()'s statement, lines 9 to 14, only a test function ran, and square()'s, lines 20 to 22, and the call on line
+# 24 only the process one test's call started: every other line runs the whole suite.
+SQUARE_TEST = SQUARE_CALL.removesuffix(" (call)")
 CONTEXT_TESTS = {
-    "tools/calc.py": dict.fromkeys(range(9, 15), frozenset({"tests/tools/test_calc.py::CalcTests::test_double"}))
+    "tools/calc.py": {
+        **dict.fromkeys(range(9, 15), frozenset({"tests/tools/test_calc.py::CalcTests::test_double"})),
+        **dict.fromkeys([20, 21, 22, 24], frozenset({SQUARE_TEST})),
+    }
 }
 
 
@@ -302,7 +308,9 @@ class MutantFixtures(unittest.TestCase):
 class ReachFixtures(unittest.TestCase):
     def test_coverage_measures_the_suites_subprocesses_and_only_the_changed_modules(self) -> None:
         settings = coverage_settings(Path("data folder"), [Path("tree/tools/calc.py"), Path("tree/deployer/a.py")])
-        self.assertIn("\npatch = subprocess\n", settings)
+        # `patch = subprocess` would hand each child the parent's configuration, its context already expanded.
+        self.assertNotIn("patch", settings)
+        self.assertIn("\ncontext = ${PYTEST_CURRENT_TEST-}\n", settings)
         self.assertIn("\ndynamic_context = test_function\n", settings)
         self.assertIn("parallel = true", settings)
         self.assertIn(f"    {Path('tree/tools/calc.py')}\n    {Path('tree/deployer/a.py')}\n", settings)
@@ -358,12 +366,39 @@ class ContextFixtures(unittest.TestCase):
             tests = executed_tests(CONTEXT_REPORT, tree, ["tools/calc.py"], CONTEXT_SUITE_PATH, CONTEXT_COLLECTED)
             lines = executed_lines(CONTEXT_REPORT, tree, ["tools/calc.py"])["tools/calc.py"]
         self.assertEqual(CONTEXT_TESTS, tests)
-        # add() also ran in setUp(), negate() in an inherited test, and square() only in a process the suite started:
-        # each line is reached, and runs the whole suite.
-        for line in (5, 16, 20):
+        # add() also ran in setUp(), negate() in an inherited test, and the module's import lines in the suite's own
+        # process too: each line is reached, and runs the whole suite.
+        for line in (1, 5, 16, 19):
             with self.subTest(line=line):
                 self.assertIn(line, lines)
                 self.assertNotIn(line, tests["tools/calc.py"])
+
+    def test_a_process_a_tests_call_started_names_that_test_and_any_other_phase_runs_the_whole_suite(self) -> None:
+        suite = "tests/tools/test_calc.py"
+        collected = [f"{suite}::CalcTests::test_double", f"{suite}::test_add[a b]", f"{suite}::test_add[c]"]
+        self.assertEqual(frozenset({collected[1]}), context_tests([f"{suite}::test_add[a b] (call)"], suite, collected))
+        # A process started by a test's call and the test's own function name it together.
+        self.assertEqual(
+            frozenset(collected),
+            context_tests(
+                [f"{suite}::CalcTests::test_double (call)", "test_calc.CalcTests.test_double", "test_calc.test_add"],
+                suite,
+                collected,
+            ),
+        )
+        for contexts in (
+            # A set-up or a tear-down may be a fixture's that other tests share.
+            [f"{suite}::CalcTests::test_double (setup)"],
+            [f"{suite}::CalcTests::test_double (teardown)"],
+            [f"{suite}::CalcTests::test_double (call)", ""],
+            # A node id of no collected test, or a call phase with what a nested pytest's test function added.
+            [f"{suite}::test_gone (call)"],
+            ["tests/tools/test_other.py::test_add[c] (call)"],
+            [f"{suite}::test_add[c] (call)|test_inner.test_x"],
+            [f"{suite}::test_add[c]"],
+        ):
+            with self.subTest(contexts=contexts):
+                self.assertIsNone(context_tests(contexts, suite, collected))
 
     def test_a_context_names_a_test_by_its_modules_import_name_and_every_parametrized_case_runs(self) -> None:
         suite = "tests/tools/test_calc.py"
@@ -477,6 +512,38 @@ class ProcessArgumentFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, self.bounded(b"tests/x.py::test_a\n", returncode=4):
             self.assertEqual([], mutation_gate.suite_tests(Path("tree"), "tests/x.py", Path(temporary) / "listing"))
 
+    def test_a_reach_runs_pytest_measured_from_its_file_and_its_coverage_steps_unmeasured(self) -> None:
+        # pytest runs this test with PYTEST_CURRENT_TEST set, which the suite's own process must not inherit.
+        self.assertIn("PYTEST_CURRENT_TEST", os.environ)
+        settings: list[str] = []
+        environments: list[dict[str, str]] = []
+
+        def run(command: Sequence[str], timeout: float, **options: Any) -> types.SimpleNamespace:
+            self.calls.append((list(command), timeout, options, []))
+            environments.append(options["env"])
+            start = options["env"].get("COVERAGE_PROCESS_START")
+            if start:
+                settings.append(Path(start).read_text(encoding="utf-8"))
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        with mock.patch.object(mutation_gate, "run_bounded", side_effect=run):
+            result = mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
+        self.assertEqual("failed in `coverage json`, which wrote no report", result)
+        (suite, timeout, options, _), *steps = self.calls
+        self.assertEqual(([sys.executable, "-B", "-m", "pytest", "tests/x.py", "-q"], 42.0), (suite, timeout))
+        environment = environments[0]
+        self.assertNotIn("PYTEST_CURRENT_TEST", environment)
+        self.assertEqual("1", environment["PYTHONDONTWRITEBYTECODE"])
+        self.assertEqual("coveragerc", Path(environment["COVERAGE_PROCESS_START"]).name)
+        self.assertEqual(
+            [coverage_settings(Path(environment["COVERAGE_PROCESS_START"]).parent, [Path("tree/tools/calc.py")])],
+            settings,
+        )
+        self.assertIs(self.tree_sentinel, options["tree"])
+        self.assertEqual(["combine", "json"], [command[4] for command, _, _, _ in steps])
+        for _, _, step_options, _ in steps:
+            self.assertEqual(mutation_gate.suite_environment(), step_options["env"])
+
 
 class RunSuiteFixtures(unittest.TestCase):
     """The real suite runner, over a suite with a test that fails and one that passes."""
@@ -500,7 +567,8 @@ class RunSuiteFixtures(unittest.TestCase):
 
 
 class CoverageReachFixtures(unittest.TestCase):
-    """The reach of a suite through a stub coverage.py in the tree, which `python -m coverage` finds first there."""
+    """The reach of a suite run by the real pytest, its coverage data combined and reported by a stub coverage.py in
+    the tree, which `python -m coverage` finds first there."""
 
     # A process that inherits coverage.py's subprocess setting starts the real coverage.py from its .pth file before
     # `-m coverage` is resolved, which then runs instead of this stub, so the stub refuses to run measured.
@@ -518,9 +586,9 @@ class CoverageReachFixtures(unittest.TestCase):
         "    print(message, file=sys.stderr)\n"
         "    sys.exit(int(code))\n"
         "rest = sys.argv[3:]\n"
-        "expected = {'run': rest[:2] == ['-m', 'pytest'] and rest[-1:] == ['-q'], 'combine': rest == ['-q'],\n"
+        "expected = {'combine': rest == ['-q'],\n"
         "            'json': rest[:3] == ['-q', '--show-contexts', '-o'] and len(rest) == 4}\n"
-        "if not sys.argv[2].startswith('--rcfile=') or not expected[step]:\n"
+        "if not sys.argv[2].startswith('--rcfile=') or not expected.get(step):\n"
         "    print('unexpected arguments', sys.argv[1:], file=sys.stderr)\n"
         "    sys.exit(7)\n"
         "if step == 'json' and action == 'ok':\n"
@@ -530,13 +598,20 @@ class CoverageReachFixtures(unittest.TestCase):
     )
 
     def reach(
-        self, actions: dict[str, str], recorded: bool = False, suite: str = "tests/test_calc.py", report: object = None
+        self,
+        actions: dict[str, str],
+        recorded: bool = False,
+        suite: str = "tests/test_calc.py",
+        report: object = None,
+        passes: bool = True,
     ) -> Reach | str:
         """The reach of `suite` in a tree whose stub coverage.py reports nothing, or, when `recorded`, CONTEXT_REPORT
-        for the CONTEXT_SUITE the tree holds, or else `report` when one is given."""
+        for the CONTEXT_SUITE the tree holds, or else `report` when one is given. Unless `recorded`, the suite is one
+        test, which passes or fails as `passes` says."""
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary) / "tree with spaces"
-            tree.mkdir()
+            (tree / "tests").mkdir(parents=True)
+            (tree / "tests" / "test_calc.py").write_text(f"def test_it():\n    assert {passes}\n", encoding="utf-8")
             (tree / "coverage.py").write_text(self.STUB, encoding="utf-8")
             (tree / "stub-actions.json").write_text(json.dumps(actions), encoding="utf-8")
             if recorded:
@@ -585,19 +660,22 @@ class CoverageReachFixtures(unittest.TestCase):
         self.assertIn(20, result.lines["tools/calc.py"])
 
     def test_a_suite_pytest_cannot_list_is_measured_and_runs_whole_against_every_mutant(self) -> None:
-        # The stub reports CONTEXT_REPORT, but the suite named is not in the tree, so pytest lists no test of it.
-        result = self.reach({}, recorded=True, suite="tests/tools/test_gone.py")
+        # The stub reports CONTEXT_REPORT, but pytest lists no test of the suite.
+        with mock.patch.object(mutation_gate, "suite_tests", return_value=[]):
+            result = self.reach({}, recorded=True, suite=CONTEXT_SUITE_PATH)
         if not isinstance(result, Reach):
             self.fail(f"the reach was not measured: {result}")
         self.assertEqual({}, dict(result.tests))
         self.assertIn(9, result.lines["tools/calc.py"])
 
     def test_a_suite_failed_unmutated_is_still_reported_by_its_exit_code(self) -> None:
-        self.assertEqual("failed unmutated with exit code 4", self.reach({"run": "fail 4 a test failed"}))
+        self.assertEqual("failed unmutated with exit code 1", self.reach({}, passes=False))
+        self.assertEqual("failed unmutated with exit code 4", self.reach({}, suite="tests/test_gone.py"))
 
     def test_a_gate_measured_by_coverage_starts_every_coverage_step_unmeasured(self) -> None:
-        # The gate's own suite runs under the reach pass's `patch = subprocess`, which leaves this variable set.
-        with mock.patch.dict(os.environ, {"COVERAGE_PROCESS_CONFIG": "{}"}):
+        # The gate's own suite runs under the reach pass, which leaves this variable set, or, from coverage.py's
+        # `patch = subprocess`, this one.
+        with mock.patch.dict(os.environ, {"COVERAGE_PROCESS_START": "rc", "COVERAGE_PROCESS_CONFIG": "{}"}):
             result = self.reach({})
         self.assertIsInstance(result, Reach, result)
 
@@ -1159,7 +1237,7 @@ class WholeRunFixtures(unittest.TestCase):
         # Line 8 is a continuation of the call on line 6, the line coverage.py recorded, so the suite ran and killed it.
         self.assertIn("| `tools/calc.py` | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 100% (1 of 1) |", text)
 
-    def test_a_mutant_runs_the_tests_that_ran_its_line_and_the_whole_suite_for_a_line_run_in_a_subprocess(self) -> None:
+    def test_a_mutant_runs_the_tests_that_ran_its_line_or_whose_call_started_the_process_that_did(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
             fixture_repository(root)
@@ -1192,11 +1270,11 @@ class WholeRunFixtures(unittest.TestCase):
             ):
                 text = gate.report().text
         # Line 11's mutant ran test_double() alone, which killed it; line 20's ran only in the process
-        # test_square_in_a_process() starts, so it ran the whole suite, which killed it there.
+        # test_square_in_a_process() starts, so it ran that test alone, which killed it there.
         self.assertEqual(
             [
                 (CONTEXT_SUITE_PATH, ("tests/tools/test_calc.py::CalcTests::test_double",), KILLED),
-                (CONTEXT_SUITE_PATH, (), KILLED),
+                (CONTEXT_SUITE_PATH, (SQUARE_TEST,), KILLED),
             ],
             calls,
         )

@@ -22,19 +22,22 @@ worktree at HEAD, one worktree per worker, with the mutant written into the work
 process the suite starts imports it.
 
 Which suites run against a mutant is measured, not guessed. The suites that reach the changed modules, as
-`job_selection.reached_suites` selects them for `--changed`, each run once unmutated under coverage.py with its
-subprocess measurement on, which records the statements of the changed modules each suite executes, in its own process
-or in one it started with the environment passed on; the gate's own coverage steps and suite runs are never measured.
+`job_selection.reached_suites` selects them for `--changed`, each run once unmutated under coverage.py, which records
+the statements of the changed modules each suite executes, in its own process or in one it started with the
+environment passed on, each process starting its measurement from the reach run's configuration file, as
+COVERAGE_PROCESS_START names it; the gate's own coverage steps and suite runs are never measured.
 coverage.py records a statement by its first line, and the lines its report names executed, missing, or excluded are the
 first lines of all the module's statements, so each line up to the next of them belongs to the statement above it, and a
 mutant on a continuation line of a multi-line statement is reached when that statement ran. coverage.py's
-`test_function` dynamic context records, too, which test functions ran each statement, and `coverage json
---show-contexts` reports them, which the gate matches to the node ids `pytest --collect-only` lists for the suite. A
-mutant then runs the suites that executed its statement, fastest first, until one fails: of each suite, only the tests
-that ran the statement, when its own test functions alone did, and the whole suite when code outside any test function
-ran it too, since a process the suite started, a set-up, a fixture, or an import records no test function; a context
-naming no collected test of the suite, or a test function name more than one collected class holds, which an inherited
-test method would be, and a suite pytest cannot list run whole as well. The mutant is killed, or timed out when a suite
+`test_function` dynamic context records, too, which test functions ran each statement, and a process the suite
+started records, as its static context, the PYTEST_CURRENT_TEST pytest gave it: the node id of the test running when it
+started, and the phase. `coverage json --show-contexts` reports them, which the gate matches to the node ids `pytest
+--collect-only` lists for the suite. A mutant then runs the suites that executed its statement, fastest first, until
+one fails: of each suite, only the tests that ran the statement, when its own test functions, or processes they started
+while they ran, alone did, and the whole suite when anything else ran it too, since a set-up, a fixture, an import, or a
+process started outside a test's call phase records no test of its own; a context naming no collected test of the
+suite, or a test function name more than one collected class holds, which an inherited test method would be, and a
+suite pytest cannot list run whole as well. The mutant is killed, or timed out when a suite
 runs past three times its unmutated time. A mutant every one of those suites passes survived. A mutant in a statement no
 suite executed is not reached, and a suite that fails unmutated, or whose coverage data `coverage combine` or `coverage
 json` fails or times out on, or whose report holds no files object, is left out and named with the step and its
@@ -46,7 +49,7 @@ every reaching suite whole. A mutant of a module-level assignment, such as a tab
 the value its names are bound to, so when only the module's functions read those names (no read at import, in a
 decorator, a default, or an annotation, none as an attribute, a parameter, a `global`, or a string, and no other Python
 file of the checkout naming one), it runs, of each suite, the tests that ran a line reading one, when only the suite's
-own test functions ran each such line it ran, and the whole suite otherwise. A suite that ran no reading line cannot
+own tests ran each such line it ran, and the whole suite otherwise. A suite that ran no reading line cannot
 tell the mutant apart and is left out, unless no suite ran one, when every reaching suite runs whole, which still kills
 a mutant that breaks the import.
 
@@ -171,7 +174,7 @@ class Mutant:
 @dataclass(frozen=True)
 class Reach:
     """A suite's unmutated run: its seconds, the lines of each changed module it executed, and, for each line only
-    the suite's own test functions executed, those tests' node ids; a line it executed that `tests` leaves out runs the
+    the suite's own tests executed, those tests' node ids; a line it executed that `tests` leaves out runs the
     whole suite."""
 
     seconds: float
@@ -454,15 +457,21 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
 
 
 def coverage_settings(folder: Path, files: Iterable[Path]) -> str:
-    """coverage.py's configuration for one reach run: data in its own folder, one file per measured process, the
-    processes the suite starts measured too, and each line recorded with the test function that ran it."""
+    """coverage.py's configuration for one reach run: data in its own folder, one file per measured process, and each
+    line recorded with the test function that ran it, or, in a process the suite started, with the test pytest was
+    running when it started.
+
+    Every process, the suite's own included, reads this file when it starts, as COVERAGE_PROCESS_START names it, so
+    each expands PYTEST_CURRENT_TEST from the environment it was started with: unset in the suite's own process, and
+    the node id and phase of the running test in a child. coverage.py's `patch = subprocess` is not used, since it
+    hands each child the parent's configuration already expanded, which takes precedence over the file."""
     return "\n".join(
         [
             "[run]",
             f"data_file = {folder / 'data'}",
             "parallel = true",
-            "patch = subprocess",
             "dynamic_context = test_function",
+            "context = ${PYTEST_CURRENT_TEST-}",
             "include =",
             *(f"    {file}" for file in files),
             f"disable_warnings = {', '.join(COVERAGE_WARNINGS)}",
@@ -523,18 +532,25 @@ def context_tests(contexts: Iterable[str], suite: str, collected: Sequence[str])
     """The node ids of the suite's tests that coverage.py's `test_function` contexts for a statement name, or None
     when the statement must run the whole suite.
 
-    A context names a test function by its module's import name and its qualified name. The empty context is code that
-    ran outside every test function: at import, in a set-up or a fixture, or in a process the suite started, which
-    records no test function, and only the whole suite repeats it. A test method a class inherits is named by the class
-    that defines it, so a context whose function name more than one collected class holds, or one that names no
-    collected test of this suite, runs the whole suite too."""
+    A context names a test function by its module's import name and its qualified name. A process the suite started
+    names, instead, the node id of the test pytest was running when it started and the phase, and only the call phase
+    is that test's alone: a set-up or a tear-down may be a fixture's that other tests share. The empty context is code
+    that ran outside every test function: at import, in a set-up or a fixture, or in a process started outside a test,
+    and only the whole suite repeats it. A test method a class inherits is named by the class that defines it, so a
+    context whose function name more than one collected class holds, or one that names no collected test of this
+    suite, runs the whole suite too."""
     stem = PurePosixPath(suite).stem
+    listed = set(collected)
     named: dict[str, list[str]] = {}
     for test in collected:
         named.setdefault(test.removeprefix(f"{suite}::").split("[", 1)[0].replace("::", "."), []).append(test)
     functions = Counter(name.rpartition(".")[2] for name in named)
     found: set[str] = set()
     for context in contexts:
+        started = context.removesuffix(" (call)")
+        if started != context and started in listed:
+            found.add(started)
+            continue
         module, _, name = context.partition(f"{stem}.")
         if module and not module.endswith("."):
             return None
@@ -548,7 +564,7 @@ def executed_tests(
     report: Mapping[str, object], tree: Path, modules: Sequence[str], suite: str, collected: Sequence[str]
 ) -> dict[str, dict[int, frozenset[str]]]:
     """For each line of each module whose statement a `coverage json --show-contexts` report says only the suite's own
-    test functions ran, those tests' node ids."""
+    tests ran, in their functions or in processes their calls started, those tests' node ids."""
     tests: dict[str, dict[int, frozenset[str]]] = {module: {} for module in modules}
     for module, entry, last in module_entries(report, tree, modules):
         contexts = entry.get("contexts")
@@ -569,13 +585,18 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
         settings = folder / "coveragerc"
         settings.write_text(coverage_settings(folder, (tree / module for module in modules)), encoding="utf-8")
         rcfile = f"--rcfile={settings}"
+        # coverage.py's .pth file starts the measurement of the suite's process, and of each process it starts, from
+        # the file. A test that runs the gate has its own PYTEST_CURRENT_TEST left out, so the suite's process gets
+        # no static context.
+        measured = {key: value for key, value in suite_environment().items() if key != "PYTEST_CURRENT_TEST"}
+        measured["COVERAGE_PROCESS_START"] = str(settings)
         started = time.monotonic()
         try:
             finished = run_bounded(
-                [*python, "coverage", "run", rcfile, "-m", "pytest", suite, "-q"],
+                pytest_command(suite, "-q"),
                 timeout,
                 cwd=tree,
-                env=suite_environment(),
+                env=measured,
                 output_limit=OUTPUT_LIMIT,
                 tree=platform_support.process_tree(),
             )
@@ -724,8 +745,8 @@ def suite_selection(mutant: Mutant, measured: Reach) -> list[str] | None:
     """The node ids of a suite's tests to run against a mutant, none for the whole suite, or None when the suite ran
     none of the lines that read what the mutant's module-level assignment binds.
 
-    The tests are those that ran the mutant's line when only the suite's own test functions did, else, for a mutant
-    with readers, those that ran a reading line, when only the suite's own test functions ran each reading line it
+    The tests are those that ran the mutant's line when only the suite's own tests did, else, for a mutant
+    with readers, those that ran a reading line, when only the suite's own tests ran each reading line it
     ran."""
     tests = measured.tests.get(mutant.module, {})
     if mutant.line in tests:
