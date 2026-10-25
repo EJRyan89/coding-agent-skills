@@ -815,6 +815,18 @@ class PatchMatchTests(SquashFixture):
         with self.assertRaisesRegex(QueryError, pattern):
             change_match(str(self.clone), self.BASE_REF, GitClient(run))(self.tip, squash)
 
+    def test_a_merge_base_that_answers_no_commit_is_refused_naming_what_git_printed(self) -> None:
+        squash = self.squash_merge()
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(0, "nonsense\n", "") if "merge-base" in command else subprocess_runner(command, timeout)
+
+        pattern = (
+            f"^cannot find the merge base of {self.BASE_REF} and {self.tip}: git answered 'nonsense', not a commit$"
+        )
+        with self.assertRaisesRegex(QueryError, pattern):
+            change_match(str(self.clone), self.BASE_REF, GitClient(run))(self.tip, squash)
+
     def test_a_merge_base_git_cannot_run_is_named_as_such(self) -> None:
         squash = self.squash_merge()
 
