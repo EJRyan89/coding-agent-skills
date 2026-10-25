@@ -22,6 +22,8 @@ class XmlRefused(ValueError):
 
 # What `read_xml` raises on bad content.
 CONTENT_ERRORS: tuple[type[Exception], ...] = (XmlRefused,)
+# The functions that raise CONTENT_ERRORS on content.
+CONTENT_READERS = ("read_xml",)
 
 
 def read_xml(text: str) -> ElementTree.Element:

@@ -116,8 +116,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** each shared reader's family, `json_reader:CONTENT_ERRORS`, `json_writer:CONTENT_ERRORS`,
   `xml_reader:CONTENT_ERRORS`, `frontmatter:CONTENT_ERRORS`, `typed_text:CONTENT_ERRORS`,
   `guidance_record:CONTENT_ERRORS`, `check_provenance:CONTENT_ERRORS`, and `diff_paths:CONTENT_ERRORS`, named whole in
-  the handler; `review_io:CONTENT_ERRORS` and `file_presence:NotAFile`.
-- **Guard:** `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
+  the handler, and the readers each module names, such as `json_reader:CONTENT_READERS`; `review_io:CONTENT_ERRORS`
+  and `file_presence:NotAFile`.
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_each_handler_around_a_reader_catches_its_whole_content_family`,
+  `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`

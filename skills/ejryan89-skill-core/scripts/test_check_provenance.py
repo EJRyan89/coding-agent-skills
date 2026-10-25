@@ -11,6 +11,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import check_provenance
 from check_provenance import CONTENT_ERRORS, PROVENANCE_FILE, ProvenanceError, Source, lines, load
 
 PAGE = {"page": "https://example.com/docs/skills", "passage": "Keep the body short."}
@@ -124,3 +125,7 @@ class ContentErrorsTests(unittest.TestCase):
                 path.write_text(text, encoding="utf-8")
                 with self.subTest(text=text), self.assertRaises(CONTENT_ERRORS):
                     load(path, ["a"])
+
+
+def test_the_readers_that_raise_the_family_are_named() -> None:
+    assert check_provenance.CONTENT_READERS == ("load",)

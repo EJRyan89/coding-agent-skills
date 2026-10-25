@@ -47,6 +47,8 @@ class GuidanceRecordError(ValueError):
 
 # What `read` raises on a record that is missing, unreadable, or malformed.
 CONTENT_ERRORS: tuple[type[Exception], ...] = (GuidanceRecordError,)
+# The functions that raise CONTENT_ERRORS on content.
+CONTENT_READERS = ("read",)
 
 
 @dataclass(frozen=True)

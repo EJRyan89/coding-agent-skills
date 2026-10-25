@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import json_reader
 import whole_number
 from json_reader import CONTENT_ERRORS, JsonRefused, loads, raw_decode, read_file
 
@@ -164,3 +165,7 @@ class ContentErrorsTests(unittest.TestCase):
             with self.assertRaises(CONTENT_ERRORS) as raised:
                 read_file(path)
         self.assertIs(UnicodeDecodeError, type(raised.exception))
+
+
+def test_the_readers_that_raise_the_family_are_named() -> None:
+    assert json_reader.CONTENT_READERS == ("loads", "raw_decode", "read_file")

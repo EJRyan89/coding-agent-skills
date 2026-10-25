@@ -1068,6 +1068,202 @@ def test_a_policy_scope_fails_for_each_module_it_skips_and_each_stale_omission()
     ]
 
 
+CONTENT_READER_SOURCE = """\
+import json
+
+
+class Refused(ValueError):
+    pass
+
+
+CONTENT_ERRORS = (Refused, json.JSONDecodeError)
+CONTENT_READERS = ("read",)
+
+
+def read(text):
+    return text
+
+
+def quote(text):
+    return text
+
+
+def _private(text):
+    return text
+"""
+
+CONTENT_CALLER_SOURCE = """\
+import contextlib
+import json
+
+import reader
+from reader import read
+
+FAMILY = (*reader.CONTENT_ERRORS, OSError)
+
+
+class Mine(reader.Refused):
+    pass
+
+
+def narrow(text):
+    try:
+        return reader.read(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def io_only(path):
+    with contextlib.suppress(OSError):
+        read(path)
+
+
+def through(text):
+    return read(text)
+
+
+def via(text):
+    try:
+        return through(text)
+    except reader.Refused:
+        return None
+
+
+def subclass(text):
+    try:
+        return read(text)
+    except Mine:
+        return None
+
+
+def reraised(text):
+    try:
+        return read(text)
+    except reader.Refused:
+        raise
+    except json.JSONDecodeError:
+        return None
+
+
+def whole(text):
+    try:
+        return read(text)
+    except FAMILY:
+        return None
+
+
+def wider(text):
+    with contextlib.suppress(ValueError):
+        return through(text)
+
+
+def unrelated(text):
+    try:
+        return read(text)
+    except KeyError:
+        return None
+
+
+def nested(text):
+    try:
+        def inner():
+            return read(text)
+        return inner
+    except OSError:
+        return None
+
+
+def unread(text):
+    try:
+        return reader.quote(text), reader._private(text)
+    except OSError:
+        return None
+
+
+def in_handler(text):
+    try:
+        return text.upper()
+    except AttributeError:
+        return read(text)
+
+
+def own(text):
+    try:
+        return read(text)
+    except reader.Refused:
+        return None
+
+
+def trusted(text):
+    return read(text)
+
+
+def sealed(text):
+    try:
+        return trusted(text)
+    except OSError:
+        return None
+
+
+class Holder:
+    def method(self, text):
+        try:
+            return read(text)
+        except OSError:
+            return None
+
+
+CONTENT_ERRORS_ALLOWED = {
+    "own": "reads text it wrote",
+    "trusted": "reads text it wrote",
+    "stale": "a reason",
+}
+"""
+
+
+def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_family() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/ejryan89-skill-core/scripts/unresolved.py": "CONTENT_ERRORS = (missing.Error,)\n",
+                "skills/ejryan89-skill-core/scripts/unnamed.py": (
+                    "CONTENT_ERRORS = (ValueError,)\nCONTENT_READERS = ('gone',)\n\n\n"
+                    "def read(text):\n    return text\n"
+                ),
+                "skills/alpha/scripts/alpha.py": CONTENT_CALLER_SOURCE,
+                "skills/alpha/scripts/test_alpha.py": CONTENT_CALLER_SOURCE,
+                "tools/broken.py": "CONTENT_ERRORS_ALLOWED = {'scope': ''}\n",
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    alpha = "skills/alpha/scripts/alpha.py"
+
+    def remedy(missing: str) -> str:
+        return (
+            f"catches part of what a reader it calls raises, or its OSError, but not {missing}; catch the whole "
+            "family, reader.CONTENT_ERRORS, or state why in CONTENT_ERRORS_ALLOWED"
+        )
+
+    both = "json.decoder.JSONDecodeError, reader.Refused"
+    assert found == [
+        "skills/ejryan89-skill-core/scripts/unnamed.py: CONTENT_READERS must be a tuple naming each function the "
+        "module defines that raises its CONTENT_ERRORS on content",
+        "skills/ejryan89-skill-core/scripts/unresolved.py: CONTENT_ERRORS must be a tuple of exception classes its "
+        "imports name",
+        f"{alpha}:15 {remedy('reader.Refused')}",
+        f"{alpha}:22 {remedy(both)}",
+        f"{alpha}:31 {remedy('json.decoder.JSONDecodeError')}",
+        f"{alpha}:38 {remedy(both)}",
+        f"{alpha}:45 {remedy('reader.Refused')}",
+        f"{alpha}:115 {remedy(both)}",
+        f"{alpha}: CONTENT_ERRORS_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: CONTENT_ERRORS_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
 INT_SOURCE = """\
 import re
 

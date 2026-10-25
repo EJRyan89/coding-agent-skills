@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import diff_paths
 from diff_paths import (
     CONTENT_ERRORS,
     HUNK_HEADER,
@@ -243,3 +244,7 @@ def test_the_family_is_the_path_error_and_covers_a_quoted_header_path_git_does_n
     assert (DiffPathError,) == CONTENT_ERRORS
     with pytest.raises(CONTENT_ERRORS):
         header_path('"b/a.py\n')
+
+
+def test_the_readers_that_raise_the_family_are_named() -> None:
+    assert diff_paths.CONTENT_READERS == ("unquote", "header_path")

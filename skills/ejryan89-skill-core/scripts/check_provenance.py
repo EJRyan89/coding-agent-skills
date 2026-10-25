@@ -39,6 +39,8 @@ class ProvenanceError(ValueError):
 
 # What `load` raises on a provenance file that cannot be read or is not in its shape.
 CONTENT_ERRORS: tuple[type[Exception], ...] = (ProvenanceError,)
+# The functions that raise CONTENT_ERRORS on content.
+CONTENT_READERS = ("load",)
 
 
 class ProvenanceFieldError(FieldError, ProvenanceError):
