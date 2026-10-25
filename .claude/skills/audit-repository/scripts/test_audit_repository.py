@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import audit_repository as audit
+import json_writer
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import Backoff, CommandResult, GitHubClient
 from guidance_record import PYTHON_SUBJECT, Page
@@ -697,6 +698,12 @@ class RotationTests(Fixture):
         self.assertEqual(before, (self.root / RECORD).read_bytes())
         self.assertEqual("", git(self.root, "status", "--porcelain"))
 
+    def test_a_record_is_committed_text_two_space_indented_with_text_past_ascii_kept(self) -> None:
+        # The guidance and rotation records are committed files a diff reads, so their bytes are fixed.
+        path = self.root / "record.json"
+        audit.write_json(path, {"page": "café", "read": ["v0.1.0"]})
+        self.assertEqual('{\n  "page": "café",\n  "read": [\n    "v0.1.0"\n  ]\n}\n'.encode(), path.read_bytes())
+
     def test_a_failed_record_write_leaves_the_record_unchanged_and_no_copy_beside_it(self) -> None:
         linked = self.linked_worktree()
         record = linked / RECORD
@@ -704,6 +711,10 @@ class RotationTests(Fixture):
         for name, failure in (
             ("a write that cannot be synced", mock.patch("os.fsync", side_effect=OSError("disk full"))),
             ("a replace refused", mock.patch("pathlib.Path.replace", side_effect=OSError("disk full"))),
+            (
+                "a record the JSON writer refuses",
+                mock.patch("json_writer.dumps", side_effect=json_writer.JsonWriteRefused("disk full")),
+            ),
         ):
             with self.subTest(name=name):
                 with failure:
@@ -1065,8 +1076,29 @@ class RemoveBriefsTests(Fixture):
     def test_a_run_marks_its_directory_with_its_own_path(self) -> None:
         _, lines = self.run_main("release", "--since", "v0.1.0")
         directory = Path(next(line for line in lines if line.startswith("BRIEFS ")).split(" ", 1)[1].strip('"'))
-        marker = json.loads((directory / ".audit-repository-briefs.json").read_text(encoding="utf-8"))
+        written = (directory / ".audit-repository-briefs.json").read_bytes()
+        marker = json.loads(written.decode("utf-8"))
         self.assertEqual({"directory": directory.resolve().as_posix()}, marker)
+        # One line, escaped past ASCII, so the marker reads alike whatever the platform's codec.
+        self.assertEqual((json.dumps(marker) + "\n").encode("ascii"), written)
+
+    def test_a_marker_the_json_writer_refuses_is_a_failed_marker_write_naming_it(self) -> None:
+        made: list[Path] = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def mkdtemp(**options: Any) -> str:
+            made.append(Path(real_mkdtemp(**options)))
+            return str(made[-1])
+
+        refused = json_writer.JsonWriteRefused("the value holds a lone surrogate U+DCFF, which UTF-8 cannot encode")
+        with (
+            mock.patch.object(tempfile, "mkdtemp", side_effect=mkdtemp),
+            mock.patch("json_writer.dumps", side_effect=refused),
+            self.assertRaisesRegex(audit.AuditError, "^cannot write the briefs marker .*: the value holds a lone"),
+        ):
+            audit.write_briefs([("first", "A brief.\n")])
+        self.addCleanup(shutil.rmtree, made[0])
+        self.assertEqual([], list(made[0].iterdir()))
 
     def test_refuses_any_other_directory_and_leaves_it(self) -> None:
         other = Path(tempfile.mkdtemp(prefix="not-audit-"))

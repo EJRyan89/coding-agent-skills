@@ -111,8 +111,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 
 import guidance_record
 import json_reader
+import json_writer
 import whole_number
-from atomic_file import UnfinishedCopyError, replace_text
+from atomic_file import UnfinishedCopyError
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
@@ -675,9 +676,12 @@ def write_record(path: Path, entries: list[Entry]) -> None:
 
 
 def write_json(path: Path, document: object) -> None:
-    """Replace a record with `document` through a copy written beside it, as write_record describes."""
+    """Replace a record with `document` through a copy written beside it, as write_record describes. A document the
+    JSON writer refuses is an OSError too, raised before a copy exists, so its caller says the record is unchanged."""
     try:
-        replace_text(path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+        json_writer.write(path, document, indent=2, ensure_ascii=False)
+    except json_writer.JsonWriteRefused as exc:
+        raise OSError(str(exc)) from exc
     except UnfinishedCopyError as exc:
         raise OSError(f"{exc.failure}; the unfinished copy {exc.copy.as_posix()} remains: {exc.removal}") from exc
 
@@ -901,8 +905,8 @@ def write_briefs(briefs: list[tuple[str, str]]) -> list[str]:
         raise AuditError(f"cannot create the briefs directory: {exc}") from exc
     marker = directory / BRIEFS_MARKER
     try:
-        marker.write_text(json.dumps({"directory": directory.resolve().as_posix()}) + "\n", encoding="utf-8")
-    except OSError as exc:
+        json_writer.write(marker, {"directory": directory.resolve().as_posix()})
+    except (OSError, json_writer.JsonWriteRefused) as exc:
         raise AuditError(f"cannot write the briefs marker {marker.as_posix()}: {exc}") from exc
     lines = [f'BRIEFS "{directory.as_posix()}"']
     for name, text in briefs:
