@@ -523,6 +523,14 @@ class CommandTests(LazySnapshotFixture):
         review_source._count(self.log, "src/café.py")
         review_source._count(self.log, "src/bad\udcff.py")
         self.assertEqual(['"src/caf\\u00e9.py"'], self.log.read_text(encoding="utf-8").splitlines())
+        # Through the command: a snapshot file whose path the writer refuses is still read, and left uncounted.
+        refusal = review_source.json_writer.JsonWriteRefused("the value holds a lone surrogate U+DCFF")
+        with mock.patch.object(review_source.json_writer, "dumps", side_effect=refusal):
+            code, lines = self.main(
+                "source-file", "--run", str(self.run_directory), "--role", "generic-review", "--path=src/unchanged.py"
+            )
+        self.assertEqual((0, [f"SOURCE_FILE {self.source / 'src' / 'unchanged.py'}"]), (code, lines))
+        self.assertEqual(['"src/caf\\u00e9.py"'], self.log.read_text(encoding="utf-8").splitlines())
 
     def test_source_search_prints_each_match_then_the_count(self) -> None:
         self.assertEqual(
