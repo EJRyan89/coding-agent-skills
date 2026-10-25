@@ -415,7 +415,7 @@ def _evidence(record: Mapping[str, Any], finding: Mapping[str, Any]) -> dict[str
 
 def next_rec_number(items: Iterable[dict[str, Any]]) -> int:
     """The first `REC-` number after every one these recommendations use, so no ID is ever given twice."""
-    refused = InsightError(f"a recommendation ID has more than {whole_number.DIGIT_LIMIT} digits")
+    refused = InsightError(f"a recommendation ID's number is not at most {whole_number.DIGIT_LIMIT} ASCII digits")
     found = (REC_ID.fullmatch(str(item.get("id", ""))) for item in items)
     used = [whole_number.read(match.group(1), refused) for match in found if match]
     return max(used, default=0) + 1

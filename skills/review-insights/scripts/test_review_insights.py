@@ -783,10 +783,13 @@ class RecommendationNumberTests(unittest.TestCase):
         self.assertEqual(1, ri.next_rec_number([]))
         self.assertEqual(13, ri.next_rec_number([{"id": "REC-012"}, {"id": "REC-003"}, {"id": "other"}, {}]))
 
-    def test_an_id_past_the_digit_limit_is_refused_by_name(self) -> None:
-        with self.assertRaises(ri.InsightError) as raised:
-            ri.next_rec_number([{"id": "REC-001"}, {"id": "REC-" + "1" * 5000}])
-        self.assertEqual(f"a recommendation ID has more than {whole_number.DIGIT_LIMIT} digits", str(raised.exception))
+    def test_an_id_past_the_digit_limit_or_in_other_digits_is_refused_by_name(self) -> None:
+        # The pattern's `\d` admits Arabic-Indic digits, which no ID this writes holds.
+        for number in ("1" * 5000, chr(0x0663) * 3):
+            with self.subTest(number=number[:4]), self.assertRaises(ri.InsightError) as raised:
+                ri.next_rec_number([{"id": "REC-001"}, {"id": f"REC-{number}"}])
+            refusal = f"a recommendation ID's number is not at most {whole_number.DIGIT_LIMIT} ASCII digits"
+            self.assertEqual(refusal, str(raised.exception))
 
 
 class DecideTests(InsightFixture):
