@@ -4,7 +4,9 @@ reported once a newer release of its runtime leaves it behind."""
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -131,3 +133,17 @@ def test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not
     ]
     assert captured_samples.behind(SAMPLES, "claude-code", (9, 0, 0)) == []
     assert captured_samples.behind(SAMPLES, "codex", (0, 159, 0)) == []
+
+
+def test_the_module_imports_on_its_own_from_any_folder(tmp_path: Path) -> None:
+    # Isolated, so nothing but what the module puts on sys.path finds the checkout: the repository root, then
+    # ejryan89-skill-core's scripts above it, as the deployer package puts them again when it is imported.
+    module = REPOSITORY / "tools" / "captured_samples.py"
+    program = f"import json, runpy, sys; runpy.run_path({str(module)!r}); print(json.dumps(sys.path[:3]))"
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", program], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    core = REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"
+    found = [os.path.normcase(entry) for entry in json.loads(done.stdout)]
+    assert found == [os.path.normcase(str(path)) for path in (core, core, REPOSITORY)]

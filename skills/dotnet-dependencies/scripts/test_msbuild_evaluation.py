@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import msbuild_evaluation
-from msbuild_evaluation import MAX_CHOOSE_DEPTH, ProjectFile, Sources, Unsettled, read_project
+from msbuild_evaluation import ProjectFile, Sources, Unsettled, choose_depth, read_project
 from msbuild_reader import PackageRef, Unreadable, parse_xml
 
 LEGACY_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
@@ -743,15 +743,27 @@ class EvaluationTests(unittest.TestCase):
             item = '<ItemGroup><PackageReference Include="Alpha.Pkg" Version="1.0.0" /></ItemGroup>'
             return f"<Project>{opening}{item}{'</When></Choose>' * depth}</Project>"
 
-        project = self.read("src/a/a.csproj", nested(MAX_CHOOSE_DEPTH))
+        # The limit is pinned as a literal, so a change to it is a change this test is made to.
+        project = self.read("src/a/a.csproj", nested(100))
         self.assertEqual([PackageRef("Alpha.Pkg", "1.0.0", "PackageReference")], project.packages)
-        reason = f"its Choose elements nest more than {MAX_CHOOSE_DEPTH} deep, past what the reader follows"
-        for depth in (MAX_CHOOSE_DEPTH + 1, 5000):
+        reason = "its Choose elements nest more than 100 deep, past what the reader follows"
+        for depth in (101, 5000):
             with self.subTest(depth=depth), self.assertRaises(Unreadable) as refused:
                 self.read("src/b/b.csproj", nested(depth))
             self.assertEqual(
                 (self.root / "src" / "b" / "b.csproj", reason), (refused.exception.file, refused.exception.reason)
             )
+
+    def test_choose_depth_counts_the_choose_elements_around_the_deepest_element(self) -> None:
+        cases = {
+            "<Project><PropertyGroup><A>1</A></PropertyGroup></Project>": 0,
+            "<Project><Choose><When Condition='true'/></Choose></Project>": 1,
+            "<Project><Choose><When Condition='true'><Choose><Otherwise/></Choose></When></Choose>"
+            "<Choose><Otherwise/></Choose></Project>": 2,
+        }
+        for text, depth in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(depth, choose_depth(parse_xml(self.write("depth.props", text))))
 
     def test_each_file_is_parsed_once_and_each_build_evaluated_once(self) -> None:
         # A project of two frameworks is evaluated once for its files' own values and once per framework, its central
