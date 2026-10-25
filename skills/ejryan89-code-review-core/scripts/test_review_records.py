@@ -784,3 +784,31 @@ class RecordTests(unittest.TestCase):
                 broken["pull_request"].update({"body_characters": characters, "body_given": given})
                 with self.assertRaisesRegex(RecordError, "body_"):
                     validate_record(broken)
+
+
+class CoveragePathTests(unittest.TestCase):
+    """A file the review leaves uncovered or cannot reach, named as git names it."""
+
+    def record(self, **coverage: list[str]) -> ReviewRecord:
+        result = validate_adapter_result(
+            valid_adapter_result(), expected_repository="example/one", expected_number=12, expected_head_sha="b" * 40
+        )
+        return build_record({**valid_request(), **coverage}, result, version=1, policy={})
+
+    def test_a_file_git_names_by_whitespace_alone_is_recorded_uncovered_or_unavailable(self) -> None:
+        for path in (" ", "\N{NO-BREAK SPACE}", "folder/ "):
+            for field in ("uncovered_files", "unavailable_sources"):
+                with self.subTest(path=path, field=field):
+                    record = validate_record(self.record(**{field: [path]}))
+                    self.assertEqual([path], record["review"]["coverage"][field])
+
+    def test_an_empty_path_is_refused_as_uncovered_or_unavailable(self) -> None:
+        for field in ("uncovered_files", "unavailable_sources"):
+            with self.subTest(field=field):
+                record = self.record(**{field: ["src/file.cs"]})
+                record["review"]["coverage"][field] = [""]
+                with self.assertRaisesRegex(
+                    RecordFieldError,
+                    field_pattern(f"record.review.coverage.{field}[0]", "a non-empty string", "an empty string"),
+                ):
+                    validate_record(record)
