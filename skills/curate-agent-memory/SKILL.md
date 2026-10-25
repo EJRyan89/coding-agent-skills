@@ -34,7 +34,7 @@ It prints `REPORT <path>`, a new JSON file in the system temporary directory; re
 
 ## Step 3: Verify and classify every memory
 
-`Read` each memory file in full, and every overlapping passage in context. Memories are point-in-time notes, so check any claim about code, paths, or configuration by searching the current files with `Grep` before relying on it.
+`Read` every memory file in full, in one turn as parallel calls, and every overlapping passage in context. Memories are point-in-time notes, so check any claim about code, paths, or configuration by searching the current files with `Grep` before relying on it.
 
 Assign each memory exactly one outcome, with a one-line reason and evidence (`file:line` for anything that exists elsewhere):
 
@@ -59,7 +59,7 @@ It prints `SKILL_FILE <path>` for each source of the skill: the checkout the dep
 
 A memory whose rule is not yet at its destination is never simply deleted. Its outcome is the move, and the memory is deleted only after the destination change is applied. If the user declines the move, keep the memory. Record nothing about deferrals; the next run checks again.
 
-Fix mechanical problems from Step 2 as part of the relevant outcome: repair or remove broken links, and bring an index that is over or near its load limit back under it by merging or moving entries. Memories missing from the index, entries whose file is gone, and duplicate entries form one "Rebuild index" group rather than per-memory outcomes. Show each `unreadable` entry with its reason; the script never reads, indexes, or deletes one, so it is the user's to resolve.
+Fix mechanical problems from Step 2 as part of the relevant outcome: repair or remove broken links, and bring an index that is over or near its load limit back under it by merging or moving entries. Memories missing from the index, entries whose file is gone, and duplicate entries form one "Rebuild index" group rather than per-memory outcomes. Show each `unreadable` entry with its reason; it is the user's to resolve.
 
 ## Step 4: Get approval by group
 
@@ -69,14 +69,14 @@ Ask which groups to apply with a multi-select `AskUserQuestion`, one option per 
 
 ## Step 5: Apply the approved changes
 
-- Change destination files first with `Edit`, reading each before changing it and keeping its existing style and structure. Never replace a whole existing file. A skill's destination is a `SKILL_FILE` from Step 3, never a file under a skills directory.
+- Change destination files first with `Edit`, reading each before changing it and keeping its existing style and structure. Never replace a whole existing file.
 - Only then delete or rewrite the memories those changes cover. When rewriting one, keep its frontmatter `name` and `description` accurate: the index is built from them. Delete approved memories by file name, never with another command:
 
   ```bash
   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" delete --memory-dir "<memory dir>" "<file>.md" ...
   ```
 
-  It checks every name before deleting any, and prints `DELETED <file>` for each file it deletes. A lone `FAILED <memory dir> ...` line, here or from `reindex`, means the directory holds no `MEMORY.md` or lies inside a skills directory, so it changed nothing; show it and go back to Step 1. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
+  It prints `DELETED <file>` for each file it deletes. A lone `FAILED <memory dir> ...` line, here or from `reindex`, means the directory holds no `MEMORY.md` or lies inside a skills directory, so it changed nothing; show it and go back to Step 1. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
 - For review findings, invoke `flag-review-finding` through the `Skill` tool with the memory's substance; delete the memory the same way once the finding is recorded.
 - When any memory changed or the "Rebuild index" group was approved, rebuild `MEMORY.md` last instead of editing it by hand:
 
@@ -84,7 +84,7 @@ Ask which groups to apply with a multi-select `AskUserQuestion`, one option per 
   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" reindex --memory-dir "<memory dir>" --write
   ```
 
-  It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; `WOULD_WRITE <path>` means `--write` was left off, so run it again as shown. It first prints one `INDEX_LINE <file>` per entry of the index, in its order, which needs no report; report its `DROPPED`, `ADDED`, and `UNREADABLE` lines. It reads an entry's target only when that target is a bare `*.md` name directly in the memory directory, `./` allowed; a target reached through `..`, an absolute path, a subfolder, or a link or junction is never read or followed: it stays as written, is reported `UNREADABLE`, and is the user's to resolve. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.
+  It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; `WOULD_WRITE <path>` means `--write` was left off, so run it again as shown. It first prints one `INDEX_LINE <file>` per entry of the index, in its order, which needs no report; report its `DROPPED`, `ADDED`, and `UNREADABLE` lines; an `UNREADABLE` entry is the user's to resolve. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.
 - Do not commit, push, or open pull requests; report which repository files changed so the user can review them, and that a change to a skill's source reaches the deployed skill at its next deployment.
 
 ## Step 6: Re-audit and report

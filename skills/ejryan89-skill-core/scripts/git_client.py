@@ -408,15 +408,21 @@ class GitClient:
         return None if paths is None else paths[0]
 
     def quiet_output(
-        self, arguments: Sequence[str], *, directory: str | Path | None = None, timeout: float | None = None
+        self,
+        arguments: Sequence[str],
+        *,
+        directory: str | Path | None = None,
+        timeout: float | None = None,
+        input_bytes: bytes | None = None,
     ) -> str | None:
         """The stdout of a git command run with `--quiet`, such as `rev-parse --verify --quiet`, or None when it exits
-        1 and prints nothing on stderr, which such a command does only when what it reads is not there.
+        1 and prints nothing on stderr, which such a command, `grep` and `merge-base --is-ancestor` among them, does
+        only when what it reads is not there. `input_bytes` is its stdin, as for `run`.
 
         Any other failure is git's, such as a broken ref it warns about or a configuration it cannot parse, and raises
         a classified GitError with git's reason.
         """
-        result = self.run(arguments, directory=directory, timeout=timeout)
+        result = self.run(arguments, directory=directory, timeout=timeout, input_bytes=input_bytes)
         if result.returncode == 0:
             return result.stdout
         if result.returncode == 1 and not result.stderr.strip():

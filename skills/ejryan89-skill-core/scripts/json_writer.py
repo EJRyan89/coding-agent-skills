@@ -26,6 +26,11 @@ class JsonWriteRefused(ValueError):
     """A value the writer would not write; the message names what it holds."""
 
 
+# What `dumps` and `write` raise on a value no JSON file can hold; a value of no JSON type, or one that refers to
+# itself, is the caller's error, which `dumps` raises as the json module does.
+CONTENT_ERRORS: tuple[type[Exception], ...] = (JsonWriteRefused,)
+
+
 def dumps(
     value: Any,
     *,
@@ -55,7 +60,7 @@ def dumps(
         )
     try:
         json_reader.loads(text)
-    except json_reader.JsonRefused as error:
+    except json_reader.CONTENT_ERRORS as error:
         raise JsonWriteRefused(f"the value cannot be read back: {error}") from error
     return json.dumps(value, ensure_ascii=True, **options) if ensure_ascii else text
 
