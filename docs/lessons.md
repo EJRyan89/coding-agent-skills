@@ -301,6 +301,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   number, a lone surrogate, and what `json_reader:loads` refuses on the read-back, by name, at the write;
   `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_writer_is_the_one_writer_of_json`,
+  `tests/validation/test_python_checks.py::test_json_write_policy_refuses_a_json_write_outside_json_writer`,
   `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
 - **Search for:** `rg -n "json\.dumps?\(" | rg -v allow_nan=False`; `write_text(json.dumps(`; input written back
   without the later reader's pass.
@@ -474,6 +476,20 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_grep_that_ends_at_its_match`
 - **Search for:** `| grep -q` or `| head -n` in a `.sh` file that runs `set -o pipefail` or `set -euo pipefail`.
 - **Examples:** #1557, #1602
+
+### A program whose status is the verdict starts with no shell above it
+
+- **Rule:** A check whose verdict is a program's exit status starts that program as its own process, judged by the
+  runner, never as one link of a shell's command chain or loop.
+- **Why:** On Windows, an MSYS Bash reads a child that Windows ends as exit 0, so `set -e` and `&&` go on and the
+  ended check passes; only the last command's low byte reaches the runner.
+- **Use:** `tests.validation.shell_targets:run_bash_suite`, `tests.validation.job_pool:run_process`, which names a
+  termination as one.
+- **Guard:** `tests/validation/test_shell_targets.py::ProgramEndingFixtures`
+- **Search for:** `" && ".join(` building a command line a shell runs; `"-c"` beside `find_git_bash()` or
+  `find_bash()` whose script starts several programs and whose one status is read as their verdict; a `( ... )`
+  subshell's `$?` in a Bash loop read as a child's verdict.
+- **Examples:** #654, #1355, #1798
 
 ### A file handed to another process appears whole
 
