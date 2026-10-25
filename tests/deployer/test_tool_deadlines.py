@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import bounded_process
 import job_tree
 from harness import DeployerTestCase, Result, forward, recorded_temporary_directories
 from test_job_tree import QUICK_LAUNCHER, PausedTree, SignalledTree, ended
@@ -118,11 +119,11 @@ class RunToolTests(DeadlineCase):
         self.assertEqual(600, platform_support.TOOL_DEADLINE_SECONDS)
 
     def test_the_deadline_given_or_the_default_reaches_the_bounded_run(self) -> None:
-        real = platform_support.run_bounded
         for timeout, expected in ((7.5, 7.5), (None, 600)):
             with (
                 self.subTest(timeout=timeout),
-                mock.patch.object(platform_support, "run_bounded", side_effect=real) as bounded,
+                # platform_support's own name for skill-core's run_bounded, which run_tool calls.
+                mock.patch("deployer.platform_support.run_bounded", side_effect=bounded_process.run_bounded) as bounded,
             ):
                 platform_support.run_tool([sys.executable, "-c", "pass"], timeout=timeout)
             self.assertEqual(expected, bounded.call_args.args[1])
