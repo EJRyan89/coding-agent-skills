@@ -537,6 +537,18 @@ class ReviewedHeadTests(unittest.TestCase):
         )
         self.assertEqual(str(self.directory / "legacy-review.md"), reviewed["report"])
 
+    def test_a_legacy_count_past_the_digit_limit_or_in_other_digits_makes_the_report_unreadable(self) -> None:
+        report = self.directory / "counted.md"
+        self.directory.mkdir(parents=True, exist_ok=True)
+        heading = "<summary><strong>MUST FIX ({})</strong></summary>\n"
+        report.write_text(heading.format(2) + heading.format(5), encoding="utf-8")
+        self.assertEqual({"MUST_FIX": 7, "SHOULD_FIX": 0, "SUGGESTION": 0}, review_operation.legacy_counts(report))
+        # An Arabic-Indic three, which the pattern's `\d` admits and int() reads, and a count past the digit limit.
+        for count in (chr(0x0663), "1" + "0" * 5000):
+            with self.subTest(count=count[:4]):
+                report.write_text(heading.format(1) + heading.format(count), encoding="utf-8")
+                self.assertIsNone(review_operation.legacy_counts(report))
+
     def test_invalid_legacy_index_is_treated_as_unreviewed(self) -> None:
         for overrides in (
             {"pull_number": 6},

@@ -414,14 +414,18 @@ LEGACY_COUNT = re.compile(
 
 
 def legacy_counts(report: Path) -> dict[Severity, int] | None:
-    """Finding counts from a migrated legacy report's collapsible section headings, or None if unreadable."""
+    """Finding counts from a migrated legacy report's collapsible section headings, or None if unreadable, a count
+    in digits past the digit limit or other than ASCII digits included."""
     try:
         text = report.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):
         return None
     counts = dict.fromkeys(SEVERITIES, 0)
     for label, value in LEGACY_COUNT.findall(text):
-        counts[LEGACY_SECTIONS[label]] += int(value)
+        number = whole_number.parse(value)
+        if number is None:
+            return None
+        counts[LEGACY_SECTIONS[label]] += number
     return counts
 
 
