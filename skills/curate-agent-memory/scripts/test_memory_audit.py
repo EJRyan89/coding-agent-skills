@@ -1759,7 +1759,8 @@ class ResolveTests(unittest.TestCase):
         lines = self.resolve_lines("--repo", str(linked), cwd=self.root, code=1)
         self.assertEqual(
             [
-                f"FAILED git could not read the repository: git config gave core.worktree in {shared / 'config'} an empty value"
+                "FAILED git could not read the repository: "
+                f"git config gave core.worktree in {shared / 'config'} an empty value"
             ],
             lines,
         )
