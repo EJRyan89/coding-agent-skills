@@ -39,7 +39,7 @@ import review_pipeline as rp
 import review_run
 import review_runtime
 from flat_text import flat_text
-from git_client import GitClient, GitResult, subprocess_runner
+from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
@@ -396,6 +396,35 @@ class CheckoutTests(DocumentTestCase):
         self.assertEqual((1, 1), (code, len(lines)), lines)
         self.assertTrue(lines[0].startswith("FAILED git could not read the checkout's HEAD commit: "), lines)
         self.assertFalse(self.output.exists())
+
+    def test_a_branch_git_cannot_read_is_named_not_taken_for_a_checkout_with_no_commit_yet(self) -> None:
+        broken = "warning: ignoring broken ref refs/heads/main\n"
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            if "symbolic-ref" in command:
+                return GitResult(0, "refs/heads/main\n", "")
+            if command[-1] == "refs/heads/main^{commit}":
+                return GitResult(1, "", broken)
+            return GitResult(1, "", "")  # HEAD names no commit
+
+        client = GitClient(answering)
+        with self.assertRaises(GitError) as context:
+            review_document.unborn(self.root, client)
+        self.assertIn("ignoring broken ref refs/heads/main", str(context.exception))
+        with self.assertRaises(GitError):
+            review_document.committed_base("plan.md", self.root, client, text=True)
+
+    def test_a_detached_head_is_not_a_checkout_with_no_commit_yet(self) -> None:
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(1, "", "")  # a detached HEAD, which names no commit the repository holds
+
+        self.assertFalse(review_document.unborn(self.root, GitClient(answering)))
+        with self.assertRaises(GitError) as context:
+            review_document.committed_base("plan.md", self.root, GitClient(answering), text=True)
+        self.assertEqual(
+            "git could not read the checkout's HEAD commit: HEAD names no commit the repository holds",
+            str(context.exception),
+        )
 
     def test_an_unchanged_document_is_refused_with_the_way_to_review_it_whole(self) -> None:
         checkout = self.checkout()
