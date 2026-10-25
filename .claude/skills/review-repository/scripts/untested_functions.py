@@ -147,6 +147,11 @@ class Definition:
     owner: str | None = None  # a method's class
 
 
+INT_PARSE_ALLOWED = {
+    "_hunks": "git writes a hunk header's numbers, and a diff prefixes each line of a file's text",
+}
+
+
 def _hunks(lines: list[str]) -> Iterator[tuple[int, list[str]]]:
     """Each hunk of one file's part of a diff: its first head line and its lines, the header first."""
     start: int | None = None

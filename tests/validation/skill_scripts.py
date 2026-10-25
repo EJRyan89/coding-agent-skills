@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import git_client
 import json_reader
+import whole_number
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from path_containment import posix_within
@@ -1738,7 +1739,8 @@ def script_contract_problems(root: Path) -> list[str]:
         elif path.suffix in {".sh", ".bash"}:
             for number, line in enumerate(text.splitlines(), 1):
                 for code in SHELL_EXIT.findall(line.split("#", 1)[0]):
-                    if int(code) not in CONTRACT_EXIT_CODES:
+                    # A code past the digit limit, or in digits other than ASCII, is outside the contract too.
+                    if whole_number.parse(code) not in CONTRACT_EXIT_CODES:
                         problems.append(
                             f"{name}:{number} exits {code}; scripts exit only 0, 1, or 2; see {RESULTS_DOC}"
                         )

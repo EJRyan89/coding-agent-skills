@@ -129,6 +129,9 @@ class ClosingTests(KnownFailureFixture):
     def test_closed_issues_reads_every_closing_line(self) -> None:
         self.assertEqual({1, 22, 333}, closed_issues("Closes #1\nfixes #22 and resolves: #333\nSee #4\n"))
 
+    def test_a_closing_number_past_the_digit_limit_or_in_other_digits_names_no_issue(self) -> None:
+        self.assertEqual({7}, closed_issues(f"Closes #7\nCloses #1{'0' * 5000}\nFixes #{chr(0x0667)}\n"))
+
 
 class RepositoryTests(unittest.TestCase):
     def test_the_repository_list_has_its_shape(self) -> None:
