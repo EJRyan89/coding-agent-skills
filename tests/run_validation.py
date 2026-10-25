@@ -66,6 +66,7 @@ import fsops_platform
 import job_selection
 import kinds_table
 import known_failures
+import literal_escapes
 import markdown_links
 import pull_request_title
 import python_checks
@@ -118,6 +119,7 @@ POLICY_MODULES = (
     job_selection,
     kinds_table,
     known_failures,
+    literal_escapes,
     markdown_links,
     pull_request_title,
     python_checks,
