@@ -1864,6 +1864,27 @@ class TwinTests(Fixture):
         self.assertIn(f"### {self.first_fix[:7]} (#12)", brief)
         self.assertIn(f"### {self.second_fix[:7]} (no pull request)", brief)
 
+    def test_each_milestone_a_sweep_cannot_find_is_none(self) -> None:
+        for milestones, expected in (
+            (("v0.3.0",), ['MILESTONE defect "v0.3.0"', "MILESTONE drift none", "MILESTONE polish none"]),
+            ((), ["MILESTONE defect none", "MILESTONE drift none", "MILESTONE polish none"]),
+        ):
+            with self.subTest(milestones=milestones):
+                _, lines = self.run_main("twins", github=StubGitHub(milestones=milestones))
+                self.assertEqual(expected, [line for line in lines if line.startswith("MILESTONE ")])
+
+    def test_a_search_git_cannot_finish_is_reported_with_its_reason(self) -> None:
+        real_run = GitClient.run
+
+        def run(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
+            if arguments[0] == "grep":
+                raise GitError("git grep did not finish within 60 seconds", kind="timeout")
+            return real_run(client, arguments, **options)
+
+        with mock.patch.object(GitClient, "run", run):
+            code, lines = self.run_main("twins")
+        self.assertEqual((1, ["FAILED git grep: git grep did not finish within 60 seconds"]), (code, lines))
+
     def test_no_release_tag_and_a_failed_search_are_reported(self) -> None:
         git(self.root, "tag", "-d", "v0.1.0")
         git(self.root, "tag", "-d", "v0.2.0")
@@ -2052,6 +2073,15 @@ def test_removed_lines_are_read_by_each_hunks_counts() -> None:
             "@@ -9,0 +9 @@",
             "+only added",
             "-not in a hunk",
+            # Counts, not order, say which side a line is on, and a line of neither ends the hunk.
+            "@@ -30,2 +30 @@",
+            "-before",
+            "+added among the removed",
+            "-after",
+            "@@ -40,3 +40 @@",
+            "-ended",
+            " context ends the hunk",
+            "-not counted",
             "@@ -20,3 +20 @@",
             "-cut short",
         ]
@@ -2062,9 +2092,12 @@ def test_removed_lines_are_read_by_each_hunks_counts() -> None:
         "--- a line that starts with three dashes",
         "second",
         "lone",
+        "before",
+        "after",
+        "ended",
         "cut short",
     ]
-    assert added == {"added", "only added"}
+    assert added == {"added", "only added", "added among the removed"}
 
 
 def test_a_hunk_count_past_the_digit_limit_is_refused_with_its_header() -> None:

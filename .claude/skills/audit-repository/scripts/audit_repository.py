@@ -1110,14 +1110,16 @@ def pathspec_batches(paths: Sequence[str]) -> list[list[str]]:
     """Each path as a literal pathspec, in batches of at most PATHSPEC_CHARS characters, or one path alone when it is
     longer."""
     batches: list[list[str]] = []
-    size = 0
+    # Each batch's characters so far, a separator counted after each pathspec.
+    sizes: list[int] = []
     for path in paths:
         pathspec = f":(literal){path}"
-        if not batches or size + len(pathspec) > PATHSPEC_CHARS:
-            batches.append([])
-            size = 0
-        batches[-1].append(pathspec)
-        size += len(pathspec) + 1
+        if batches and sizes[-1] + len(pathspec) <= PATHSPEC_CHARS:
+            batches[-1].append(pathspec)
+            sizes[-1] += len(pathspec) + 1
+        else:
+            batches.append([pathspec])
+            sizes.append(len(pathspec) + 1)
     return batches
 
 
@@ -1181,7 +1183,7 @@ def twin_part_note(part: int, parts: int) -> list[str]:
     return ["", f"This brief is part {part} of {parts} of the sweep: other readers read the other fixes."]
 
 
-def twin_brief(fixes: Sequence[Fix], base: str, base_commit: str, head: str, part: int = 1, parts: int = 1) -> str:
+def twin_brief(fixes: Sequence[Fix], base: str, base_commit: str, head: str, part: int, parts: int) -> str:
     lines = [
         "# Twin sweep",
         "",
