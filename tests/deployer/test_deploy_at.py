@@ -692,7 +692,8 @@ class DeployAtTests(DeployerTestCase):
 
     def test_an_export_git_refuses_leaves_no_directory_behind(self) -> None:
         patch, made = recorded_temporary_directories()
-        with patch, self.assertRaisesRegex(DeployError, "git archive could not export 0{40}"):
+        # The refusal carries git's reason, which git prints on stderr.
+        with patch, self.assertRaisesRegex(DeployError, "git archive could not export 0{40}: fatal: "):
             source_ref.export(self.source, "0" * 40)
         self.assertEqual(1, len(made))
         self.assertFalse(made[0].exists())

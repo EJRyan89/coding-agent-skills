@@ -128,6 +128,13 @@ class RunToolTests(DeadlineCase):
         result = platform_support.run_tool([sys.executable, "-c", program], separate_errors=True)
         self.assertEqual((3, "out", "err"), (result.returncode, result.output.strip(), result.errors.strip()))
 
+    def test_bytes_that_are_not_utf_8_are_replaced_on_either_stream(self) -> None:
+        program = (
+            "import sys; sys.stdout.buffer.write(b'o\\xff'); sys.stdout.flush(); sys.stderr.buffer.write(b'e\\xfe')"
+        )
+        result = platform_support.run_tool([sys.executable, "-c", program], separate_errors=True)
+        self.assertEqual((0, "o�", "e�"), (result.returncode, result.output, result.errors))
+
     def test_the_environment_is_added_to_the_deployer_s_own(self) -> None:
         program = "import os; print(os.environ['ADDED'], bool(os.environ.get('PATH')))"
         result = platform_support.run_tool([sys.executable, "-c", program], {"ADDED": "a value"})

@@ -49,6 +49,22 @@ class SourceCommitTests(DeployerTestCase):
             self.assertEqual(head, source_commit.describe(self.root, head))
         run_tool.assert_not_called()
 
+    def test_a_git_that_cannot_start_while_describing_is_refused_with_the_reason(self) -> None:
+        head = self.make_repository()
+        with (
+            mock.patch.object(platform_support, "run_tool", side_effect=OSError(13, "Access is denied")),
+            self.assertRaises(DeployError) as raised,
+        ):
+            source_commit.describe(self.source, head)
+        shown = platform_support.normalize(self.source)
+        self.assertEqual(
+            (
+                f"ERROR: Cannot describe the deployed commit {head} in {shown}: Access is denied",
+                "Check that Git runs, then retry.",
+            ),
+            raised.exception.lines,
+        )
+
     def test_a_deployment_from_a_git_checkout_records_its_full_head_commit(self) -> None:
         head = self.make_repository()
         self.deploy_ok("--all")
