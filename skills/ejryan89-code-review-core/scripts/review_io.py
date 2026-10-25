@@ -210,8 +210,9 @@ def atomic_write_json(
     if validator is not None:
         validator(value)
     content = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    # Validate the exact serialized representation before replacement.
-    parsed = json.loads(content)
+    # Validate the exact serialized representation before replacement, read as every reader of the file reads it, so
+    # a NaN or an infinity the value holds is refused here rather than by them.
+    parsed = json_reader.loads(content)
     if validator is not None:
         validator(parsed)
     atomic_write_text(path, content, mode=mode)
@@ -336,7 +337,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             )
             token = READ.string(owner.get("token"), "lock owner.token", empty=True)
         except CONTENT_ERRORS:  # undecodable, not JSON, too large or deep, or not an owner record
-            token = ""
+            token, owner = "", {}
         if token:
             return LockIdentity(token=token), owner
         return LockIdentity(unowned=(status.st_dev, status.st_ino, status.st_mtime_ns), torn=True), {}

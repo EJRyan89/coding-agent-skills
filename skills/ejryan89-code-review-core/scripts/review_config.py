@@ -17,6 +17,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from console import run_main
 from flat_text import LINE_UNSAFE
 from github_logins import is_login
@@ -659,7 +660,7 @@ def _main(arguments: list[str] | None = None) -> int:
             print(f"VALID {path}")
         else:
             path = args.output or default_config_path()
-            value = json.loads(args.input.read_text(encoding="utf-8-sig"))
+            value = json_reader.loads(args.input.read_text(encoding="utf-8-sig"))
             write_config(value, path)
             print(f"WROTE {path}")
         return 0

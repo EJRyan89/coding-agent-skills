@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+import json_reader
 from bounded_process import ProcessTree, without_repository_variables
 
 from . import platform_support
@@ -234,7 +235,7 @@ def _directory(path: str) -> str:
 def parse_copilot(output: str) -> Listing:
     """The skills in `copilot skill list --json` output, whose paths are skill directories."""
     try:
-        entries = json.loads(output)
+        entries = json_reader.loads(output)
     except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
         raise ListingError(f"its skill list is not JSON: {exc}") from None
     if isinstance(entries, dict):
@@ -282,7 +283,7 @@ def codex_requests(cwd: Path) -> list[str]:
 
 def _codex_message(line: str) -> dict[str, object] | None:
     try:
-        message = json.loads(line)
+        message = json_reader.loads(line)
     except (ValueError, RecursionError):  # a decoding error or the digit limit, or nesting too deep
         return None
     return message if isinstance(message, dict) else None
@@ -355,7 +356,7 @@ def parse_codex_catalog(lines: list[str]) -> Listing:
     not know, and an empty catalog read from it would pass every user-only adapter as kept out.
     """
     try:
-        messages = json.loads("\n".join(lines))
+        messages = json_reader.loads("\n".join(lines))
         texts = _strings(messages)
     except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
         raise ListingError(f"its prompt input is not JSON: {exc}") from None

@@ -21,6 +21,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 
+import json_reader
 from git_client import GitClient
 from review_document import specialists_manifest
 from review_records import LEDGER_ID
@@ -382,7 +383,7 @@ def _reviewer_folder(checkout: Path, folder: PurePosixPath) -> list[str]:
 def _manifest_path(directory: Path) -> str | None:
     """The reviewer manifest a fixture's pull.json names, or None for the generic reviewer."""
     try:
-        manifest_path = json.loads((directory / "pull.json").read_text(encoding="utf-8")).get("manifest_path")
+        manifest_path = json_reader.read_file(directory / "pull.json").get("manifest_path")
     except (OSError, ValueError, AttributeError) as exc:
         raise ScenarioError(f"cannot read pull.json's manifest_path: {exc}") from exc
     return None if manifest_path is None else _path(manifest_path)
@@ -390,7 +391,7 @@ def _manifest_path(directory: Path) -> str | None:
 
 def _manifest(tree: Path, manifest_path: str, what: str) -> dict[str, Any]:
     try:
-        return validate_adapter_manifest(json.loads((tree / manifest_path).read_text(encoding="utf-8")))
+        return validate_adapter_manifest(json_reader.read_file(tree / manifest_path))
     except (OSError, ValueError, RuntimeContractError) as exc:
         raise ScenarioError(f"{what} {manifest_path} cannot be read: {exc}") from exc
 
@@ -571,7 +572,7 @@ def load_trigger(skill: str, directory: Path, spec: Mapping[str, object], checko
 
 def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT) -> Scenario:
     try:
-        spec = json.loads((directory / "scenario.json").read_text(encoding="utf-8"))
+        spec = json_reader.read_file(directory / "scenario.json")
     except (OSError, ValueError) as exc:
         raise ScenarioError(f"{directory.name}: cannot read scenario.json: {exc}") from exc
     try:

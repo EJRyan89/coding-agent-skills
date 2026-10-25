@@ -591,6 +591,38 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# ejryan89-skill-core's json_reader is the one parse of JSON, refusing a repeated key, a bare NaN or Infinity, and
+# nesting past the recursion limit, where the json module's own readers keep a repeated key's last value and read NaN
+# as a float. Any other parse states why in a module-level JSON_PARSE_ALLOWED = {scope: reason}, as where a function
+# parses the text it just serialized.
+JSON_PARSERS = frozenset({"json.loads", "json.load", "json.JSONDecoder", "json.decoder.JSONDecoder"})
+JSON_READER = "skills/ejryan89-skill-core/scripts/json_reader.py"
+JSON_PARSE_ALLOWANCE = "JSON_PARSE_ALLOWED"
+
+
+def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each use of the json module's own parsers outside json_reader, as an attribute or an imported name, that no
+    JSON_PARSE_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != JSON_READER]
+    for _, name, tree in python_trees(paths, root, problems):
+        aliases = import_aliases(tree)
+        found = [
+            (
+                node.lineno,
+                scope,
+                f"parses JSON with {parser}, which keeps a repeated key's last value and reads NaN; call "
+                f"ejryan89-skill-core's json_reader, the one parse of JSON, or state why in {JSON_PARSE_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Attribute | ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and (parser := qualified_name(node, aliases)) in JSON_PARSERS
+        ]
+        problems += sanctioned_problems(name, tree, JSON_PARSE_ALLOWANCE, found)
+    return problems
+
+
 # ctypes passes an undeclared foreign function's arguments and its result as C ints, which cuts a pointer-sized handle
 # short, so every function a module calls through a library it loads has its argtypes and restype assigned in that
 # module. A function every call gives no arguments needs no argtypes. Any other exception states why in a module-level
@@ -958,7 +990,24 @@ class PythonChecksPolicies(unittest.TestCase):
         # Default strictness, and no module, suite, or import is exempt; every root is also checked with --strict, as
         # [tool.validation] lists them. No platform: each host checks the code as it runs there, so every platform's
         # branches are checked on the platform that runs them.
-        self.assertEqual(["explicit_package_bases", "mypy_path", "python_version"], sorted(configuration))
+        # The optional error codes beyond --strict, each a check every root passes; warn_unreachable is not set.
+        self.assertEqual(
+            [
+                "deprecated",
+                "exhaustive-match",
+                "ignore-without-code",
+                "possibly-undefined",
+                "redundant-expr",
+                "redundant-self",
+                "truthy-bool",
+                "truthy-iterable",
+                "unused-awaitable",
+            ],
+            configuration["enable_error_code"],
+        )
+        self.assertEqual(
+            ["enable_error_code", "explicit_package_bases", "mypy_path", "python_version"], sorted(configuration)
+        )
 
     def test_strict_type_check_areas_only_grow(self) -> None:
         # A pull request that makes an area strict adds it to STRICT_TYPE_CHECK_AREAS and to pyproject.toml together.
@@ -998,6 +1047,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_link_probe_is_the_one_link_test(self) -> None:
         self.assertEqual([], link_test_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_json_reader_is_the_one_parse_of_json(self) -> None:
+        self.assertEqual([], json_parse_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_every_ctypes_foreign_function_called_is_declared(self) -> None:
         self.assertEqual([], ctypes_declaration_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

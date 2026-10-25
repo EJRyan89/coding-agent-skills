@@ -477,6 +477,18 @@ class JsonTests(unittest.TestCase):
         self.assertEqual("malformed", context.exception.kind)
         self.assertIn("malformed JSON", str(context.exception))
 
+    def test_json_fails_as_malformed_on_a_repeated_key_nan_or_an_over_long_integer(self) -> None:
+        for body in ('{"login": "a", "login": "b"}', '{"count": NaN}', "9" * 5000):
+            with self.subTest(body=body[:20]), self.assertRaises(GitHubError) as context:
+                github_client.json_body(github_client.CommandResult(0, body, ""))
+            self.assertEqual("malformed", context.exception.kind)
+
+    def test_a_refused_body_that_is_not_such_json_gives_no_reason(self) -> None:
+        self.assertEqual(["bad"], github_client.body_reasons('{"errors": [{"message": "bad"}]}'))
+        for body in ('{"errors": [], "errors": [{"message": "bad"}]}', '{"errors": NaN}', "9" * 5000, "["):
+            with self.subTest(body=body[:20]):
+                self.assertEqual([], github_client.body_reasons(body))
+
     def test_json_body_is_the_one_parse_a_callers_own_parse_reuses(self) -> None:
         self.assertEqual([1, "two"], github_client.json_body(github_client.CommandResult(0, '[1, "two"]', "")))
 

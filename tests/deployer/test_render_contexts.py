@@ -26,6 +26,11 @@ class SubstitutionContextTests(unittest.TestCase):
         with self.assertRaisesRegex(DeployError, "Rendered JSON validation failed: s/config.json"):
             render.render_file("s/config.json", b'{"root": {{X}}}', {"X": "value"})
 
+    def test_rendered_json_that_repeats_a_key_or_holds_nan_is_refused(self) -> None:
+        for template in (b'{"root": "{{X}}", "root": 1}', b'{"root": "{{X}}", "other": NaN}'):
+            with self.subTest(template=template), self.assertRaisesRegex(DeployError, "Rendered JSON validation"):
+                render.render_file("s/config.json", template, {"X": "value"})
+
     def test_toml_token_outside_a_string_must_still_parse(self) -> None:
         # The parser's own reason closes the line, so it is taken from the parser rather than pinned to one release.
         with self.assertRaises(tomllib.TOMLDecodeError) as parsed:

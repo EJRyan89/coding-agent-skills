@@ -340,13 +340,15 @@ class GuardSubcommandTests(WorktreesTestCase):
             (event("Bash", "command", "git reset --hard", self.tree), self.environment, None),
             ("{not json", self.environment, None),
         )
+        errors: list[str] = []
         for stdin, environment, expected in cases:
             with self.subTest(stdin=stdin, inherited="GIT_DIR" in environment):
                 moved = run_script(GUARD_SCRIPT, [], self.root, environment, stdin)
                 forwarded = self.run_script(["guard"], cwd=self.root, stdin=stdin, environment=environment)
+                errors.append(forwarded.stderr)
                 self.assertEqual(
                     (0, moved.stdout, moved.stderr), (forwarded.returncode, forwarded.stdout, forwarded.stderr)
                 )
                 decision = json.loads(forwarded.stdout)["hookSpecificOutput"] if forwarded.stdout.strip() else None
                 self.assertEqual(expected, None if decision is None else decision["permissionDecision"])
-        self.assertIn("hub guard skipped", forwarded.stderr)
+        self.assertIn("hub guard skipped", errors[-1])

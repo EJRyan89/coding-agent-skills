@@ -98,7 +98,7 @@ class SiblingScriptsTests(unittest.TestCase):
         # A home no legacy code page can spell, so the line is shown to print in UTF-8 before run_main sets it up.
         deployed = self.root / "a home 家" / ".claude" / "skills"
         core = self.make_skill(deployed / "ejryan89-skill-core")
-        for module in ("skill_roots.py", "file_presence.py", "console.py", "flat_text.py"):
+        for module in ("skill_roots.py", "file_presence.py", "console.py", "flat_text.py", "json_reader.py"):
             (core / module).write_text(
                 (Path(__file__).resolve().parent / module).read_text(encoding="utf-8"), encoding="utf-8"
             )
@@ -172,7 +172,7 @@ class PluginNameTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "is not JSON"):
             plugin_name()
         with (
-            mock.patch("pathlib.Path.read_text", side_effect=PermissionError(13, "Permission denied")),
+            mock.patch("pathlib.Path.read_bytes", side_effect=PermissionError(13, "Permission denied")),
             self.assertRaisesRegex(ValueError, "cannot be read: Permission denied"),
         ):
             plugin_name()
@@ -183,7 +183,7 @@ class PluginNameTests(unittest.TestCase):
             plugin_name()
 
     def test_an_absent_sibling_beside_a_manifest_that_cannot_be_known_still_names_the_sibling(self) -> None:
-        unreadable = mock.patch("pathlib.Path.read_text", side_effect=PermissionError(13, "Permission denied"))
+        unreadable = mock.patch("pathlib.Path.read_bytes", side_effect=PermissionError(13, "Permission denied"))
         for text, reading, reason in (
             ("{not json", contextlib.nullcontext(), "is not JSON"),
             ('{"name": ""}', contextlib.nullcontext(), "names no plugin"),

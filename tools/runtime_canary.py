@@ -714,8 +714,8 @@ def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
     skills: set[str] | None = None
     denials: list[str] = []
     for line in output.splitlines():
-        with contextlib.suppress(json.JSONDecodeError):
-            event = json.loads(line)
+        with contextlib.suppress(ValueError):
+            event = json_reader.loads(line)
             if not isinstance(event, dict):
                 continue
             if event.get("type") == "system" and event.get("subtype") == "init":
@@ -1355,8 +1355,8 @@ def claimed(home: Path) -> bool:
         # A path whose metadata cannot be read is judged as a link is: not this tool's claim.
         if any(platform_support.is_link_or_junction(path) for path in (state, marker)):
             return False
-        record = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        record = json_reader.read_file(marker)
+    except (OSError, ValueError):
         return False
     named = record.get("home") if isinstance(record, dict) else None
     return isinstance(named, str) and lexical(named) == lexical(home)

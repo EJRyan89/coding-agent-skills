@@ -43,6 +43,8 @@ class ScalarTests(unittest.TestCase):
             "key: a#b": "a#b",
             'key: "Say \\"hi\\" — \\u00e9\\tthen\\\\stop"': 'Say "hi" — é\tthen\\stop',
             'key: "with # inside"  # comment': "with # inside",
+            # A literal tab, which YAML allows inside double quotes and JSON only as an escape.
+            'key: "a\tb"': "a\tb",
             "key: 'It''s single'": "It's single",
             "key: true": "true",
             "key:": None,

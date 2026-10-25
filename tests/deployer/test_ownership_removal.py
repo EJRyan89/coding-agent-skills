@@ -22,7 +22,7 @@ from harness import (
     remove_directory_link,
 )
 
-from deployer import fsops, hashing, pipeline, render
+from deployer import fsops, hashing, manifest, pipeline, render
 from deployer.errors import DeployError
 from deployer.paths import validate_managed_roots
 
@@ -222,7 +222,7 @@ class RemovalTests(DeployerTestCase):
         # core plays ejryan89-skill-core: it holds the real sibling lookup, which run.py reaches middle through once
         # deployed, where the manifest's recorded skill_deps keep middle installed beside a skipped or preserved public.
         self.write(core / "scripts" / "skill_roots.py", SKILL_ROOTS.read_text(encoding="utf-8"))
-        for module in ("file_presence.py", "console.py", "flat_text.py"):
+        for module in ("file_presence.py", "console.py", "flat_text.py", "json_reader.py"):
             self.write(core / "scripts" / module, SKILL_ROOTS.with_name(module).read_text(encoding="utf-8"))
         self.write(
             middle / "scripts" / "bridge.py",
@@ -1163,3 +1163,26 @@ class ShippedFileTests(DeployerTestCase):
         )
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertEqual({}, self.owned("skills"))
+
+
+class OwnershipReadTests(DeployerTestCase):
+    def test_a_shared_asset_reads_back_its_recorded_role_and_owner_when_none_is_recorded(self) -> None:
+        self.write_manifest(
+            {
+                "manifest_version": manifest.MANIFEST_VERSION,
+                "sources": {
+                    SOURCE_ID: {
+                        "shared": {
+                            "dependency-asset.md": {"hash": ZERO_HASH, "role": "dependency"},
+                            "owned-asset.md": {"hash": ZERO_HASH, "role": "owner"},
+                            "unrecorded-asset.md": {"hash": ZERO_HASH},
+                        }
+                    }
+                },
+            }
+        )
+        owned = manifest.load(self.manifest_file).ownership(SOURCE_ID)
+        self.assertEqual(
+            {"dependency-asset.md": "dependency", "owned-asset.md": "owner", "unrecorded-asset.md": "owner"},
+            owned.shared_roles,
+        )

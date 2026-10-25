@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import bash_agreement
 import git_client
 import git_worktrees
-from bounded_process import run_bounded
+from bounded_process import Finished, run_bounded
 from markdown_sections import CODE_SPAN, markdown_section
 from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment
 
@@ -140,6 +140,22 @@ class PowerShellReaderStartTests(unittest.TestCase):
         self.assertEqual(20, call.args[1])
         self.assertIsNotNone(call.kwargs["tree"])
         self.assertEqual(4 * 1024 * 1024, call.kwargs["output_limit"])
+
+    def test_output_that_is_not_utf8_is_read_with_replacement_characters_and_a_repeated_key_is_not(self) -> None:
+        # A console code page can reach the reader's output; a byte it cannot decode costs only that character.
+        cases: tuple[tuple[bytes, list[dict[str, Any]] | None, list[str]], ...] = (
+            (b'{"events": [], "detail": "caf\xe9"}', [], []),
+            (b'{"events": [], "events": []}', None, ["pwsh could not read the command ()"]),
+        )
+        for stdout, events, notes in cases:
+            reading = hub_guard.Reading(isolated_environment(), text="Get-Item x")
+            with (
+                self.subTest(stdout=stdout),
+                mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+                mock.patch.object(hub_guard, "run_bounded", return_value=Finished(0, stdout, b"")),
+            ):
+                self.assertEqual(events, hub_guard.powershell_events("Get-Item x", reading, 0))
+                self.assertEqual(notes, reading.notes)
 
 
 class FileGuardTests(GuardTestCase):

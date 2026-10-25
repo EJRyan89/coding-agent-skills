@@ -42,6 +42,16 @@ def loads(text: str | bytes) -> Any:
         raise JsonRefused("the JSON nests deeper than the parser can read") from error
 
 
+def raw_decode(text: str, index: int = 0) -> tuple[Any, int]:
+    """The value `text` holds from `index` and the index just past it, as `json.JSONDecoder.raw_decode` reads it,
+    refusing what `loads` refuses, so a value followed by other text, such as a line's next field, is read alike."""
+    decoder = json.JSONDecoder(object_pairs_hook=_object, parse_constant=_constant)
+    try:
+        return decoder.raw_decode(text, index)
+    except RecursionError as error:
+        raise JsonRefused("the JSON nests deeper than the parser can read") from error
+
+
 def read_file(path: Path) -> Any:
     """The value the UTF-8 file at `path` holds, as `loads` reads it, whatever the platform's own codec: an `OSError`
     when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, which includes a

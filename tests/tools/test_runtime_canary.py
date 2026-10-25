@@ -1182,6 +1182,11 @@ class RunTests(RuntimeCanaryTestCase):
         init = json.dumps({"type": "system", "subtype": "init", "skills": 5})
         self.assertEqual((set(), []), runtime_canary.claude_stream(init))
 
+    def test_a_stream_line_that_is_not_json_or_repeats_a_key_is_passed_over(self) -> None:
+        init = json.dumps({"type": "system", "subtype": "init", "skills": ["/alpha"]})
+        stream = "\n".join(["warning: not json", '{"type": "result", "type": "system"}', init])
+        self.assertEqual(({"alpha"}, []), runtime_canary.claude_stream(stream))
+
     def test_a_session_that_discovered_no_skill_fails_as_a_bare_session_would(self) -> None:
         # --bare skips skill discovery and may become the default for claude -p; a session in it lists no skill.
         bare = json.dumps({"type": "system", "subtype": "init", "skills": []})

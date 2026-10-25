@@ -1337,8 +1337,17 @@ class OverrideAndPullKeyTests(unittest.TestCase):
             (" ", wrong(identity, TEXT, "a blank string")),
             ("owner/repo", ("TrackerError", "Invalid removal pull-request identity: 'owner/repo'")),
             ("owner/repo#0", ("TrackerError", "Invalid removal pull-request identity: 'owner/repo#0'")),
+            # A number GitHub's cannot reach, past ten digits, short of and past the interpreter's digit limit.
+            *(
+                (
+                    f"owner/repo#{digits}",
+                    ("TrackerError", f"Invalid removal pull-request identity: 'owner/repo#{digits}'"),
+                )
+                for digits in ("1" * 11, "9" * 5000)
+            ),
         ]
         self.assertEqual({"owner/repo#1"}, normalize_pull_keys(["Owner/Repo#1"], "removal"))
+        self.assertEqual({"owner/repo#9999999999"}, normalize_pull_keys(["owner/repo#9999999999"], "removal"))
         for value, expected in cases:
             with self.subTest(value=value):
                 self.assertEqual(expected, raised(partial(normalize_pull_keys, [value], "removal")))

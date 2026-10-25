@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import frontmatter
+import json_reader
 from agent_skills import CODEX_METADATA as CODEX_METADATA
 from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
@@ -187,7 +188,7 @@ def render_file(logical: str, content: bytes, values: dict[str, str]) -> bytes:
         rendered = _substitute(text, values, context, logical)
     if rendered != text and context == "json":
         try:
-            json.loads(rendered)
+            json_reader.loads(rendered)
         except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
             raise DeployError(f"ERROR: Rendered JSON validation failed: {logical}: {exc}") from exc
     if rendered != text and context == "toml":

@@ -98,6 +98,11 @@ for line in sys.stdin.buffer:
             result = INITIALIZE.get(mode, {"protocolVersion": "2025-06-18", "capabilities": capabilities,
                                            "serverInfo": INFO})
             reply = {"jsonrpc": "2.0", "id": 1, "result": result}
+        if mode == "notutf8":
+            # A server name holding a byte that is not UTF-8, which the client reads as a replacement character.
+            sys.stdout.buffer.write(json.dumps(reply).encode().replace(b'"fake"', b'"fake\\xff"') + b"\\n")
+            sys.stdout.buffer.flush()
+            continue
         print(json.dumps(reply), flush=True)
     elif message.get("method") == "notifications/initialized":
         open("initialized.txt", "w").write("initialized")
@@ -248,6 +253,18 @@ class HandshakeTests(unittest.TestCase):
         code, lines = self._run()
         self.assertEqual(0, code, lines)
         self.assertEqual(["HANDSHAKE_OK docs source=.mcp.json,.vscode/mcp.json protocol=2025-06-18 tools=2"], lines)
+
+    def test_identical_definitions_written_in_another_key_order_are_started_once(self) -> None:
+        # A definition's fields are compared in one order whatever the file says; an env's names are not.
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok", env={"ALPHA": "1", "BETA": "2"})})
+        self._write(".vscode/mcp.json", "servers", {"docs": self._stdio("ok", env={"BETA": "2", "ALPHA": "1"})})
+        code, lines = self._run()
+        self.assertEqual(0, code, lines)
+        self.assertEqual(["HANDSHAKE_OK docs source=.mcp.json,.vscode/mcp.json protocol=2025-06-18 tools=2"], lines)
+
+    def test_a_response_line_that_is_not_utf8_is_read_with_replacement_characters(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("notutf8")})
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), self._run())
 
     def test_failures_are_reported_per_server(self) -> None:
         self._write(
@@ -420,6 +437,21 @@ class HandshakeTests(unittest.TestCase):
             ),
             self._run(),
         )
+
+    def test_a_definition_nested_too_deep_to_compare_is_a_config_problem_while_the_others_run(self) -> None:
+        # A reader on a recent Python takes nesting json.dumps then cannot write, so the server is grouped from it.
+        deep: list[object] = []
+        for _ in range(100_000):
+            deep = [deep]
+        docs = self._stdio("ok")
+        declared = [("deep", ".mcp.json", {"command": sys.executable, "args": deep}), ("docs", ".mcp.json", docs)]
+        with mock.patch.object(mcp_handshake, "declared_servers", return_value=(declared, [])):
+            groups, problems = mcp_handshake.group_servers(self.root, None)
+        self.assertEqual([("docs", [".mcp.json"], docs)], groups)
+        self.assertEqual([("ERROR", ".mcp.json", f"Server 'deep': {mcp_handshake.TOO_DEEP}")], problems)
+        # The reason is the one the usage documents for such a server.
+        usage = " ".join((mcp_handshake.__doc__ or "").split())
+        self.assertIn(f"(Server '<name>': {mcp_handshake.TOO_DEEP})", usage)
 
     def test_codex_servers_are_read_as_the_audit_reads_them(self) -> None:
         (self.root / ".codex").mkdir()
