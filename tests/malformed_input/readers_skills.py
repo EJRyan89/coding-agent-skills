@@ -53,6 +53,7 @@ import review_synthesis
 import skill_inventory
 import update_pr_dashboard
 from pr_change import CHANGED, UNCHANGED
+from review_flags import FlagError
 from review_io import PersistenceError
 
 UTF8_SIG = "the file is decoded as UTF-8 with an optional byte-order mark"
@@ -326,7 +327,7 @@ READERS = [
         "text",
         b"v1 F001",
         _named_finding,
-        (flag_review_finding.FlagError,),
+        (FlagError,),
         accepts=dict.fromkeys(("empty", "bom", "nul_bytes", "truncated", "long_line"), NOT_A_LABEL),
         number=lambda digits: b"v" + digits + b" F001",
     ),

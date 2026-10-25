@@ -65,51 +65,6 @@
     "issue": 1880
   },
   {
-    "reader": "skill_inventory.plugin_hooks",
-    "case": "wrong_type:hooks",
-    "issue": 1890
-  },
-  {
-    "reader": "skill_inventory.plugin_hooks",
-    "case": "wrong_type:hooks.PreToolUse",
-    "issue": 1890
-  },
-  {
-    "reader": "skill_inventory.plugin_hooks",
-    "case": "wrong_type:hooks.PreToolUse.0",
-    "issue": 1890
-  },
-  {
-    "reader": "skill_inventory.plugin_hooks",
-    "case": "wrong_type:hooks.PreToolUse.0.hooks",
-    "issue": 1890
-  },
-  {
-    "reader": "skill_inventory.plugin_hooks",
-    "case": "wrong_type:hooks.PreToolUse.0.hooks.0",
-    "issue": 1890
-  },
-  {
-    "reader": "skill_inventory.plugin_hooks",
-    "case": "wrong_type:hooks.PreToolUse.0.hooks.0.command",
-    "issue": 1890
-  },
-  {
-    "reader": "skill_inventory.plugin_hooks",
-    "case": "wrong_type:hooks.PreToolUse.0.hooks.0.type",
-    "issue": 1890
-  },
-  {
-    "reader": "skill_inventory.plugin_hooks",
-    "case": "wrong_type:hooks.PreToolUse.0.matcher",
-    "issue": 1890
-  },
-  {
-    "reader": "skill_inventory.read_metadata",
-    "case": "wrong_type:skill_deps",
-    "issue": 1880
-  },
-  {
     "reader": "untested_functions.python_definitions",
     "case": "deep_nesting",
     "issue": 1880
