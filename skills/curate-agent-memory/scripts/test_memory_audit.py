@@ -1352,8 +1352,12 @@ class ResolveTests(unittest.TestCase):
         write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "~/memory-user"}))
         result = memory_audit.resolve(self.repo, self.home, {}, None)
         self.assertEqual(str(self.home / "memory-user"), result["memory_dir"])
-        self.assertIn(memory_audit.MANAGED_UNKNOWN_NOTE, result["notes"])
-        self.assertNotIn(memory_audit.MANAGED_UNKNOWN_NOTE, self.resolve()["notes"])
+        note = (
+            "The Program Files folder is not named by an absolute path, so managed settings were not read; one there "
+            "can set autoMemoryDirectory."
+        )
+        self.assertIn(note, result["notes"])
+        self.assertNotIn(note, self.resolve()["notes"])
 
     def test_project_directory_name_and_config_dir_are_honored(self) -> None:
         config = self.root / "config"

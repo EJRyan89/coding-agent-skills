@@ -588,6 +588,13 @@ class InstallHintTests(unittest.TestCase):
         self.assertTrue(platform_support.install_hint(bash).startswith(hints))
         self.assertIn('"Installing the tools"', " ".join(platform_support.INSTALL_HELP))
 
+    def test_windows_help_names_git_bash_by_an_absolute_path(self) -> None:
+        # find_bash passes over a relative GIT_BASH, so the help asks for an absolute one.
+        self.assertIn(
+            "To use Git Bash from another location, set GIT_BASH to the absolute path of its bash.exe.",
+            " ".join(platform_support.WINDOWS_INSTALL_HELP),
+        )
+
 
 class HomeDirectoryTests(unittest.TestCase):
     PROFILE = r"D:\Profiles\Some One"

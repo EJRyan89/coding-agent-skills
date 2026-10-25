@@ -246,6 +246,17 @@ class LinkFoldersTests(LocatorTestCase):
         with mock.patch.object(sys, "platform", "win32"):
             self.assertEqual([self.local / "Microsoft" / "WinGet" / "Links"], link_folders())
 
+    def test_an_unset_or_relative_local_application_data_folder_links_no_folder(self) -> None:
+        environment = {key: value for key, value in os.environ.items() if key.upper() != "LOCALAPPDATA"}
+        for local in (None, "", "local app data"):
+            variables = environment if local is None else {**environment, "LOCALAPPDATA": local}
+            with (
+                self.subTest(local=local),
+                mock.patch.object(sys, "platform", "win32"),
+                mock.patch.dict(os.environ, variables, clear=True),
+            ):
+                self.assertEqual([], link_folders())
+
     def test_another_platform_has_no_link_folder_yet(self) -> None:
         self.program(self.links)
         with (
