@@ -308,7 +308,12 @@ def _codex_groups(lines: list[str]) -> list[dict[str, object]]:
     data = result.get("data") if isinstance(result, dict) else None
     if not isinstance(data, list):
         raise ListingError("its skills/list answer has no data")
-    return [group for group in data if isinstance(group, dict)]
+    for group in data:
+        if not isinstance(group, dict):
+            raise ListingError(
+                f"its skills/list answer has a group of a shape this reader does not know: {_shape(group)}"
+            )
+    return data
 
 
 def _entries(group: dict[str, object], field: str) -> list[object]:
@@ -341,7 +346,10 @@ def parse_codex_refusals(lines: list[str]) -> tuple[Refused, ...]:
                 raise ListingError(
                     f"its skills/list answer has an error of a shape this reader does not know: {_shape(entry)}"
                 )
-            reason = str(entry.get("message") or "no reason given")
+            message = entry.get("message")
+            if message is not None and not isinstance(message, str):
+                raise ListingError(f"its skills/list answer has an error whose message is {_shape(message)}, not text")
+            reason = message or "no reason given"
             refused.append(Refused(_directory(str(Path(path).parent)), reason))
     return tuple(refused)
 

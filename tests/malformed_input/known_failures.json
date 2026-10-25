@@ -1,17 +1,1 @@
-[
-  {
-    "reader": "deployer.discovery.parse_codex",
-    "case": "wrong_type:result.data.0",
-    "issue": 1892
-  },
-  {
-    "reader": "deployer.discovery.parse_codex_refusals",
-    "case": "wrong_type:result.data.0",
-    "issue": 1892
-  },
-  {
-    "reader": "deployer.discovery.parse_codex_refusals",
-    "case": "wrong_type:result.data.0.errors.0.message",
-    "issue": 1892
-  }
-]
+[]
