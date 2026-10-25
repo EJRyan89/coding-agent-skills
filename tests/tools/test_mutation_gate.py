@@ -1229,6 +1229,8 @@ class SummaryFixtures(unittest.TestCase):
             text,
         )
         self.assertNotIn("mutmut made no mutant", text)
+        # A module report built without tables holds an empty tuple of them, never None.
+        self.assertEqual((), ModuleReport("tools/calc.py", [], False, 0).tables)
 
     def test_the_summary_says_when_the_cap_cut_a_module_short(self) -> None:
         text = summary(self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN)], cut_short=True))
