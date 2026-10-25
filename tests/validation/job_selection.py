@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 import json_reader
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
+from path_containment import posix_within
 from python_checks import static_format_check, static_lint_check, type_check_jobs
 from shell_targets import static_markdown_shell_check, static_powershell_check, static_shell_check
 from suite_discovery import FIXTURE_ROOT, regression_suites, suite_jobs
@@ -163,7 +164,7 @@ def python_imports(root: Path, names: Iterable[str]) -> dict[str, set[str]]:
     read imports nothing here; the policies that read it report it."""
     imports: dict[str, set[str]] = {}
     for name in names:
-        if not name.endswith(".py") or name.startswith(f"{FIXTURE_ROOT.as_posix()}/"):
+        if not name.endswith(".py") or posix_within(name, FIXTURE_ROOT.as_posix(), strict=True):
             continue
         try:
             imports[name] = imported_names(parse_python(root / name))

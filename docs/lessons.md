@@ -235,16 +235,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   anything opens it.
 - **Why:** A parent segment, a link, or an absolute path otherwise leads a reader or a writer outside the tree it was
   given.
-- **Use:** `dotnet_solution:refusal`, `dotnet_format_targets:listed_refusal`, `link_probe:is_plain_file`,
-  `tools.checkout:checkout_root`, `memory_audit:bare_name`; one containment test for every caller is the mechanism in
-  #1905.
-- **Guard:** `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ListedRefusalTests`,
+- **Use:** `path_containment:refusal`, which judges an entry from input as written, as resolved, and through the link
+  probe, and names why; `path_containment:within`, the one comparison of a path with its tree, which every other
+  containment test calls on paths it has made absolute or resolved; `path_containment:posix_within` for a repository
+  path a listing gives; `dotnet_solution:refusal` and `dotnet_format_targets:listed_refusal`, which compare through it a
+  path a solution or a file list names; `link_probe:is_plain_file`, `tools.checkout:checkout_root`,
+  `memory_audit:bare_name`.
+- **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_path_containment_is_the_one_containment_test`,
+  `skills/ejryan89-skill-core/scripts/test_path_containment.py::RefusalTests`,
+  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ListedRefusalTests`,
   `skills/curate-agent-memory/scripts/test_memory_audit.py::ReindexTests::test_a_target_with_a_parent_segment_is_never_read`,
   `tests/tools/test_plugin_canary.py::test_an_installed_plugin_the_canary_cannot_place_in_the_home_is_refused_by_name`,
   `tests/tools/test_checkout.py::test_every_tool_that_takes_root_parses_it_with_checkout_root_and_the_module_names_it`
-- **Search for:** `root / name` or `joinpath(*` where the operand comes from input; `is_relative_to(` after a
-  `resolve()` with no lexical check before it; `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"`, a
-  containment test of its own.
+- **Search for:** `root / name` or `joinpath(*` where the operand comes from input and no `refusal` judged it first;
+  `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, or
+  `startswith(f"{` with a trailing `/` outside `path_containment.py`, which the guard refuses unless a
+  `CONTAINMENT_ALLOWED` entry states why.
 - **Examples:** #1780, #1782, #1818, #1905
 
 ### Every check comes before the first write
@@ -503,3 +509,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that runs a module's suites on what only a policy under `tests/validation/` reads; a new `*_ALLOWED` name with no
   `*_ALLOWANCE` constant naming it in a policy.
 - **Examples:** #1933, #1938
+
+### A fixture derives what it copies from the source
+
+- **Rule:** A suite that builds a throwaway copy of ejryan89-skill-core's modules copies a module with every module it
+  imports, read from the source, and leaves one out only by removing it from the built tree by name.
+- **Why:** A hand-kept list of modules to copy is one short as soon as a copied module imports another, and the
+  fixture's script then fails with `ModuleNotFoundError` in a suite the change never touched.
+- **Use:** `module_closure:copy_with_imports`, given the modules a fixture's script needs, or
+  `module_closure:imports_of` for a script of another skill.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_module_closure.py::ModuleClosureTests::test_a_new_import_of_a_copied_module_is_copied_without_any_list_edited`
+- **Search for:** a tuple or list of `"<module>.py"` names in a suite next to `write_bytes`, `write_text`, or
+  `copyfile` under a path naming `ejryan89-skill-core`; `with_name(module)` in a loop over such names.
+- **Examples:** #1939

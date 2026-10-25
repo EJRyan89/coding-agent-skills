@@ -2724,3 +2724,11 @@ def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.
     refusal = capsys.readouterr().err.splitlines()[-1]
     assert "argument --timeout: " in refusal
     assert refusal.endswith(f" seconds, not {value}")
+
+
+def test_a_path_is_inside_a_folder_only_below_it_and_as_written(tmp_path: Path) -> None:
+    folder = tmp_path / "skills"
+    assert runtime_canary.inside(str(folder / "a" / "run.py"), folder)
+    assert not runtime_canary.inside(str(folder), folder), "the folder itself holds no script of its own"
+    assert not runtime_canary.inside(str(folder / ".." / "other" / "run.py"), folder)
+    assert not runtime_canary.inside(str(tmp_path / "skills-other" / "run.py"), folder)

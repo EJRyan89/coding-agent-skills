@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, TypeGuard, assert_never
 
+from path_containment import posix_within
+
 from . import fsops, hashing, manifest, platform_support, state_files
 from .errors import DeployError, see_recovery
 from .names import BACKUP_SUFFIX, safe_name_problem, transient_name
@@ -201,7 +203,7 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
     # Compared as the file system holding the root compares names: without regard to case only where it folds.
     base_canonical = platform_support.name_key(platform_support.canonical_directory(base), base)
     parent_canonical = platform_support.canonical_directory(run_backups)
-    if not platform_support.name_key(parent_canonical, base).startswith(base_canonical + "/"):
+    if not posix_within(platform_support.name_key(parent_canonical, base), base_canonical, strict=True):
         raise DeployError(f"ERROR: Backup path resolves outside deployment root: {parent_canonical}")
     return run_backups / item
 
