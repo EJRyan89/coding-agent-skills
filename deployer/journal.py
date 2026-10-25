@@ -87,7 +87,15 @@ class Journal:
         fsops.write_file(self.path, b"")
 
     def write(self, entry: JournalEntry) -> None:
-        fsops.append_line(self.path, json_writer.dumps(entry, separators=(",", ":")))
+        """Append an entry before the change it records. An entry the JSON writer refuses is a DeployError naming
+        the journal, raised before that change, which the run's journaled recovery handles."""
+        try:
+            line = json_writer.dumps(entry, separators=(",", ":"))
+        except json_writer.JsonWriteRefused as exc:
+            raise DeployError(
+                f"ERROR: Cannot write the journal {platform_support.normalize(self.path)}: {exc}"
+            ) from exc
+        fsops.append_line(self.path, line)
         self.entries.append(entry)
 
     def backup(self, root: str, item: str, backup_hash: str, retain: bool) -> None:

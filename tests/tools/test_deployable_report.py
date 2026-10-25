@@ -607,6 +607,15 @@ class DeployableReportTests(unittest.TestCase):
         self.assertEqual(2, code, output)
         self.assertIn(f"ERROR: Cannot write the results file: {self.results_file}: denied", output)
 
+    def test_the_results_file_is_two_space_indented_text_readable_by_all(self) -> None:
+        # The workflow uploads the results file for a person to read and compare across runs, so its bytes are fixed.
+        report._write_results(self.results_file, [{"label": "first deploy", "results": []}])
+        self.assertEqual(
+            b'[\n  {\n    "label": "first deploy",\n    "results": []\n  }\n]\n', self.results_file.read_bytes()
+        )
+        if sys.platform != "win32":  # Windows keeps no permission bits but read-only
+            self.assertEqual(0o644, self.results_file.stat().st_mode & 0o777)
+
     def test_an_absent_results_file_starts_an_empty_record(self) -> None:
         self.assertFalse(self.results_file.exists())
         code, output = self.run_main("summary", "--results", str(self.results_file), "--no-probe")
