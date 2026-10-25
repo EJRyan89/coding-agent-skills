@@ -1,6 +1,5 @@
 [
   {"reader": "audit_repository.read_guidance_record", "case": "deep_nesting", "issue": 1664},
-  {"reader": "change_skill.metadata", "case": "long_integer", "issue": 1760},
   {"reader": "check_provenance.load", "case": "deep_nesting", "issue": 1664},
   {"reader": "github_client.json_body", "case": "long_integer", "issue": 1664},
   {"reader": "guidance_record.read", "case": "deep_nesting", "issue": 1664},

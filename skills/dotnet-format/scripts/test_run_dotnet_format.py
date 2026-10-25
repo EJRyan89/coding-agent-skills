@@ -343,7 +343,12 @@ class MainTests(unittest.TestCase):
         self.file_list.write_text("".join(f"{name}\n" for name in self.files), encoding="utf-8")
 
     def run_formatter(
-        self, mode: str, runner: formatter.Runner | formatter.Services, installed: bool = True, *extra: str
+        self,
+        mode: str,
+        runner: formatter.Runner | formatter.Services,
+        installed: bool = True,
+        *extra: str,
+        solution: str = "App.sln",
     ) -> tuple[int, list[list[str]], str]:
         if isinstance(runner, formatter.Services):
             services = runner
@@ -355,7 +360,7 @@ class MainTests(unittest.TestCase):
             "--repo-root",
             str(self.root),
             "--solution",
-            "App.sln",
+            solution,
             "--include-file",
             str(self.file_list),
             *extra,
@@ -452,6 +457,33 @@ class MainTests(unittest.TestCase):
                 self.assertEqual(["SUMMARY", "LOG"], [fields[0] for fields in lines[3:]])
                 ((arguments, _, _),) = runner.calls
                 self.assertEqual(self.files, arguments[arguments.index("--include") + 1 :])
+
+    def test_a_solution_outside_the_root_is_refused_before_it_is_read_or_formatted(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        outside = Path(directory.name).resolve()
+        (outside / "Other.sln").write_text("not read\n", encoding="utf-8")
+        if sys.platform == "win32":  # a junction needs no privilege
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(self.root / "Linked"))
+        else:
+            (self.root / "Linked").symlink_to(outside, target_is_directory=True)
+        solutions = {
+            f"../{outside.name}/Other.sln": "the path is outside the examined tree",
+            (outside / "Other.sln").as_posix(): "the path is outside the examined tree",
+            "Linked/Other.sln": "a symbolic link or junction leads it outside the repository root",
+        }
+        for mode in ("check", "fix"):
+            for solution, expected in solutions.items():
+                with self.subTest(mode=mode, solution=solution):
+                    runner = FakeRunner(0, "  Format complete in 10ms.\n")
+                    status, lines, errors = self.run_formatter(mode, runner, solution=solution)
+                    self.assertEqual((1, ""), (status, errors))
+                    self.assertEqual(1, len(lines), lines)
+                    prefix = f"FAILED the solution {solution} is refused: {expected}"
+                    self.assertTrue("\t".join(lines[0]).startswith(prefix), lines)
+                    self.assertEqual([], runner.calls)
 
     def test_a_list_every_entry_of_which_is_refused_runs_nothing(self) -> None:
         self.file_list.write_text("../Outside.cs\n", encoding="utf-8")

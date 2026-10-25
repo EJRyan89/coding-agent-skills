@@ -154,6 +154,13 @@ def listed_refusal(root: Path, name: str) -> str | None:
     return None
 
 
+def solution_refusal(root: Path, solution: str) -> str | None:
+    """Why a script does not read or format the solution a `--solution` value names, judged as `listed_refusal`
+    judges a FILE_LIST entry, or None when it lies inside `root`."""
+    refused = listed_refusal(root, solution)
+    return f"the solution {solution} is refused: {refused}" if refused else None
+
+
 def inside_root(root: Path, names: list[str], emit: Callable[[str], None]) -> list[str]:
     """The FILE_LIST entries `listed_refusal` keeps, in order; each other entry prints `REFUSED <entry> <reason>`."""
     kept: list[str] = []
