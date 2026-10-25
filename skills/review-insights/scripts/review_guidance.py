@@ -94,6 +94,10 @@ LINK = re.compile(r"\]\(\s*<?([^)\s>#]+\.md)(?:#[^)\s]*)?>?\s*\)")
 CODE_REFERENCE = re.compile(r"`([A-Za-z0-9_./-]+\.md)`")
 
 
+class GuidanceError(RuntimeError):
+    """A guidance file git could not read at a commit, with git's reason."""
+
+
 @dataclass(frozen=True)
 class WorkingCopy:
     """The working tree's copy of a file and its SHA-256, or None, and why it could not be read when it could not."""
@@ -196,16 +200,22 @@ def read_working_copy(checkout: Path, path: str) -> WorkingCopy:
 
 
 def read_committed(checkout: Path, commit: str | None, path: str, digest: str) -> bytes | None:
-    """The file's bytes at `commit` when their SHA-256 is `digest`; None otherwise, or when the path leaves the
-    checkout."""
+    """The file's bytes at `commit` when their SHA-256 is `digest`; None when no commit is named, the path leaves the
+    checkout, git answers that the commit holds no such file or is no commit it knows, or the bytes are another
+    version or past READ_BYTES.
+
+    Raises GuidanceError naming git's reason when git cannot read it, so a git failure is never reported as a version
+    that is not there.
+    """
     if commit is None or not safe_repository_path(path):
         return None
     try:
-        result = GitClient().run(["show", f"{commit}:{path}"], directory=checkout)
-    except GitError:
-        return None
-    content = result.output_bytes()
-    if result.returncode != 0 or len(content) > READ_BYTES or hashlib.sha256(content).hexdigest() != digest:
+        content = GitClient().file_at(commit, path, directory=checkout)
+    except GitError as exc:
+        raise GuidanceError(
+            f"git could not read {path} at {commit} in {checkout.as_posix()}: {flat_text(str(exc))}"
+        ) from exc
+    if content is None or len(content) > READ_BYTES or hashlib.sha256(content).hexdigest() != digest:
         return None
     return content
 
