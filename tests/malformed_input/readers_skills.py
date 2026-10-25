@@ -100,6 +100,10 @@ def _plugin_manifest(path: Path) -> None:
     manifest.write_text('{"name": "example"}', encoding="utf-8")
 
 
+# A plugin hooks file of one event with one matcher group and one handler, so each member below hooks has its cases.
+PLUGIN_HOOKS = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "check"}]}]}}
+
+
 def _plugin_hooks(path: Path) -> object:
     return skill_inventory.plugin_hooks(path.parents[1] / "skills" / "example")
 
@@ -406,7 +410,7 @@ READERS = [
     Reader(
         "skill_inventory.plugin_hooks",
         "json",
-        b'{"hooks": {}}',
+        json.dumps(PLUGIN_HOOKS).encode(),
         _plugin_hooks,
         (skill_inventory.InputError,),
         filename="plugin/hooks/hooks.json",
@@ -416,7 +420,7 @@ READERS = [
     Reader(
         "skill_inventory.read_metadata",
         "json",
-        b'{"skill_deps": []}',
+        b'{"skill_deps": ["ejryan89-skill-core"]}',
         _metadata,
         (Refused,),
         filename="deploy-meta/example.json",

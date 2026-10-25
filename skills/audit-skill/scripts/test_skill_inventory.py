@@ -2179,6 +2179,17 @@ class AgentTests(SourceTreeTestCase):
             [line for line in lines if "forged" in line],
         )
 
+    def test_metadata_whose_name_list_is_of_another_kind_is_unreadable(self) -> None:
+        for key in ("shared_deps", "skill_deps", "agent_deps", "tools", "optional_tools"):
+            for value in ("ejryan89-skill-core", [1], {"name": "x"}):
+                with self.subTest(key=key, value=value):
+                    skill = self.skill("Body.\n")
+                    metadata = write(self.root / "deploy-meta" / "alpha.json", json.dumps({key: value}))
+                    code, lines, error = run("inventory", str(skill.parent))
+                    self.assertEqual(0, code, error)
+                    self.assertIn(f"DECLARED_UNREADABLE {metadata.as_posix()}", lines)
+                    self.assertEqual([], [line for line in lines if line.startswith("DECLARED ")])
+
     def test_unparseable_metadata_is_unreadable_and_the_inventory_carries_on(self) -> None:
         for shape, text in UNPARSEABLE_JSON.items():
             with self.subTest(shape=shape):
@@ -2712,6 +2723,64 @@ class PluginTests(TemporaryTestCase):
                 hooks = write(root / "hooks" / "hooks.json", text)
                 code, lines, _ = run("scan", str(self.skill(root).parent))
                 self.assertEqual((1, f"FAILED {hooks.as_posix()} is not a JSON object"), (code, lines[-1]))
+
+    def test_a_hooks_file_member_of_another_kind_fails_the_scan_by_name(self) -> None:
+        group = {"matcher": "Bash", "hooks": [{"type": "command", "command": "check"}]}
+
+        def handlers(*listed: object) -> dict[str, object]:
+            return {"hooks": {"PreToolUse": [{**group, "hooks": list(listed)}]}}
+
+        handler_kind = "each handler of hook event 'PreToolUse' must be an object naming its type as text"
+        cases: dict[str, tuple[object, str]] = {
+            "hooks": ({"hooks": [group]}, "'hooks' must be an object mapping event names to matcher groups"),
+            "event": ({"hooks": {"PreToolUse": group}}, "hook event 'PreToolUse' must be a list of matcher groups"),
+            "group": (
+                {"hooks": {"PreToolUse": ["Bash"]}},
+                "each matcher group of hook event 'PreToolUse' must be an object",
+            ),
+            "matcher": (
+                {"hooks": {"PreToolUse": [{**group, "matcher": ["Bash"]}]}},
+                "a matcher of hook event 'PreToolUse' must be text",
+            ),
+            "handlers": (
+                {"hooks": {"PreToolUse": [{**group, "hooks": {"type": "command", "command": "check"}}]}},
+                "each matcher group of hook event 'PreToolUse' needs a 'hooks' list",
+            ),
+            "handler": (handlers("check"), handler_kind),
+            "type": (handlers({"type": 1, "command": "check"}), handler_kind),
+            "command": (
+                handlers({"type": "command", "command": ["check"]}),
+                "a command hook of hook event 'PreToolUse' needs its command as text",
+            ),
+        }
+        for member, (document, reason) in cases.items():
+            with self.subTest(member=member):
+                root = self.plugin(folder=self.root / member, hooks=document)
+                code, lines, _ = run("scan", str(self.skill(root).parent))
+                hooks = (root / "hooks" / "hooks.json").as_posix()
+                self.assertEqual(
+                    (1, f"FAILED {hooks} is not a hooks file Claude Code reads: {reason}"), (code, lines[-1])
+                )
+
+    def test_a_hooks_file_without_hooks_or_with_handlers_of_another_type_holds_no_command_hook(self) -> None:
+        documents = {
+            "absent": {},
+            "null": {"hooks": None},
+            "prompt": {"hooks": {"Stop": [{"hooks": [{"type": "prompt", "prompt": "Check."}]}]}},
+        }
+        for name, document in documents.items():
+            with self.subTest(document=name):
+                root = self.plugin(folder=self.root / name, hooks=document)
+                self.assertEqual([], skill_inventory.plugin_hooks(self.skill(root).parent))
+
+    def test_a_matcher_group_without_a_matcher_or_with_an_empty_one_matches_every_tool(self) -> None:
+        groups = [
+            {"hooks": [{"type": "command", "command": "one"}]},
+            {"matcher": "", "hooks": [{"type": "command", "command": "two"}]},
+        ]
+        root = self.plugin(hooks={"hooks": {"PreToolUse": groups}})
+        found = skill_inventory.plugin_hooks(self.skill(root).parent)
+        self.assertEqual([("one", "*"), ("two", "*")], [(hook.program, matcher) for hook, matcher in found])
 
     def test_an_unparseable_hooks_file_fails_the_scan(self) -> None:
         for shape, text in UNPARSEABLE_JSON.items():
