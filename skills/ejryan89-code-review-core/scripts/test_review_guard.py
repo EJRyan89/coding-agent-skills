@@ -23,6 +23,7 @@ import review_dispatch
 import review_guard as guard
 import review_pipeline as rp
 import review_run
+import review_runtime
 from executable_locator import PYTHON
 from review_source import source_commands
 from test_review_io import UNPARSEABLE_JSON
@@ -1007,7 +1008,7 @@ def test_a_read_is_counted_by_the_spelling_the_log_gives_it(tmp_path: Path) -> N
 def test_the_manifest_is_left_out_of_a_run_whose_folder_ends_in_a_dot(tmp_path: Path) -> None:
     # Windows makes `run.` as `run`; the run is still named `run.`, and its manifest is judged by that spelling.
     run = tmp_path / "run."
-    manifest = run / "source" / review_dispatch.SOURCE_SNAPSHOT_MANIFEST
+    manifest = run / "source" / review_runtime.SOURCE_SNAPSHOT_MANIFEST
     manifest.parent.mkdir(parents=True)
     manifest.write_text("{}\n", encoding="utf-8")
-    assert counted_reads(run, [review_dispatch.SOURCE_SNAPSHOT_MANIFEST]) == {"files": 0, "bytes": 0}
+    assert counted_reads(run, [review_runtime.SOURCE_SNAPSHOT_MANIFEST]) == {"files": 0, "bytes": 0}
