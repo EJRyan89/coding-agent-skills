@@ -1261,6 +1261,24 @@ def entered(text):
         return None
 
 
+def in_finally(text):
+    try:
+        try:
+            text = text.strip()
+        finally:
+            read(text)
+    except json.JSONDecodeError:
+        return None
+
+
+async def entered_async(text):
+    try:
+        async with contextlib.AsyncExitStack():
+            return read(text)
+    except reader.Refused:
+        return None
+
+
 CONTENT_ERRORS_ALLOWED = {
     "own": "reads text it wrote",
     "trusted": "reads text it wrote",
@@ -1341,6 +1359,9 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
         f"{alpha}:143 {remedy('json.decoder.JSONDecodeError')}",
         f"{alpha}:150 {remedy('reader.Refused')}",
         f"{alpha}:160 {remedy('json.decoder.JSONDecodeError')}",
+        # A finally block runs inside the try that holds its statement, so the outer handler judges its reader call.
+        f"{alpha}:168 {remedy('reader.Refused')}",
+        f"{alpha}:178 {remedy('json.decoder.JSONDecodeError')}",
         f"{alpha}: CONTENT_ERRORS_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTENT_ERRORS_ALLOWED must map each function, class, or assignment to its reason",
         f"tools/caller.py:8 {remedy('reader.Refused')}",
