@@ -2199,6 +2199,19 @@ class AgentTests(SourceTreeTestCase):
             [line for line in lines if "forged" in line],
         )
 
+    def test_a_dependencys_metadata_it_cannot_read_is_named_and_leaves_its_agents_unknown(self) -> None:
+        self.agent("helper")
+        skill = self.skill("Body.\n", {"skill_deps": ["beta"], "agent_deps": ["helper"]})
+        self.skill("Body.\n", {"agent_deps": "reviewer"}, name="beta")
+        code, lines, error = run("inventory", str(skill.parent))
+        self.assertEqual(0, code, error)
+        beta = (self.root / "deploy-meta" / "beta.json").as_posix()
+        self.assertEqual(
+            [f"DECLARED_UNREADABLE {beta}", "DECLARED skill beta"],
+            [line for line in lines if line.startswith("DECLARED")],
+        )
+        self.assertIsNone(skill_inventory.declared_agents(skill.parent))
+
     def test_metadata_whose_name_list_is_of_another_kind_is_unreadable(self) -> None:
         for key in ("shared_deps", "skill_deps", "agent_deps", "tools", "optional_tools"):
             for value in ("ejryan89-skill-core", [1], {"name": "x"}):
@@ -2480,6 +2493,14 @@ class RuntimeSupportTests(SourceTreeTestCase):
             ["RUNTIME_NEEDS sandbox-network git fetch scripts/update.py", "RUNTIME_OVERCLAIMED codex sandbox-network"],
             [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
         )
+
+    def test_metadata_it_cannot_read_is_named_rather_than_read_as_no_declaration(self) -> None:
+        skill = self.skill("Body.\n", self.full(tools="gh"))
+        self.assertEqual(["RUNTIME_UNREADABLE its metadata cannot be read"], self.runtime(skill))
+        metadata = self.root / "deploy-meta" / "alpha.json"
+        with self.assertRaises(skill_inventory.InputError) as raised:
+            skill_inventory.own_needs(skill.parent)
+        self.assertEqual(f"cannot read {metadata.as_posix()}: not metadata it reads", str(raised.exception))
 
     def test_a_python_script_that_does_not_parse_fails_the_runtime_derivation(self) -> None:
         skill = self.skill("Body.\n", self.full())

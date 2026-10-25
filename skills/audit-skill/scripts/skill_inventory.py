@@ -1323,6 +1323,16 @@ def names(metadata: dict[str, object] | None, key: str) -> list[str]:
     return [name for name in value if isinstance(name, str)] if isinstance(value, list) else []
 
 
+def metadata_path(root: Path, name: str) -> Path:
+    return root / "deploy-meta" / f"{name}.json"
+
+
+def unreadable_metadata(root: Path, name: str) -> bool:
+    """Whether the skill has a metadata file read_metadata cannot read, whose names are then unknown rather than none,
+    as opposed to no metadata file at all."""
+    return read_metadata(root, name) is None and metadata_path(root, name).exists()
+
+
 def skill_closure(root: Path, name: str) -> list[str]:
     """The skill and every skill its metadata's skill_deps reach, in the order they are first reached."""
     reached: list[str] = []
@@ -1337,12 +1347,16 @@ def skill_closure(root: Path, name: str) -> list[str]:
 
 def declared_agents(directory: Path) -> dict[str, str] | None:
     """The agents a deployment of the skill installs, each with the skill that declares it in agent_deps, its own
-    first: None outside a source tree, where no metadata says."""
+    first: None outside a source tree, where no metadata says, and when a skill the closure reaches has metadata that
+    cannot be read, which may declare any agent or dependency."""
     root = source_root(directory)
     if root is None:
         return None
+    closure = skill_closure(root, directory.name)
+    if any(unreadable_metadata(root, skill) for skill in closure):
+        return None
     agents: dict[str, str] = {}
-    for skill in skill_closure(root, directory.name):
+    for skill in closure:
         for agent in names(read_metadata(root, skill), "agent_deps"):
             agents.setdefault(agent, skill)
     return agents
@@ -1356,9 +1370,14 @@ def declared_lines(directory: Path) -> list[str]:
         return []
     declared = read_metadata(root, directory.name)
     if declared is None:
-        return [f"DECLARED_UNREADABLE {posix(root / 'deploy-meta' / f'{directory.name}.json')}"]
+        return [f"DECLARED_UNREADABLE {posix(metadata_path(root, directory.name))}"]
     agents = declared_agents(directory) or {}
     return [
+        *(
+            f"DECLARED_UNREADABLE {posix(metadata_path(root, skill))}"
+            for skill in skill_closure(root, directory.name)[1:]
+            if unreadable_metadata(root, skill)
+        ),
         *(f"DECLARED shared {name}" for name in names(declared, "shared_deps")),
         *(f"DECLARED skill {name}" for name in names(declared, "skill_deps")),
         *(
@@ -2670,6 +2689,10 @@ def own_needs(folder: Path) -> set[str]:
     except (OSError, UnicodeError, frontmatter.FrontmatterError) as exc:
         raise InputError(f"cannot read {posix(path)}: {exc}") from exc
     metadata = read_metadata(folder.parent.parent, folder.name)
+    if metadata is None and unreadable_metadata(folder.parent.parent, folder.name):
+        raise InputError(
+            f"cannot read {posix(metadata_path(folder.parent.parent, folder.name))}: not metadata it reads"
+        )
     tools = names(metadata, "tools") + names(metadata, "optional_tools")
     return {need for need, _ in needs_evidence(folder, granted, "INVOCATION model" not in listed, tools)}
 
@@ -2699,7 +2722,8 @@ def runtime_lines(folder: Path, granted: list[str], user_only: bool) -> list[str
     root = source_root(folder)
     metadata = read_metadata(root, folder.name) if root is not None else None
     if metadata is None:
-        return []
+        unreadable = root is not None and unreadable_metadata(root, folder.name)
+        return ["RUNTIME_UNREADABLE its metadata cannot be read"] if unreadable else []
     if "runtime_support" not in metadata:
         return ["RUNTIME_UNDECLARED"]
     try:
