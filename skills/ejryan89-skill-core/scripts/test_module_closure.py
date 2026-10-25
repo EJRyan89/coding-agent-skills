@@ -92,7 +92,19 @@ class ModuleClosureTests(unittest.TestCase):
     def test_a_cycle_ends_and_a_missing_module_is_refused(self) -> None:
         self.module("one", "import two\n")
         self.module("two", "import one\n")
-        self.assertEqual(["one", "two"], closure("two", scripts=self.scripts))
+        # In a child with a time limit, so a walk that never ends fails this test rather than hanging the suite.
+        program = (
+            "import sys\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1])\n"
+            "from module_closure import closure\nprint(closure('two', scripts=Path(sys.argv[2])))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", program, str(SCRIPTS), str(self.scripts)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual((0, "['one', 'two']\n"), (result.returncode, result.stdout), result.stderr)
         with self.assertRaises(FileNotFoundError):
             closure("absent", scripts=self.scripts)
 
