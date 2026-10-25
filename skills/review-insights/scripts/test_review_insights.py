@@ -653,6 +653,14 @@ class ReportTests(InsightFixture):
                 f"FAILED {history}owner/repo#7: Access is denied",
             )
 
+    def test_guidance_git_cannot_read_fails_the_report_naming_git(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness"])
+        reason = "git could not read docs/checklist.md at 1111111 in C:/checkout: fatal: bad config line 1"
+        with mock.patch.object(
+            ri.review_guidance, "read_guidance", side_effect=ri.review_guidance.GuidanceError(reason)
+        ):
+            self.assertFailed(self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"), reason)
+
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # Windows pipes default to a legacy code page; RECOMMENDATION quotes a reviewer's category as written.
         self.commit("owner/repo", 7, ["Naming → clarity ✓"])
@@ -1410,6 +1418,33 @@ class AnalyzerTests(InsightFixture):
             json_path.write_text(json.dumps(tampered), encoding="utf-8")
             with self.assertRaisesRegex(ri.InsightError, message):
                 ri.load_report(json_path)
+
+    def test_evidence_of_a_kind_the_example_lines_cannot_read_is_refused(self) -> None:
+        self.commit_covered()
+        json_path, _ = self.report()
+        original = json.loads(json_path.read_text(encoding="utf-8"))
+        for field, value in (
+            ("repository", None),
+            ("finding_id", 1),
+            ("path", None),
+            ("pull_number", "7"),
+            ("review_version", 0),
+            ("line", None),
+            ("line", 0),
+            ("line", True),
+            ("title", 3),
+        ):
+            tampered = json.loads(json.dumps(original))
+            tampered["recommendations"][2]["evidence"][0][field] = value
+            json_path.write_text(json.dumps(tampered), encoding="utf-8")
+            with self.assertRaisesRegex(ri.InsightError, "^REC-003.evidence must be a list of findings$"):
+                ri.load_report(json_path)
+        tampered = json.loads(json.dumps(original))
+        entry = tampered["recommendations"][2]["evidence"][0]
+        entry.update(title=None, line=1, pull_number=1, review_version=1)
+        json_path.write_text(json.dumps(tampered), encoding="utf-8")
+        loaded = ri.load_report(json_path)["recommendations"][2]["evidence"][0]
+        self.assertEqual(f"{entry['path']}:1", ri._example(loaded).rsplit(" ", 1)[-1])
 
     def test_a_report_missing_a_field_a_command_reads_fails_naming_it(self) -> None:
         # Each field render, the report's own lines, and the synthesis input read, removed or of another kind: every
