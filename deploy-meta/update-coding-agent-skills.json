@@ -2,5 +2,5 @@
     "required_vars": ["SOURCE_ROOT", "UPDATE_CHANNEL"],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["ejryan89-skill-core"],
-    "runtime_support": {"claude-code": "full", "codex": {"level": "partial", "needs": ["sandbox-network"], "reason": "Its git calls to the source checkout's remote, a tag check and the fetch, need network access, which Codex's default sandbox turns off: unless [sandbox_workspace_write] network_access is true, an interactive session asks to approve each and codex exec fails them."}, "copilot-cli": {"level": "partial", "needs": ["user-only-start"], "reason": "A headless copilot -p session cannot start it; start it from an interactive session."}}
+    "runtime_support": {"claude-code": "full", "codex": {"level": "partial", "needs": ["sandbox-network"], "reason": "Its git calls to the source checkout's remote, a tag check and the fetch, need network access, which Codex's default sandbox turns off, so an interactive session asks to approve each and codex exec fails them. See \"Network access\" in docs/codex-support.md for the ways to open the network."}, "copilot-cli": {"level": "partial", "needs": ["user-only-start"], "reason": "A headless copilot -p session cannot start it; start it from an interactive session."}}
 }

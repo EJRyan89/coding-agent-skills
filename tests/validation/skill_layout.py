@@ -16,7 +16,7 @@ import frontmatter
 import json_reader
 import skill_menu
 from agent_skills import MAX_NAME
-from markdown_sections import EXECUTABLE_FENCES
+from markdown_sections import EXECUTABLE_FENCES, markdown_section
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
 from skill_scripts import shell_git_subcommands
@@ -321,6 +321,43 @@ def runtime_page_problems(root: Path) -> list[str]:
                         f"{' lacking ' + ', '.join(sorted(support.needs)) if support.needs else ''}; "
                         f"see {METADATA_DOC}"
                     )
+    return problems
+
+
+def capability_guide_problems(root: Path) -> list[str]:
+    """Report a guide section runtime_support.CAPABILITY_GUIDES names that its document no longer has, and a reason
+    for lacking a capability a guide says how to give that does not carry runtime_support.guide_pointer's sentence.
+
+    A reason that restated the guide's settings was left naming one route when the guide gained another; pointing to
+    the guide's section keeps one owner for how to give the capability.
+    """
+    import runtime_support
+
+    problems: list[str] = []
+    checked = 0
+    for document, heading, _gives in sorted(set(runtime_support.CAPABILITY_GUIDES.values())):
+        path = root / document
+        if not path.is_file() or markdown_section(path.read_text(encoding="utf-8"), f"## {heading}") is None:
+            problems.append(f'{document} has no "## {heading}" section, which runtime_support.CAPABILITY_GUIDES names')
+    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+        try:
+            declared = runtime_support.parse(json_reader.loads(metadata.read_text(encoding="utf-8"))["runtime_support"])
+        except (KeyError, runtime_support.RuntimeSupportError):
+            continue  # runtime_support_problems reports it
+        for runtime, support in declared.items():
+            for need in support.needs:
+                pointer = runtime_support.guide_pointer(runtime, need)
+                checked += pointer is not None
+                if pointer is not None and pointer not in support.reason:
+                    problems.append(
+                        f"deploy-meta/{metadata.name}: the {runtime} reason for lacking {need} does not carry "
+                        f"{pointer!r}; point to the guide rather than restating its settings"
+                    )
+    if not checked:
+        problems.append(
+            "could not measure: no readable deploy-meta declaration lacks a capability "
+            "runtime_support.CAPABILITY_GUIDES names, so no reason was held to its guide"
+        )
     return problems
 
 
@@ -1091,6 +1128,9 @@ class SkillLayoutPolicies(unittest.TestCase):
 
     def test_runtime_pages_state_each_skills_support_as_its_metadata_declares(self) -> None:
         self.assertEqual([], runtime_page_problems(REPOSITORY_ROOT))
+
+    def test_each_reason_for_a_capability_a_guide_gives_points_to_that_guide(self) -> None:
+        self.assertEqual([], capability_guide_problems(REPOSITORY_ROOT))
 
     def test_skill_scripts_declare_each_sibling_they_put_on_sys_path(self) -> None:
         self.assertEqual([], script_dependency_problems(REPOSITORY_ROOT))
