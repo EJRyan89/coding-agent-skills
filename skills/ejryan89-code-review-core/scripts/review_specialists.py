@@ -24,6 +24,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 from bounded_process import non_interactive_environment, run_bounded
 from diff_paths import HUNK_HEADER, DiffPathError, header_path, unquote
 from flat_text import LINE_UNSAFE
@@ -1410,7 +1411,7 @@ def _write_shared(work: Path, request: dict[str, Any], source_root: Path, snapsh
     atomic_write_json(work / ANALYZERS, analyzers)
     atomic_write_text(
         work / "github-comments.json",
-        json.dumps(request.get("github_comments") or [], indent=2, ensure_ascii=False) + "\n",
+        json_writer.dumps(request.get("github_comments") or [], indent=2, ensure_ascii=False) + "\n",
     )
     return analyzers
 

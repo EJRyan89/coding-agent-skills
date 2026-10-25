@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 from console import run_main
 from executable_locator import PYTHON
 from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log
@@ -90,10 +91,14 @@ def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
 
 def _count(log: Path, relative: str) -> None:
     """Add a file to the role's read log, which only a reviewer the guard holds has: an unguarded one stays
-    uncounted, as its reads do."""
+    uncounted, as its reads do, and so does a path the JSON writer refuses."""
+    try:
+        line = json_writer.dumps(relative) + "\n"
+    except json_writer.JsonWriteRefused:
+        return
     if log.is_file():
         with contextlib.suppress(OSError), log.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(relative) + "\n")
+            stream.write(line)
 
 
 def source_file(run: Path, role: str, relative: str) -> list[str]:

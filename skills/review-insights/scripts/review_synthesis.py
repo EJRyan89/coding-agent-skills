@@ -33,7 +33,6 @@ Synthesized recommendations are presented by priority and, within one, cheapest 
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import shutil
 import tempfile
@@ -45,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 import json_reader
+import json_writer
 from executable_locator import PYTHON
 from flat_text import flat_text
 from review_config import safe_repository_path
@@ -375,7 +375,7 @@ def presented(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _jsonl(items: list[dict[str, Any]]) -> str:
-    return "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in items)
+    return "".join(json_writer.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in items)
 
 
 def _digest(body: str, context: str) -> str:
@@ -430,7 +430,7 @@ class Staged:
                 "result_file": str(result),
                 "self_check": check_command(self.facts.script, self.facts.report_path, result),
             }
-            atomic_write_text(run / RUN_FILE, json.dumps({"roles": [role]}, indent=1) + "\n")
+            atomic_write_text(run / RUN_FILE, json_writer.dumps({"roles": [role]}, indent=1) + "\n")
         except BaseException:
             self.discard_run()
             raise
@@ -488,7 +488,7 @@ def staged_inputs(directory: Path, lines: list[dict[str, Any]], context: dict[st
     """The seal, and the context and the input, its seal line first, by the path each is written to. A context
     larger than `synthesize` reads back is refused."""
     body = _jsonl(lines)
-    context_text = json.dumps(context, indent=1, sort_keys=True) + "\n"
+    context_text = json_writer.dumps(context, indent=1, sort_keys=True) + "\n"
     if len(context_text.encode("utf-8")) > MAXIMUM_BYTES:
         raise PersistenceError(f"The synthesis context would exceed {MAXIMUM_BYTES} bytes; report a shorter range")
     digest = _digest(body, context_text)

@@ -1406,6 +1406,12 @@ class ReviewCommentTests(AdversarialFixture):
         self.assertEqual(self.github.threads, self.request(ready)["github_comments"])
         comments_file = ready["run"] / "work" / "github-comments.json"
         self.assertEqual(self.github.threads, json.loads(comments_file.read_text(encoding="utf-8")))
+        # A reviewer reads the file as text, so text past ASCII is written as itself, two-space indented.
+        self.assertEqual(
+            json.dumps(self.request(ready)["github_comments"], indent=2, ensure_ascii=False) + "\n",
+            comments_file.read_text("utf-8"),
+        )
+        self.assertIn("\u2028", comments_file.read_text(encoding="utf-8"))
         [role] = ready["roles"]
         prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
         heading = (
