@@ -78,7 +78,6 @@ import importlib
 import importlib.metadata
 import io
 import itertools
-import json
 import os
 import queue
 import re
@@ -99,6 +98,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "validation"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from bounded_process import run_bounded
 from console import run_main
 from flat_text import flat_text
@@ -604,7 +604,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 )
         if not report.is_file():
             return f"failed in {code('coverage json')}, which wrote no report"
-        recorded = json.loads(report.read_text(encoding="utf-8"))
+        recorded = json_reader.loads(report.read_text(encoding="utf-8"))
         if not isinstance(recorded, dict) or not isinstance(recorded.get("files"), dict):
             return f"failed in {code('coverage json')}, whose report holds no files object"
         collected = suite_tests(tree, suite, folder / "collected.txt")

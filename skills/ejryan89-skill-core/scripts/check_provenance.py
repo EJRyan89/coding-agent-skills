@@ -19,12 +19,12 @@ each passage with the live page.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import json_reader
 from typed_fields import FieldError, FieldReader, describe
 
 # Where a skill keeps the file, relative to its folder.
@@ -56,7 +56,7 @@ class Source:
 def load(path: Path, checks: Collection[str]) -> dict[str, tuple[Source, ...]]:
     """Each check's sources, read from `path`, which must hold an entry for every one of `checks` and no other."""
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProvenanceError(f"cannot read {path.as_posix()}: {exc}") from exc
     entries = READ.json_object(READ.json_object(document, "$", required={"checks"})["checks"], "$.checks")

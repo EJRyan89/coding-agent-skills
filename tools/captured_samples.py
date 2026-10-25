@@ -12,11 +12,16 @@ and tools/runtime_command_lines.py against the version the installed runtime pri
 from __future__ import annotations
 
 import datetime
-import json
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
+
+import json_reader
 
 from deployer.tools import format_version, parse_version
 
@@ -48,7 +53,7 @@ class Sample:
 def read(top: Path, runtimes: tuple[str, ...]) -> list[Sample]:
     """Every sample the record at `top` names, each with a version of one or more of `runtimes`, or SampleError."""
     try:
-        record = json.loads((top / PROVENANCE).read_bytes().decode("utf-8"))
+        record = json_reader.loads((top / PROVENANCE).read_bytes().decode("utf-8"))
     except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise SampleError(f"cannot read {PROVENANCE.as_posix()}: {exc}") from exc
     samples = record.get("samples") if isinstance(record, dict) else None

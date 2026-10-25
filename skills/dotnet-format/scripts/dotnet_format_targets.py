@@ -40,7 +40,6 @@ a git command fails or does not finish in time, no base ref exists, or a file ca
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
@@ -52,6 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 import msbuild_xml
 from console import run_main
 from dotnet_solution import (
@@ -212,7 +212,7 @@ def pull_request_base(services: Services, root: Path) -> str | None:
     """
     try:
         output = GitHubClient(services.gh(root)).run(["pr", "view", "--json", "baseRefName"], retry=False)
-        document = json.loads(output.stdout)
+        document = json_reader.loads(output.stdout)
     except (GitHubError, ValueError):
         return None
     name = document.get("baseRefName") if isinstance(document, dict) else None

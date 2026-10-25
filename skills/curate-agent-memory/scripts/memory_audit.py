@@ -835,7 +835,7 @@ def read_settings(path: Path) -> dict[str, Any]:
         if not is_present(path):
             return {}
         settings = json_reader.loads(path.read_bytes().decode("utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError, json_reader.JsonRefused) as exc:
+    except (OSError, ValueError) as exc:
         raise UnreadableSettings(f"Cannot read {path}: {exc}") from exc
     return settings if isinstance(settings, dict) else {}
 

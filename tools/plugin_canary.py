@@ -65,6 +65,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 import skill_menu
 from console import run_main
 from skill_roots import sibling_scripts
@@ -186,7 +187,7 @@ def details(text: str) -> dict[str, set[str]]:
 
 def expected(plugin: plugin_build.Plugin) -> dict[str, set[str]]:
     hooks = (
-        json.loads(plugin.files[skill_menu.PLUGIN_HOOKS]).get("hooks", {})
+        json_reader.loads(plugin.files[skill_menu.PLUGIN_HOOKS]).get("hooks", {})
         if skill_menu.PLUGIN_HOOKS in plugin.files
         else {}
     )
@@ -196,7 +197,7 @@ def expected(plugin: plugin_build.Plugin) -> dict[str, set[str]]:
 def option_values(home: Path, plugin: plugin_build.Plugin) -> list[str]:
     """The --config arguments giving each option the plugin's manifest declares a new folder of the home, as
     `claude plugin install` takes them: a required option left unset would stop the install."""
-    declared = json.loads(plugin.files[skill_menu.PLUGIN_MANIFEST]).get("userConfig", {})
+    declared = json_reader.loads(plugin.files[skill_menu.PLUGIN_MANIFEST]).get("userConfig", {})
     arguments: list[str] = []
     for name in sorted(declared):
         folder = home / OPTIONS / name
@@ -274,7 +275,7 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
             continue
         listing = session.runner(list_command(executable), session.home, session.config, session.timeout)
         try:
-            installed = next(item for item in json.loads(listing.stdout) if item.get("id") == identifier)
+            installed = next(item for item in json_reader.loads(listing.stdout) if item.get("id") == identifier)
         except (ValueError, StopIteration, AttributeError):
             yield f"INSTALL_FAILED claude {plugin.name} {quote('claude plugin list --json does not list it')}"
             continue
@@ -296,7 +297,7 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
 def stream_events(output: str) -> Iterator[dict[str, Any]]:
     for line in output.splitlines():
         try:
-            event = json.loads(line)
+            event = json_reader.loads(line)
         except ValueError:
             continue
         if isinstance(event, dict):
@@ -505,7 +506,7 @@ def checks(session: Session, executable: str, discovery_only: bool) -> Iterator[
     paths: dict[str, str] = {}
     for line in install(session, executable, plugins):
         if line.startswith("PATHS "):
-            paths = json.loads(line[len("PATHS ") :])
+            paths = json_reader.loads(line[len("PATHS ") :])
         else:
             yield line
     if discovery_only:

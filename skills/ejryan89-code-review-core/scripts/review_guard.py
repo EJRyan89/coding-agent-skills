@@ -62,6 +62,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from console import run_main
 from executable_locator import PYTHON
 from skill_roots import plugin_name
@@ -238,7 +239,7 @@ def run_root(path: Path) -> Path | None:
 def _roles(run: Path) -> list[dict[str, str]]:
     """The roles a prepared run's `run.json` names, each with its ID, prompt file, and result file."""
     try:
-        state = json.loads((run / RUN_FILE).read_text(encoding="utf-8"))
+        state = json_reader.loads((run / RUN_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError) as exc:
         raise Denied(f"the review run {run} could not be read") from exc
     try:
@@ -261,7 +262,7 @@ def _role(value: Any, path: str) -> dict[str, str]:
 def _load_claim(agent: str) -> Claim | None:
     """The run and role this agent claimed, or None when it has claimed none."""
     try:
-        claim = json.loads((CLAIMS / f"{agent}.json").read_text(encoding="utf-8"))
+        claim = json_reader.loads((CLAIMS / f"{agent}.json").read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError, RecursionError) as exc:
@@ -282,7 +283,7 @@ def _prune_claims() -> None:
     """Remove each claim whose run is gone: finalize removes a run's folder, run.json with it."""
     for path in CLAIMS.glob("*.json"):
         with contextlib.suppress(OSError, ValueError, RecursionError):
-            claim = json.loads(path.read_text(encoding="utf-8"))
+            claim = json_reader.loads(path.read_text(encoding="utf-8"))
             try:
                 run: str | None = READ.string(READ.json_object(claim, "claim").get("run"), "claim.run", empty=True)
             except FieldError:
@@ -436,7 +437,7 @@ def decide(event: dict[str, Any], plugin: str | None = PLUGIN) -> str | None:
 def main(stream: str) -> int:
     try:
         try:
-            event = READ.json_object(json.loads(stream), "hook event")
+            event = READ.json_object(json_reader.loads(stream), "hook event")
         except FieldError:
             event = None
         reason = "the hook event could not be read" if event is None else decide(event)

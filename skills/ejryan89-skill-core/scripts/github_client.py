@@ -14,7 +14,6 @@ each with U+FFFD before a caller sees it, counting them in `CommandResult.replac
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import threading
@@ -345,8 +344,8 @@ def body_reasons(body: str) -> list[str]:
     a search naming a user it cannot see. A body that is not such JSON gives none.
     """
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
+        payload = json_reader.loads(body)
+    except ValueError:
         return []
     errors = payload.get("errors") if isinstance(payload, dict) else None
     if not isinstance(errors, list):
@@ -425,7 +424,7 @@ def json_body(result: CommandResult) -> Any:
     """
     try:
         return json_reader.loads(result.stdout)
-    except (json.JSONDecodeError, json_reader.JsonRefused) as exc:
+    except ValueError as exc:
         raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
 
 

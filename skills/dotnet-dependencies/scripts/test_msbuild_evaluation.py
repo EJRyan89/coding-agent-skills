@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import msbuild_evaluation
-from msbuild_evaluation import ProjectFile, Sources, Unsettled, read_project
+from msbuild_evaluation import MAX_CHOOSE_DEPTH, ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import PackageRef, Unreadable, parse_xml
 
 LEGACY_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
@@ -736,6 +736,20 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(
             ([PackageRef("Alpha.Pkg", None, "PackageReference")], ["net8.0"]), (project.packages, project.frameworks)
         )
+
+    def test_choose_elements_nested_past_the_limit_make_the_file_unreadable(self) -> None:
+        def nested(depth: int) -> str:
+            opening = "<Choose><When Condition=\"'1'=='1'\">" * depth
+            item = '<ItemGroup><PackageReference Include="Alpha.Pkg" Version="1.0.0" /></ItemGroup>'
+            return f"<Project>{opening}{item}{'</When></Choose>' * depth}</Project>"
+
+        project = self.read("src/a/a.csproj", nested(MAX_CHOOSE_DEPTH))
+        self.assertEqual([PackageRef("Alpha.Pkg", "1.0.0", "PackageReference")], project.packages)
+        reason = f"its Choose elements nest more than {MAX_CHOOSE_DEPTH} deep, past what the reader follows"
+        for depth in (MAX_CHOOSE_DEPTH + 1, 5000):
+            with self.subTest(depth=depth), self.assertRaises(Unreadable) as refused:
+                self.read("src/b/b.csproj", nested(depth))
+            self.assertEqual(reason, refused.exception.reason)
 
     def test_each_file_is_parsed_once_and_each_build_evaluated_once(self) -> None:
         # A project of two frameworks is evaluated once for its files' own values and once per framework, its central

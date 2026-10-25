@@ -918,6 +918,20 @@ class EvidenceAbsentTests(GuardFixture):
             self.assertEqual(0, guard.main(""))
         self.assertEqual("deny", json.loads(stdout.getvalue())["hookSpecificOutput"]["permissionDecision"])
 
+    def test_a_hook_event_that_repeats_a_key_is_denied(self) -> None:
+        # Which tool_input the call carries is ambiguous, so neither is judged as the one it runs.
+        self.claim()
+        inside = json.dumps({"file_path": self.prompt()})
+        stream = f'{{"tool_name": "Read", "tool_input": {inside}, "tool_input": {inside}, "agent_id": "{AGENT}"}}'
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(0, guard.main(stream))
+        decision = json.loads(stdout.getvalue())["hookSpecificOutput"]
+        self.assertEqual(
+            ("deny", "Code-review reviewer boundary: the guard could not evaluate this call (JsonRefused)."),
+            (decision["permissionDecision"], decision["permissionDecisionReason"]),
+        )
+
     def test_a_hook_event_with_no_tool_input_is_denied(self) -> None:
         self.claim()
         for tool in ("Read", "Write", "Bash"):

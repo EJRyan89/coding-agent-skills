@@ -367,8 +367,9 @@ class ParsingTests(unittest.TestCase):
         )
 
     def test_a_codex_catalog_that_is_not_json_is_a_listing_error(self) -> None:
-        with self.assertRaisesRegex(ListingError, "its prompt input is not JSON"):
-            discovery.parse_codex_catalog(["Error: something"])
+        for lines in (["Error: something"], ['{"text": "a", "text": "b"}']):
+            with self.subTest(lines=lines), self.assertRaisesRegex(ListingError, "its prompt input is not JSON"):
+                discovery.parse_codex_catalog(lines)
 
     if platform_support.WINDOWS:
 
@@ -475,6 +476,8 @@ class ParsingTests(unittest.TestCase):
             "Error: not signed in": "its skill list is not JSON: Expecting value: line 1 column 1 (char 0)",
             json.dumps({"skills": "none"}): "its skill list is not a JSON array",
             json.dumps("alpha"): "its skill list is not a JSON array",
+            '{"skills": "none", "skills": []}': "its skill list is not JSON: the JSON repeats the key 'skills' in one "
+            "object",
         }
         for output, reason in cases.items():
             with self.subTest(output=output), self.assertRaises(ListingError) as caught:

@@ -210,8 +210,9 @@ def atomic_write_json(
     if validator is not None:
         validator(value)
     content = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    # Validate the exact serialized representation before replacement.
-    parsed = json.loads(content)
+    # Validate the exact serialized representation before replacement, read as every reader of the file reads it, so
+    # a NaN or an infinity the value holds is refused here rather than by them.
+    parsed = json_reader.loads(content)
     if validator is not None:
         validator(parsed)
     atomic_write_text(path, content, mode=mode)

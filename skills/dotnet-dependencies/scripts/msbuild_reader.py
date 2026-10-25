@@ -22,7 +22,6 @@ the one bound (`read_bounded`).
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from collections.abc import Callable, Iterable, Sequence
@@ -34,6 +33,7 @@ from xml.etree.ElementTree import Element
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import dotnet_solution
+import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
 from folders_up import folders_up
 from msbuild_xml import local_name
@@ -341,7 +341,7 @@ def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
     the target, whichever form the restore wrote it in, a name spelled alike before one that leaves its platform
     version to the default (`matching_framework`), else the target's name as written."""
     try:
-        document = json.loads(read_bounded(path).decode("utf-8-sig"))
+        document = json_reader.loads(read_bounded(path).decode("utf-8-sig"))
     except ValueError as error:
         raise Unreadable(path, str(error)) from None
     targets = document.get("targets") if isinstance(document, dict) else None

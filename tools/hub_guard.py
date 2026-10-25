@@ -31,6 +31,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_reader
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
@@ -1611,7 +1612,7 @@ def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[s
         reading.cannot_read(f"could not start pwsh ({exc})")
         return None
     try:
-        output = json.loads(result.stdout.decode("utf-8", "replace"))
+        output = json_reader.loads(result.stdout.decode("utf-8", "replace"))
     except ValueError:
         errors = result.stderr.decode("utf-8", "replace").strip().splitlines()
         reading.cannot_read(f"pwsh could not read the command ({(errors or [''])[0]})")
@@ -2034,7 +2035,7 @@ def guard(stream: str) -> int:
     # fails leaves a command the guard cannot read; None until then.
     in_view: tuple[str, set[Path]] | None = None
     try:
-        event = json.loads(stream)
+        event = json_reader.loads(stream)
         tool = event.get("tool_name", "")
         tool_input = event.get("tool_input") or {}
         cwd = Path(platform_support.from_shell_path(event.get("cwd") or str(Path.cwd())))

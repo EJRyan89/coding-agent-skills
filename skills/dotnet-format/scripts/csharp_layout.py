@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import argparse
 import functools
-import json
 import os
 import re
 import sys
@@ -64,6 +63,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import json_reader
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
@@ -885,7 +885,7 @@ def evaluated_reference(root: Path, project: Path, services: Services) -> bool |
         return f"MSBuild could not evaluate {name}: it exited with code {result.returncode}"
     text = result.output.decode("utf-8", errors="replace")
     try:
-        document, _ = json.JSONDecoder().raw_decode(text, text.index("{"))
+        document, _ = json_reader.raw_decode(text, text.index("{"))
         items = document["Items"]
         found = [item[metadata] for kind, metadata in PACKAGE_ITEMS for item in items.get(kind, [])]
     except (ValueError, KeyError, TypeError, AttributeError):

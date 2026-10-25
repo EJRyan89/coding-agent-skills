@@ -421,6 +421,18 @@ class HandshakeTests(unittest.TestCase):
             self._run(),
         )
 
+    def test_a_definition_nested_too_deep_to_compare_is_a_config_problem_while_the_others_run(self) -> None:
+        # A reader on a recent Python takes nesting json.dumps then cannot write, so the server is grouped from it.
+        deep: list[object] = []
+        for _ in range(100_000):
+            deep = [deep]
+        docs = self._stdio("ok")
+        declared = [("deep", ".mcp.json", {"command": sys.executable, "args": deep}), ("docs", ".mcp.json", docs)]
+        with mock.patch.object(mcp_handshake, "declared_servers", return_value=(declared, [])):
+            groups, problems = mcp_handshake.group_servers(self.root, None)
+        self.assertEqual([("docs", [".mcp.json"], docs)], groups)
+        self.assertEqual([("ERROR", ".mcp.json", f"Server 'deep': {mcp_handshake.TOO_DEEP}")], problems)
+
     def test_codex_servers_are_read_as_the_audit_reads_them(self) -> None:
         (self.root / ".codex").mkdir()
         config = self.root / ".codex/config.toml"
