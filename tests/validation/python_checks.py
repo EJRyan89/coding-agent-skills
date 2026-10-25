@@ -743,10 +743,20 @@ class _ScopeNumbers:
                 self.groups.update(names)
 
     def test(self, node: ast.AST) -> None:
-        """Record the expression a digit test on this node admits."""
+        """Record the expression a digit test or a regular-expression test on this node admits, with how to name the
+        test."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            return
+        method = node.func.attr
         receiver = _method_call(node, "isdigit", "isdecimal", "isnumeric")
-        if isinstance(node, ast.Call) and receiver is not None and isinstance(node.func, ast.Attribute):
-            self.tested.setdefault(ast.dump(_unstripped(receiver)), node.func.attr)
+        if receiver is not None:
+            self.tested.setdefault(ast.dump(_unstripped(receiver)), f"an {method}() test")
+            return
+        pattern = _method_call(node, "match", "fullmatch", "search")
+        # re.fullmatch(pattern, text) tests its second argument, and a compiled pattern's fullmatch(text) its first.
+        index = 1 if isinstance(pattern, ast.Name) and pattern.id == "re" else 0
+        if pattern is not None and len(node.args) > index:
+            self.tested.setdefault(ast.dump(_unstripped(node.args[index])), f"a regular-expression {method}()")
 
     def refusal(self, call: ast.Call) -> str | None:
         """What a one-argument int() call converts that it must not, or None."""
@@ -758,7 +768,7 @@ class _ScopeNumbers:
         if self.is_group(argument):
             return "a regular-expression group"
         test = self.tested.get(ast.dump(_unstripped(argument)))
-        return f"a value an {test}() test admitted" if test else None
+        return f"a value {test} admitted" if test else None
 
 
 def _unstripped(node: ast.expr) -> ast.expr:

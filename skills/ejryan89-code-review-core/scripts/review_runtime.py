@@ -1607,6 +1607,7 @@ def _write_object_ids(stdin: IO[bytes], blobs: Sequence[str]) -> None:
 INT_PARSE_ALLOWED = {
     "_batch_blob_size": "git cat-file writes the blob's size",
     "_commit_members": "git ls-tree writes each blob's size",
+    "read_blob": "git cat-file -s writes the blob's size",
 }
 
 

@@ -136,7 +136,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
   has `\d+` rather than `\d{1,N}`; `.isdigit()` before an `int(`, which admits digits `int` reads past any bound;
   `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
-  `math.isfinite`; `int(` on each item of a `.findall(`; a refusal worded "more than N digits" for a `\d` group,
+  `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
+  bounds no length; a refusal worded "more than N digits" for a `\d` group,
   which also admits digits that are not ASCII.
 - **Examples:** #1611, #1729, #1879, #1886, #1895, #1897
 

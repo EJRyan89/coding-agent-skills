@@ -1029,6 +1029,14 @@ def listed(text):
     return [int(value) for value in PATTERN.findall(text)], [int(low) for low, _ in pairs]
 
 
+def checked(text, size):
+    if not re.fullmatch(r"[0-9]+", size.strip()):
+        return None
+    if PATTERN.match(text):
+        return int(size.strip()), int(text)
+    return None
+
+
 def conforms(text, token):
     match = PATTERN.fullmatch(text)
     return (
@@ -1070,6 +1078,8 @@ def test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_
         *(f"{alpha}:28 converts a value an {test}() test admitted{remedy}" for test in ("isdigit", "isdecimal")),
         f"{alpha}:28 converts a value an isnumeric() test admitted{remedy}",
         *(f"{alpha}:34 {group}" for _ in range(2)),
+        f"{alpha}:41 converts a value a regular-expression fullmatch() admitted{remedy}",
+        f"{alpha}:41 converts a value a regular-expression match() admitted{remedy}",
         f"{alpha}: INT_PARSE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: INT_PARSE_ALLOWED must map each function, class, or assignment to its reason",
     ]
