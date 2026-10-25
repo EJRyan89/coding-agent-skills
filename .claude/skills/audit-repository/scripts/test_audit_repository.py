@@ -1674,3 +1674,28 @@ class RepositoryGuidanceTests(unittest.TestCase):
     def test_the_plugin_organization_page_is_a_claude_code_page(self) -> None:
         subjects = {found.url: found.subject for found in self.pages()}
         self.assertEqual("claude-code", subjects.get("https://code.claude.com/docs/en/plugins/org"))
+
+
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_the_main_checkout_is_known_however_git_spells_its_top_or_common_directory(tmp_path: Path) -> None:
+    real, elsewhere = tmp_path / "checkout", tmp_path / "elsewhere"
+    (real / ".git").mkdir(parents=True)
+    (elsewhere / ".git").mkdir(parents=True)
+    link = tmp_path / "linked checkout"
+    link_folder(real, link)
+    for top, common, main in (
+        (link, real / ".git", True),
+        (real, link / ".git", True),
+        (real, elsewhere / ".git", False),
+    ):
+        with mock.patch.object(audit, "git_output", return_value=f"{top}\n{common}\n"):
+            assert audit.checkout_top(GitClient(), real) == (top, main), (top, common)

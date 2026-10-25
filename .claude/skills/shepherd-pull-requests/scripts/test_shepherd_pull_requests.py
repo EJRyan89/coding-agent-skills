@@ -1571,3 +1571,24 @@ class MainTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             shepherd.main(["--rebase"])
         self.assertEqual(2, raised.exception.code)
+
+
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_a_folder_and_a_link_to_it_are_one_path_in_either_order(tmp_path: Path) -> None:
+    target, other = tmp_path / "hub", tmp_path / "other"
+    target.mkdir()
+    other.mkdir()
+    link = tmp_path / "linked hub"
+    link_folder(target, link)
+    assert shepherd.same_path(link, target)
+    assert shepherd.same_path(target, link)
+    assert not shepherd.same_path(link, other)
