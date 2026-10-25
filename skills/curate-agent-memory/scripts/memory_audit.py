@@ -859,7 +859,7 @@ def repository_supplied(repo: Path, scope: str) -> bool:
         listed = GitClient().output(["ls-files", "-z", "--", ".claude/settings.local.json"], directory=repo)
     except GitError as exc:
         return exc.kind != "not_repository"
-    return bool(listed.strip("\0"))
+    return bool(listed)
 
 
 def blocking_scope(scopes: tuple[tuple[str, Path], ...]) -> str | None:

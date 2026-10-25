@@ -1569,6 +1569,32 @@ class ResolveTests(unittest.TestCase):
         (self.repo / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
         self.assertTrue(memory_audit.repository_supplied(self.repo, "local"), "a configuration git cannot parse")
 
+    def test_local_settings_in_no_repository_are_the_users(self) -> None:
+        plain = self.root / "plain folder"
+        write(plain / ".claude" / "settings.local.json", "{}")
+        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}):
+            self.assertFalse(memory_audit.repository_supplied(plain, "local"))
+
+    def test_the_main_worktree_core_worktree_names_is_read_whole(self) -> None:
+        common = self.root / "shared git"
+        paths = [self.root / "linked", self.root / "shared git" / "worktrees" / "linked", common]
+
+        def main_worktree_given(configured: str | None) -> Path | None:
+            with (
+                mock.patch.object(GitClient, "rev_parse_paths", return_value=paths),
+                mock.patch.object(GitClient, "quiet_output", return_value=configured),
+            ):
+                return memory_audit.main_worktree(self.root / "linked")
+
+        # Only the line end git prints is cut: a name may end in another space or in any letter.
+        self.assertEqual((common / "../work\tX").resolve(), main_worktree_given("../work\tX\r\n"))
+        self.assertEqual((common / "../work\t").resolve(), main_worktree_given("../work\t\n"))
+        with self.assertRaises(GitError) as context:
+            main_worktree_given("\r\n")
+        self.assertEqual(f"git config gave core.worktree in {common / 'config'} an empty value", str(context.exception))
+        with self.assertRaises(memory_audit.UnknownMainWorktree):
+            main_worktree_given(None)
+
     def test_a_used_repository_choice_states_the_block_rule(self) -> None:
         self.store(self.home / "chosen")
         project = self.repo / ".claude" / "settings.json"

@@ -414,6 +414,44 @@ class CheckoutTests(DocumentTestCase):
         with self.assertRaises(GitError):
             review_document.committed_base("plan.md", self.root, client, text=True)
 
+    def test_a_git_failure_keeps_its_kind_and_exit_code_when_reworded(self) -> None:
+        reworded = review_document.git_failure(GitError("fatal: no", kind="not_repository", returncode=128), "read it")
+        self.assertEqual(
+            ("git could not read it: fatal: no", "not_repository", 128),
+            (str(reworded), reworded.kind, reworded.returncode),
+        )
+
+    def test_a_branch_with_no_commit_is_looked_up_in_the_checkout(self) -> None:
+        commands: list[list[str]] = []
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            commands.append(list(command))
+            if "symbolic-ref" in command:
+                return GitResult(0, "refs/heads/main\n", "")
+            return GitResult(1, "", "")
+
+        self.assertTrue(review_document.unborn(self.root, GitClient(answering)))
+        self.assertEqual(
+            ["-C", str(self.root), "rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/main^{commit}"],
+            commands[1][1:],
+        )
+
+    def test_a_listed_blob_git_then_finds_no_file_for_fails_naming_it(self) -> None:
+        head, blob = "a" * 40, "b" * 40
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            if command[-1] == "HEAD^{commit}":
+                return GitResult(0, f"{head}\n", "")
+            if "ls-tree" in command:
+                return GitResult(0, f"100644 blob {blob}\tplan.md\0", "")
+            return GitResult(1, "", "")  # the file at the commit names nothing
+
+        with self.assertRaises(GitError) as context:
+            review_document.committed_base("plan.md", self.root, GitClient(answering), text=True)
+        self.assertEqual(
+            f"git could not read plan.md as committed at {head}: it lists blob {blob} there", str(context.exception)
+        )
+
     def test_a_detached_head_is_not_a_checkout_with_no_commit_yet(self) -> None:
         def answering(command: Sequence[str], timeout: float) -> GitResult:
             return GitResult(1, "", "")  # a detached HEAD, which names no commit the repository holds
