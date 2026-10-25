@@ -478,7 +478,7 @@ class SignedOutTests(unittest.TestCase):
 
     def test_github_cli_is_left_off_the_path_and_refused_beside_the_runtime(self) -> None:
         separator = os.pathsep
-        holds_gh = {"gh-dir", "shared"}
+        holds_gh = {"gh-dir", "shared", "shared/", "./shared"}
 
         def find(name: str, search_path: str) -> str | None:
             if name == "node":
@@ -490,8 +490,10 @@ class SignedOutTests(unittest.TestCase):
                 separator.join(["tools", "runtime-dir"]),
                 lines.without_gh(separator.join(["tools", "gh-dir", "runtime-dir"]), "runtime-dir/copilot"),
             )
-            with self.assertRaisesRegex(lines.Unsafe, "GitHub CLI is in shared"):
-                lines.without_gh(separator.join(["tools", "shared"]), "shared/copilot")
+            # A search path spells the runtime's folder as it likes, and every spelling of it is the runtime's folder.
+            for spelling in ("shared", "shared/", "./shared"):
+                with self.subTest(spelling=spelling), self.assertRaisesRegex(lines.Unsafe, "GitHub CLI is in "):
+                    lines.without_gh(separator.join(["tools", spelling]), "shared/copilot")
 
     def test_a_runtime_that_cannot_be_signed_out_starts_nothing(self) -> None:
         stub = StubRuntimes()
