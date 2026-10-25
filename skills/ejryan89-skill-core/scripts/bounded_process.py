@@ -142,20 +142,19 @@ def run_bounded(
             cwd=cwd,
             **({} if tree is None else tree.start_options()),
         )
-        expired: subprocess.TimeoutExpired | None = None
         with nullcontext() if tree is None else tree.hold(process):
             try:
-                returncode = process.wait(timeout=timeout)
+                ended: int | subprocess.TimeoutExpired = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired as exc:
                 process.kill()
                 # A kill not yet reported within its allowance still ends as the caller's time limit, with its output.
                 with suppress(subprocess.TimeoutExpired):
                     process.wait(timeout=KILL_WAIT_SECONDS)
-                expired = exc
+                ended = exc
         kept_output, kept_errors = _read_back(output, output_limit), _read_back(errors, output_limit)
-        if expired is not None:
-            raise subprocess.TimeoutExpired(list(command), timeout, kept_output, kept_errors) from expired
-        return Finished(returncode, kept_output, kept_errors)
+        if isinstance(ended, subprocess.TimeoutExpired):
+            raise subprocess.TimeoutExpired(list(command), timeout, kept_output, kept_errors) from ended
+        return Finished(ended, kept_output, kept_errors)
 
 
 def _read_back(stream: IO[bytes], limit: int | None) -> bytes:

@@ -2789,12 +2789,10 @@ class JsonFileDecodingTests(TemporaryTestCase):
         self.assertIn("not JSON", lines[0])
         self.assertTrue(lines[2].endswith("not a JSON object"), lines[2])
         # The reason is the operating system's own words, as the platform gives them for a folder read as a file.
-        try:
+        with self.assertRaises(OSError) as raised:
             (scenarios / "folder" / "scenario.json").read_bytes()
-        except OSError as exc:
-            reason = exc.strerror
         folder = (scenarios / "folder" / "scenario.json").as_posix()
-        self.assertEqual(f"TRIGGER_SCENARIO_UNREADABLE {folder} {reason}", lines[1])
+        self.assertEqual(f"TRIGGER_SCENARIO_UNREADABLE {folder} {raised.exception.strerror}", lines[1])
 
 
 def test_a_line_splits_into_sentences_and_clauses_before_a_capital_span_emphasis_or_parenthesis() -> None:

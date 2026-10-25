@@ -223,12 +223,11 @@ class Manifest:
         for kind in KINDS:
             for name, value in entry.get(kind.key, {}).items():
                 owned.of(kind)[name] = _hash_of(value)
-                details = value if isinstance(value, dict) else {}
                 if kind is SKILL:
                     for dependency in DEPENDENCY_KINDS:
-                        owned.deps_of(dependency)[name] = list(details.get(dependency.dependency_key, []))
+                        owned.deps_of(dependency)[name] = list(value.get(dependency.dependency_key, []))
                 elif kind is SHARED:
-                    owned.shared_roles[name] = details.get("role", "owner")
+                    owned.shared_roles[name] = value.get("role", "owner")
         owned.requested_skills = set(entry.get("requested_skills", []))
         owned.requested_bundles = set(entry.get("requested_bundles", []))
         owned.requested_bundle_members = {

@@ -336,7 +336,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             )
             token = READ.string(owner.get("token"), "lock owner.token", empty=True)
         except CONTENT_ERRORS:  # undecodable, not JSON, too large or deep, or not an owner record
-            token = ""
+            token, owner = "", {}
         if token:
             return LockIdentity(token=token), owner
         return LockIdentity(unowned=(status.st_dev, status.st_ino, status.st_mtime_ns), torn=True), {}
