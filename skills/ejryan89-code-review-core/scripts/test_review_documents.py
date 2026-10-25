@@ -518,6 +518,8 @@ class RefusalTests(unittest.TestCase):
         outlined = '<w:p><w:pPr><w:outlineLvl w:val="\u00b2"/></w:pPr><w:r><w:t>Body</w:t></w:r></w:p>'
         self.assertEqual(["[P1] Body"], lines(word_document(document=body_xml(outlined))))
         self.assertEqual(["[P1] - Item"], lines(word_document(paragraph("Item", level="\u00b3"))))
+        # A level past the interpreter's digit limit is no level either.
+        self.assertEqual(["[P1] - Item"], lines(word_document(paragraph("Item", level="1" * 5000))))
         styles = STYLES.replace('<w:outlineLvl w:val="2"/>', '<w:outlineLvl w:val="\u00b9"/>')
         self.assertEqual(["[P1] Section"], lines(word_document(paragraph("Section", style="Custom"), styles=styles)))
 
