@@ -85,6 +85,12 @@ skill and agent behavior, not documentation. `DOCUMENTATION_FILES` and `DOCUMENT
 A guard, gate, verdict, count, or measurement has a test in which its evidence never existed, as item 5 of
 [Validation](adding-a-skill.md#validation) in the skill contract states.
 
+A defect or drift found after its change merged ends in an entry in the [lessons ledger](lessons.md), made in the pull
+request that fixes it: the lesson, the issues it was found in, and the guard that now refuses the mistake, a test, a
+validation policy's test, a skill's step, or a workflow, or the reason no guard is possible. A finding of a lesson the
+ledger already holds adds its issue to that entry. Validation fails a lesson whose guard does not resolve, and one
+that names neither a guard nor a reason.
+
 A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
 expected wording from that document, or from the one constant the code and the document both use, never from a copy
 restated in the test, so the test cannot pin a change the document does not make. A shared constant's text is pinned
@@ -239,6 +245,7 @@ Each fact has one owner; update the owner in the same change.
 | `docs/upgrade-notes.md` | What each release changes for an installation, one entry per change a user meets, written at release from each pull request body's `## Upgrade note`. |
 | `docs/code-review-operations-contract.md` | The behavior the code-review skills promise to keep, and the formats of their records. |
 | `docs/skill-evaluations.md` | The latest `evaluate-skill` result per skill and model, written by `python tools/skill_evals.py --write`. |
+| `docs/lessons.md` | Each lesson learned from a defect or drift found after merge, and the guard that refuses it or why none can. |
 
 ## Model guidance
 
