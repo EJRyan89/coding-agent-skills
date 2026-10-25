@@ -117,6 +117,16 @@ class RunToolTests(DeadlineCase):
     def test_the_deadline_is_ten_minutes(self) -> None:
         self.assertEqual(600, platform_support.TOOL_DEADLINE_SECONDS)
 
+    def test_the_deadline_given_or_the_default_reaches_the_bounded_run(self) -> None:
+        real = platform_support.run_bounded
+        for timeout, expected in ((7.5, 7.5), (None, 600)):
+            with (
+                self.subTest(timeout=timeout),
+                mock.patch.object(platform_support, "run_bounded", side_effect=real) as bounded,
+            ):
+                platform_support.run_tool([sys.executable, "-c", "pass"], timeout=timeout)
+            self.assertEqual(expected, bounded.call_args.args[1])
+
     def test_a_slow_tool_within_its_deadline_finishes_with_its_output_in_order(self) -> None:
         program = "import sys, time; print('out', flush=True); time.sleep(1); print('err', file=sys.stderr)"
         result = platform_support.run_tool([sys.executable, "-c", program], timeout=30)
