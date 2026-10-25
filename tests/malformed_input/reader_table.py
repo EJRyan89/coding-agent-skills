@@ -45,6 +45,9 @@ class Reader:
     # Each case the reader documents accepting, mapped to the reason it does.
     accepts: Mapping[str, str] = field(default_factory=dict)
     refuses_links: bool = False
+    # Writes the files the reader takes beside its own, given the path of its own, before the case is read; the
+    # reader then writes nothing below the case's folder when it refuses.
+    prepare: Callable[[Path], None] | None = None
 
 
 def applicable_cases(reader: Reader) -> list[corpus.Case]:

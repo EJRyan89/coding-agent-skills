@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from pathlib import Path
 from unittest import mock
 
@@ -97,10 +98,20 @@ class ConfigureTests(DeployerTestCase):
         self.make_config()
         before = self.digest()
         target = self.config_file()
-        # The read fails as a file an editor or a scanner holds does, while the harness still reads the home around it.
-        denied = PermissionError(13, "Permission denied", str(target))
-        with mock.patch("deployer.config.read", side_effect=denied):
-            result = self.configure(stdin=f"{forward(self.repos)}\n\n\n\n")
+        # The read fails as a file an editor or a scanner holds does, inside the run only, so the harness still reads
+        # the home around it; config.read turns the failure into the deployer's refusal.
+        read_bytes = Path.read_bytes
+
+        def denied(path: Path) -> bytes:
+            if path == target:
+                raise PermissionError(13, "Permission denied", str(target))
+            return read_bytes(path)
+
+        def run() -> int:
+            with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=denied):
+                return configure.run([], self.paths, stdin=io.StringIO(f"{forward(self.repos)}\n\n\n\n"))
+
+        result = self.run_command(run)
         self.assertEqual(1, result.code, result.output)
         self.assertIn(
             f"\nERROR: Could not read the configuration: {forward(target)}: Permission denied\n"

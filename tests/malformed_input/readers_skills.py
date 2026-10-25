@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -93,12 +94,14 @@ def _metadata(path: Path) -> object:
     return metadata
 
 
-def _plugin_hooks(path: Path) -> object:
-    plugin = path.parents[1]
-    manifest = plugin / ".claude-plugin" / "plugin.json"
+def _plugin_manifest(path: Path) -> None:
+    manifest = path.parents[1] / ".claude-plugin" / "plugin.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text('{"name": "example"}', encoding="utf-8")
-    return skill_inventory.plugin_hooks(plugin / "skills" / "example")
+
+
+def _plugin_hooks(path: Path) -> object:
+    return skill_inventory.plugin_hooks(path.parents[1] / "skills" / "example")
 
 
 def _policy(path: Path) -> object:
@@ -108,12 +111,17 @@ def _policy(path: Path) -> object:
 
 @contextmanager
 def _sealed(path: Path) -> Iterator[None]:
-    """SEALS in the case's folder, holding the seal repo_cleanup.save_plan writes for the bytes at path."""
-    with mock.patch.object(repo_cleanup, "SEALS", path.parent / "seals"):
-        if path.is_file():
+    """SEALS in a folder of its own, outside the case's folder the suite holds unwritten, holding the seal
+    repo_cleanup.save_plan writes for the bytes at path, where they can be read."""
+    with tempfile.TemporaryDirectory() as seals, mock.patch.object(repo_cleanup, "SEALS", Path(seals)):
+        try:
+            content = path.read_bytes()
+        except OSError:
+            content = None
+        if content is not None:
             seal = repo_cleanup.seal_file(path)
             seal.parent.mkdir(parents=True, exist_ok=True)
-            seal.write_text(hashlib.sha256(path.read_bytes()).hexdigest() + "\n", encoding="utf-8")
+            seal.write_text(hashlib.sha256(content).hexdigest() + "\n", encoding="utf-8")
         yield
 
 
@@ -156,8 +164,11 @@ SYNTHESIS_CONTEXT = "{}"
 SYNTHESIS_SEAL = hashlib.sha256(f"\0{SYNTHESIS_CONTEXT}".encode()).hexdigest()
 
 
-def _synthesis_context(path: Path) -> object:
+def _synthesis_companion(path: Path) -> None:
     (path.parent / review_synthesis.CONTEXT_NAME).write_text(SYNTHESIS_CONTEXT, encoding="utf-8")
+
+
+def _synthesis_context(path: Path) -> object:
     return review_synthesis.load_context({"input": str(path), "input_sha256": SYNTHESIS_SEAL})
 
 
@@ -171,10 +182,15 @@ class _Detector:
         pass
 
 
-def _dashboard_input(path: Path) -> object:
+def _dashboard(path: Path) -> None:
     dashboard = path.parent / "dashboard.md"
     dashboard.write_text(f"{update_pr_dashboard.START_MARKER}\n{update_pr_dashboard.END_MARKER}\n", encoding="utf-8")
-    return update_pr_dashboard.update_dashboard_rows(path, dashboard, "reviewer", detector=_Detector())
+
+
+def _dashboard_input(path: Path) -> object:
+    return update_pr_dashboard.update_dashboard_rows(
+        path, path.parent / "dashboard.md", "reviewer", detector=_Detector()
+    )
 
 
 DASHBOARD_ITEM = {
@@ -385,6 +401,7 @@ READERS = [
         _synthesis_context,
         (review_synthesis.SynthesisError,),
         filename=review_synthesis.INPUT_NAME,
+        prepare=_synthesis_companion,
     ),
     Reader(
         "skill_inventory.plugin_hooks",
@@ -394,6 +411,7 @@ READERS = [
         (skill_inventory.InputError,),
         filename="plugin/hooks/hooks.json",
         accepts={"bom": UTF8_SIG},
+        prepare=_plugin_manifest,
     ),
     Reader(
         "skill_inventory.read_metadata",
@@ -423,5 +441,6 @@ READERS = [
             "bom": UTF8_SIG,
             "top_level_list": "the input is a list of pull requests, and an empty one holds none",
         },
+        prepare=_dashboard,
     ),
 ]

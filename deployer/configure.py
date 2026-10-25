@@ -8,7 +8,7 @@ from typing import TextIO
 
 from . import config, fsops, platform_support, source
 from .arguments import CONFIGURE_COMMAND, PROG, parse_command
-from .errors import Cancelled, DeployError, debug_requested, fail, input_ended, os_error, print_error
+from .errors import Cancelled, DeployError, debug_requested, fail, input_ended, print_error
 from .paths import Paths, validate_managed_roots
 
 # Ctrl+C or the end of input at a prompt. The configuration is written atomically, so it is unchanged.
@@ -61,10 +61,7 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
         dropped: list[str] = []
         # Checked with --reset too, which would otherwise ask every question and then fail to write over it.
         if config.is_saved(config_file) and not reset:
-            try:
-                existing = config.read(config_file, source_id, dropped)
-            except OSError as exc:
-                raise os_error(exc, "read the configuration") from exc
+            existing = config.read(config_file, source_id, dropped)
         print("")
         print(f"Source: {source.label(source_id, source.load_source_name(paths))}")
         print(f"Config: {platform_support.normalize(config_file)}")
