@@ -2,8 +2,10 @@
 
 readers.py lists each reader with its format, the refusals its contract names, and the cases it documents accepting;
 corpus.py builds the cases. Each case placed where the reader expects its file must end in one of the reader's named
-refusals or in a documented acceptance, never an escaped traceback or another exception type. A field case may also
-end in an acceptance, since whether a field is required is the reader's own contract, which its suite holds. A
+refusals or in a documented acceptance, never an escaped traceback or another exception type. A field case that
+removes a field or empties an object may also end in an acceptance, since whether a field is required is the reader's
+own contract, which its suite holds; one that gives a field a value of another type may not, unless the reader
+documents taking it, since a reader that answers past a shape it does not know answers on evidence it never read. A
 refusal leaves the case's folder as it was, so a step that writes before it validates fails; the files a reader takes
 beside its own are written by its prepare before the case is read. Each reader also reads its own well-formed
 document, so a reader whose adapter is broken cannot pass by refusing everything.
@@ -34,8 +36,9 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 KNOWN = {(entry.reader, entry.case): entry.issue for entry in read_known_failures(REPOSITORY / KNOWN_FAILURES)}
 PAIRS = [(reader, case) for reader in readers.READERS for case in readers.applicable_cases(reader)]
 # The exceptions a malformed file makes a reader's parse or shape check raise when nothing turns them into its refusal.
-# Any other exception propagates and fails its test with the traceback, listed as a known failure or not.
-ESCAPES = (ArithmeticError, AttributeError, LookupError, OSError, RecursionError, TypeError, ValueError)
+# Any other exception propagates and fails its test with the traceback, listed as a known failure or not. Python's
+# parser raises MemoryError for source nested past its own stack.
+ESCAPES = (ArithmeticError, AttributeError, LookupError, MemoryError, OSError, RecursionError, TypeError, ValueError)
 
 
 def tree(folder: Path) -> dict[str, bytes | None]:
@@ -71,8 +74,12 @@ def failure(reader: readers.Reader, case: corpus.Case, folder: Path) -> str | No
             return f"refused the case after writing {written}" if written else None
         except ESCAPES as error:
             return f"raised {type(error).__name__}: {str(error)[:300]}"
-    if case.field or case.name in reader.accepts:
+    if case.name in reader.accepts:
         return None
+    if case.field and (not case.name.startswith(f"{corpus.WRONG_TYPE}:") or reader.open_fields):
+        return None
+    if case.field:
+        return "accepted a field of another type, which the reader documents neither refusing nor accepting"
     return "accepted the case, which the reader documents neither refusing nor accepting"
 
 
@@ -107,6 +114,13 @@ def test_each_known_failure_names_a_listed_reader_and_one_of_its_cases() -> None
     assert not unknown, unknown
 
 
+def test_a_pending_reader_is_not_yet_in_a_table() -> None:
+    held = {reader.name for reader in readers.READERS}
+    assert not held & readers.PENDING.keys(), (
+        f"remove each held reader from PENDING: {sorted(held & readers.PENDING.keys())}"
+    )
+
+
 def _refuse(path: Path) -> object:
     raise ValueError(f"refused {path.name}")
 
@@ -132,7 +146,12 @@ def _prepared(path: Path) -> None:
         (_write_then_refuse, "empty", None, "refused the case after writing ['written']"),
         (_open, "empty", None, "accepted the case, which the reader documents neither refusing nor accepting"),
         (_open, "missing:value", None, None),
-        (_open, "wrong_type:value", None, None),
+        (
+            _open,
+            "wrong_type:value",
+            None,
+            "accepted a field of another type, which the reader documents neither refusing nor accepting",
+        ),
         *([(_open, corpus.UNREADABLE, None, "raised PermissionError")] if corpus.can_deny_reading() else []),
     ],
 )
@@ -150,6 +169,37 @@ def test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_ac
         assert found.startswith(expected), found
 
 
+def test_a_field_of_another_type_passes_where_the_reader_documents_taking_it_or_leaves_fields_to_its_caller() -> None:
+    documented = readers.Reader(
+        "example.read", "json", b'{"value": 1}', _open, (ValueError,), accepts={"wrong_type:value": "unread"}
+    )
+    open_fields = readers.Reader(
+        "example.read", "json", b'{"value": 1}', _open, (ValueError,), open_fields="it returns the document whole"
+    )
+    for reader in (documented, open_fields):
+        case = next(case for case in readers.applicable_cases(reader) if case.name == "wrong_type:value")
+        with tempfile.TemporaryDirectory() as temporary:
+            assert failure(reader, case, Path(temporary)) is None
+
+
+def test_a_parsers_grammar_builds_its_nesting_and_number_cases_in_place_of_the_formats() -> None:
+    reader = readers.Reader(
+        "example.parse",
+        "text",
+        b"(a)",
+        _open,
+        (ValueError,),
+        nesting=lambda levels: b"(" * levels + b"a" + b")" * levels,
+        number=lambda digits: b"#" + digits,
+    )
+    found = {case.name: case.content for case in readers.applicable_cases(reader)}
+    assert found["deep_nesting"] == b"(" * corpus.SCANNED_DEPTH + b"a" + b")" * corpus.SCANNED_DEPTH
+    assert found["long_integer"] == b"#" + corpus.LONG_INTEGER
+    json_reader = readers.Reader("example.read", "json", b'{"value": 1}', _open, (ValueError,), nesting=lambda n: b"x")
+    nested = [case for case in readers.applicable_cases(json_reader) if case.name == "deep_nesting"]
+    assert [case.content for case in nested] == [b"x"]
+
+
 def test_a_field_case_changes_one_field_of_the_readers_own_document() -> None:
     found = {case.name: json.loads(case.content) for case in corpus.fields(b'{"name": "a", "items": [{"id": 1}]}')}
     assert found == {
@@ -157,6 +207,8 @@ def test_a_field_case_changes_one_field_of_the_readers_own_document() -> None:
         "wrong_type:name": {"name": {"value": 1}, "items": [{"id": 1}]},
         "missing:items": {"name": "a"},
         "wrong_type:items": {"name": "a", "items": "text"},
+        "empty_object:items.0": {"name": "a", "items": [{}]},
+        "wrong_type:items.0": {"name": "a", "items": ["text"]},
         "missing:items.0.id": {"name": "a", "items": [{}]},
         "wrong_type:items.0.id": {"name": "a", "items": [{"id": {"value": 1}}]},
     }

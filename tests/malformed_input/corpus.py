@@ -33,6 +33,9 @@ DIRECTORY = "directory"
 LINK = "link"
 UNREADABLE = "unreadable"
 
+# The field change that gives a field a value of another type, which a reader refuses unless it documents taking it.
+WRONG_TYPE = "wrong_type"
+
 
 @dataclass(frozen=True)
 class Case:
@@ -66,12 +69,14 @@ def can_deny_reading() -> bool:
 
 
 def _field_paths(value: object, path: tuple[str | int, ...] = ()) -> Iterator[tuple[tuple[str | int, ...], object]]:
-    """Each field below value with its path: an object's keys in order, and a list's first item for the rest."""
+    """Each field below value with its path: an object's keys in order, and a list's first item, standing for the
+    rest, itself and then its own fields."""
     if isinstance(value, dict):
         for key, item in value.items():
             yield (*path, key), item
             yield from _field_paths(item, (*path, key))
     elif isinstance(value, list) and value:
+        yield (*path, 0), value[0]
         yield from _field_paths(value[0], (*path, 0))
 
 
@@ -103,12 +108,12 @@ def fields(valid: bytes, before: bytes = b"", after: bytes = b"") -> list[Case]:
         about = {
             "missing": f"the document without its field {name}, which the code may index later",
             "empty_object": f"{{}} in place of the object {name}, its required keys missing",
-            "wrong_type": f"a value of another type in place of {name}",
+            WRONG_TYPE: f"a value of another type in place of {name}",
         }
         changes = [
             *(["missing"] if isinstance(path[-1], str) else []),
             *(["empty_object"] if isinstance(value, dict) else []),
-            "wrong_type",
+            WRONG_TYPE,
         ]
         found += [
             Case(
