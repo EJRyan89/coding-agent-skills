@@ -67,7 +67,8 @@ all of them did, goes to stdout and to the step summary
 GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line saying so. It exits 0 once the
 gate has run to its end, whatever survived, and 1 when the run was unfinished, after its summary and an error
 annotation repeating its first line, or when it cannot run: mutmut no longer makes the mutant its canary expects on the
-canary's line alone, or a git command fails.
+canary's line alone, the reach run no longer measures its canary suite's own process and the process the suite's test
+starts, each line named with that test, which a missing coverage.py .pth file would cause, or a git command fails.
 """
 
 from __future__ import annotations
@@ -141,6 +142,21 @@ CANARY_MUTANT = "def add(a):\n    return a - 1\n"
 # stops honoring the line filter fails the gate rather than mutating whole modules again.
 CANARY_LINE = frozenset({2})
 CANARY_OTHER_LINE = frozenset({1})
+# A suite whose reach every reach pass checks first: its test runs parent() in the suite's own process and child() in a
+# process it starts, so a coverage.py release, an install layout, or an interpreter that no longer starts measuring
+# from COVERAGE_PROCESS_START, or no longer names a child's lines with the test that started it, fails the gate rather
+# than leaving every mutant not reached.
+MEASUREMENT_MODULE = "canary.py"
+MEASUREMENT_SOURCE = (
+    "import sys\n\n\ndef parent():\n    return 1\n\n\ndef child():\n    return 2\n\n\n"
+    'if __name__ == "__main__":\n    print(child())\n'
+)
+MEASUREMENT_SUITE = "test_canary.py"
+MEASUREMENT_TESTS = (
+    "import subprocess\nimport sys\nfrom pathlib import Path\n\nimport canary\n\n\n"
+    "def test_canary():\n    assert canary.parent() == 1\n"
+    '    subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("canary.py"))], check=True)\n'
+)
 # coverage.py's warnings name what a measured process did not import; a suite that checks a child's stderr would read
 # them as its child's output, so none is printed.
 COVERAGE_WARNINGS = (
@@ -420,6 +436,25 @@ def generator_problem(generate: Generator) -> str | None:
         return f"the mutant generator no longer turns {CANARY_SOURCE.strip()!r} into {CANARY_MUTANT.strip()!r}"
     if CANARY_MUTANT in generate("canary.py", CANARY_SOURCE, CANARY_OTHER_LINE):
         return "the mutant generator mutated a line it was not given, so it no longer keeps to the changed lines"
+    return None
+
+
+def measurement_problem(reach: ReachRunner) -> str | None:
+    """Why the reach run cannot be trusted, or None when it measured the canary suite's own process and the process its
+    test started, and named each one's line with that test."""
+    expected = frozenset({f"{MEASUREMENT_SUITE}::test_canary"})
+    with tempfile.TemporaryDirectory(prefix="mutation-canary-") as temporary:
+        tree = Path(temporary)
+        (tree / MEASUREMENT_MODULE).write_text(MEASUREMENT_SOURCE, encoding="utf-8")
+        (tree / MEASUREMENT_SUITE).write_text(MEASUREMENT_TESTS, encoding="utf-8")
+        result = reach(tree, MEASUREMENT_SUITE, [MEASUREMENT_MODULE], MINIMUM_SUITE_SECONDS)
+    if isinstance(result, str):
+        return f"the reach run's canary suite {result}, so no suite's reach can be measured"
+    tests = result.tests.get(MEASUREMENT_MODULE, {})
+    # parent()'s and child()'s return lines.
+    for line, where in ((5, "the suite's own process"), (9, "a process its test started")):
+        if tests.get(line) != expected:
+            return f"the reach run no longer names the line {where} ran with the canary suite's test"
     return None
 
 
@@ -986,6 +1021,7 @@ class Gate:
     reach: ReachRunner = coverage_reach
     run: SuiteRunner = run_suite
     clock: Clock = time.monotonic
+    measure: Callable[[ReachRunner], str | None] = measurement_problem
 
     def select(self, tree: Path, modules: Sequence[str]) -> dict[str, tuple[int, list[Mutant]]]:
         """Each module's count of changed lines and the mutants of those lines."""
@@ -1016,6 +1052,9 @@ class Gate:
         failed: dict[str, str] = {}
         unmeasured: list[str] = []
         if mutated:
+            problem = self.measure(self.reach)
+            if problem:
+                raise RuntimeError(problem)
             suites = [
                 suite.relative_to(self.root).as_posix()
                 for suite in reached_suites(self.root, mutated)

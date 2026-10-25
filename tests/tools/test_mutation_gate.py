@@ -354,6 +354,52 @@ class ReachFixtures(unittest.TestCase):
         self.assertEqual(frozenset(), mutation_gate.statement_lines({"executed_lines": []}, 6))
 
 
+class MeasurementCanaryFixtures(unittest.TestCase):
+    """The canary suite every reach pass measures first, with a reach runner standing in for coverage.py."""
+
+    CANARY_TEST = frozenset({"test_canary.py::test_canary"})
+
+    def canary(self, tests: dict[int, frozenset[str]] | str) -> str | None:
+        """The canary's verdict on a reach runner that runs the canary suite with the real pytest, unmeasured, and
+        reports `tests` as the lines' tests, or `tests` itself as why it has no reach."""
+        asked: list[tuple[str, list[str], float]] = []
+
+        def reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach | str:
+            asked.append((suite, list(modules), timeout))
+            done = subprocess.run(
+                [sys.executable, "-B", "-m", "pytest", suite, "-q", "-p", "no:cacheprovider"],
+                cwd=tree,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+            if isinstance(tests, str):
+                return tests
+            return Reach(1.0, {"canary.py": frozenset(tests)}, {"canary.py": tests})
+
+        problem = mutation_gate.measurement_problem(reach)
+        self.assertEqual([("test_canary.py", ["canary.py"], mutation_gate.MINIMUM_SUITE_SECONDS)], asked)
+        return problem
+
+    def test_a_reach_that_names_the_suites_and_its_childs_lines_with_the_test_passes(self) -> None:
+        self.assertIsNone(self.canary({5: self.CANARY_TEST, 9: self.CANARY_TEST}))
+
+    def test_a_reach_that_measured_nothing_or_no_process_or_the_wrong_test_fails(self) -> None:
+        other = frozenset({"test_canary.py::test_other"})
+        for tests, expected in (
+            # No .pth file starts measuring, so `coverage combine` has no data.
+            ("failed in `coverage combine` with exit code 1", "canary suite failed in `coverage combine`"),
+            ({}, "the suite's own process"),
+            # `patch = subprocess`, or a child started with its context already expanded, names no test.
+            ({5: self.CANARY_TEST}, "a process its test started"),
+            ({9: self.CANARY_TEST}, "the suite's own process"),
+            ({5: self.CANARY_TEST, 9: other}, "a process its test started"),
+        ):
+            with self.subTest(tests=tests):
+                self.assertIn(expected, self.canary(tests) or "")
+
+
 class ContextFixtures(unittest.TestCase):
     """The tests a mutant's line runs, read from coverage.py's recorded contexts and pytest's listing of the suite."""
 
@@ -1137,6 +1183,11 @@ def stub_generator(module: str, source: str, lines: frozenset[int]) -> list[str]
     return made
 
 
+def measured(reach: object) -> None:
+    """A measurement canary that passes, for a run whose reach is stubbed: coverage.py is not a development
+    dependency."""
+
+
 def stub_reach(tree: Path, suite: str, modules: object, timeout: float) -> Reach:
     lines = frozenset(range(1, CALC.count("\n") + 1))
     return Reach(1.0, {"tools/calc.py": lines})
@@ -1160,7 +1211,7 @@ class WholeRunFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository with spaces"
             fixture_repository(root)
-            gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach)
+            gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach, measure=measured)
             result = gate.report()
             text = result.text
             worktrees = git(root, "worktree", "list", "--porcelain")
@@ -1184,7 +1235,7 @@ class WholeRunFixtures(unittest.TestCase):
             root = Path(temporary) / "repository"
             fixture_repository(root)
             result = Gate(
-                root, "main", 5, 2, GitClient(), stub_generator, stub_reach, clock=lambda: next(times)
+                root, "main", 5, 2, GitClient(), stub_generator, stub_reach, clock=lambda: next(times), measure=measured
             ).report()
         self.assertFalse(result.finished)
         self.assertTrue(
@@ -1206,7 +1257,7 @@ class WholeRunFixtures(unittest.TestCase):
                 asked[module] = lines
                 return [source.replace("a + b", "a - b"), source.replace("a * 2", "a * 3")]
 
-            text = Gate(root, "feature", 5, 2, GitClient(), generate, stub_reach).report().text
+            text = Gate(root, "feature", 5, 2, GitClient(), generate, stub_reach, measure=measured).report().text
         self.assertEqual({"tools/calc.py": frozenset({6})}, asked)
         # The suite kills line 2's mutant, so it would count as killed had it run: only line 6's ran, and survived.
         self.assertIn("| `tools/calc.py` | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
@@ -1233,7 +1284,7 @@ class WholeRunFixtures(unittest.TestCase):
             def recorded_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach:
                 return Reach(1.0, executed_lines(MULTILINE_REPORT, tree, modules))
 
-            text = Gate(root, "feature", 5, 2, GitClient(), generate, recorded_reach).report().text
+            text = Gate(root, "feature", 5, 2, GitClient(), generate, recorded_reach, measure=measured).report().text
         # Line 8 is a continuation of the call on line 6, the line coverage.py recorded, so the suite ran and killed it.
         self.assertIn("| `tools/calc.py` | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 100% (1 of 1) |", text)
 
@@ -1264,7 +1315,7 @@ class WholeRunFixtures(unittest.TestCase):
                 calls.append((suite, tuple(tests), result))
                 return result
 
-            gate = Gate(root, "feature", 5, 1, GitClient(), generate, recorded_reach, run)
+            gate = Gate(root, "feature", 5, 1, GitClient(), generate, recorded_reach, run, measure=measured)
             with mock.patch.object(
                 mutation_gate, "reached_suites", return_value=[root / "tests" / "tools" / "test_calc.py"]
             ):
@@ -1318,6 +1369,23 @@ class WholeRunFixtures(unittest.TestCase):
                 gate.report()
             self.assertEqual(1, git(root, "worktree", "list", "--porcelain").count("worktree "))
 
+    def test_a_reach_that_fails_its_measurement_canary_stops_the_run_before_any_suite(self) -> None:
+        checked: list[object] = []
+
+        def unmeasured(reach: object) -> str:
+            checked.append(reach)
+            return "the reach run no longer names the line a process its test started ran with the canary suite's test"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach, measure=unmeasured)
+            with self.assertRaisesRegex(RuntimeError, "a process its test started"):
+                gate.report()
+            self.assertEqual(1, git(root, "worktree", "list", "--porcelain").count("worktree "))
+        # The canary checks the run's own reach runner, which measures no suite once it fails.
+        self.assertEqual([refuse_reach], checked)
+
 
 class QueueFixtures(unittest.TestCase):
     """Two changed modules sharing one queue, with a suite run that takes the whole cap."""
@@ -1346,7 +1414,7 @@ class QueueFixtures(unittest.TestCase):
                     (tree / module).write_text(source, encoding="utf-8")
             git = mock.create_autospec(GitClient, instance=True)
             git.output.return_value = "@@ -0,0 +1,3 @@\n+x = 1\n+y = 2\n+z = 3\n"
-            gate = Gate(root, "main", 1, 2, git, line_generator, reach, run, lambda: now[0])
+            gate = Gate(root, "main", 1, 2, git, line_generator, reach, run, lambda: now[0], measured)
             with mock.patch.object(mutation_gate, "reached_suites", return_value=[root / "tests" / "test_x.py"]):
                 report = gate.mutate(trees, modules, 0.0)
         tested = {module.module: counts(module.outcomes)[SURVIVED] for module in report.modules}
