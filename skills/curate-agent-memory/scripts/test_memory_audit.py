@@ -2067,3 +2067,24 @@ class ManagedSettingsPathTests(unittest.TestCase):
         for value in (None, "", ".", "Program Files"):
             with self.subTest(value=value):
                 self.assertIsNone(self.managed(value))
+
+
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_a_target_reached_through_a_linked_folder_is_the_file_it_names(tmp_path: Path) -> None:
+    memory, real = tmp_path / "memory", tmp_path / "real"
+    memory.mkdir()
+    real.mkdir()
+    link_folder(real, memory / "shared")
+    named = memory_audit.target_identity(memory, "shared/note.md")
+    assert named == memory_audit.target_identity(real, "note.md")
+    assert named == memory_audit.target_identity(memory, "./shared/../shared/note.md")
+    assert named != memory_audit.target_identity(memory, "note.md")
