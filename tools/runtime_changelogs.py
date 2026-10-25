@@ -105,6 +105,8 @@ MAX_RELEASE_PAGES = 10
 # The pages requested at once.
 PAGE_WORKERS = 8
 GONE_STATUSES = (404, 410)
+# What the summary says of a runtime none of whose entries read mentions a watched term.
+NO_WATCHED_ENTRY = "No entry read mentions a watched term."
 # The Python the variables are read from, from the top of the repository, suites aside.
 PYTHON_ROOTS = ("deploy.py", "deployer", "tools", "skills")
 # The Markdown whose `${NAME}` placeholders a runtime fills in, such as `${CLAUDE_SKILL_DIR}`.
@@ -567,7 +569,7 @@ def summary(lines: Sequence[str]) -> str:
         if line.startswith("CHANGELOG "):
             _, subject, since, latest, read, kept = line.split(" ")
             rows += ["", f"### {subject}: releases after {since}, up to {latest}", "", f"Entries read: {read}.", ""]
-            rows += ["No entry read mentions a watched term.", ""] if kept == "0" else []
+            rows += [NO_WATCHED_ENTRY, ""] if kept == "0" else []
             if kept != "0" or subject in unread:
                 rows += ["| Release | Terms | Entry |", "| --- | --- | --- |"]
         elif line.startswith("UNREAD "):

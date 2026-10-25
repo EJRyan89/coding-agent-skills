@@ -2560,6 +2560,24 @@ def bash_git_subcommands(text: str) -> set[str]:
     return found
 
 
+def script_git_subcommands(script: Path) -> set[str]:
+    """The subcommand of each git command a Bash script runs, or of each git call a Python script makes, by the
+    shared derivation; any other script runs none this reads. A Python script that does not parse fails, as
+    script_facts fails it."""
+    text = require_text(script)
+    suffix = script.suffix.casefold()
+    if suffix in (".sh", ".bash"):
+        return bash_git_subcommands(text)
+    if suffix != ".py":
+        return set()
+    try:
+        return runtime_support.python_git_subcommands(text)
+    # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
+    # limits
+    except (SyntaxError, ValueError, MemoryError, RecursionError) as exc:
+        raise InputError(f"cannot read {posix(script)}: not valid Python") from exc
+
+
 def needs_evidence(folder: Path, granted: list[str], user_only: bool, tools: list[str]) -> list[tuple[str, str]]:
     """Each runtime capability the skill needs, by the shared derivation, with what shows it: a grant, user-only
     start, a hooked agent it starts, a network tool it declares, or a git subcommand that reaches a remote."""
@@ -2576,9 +2594,7 @@ def needs_evidence(folder: Path, granted: list[str], user_only: bool, tools: lis
             (need, f"tool {tool}") for need in runtime_support.frontmatter_needs([], False, tools=frozenset({tool}))
         ]
     for script in folder_scripts(folder / "scripts"):
-        if script.suffix.casefold() not in (".sh", ".bash"):
-            continue
-        for subcommand in sorted(bash_git_subcommands(require_text(script))):
+        for subcommand in sorted(script_git_subcommands(script)):
             needs = runtime_support.frontmatter_needs([], False, git_subcommands=frozenset({subcommand}))
             evidence += [(need, f"git {subcommand} {posix(script.relative_to(folder.resolve()))}") for need in needs]
     return list(dict.fromkeys(evidence))
