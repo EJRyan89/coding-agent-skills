@@ -42,6 +42,7 @@ from tools.mutation_gate import (
     Mutant,
     Outcome,
     Reach,
+    ReachRunner,
     Report,
     SuiteRunner,
     changed_lines,
@@ -359,9 +360,10 @@ class MeasurementCanaryFixtures(unittest.TestCase):
 
     CANARY_TEST = frozenset({"test_canary.py::test_canary"})
 
-    def canary(self, tests: dict[int, frozenset[str]] | str) -> str | None:
+    def canary(self, tests: dict[int, frozenset[str]] | str | None) -> str | None:
         """The canary's verdict on a reach runner that runs the canary suite with the real pytest, unmeasured, and
-        reports `tests` as the lines' tests, or `tests` itself as why it has no reach."""
+        reports `tests` as the lines' tests, `tests` itself as why it has no reach, or, for None, a reach holding no
+        entry for the canary module."""
         asked: list[tuple[str, list[str], float]] = []
 
         def reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach | str:
@@ -376,6 +378,8 @@ class MeasurementCanaryFixtures(unittest.TestCase):
             self.assertEqual(0, done.returncode, done.stdout + done.stderr)
             if isinstance(tests, str):
                 return tests
+            if tests is None:
+                return Reach(1.0, {}, {})
             return Reach(1.0, {"canary.py": frozenset(tests)}, {"canary.py": tests})
 
         problem = mutation_gate.measurement_problem(reach)
@@ -387,17 +391,29 @@ class MeasurementCanaryFixtures(unittest.TestCase):
 
     def test_a_reach_that_measured_nothing_or_no_process_or_the_wrong_test_fails(self) -> None:
         other = frozenset({"test_canary.py::test_other"})
-        for tests, expected in (
+        own = "the reach run no longer names the line the suite's own process ran with the canary suite's test"
+        child = "the reach run no longer names the line a process its test started ran with the canary suite's test"
+        cases: list[tuple[dict[int, frozenset[str]] | str | None, str]] = [
             # No .pth file starts measuring, so `coverage combine` has no data.
-            ("failed in `coverage combine` with exit code 1", "canary suite failed in `coverage combine`"),
-            ({}, "the suite's own process"),
+            (
+                "failed in `coverage combine` with exit code 1: `No data to combine`",
+                "the reach run's canary suite failed in `coverage combine` with exit code 1: `No data to combine`, so "
+                "no suite's reach can be measured",
+            ),
+            (None, own),
+            ({}, own),
             # `patch = subprocess`, or a child started with its context already expanded, names no test.
-            ({5: self.CANARY_TEST}, "a process its test started"),
-            ({9: self.CANARY_TEST}, "the suite's own process"),
-            ({5: self.CANARY_TEST, 9: other}, "a process its test started"),
-        ):
+            ({5: self.CANARY_TEST}, child),
+            ({9: self.CANARY_TEST}, own),
+            ({5: self.CANARY_TEST, 9: other}, child),
+        ]
+        for tests, expected in cases:
             with self.subTest(tests=tests):
-                self.assertIn(expected, self.canary(tests) or "")
+                self.assertEqual(expected, self.canary(tests))
+
+    def test_the_canary_texts_are_ascii_so_their_bytes_hold_in_every_locale(self) -> None:
+        self.assertTrue(mutation_gate.MEASUREMENT_SOURCE.isascii())
+        self.assertTrue(mutation_gate.MEASUREMENT_TESTS.isascii())
 
 
 class ContextFixtures(unittest.TestCase):
@@ -1368,6 +1384,43 @@ class WholeRunFixtures(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no longer turns"):
                 gate.report()
             self.assertEqual(1, git(root, "worktree", "list", "--porcelain").count("worktree "))
+
+    @staticmethod
+    def canary_aware(failing: bool, asked: list[str]) -> ReachRunner:
+        """A reach runner that stubs every suite's reach and answers the measurement canary's suite as coverage.py
+        would with no .pth file when `failing`, and as it does with one otherwise."""
+        canary = frozenset({"test_canary.py::test_canary"})
+
+        def reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach | str:
+            asked.append(suite)
+            if suite != "test_canary.py":
+                return stub_reach(tree, suite, modules, timeout)
+            if failing:
+                return "failed in `coverage combine` with exit code 1: `No data to combine`"
+            return Reach(1.0, {"canary.py": frozenset({5, 9})}, {"canary.py": {5: canary, 9: canary}})
+
+        return reach
+
+    def test_a_default_gate_measures_its_reach_canary_first_and_stops_when_it_fails(self) -> None:
+        for failing in (True, False):
+            asked: list[str] = []
+            with self.subTest(failing=failing), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "repository"
+                fixture_repository(root)
+                # No `measure` is given: the gate's own canary runs.
+                gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, self.canary_aware(failing, asked))
+                if failing:
+                    with self.assertRaises(RuntimeError) as raised:
+                        gate.report()
+                    self.assertEqual(
+                        "the reach run's canary suite failed in `coverage combine` with exit code 1: `No data to "
+                        "combine`, so no suite's reach can be measured",
+                        str(raised.exception),
+                    )
+                    self.assertEqual(["test_canary.py"], asked)
+                else:
+                    self.assertTrue(gate.report().finished)
+                    self.assertEqual(["test_canary.py", "tests/tools/test_calc.py"], asked)
 
     def test_a_reach_that_fails_its_measurement_canary_stops_the_run_before_any_suite(self) -> None:
         checked: list[object] = []

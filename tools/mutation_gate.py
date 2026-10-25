@@ -445,8 +445,9 @@ def measurement_problem(reach: ReachRunner) -> str | None:
     expected = frozenset({f"{MEASUREMENT_SUITE}::test_canary"})
     with tempfile.TemporaryDirectory(prefix="mutation-canary-") as temporary:
         tree = Path(temporary)
-        (tree / MEASUREMENT_MODULE).write_text(MEASUREMENT_SOURCE, encoding="utf-8")
-        (tree / MEASUREMENT_SUITE).write_text(MEASUREMENT_TESTS, encoding="utf-8")
+        # The texts are ASCII, so their bytes are the same in every encoding a locale could choose.
+        (tree / MEASUREMENT_MODULE).write_bytes(MEASUREMENT_SOURCE.encode())
+        (tree / MEASUREMENT_SUITE).write_bytes(MEASUREMENT_TESTS.encode())
         result = reach(tree, MEASUREMENT_SUITE, [MEASUREMENT_MODULE], MINIMUM_SUITE_SECONDS)
     if isinstance(result, str):
         return f"the reach run's canary suite {result}, so no suite's reach can be measured"
