@@ -29,6 +29,8 @@ class JsonWriteRefused(ValueError):
 # What `dumps` and `write` raise on a value no JSON file can hold; a value of no JSON type, or one that refers to
 # itself, is the caller's error, which `dumps` raises as the json module does.
 CONTENT_ERRORS: tuple[type[Exception], ...] = (JsonWriteRefused,)
+# The functions that raise CONTENT_ERRORS on content.
+CONTENT_READERS = ("dumps", "write")
 
 
 def dumps(

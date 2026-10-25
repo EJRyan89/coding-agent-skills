@@ -369,6 +369,9 @@ class PowerShellJsonRunner(unittest.TestCase):
         pytest.param(platform_support.ToolResult(1, "[]\n"), id="failed exit"),
         pytest.param(platform_support.ToolResult(0, '{"line": 3}\n'), id="an object"),
         pytest.param(platform_support.ToolResult(0, "not json\n"), id="not json"),
+        # JSON json_reader refuses is output that is not a list too, never an error of its own.
+        pytest.param(platform_support.ToolResult(0, '[{"line": 3, "line": 4}]\n'), id="a repeated key"),
+        pytest.param(platform_support.ToolResult(0, "[NaN]\n"), id="a constant JSON does not define"),
         pytest.param(platform_support.ToolResult(0, ""), id="no output"),
     ],
 )

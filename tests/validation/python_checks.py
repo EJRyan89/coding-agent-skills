@@ -1,22 +1,27 @@
 """The Python static checks: ruff format and lint, mypy and its mypy_path, the noqa and type: ignore rules, the rule
 against issue numbers in comments and docstrings, and the policies that hold the code's universal claims: every process
 starts without git's repository-selecting variables, link_probe is the one link test, every ctypes foreign function a
-module calls is declared, and no process runner's result is discarded unchecked."""
+module calls is declared, no process runner's result is discarded unchecked, and a handler around a shared reader
+catches the whole family of errors the reader raises on content."""
 
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
 import functools
 import hashlib
+import importlib
 import io
 import os
 import re
+import sys
 import tempfile
 import tokenize
 import tomllib
 import unittest
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -1150,6 +1155,348 @@ def time_option_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# A caller catches the whole error family a shared reader raises on content. Each ejryan89-skill-core module that
+# exports CONTENT_ERRORS, what its readers raise on bad content, names those readers in CONTENT_READERS. A handler
+# around a call of one, directly or through a repository function that lets part of the family escape, that catches
+# part of the family or the call's OSError catches all of it, or the scope states why in a module-level
+# CONTENT_ERRORS_ALLOWED = {scope: reason}; a function the allowance names lets no family escape, for one that cannot
+# meet bad content.
+CONTENT_ERRORS = "CONTENT_ERRORS"
+CONTENT_READERS = "CONTENT_READERS"
+CONTENT_ERRORS_ALLOWANCE = "CONTENT_ERRORS_ALLOWED"
+SKILL_CORE_SCRIPTS = "skills/ejryan89-skill-core/scripts"
+SUPPRESS = "contextlib.suppress"
+# A class the policy compares: a repository class by its qualified name, or a standard-library class itself.
+ClassKey = str | type
+
+
+def _module_name(root: Path, path: Path) -> str:
+    """The name a module is imported by: a package's as dotted from the root, every other script by its file name."""
+    relative = path.relative_to(root)
+    if relative.parts[0] in ("deployer", "tools") and len(relative.parts) == 2:
+        return relative.parts[0] if relative.stem == "__init__" else f"{relative.parts[0]}.{relative.stem}"
+    return relative.stem
+
+
+def _content_aliases(tree: ast.Module, module: str) -> dict[str, str]:
+    """import_aliases, with what a package module's relative imports bind and each name the module defines itself."""
+    aliases = {
+        node.name: f"{module}.{node.name}"
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+    }
+    aliases |= {name: f"{module}.{name}" for name in _module_tuples(tree)}
+    package = module.rpartition(".")[0]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and package:
+            base = f"{package}.{node.module}" if node.module else package
+            aliases |= {alias.asname or alias.name: f"{base}.{alias.name}" for alias in node.names}
+    return aliases | import_aliases(tree)
+
+
+def _module_tuples(tree: ast.Module) -> dict[str, ast.Tuple]:
+    """Each module-level name assigned a literal tuple, such as a family of exception classes."""
+    found: dict[str, ast.Tuple] = {}
+    for node in tree.body:
+        target: ast.expr
+        value: ast.expr | None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign):
+            target, value = node.target, node.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and isinstance(value, ast.Tuple):
+            found[target.id] = value
+    return found
+
+
+def _content_readers(tree: ast.Module) -> list[str] | None:
+    """The function names a module's CONTENT_READERS tuple holds, or None when it is no tuple of names."""
+    value = _module_tuples(tree).get(CONTENT_READERS)
+    if value is None:
+        return None
+    names = [item.value for item in value.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)]
+    return names if len(names) == len(value.elts) else None
+
+
+def _standard_class(qualified: str) -> type | None:
+    """The built-in or standard-library class a qualified name stands for, or None."""
+    module, _, attribute = qualified.rpartition(".")
+    if not module:
+        found = getattr(builtins, qualified, None)
+        return found if isinstance(found, type) else None
+    top = module.split(".")[0]
+    if top not in sys.stdlib_module_names:
+        return None
+    try:
+        found = getattr(importlib.import_module(module), attribute, None)
+    except ImportError:
+        return None
+    return found if isinstance(found, type) else None
+
+
+class _ContentModel:
+    """The repository's modules as the content-errors policy reads them: its classes, its tuples of classes, its
+    module-level functions, and each skill-core reader's family."""
+
+    def __init__(self, root: Path, files: list[Path], problems: list[str]) -> None:
+        self.trees: dict[str, tuple[str, ast.Module]] = {}
+        self.aliases: dict[str, dict[str, str]] = {}
+        for path, name, tree in python_trees(claim_files(root, files), root, problems):
+            module = _module_name(root, path)
+            if module in self.trees:
+                # A module the model held under the same name would go unread, so the claim would not reach it.
+                problems.append(
+                    f"{name}: {self.trees[module][0]} is imported as {module} too, so the content-errors policy, "
+                    "which reads modules by the name they are imported as, cannot read both; rename one"
+                )
+                continue
+            self.trees[module] = (name, tree)
+            self.aliases[module] = _content_aliases(tree, module)
+        self.bases = {
+            f"{module}.{node.name}": [qualified_name(base, self.aliases[module]) for base in node.bases]
+            for module, (_, tree) in self.trees.items()
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+        }
+        self.tuples = {
+            f"{module}.{name}": (module, value)
+            for module, (_, tree) in self.trees.items()
+            for name, value in _module_tuples(tree).items()
+        }
+        self.functions = {
+            f"{module}.{node.name}": (module, node)
+            for module, (_, tree) in self.trees.items()
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        self.families: dict[str, dict[ClassKey, str]] = {}
+        for module, (name, tree) in self.trees.items():
+            if not posix_within(name, SKILL_CORE_SCRIPTS) or f"{module}.{CONTENT_ERRORS}" not in self.tuples:
+                continue
+            family = self.classes(f"{module}.{CONTENT_ERRORS}")
+            if not family:
+                problems.append(f"{name}: {CONTENT_ERRORS} must be a tuple of exception classes its imports name")
+                continue
+            readers = _content_readers(tree)
+            defined = {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
+            if readers is None or not readers or not set(readers) <= defined:
+                problems.append(
+                    f"{name}: {CONTENT_READERS} must be a tuple naming each function the module defines that raises "
+                    f"its {CONTENT_ERRORS} on content"
+                )
+                continue
+            for reader in readers:
+                self.families[f"{module}.{reader}"] = dict.fromkeys(family, f"{module}.{CONTENT_ERRORS}")
+        if not self.families:
+            # With no reader every handler passes, which would hold nothing; say so instead.
+            problems.append(
+                f"{SKILL_CORE_SCRIPTS} names no reader in a {CONTENT_READERS} beside its {CONTENT_ERRORS}, so the "
+                "content-errors policy could check no handler"
+            )
+        self._ancestors: dict[ClassKey, frozenset[ClassKey]] = {}
+
+    def ancestors(self, key: ClassKey) -> frozenset[ClassKey]:
+        """A class and every class it derives from, as far as the repository and the standard library name them."""
+        if key not in self._ancestors:
+            found: set[ClassKey] = set(key.__mro__) if isinstance(key, type) else {key}
+            for base in [] if isinstance(key, type) else self.bases.get(key, []):
+                resolved = base if base in self.bases else _standard_class(base)
+                if resolved is not None:
+                    found |= self.ancestors(resolved)
+            self._ancestors[key] = frozenset(found)
+        return self._ancestors[key]
+
+    def classes(self, qualified: str, depth: int = 0) -> list[ClassKey] | None:
+        """The classes a qualified name stands for: a class, or each class a tuple of them holds; None for a name it
+        cannot resolve."""
+        if qualified in self.bases:
+            return [qualified]
+        if qualified in self.tuples and depth < len(self.tuples):
+            module, value = self.tuples[qualified]
+            return self.expression_classes(value, module, depth + 1)
+        standard = _standard_class(qualified)
+        return None if standard is None else [standard]
+
+    def expression_classes(self, node: ast.expr | None, module: str, depth: int = 0) -> list[ClassKey] | None:
+        """The classes an except clause or suppress argument names, through the module's imports, or None."""
+        if node is None:
+            return [BaseException]
+        if isinstance(node, ast.Tuple):
+            found: list[ClassKey] = []
+            for element in node.elts:
+                classes = self.expression_classes(
+                    element.value if isinstance(element, ast.Starred) else element, module, depth
+                )
+                if classes is None:
+                    return None
+                found += classes
+            return found
+        qualified = qualified_name(node, self.aliases[module])
+        return self.classes(qualified, depth) if qualified else None
+
+    def callee(self, call: ast.Call, module: str) -> str:
+        """The reader or repository function a call names, by its qualified name, or ""."""
+        qualified = qualified_name(call.func, self.aliases[module])
+        return qualified if qualified in self.families or qualified in self.functions else ""
+
+
+def class_text(key: ClassKey) -> str:
+    """A class as a finding names it: a repository class by its qualified name, a built-in one bare."""
+    if isinstance(key, str):
+        return key
+    return key.__qualname__ if key.__module__ == "builtins" else f"{key.__module__}.{key.__qualname__}"
+
+
+@dataclass(frozen=True)
+class _Guard:
+    """A handler, an except clause's or a suppress's, by its line and the classes it catches, None for one the policy
+    cannot resolve, around what its body calls; what its handlers and other blocks call runs outside it."""
+
+    line: int
+    caught: tuple[ClassKey, ...] | None
+    inner: tuple[_Guard | str, ...]
+
+
+class _ContentEscapes:
+    """What each repository function lets escape of the readers' families, and each handler that misses part of one.
+    Each function is read once into the readers and functions it calls and the handlers around them, its shape, and
+    what escapes is then derived from the shapes until no function's escapes grow."""
+
+    def __init__(self, model: _ContentModel) -> None:
+        self.model = model
+        self.allowed = {
+            module: module_allowance(tree, CONTENT_ERRORS_ALLOWANCE) or {} for module, (_, tree) in model.trees.items()
+        }
+        # Every function and method of each module, by the scope scoped_nodes names it, with its shape.
+        self.scoped = {
+            module: [
+                (scope, node, self.shape(node.body, module))
+                for node, scope in scoped_nodes(tree.body)
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            ]
+            for module, (_, tree) in model.trees.items()
+        }
+        self.shapes = {f"{module}.{scope}": shape for module, found in self.scoped.items() for scope, _, shape in found}
+        self.escapes: dict[str, dict[ClassKey, str]] = {qualified: {} for qualified in model.functions}
+        changed = True
+        while changed:
+            changed = False
+            for qualified, (module, node) in model.functions.items():
+                found = {} if node.name in self.allowed[module] else self.escaping(self.shapes[qualified], None, "")
+                if found != self.escapes[qualified]:
+                    self.escapes[qualified], changed = found, True
+
+    def shape(self, body: Sequence[ast.AST], module: str) -> tuple[_Guard | str, ...]:
+        """The calls of readers and repository functions in `body`, outside any nested definition, and the handlers
+        around them, as `escaping` reads them."""
+        found: list[_Guard | str] = []
+        pending = list(body)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, ast.Try | ast.TryStar | ast.With | ast.AsyncWith):
+                found += self.guard_shape(node, module)
+                continue
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+                continue
+            if isinstance(node, ast.Call) and (callee := self.model.callee(node, module)):
+                found.append(callee)
+            pending += ast.iter_child_nodes(node)
+        return tuple(found)
+
+    def guard_shape(self, node: ast.Try | ast.TryStar | ast.With | ast.AsyncWith, module: str) -> list[_Guard | str]:
+        """The shape of a try statement or a with statement, whose suppress, if it enters one, is a handler."""
+        if isinstance(node, ast.Try | ast.TryStar):
+            inner = self.shape(node.body, module)
+            outside = self.shape([*(s for h in node.handlers for s in h.body), *node.orelse, *node.finalbody], module)
+            if not node.handlers:
+                return [*inner, *outside]
+            caught: list[ClassKey] | None = []
+            for handler in node.handlers:
+                classes = self.model.expression_classes(handler.type, module)
+                reraised = len(handler.body) == 1 and isinstance(handler.body[0], ast.Raise) and not handler.body[0].exc
+                if classes is None or caught is None:
+                    caught = None
+                elif not reraised:
+                    caught += classes
+            if not inner:
+                return list(outside)
+            return [_Guard(node.lineno, None if caught is None else tuple(caught), inner), *outside]
+        entered = self.shape([item.context_expr for item in node.items], module)
+        suppressed: list[ClassKey] | None = []
+        for item in node.items:
+            call = item.context_expr
+            if isinstance(call, ast.Call) and qualified_name(call.func, self.model.aliases[module]) == SUPPRESS:
+                classes = self.model.expression_classes(ast.Tuple(elts=list(call.args)), module)
+                suppressed = None if classes is None or suppressed is None else suppressed + classes
+        inner = self.shape(node.body, module)
+        if suppressed == [] or not inner:
+            return [*entered, *inner]
+        return [*entered, _Guard(node.lineno, None if suppressed is None else tuple(suppressed), inner)]
+
+    def handled(self, caught: tuple[ClassKey, ...] | None, inner: dict[ClassKey, str]) -> dict[ClassKey, str]:
+        """The members of `inner` no class of `caught` catches; an unresolved handler is taken to catch them all."""
+        if caught is None:
+            return {}
+        return {key: origin for key, origin in inner.items() if not set(caught) & self.model.ancestors(key)}
+
+    def touches(self, caught: tuple[ClassKey, ...], inner: dict[ClassKey, str]) -> bool:
+        """Whether a handler names part of a family that escapes into it, or the reader's OSError."""
+        return any(
+            OSError in self.model.ancestors(handler)
+            or any(handler in self.model.ancestors(key) or key in self.model.ancestors(handler) for key in inner)
+            for handler in caught
+        )
+
+    def escaping(
+        self, shape: tuple[_Guard | str, ...], sites: list[tuple[int, str, str]] | None, scope: str
+    ) -> dict[ClassKey, str]:
+        """What escapes a shape, recording in `sites` each handler that catches part of a family or the OSError of a
+        reader whose family it misses."""
+        found: dict[ClassKey, str] = {}
+        for item in shape:
+            if isinstance(item, str):
+                found |= self.model.families.get(item) or self.escapes.get(item, {})
+                continue
+            inner = self.escaping(item.inner, sites, scope)
+            left = self.handled(item.caught, inner)
+            if sites is not None and item.caught is not None and left and self.touches(item.caught, inner):
+                missing = ", ".join(sorted(class_text(key) for key in left))
+                families = ", ".join(sorted(set(left.values())))
+                sites.append(
+                    (
+                        item.line,
+                        scope,
+                        f"catches part of what a reader it calls raises, or its OSError, but not {missing}; catch the "
+                        f"whole family, {families}, or state why in {CONTENT_ERRORS_ALLOWANCE}",
+                    )
+                )
+            found |= left
+        return found
+
+
+def content_error_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each handler around a reader that exports CONTENT_ERRORS, called directly or through a repository function,
+    that catches part of the reader's family, or the call's OSError, without the rest, and no CONTENT_ERRORS_ALLOWED
+    entry sanctions; then each entry that sanctions nothing."""
+    problems: list[str] = []
+    model = _ContentModel(root, files, problems)
+    escapes = _ContentEscapes(model)
+    for module, (name, tree) in model.trees.items():
+        sites: list[tuple[int, str, str]] = []
+        for scope, node, shape in escapes.scoped[module]:
+            if scope not in escapes.allowed[module]:
+                escapes.escaping(shape, sites, scope)
+                continue
+            # A sanctioned function is used when it holds a handler the policy would report or lets a family escape.
+            held: list[tuple[int, str, str]] = []
+            if escapes.escaping(shape, held, scope) or held:
+                sites.append((node.lineno, scope, "is sanctioned"))
+        problems += sanctioned_problems(name, tree, CONTENT_ERRORS_ALLOWANCE, sites)
+    return problems
+
+
 def ruff_format_check(root: Path, targets: list[str]) -> None:
     """Fail, naming each file, when ruff format would change any Python file under the targets in root."""
     ruff = find_ruff()
@@ -1372,6 +1719,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_json_reader_is_the_one_parse_of_json(self) -> None:
         self.assertEqual([], json_parse_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_each_handler_around_a_reader_catches_its_whole_content_family(self) -> None:
+        self.assertEqual([], content_error_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_whole_number_is_the_one_reader_of_a_number_from_text(self) -> None:
         self.assertEqual([], int_parse_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

@@ -32,6 +32,8 @@ class JsonRefused(ValueError):
 # What `loads`, `raw_decode`, and `read_file` raise on bad content, each a ValueError: the reader's own refusal, the
 # json module's for text that is not JSON, and the codec's for bytes that are not UTF-8.
 CONTENT_ERRORS: tuple[type[Exception], ...] = (JsonRefused, json.JSONDecodeError, UnicodeDecodeError)
+# The functions that raise CONTENT_ERRORS on content.
+CONTENT_READERS = ("loads", "raw_decode", "read_file")
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

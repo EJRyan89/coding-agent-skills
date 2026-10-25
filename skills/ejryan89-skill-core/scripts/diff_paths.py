@@ -34,6 +34,8 @@ class DiffPathError(ValueError):
 
 # What `unquote` and `header_path` raise on a path git does not write.
 CONTENT_ERRORS: tuple[type[Exception], ...] = (DiffPathError,)
+# The functions that raise CONTENT_ERRORS on content.
+CONTENT_READERS = ("unquote", "header_path")
 
 
 def unquote(value: str) -> str:

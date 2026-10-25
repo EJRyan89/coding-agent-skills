@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import typed_text
 from typed_text import CONTENT_ERRORS, TYPED_ENCODING, read_typed
 
 # The bytes a Windows editor may save before UTF-8 text, written out so the read is held to them.
@@ -50,3 +51,7 @@ class ContentErrorsTests(unittest.TestCase):
             path.write_bytes(b"\xff")
             with self.assertRaises(CONTENT_ERRORS):
                 read_typed(path)
+
+
+def test_the_readers_that_raise_the_family_are_named() -> None:
+    assert typed_text.CONTENT_READERS == ("read_typed",)

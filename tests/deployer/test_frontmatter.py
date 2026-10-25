@@ -313,3 +313,7 @@ class ContentErrorsTests(unittest.TestCase):
     def test_a_double_quoted_escape_json_does_not_read_is_the_frontmatter_error(self) -> None:
         with self.assertRaisesRegex(FrontmatterError, "a double-quoted value uses an escape this reader does not"):
             parse('name: "a\\q"').value("name")
+
+
+def test_the_readers_that_raise_the_family_are_named() -> None:
+    assert frontmatter.CONTENT_READERS == ("split", "parse", "read")

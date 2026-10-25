@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import nesting_depth
+import xml_reader
 from xml_reader import CONTENT_ERRORS, XmlRefused, read_xml
 
 DOCTYPE_REFUSED = "the document declares a DOCTYPE, which could expand entities without bound"
@@ -129,3 +130,7 @@ def test_the_family_is_the_refusal_and_it_covers_a_declaration_and_a_malformed_d
     for text in ("<!DOCTYPE a><a/>", "<a>"):
         with pytest.raises(CONTENT_ERRORS):
             read_xml(text)
+
+
+def test_the_readers_that_raise_the_family_are_named() -> None:
+    assert xml_reader.CONTENT_READERS == ("read_xml",)
