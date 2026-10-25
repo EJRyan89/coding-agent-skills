@@ -193,7 +193,12 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
         return
     root = Path(path_key(source, resolve=True))
     relative = Path(os.path.normcase(str(path))).relative_to(root)
-    with contextlib.suppress(OSError), read_log(run, role).open("a", encoding="utf-8") as log:
+    # The read is already allowed and the log only counts it, so a path the JSON writer refuses, such as one holding
+    # a lone surrogate, stays uncounted, as review_source counts it, and never turns the read into a denial.
+    with (
+        contextlib.suppress(OSError, json_writer.JsonWriteRefused),
+        read_log(run, role).open("a", encoding="utf-8") as log,
+    ):
         log.write(json_writer.dumps(relative.as_posix()) + "\n")
 
 
