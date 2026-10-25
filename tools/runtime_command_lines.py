@@ -165,12 +165,12 @@ def without_gh(search_path: str, executable: str) -> str:
     no `gh` is on its search path. Raise Unsafe when the runtime's own directory or Node.js's holds `gh` too."""
     directories = [directory for directory in search_path.split(os.pathsep) if directory]
     node = platform_support.find_on_path("node", search_path)
-    needed = {os.path.normcase(Path(program).parent) for program in (executable, node) if program}
+    needed = {platform_support.path_key(Path(program).parent) for program in (executable, node) if program}
     kept = []
     for directory in directories:
         if platform_support.find_on_path("gh", directory) is None:
             kept.append(directory)
-        elif os.path.normcase(directory) in needed:
+        elif platform_support.path_key(directory) in needed:
             raise Unsafe(
                 f"GitHub CLI is in {directory}, beside the runtime or Node.js, so its sign-in cannot be hidden"
             )
