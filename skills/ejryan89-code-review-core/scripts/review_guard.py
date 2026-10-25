@@ -111,6 +111,14 @@ REVIEWER = "code-review-reviewer"
 PLUGIN = plugin_name()
 FIRST = "read the prompt file your task names first"
 ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+# Folds the guard makes without skills/ejryan89-skill-core/scripts/path_keys.py's path_key, with the reason.
+DUPLICATION_ALLOWED = {
+    "path_key": (
+        "the guard matches a run record's prompt file by its exact spelling on purpose, so _same folds case alone and "
+        "never normalizes that spelling as a key from skills/ejryan89-skill-core/scripts/path_keys.py would; and each "
+        "fold, in _same and the path side of _log_read, follows only _path's own normalization of the path it judges"
+    ),
+}
 
 Claim = tuple[Path, dict[str, str]]
 

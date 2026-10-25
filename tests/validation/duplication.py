@@ -66,8 +66,9 @@ MINIMUM_SHARED_MEMBERS = 3
 
 Copy = tuple[str, int, str]
 # A shared fact's restatement test: the node, the fact's members as its owner holds them, whether the node's module
-# imports the owner, and the fact's name, which a module that imports it reads the fact through.
-Restates = Callable[[ast.AST, frozenset[str], bool, str], bool]
+# imports the owner, the fact's name, which a module that imports it reads the fact through, and the module's
+# resolver, which names what a call calls through the module's imports.
+Restates = Callable[[ast.AST, frozenset[str], bool, str, CallableResolver], bool]
 
 
 def duplication_omissions() -> dict[str, str]:
@@ -166,7 +167,9 @@ def _copy_report(key: str, group: list[Copy]) -> str:
     return f"{group[0][2]} is defined identically in {places}; {fix}"
 
 
-def _shares_members(node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str) -> bool:
+def _shares_members(
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
+) -> bool:
     """A tuple, list, or set literal holding several of the fact's members: a copy of its vocabulary, however far it
     has drifted from the owner's."""
     if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
@@ -175,7 +178,9 @@ def _shares_members(node: ast.AST, members: frozenset[str], _imports_owner: bool
     return len(held & members) >= MINIMUM_SHARED_MEMBERS
 
 
-def _holds_member(node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str) -> bool:
+def _holds_member(
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
+) -> bool:
     """A string literal holding one of the fact's members, as a glob or a message re-derives a rule from it."""
     return (
         isinstance(node, ast.Constant)
@@ -184,13 +189,17 @@ def _holds_member(node: ast.AST, members: frozenset[str], _imports_owner: bool, 
     )
 
 
-def _equals_in_importer(node: ast.AST, members: frozenset[str], imports_owner: bool, _name: str) -> bool:
+def _equals_in_importer(
+    node: ast.AST, members: frozenset[str], imports_owner: bool, _name: str, _resolver: CallableResolver
+) -> bool:
     """The fact's own value as a literal in a module that imports its owner, which could import the value too. A
     short value such as a file name recurs for unrelated reasons elsewhere, so only an importer is read."""
     return imports_owner and isinstance(node, ast.Constant) and node.value in members
 
 
-def _states_number(node: ast.AST, members: frozenset[str], imports_owner: bool, _name: str) -> bool:
+def _states_number(
+    node: ast.AST, members: frozenset[str], imports_owner: bool, _name: str, _resolver: CallableResolver
+) -> bool:
     """A limit's own number as a literal in a module that imports its owner, or stated as "at most" the number in any
     text, as a refusal's message re-derives it."""
     if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
@@ -209,7 +218,9 @@ def _names_key(node: ast.AST, members: frozenset[str], name: str) -> bool:
     return (isinstance(node, ast.Name) and node.id == name) or (isinstance(node, ast.Attribute) and node.attr == name)
 
 
-def _reads_key(node: ast.AST, members: frozenset[str], _imports_owner: bool, name: str) -> bool:
+def _reads_key(
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, name: str, _resolver: CallableResolver
+) -> bool:
     """A reading of a key outside its owner's: the key's literal passed to a call, as a reader looks it up, or the key
     compared, after any call, with true or false, as a reader judges its value."""
     if isinstance(node, ast.Call):
@@ -227,7 +238,9 @@ def _reads_key(node: ast.AST, members: frozenset[str], _imports_owner: bool, nam
     return judged and any(_names_key(inner, members, name) for operand in operands for inner in ast.walk(operand))
 
 
-def _patterns_member(node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str) -> bool:
+def _patterns_member(
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
+) -> bool:
     """A string literal holding a member as a regular expression escapes it, as a pattern re-derives a spelling; a
     member that needs no escape reads alike in prose and is left to the prose."""
     escaped = {re.escape(member) for member in members} - members
@@ -236,7 +249,9 @@ def _patterns_member(node: ast.AST, members: frozenset[str], _imports_owner: boo
     )
 
 
-def _reads_title_or_body(node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str) -> bool:
+def _reads_title_or_body(
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
+) -> bool:
     """A pull request title or body file read with a codec of its own: read_text or open given an encoding other than
     the owner's, on a path whose expression names a title or a body."""
     if not isinstance(node, ast.Call):
@@ -251,7 +266,9 @@ def _reads_title_or_body(node: ast.AST, members: frozenset[str], _imports_owner:
     return named and isinstance(encoding, ast.Constant) and encoding.value not in members
 
 
-def _reads_version_numbers(node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str) -> bool:
+def _reads_version_numbers(
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
+) -> bool:
     """A version's numbers read by hand: int applied to each part of a text split on the owner's separator, in a
     comprehension or through map, as a version parser re-derives the shared reader."""
     if isinstance(node, (ast.GeneratorExp, ast.ListComp)):
@@ -273,10 +290,49 @@ def _reads_version_numbers(node: ast.AST, members: frozenset[str], _imports_owne
     )
 
 
+def _called_name(node: ast.AST) -> str:
+    """The method a call calls, such as `resolve` for `path.resolve()`, or "" for any other call or node."""
+    return node.func.attr if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) else ""
+
+
+def _folds_path_case(
+    node: ast.AST, _members: frozenset[str], _imports_owner: bool, _name: str, resolver: CallableResolver
+) -> bool:
+    """A path's comparison key built by hand: a path case-folded through os.path.normcase, whatever was done to it
+    first, or a path made absolute, normalized, or resolved, then case-folded through str.casefold or str.lower, which
+    fold case even where the file system keeps it. A function is named through the module's imports, so an alias of
+    normcase is normcase and a local function that shares its name is not; a method is named by its name, since its
+    receiver's type is unknown. Folding a path's name, such as a folder's against `.git`, builds no key; str.casefold
+    and str.lower of other text are left alone, since most such text is no path."""
+    folds = {"os.path.normcase", "posixpath.normcase", "ntpath.normcase"}
+    wrappers = {"str", "pathlib.Path", "pathlib.PurePath", "os.fspath"}
+    normalizers = {
+        f"{module}.{name}"
+        for module in ("os.path", "posixpath", "ntpath")
+        for name in ("normpath", "abspath", "realpath")
+    }
+    if not isinstance(node, ast.Call):
+        return False
+    called = resolver.name(node.func)
+    if called in folds and node.args:
+        folded = node.args[0]
+    elif _called_name(node) in {"casefold", "lower"} and not node.args:
+        folded = node.func.value if isinstance(node.func, ast.Attribute) else node
+    else:
+        return False
+    while isinstance(folded, ast.Call) and resolver.name(folded.func) in wrappers and folded.args:
+        folded = folded.args[0]
+    if called in folds:
+        return not (isinstance(folded, ast.Attribute) and folded.attr == "name")
+    return isinstance(folded, ast.Call) and (
+        resolver.name(folded.func) in normalizers or _called_name(folded) in {"resolve", "absolute"}
+    )
+
+
 @dataclass(frozen=True)
 class SharedFact:
-    """One value the repository keeps in one module, its owner, under one module-level name, and how another module
-    restates it instead of importing it."""
+    """One value or function the repository keeps in one module, its owner, under one module-level name, and how
+    another module restates it instead of importing it."""
 
     owner: str
     name: str
@@ -298,14 +354,17 @@ def _shared_facts() -> tuple[SharedFact, ...]:
         SharedFact(f"{SKILL_CORE_SCRIPTS}/typed_text.py", "TYPED_ENCODING", _reads_title_or_body),
         SharedFact("tests/validation/skill_layout.py", "HOME_SPELLINGS", _patterns_member),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/versions.py", "SEPARATOR", _reads_version_numbers),
+        SharedFact(f"{SKILL_CORE_SCRIPTS}/path_keys.py", "path_key", _folds_path_case),
     )
 
 
 def _fact_members(tree: ast.Module, name: str) -> frozenset[str] | None:
     """The strings a module-level name holds, as a string literal, a whole number written in decimal, or a collection
-    of string literals, or None."""
+    of string literals, or the name itself when it names a module-level function, or None."""
     resolver = CallableResolver(tree)
     for node in module_statements(tree.body):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return frozenset({name})
         if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -335,16 +394,16 @@ def _docstring_nodes(tree: ast.Module) -> set[int]:
 
 
 def shared_fact_owner_problems(root: Path) -> list[str]:
-    """Report a shared fact whose owner no longer holds it as a literal, so the restatement check cannot go quiet
-    after a rename or a move."""
+    """Report a shared fact whose owner no longer holds it as a literal or a function, so the restatement check cannot
+    go quiet after a rename or a move."""
     problems: list[str] = []
     for fact in _shared_facts():
         path = root / fact.owner
         trees = list(python_trees([path] if path.is_file() else [], root, problems))
         if not trees or _fact_members(trees[0][2], fact.name) is None:
             problems.append(
-                f"{fact.owner} no longer holds {fact.name} as a literal; name its new home in the shared facts of "
-                "tests/validation/duplication.py"
+                f"{fact.owner} no longer holds {fact.name} as a literal or a function; name its new home in the shared "
+                "facts of tests/validation/duplication.py"
             )
     return problems
 
@@ -354,13 +413,14 @@ def _restating_lines(tree: ast.Module, fact: SharedFact, members: frozenset[str]
     stem = PurePath(fact.owner).stem
     imports_owner = any(stem in found.module.split(".") for found in module_imports(tree))
     prose = _docstring_nodes(tree)
+    resolver = CallableResolver(tree)
     return sorted(
         {
             node.lineno
             for node in ast.walk(tree)
             if isinstance(node, ast.expr)
             and id(node) not in prose
-            and fact.restates(node, members, imports_owner, fact.name)
+            and fact.restates(node, members, imports_owner, fact.name, resolver)
         }
     )
 
