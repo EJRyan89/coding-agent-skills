@@ -6174,3 +6174,44 @@ def test_a_run_whose_repository_holds_read_only_files_is_removed(tmp_path: Path)
     held.chmod(0o444)
     review_run.remove_run(run)
     assert not run.exists()
+
+
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_a_start_through_a_linked_folder_keeps_its_spelling(tmp_path: Path) -> None:
+    scripts = Path(rp.__file__).resolve().parent
+    link = tmp_path / "linked scripts"
+    link_folder(scripts, link)
+    started = str(link / "review_pipeline.py")
+    with mock.patch.object(sys, "argv", [started, "prepare"]):
+        assert review_run.command_script("review_source.py") == str(link / "review_source.py")
+
+
+def test_a_checkout_and_a_link_to_it_share_one_fetch_lock(tmp_path: Path) -> None:
+    checkout, other = tmp_path / "checkout", tmp_path / "other"
+    checkout.mkdir()
+    other.mkdir()
+    link = tmp_path / "linked checkout"
+    link_folder(checkout, link)
+    assert review_snapshot._fetch_lock(link) is review_snapshot._fetch_lock(checkout)
+    assert review_snapshot._fetch_lock(other) is not review_snapshot._fetch_lock(checkout)
+
+
+def test_a_pipeline_named_through_a_linked_folder_is_the_script_it_names(tmp_path: Path) -> None:
+    scripts = Path(rp.__file__).resolve().parent
+    link = tmp_path / "linked scripts"
+    link_folder(scripts, link)
+    started = str(scripts / "review_pipeline.py")
+    with (
+        mock.patch.object(review_run, "PIPELINE_SCRIPT", link / "review_pipeline.py"),
+        mock.patch.object(sys, "argv", [started, "prepare"]),
+    ):
+        assert review_run.command_script("review_source.py") == str(scripts / "review_source.py")
