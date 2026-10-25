@@ -471,6 +471,20 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** `| grep -q` or `| head -n` in a `.sh` file that runs `set -o pipefail` or `set -euo pipefail`.
 - **Examples:** #1557, #1602
 
+### A program whose status is the verdict starts with no shell above it
+
+- **Rule:** A check whose verdict is a program's exit status starts that program as its own process, judged by the
+  runner, never as one link of a shell's command chain or loop.
+- **Why:** On Windows, an MSYS Bash reads a child that Windows ends as exit 0, so `set -e` and `&&` go on and the
+  ended check passes; only the last command's low byte reaches the runner.
+- **Use:** `tests.validation.shell_targets:run_bash_suite`, `tests.validation.job_pool:run_process`, which names a
+  termination as one.
+- **Guard:** `tests/validation/test_shell_targets.py::ProgramEndingFixtures`
+- **Search for:** `" && ".join(` building a command line a shell runs; `"-c"` beside `find_git_bash()` or
+  `find_bash()` whose script starts several programs and whose one status is read as their verdict; a `( ... )`
+  subshell's `$?` in a Bash loop read as a child's verdict.
+- **Examples:** #654, #1355, #1798
+
 ### A file handed to another process appears whole
 
 - **Rule:** A file one process writes for another is written to a temporary name beside it and renamed into place.
