@@ -26,7 +26,6 @@ from shell_targets import (
     markdown_shell_check,
     markdown_shell_targets,
     powershell_targets,
-    run_git_bash,
     script_analyzer_check,
     shell_script_targets,
     shell_token_problems,
@@ -480,31 +479,72 @@ class ShellTargetsFixtures(unittest.TestCase):
 class ProgramEndingFixtures(unittest.TestCase):
     """Each program a shell or analyzer job starts is recognized when it is ended before its first line of output."""
 
-    # The status is the one Windows set on Git Bash before it printed anything; the fixtures read it as Windows does, on
-    # every platform, and test_platform_support holds how a signal ends a process elsewhere.
-    @mock.patch.object(platform_support, "WINDOWS", True)
-    def test_bash_starts_as_a_plain_shell_and_its_ending_names_the_status_and_the_command(self) -> None:
-        bash = "C:/Program Files/Git/bin/bash.exe"
+    BASH = "C:/Program Files/Git/bin/bash.exe"
+    SHELLCHECK = "C:/tools/shell check/shellcheck.exe"
+    SCRIPTS = ("skills/alpha/scripts/a.sh", "skills/alpha/scripts/b.sh", "skills/alpha/scripts/c.sh")
+
+    def static_shell_check(self, statuses: dict[int, Finished], shellcheck: str | None = SHELLCHECK) -> list[list[str]]:
+        """Run the static shell checks over SCRIPTS, each start ending as statuses gives by its index, else with 0."""
         started: list[list[str]] = []
 
-        def ended(arguments: list[str], *_: object, **__: object) -> Finished:
+        def run(arguments: list[str], *_: object, **__: object) -> Finished:
             started.append(arguments)
-            return Finished(2_147_483_652, b"", b"")
+            return statuses.get(len(started) - 1, Finished(0, b"", b""))
 
         with (
-            mock.patch.object(shell_targets, "find_git_bash", return_value=bash),
-            mock.patch.object(shell_targets, "find_shellcheck", return_value="C:/tools/shell check/shellcheck.exe"),
-            mock.patch.object(job_pool, "run_bounded", side_effect=ended),
-            self.assertRaises(Terminated) as raised,
+            mock.patch.object(
+                shell_targets, "shell_script_targets", return_value=[REPOSITORY_ROOT / name for name in self.SCRIPTS]
+            ),
+            mock.patch.object(shell_targets, "find_git_bash", return_value=self.BASH),
+            mock.patch.object(shell_targets, "find_shellcheck", return_value=shellcheck),
+            mock.patch.object(job_pool, "run_bounded", side_effect=run),
         ):
-            run_git_bash("bash 'suite.sh'")
-        root = shell_targets.shell_quote(platform_support.to_shell_path(str(REPOSITORY_ROOT)))
-        command = f"export PATH=\"$SHELLCHECK_BIN_DIR:$PATH\"; set -euo pipefail; cd {root}; bash 'suite.sh'"
-        self.assertEqual([[bash, "-c", command]], started, "not a login shell")
+            shell_targets.static_shell_check()
+        return started
+
+    def test_each_syntax_check_and_shellcheck_start_as_their_own_programs(self) -> None:
         self.assertEqual(
-            f"bash.exe was ended with status 0x80000004 before its first line of output: {bash} -c {command}",
+            [
+                *([self.BASH, "-n", name] for name in self.SCRIPTS),
+                [self.SHELLCHECK, "--severity=warning", *self.SCRIPTS],
+            ],
+            self.static_shell_check({}),
+            "no shell above a check, whose status a Bash above it would read as exit 0 when Windows ends it",
+        )
+
+    # The status is the one Windows set on a Git Bash before it printed anything; the fixtures read it as Windows does,
+    # on every platform, and test_platform_support holds how a signal ends a process elsewhere. A Bash above the check
+    # read that end as exit 0 and `set -e` went on, so the script was never parsed and the checks passed.
+    @mock.patch.object(platform_support, "WINDOWS", True)
+    def test_a_syntax_check_windows_ends_fails_the_checks_and_names_the_status_and_the_script(self) -> None:
+        with self.assertRaises(Terminated) as raised:
+            self.static_shell_check({1: Finished(2_147_483_652, b"", b"")})
+        self.assertEqual(
+            "bash.exe was ended with status 0x80000004 before its first line of output: "
+            f"{self.BASH} -n {self.SCRIPTS[1]}",
             str(raised.exception),
         )
+
+    @mock.patch.object(platform_support, "WINDOWS", True)
+    def test_a_check_ended_after_its_output_began_or_shellcheck_ended_fails_the_checks(self) -> None:
+        with self.assertRaises(AssertionError) as raised:
+            self.static_shell_check({0: Finished(2_147_483_652, b"", b"partial\n")})
+        self.assertIn(
+            f"(status 0x80000004, ended after its output began): {self.BASH} -n {self.SCRIPTS[0]}",
+            str(raised.exception),
+        )
+        with self.assertRaises(Terminated) as ended:
+            self.static_shell_check({len(self.SCRIPTS): Finished(2_147_483_652, b"", b"")})
+        self.assertTrue(str(ended.exception).startswith("shellcheck.exe was ended with status 0x80000004"))
+
+    def test_a_failed_syntax_check_stops_the_checks_and_shellcheck_missing_fails_before_any_start(self) -> None:
+        with self.assertRaises(AssertionError) as raised:
+            self.static_shell_check({1: Finished(2, b"", b"syntax error near unexpected token\n")})
+        self.assertIn(f"Command failed with exit code 2: {self.BASH} -n {self.SCRIPTS[1]}", str(raised.exception))
+        self.assertIn("syntax error near unexpected token", str(raised.exception))
+        with self.assertRaises(AssertionError) as missing:
+            self.assertEqual([], self.static_shell_check({}, shellcheck=None))
+        self.assertTrue(str(missing.exception).startswith("ShellCheck was not found: "))
 
     # A Bash suite is Git Bash's own program, so the status Windows ended it with is the one the runner reads.
     @mock.patch.object(platform_support, "WINDOWS", True)
