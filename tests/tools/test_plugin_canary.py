@@ -740,5 +740,5 @@ def test_a_refusal_the_run_meets_is_its_failed_line_and_keeps_the_home(
     monkeypatch.setattr(canary, "create_home", lambda: tmp_path)
     monkeypatch.setattr(canary, "canary", refused)
     assert canary.main([]) == 1
-    assert capsys.readouterr().out.splitlines()[0] == f"FAILED {canary.quote(str(refusal))}"
+    assert capsys.readouterr().out.splitlines()[0] == f"FAILED {quote(str(refusal))}"
     assert tmp_path.is_dir()
