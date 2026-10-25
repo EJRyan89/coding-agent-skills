@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import re
 import sys
 from collections import Counter
@@ -66,6 +65,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import json_writer
 import review_guidance
 import review_signals
 import review_synthesis as synthesis_stage
@@ -844,7 +844,7 @@ def write_report(json_path: Path, report: dict[str, Any], synthesis: synthesis_s
     if synthesis is not None and report["synthesis"] is synthesis.synthesis:
         synthesis.stage_run()
     try:
-        content = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        content = json_writer.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
         if len(content.encode("utf-8")) > synthesis_stage.MAXIMUM_BYTES:
             raise InsightError(
                 f"The report would exceed {synthesis_stage.MAXIMUM_BYTES} bytes, more than it could be read back "

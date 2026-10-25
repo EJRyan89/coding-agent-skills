@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 import review_dispatch
 import review_guard as guard
 import review_pipeline as rp
@@ -340,6 +341,21 @@ class ReadLogTests(GuardFixture):
         size = sum((self.source / "app" / name).stat().st_size for name in ("Service.cs", "Role.cs"))
         self.assertEqual({"csharp-review": {"files": 2, "bytes": size}}, state["reads"])
         self.assertFalse(log.exists(), "a counted log is removed")
+
+    def test_a_claim_records_its_run_and_role_and_a_refused_one_leaves_no_claim(self) -> None:
+        # A claim the JSON writer refuses fails the guard's evaluation, which the hook turns into a denial, and leaves
+        # no empty claim file a later call would read as unreadable.
+        refused = json_writer.JsonWriteRefused("the value holds a lone surrogate U+DCFF")
+        with (
+            mock.patch.object(json_writer, "dumps", side_effect=refused),
+            self.assertRaises(json_writer.JsonWriteRefused),
+        ):
+            self.decide("Read", file_path=self.prompt("csharp-review"))
+        self.assertFalse((self.claims / f"{AGENT}.json").exists())
+        self.claim()
+        claim = json.loads((self.claims / f"{AGENT}.json").read_text(encoding="utf-8"))
+        self.assertEqual("csharp-review", claim["role"])
+        self.assertEqual(guard.run_root(Path(self.prompt("csharp-review"))), Path(claim["run"]))
 
     def test_a_claim_starts_the_log_and_each_snapshot_file_read_is_logged(self) -> None:
         log = guard.read_log(self.run_directory, "csharp-review")

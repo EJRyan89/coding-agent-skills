@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 import review_guard
 import review_runtime
 import review_source
@@ -516,6 +517,21 @@ class CommandTests(LazySnapshotFixture):
             0, self.main("source-file", "--run", run, "--role", "generic-review", "--path=src/changed.py")[0]
         )
         self.assertFalse(self.log.exists())
+
+    def test_a_counted_path_is_one_json_string_line_and_one_the_writer_refuses_stays_uncounted(self) -> None:
+        # A name past ASCII is one escaped JSON string line; a lone surrogate, which no UTF-8 log can hold, is left
+        # uncounted as an unguarded read is, and the command still prints the file.
+        review_source._count(self.log, "src/café.py")
+        review_source._count(self.log, "src/bad\udcff.py")
+        self.assertEqual(['"src/caf\\u00e9.py"'], self.log.read_text(encoding="utf-8").splitlines())
+        # Through the command: a snapshot file whose path the writer refuses is still read, and left uncounted.
+        refusal = json_writer.JsonWriteRefused("the value holds a lone surrogate U+DCFF")
+        with mock.patch.object(json_writer, "dumps", side_effect=refusal):
+            code, lines = self.main(
+                "source-file", "--run", str(self.run_directory), "--role", "generic-review", "--path=src/unchanged.py"
+            )
+        self.assertEqual((0, [f"SOURCE_FILE {self.source / 'src' / 'unchanged.py'}"]), (code, lines))
+        self.assertEqual(['"src/caf\\u00e9.py"'], self.log.read_text(encoding="utf-8").splitlines())
 
     def test_source_search_prints_each_match_then_the_count(self) -> None:
         self.assertEqual(

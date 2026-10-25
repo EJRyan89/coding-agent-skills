@@ -261,6 +261,16 @@ class InsightFixture(unittest.TestCase):
 
 
 class ReportTests(InsightFixture):
+    def test_the_report_is_written_two_space_indented_with_sorted_keys_and_text_past_ascii_kept(self) -> None:
+        # The report is a record a person reads and diffs across runs, so its bytes are fixed.
+        json_path = self.summary / "insights.json"
+        with mock.patch.object(ri, "render", return_value="# Report\n"):
+            ri.write_report(json_path, {"synthesis": None, "title": "café", "counts": [1]})
+        self.assertEqual(
+            '{\n  "counts": [\n    1\n  ],\n  "synthesis": null,\n  "title": "café"\n}\n'.encode(),
+            json_path.read_bytes(),
+        )
+
     def test_report_reads_the_configured_scope_and_links_flags_by_finding_category(self) -> None:
         self.commit("owner/repo", 7, ["Correctness", "Style"])
         self.commit("owner/repo", 7, ["Style", "Correctness"], version=2)

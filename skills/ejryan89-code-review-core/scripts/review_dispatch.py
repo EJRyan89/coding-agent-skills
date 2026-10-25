@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import sys
 from collections.abc import Sequence
@@ -13,6 +12,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 from path_keys import path_key
 from review_config import ConfigurationError, load_config
 from review_guard import PLUGIN, UNGUARDED, claimed, read_log, reviewer_agent_type
@@ -325,12 +325,12 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
             for role in state["roles"]
         ]
         count += len(roles)
-        entries.append(json.dumps([state["selector"], str(run), roles], ensure_ascii=False))
+        entries.append(json_writer.dumps([state["selector"], str(run), roles], ensure_ascii=False))
     if not count:
         raise PipelineError("No reviewer roles to run")
     before, after = REVIEWER_TASK.split("{prompt}")
     text = WORKFLOW_SCRIPT.format(
-        runs=",\n".join(entries), reviewer_agent=REVIEWER_AGENT, task_parts=json.dumps([before, after, os.sep])
+        runs=",\n".join(entries), reviewer_agent=REVIEWER_AGENT, task_parts=json_writer.dumps([before, after, os.sep])
     )
     # Kept with the first run for inspection; finalize removes it with the run.
     script = runs[0].resolve() / "reviewers.workflow.js"

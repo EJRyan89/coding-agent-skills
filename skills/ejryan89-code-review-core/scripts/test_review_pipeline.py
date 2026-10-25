@@ -412,6 +412,33 @@ class CommandScriptTests(unittest.TestCase):
                 self.assertEqual(resolved, self.spelled(started))
 
 
+class WorkflowScriptTextTests(unittest.TestCase):
+    def test_a_runs_selector_and_folder_past_ascii_are_written_as_themselves(self) -> None:
+        # The orchestrator copies the printed script into the Workflow tool as text, so its literals keep each
+        # character as itself rather than as a \u escape it would have to carry over exactly.
+        with tempfile.TemporaryDirectory() as temporary:
+            # Resolved, as the dispatch resolves each run, so an 8.3 short name in the temporary path matches.
+            run = Path(temporary).resolve() / "run café"
+            run.mkdir()
+            state = {
+                "selector": "owner/café#7",
+                "runtime": "claude-code",
+                "config_path": str(run / "config.json"),
+                "roles": [{"id": "generic-review", "prompt_file": str(run / "prompts" / "generic.md")}],
+            }
+            with (
+                mock.patch.object(review_dispatch, "load_run", return_value=state),
+                mock.patch.object(review_dispatch, "run_dispatch", return_value="workflow"),
+                mock.patch.object(review_dispatch, "mark_dispatched"),
+                mock.patch.object(review_dispatch, "load_config", return_value={}),
+            ):
+                _, text, count = review_dispatch.workflow_script([run])
+        self.assertEqual(1, count)
+        folder = str(run.resolve()).replace("\\", "\\\\")
+        self.assertIn(f'["owner/café#7", "{folder}", [["generic-review", ', text)
+        self.assertNotIn("\\u00e9", text)
+
+
 class FixtureTemplateTests(unittest.TestCase):
     def test_a_copied_checkout_matches_a_freshly_built_one(self) -> None:
         def shape(checkout: Path, base: str, head: str) -> dict[str, object]:
