@@ -238,6 +238,17 @@ class ClientTests(unittest.TestCase):
             self.assertEqual((kind, returncode), (context.exception.kind, context.exception.returncode))
             self.assertIn(reason, str(context.exception))
 
+    def test_a_quiet_command_given_input_reads_it_through_the_input_runner(self) -> None:
+        given: list[bytes] = []
+
+        def input_runner(command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult:
+            given.append(input_bytes)
+            return GitResult(1, "", "")
+
+        client = GitClient(scripted()[0], input_runner=input_runner)
+        self.assertIsNone(client.quiet_output(["grep", "-f", "-"], input_bytes=b"pattern\n"))
+        self.assertEqual([b"pattern\n"], given)
+
     def test_a_quiet_failure_with_nothing_on_stderr_names_the_subcommand_and_its_exit_code(self) -> None:
         client = GitClient(scripted(GitResult(2, "", ""))[0])
         with self.assertRaises(GitError) as context:

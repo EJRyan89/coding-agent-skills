@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import importlib
 import io
 import json
@@ -25,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "validati
 import premerge_review
 import shepherd_pull_requests as shepherd
 import whole_number
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, GitResult, subprocess_runner
 from git_worktrees import list_worktrees
 from github_client import Backoff, CommandResult, GitHubClient, GitHubError
 from review_records import RecordError
@@ -1348,6 +1349,45 @@ class MergedTest(FixtureTestCase):
             "from main's; fetch origin in the hub",
             self.line(lines, "MERGED_FAILED "),
         )
+
+    def answering(self, word: str, answer: GitResult) -> GitClient:
+        """Real git, but `answer` for the command that holds `word`."""
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            return answer if word in command else subprocess_runner(command, timeout)
+
+        return GitClient(run)
+
+    def test_each_lookup_names_a_git_failure_instead_of_reading_it_as_absent(self) -> None:
+        broken = GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
+        head = git("rev-parse", "HEAD", directory=self.hub)
+        for name, call in (
+            ("the origin URL", lambda: shepherd.locate(self.answering("--get", broken), self.hub)),
+            ("the hub's branch", lambda: shepherd.fast_forward(self.answering("symbolic-ref", broken), self.hub, True)),
+            ("origin's main", lambda: shepherd.own_history(self.answering("--verify", broken), self.hub, [head], head)),
+        ):
+            with self.subTest(name), self.assertRaises(GitError) as raised:
+                call()
+            self.assertIn("bad config line 1", str(raised.exception))
+
+    def test_a_hub_on_a_detached_head_is_named_so(self) -> None:
+        git("switch", "--quiet", "--detach", directory=self.hub)
+        self.assertEqual(
+            "not fast-forwarded: it is on a detached HEAD, not main", shepherd.fast_forward(GitClient(), self.hub, True)
+        )
+
+    def test_a_pull_is_behind_only_when_git_answers_that_main_is_no_ancestor(self) -> None:
+        unknown = dataclasses.replace(shepherd.pull_of(pull(10)), merge_state="UNKNOWN")
+        for answer, behind in (
+            (GitResult(1, "", ""), True),
+            (GitResult(0, "", ""), False),
+            (GitResult(1, "", "warning: ignoring broken ref refs/heads/main\n"), False),
+            (GitResult(128, "", "fatal: Not a valid commit name"), False),
+        ):
+            with self.subTest(answer=answer):
+                self.assertEqual(
+                    behind, shepherd.is_behind(self.answering("merge-base", answer), self.hub, unknown, "a" * 40)
+                )
 
     def test_a_merged_head_s_own_commits_are_refused_without_origin_s_main(self) -> None:
         head = git("rev-parse", "HEAD", directory=self.hub)
