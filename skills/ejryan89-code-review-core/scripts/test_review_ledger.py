@@ -386,6 +386,12 @@ class RepeatTests(unittest.TestCase):
         self.assertLess(markdown.index("v1 F001. [Correctness]"), markdown.index("v1 F003. Repeats v1 F001"))
         self.assertLess(markdown.index("v1 F003. Repeats v1 F001"), markdown.index("v1 F002. [Correctness]"))
 
+    def test_a_repeat_of_a_prior_version_past_the_digit_limit_is_an_unknown_finding(self) -> None:
+        target = "v1" + "0" * 5000 + ":F001"
+        with self.assertRaises(RecordError) as raised:
+            build_record(record_request(), adapter_result([finding("a", repeats=target)]), version=2, policy=POLICY)
+        self.assertEqual(f"Finding a repeats an unknown finding: {target}", str(raised.exception))
+
     def test_the_verdict_counts_open_ledger_entries(self) -> None:
         should = [entry(1, f"F00{n}", "SHOULD_FIX", "open", 1) for n in (1, 2)]
         self.assertEqual("APPROVED", calculate_verdict(should, VERDICT_POLICY))
