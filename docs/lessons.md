@@ -44,9 +44,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** An unreadable path, a failed command, or a git error read as "not found" otherwise reads as a clean pass.
 - **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
-  `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read. The found, absent, and
-  could-not-tell lookups of git and the GitHub CLI come with #1881.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_link_probe_is_the_one_link_test`,
+  `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read; and git's found,
+  absent, and could-not-tell lookups, `git_client:GitClient.rev_parse_paths` for a path query,
+  `git_client:GitClient.commit_of` for a ref, `git_client:GitClient.file_at` for a file at a commit, and
+  `git_client:GitClient.quiet_output` for any command run quiet, each None only for what git reports as absent.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests`,
+  `skills/audit-skill/scripts/test_skill_inventory.py::LocateTests::test_a_checkout_git_cannot_read_fails_naming_git_instead_of_searching_no_repository`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_link_probe_is_the_one_link_test`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`
@@ -123,10 +127,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A result a limit, budget, cap, or page size cut short says so, by a flag, a line, or a field its reader
   checks.
 - **Why:** A listing cut at its limit otherwise reads as the whole set, and what lies past the cut is never judged.
-- **Use:** `bounded_process:run_bounded`, `pr_status:_list_pulls`, `audit_repository:duplicates`,
-  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`; a capped GitHub CLI listing read outside the client is
-  refused by the mechanism in #1881.
-- **Guard:** `.claude/skills/audit-repository/scripts/test_audit_repository.py::DuplicateTests::test_a_search_that_finds_exactly_what_it_lists_is_not_cut`,
+- **Use:** `github_client:GitHubClient.capped_list`, which asks gh for one more item than its limit and says whether
+  GitHub held more; `bounded_process:run_bounded`, `pr_status:_list_pulls`, `audit_repository:duplicates`,
+  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_github_client.py::CappedListTests`,
+  `.claude/skills/audit-repository/scripts/test_audit_repository.py::DuplicateTests::test_a_search_that_finds_exactly_what_it_lists_is_not_cut`,
   `skills/review-insights/scripts/test_review_guidance.py::ReportTests::test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input`,
   `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`
 - **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a slice such as

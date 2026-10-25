@@ -171,7 +171,7 @@ import whole_number
 from console import run_main
 from file_presence import is_present
 from flat_text import flat_text, single_line
-from git_client import GitClient
+from git_client import GitClient, GitError
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
 from path_keys import path_key
 from suite_names import is_suite_name
@@ -1098,8 +1098,15 @@ def locate(name: str, home: Path, repo: Path | None, folder: Path | None = None)
 
 
 def git_toplevel(directory: Path, git: GitClient | None = None) -> Path | None:
-    """The root of the repository containing directory, or None outside one or when git cannot run or finish."""
-    return (git or GitClient()).rev_parse_path("--show-toplevel", directory=directory)
+    """The root of the repository containing directory, or None when git answers that it lies in no repository.
+
+    Raises InputError naming git's reason when git cannot run, finish, or read the checkout, so a repository git
+    cannot read is never searched as no repository at all.
+    """
+    try:
+        return (git or GitClient()).rev_parse_path("--show-toplevel", directory=directory)
+    except GitError as exc:
+        raise InputError(f"git could not read the checkout at {directory.as_posix()}: {exc}") from exc
 
 
 # --- inventory ------------------------------------------------------------------------------------

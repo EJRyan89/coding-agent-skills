@@ -10,6 +10,9 @@ have applied it before the answer was lost: it fails as an `unknown_outcome` tha
 GitHub output is untrusted bytes: a diff carries files in any encoding, and a title can hold anything. The runner
 decodes with surrogateescape, which keeps each byte that is not UTF-8 as a lone surrogate, and the client replaces
 each with U+FFFD before a caller sees it, counting them in `CommandResult.replaced`.
+
+A listing gh cuts at its `--limit` says nothing about what it left out, so `capped_list` asks for one more item than
+it keeps and reports in `Listing.cut` whether GitHub held more.
 """
 
 from __future__ import annotations
@@ -138,6 +141,8 @@ GRAPHQL_KINDS: dict[str, GitHubErrorKind] = {
 RETRYABLE_KINDS: frozenset[GitHubErrorKind] = frozenset({"rate_limit"})
 DEFAULT_TIMEOUT_SECONDS = 300.0
 MISSING_CLI = "GitHub CLI executable 'gh' was not found; install GitHub CLI and authenticate first"
+# The options a gh listing takes its limit by, which `capped_list` sets itself.
+LIMIT_OPTIONS = frozenset({"--limit", "-L"})
 
 
 class GitHubError(RuntimeError):
@@ -433,6 +438,14 @@ def json_body(result: CommandResult) -> Any:
         raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
 
 
+@dataclass(frozen=True)
+class Listing:
+    """What `GitHubClient.capped_list` read: at most its limit of items, and whether GitHub held more."""
+
+    items: list[Any]
+    cut: bool
+
+
 def _identity(result: CommandResult) -> CommandResult:
     return result
 
@@ -498,6 +511,24 @@ class GitHubClient:
             return payload
 
         return self.request(arguments, parse, retry=retry)
+
+    def capped_list(self, arguments: Sequence[str], limit: int, *, retry: bool = True) -> Listing:
+        """Run `gh <arguments> --limit <limit + 1>`, a listing such as `pr list --json ...`, and return its first
+        `limit` items with whether GitHub held more, so a listing cut at its limit says so rather than reading as
+        complete.
+
+        `arguments` name no limit of their own, and `limit` is at least 1, or it raises an `input` GitHubError. An
+        answer that is not a JSON list raises a `malformed` one.
+        """
+        if isinstance(limit, bool) or limit < 1:
+            raise GitHubError(f"a capped listing needs a limit of at least 1, not {limit!r}", kind="input")
+        if any(_option(part)[0] in LIMIT_OPTIONS for part in arguments):
+            raise GitHubError("a capped listing sets its own --limit; the arguments name one", kind="input")
+        payload = self.json([*arguments, "--limit", str(limit + 1)], retry=retry)
+        if not isinstance(payload, list):
+            listing = " ".join(arguments[:2])
+            raise GitHubError(f"gh {listing} answered with something that is not a list", kind="malformed")
+        return Listing(payload[:limit], len(payload) > limit)
 
     def download(self, arguments: Sequence[str], target: Path, *, retry: bool = True) -> None:
         """Run `gh <arguments>` with its output written to `target`, which a retry overwrites."""

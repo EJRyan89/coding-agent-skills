@@ -72,7 +72,7 @@ import review_synthesis as synthesis_stage
 import whole_number
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient
+from git_client import GitClient, GitError
 from path_containment import within
 from review_archive import list_versions, pull_directory, record_files, record_paths
 from review_config import (
@@ -177,7 +177,10 @@ def current_repository(config: dict[str, Any], services: Services) -> str | None
     there belongs to; the innermost when checkouts nest."""
     directory = services.cwd()
     candidates = [directory]
-    common = services.git_common_dir(directory)
+    try:
+        common = services.git_common_dir(directory)
+    except GitError as exc:
+        raise InsightError(f"git could not read the checkout at {directory.as_posix()}: {exc}") from exc
     if common is not None and common.name.casefold() == ".git":
         candidates.append(common.parent)
     matches = [

@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from device_names import is_reserved_device_name
 from executable_locator import find_executable
+from git_client import OBJECT_NAME as GIT_OBJECT_ID
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
@@ -99,7 +100,6 @@ WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f]')
 MAX_SEGMENT_UNITS = 255  # NTFS, ReFS, exFAT, and FAT32 all stop a name at 255 UTF-16 code units
 MAX_PATH = 260  # a Windows path without long-path support, its terminating NUL included
 LONG_PATH_UNITS = 32_767  # an NT path with long-path support, counted with the volume's device name for the drive
-GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 # What each runtime gives a review, which is not everything it can do: Copilot CLI starts subagents, but its hooks let a
 # tool call through when they time out, so its reviewers stay inline under the seal rather than start as subagents
 # whose guard holds only when it runs (the fail-closed decision in docs/design.md).

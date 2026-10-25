@@ -96,6 +96,23 @@ class LocateTests(TemporaryTestCase):
         self.assertEqual(f"SKILL_FILE {skill.as_posix()}", lines[1])
         self.assertEqual("SCOPE project-agents", lines[3])
 
+    def test_a_checkout_git_cannot_read_fails_naming_git_instead_of_searching_no_repository(self) -> None:
+        git("init", "-q", str(self.repo))
+        write(self.user_skills / "alpha" / "SKILL.md", "x")
+        (self.repo / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        completed = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "locate", "alpha", "--home", str(self.home)],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(1, completed.returncode, completed.stderr)
+        lines = completed.stdout.splitlines()
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED git could not read the checkout at {self.repo.as_posix()}"))
+        self.assertIn("bad config line 1", lines[0])
+
     def test_the_same_file_reached_through_two_roots_counts_once(self) -> None:
         skill = write(self.user_skills / "alpha" / "SKILL.md", "x")
         code, lines, _ = self.locate("alpha", "--repo", str(self.home))
@@ -261,23 +278,23 @@ class LocateTests(TemporaryTestCase):
         with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}):
             self.assertIsNone(skill_inventory.git_toplevel(plain))
 
-    def test_git_that_cannot_run_or_finish_gives_no_top_level(self) -> None:
-        commands: list[list[str]] = []
-
+    def test_git_that_cannot_run_finish_or_read_the_checkout_is_named(self) -> None:
         def stalled(command: Sequence[str], timeout: float) -> GitResult:
-            commands.append(list(command))
             raise GitError("git did not finish within 300 seconds", kind="timeout")
 
-        self.assertIsNone(skill_inventory.git_toplevel(self.root, GitClient(stalled)))
-        self.assertEqual(
-            [["git", "-C", str(self.root), "rev-parse", "--path-format=absolute", "--show-toplevel"]], commands
-        )
+        def dubious(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(128, "", "fatal: detected dubious ownership in repository at 'C:/work/repo'\n")
+
+        for runner, reason in ((stalled, "did not finish"), (dubious, "dubious ownership")):
+            with self.subTest(reason), self.assertRaises(skill_inventory.InputError) as context:
+                skill_inventory.git_toplevel(self.root, GitClient(runner))
+            self.assertIn(f"git could not read the checkout at {self.root.as_posix()}", str(context.exception))
+            self.assertIn(reason, str(context.exception))
 
     def test_the_top_level_is_the_absolute_path_git_answers(self) -> None:
         answers = {
             "a path": (GitResult(0, "C:/work/repo with space\n", ""), Path("C:/work/repo with space")),
-            "a failure": (GitResult(128, "", "fatal: not a git repository"), None),
-            "nothing": (GitResult(0, "\n", ""), None),
+            "no repository": (GitResult(128, "", "fatal: not a git repository"), None),
         }
         for case, (answer, expected) in answers.items():
             commands: list[list[str]] = []
