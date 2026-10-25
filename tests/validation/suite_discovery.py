@@ -22,6 +22,7 @@ from typing import TypeGuard
 
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
+from module_closure import MODULE_LOADERS
 from path_containment import posix_within, within
 from shell_targets import run_bash_suite
 from skill_scripts import ASSIGNMENT, STANDARD_STREAMS, split_operators
@@ -578,8 +579,6 @@ PATH_LOADERS = {
     "SourceFileLoader": (1, "path"),
     "run_path": (0, "path_name"),
 }
-# The calls that import a module by its name, by their last name.
-NAME_LOADERS = frozenset({"import_module", "__import__"})
 
 
 class RepositoryModules:
@@ -713,7 +712,7 @@ class RepositoryModules:
                 names += [(f"{module}.{alias.name}" if module else alias.name, node.level) for alias in node.names]
             elif (
                 isinstance(node, ast.Call)
-                and ast.unparse(node.func).rsplit(".", 1)[-1] in NAME_LOADERS
+                and ast.unparse(node.func).rsplit(".", 1)[-1] in MODULE_LOADERS
                 and isinstance(argument := call_argument(node, 0, "name"), ast.Constant)
                 and isinstance(argument.value, str)
             ):
