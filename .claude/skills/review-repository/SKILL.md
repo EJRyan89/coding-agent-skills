@@ -26,7 +26,7 @@ allowed-tools: ["Bash(python -B skills/ejryan89-code-review-core/scripts/review_
 | `sibling-search` | scripts, beside the reviewers above | A fix's `Siblings:` line, held against the twins in the diff's own files |
 | `upgrade-notes` | contract files, skills' `SKILL.md`, `deployer/arguments.py`, `pdf_tool.py` | The body's upgrade-note entry for each contract change, at the level and with the user action it asks for |
 
-The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every pattern matches without regard to case, as a checkout on a case-insensitive file system places a path. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `review-prs` gives every reviewer the pull request's body as untrusted data, `PULL_REQUEST_BODY_FILE`, so `upgrade-notes` reads its `## Upgrade note` and `sibling-search` its `Siblings:` line. `documentation-drift` and `untested-changes` open only when their conditions find something; they, `sibling-search`, and `skill-scripts` share their files, so the generic reviewer still reviews those files.
+The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `documentation-drift` and `untested-changes` open only when their conditions find something; they, `sibling-search`, and `skill-scripts` share their files, so the generic reviewer still reviews those files.
 
 ## 1. Configure
 
@@ -41,7 +41,7 @@ The configuration stays on each machine and never in the repository. Add this en
 }
 ```
 
-`snapshot_exclude` leaves out the evaluation and canary fixtures, whose planted defects and own `README.md` and `docs/design.md` `source-search` would return beside the repository's. A pull request that changes a fixture is therefore `INCOMPLETE`: its fixtures are reviewed from the diff, and `evaluate-skill` exercises them. The snapshot also leaves out every path under `.claude/` as an agent instruction, whatever the configuration says, so `untested-changes` gives its reviewer each changed repository-skill script as an `EXCLUDED` entry to judge from the diff.
+`snapshot_exclude` leaves out the evaluation and canary fixtures, whose planted defects and own `README.md` and `docs/design.md` `source-search` would return beside the repository's. A pull request that changes a fixture is therefore `INCOMPLETE`: its fixtures are reviewed from the diff, and `evaluate-skill` exercises them. The snapshot also leaves out every path under `.claude/` as an agent instruction, whatever the configuration says, so `untested-changes` gives its reviewer each changed repository-skill script, and `documentation-drift` each agent instruction document it could not search, as an `EXCLUDED` entry to judge from the diff.
 
 ## 2. Check
 

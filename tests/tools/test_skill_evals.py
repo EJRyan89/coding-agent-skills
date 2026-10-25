@@ -79,18 +79,20 @@ def review_scenarios(*arguments: Any, **options: Any) -> list[Scenario]:
 # The roles each review-repository scenario's review starts on the copy a run reviews, as the sweep below finds them
 # on it, and so the specialists its change reaches: the one record of the routes, which the reviewer's own suite reads
 # nowhere, since only the copy holds the reviewer's files a condition reads.
+# The documentation-drift route opens wherever a changed script gives a name: each copy holds the reviewer's own
+# SKILL.md and references, which the snapshot leaves out as agent instructions, so they are documents nothing searched.
 REVIEW_REPOSITORY_ROLES = {
-    "branch-name-command": "sibling-search,skill-scripts,trust-boundary",
+    "branch-name-command": "documentation-drift,sibling-search,skill-scripts,trust-boundary",
     "build-grant": "documentation-drift,generic-review,sibling-search,skill-contract,skill-scripts,upgrade-notes",
     "drifted-guide": "documentation-drift,generic-review,sibling-search",
-    "missed-sibling": "generic-review,sibling-search",
+    "missed-sibling": "documentation-drift,generic-review,sibling-search",
     "misstated-exit-status": "documentation",
-    "tested-change": "generic-review,sibling-search",
-    "text-read-policy": "sibling-search,validation-policy",
-    "undocumented-change": "generic-review,sibling-search",
-    "unnoted-flag-rename": "deployer,sibling-search,upgrade-notes",
-    "untested-change": "generic-review,sibling-search,untested-changes",
-    "write-before-refusal": "deployer,sibling-search",
+    "tested-change": "documentation-drift,generic-review,sibling-search",
+    "text-read-policy": "documentation-drift,sibling-search,validation-policy",
+    "undocumented-change": "documentation-drift,generic-review,sibling-search",
+    "unnoted-flag-rename": "deployer,documentation-drift,sibling-search,upgrade-notes",
+    "untested-change": "documentation-drift,generic-review,sibling-search,untested-changes",
+    "write-before-refusal": "deployer,documentation-drift,sibling-search",
 }
 REVIEW_REPOSITORY_SCENARIOS = tuple(REVIEW_REPOSITORY_ROLES)
 # The Python files the write-before-refusal scenario holds in both trees, each by its path once restored.
