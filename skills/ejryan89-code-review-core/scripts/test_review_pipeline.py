@@ -6203,3 +6203,15 @@ def test_a_checkout_and_a_link_to_it_share_one_fetch_lock(tmp_path: Path) -> Non
     link_folder(checkout, link)
     assert review_snapshot._fetch_lock(link) is review_snapshot._fetch_lock(checkout)
     assert review_snapshot._fetch_lock(other) is not review_snapshot._fetch_lock(checkout)
+
+
+def test_a_pipeline_named_through_a_linked_folder_is_the_script_it_names(tmp_path: Path) -> None:
+    scripts = Path(rp.__file__).resolve().parent
+    link = tmp_path / "linked scripts"
+    link_folder(scripts, link)
+    started = str(scripts / "review_pipeline.py")
+    with (
+        mock.patch.object(review_run, "PIPELINE_SCRIPT", link / "review_pipeline.py"),
+        mock.patch.object(sys, "argv", [started, "prepare"]),
+    ):
+        assert review_run.command_script("review_source.py") == str(scripts / "review_source.py")

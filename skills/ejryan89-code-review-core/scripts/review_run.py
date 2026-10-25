@@ -96,8 +96,7 @@ def command_script(name: str) -> str:
     started = sys.argv[0] if sys.argv else ""
     if not started.endswith(pipeline.name) or not Path(started).is_absolute() or set(started) & set('"`$\r\n'):
         return resolved
-    # PIPELINE_SCRIPT is resolved where it is defined, so its lexical key is its resolved one.
-    if path_key(started, resolve=True) != path_key(pipeline):
+    if path_key(started, resolve=True) != path_key(pipeline, resolve=True):
         return resolved
     return started.removesuffix(pipeline.name) + name
 
