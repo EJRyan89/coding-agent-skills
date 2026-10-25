@@ -5,8 +5,8 @@ using namespace System.Management.Automation.Language
 # in hub_guard.py, where tests/tools/test_hub_guard.py drives it.
 #
 # Input: base64-encoded UTF-8 of a JSON object on stdin, so no console code page can alter it: "command", the text,
-# and "limit", how deep Invoke-Expression and pwsh -Command are followed, which hub_guard.py passes from its own
-# nesting limit.
+# "limit", how deep Invoke-Expression and pwsh -Command are followed, which hub_guard.py passes from its own
+# nesting limit, and "slashParameters", whether a child pwsh reads a word that starts with a slash as a parameter.
 # Output: one JSON object. {"error": message} when PowerShell would refuse to parse the command, and so would run
 # none of it; otherwise {"events": [...]}, each one of:
 #   {"kind": "command", "words": [{"text", "dynamic"}],  a command, its name first; dynamic means the text does
@@ -148,15 +148,38 @@ function Test-Null([Ast] $Ast) {
     $Ast.Expression.VariablePath.UserPath -eq 'null'
 }
 
-# The script pwsh runs inline: every word after -Command, joined, or the one word after -CommandWithArgs or -cwa.
-# $null when there is no such switch, '' when what follows it is missing or not static.
+# The parameter name a pwsh argument spells, lower-cased, as pwsh reads its command line, which hub_guard.py's
+# powershell_switch reads the same way: trimmed, without a leading dash (a hyphen, an en dash, an em dash, or a
+# horizontal bar) and then a second dash the same as the first, or without a leading slash where pwsh takes one.
+# $null for a word that is not a parameter.
+function Get-PwshParameterName([string] $Text) {
+    $trimmed = $Text.Trim()
+    if ($trimmed.Length -eq 0) {
+        return $null
+    }
+    $first = $trimmed[0]
+    $name = $trimmed.Substring(1)
+    if ("-$([char] 0x2013)$([char] 0x2014)$([char] 0x2015)".IndexOf($first) -ge 0) {
+        if ($name.Length -gt 0 -and $name[0] -eq $first) {
+            $name = $name.Substring(1)
+        }
+    } elseif ($first -ne '/' -or -not $script:SlashParameters) {
+        return $null
+    }
+    $name.ToLowerInvariant()
+}
+
+# The script pwsh runs inline: every word after -Command, joined, or the one word after -CommandWithArgs or -cwa,
+# each spelled as Get-PwshParameterName reads it. $null when there is no such switch, '' when what follows it is
+# missing or not static.
 function Get-ChildScript([object[]] $Words) {
     for ($index = 1; $index -lt $Words.Count; $index++) {
         if ($Words[$index].dynamic) {
             continue
         }
-        $withArguments = $Words[$index].text -match '^(-cwa|-commandw(i(t(h(a(r(g(s)?)?)?)?)?)?)?)$'
-        if ($withArguments -or $Words[$index].text -match '^-c(o(m(m(a(n(d)?)?)?)?)?)?$') {
+        $name = Get-PwshParameterName $Words[$index].text
+        $withArguments = $name -cmatch '^(cwa|commandw(i(t(h(a(r(g(s)?)?)?)?)?)?)?)$'
+        if ($withArguments -or $name -cmatch '^c(o(m(m(a(n(d)?)?)?)?)?)?$') {
             # Checked before slicing: a range whose start is past its end counts down instead of coming back empty.
             if ($index + 1 -ge $Words.Count) {
                 return ''
@@ -379,6 +402,7 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [int] $Limit, [Collecti
 
 $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())) |
     ConvertFrom-Json
+$SlashParameters = [bool] $payload.slashParameters
 $events = [Collections.Generic.List[object]]::new()
 $parseError = Read-CommandEvent $payload.command 0 ([int] $payload.limit) $events
 if ($null -ne $parseError) {

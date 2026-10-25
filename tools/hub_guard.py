@@ -187,8 +187,6 @@ PREFIX_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
 }
 # Bash options whose next word is their value, so it is not the script that -c runs.
 BASH_OPTIONS_WITH_VALUE = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
-POWERSHELL_COMMAND_SWITCH = re.compile(r"-c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?", re.IGNORECASE)
-POWERSHELL_COMMAND_WITH_ARGUMENTS_SWITCH = re.compile(r"-cwa|-commandw(?:i(?:t(?:h(?:a(?:r(?:g(?:s)?)?)?)?)?)?)?", re.I)
 # How deep bash -c, pwsh -Command, eval, a function call, and Invoke-Expression are followed; the PowerShell reader is
 # handed what is left of it. Deeper nesting is a command the guard cannot read.
 NESTING_LIMIT = 4
@@ -859,7 +857,9 @@ class Shell:
 
     variables holds every variable the shell has, by name as written, starting with the environment it inherits;
     exported, those its commands see. opaque marks a shell in which a command the guard cannot read, such as a
-    sourced file, may have set any variable.
+    sourced file, may have set any variable. references holds each name reference declare -n, local -n, or
+    typeset -n made, by its name: the variable it stands for, "" while it stands for none, so that its first
+    assignment names one, or None when the text does not settle which.
     """
 
     cwd: Path | None
@@ -869,6 +869,7 @@ class Shell:
     allexport: bool = False
     opaque: bool = False
     functions: dict[str, bash_syntax.Command] = field(default_factory=dict)
+    references: dict[str, str | None] = field(default_factory=dict)
 
     def copy(self) -> Shell:
         return replace(
@@ -877,10 +878,28 @@ class Shell:
             exported=set(self.exported),
             stack=list(self.stack),
             functions=dict(self.functions),
+            references=dict(self.references),
         )
 
+    def target(self, name: str) -> str | None:
+        """The variable a name reaches: itself, or the one its chain of name references ends at; None when a
+        reference in the chain stands for no variable, for an element, or for one the text does not settle, or when
+        the chain is deeper than Bash follows, eight references."""
+        for _ in range(8):
+            if name not in self.references:
+                return name
+            reached = self.references[name]
+            if reached is None or not bash_syntax.NAME.fullmatch(reached):
+                return None
+            name = reached
+        return None if name in self.references else name
+
     def lookup(self, name: str) -> Word:
-        """A variable's value as the shell expands it; None when the text does not settle it."""
+        """A variable's value as the shell expands it, through any name reference; None when the text does not settle
+        it."""
+        target = self.target(name)
+        if target != name:
+            return None if target is None else self.lookup(target)
         if name == "PWD":
             return None if self.cwd is None else str(self.cwd)
         if self.opaque or name == "OLDPWD":
@@ -888,14 +907,28 @@ class Shell:
         return self.variables.get(name)
 
     def assign(self, name: str, value: Word, export: bool) -> None:
-        """NAME=value: a variable already exported stays so, as every variable does under allexport."""
-        self.variables[name] = value
+        """NAME=value, through any name reference: a variable already exported stays so, as every variable does under
+        allexport. The first assignment to a reference that stands for none names the variable it stands for, and
+        one through a reference the text does not settle may set any variable."""
+        if self.references.get(name) == "":
+            self.references[name] = value
+            return
+        target = self.target(name)
+        if target is None:
+            self.opaque = True
+            return
+        self.variables[target] = value
         if export or self.allexport:
-            self.exported.add(name)
+            self.exported.add(target)
 
     def unset(self, name: str) -> None:
-        self.variables.pop(name, None)
-        self.exported.discard(name)
+        """unset NAME, through any name reference; one the text does not settle may unset any variable."""
+        target = self.target(name)
+        if target is None:
+            self.opaque = True
+            return
+        self.variables.pop(target, None)
+        self.exported.discard(target)
 
     def program_variables(self, local: Mapping[str, Word]) -> dict[str, Word]:
         """The variables a program the shell starts sees: those exported, and the command's own assignments."""
@@ -913,6 +946,10 @@ def join(first: Shell, second: Shell) -> Shell:
     for name in first.variables.keys() | second.variables.keys():
         left, right = first.variables.get(name, _ABSENT), second.variables.get(name, _ABSENT)
         variables[name] = left if left == right and isinstance(left, str) else None
+    references: dict[str, str | None] = {}
+    for name in first.references.keys() | second.references.keys():
+        left, right = first.references.get(name, _ABSENT), second.references.get(name, _ABSENT)
+        references[name] = left if left == right and isinstance(left, str) else None
     stack = first.stack if first.stack == second.stack else [None] * max(len(first.stack), len(second.stack))
     return Shell(
         first.cwd if same_place(first.cwd, second.cwd) else None,
@@ -922,6 +959,7 @@ def join(first: Shell, second: Shell) -> Shell:
         first.allexport or second.allexport,
         first.opaque or second.opaque,
         {**first.functions, **second.functions},
+        references,
     )
 
 
@@ -1081,7 +1119,10 @@ class BashReader:
                 tested = self.run_list(node.condition, state)
                 seen.append((tested.ok if node.kind == "until" else tested.fail).copy())
                 state = (tested.fail if node.kind == "until" else tested.ok).copy()
-            if node.name is not None:
+            if node.name in state.references:
+                # A name reference as the loop's variable stands for each word in turn.
+                state.references[node.name] = None
+            elif node.name is not None:
                 state.assign(node.name, None, export=False)
             after = self.run_list(node.body, state).merged()
             seen.append(after)
@@ -1116,11 +1157,18 @@ class BashReader:
                 shell.assign(name, value, export=name in shell.exported)
             return certain(shell)
         # Before a command's name Bash refuses an element's assignment, NAME[SUBSCRIPT]=, sets nothing for it, and
-        # runs the command all the same.
-        local = {
-            assignment.name: assigned_value(assignment, shell) for assignment in assignments if not assignment.element
-        }
+        # runs the command all the same. Each other one reaches its variable through any name reference.
+        local: dict[str, Word] = {}
+        unsettled = False
+        for assignment in assignments:
+            target = shell.target(assignment.name)
+            if target is None:
+                unsettled = True
+            elif not assignment.element:
+                local[target] = assigned_value(assignment, shell)
         values = [word_value(word, shell) for word in words[index:]]
+        # One through a reference the text does not settle may give the command any variable.
+        shell.opaque = shell.opaque or unsettled
         return self.run_words(values, node.redirects, shell, local)
 
     def run_words(
@@ -1326,9 +1374,12 @@ def bash_popd(reader: BashReader, arguments: list[Word], _: object, shell: Shell
 
 
 def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """export, declare, typeset, local, and readonly: the variables they set, export, or stop exporting."""
+    """export, declare, typeset, local, and readonly: the variables they set, export, or stop exporting, each reached
+    through any name reference, and the name references declare, typeset, and local make with -n and undo with
+    +n."""
     builtin = reader.current_builtin
     exporting, unexporting = builtin == "export", False
+    referencing: bool | None = None
     for word in arguments:
         if word is None:
             shell.opaque = True
@@ -1339,27 +1390,130 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
                 return certain(shell)  # Functions, not variables.
             if builtin == "export" and "n" in flags:
                 unexporting = True
-            elif "x" in flags:
+                continue
+            if "x" in flags:
                 exporting, unexporting = word.startswith("-"), word.startswith("+")
+            if "n" in flags and builtin in {"declare", "typeset", "local"}:
+                referencing = word.startswith("-")
             continue
         name, has_value, value = word.partition("=")
-        if has_value:
-            shell.variables[name] = value
+        subject = declared_name(shell, name, value if has_value else None, referencing)
+        if subject is None:
+            continue
+        if has_value and not referencing:
+            shell.variables[subject] = value
         if unexporting:
-            shell.exported.discard(name)
+            shell.exported.discard(subject)
         elif exporting or (shell.allexport and has_value):
-            shell.exported.add(name)
+            shell.exported.add(subject)
     return certain(shell)
 
 
+def declared_name(shell: Shell, name: str, value: str | None, referencing: bool | None) -> str | None:
+    """The variable a declaration of a name sets and exports: the name itself when it makes (-n) or undoes (+n) a
+    name reference, and otherwise the variable the name reaches. None when the declaration is done: a value given to
+    a reference that stands for none names the variable it stands for, and a name that reaches a variable the text
+    does not settle may be any variable."""
+    if referencing:
+        if value is None:
+            value = shell.references[name] if name in shell.references else shell.variables.get(name, "")
+            value = None if shell.opaque and name not in shell.references else value
+        shell.references[name] = value
+        if value or name in shell.variables:
+            # The reference's own value, which a program sees when it is exported.
+            shell.variables[name] = value
+        return name
+    if referencing is False and name in shell.references:
+        del shell.references[name]
+        return name
+    if value is not None and shell.references.get(name) == "":
+        shell.references[name] = value
+        return None
+    target = shell.target(name)
+    if target is None:
+        shell.opaque = True
+    return target
+
+
+def bash_read(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """read, which sets each name it is given, or REPLY, to what it reads, and with -a makes its name an array: each
+    is left unsettled, and a word the text does not settle before or among the names may name any variable."""
+    names: list[Word] = []
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None or word == "--":
+            index += word == "--"
+            break
+        if not word.startswith("-") or word == "-":
+            break
+        for position, flag in enumerate(word[1:], start=2):
+            if flag in "adinNptu":
+                # The option's value is the rest of the word, or else the next word.
+                attached = word[position:]
+                if not attached:
+                    index += 1
+                if flag == "a":
+                    names.append(attached or (arguments[index] if index < len(arguments) else ""))
+                break
+        index += 1
+    names.extend(arguments[index:])
+    assign_unsettled(shell, names or ["REPLY"])
+    return certain(shell)
+
+
+def bash_printf(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """printf -v NAME, which sets NAME to the text it formats, left unsettled; a word the text does not settle where
+    -v may stand may name any variable."""
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None:
+            assign_unsettled(shell, [None])
+            break
+        if word == "--" or not word.startswith("-v"):
+            break
+        if word == "-v":
+            # -v's name is the next word, unless it is attached, as in -vNAME.
+            index += 1
+            assign_unsettled(shell, [arguments[index] if index < len(arguments) else ""])
+        else:
+            assign_unsettled(shell, [word[2:]])
+        index += 1
+    return certain(shell)
+
+
+def bash_getopts(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """getopts OPTSTRING NAME, which sets NAME to the option it finds, left unsettled."""
+    operands = arguments[1:] if arguments[:1] == ["--"] else arguments
+    assign_unsettled(shell, operands[1:2] if operands[:1] != [None] else [None])
+    return certain(shell)
+
+
+def assign_unsettled(shell: Shell, names: list[Word]) -> None:
+    """Gives each name a value the text does not settle, through any name reference; a name of one element sets its
+    array. A name the text does not settle may be any variable."""
+    for name in names:
+        if name is None:
+            shell.opaque = True
+        elif name:
+            shell.assign(name.partition("[")[0], None, export=False)
+
+
 def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """unset NAME, through any name reference, -f NAME, a function, and -n NAME, a name reference itself."""
     functions = "-f" in arguments
+    references = "-n" in arguments
     for word in arguments:
         if word is None:
             shell.opaque = True
         elif not word.startswith("-"):
             if functions:
                 shell.functions.pop(word, None)
+            elif references and word in shell.references:
+                del shell.references[word]
+                shell.variables.pop(word, None)
+                shell.exported.discard(word)
             else:
                 shell.unset(word)
     return certain(shell)
@@ -1439,6 +1593,9 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
     **dict.fromkeys(DECLARE_NAMES, bash_declare),
     "unset": bash_unset,
     "set": bash_set,
+    "read": bash_read,
+    "printf": bash_printf,
+    "getopts": bash_getopts,
     "eval": bash_eval,
     "source": bash_source,
     ".": bash_source,
@@ -1478,13 +1635,26 @@ def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], sh
 
 
 def powershell_script(arguments: list[Word]) -> list[Word] | None:
-    """The script pwsh runs inline: every word after -Command, or an abbreviation of it, or the one word after
-    -CommandWithArgs or -cwa, whose other words are its arguments; None when it runs no inline script."""
+    """The script pwsh runs inline: every word after -Command, or the one word after -CommandWithArgs, whose other
+    words are its arguments; None when it runs no inline script."""
     for index, word in enumerate(arguments):
-        if word is not None and POWERSHELL_COMMAND_WITH_ARGUMENTS_SWITCH.fullmatch(word):
+        inline = powershell_inline(word)
+        if inline == "commandwithargs":
             return arguments[index + 1 : index + 2]
-        if word is not None and POWERSHELL_COMMAND_SWITCH.fullmatch(word):
+        if inline == "command":
             return arguments[index + 1 :]
+    return None
+
+
+def powershell_inline(word: Word) -> str | None:
+    """The inline-script parameter a pwsh argument names, "command" or "commandwithargs", by any spelling of its
+    name, a prefix of it, or the alias -cwa; None for any other word."""
+    if word is None:
+        return None
+    if powershell_parameter(word, (("commandwithargs", "commandw"), ("cwa", "cwa"))):
+        return "commandwithargs"
+    if powershell_parameter(word, (("command", "c"),)):
+        return "command"
     return None
 
 
@@ -1493,7 +1663,7 @@ def powershell_reads_input(arguments: list[Word]) -> bool:
     -File -, or none of an inline command, a script file, or an encoded command. A word the text does not settle
     before that is decided may be any of them, so it counts too.
 
-    The parameters are spelled as in powershell_takes_value."""
+    The parameters are spelled as in powershell_switch and abbreviated as in powershell_takes_value."""
     encoded = (("encodedcommand", "e"), ("ec", "ec"))
     file = (("file", "f"),)
     index = 0
@@ -1502,12 +1672,16 @@ def powershell_reads_input(arguments: list[Word]) -> bool:
         following = arguments[index + 1] if index + 1 < len(arguments) else None
         if word is None:
             return True
-        if POWERSHELL_COMMAND_WITH_ARGUMENTS_SWITCH.fullmatch(word) or powershell_parameter(word, encoded):
-            return False
-        if POWERSHELL_COMMAND_SWITCH.fullmatch(word) or powershell_parameter(word, file):
-            return following == "-"
-        if not word.startswith("-"):
+        name = powershell_switch(word)
+        if name is None:
             return False  # a script file, named without -File
+        if not name:
+            return True  # a lone dash reads standard input, whatever follows it
+        inline = powershell_inline(word)
+        if inline == "commandwithargs" or powershell_parameter(word, encoded):
+            return False
+        if inline == "command" or powershell_parameter(word, file):
+            return following == "-"
         index += 2 if powershell_takes_value(word) else 1
     return True
 
@@ -1536,10 +1710,28 @@ def powershell_takes_value(word: str) -> bool:
 
 
 def powershell_parameter(word: str, forms: Iterable[tuple[str, str]]) -> bool:
-    """Whether a word names one of these pwsh parameters, in any case: a prefix of a name at least as long as its
-    shortest form."""
-    name = word[1:].lower()
-    return word.startswith("-") and any(full.startswith(name) and name.startswith(short) for full, short in forms)
+    """Whether a word names one of these pwsh parameters, in any case and spelled as powershell_switch reads it: a
+    prefix of a name at least as long as its shortest form."""
+    name = powershell_switch(word)
+    return name is not None and any(full.startswith(name) and name.startswith(short) for full, short in forms)
+
+
+def powershell_switch(word: str) -> str | None:
+    """The parameter name a pwsh argument spells, lower-cased, as pwsh reads its command line; None for a word that is
+    not a parameter, such as a script file's name. A lone dash gives the empty name.
+
+    pwsh trims the word's white space, every character of which Python's strip removes too, and takes off a leading
+    dash, a hyphen, an en dash, an em dash, or a horizontal bar, and then a second dash the same as the first; where
+    platform_support says so, a leading slash marks a parameter too."""
+    text = word.strip()
+    if not text:
+        return None
+    first, name = text[0], text[1:]
+    if first in "-\u2013\u2014\u2015":
+        name = name[1:] if name.startswith(first) else name
+    elif first != "/" or not platform_support.POWERSHELL_SLASH_PARAMETERS:
+        return None
+    return name.lower()
 
 
 def follow(
@@ -1586,14 +1778,20 @@ def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[s
     """The reader's events for one command, or None when there are none, with why.
 
     pwsh starts with -Command rather than -File, so no execution policy applies, and not with -EncodedCommand,
-    which endpoint protection treats as a sign of malware. The command, and how much nesting is left to follow,
-    travel base64-encoded on stdin, past any console code page.
+    which endpoint protection treats as a sign of malware. The command, how much nesting is left to follow, and
+    whether a child pwsh takes a slash before a parameter travel base64-encoded on stdin, past any console code page.
     """
     pwsh = platform_support.find_pwsh(reading.environment.get("PATH", ""))
     if pwsh is None:
         reading.cannot_read("could not find pwsh to read a PowerShell command")
         return None
-    payload = json.dumps({"command": command, "limit": NESTING_LIMIT - depth})
+    payload = json.dumps(
+        {
+            "command": command,
+            "limit": NESTING_LIMIT - depth,
+            "slashParameters": platform_support.POWERSHELL_SLASH_PARAMETERS,
+        }
+    )
     try:
         # run_bounded takes git's repository-selecting variables out of the hook's environment, and the tree ends
         # every process pwsh starts once it has finished or been killed.
