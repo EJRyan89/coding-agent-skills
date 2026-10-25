@@ -1082,6 +1082,21 @@ class ToolsTests(TemporaryTestCase):
             [found[0], found[1][: found[1].index(" not JSON:") + len(" not JSON:")], *found[2:]],
         )
 
+    def test_a_trigger_scenario_after_an_unreadable_one_is_still_named(self) -> None:
+        write(self.root / "deploy-meta" / "alpha.json", "{}")
+        skill = write(self.root / "skills" / "alpha" / "SKILL.md", "---\ndescription: Run.\n---\nBody.\n")
+        scenarios = self.root / "tests" / "fixtures" / "skill-evals" / "alpha"
+        first = write(scenarios / "a-broken" / "scenario.json", '{"mode": "trigger", "requests": "Run it."}')
+        second = write(scenarios / "b-description" / "scenario.json", '{"mode": "trigger", "requests": ["a"]}')
+        _, lines, _ = run("tools", str(skill))
+        self.assertEqual(
+            [
+                f"TRIGGER_SCENARIO_UNREADABLE {first.as_posix()} its requests is not a list",
+                f"TRIGGER_SCENARIO {second.as_posix()} 1 0",
+            ],
+            [line for line in lines if line.startswith("TRIGGER")],
+        )
+
     def test_a_trigger_scenario_whose_requests_or_near_misses_are_not_a_list_is_unreadable(self) -> None:
         write(self.root / "deploy-meta" / "alpha.json", "{}")
         skill = write(self.root / "skills" / "alpha" / "SKILL.md", "---\ndescription: Run.\n---\nBody.\n")
@@ -2494,6 +2509,13 @@ class RuntimeSupportTests(SourceTreeTestCase):
             [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
         )
 
+    def test_a_skill_with_readable_metadata_or_none_at_all_has_its_needs_derived(self) -> None:
+        readable = self.skill("Body.\n", self.full(tools=["gh"]))
+        self.assertEqual({"sandbox-network"}, skill_inventory.own_needs(readable.parent))
+        bare = write(self.root / "skills" / "beta" / "SKILL.md", "---\ndescription: Run.\n---\nBody.\n")
+        self.assertFalse((self.root / "deploy-meta" / "beta.json").exists())
+        self.assertEqual(set(), skill_inventory.own_needs(bare.parent))
+
     def test_metadata_it_cannot_read_is_named_rather_than_read_as_no_declaration(self) -> None:
         skill = self.skill("Body.\n", self.full(tools="gh"))
         self.assertEqual(["RUNTIME_UNREADABLE its metadata cannot be read"], self.runtime(skill))
@@ -2813,6 +2835,26 @@ class PluginTests(TemporaryTestCase):
             with self.subTest(document=name):
                 root = self.plugin(folder=self.root / name, hooks=document)
                 self.assertEqual([], skill_inventory.plugin_hooks(self.skill(root).parent))
+
+    def test_each_command_hook_names_its_matcher_group_counted_from_one_across_events(self) -> None:
+        def command(name: str) -> dict[str, str]:
+            return {"type": "command", "command": name}
+
+        events = {
+            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "prompt", "prompt": "Check."}, command("one")]}],
+            "Stop": [{"hooks": [command("two")]}, {"matcher": "Read", "hooks": [command("three"), command("four")]}],
+        }
+        root = self.plugin(hooks={"hooks": events})
+        found = skill_inventory.plugin_hooks(self.skill(root).parent)
+        self.assertEqual(
+            [
+                ("PreToolUse", 1, "one", "Bash"),
+                ("Stop", 2, "two", "*"),
+                ("Stop", 3, "three", "Read"),
+                ("Stop", 3, "four", "Read"),
+            ],
+            [(hook.event, hook.group, hook.program, matcher) for hook, matcher in found],
+        )
 
     def test_a_matcher_group_without_a_matcher_or_with_an_empty_one_matches_every_tool(self) -> None:
         groups = [
