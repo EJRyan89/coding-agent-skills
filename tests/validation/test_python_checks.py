@@ -973,7 +973,7 @@ def test_claim_policies_read_the_policies_their_runner_and_the_root_modules() ->
         root = Path(temporary)
         held = ["conftest.py", "deploy.py", "tests/run_validation.py", "tests/validation/policy.py"]
         write_fixture_tree(
-            root, {name: parse for name in [*held, "tests/validation/test_policy.py", "tests/deployer/harness.py"]}
+            root, dict.fromkeys([*held, "tests/validation/test_policy.py", "tests/deployer/harness.py"], parse)
         )
         found = python_checks.json_parse_problems(root, sorted(root.rglob("*.py")))
     assert [problem.split(" ", 1)[0] for problem in found] == [f"{name}:3" for name in held]
