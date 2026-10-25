@@ -511,6 +511,13 @@ class InstallHintTests(unittest.TestCase):
         self.assertEqual(
             "winget install --id koalaman.shellcheck", platform_support.WINDOWS_INSTALL_HINTS["ShellCheck"]
         )
+        # The development dependencies install from the lock as CI installs it: hashes checked, wheels only.
+        for package in ("ruff", "mypy", "pytest"):
+            with self.subTest(package=package):
+                self.assertEqual(
+                    "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+                    platform_support.WINDOWS_INSTALL_HINTS[package],
+                )
         self.assertEqual(
             {
                 "Bash": "sudo apt install bash",
