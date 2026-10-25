@@ -91,6 +91,7 @@ from console import run_main
 from flat_text import single_line
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError
 from runtime_support import RUNTIMES as SUBJECTS
+from seconds_option import positive_seconds
 from suite_names import is_suite_name
 
 from deployer.paths import Paths
@@ -599,7 +600,7 @@ def summary(lines: Sequence[str]) -> str:
 def main(arguments: list[str] | None = None, fetcher: Fetcher = fetch, top: Path = REPOSITORY_ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--summary", type=Path, metavar="FILE", help="append the findings to FILE as Markdown")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, metavar="SECONDS")
+    parser.add_argument("--timeout", type=positive_seconds, default=DEFAULT_TIMEOUT, metavar="SECONDS")
     namespace = parser.parse_args(arguments)
     try:
         lines = watch(top, fetcher, namespace.timeout)

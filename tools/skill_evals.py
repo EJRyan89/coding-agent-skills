@@ -234,7 +234,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import math
 import os
 import re
 import sys
@@ -249,6 +248,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from bounded_process import without_repository_variables
 from console import run_main
 from git_client import GitClient, GitError
+from seconds_option import positive_seconds
 
 from deployer import fsops, platform_support
 from deployer.source import SKILL_NAME_PATTERN
@@ -497,13 +497,6 @@ def positive(value: str) -> int:
     return number
 
 
-def seconds(value: str) -> float:
-    number = float(value)
-    if not math.isfinite(number) or number <= 0:
-        raise argparse.ArgumentTypeError(f"must be a positive number of seconds, not {value}")
-    return number
-
-
 def skill_name(value: str) -> str:
     if not SKILL_NAME_PATTERN.fullmatch(value):
         raise argparse.ArgumentTypeError(f"must be a skill's name, a folder under {SCENARIO_ROOT}, not {value}")
@@ -520,7 +513,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--model", action="append", choices=list(MODELS), help="judge only this model (repeatable)")
     result.add_argument("--write", action="store_true", help="replace the skill's rows in docs/skill-evaluations.md")
     result.add_argument(
-        "--timeout", type=seconds, default=DEFAULT_TIMEOUT, help=f"seconds for each run (default {DEFAULT_TIMEOUT})"
+        "--timeout",
+        type=positive_seconds,
+        default=DEFAULT_TIMEOUT,
+        help=f"seconds for each run (default {DEFAULT_TIMEOUT})",
     )
     result.add_argument("--jobs", type=positive, default=DEFAULT_JOBS, help=f"runs at once (default {DEFAULT_JOBS})")
     result.add_argument(

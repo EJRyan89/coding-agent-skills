@@ -1080,3 +1080,49 @@ def test_discarded_result_policy_refuses_a_runner_result_left_unread() -> None:
         f"{alpha}: RESULT_DISCARD_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: RESULT_DISCARD_ALLOWED must map each function, class, or assignment to its reason",
     ]
+
+
+TIME_OPTION_SOURCE = """\
+import argparse
+
+from seconds_option import positive_seconds
+
+
+def parser():
+    result = argparse.ArgumentParser()
+    result.add_argument("--timeout", type=float, default=30.0)
+    result.add_argument("--read-timeout", "-r", type=float)
+    result.add_argument("--wait", type=float, metavar="SECONDS")
+    result.add_argument("limit", type=float, dest="limit_minutes")
+    result.add_argument_group("g").add_argument("--max_hours", type=float)
+    result.add_argument("--timeout-ok", type=positive_seconds)
+    result.add_argument("--ratio", type=float)
+    result.add_argument("--attempts", type=int)
+    result.add_argument("--seconds-listed", type=str)
+    return result
+
+
+def sanctioned(result):
+    result.add_argument("--seconds", type=float)
+
+
+TIME_OPTION_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_time_option_policy_refuses_a_float_time_option() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(python_checks.time_option_problems, "TIME_OPTION_ALLOWED", TIME_OPTION_SOURCE, alpha)
+    remedy = (
+        "with type=float, which accepts nan, inf, 0, and a negative number; use ejryan89-skill-core's "
+        "seconds_option.positive_seconds, or state why in TIME_OPTION_ALLOWED"
+    )
+    assert found == [
+        f"{alpha}:8 reads --timeout {remedy}",
+        f"{alpha}:9 reads --read-timeout {remedy}",
+        f"{alpha}:10 reads SECONDS {remedy}",
+        f"{alpha}:11 reads limit_minutes {remedy}",
+        f"{alpha}:12 reads --max_hours {remedy}",
+        f"{alpha}: TIME_OPTION_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: TIME_OPTION_ALLOWED must map each function, class, or assignment to its reason",
+    ]

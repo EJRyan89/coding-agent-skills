@@ -2706,3 +2706,13 @@ def test_the_commands_that_make_no_home_take_no_skill_and_no_home_option(argumen
         runtime_canary.main(arguments)
     assert raised.value.code == 2
     assert message in output.getvalue()
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1"])
+def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        runtime_canary.main(["--timeout", value])
+    assert exited.value.code == 2
+    refusal = capsys.readouterr().err.splitlines()[-1]
+    assert "argument --timeout: " in refusal
+    assert refusal.endswith(f" seconds, not {value}")

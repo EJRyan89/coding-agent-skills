@@ -6,6 +6,7 @@ runtime would, from its arguments alone, and a lookup that names a program nobod
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -13,7 +14,10 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest import mock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -526,3 +530,36 @@ class SummaryTests(unittest.TestCase):
             with mock.patch.object(lines, "run", return_value=['FAILED codex skill-listing "x"']):
                 self.assertEqual(1, lines.main(["--runtime", "codex"]))
             self.assertTrue(summary.read_text(encoding="utf-8").startswith("before\n## Runtime command lines"))
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1"])
+def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        lines.main(["--timeout", value])
+    assert exited.value.code == 2
+    refusal = capsys.readouterr().err.splitlines()[-1]
+    assert "argument --timeout: " in refusal
+    assert refusal.endswith(f" seconds, not {value}")
+
+
+class Parsed(Exception):
+    """Raised in place of returning from parse_args, carrying the namespace it parsed, so main runs nothing after."""
+
+
+def test_the_timeout_defaults_to_30_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    parse = argparse.ArgumentParser.parse_args
+
+    def parsed(parser: argparse.ArgumentParser, *arguments: Any, **options: Any) -> None:
+        raise Parsed(parse(parser, *arguments, **options))
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parsed)
+    with pytest.raises(Parsed) as stopped:
+        lines.main([])
+    assert stopped.value.args[0].timeout == 30.0
+
+
+def test_the_help_names_the_timeout_in_seconds(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        lines.main(["--help"])
+    assert exited.value.code == 0
+    assert "--timeout SECONDS" in " ".join(capsys.readouterr().out.split())

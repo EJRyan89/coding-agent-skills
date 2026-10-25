@@ -333,12 +333,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   zero, a negative number, `inf`, and `nan` when it is read.
 - **Why:** `float` accepts `inf`, `nan`, and negatives, so a limit can silently become no limit or an immediate
   timeout.
-- **No guard:** The mechanism, one argument type for a time option and a policy refusing `type=float` on one, is in
-  #1883; until it lands, review holds the rule.
+- **Use:** `seconds_option:positive_seconds`, the argparse type every time option takes
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_time_option_refuses_what_is_no_limit`,
+  `tests/validation/test_python_checks.py::test_time_option_policy_refuses_a_float_time_option`,
+  `skills/ejryan89-skill-core/scripts/test_seconds_option.py::test_anything_else_is_refused_naming_the_value`
 - **Search for:** `rg -n "type=float"` in an `add_argument(` for a `--timeout`, `--wait`, or other seconds option;
   `type=int` on such an option; `timeout=` given a value read from an argument or a file with no check that it is
   above zero and finite.
-- **Examples:** #1883
+- **Examples:** #1756, #1837, #1883, #1899
 
 ### A check reaches its whole rule
 
