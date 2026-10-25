@@ -92,7 +92,11 @@ def raises(error: BaseException) -> Callable[[], int]:
 
 class RunMainTests(unittest.TestCase):
     def test_exits_with_what_main_returns(self) -> None:
-        self.assertEqual((0, "done\n", ""), run_in_process(lambda: print("done") or 0))
+        def prints() -> int:
+            print("done")
+            return 0
+
+        self.assertEqual((0, "done\n", ""), run_in_process(prints))
         self.assertEqual((1, "", ""), run_in_process(lambda: 1))
         self.assertEqual((None, "", ""), run_in_process(lambda: None))
 

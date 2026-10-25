@@ -525,15 +525,16 @@ class GitHubClient:
             if pacer is not None:
                 pacer.before()
             result, response = self._execute(execute, command, change, headers)
-            error: GitHubError | None = None
             try:
                 value = self._judge(command, result, response, parse)
             except GitHubError as exc:
                 error = exc
+            else:
+                if pacer is not None:
+                    pacer.after(None)
+                return value
             if pacer is not None:
                 pacer.after(error)
-            if error is None:
-                return value
             if error.transient:
                 if change is not None:
                     raise _unknown_outcome(error, change)

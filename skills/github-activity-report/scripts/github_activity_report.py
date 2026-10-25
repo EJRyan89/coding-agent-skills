@@ -240,6 +240,7 @@ class GitHubSearchClient:
         legitimately list one commit in several repositories, so only pull request searches must be distinct.
         """
         repeats_allowed = endpoint == "search/commits"
+        found = expected = 0
         for attempt in range(PAGINATION_PASSES):
             payload = (
                 first if first is not None and attempt == 0 else self._search_page(endpoint, query, 1, SEARCH_PAGE_SIZE)
@@ -355,6 +356,8 @@ class GitHubSearchClient:
             left, left_capped = self.graphql_search_range(template, user, start, middle)
             right, right_capped = self.graphql_search_range(template, user, middle + timedelta(days=1), end)
             return left + right, left_capped + right_capped
+        unique: list[Any] = []
+        expected = 0
         for attempt in range(PAGINATION_PASSES):
             if attempt:
                 page = self._graphql_search_page(query, user, None)

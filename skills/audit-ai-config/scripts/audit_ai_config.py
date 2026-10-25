@@ -427,7 +427,7 @@ def validate_manifest_vocabulary(manifest: dict[str, Any]) -> list[Finding]:
             message=f"Unknown MCP target in manifest: '{t}'",
         )
         for t in manifest_mcp_targets(manifest)
-        if isinstance(t, str) and t not in VALID_MCP_TARGETS
+        if t not in VALID_MCP_TARGETS
     )
     return findings
 

@@ -293,6 +293,7 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual("malformed", context.exception.kind)
 
     def test_the_pull_a_review_reads_carries_its_description_and_a_null_one_is_empty(self) -> None:
+        pull: dict[str, Any] = {}
         for body, expected in (("## Upgrade note\n\nNone\n", "## Upgrade note\n\nNone\n"), (None, ""), ("", "")):
             with self.subTest(body=body):
                 value = {**self._api_pull(42), "body": body}
