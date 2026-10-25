@@ -436,6 +436,32 @@ class CheckoutTests(DocumentTestCase):
             commands[1][1:],
         )
 
+    def test_a_head_git_cannot_read_fails_keeping_gits_kind_and_exit_code(self) -> None:
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
+
+        with self.assertRaises(GitError) as context:
+            review_document.committed_base("plan.md", self.root, GitClient(answering), text=True)
+        self.assertEqual(
+            (
+                "git could not read the checkout's HEAD commit: fatal: bad config line 1 in file .git/config",
+                "git",
+                128,
+            ),
+            (str(context.exception), context.exception.kind, context.exception.returncode),
+        )
+
+    def test_a_branch_with_no_commit_yet_has_no_base(self) -> None:
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            if "symbolic-ref" in command:
+                return GitResult(0, "refs/heads/main\n", "")
+            return GitResult(1, "", "")  # neither HEAD nor its branch names a commit yet
+
+        self.assertEqual(
+            review_document.Base(None, None, "the checkout has no commit yet"),
+            review_document.committed_base("plan.md", self.root, GitClient(answering), text=True),
+        )
+
     def test_a_listed_blob_git_then_finds_no_file_for_fails_naming_it(self) -> None:
         head, blob = "a" * 40, "b" * 40
 
