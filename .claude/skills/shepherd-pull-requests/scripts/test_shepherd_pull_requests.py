@@ -545,6 +545,35 @@ class ListingTest(FixtureTestCase):
         listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
         self.assertEqual("3", listing[listing.index("--limit") + 1])
 
+    def test_a_cut_open_listing_is_an_incomplete_answer(self) -> None:
+        client = GitHubClient(StubGh([pull(10), pull(11)]), backoff=NO_WAIT, sleeper=lambda _: None)
+        with mock.patch.object(shepherd, "OPEN_LISTED", 1), self.assertRaises(GitHubError) as context:
+            shepherd.read_pulls(client, REPOSITORY)
+        self.assertEqual("incomplete", context.exception.kind)
+
+    def test_the_merged_listing_asks_for_the_newest_merged_pull_requests_of_the_repository(self) -> None:
+        gh = StubGh(merged=[{"number": 9, "headRefName": "fix/old", "headRefOid": "b" * 40}])
+        client = GitHubClient(gh, backoff=NO_WAIT, sleeper=lambda _: None)
+        self.assertEqual([shepherd.Merged(9, "fix/old", "b" * 40)], shepherd.read_merged(client, REPOSITORY))
+        self.assertEqual(
+            [
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    REPOSITORY,
+                    "--state",
+                    "merged",
+                    "--json",
+                    "number,headRefName,headRefOid",
+                    "--limit",
+                    str(shepherd.MERGED_LISTED + 1),
+                ]
+            ],
+            gh.calls,
+        )
+
     def test_exactly_as_many_open_pull_requests_as_one_tick_lists_are_all_judged(self) -> None:
         with mock.patch.object(shepherd, "OPEN_LISTED", 2):
             status, lines = self.tick(StubGh([pull(10), pull(11)]))
