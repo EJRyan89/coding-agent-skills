@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from path_containment import within
+
 from . import fsops, platform_support
 from .arguments import usage_error
 from .errors import DeployError, os_error
@@ -147,7 +149,7 @@ def canary_home(value: str) -> Path:
         raise usage_error(f"--canary-home must be an existing directory: {platform_support.normalize(home)}")
     temporary = Path(platform_support.canonical_directory(tempfile.gettempdir()))
     resolved = Path(platform_support.canonical_directory(home))
-    if resolved == temporary or not resolved.is_relative_to(temporary):
+    if not within(resolved, temporary, strict=True):
         raise usage_error(
             f"--canary-home must be inside the temporary directory {platform_support.normalize(temporary)} "
             f"(got: {platform_support.normalize(resolved)})"

@@ -64,6 +64,7 @@ from frontmatter import (
 from frontmatter import split as split_frontmatter
 from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
+from path_containment import within
 
 # ---------------------------------------------------------------------------
 # Finding model
@@ -250,7 +251,7 @@ def leaves_root(root: Path, path: Path) -> bool:
     that leads out of the repository makes it. A path that cannot be resolved counts as outside, so nothing is read
     through it."""
     try:
-        return not path.resolve().is_relative_to(root.resolve())
+        return not within(path.resolve(), root.resolve())
     except (OSError, RuntimeError, ValueError):
         return True
 

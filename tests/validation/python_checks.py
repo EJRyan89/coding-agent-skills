@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
+from path_containment import posix_within, within
 from toolchain import find_mypy, find_ruff
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
@@ -285,8 +286,8 @@ def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
         name = path.relative_to(root).as_posix()
         if (
             path.suffix != ".py"
-            or not any(name == prefix or name.startswith(f"{prefix}/") for prefix in FORMAT_ROOTS)
-            or any(name.startswith(f"{prefix}/") for prefix in ISSUE_REFERENCE_EXCLUDED)
+            or not any(posix_within(name, prefix) for prefix in FORMAT_ROOTS)
+            or any(posix_within(name, prefix, strict=True) for prefix in ISSUE_REFERENCE_EXCLUDED)
         ):
             continue
         try:
@@ -308,10 +309,10 @@ def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
 def _type_check_root(root: Path, path: Path, skill_scripts: list[Path]) -> Path | None:
     """The folder mypy collects a file from: its skill's scripts/, or the root of TYPE_CHECK_ROOTS holding it."""
     for scripts in skill_scripts:
-        if path.is_relative_to(scripts):
+        if within(path, scripts):
             return scripts
     for top in TYPE_CHECK_ROOTS:
-        if path == root / top or path.is_relative_to(root / top):
+        if within(path, root / top):
             return root / top
     return None
 
@@ -974,7 +975,7 @@ def mypy_cache_root(environment: Mapping[str, str]) -> Path | None:
 def mypy_cache_directory(root: Path, cwd: Path, targets: list[str], *, strict: bool) -> Path:
     """The cache folder under `root` of the type check run from `cwd` on `targets`: one per check, since each check
     differs in one of them, and the same at every run, so a restored cache is found again."""
-    place = cwd.relative_to(REPOSITORY_ROOT).as_posix() if cwd.is_relative_to(REPOSITORY_ROOT) else cwd.as_posix()
+    place = cwd.relative_to(REPOSITORY_ROOT).as_posix() if within(cwd, REPOSITORY_ROOT) else cwd.as_posix()
     check = "\0".join([place, *targets, "strict" if strict else "default"])
     return root / hashlib.sha256(check.encode("utf-8")).hexdigest()[:16]
 

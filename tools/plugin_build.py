@@ -61,6 +61,7 @@ import frontmatter
 import json_reader
 from console import run_main
 from flat_text import flat_text
+from path_containment import within
 from skill_menu import (
     PLUGIN_FRONTMATTER_VALUES,
     PLUGIN_HOOKS,
@@ -292,7 +293,7 @@ def output_directory(requested: Path | None, source_dir: Path) -> Path:
     if requested is None:
         return Path(tempfile.mkdtemp(prefix="coding-agent-skills-plugins-"))
     target = requested.resolve()
-    if target.is_relative_to(source_dir.resolve()):
+    if within(target, source_dir.resolve()):
         raise BuildError(f"--output {requested} lies inside the source tree {source_dir}, which is never written")
     holder = skills_directory_holding(target)
     if holder is not None:
