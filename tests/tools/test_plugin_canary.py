@@ -20,6 +20,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import json_writer
 import whole_number
 from review_dispatch import REVIEWER_TASK
 
@@ -719,3 +720,25 @@ def test_the_help_names_the_timeout_in_seconds(capsys: pytest.CaptureFixture[str
         canary.main(["--help"])
     assert exited.value.code == 0
     assert "--timeout SECONDS" in " ".join(capsys.readouterr().out.split())
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        plugin_build.BuildError("plugin fixture-skills keeps template tokens"),
+        PermissionError("denied"),
+        # A home's path, which the canary writes into its records, may hold what no JSON file can.
+        json_writer.JsonWriteRefused("the value holds a lone surrogate U+DC80, which UTF-8 cannot encode"),
+    ],
+)
+def test_a_refusal_the_run_meets_is_its_failed_line_and_keeps_the_home(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path, refusal: Exception
+) -> None:
+    def refused(*_arguments: object, **_options: object) -> int:
+        raise refusal
+
+    monkeypatch.setattr(canary, "create_home", lambda: tmp_path)
+    monkeypatch.setattr(canary, "canary", refused)
+    assert canary.main([]) == 1
+    assert capsys.readouterr().out.splitlines()[0] == f"FAILED {canary.quote(str(refusal))}"
+    assert tmp_path.is_dir()
