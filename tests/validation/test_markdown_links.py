@@ -212,6 +212,9 @@ class LessonsLedgerPolicy(unittest.TestCase):
             "skills/ejryan89-skill-core/scripts/core_a.py": self.SUITE,
             "skills/ejryan89-skill-core/scripts/broken.py": "def broken(:\n",
             "package/__init__.py": "LIMIT = 1\n",
+            ".claude/skills/a/scripts/core_b.py": "LIMIT = 1\n",
+            "skills/x/scripts/twin.py": "LIMIT = 1\n",
+            "skills/y/scripts/twin.py": "LIMIT = 1\n",
             ".claude/skills/a/SKILL.md": self.SKILL,
             ".github/workflows/watch.yml": "on: workflow_dispatch\n",
             **(files or {}),
@@ -234,7 +237,7 @@ class LessonsLedgerPolicy(unittest.TestCase):
             "- **Examples:** #12, and no number at all.\n\n"
             f"### Every mechanism resolves\n\n{self.ENTRY}"
             "- **Use:** `tests.test_a:helper`, `tests.test_a:LIMIT`, `core_a:LIMIT_NOTE`, `core_a:GuardTests`,\n"
-            "  `core_a:GuardTests.WAIT`, `tests.test_a:GuardTests.test_held`, and `package:LIMIT`.\n\n"
+            "  `core_a:GuardTests.WAIT`, `tests.test_a:GuardTests.test_held`, `core_b:LIMIT`, and `package:LIMIT`.\n\n"
             f"### A mechanism no check can hold\n\n{self.ENTRY}- **Use:** `core_a:helper`.\n"
             "- **No guard:** A reader cannot tell it from the code.\n\n"
             f"### No check can tell\n\n{self.ENTRY}- **No guard:** The mechanism is in #12.\n\n"
@@ -299,7 +302,7 @@ class LessonsLedgerPolicy(unittest.TestCase):
         ledger = (
             f"# Lessons\n\n## Patterns\n\n### Gone\n\n{self.ENTRY}- **Use:**"
             " `tests.test_a:gone`, `core_a:inner`, `core_a:GuardTests.gone`, `core_a:helper.inner`, `tests.gone:x`,"
-            " `test_a:helper`,\n"
+            " `test_a:helper`, `twin:LIMIT`,\n"
             "  `broken:broken`, `tests/test_a.py::helper`, `core_a:GuardTests.WAIT.real`, `core_a`, and `helper`.\n"
         )
         prefix = "docs/lessons.md:10 the pattern 'Gone'"
@@ -308,7 +311,7 @@ class LessonsLedgerPolicy(unittest.TestCase):
         problems = self.problems(ledger)
         unreadable = f"docs/lessons.md:11 the pattern 'Gone' uses broken:broken, but {scripts}/broken.py does not parse"
         # The parser's own words after the prefix differ between Python releases.
-        self.assertTrue(problems[6].startswith(unreadable), problems[6])
+        self.assertTrue(problems[7].startswith(unreadable), problems[7])
         self.assertEqual(
             [
                 f"{prefix} uses tests.test_a:gone, which tests/test_a.py does not define at module level",
@@ -316,11 +319,13 @@ class LessonsLedgerPolicy(unittest.TestCase):
                 f"{prefix} uses core_a:GuardTests.gone, which the class GuardTests of {scripts}/core_a.py does not "
                 "define",
                 f"{prefix} uses core_a:helper.inner, but helper in {scripts}/core_a.py is not a class",
-                f"{prefix} uses tests.gone:x, but no module tests.gone is importable from the repository root or "
-                f"{scripts}",
-                f"{prefix} uses test_a:helper, but no module test_a is importable from the repository root or "
-                f"{scripts}",
-                problems[6],
+                f"{prefix} uses tests.gone:x, but no module tests.gone is importable from the repository root or a "
+                "skill's scripts",
+                f"{prefix} uses test_a:helper, but no module test_a is importable from the repository root or a "
+                "skill's scripts",
+                f"{prefix} uses twin:LIMIT, but the module twin is ambiguous: skills/x/scripts/twin.py or "
+                "skills/y/scripts/twin.py",
+                problems[7],
                 f"docs/lessons.md:11 the pattern 'Gone' names tests/test_a.py::helper, {form}",
                 f"docs/lessons.md:11 the pattern 'Gone' names core_a:GuardTests.WAIT.real, {form}",
                 f"docs/lessons.md:11 the pattern 'Gone' names core_a, {form}",

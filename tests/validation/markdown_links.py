@@ -8,11 +8,10 @@ from __future__ import annotations
 import ast
 import re
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from duplication import SKILL_CORE_SCRIPTS
 from validation_support import (
     COMMONMARK_CODE_SPAN,
     OPERATIONS_CONTRACT,
@@ -299,21 +298,26 @@ def _bound_names(body: list[ast.stmt]) -> dict[str, ast.stmt]:
 def _use_problem(root: Path, span: str) -> str | None:
     """Why a mechanism a pattern uses does not resolve, or None when it does: a module and a name it binds at module
     level, `<module>:<name>`, or a name one of its classes binds, `<module>:<class>.<name>`, as `pkgutil.resolve_name`
-    reads an object, where the module is importable from the repository root or from skill-core's scripts, the two
-    directories every part of the repository puts on `sys.path`."""
+    reads an object, where the module is importable from exactly one of the directories a part of the repository puts
+    on `sys.path`: the repository root, or a skill's or repository skill's `scripts`."""
     mechanism = re.compile(r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*):([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?")
     if not (use := mechanism.fullmatch(span)):
         return f"names {span}, which is not a module and a name, <module>:<name> or <module>:<class>.<name>"
     module, name, member = use.groups()
     parts = module.split(".")
-    candidates = [
-        base / Path(*parts[:-1]) / last
-        for base in (root, root / SKILL_CORE_SCRIPTS)
-        for last in (f"{parts[-1]}.py", f"{parts[-1]}/__init__.py")
+    bases = [root, *sorted((*root.glob("skills/*/scripts"), *root.glob(".claude/skills/*/scripts")))]
+    found = [
+        candidate
+        for base in bases
+        for candidate in (base / Path(*parts[:-1]) / f"{parts[-1]}.py", base / Path(*parts) / "__init__.py")
+        if candidate.is_file()
     ]
-    path = next((candidate for candidate in candidates if candidate.is_file()), None)
-    if path is None:
-        return f"uses {span}, but no module {module} is importable from the repository root or {SKILL_CORE_SCRIPTS}"
+    if not found:
+        return f"uses {span}, but no module {module} is importable from the repository root or a skill's scripts"
+    if len(found) > 1:
+        places = listed([path.relative_to(root).as_posix() for path in found])
+        return f"uses {span}, but the module {module} is ambiguous: {places}"
+    path = found[0]
     module = path.relative_to(root).as_posix()
     unreadable: list[str] = []
     names = {
@@ -393,10 +397,11 @@ def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]])
             *problems,
             f"{at(heading_number)} names neither its mechanism, a guard, nor the reason no guard is possible",
         ]
-    for kind, lines, resolve in (
+    resolvers: tuple[tuple[str, list[tuple[int, list[str]]], Callable[[str], str | None]], ...] = (
         ("guard", guards, lambda span: _guard_problem(root, index, document, span)),
         ("mechanism", uses, lambda span: _use_problem(root, span)),
-    ):
+    )
+    for kind, lines, resolve in resolvers:
         if lines and not any(spans for _, spans in lines):
             problems.append(f"{at(lines[0][0])} names no {kind} in a code span")
         for number, spans in lines:
@@ -411,8 +416,8 @@ def lessons_ledger_problems(root: Path) -> list[str]:
     field a pattern does not have or one field twice; and each guard and mechanism it names that does not resolve. A
     guard is a test ID, `<path>::<test>`, `<path>::<class>`, or `<path>::<class>::<test>`, that names a test or a test
     class of that file, a skill's step, `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, or a
-    workflow, `.github/workflows/<file>`, that exists. A mechanism is a module importable from the repository root or
-    skill-core's scripts and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
+    workflow, `.github/workflows/<file>`, that exists. A mechanism is a module importable from exactly one of the
+    repository root and the skills' scripts, and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
     document = "docs/lessons.md"
     path = root / document
     if not path.is_file():
