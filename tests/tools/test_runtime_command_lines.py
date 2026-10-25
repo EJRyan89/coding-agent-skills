@@ -504,6 +504,10 @@ class SignedOutTests(unittest.TestCase):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_the_verdict_when_nothing_failed_is_pinned_once(self) -> None:
+        # The one pin of the constant's text; every other test takes it from the constant.
+        self.assertEqual("Every runtime accepted every command line.", lines.ALL_ACCEPTED)
+
     def test_the_summary_tables_each_fact_and_says_whether_any_failed(self) -> None:
         passed = lines.summary(["VERSION codex 0.163.0", "ACCEPTED codex skill-listing"])
         self.assertIn("| codex | version | 0.163.0 |", passed)

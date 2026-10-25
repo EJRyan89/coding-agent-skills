@@ -319,6 +319,11 @@ def test_a_quoted_reason_keeps_its_runs_of_spaces_in_the_summary() -> None:
     assert "| 1.0.54 | none read |  no bullet  in its text:   Fixes  and changes  |\n" in watch.summary(lines)
 
 
+def test_the_line_for_no_watched_entry_is_pinned_once() -> None:
+    # The one pin of the constant's text; every other test takes it from the constant.
+    assert watch.NO_WATCHED_ENTRY == "No entry read mentions a watched term."
+
+
 def test_the_summary_says_how_many_entries_it_read_and_tables_each_unread_release() -> None:
     lines = [
         "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
