@@ -1,8 +1,8 @@
 """Regression suite for tools/hub_guard.py's reading of the pwsh command line: which forms read a script from standard
-input, and which parameters take the next word as their value.
+input or inline, how pwsh spells a parameter, and which parameters take the next word as their value.
 
 It starts no program and holds no fixture, so it runs in under a second, apart from tests/tools/test_hub_guard.py,
-whose suites start git and pwsh.
+whose suites start git and pwsh; tests/tools/test_hub_guard_shells.py holds these readings to what pwsh does.
 """
 
 from __future__ import annotations
@@ -77,6 +77,118 @@ class StandardInputTests(unittest.TestCase):
             ("-WorkingDirectory", True),
             ("-wd", True),
             ("-NoProfile", False),
+        ):
+            with self.subTest(word=word):
+                self.assertEqual(expected, hub_guard.powershell_takes_value(word))
+
+
+class SpellingTests(unittest.TestCase):
+    """Every spelling pwsh takes for a parameter: a leading hyphen, en dash, em dash, or horizontal bar, that dash
+    doubled, white space around the word, and a leading slash, on every platform."""
+
+    def test_pwsh_inline_script_parameters_in_every_spelling(self) -> None:
+        for word, expected in (
+            ("-c", "command"),
+            ("-Command", "command"),
+            ("-COMMAND", "command"),
+            ("-co", "command"),
+            ("--c", "command"),
+            ("--command", "command"),
+            ("--Command", "command"),
+            ("\u2013c", "command"),
+            ("\u2014command", "command"),
+            ("\u2015co", "command"),
+            ("\u2013\u2013c", "command"),
+            ("\u2014\u2014command", "command"),
+            (" -c ", "command"),
+            ("\t--command\n", "command"),
+            ("\u3000-c", "command"),
+            ("-cwa", "commandwithargs"),
+            ("-commandw", "commandwithargs"),
+            ("--cwa", "commandwithargs"),
+            ("--CommandWithArgs", "commandwithargs"),
+            ("\u2013cwa", "commandwithargs"),
+            ("/c", "command"),
+            ("/Command", "command"),
+            (" /c", "command"),
+            ("/cwa", "commandwithargs"),
+            ("/CommandWithArgs", "commandwithargs"),
+            ("---c", None),
+            ("-\u2013c", None),
+            ("\u2013-c", None),
+            ("//c", None),
+            ("/-c", None),
+            ("-/c", None),
+            ("-commandx", None),
+            ("-cw", None),
+            ("c", None),
+            ("", None),
+            ("-", None),
+            ("--", None),
+            ("/", None),
+            ("Xc", None),
+            (None, None),
+        ):
+            with self.subTest(word=word):
+                self.assertEqual(expected, hub_guard.powershell_inline(word))
+
+    def test_pwsh_script_is_read_after_every_spelling_of_its_parameter(self) -> None:
+        for arguments, expected in (
+            (["--command", "Get-Date", "-Format", "o"], ["Get-Date", "-Format", "o"]),
+            (["\u2014c", "Get-Date"], ["Get-Date"]),
+            (["-NoProfile", "--cwa", "Get-Date", "one"], ["Get-Date"]),
+            (["/Command", "Get-Date"], ["Get-Date"]),
+            (["/cwa", "Get-Date", "one"], ["Get-Date"]),
+            (["---c", "Get-Date"], None),
+            ([None, "-c", "Get-Date"], ["Get-Date"]),
+            (["build.ps1"], None),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(expected, hub_guard.powershell_script(list(arguments)))
+
+    def test_pwsh_reads_its_input_by_every_spelling_and_after_a_lone_dash(self) -> None:
+        for arguments, expected in (
+            (["--command", "-"], True),
+            (["--command", "Get-Date"], False),
+            # The inline script is the words after -Command, and the one after -CommandWithArgs, whatever they say.
+            (["-c", "-NoProfile"], False),
+            (["-cwa", "-"], False),
+            (["Xc"], False),
+            (["\u2013\u2013file", "-"], True),
+            (["--file", "build.ps1"], False),
+            (["--ec"], False),
+            (["\u2014cwa", "Get-Date"], False),
+            (["--ex", "Bypass"], True),
+            (["\u2013wd", "C:/", "-c", "-"], True),
+            ([" -c ", "-"], True),
+            (["/c", "-"], True),
+            (["/f", "-"], True),
+            (["/ec"], False),
+            (["/NoProfile"], True),
+            (["/ex", "Bypass", "-c", "Get-Date"], False),
+            # A lone dash reads standard input whatever follows it.
+            (["-"], True),
+            (["-", "-c", "Get-Date"], True),
+            (["-NoProfile", "-", "build.ps1"], True),
+            (["--"], True),
+            # An empty word is a script file's name, which pwsh cannot find.
+            (["", "-c", "-"], False),
+            # A word after a slash that names no parameter, such as an absolute path, is not settled.
+            (["/scripts/build.ps1"], True),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(expected, hub_guard.powershell_reads_input(list(arguments)))
+
+    def test_pwsh_parameters_that_take_a_value_in_every_spelling(self) -> None:
+        for word, expected in (
+            ("--ExecutionPolicy", True),
+            ("\u2013ep", True),
+            ("\u2015\u2015wd", True),
+            (" -o ", True),
+            ("/ex", True),
+            ("/WorkingDirectory", True),
+            ("---ex", False),
+            ("ex", False),
         ):
             with self.subTest(word=word):
                 self.assertEqual(expected, hub_guard.powershell_takes_value(word))
