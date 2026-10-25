@@ -913,6 +913,21 @@ class StageTests(unittest.TestCase):
         }
         return record, finding, ("owner/repo", 1, 1, finding["id"])
 
+    def test_the_staged_input_and_context_are_sorted_compact_lines_and_a_one_space_indent_past_ascii_kept(
+        self,
+    ) -> None:
+        # The seal is a digest of these bytes and an agent reads them, so their form is fixed: each input item one
+        # line with sorted keys and text past ASCII as itself, the context indented by one space with sorted keys and
+        # text past ASCII escaped.
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            digest, files = rs.staged_inputs(directory, [{"z": "café", "a": 1}], {"z": "é", "a": [1]})
+        self.assertEqual('{\n "a": [\n  1\n ],\n "z": "\\u00e9"\n}\n', files[directory / rs.CONTEXT_NAME])
+        self.assertEqual(
+            f'{{"input_sha256": "{digest}", "kind": "seal"}}\n{{"a": 1, "z": "café"}}\n',
+            files[directory / rs.INPUT_NAME],
+        )
+
     def test_an_input_or_context_json_cannot_hold_is_refused_before_anything_is_staged(self) -> None:
         # A finding's body is author text, which an escaped lone surrogate in a record reaches as one.
         with tempfile.TemporaryDirectory() as temporary:
