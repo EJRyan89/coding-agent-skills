@@ -164,6 +164,15 @@ class RefusalTests(unittest.TestCase):
             refusal("alias/a.md", self.tree),
         )
 
+    def test_a_link_is_found_whichever_separator_the_entry_is_written_with(self) -> None:
+        link_folder(self.tree / "docs", self.tree / "alias")
+        for entry in ("alias/a.md", "alias\\a.md"):
+            with self.subTest(entry=entry):
+                self.assertEqual(
+                    "a symbolic link or junction lies on the entry's path, which is never followed",
+                    refusal(entry, self.tree),
+                )
+
     def test_a_link_below_a_plain_folder_is_found(self) -> None:
         link_folder(self.tree / "docs", self.tree / "docs" / "alias")
         self.assertEqual(

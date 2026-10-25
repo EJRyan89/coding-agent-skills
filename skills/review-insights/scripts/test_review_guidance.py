@@ -311,6 +311,13 @@ class ReadTests(unittest.TestCase):
                 self.assertEqual(rg.WorkingCopy(None), rg.read_working_copy(self.checkout, path))
                 self.assertIsNone(rg.read_committed(self.checkout, "f" * 40, path, digest(CHECKLIST)))
 
+    def test_a_working_copy_of_exactly_the_read_bound_is_read_and_one_byte_more_is_not(self) -> None:
+        path = self.checkout / "docs" / "checklist.md"
+        with mock.patch.object(rg, "READ_BYTES", path.stat().st_size):
+            self.assertEqual(digest(CHECKLIST), rg.read_working_copy(self.checkout, "docs/checklist.md").digest)
+        with mock.patch.object(rg, "READ_BYTES", path.stat().st_size - 1):
+            self.assertIsNone(rg.read_working_copy(self.checkout, "docs/checklist.md").digest)
+
     def test_a_path_reached_through_a_link_is_never_read_even_when_the_link_stays_inside(self) -> None:
         outside = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, outside)
