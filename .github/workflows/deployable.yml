@@ -129,11 +129,12 @@ jobs:
           }
 
       # Codex CLI on Windows needs two machine settings before it can run a skill's scripts (docs/codex-support.md).
-      # Neither changes what `verify` sees, because discovery runs no script. This step writes the sandbox setting, so
-      # the runner is configured as a user's machine must be, though not provisioned: the elevated sandbox's
+      # Neither changes what `verify` sees, because discovery runs no script. This step writes the sandbox settings, the
+      # TOML block "Windows sandbox mode" in docs/codex-support.md gives and tests/validation/workflows.py holds this one
+      # to, so the runner is configured as a user's machine must be, though not provisioned: the elevated sandbox's
       # administrator-approved setup never runs here, since nothing here runs a command in the sandbox. It also records
       # where the Python app execution aliases stand, since no supported command turns them off.
-      - name: Make the Codex sandbox setting and record the Python aliases
+      - name: Make the Codex sandbox settings and record the Python aliases
         run: |
           $directory = Join-Path $env:USERPROFILE '.codex'
           New-Item -ItemType Directory -Force $directory | Out-Null
@@ -142,8 +143,14 @@ jobs:
             Write-Host "::error::$config already exists on a runner that should be fresh"
             exit 1
           }
-          Set-Content -LiteralPath $config -Value "[windows]`nsandbox = `"elevated`"" -Encoding utf8NoBOM
-          Add-Content -Path $env:NOTES -Value 'Codex sandbox: wrote [windows] sandbox = "elevated" to ~/.codex/config.toml.'
+          $settings = @'
+          [features]
+          prefer_mxc = true
+          [windows]
+          sandbox = "elevated"
+          '@
+          Set-Content -LiteralPath $config -Value $settings -Encoding utf8NoBOM
+          Add-Content -Path $env:NOTES -Value 'Codex sandbox: wrote [features] prefer_mxc = true and [windows] sandbox = "elevated" to ~/.codex/config.toml.'
 
           # The documented check that needs no model: the mode Codex would use.
           $probe = (codex debug prompt-input -c sandbox_mode=workspace-write 2>&1 | Out-String)

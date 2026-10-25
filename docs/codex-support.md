@@ -72,9 +72,27 @@ These are the pages this was read from, beside the spawn tool's own instructions
 
 ## Network access
 
-Codex runs commands with network access turned off by default, on every platform ([Approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security)). A skill whose script calls GitHub through `gh`, or fetches with Git, therefore cannot reach it from the sandbox: in an interactive session Codex asks you to approve each such command to run outside the sandbox, and `codex exec`, which asks for no approval, fails it. The [Runtime support](skills.md#runtime-support) table marks these skills partial on Codex, lacking `sandbox-network`. Two settings let them reach the network: one keeps every command in the sandbox and opens the network to all of them, the other opens it to the commands you name by running them outside the sandbox.
+Codex runs commands with network access turned off by default, on every platform ([Approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security)). A skill whose script calls GitHub through `gh`, or fetches with Git, therefore cannot reach it from the sandbox: in an interactive session Codex asks you to approve each such command to run outside the sandbox, and `codex exec`, which asks for no approval, fails it. The [Runtime support](skills.md#runtime-support) table marks these skills partial on Codex, lacking `sandbox-network`. Two routes let them reach the network: one keeps every command in the sandbox and opens the network to all of them, the other opens it to the commands you name by running them outside the sandbox.
 
-To let every sandboxed command reach the network, add this to `~/.codex/config.toml`, the `sandbox_workspace_write.network_access` key of the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference):
+To let every sandboxed command reach the network, name a [permission profile](https://learn.chatgpt.com/docs/permissions) that turns it on as your default, in `~/.codex/config.toml`, with `default_permissions` above the file's first table:
+
+```toml
+default_permissions = "skills-network"
+[permissions.skills-network]
+extends = ":workspace"
+[permissions.skills-network.network]
+enabled = true
+```
+
+`extends = ":workspace"` keeps the built-in `:workspace` profile's file rules, which let a command write in the workspace and the temporary directories, and `network.enabled` opens the network to every command under the profile. Without the `network_proxy` feature, Codex applies no domain rules to that network. `codex debug prompt-input` says `Network access is enabled` once the profile is read. To confirm that `gh` reaches GitHub from the sandbox, without starting a model:
+
+```powershell
+codex sandbox --permission-profile skills-network -- gh api rate_limit --jq .rate.limit
+```
+
+It prints your hourly API limit, which is `60` when `gh` runs without your sign-in, as under the elevated sandbox below, and an error from `api.github.com` while the network is off.
+
+Permission profiles do not combine with the older sandbox settings, as the `default_permissions` entry of the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) warns: set either `default_permissions` and its `[permissions]` tables, or `sandbox_mode` and `[sandbox_workspace_write]`, never both, since a `sandbox_mode` in a loaded configuration file, or a `--sandbox` flag, makes Codex use the older settings instead. The older form of the same setting is the `sandbox_workspace_write.network_access` key:
 
 ```toml
 [sandbox_workspace_write]
@@ -95,7 +113,7 @@ To open the network to one skill alone, add a prefix rule with the decision `all
 prefix_rule(pattern = ["python", "-B", "<skills>/repo-cleanup/scripts/repo_cleanup.py"], decision = "allow")
 ```
 
-The script then runs outside the sandbox without asking, as you, with whatever arguments follow: it reaches the network and finds your `gh` sign-in, under the elevated sandbox too, and it can write anywhere you can. That is narrower than `network_access` in which commands it reaches, and wider in what those commands may do. To confirm that the rule matches, without starting a model:
+The script then runs outside the sandbox without asking, as you, with whatever arguments follow: it reaches the network and finds your `gh` sign-in, under the elevated sandbox too, and it can write anywhere you can. That is narrower than a profile or `network_access` in which commands it reaches, and wider in what those commands may do. To confirm that the rule matches, without starting a model:
 
 ```powershell
 codex execpolicy check --pretty --rules "$HOME/.codex/rules/default.rules" -- python -B '<skills>/repo-cleanup/scripts/repo_cleanup.py'

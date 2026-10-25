@@ -22,6 +22,7 @@ from workflows import (
     PINNED_TOOL_LINES,
     WorkflowSyntaxError,
     changelog_job_problems,
+    codex_settings_problems,
     command_line_job_problems,
     configure_answer_problems,
     copilot_auto_update_problems,
@@ -863,7 +864,7 @@ _JOB_SETTINGS = (
 DEPLOYABLE_JOBS = (
     "jobs:\n  deployable:\n    runs-on: windows-latest\n" + _JOB_SETTINGS + "    steps:\n"
     "      - name: Check out source\n        uses: actions/checkout@SHA # v1\n"
-    "      - name: Make the Codex sandbox setting and record the Python aliases\n        run: Write-Host set\n"
+    "      - name: Make the Codex sandbox settings and record the Python aliases\n        run: Write-Host set\n"
     "      - name: Deploy\n        run: python deploy.py --all\n"
     "  deployable-linux:\n    runs-on: ubuntu-latest\n"
     + _JOB_SETTINGS
@@ -872,6 +873,42 @@ DEPLOYABLE_JOBS = (
     "      - name: Check out source\n        uses: actions/checkout@SHA # v1\n"
     "      - name: Deploy\n        run: python3 deploy.py --all\n"
 )
+
+
+CODEX_SETTINGS_WORKFLOW = (
+    "jobs:\n  deployable:\n    runs-on: windows-latest\n    steps:\n"
+    "      - name: Make the Codex sandbox settings and record the Python aliases\n        run: |\n"
+    "          $config = Join-Path $env:USERPROFILE '.codex/config.toml'\n"
+    "          $settings = @'\n"
+    '          [features]\n          prefer_mxc = true\n          [windows]\n          sandbox = "elevated"\n'
+    "          '@\n"
+    "          Set-Content -LiteralPath $config -Value $settings -Encoding utf8NoBOM\n"
+)
+CODEX_GUIDE = (
+    "Some prose.\n\nFor MXC with the elevated fallback, add this to `~/.codex/config.toml`:\n\n"
+    '```toml\n[windows]\nsandbox = "elevated"\n[features]\nprefer_mxc = true\n```\n\nMore prose.\n'
+)
+
+
+class CodexSettingsFixtures(unittest.TestCase):
+    def test_the_workflow_writes_the_guides_codex_settings_in_any_order(self) -> None:
+        self.assertEqual([], codex_settings_problems(CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE))
+
+    def test_each_departure_from_the_guides_codex_settings_fails(self) -> None:
+        for workflow, guide, problem in (
+            (CODEX_SETTINGS_WORKFLOW.replace("          prefer_mxc = true\n", ""), CODEX_GUIDE, "but docs/"),
+            (CODEX_SETTINGS_WORKFLOW.replace('"elevated"', '"unelevated"'), CODEX_GUIDE, "but docs/"),
+            (CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("prefer_mxc = true", "prefer_mxc = false"), "but docs/"),
+            (CODEX_SETTINGS_WORKFLOW.replace("sandbox settings and", "settings and"), CODEX_GUIDE, "0 steps named"),
+            (CODEX_SETTINGS_WORKFLOW.replace("$settings = @'", "$written = @'"), CODEX_GUIDE, "no Codex settings"),
+            (CODEX_SETTINGS_WORKFLOW.replace("-Value $settings", "-Value $other"), CODEX_GUIDE, "does not write"),
+            (CODEX_SETTINGS_WORKFLOW.replace("prefer_mxc = true", "prefer_mxc ="), CODEX_GUIDE, "are not TOML"),
+            (CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("For MXC with", "For"), "docs/codex-support.md has no"),
+            (CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("```toml", "```text"), "docs/codex-support.md has no"),
+        ):
+            with self.subTest(problem=problem, workflow=workflow, guide=guide):
+                problems = codex_settings_problems(workflow, guide)
+                self.assertTrue(any(problem in found for found in problems), problems)
 
 
 class DeployableLinuxFixtures(unittest.TestCase):
