@@ -8,7 +8,9 @@
     "Review only the documents that pull request octo-org/widgets#42 changes, not its code."
   ],
   "near_misses": [
-    "Review pull request octo-org/widgets#42.",
+    "Review pull request octo-org/widgets#42."
+  ],
+  "unserved": [
     "Fix the typos in README.md.",
     "Summarize the PDF at specs/protocol.pdf in three bullet points."
   ]

@@ -841,6 +841,7 @@ def trigger_spec(skill: str, requests: int = 3) -> dict[str, Any]:
         "mode": "trigger",
         "requests": [f"Do the {skill} task, phrasing {number}." for number in range(1, requests + 1)],
         "near_misses": ["Do another task."],
+        "unserved": ["Do what no skill does."],
     }
 
 
@@ -916,6 +917,24 @@ def test_trigger_scenario_policy_passes_each_skill_the_model_may_start_holding_o
             {"alpha/description": {**trigger_spec("alpha"), "near_misses": []}},
             [f"tests/fixtures/skill-evals/alpha/description holds no near miss; {TRIGGER_DOC}", MISSING_ALPHA],
             id="no near miss",
+        ),
+        pytest.param(
+            {"alpha/description": {**trigger_spec("alpha"), "unserved": []}},
+            [
+                "tests/fixtures/skill-evals/alpha/description holds no unserved request, a near miss no skill "
+                f"serves; {TRIGGER_DOC}",
+                MISSING_ALPHA,
+            ],
+            id="no unserved request",
+        ),
+        pytest.param(
+            {"alpha/description": {key: value for key, value in trigger_spec("alpha").items() if key != "unserved"}},
+            [
+                "tests/fixtures/skill-evals/alpha/description holds no unserved request, a near miss no skill "
+                f"serves; {TRIGGER_DOC}",
+                MISSING_ALPHA,
+            ],
+            id="no unserved list",
         ),
         pytest.param(
             {"alpha/description": trigger_spec("alpha"), "alpha/broken": "{not json"},

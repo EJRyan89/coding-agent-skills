@@ -143,6 +143,11 @@ class Frontmatter:
             raise FrontmatterError(f"{key} must be a single value, not a list")
         return value
 
+    def user_only(self) -> bool:
+        """Whether a SKILL.md's frontmatter lets only the user start the skill: its disable-model-invocation is true,
+        ignoring case, as the deployer writes it into each runtime adapter."""
+        return (self.string("disable-model-invocation") or "").casefold() == "true"
+
 
 def parse(text: str) -> Frontmatter:
     """The frontmatter of a Markdown document; an empty one when the document has none."""

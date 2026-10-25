@@ -8,7 +8,9 @@
     "What pulls Microsoft.Extensions.Logging into the Api project?"
   ],
   "near_misses": [
-    "Format the C# files I changed on this branch before I commit.",
+    "Format the C# files I changed on this branch before I commit."
+  ],
+  "unserved": [
     "Upgrade Newtonsoft.Json to its latest version in every project.",
     "Build the solution and run its unit tests."
   ]

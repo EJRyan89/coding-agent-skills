@@ -3,6 +3,7 @@
 Usage:
   python -B tools/skill_evals.py SKILL [--write] [--runs N] [--timeout SECONDS] [--jobs N]
   python -B tools/skill_evals.py SKILL [--scenario NAME ...] [--model NAME ...] [--runs N] [--records DIR]
+  python -B tools/skill_evals.py SKILL --sample-read agrees|disagrees
 
 SKILL is one skill's name, a folder of scenarios under tests/fixtures/skill-evals/; a name that is not a skill's is a
 usage error, and a skill with no scenario there fails the run. Repeated --scenario and --model names count once, in
@@ -49,16 +50,19 @@ A document or base path leads from the scenario's folder to a file, which may be
 scenarios root, so a document serves several skills' scenarios without a copy.
 
 A trigger scenario judges a skill's description rather than its work: whether a session given only a request a user
-might type starts the skill, as its description says it should, and whether one given a near miss, such as a request
-a neighbouring skill's description names, leaves it alone. Its scenario.json holds no expectations, since each
-request is one:
+might type starts the skill, as its description says it should, and whether one given a near miss leaves it alone: a
+request a neighbouring skill's description names, in `near_misses`, or one no skill serves, in `unserved`. Its
+scenario.json holds no expectations, since each request is one:
 
-  {"skill": "<skill>", "mode": "trigger", "requests": ["<request>", ...], "near_misses": ["<request>", ...]}
+  {"skill": "<skill>", "mode": "trigger", "requests": ["<request>", ...], "near_misses": ["<request>", ...],
+   "unserved": ["<request>", ...]}
 
 The skill is a shipped one under skills/, which the deployment puts in each home, and the model may start it: one that
-sets disable-model-invocation fails the load. Each list holds at least one request; a request is one line of text,
-given once in the scenario, that starts with neither `-` nor `/`, which Claude Code would read as an option or a
-command. Its expectations are `starts "<request>"` for each request and `does_not_start "<request>"` for each near
+sets disable-model-invocation fails the load. Each list holds at least one request here, and validation holds a
+committed scenario to at least MINIMUM_TRIGGER_REQUESTS requests in tests/validation/skill_layout.py; a request is one
+line of text, given once in the scenario, that starts with neither `-` nor `/`, which Claude Code would read as an
+option or a command. The near misses are the neighbours' requests, then the unserved ones. Its expectations are
+`starts "<request>"` for each request and `does_not_start "<request>"` for each near
 miss, in that order. A run gives each request, then each near miss, to a headless session of its own in the model's
 home, on that model, since the session's model is the one that decides whether to start a skill, with no grant and
 at most TRIGGER_TURNS turns, so a session that starts a skill stops soon after. A session started the skill when one
@@ -193,8 +197,8 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
   FAILED "<reason>"                               nothing was run or judged: the scenarios could not be loaded,
                                                   Claude Code is missing, the checkout follows another
                                                   repository's pull request or its branch cannot be read, or
-                                                  --write's existing results file cannot be read or its table
-                                                  cannot be read
+                                                  --write's existing results file cannot be read or one of its
+                                                  tables cannot be read
 A run then prints, between a `CITATION BEGIN` and a `CITATION END` line, the Markdown a pull request's Validation
 section cites it with: the command, a table with one row per scenario and one column per model, each cell the
 expectations passed of those checked over every run, followed over several runs by `(<passed>/<runs> runs)`, the
@@ -202,7 +206,17 @@ RUNS line's count, and in a text fence the RUNTIME, REVIEWER, and GUARDED lines,
 reason as the results file records it, and each judgment's FAIL line, so the block names no path of the machine. With
 --records, the table alone follows the outcomes. Then `WROTE <file>` when --write replaced the skill's
 rows in docs/skill-evaluations.md, and `REMOVED "<dir>"` when nothing failed and the home is gone; otherwise the home
-stays for its transcripts. A model none of whose reviewers ran is written in the results file as not run with a fixed
+stays for its transcripts. Before `WROTE`, --write prints `SAMPLE <scenario> <model>`, with ` run=<run>` as above, the
+run whose transcript the reader checks against its verdicts: of the runs that passed every expectation, the first after
+the scenario and model the skill's row of the samples table names, in scenario order and then model order, wrapping
+round, so successive recorded runs read each scenario on each model in turn. It replaces the skill's samples row with
+that run, the run's date, and `unread`, or prints `SAMPLE none` and keeps the row when no run passed. A script grader
+that passes a wrong run fails nothing, so only a reading of a passing transcript shows it. Since a passing run's home
+is removed, the run keeps the home while it samples one: `REMOVED` then never follows `SAMPLE <scenario>`.
+`--sample-read agrees` or `--sample-read disagrees`, given with the skill alone, runs nothing: it marks the skill's
+unread samples row with the reading, `agrees` when the transcript shows what each verdict of that run says, and prints
+`WROTE <file>`, or `FAILED "<reason>"` when the results file cannot be read, has no row of the skill, or the row was
+already read. A model none of whose reviewers ran is written in the results file as not run with a fixed
 phrase for its first reason, such as `timed out after 1800 seconds` or `denied 2 commands`, which names no path of the
 machine; the FAIL lines and the transcript keep the whole reason. --write reads the results table strictly before any
 run: the header, its separator, then rows of the header's columns, each naming a skill, and nothing else between the
@@ -241,8 +255,16 @@ from deployer.source import SKILL_NAME_PATTERN
 from tools import runtime_canary
 from tools.runtime_canary import Runner
 from tools.skill_evals_judging import Outcome, judge, not_counted_line, outcome_line, records_in, report, table
-from tools.skill_evals_records import JUDGMENT, MODELS, RUN
-from tools.skill_evals_results import replace_results, result_rows, results_table
+from tools.skill_evals_records import JUDGMENT, MODELS, RUN, Index
+from tools.skill_evals_results import (
+    pick_sample,
+    read_sample,
+    replace_results,
+    replace_sample,
+    result_rows,
+    results_table,
+    samples_table,
+)
 from tools.skill_evals_runs import (
     NO_REVIEW,
     Run,
@@ -253,6 +275,7 @@ from tools.skill_evals_runs import (
     run_all,
     run_keys,
     run_lines,
+    run_token,
     runs_source,
 )
 from tools.skill_evals_scenarios import REPOSITORY_ROOT, SCENARIO_ROOT, Scenario, ScenarioError, load_scenarios, quote
@@ -413,6 +436,7 @@ def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
     except OSError as exc:
         raise ScenarioError(f"cannot read {seams.results}: {exc}") from exc
     results_table(text)
+    samples_table(text)
     return executable, text
 
 
@@ -448,11 +472,19 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: Options, seams:
     for line in citation(skill, options, version, scenarios, models, runs, outcomes):
         print(line)
     print("CITATION END")
+    sample: tuple[str, str, Index] | None = None
     if results_text is not None:
         rows = result_rows(skill, scenarios, models, outcomes, runs, version, seams.today())
-        seams.results.write_text(replace_results(results_text, skill, rows), encoding="utf-8", newline="\n")
+        written = replace_results(results_text, skill, rows)
+        sample = pick_sample(skill, scenarios, models, outcomes, written)
+        if sample is None:
+            print("SAMPLE none")
+        else:
+            written = replace_sample(written, skill, sample, seams.today())
+            print(f"SAMPLE {sample[0]} {sample[1]}{run_token(sample[2])}")
+        seams.results.write_text(written, encoding="utf-8", newline="\n")
         print(f"WROTE {runtime_canary.forward(seams.results)}")
-    if not failed:
+    if not failed and sample is None:
         fsops.remove(root)
         print(f"REMOVED {quote(runtime_canary.forward(root))}")
     return 1 if failed else 0
@@ -494,12 +526,34 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--runs", type=positive, default=1, help="runs of each scenario on each model, each judged (default 1)"
     )
+    result.add_argument(
+        "--sample-read",
+        choices=["agrees", "disagrees"],
+        help="record what the transcript the last --write run sampled shows, and run nothing",
+    )
     return result
+
+
+def record_reading(skill: str, reading: str, results: Path) -> int:
+    """Mark the skill's sampled transcript in the results file with the reader's reading."""
+    try:
+        text = read_sample(results.read_text(encoding="utf-8"), skill, reading)
+    except (OSError, ScenarioError) as exc:
+        print(f"FAILED {quote(str(exc))}")
+        return 1
+    results.write_text(text, encoding="utf-8", newline="\n")
+    print(f"WROTE {runtime_canary.forward(results)}")
+    return 0
 
 
 def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = None) -> int:
     command = parser()
-    options = Options.parsed(command.parse_args(argv))
+    namespace = command.parse_args(argv)
+    options = Options.parsed(namespace)
+    if namespace.sample_read is not None:
+        if options != Options.parsed(command.parse_args([options.skill])):
+            command.error("--sample-read takes the skill alone and runs nothing")
+        return record_reading(options.skill, namespace.sample_read, (seams or Seams()).results)
     if options.write and (options.records or options.scenarios or options.models):
         command.error("--write records a full run: every scenario on every model, with no --records")
     try:

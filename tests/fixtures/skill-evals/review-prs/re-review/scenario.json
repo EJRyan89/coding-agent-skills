@@ -8,6 +8,7 @@
     {"kind": "disposition", "entry": "v1:F003", "disposition": "addressed"},
     {"kind": "ledger", "addressed": 1, "still_present": 2},
     {"kind": "repeats", "path": "store.go", "lines": [44, 45], "entry": "v1:F001"},
+    {"kind": "repeats", "path": "store.go", "lines": [70, 71], "entry": "v1:F002"},
     {"kind": "no_finding_above", "severity": "SUGGESTION", "paths": ["labels.go", "labels_test.go"]},
     {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
   ]

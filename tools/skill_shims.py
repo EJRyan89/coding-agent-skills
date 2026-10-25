@@ -94,7 +94,7 @@ def shim_text(name: str, skill_text: str) -> str | None:
 
 def user_only(skill_text: str) -> bool:
     """Whether only the user may start the skill, as the deployer reads disable-model-invocation for an adapter."""
-    return (frontmatter.parse(skill_text).string("disable-model-invocation") or "").casefold() == "true"
+    return frontmatter.parse(skill_text).user_only()
 
 
 def shim_files(name: str, skill_text: str) -> dict[str, str] | None:

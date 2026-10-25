@@ -8,7 +8,9 @@
   ],
   "near_misses": [
     "Review the design document at docs/design/export.md.",
-    "Which pull requests need my attention?",
+    "Which pull requests need my attention?"
+  ],
+  "unserved": [
     "Open a pull request for this branch."
   ]
 }

@@ -210,7 +210,7 @@ def _adapter_frontmatter(skill: str, rendered: bytes) -> tuple[str, str | None, 
         document = frontmatter.parse(rendered.decode("utf-8-sig"))
         description = document.string("description")
         hint = document.string("argument-hint")
-        user_only = (document.string("disable-model-invocation") or "").casefold() == "true"
+        user_only = document.user_only()
     except (UnicodeError, frontmatter.FrontmatterError) as exc:
         raise DeployError(f"ERROR: Skill '{skill}' frontmatter cannot be read: {exc}") from exc
     if not description or not description.strip():

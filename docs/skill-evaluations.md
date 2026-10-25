@@ -33,8 +33,9 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   that could drift from the skill under test, the copy is removed when the run ends, and the rows are the reviewer's.
 - **A trigger scenario** judges a skill's description rather than its work. Its `scenario.json` names a shipped
   skill the model may start, with `"mode": "trigger"`, a list of `requests` a user might type that should start it,
-  drawn from its description's "Use it when" sentence, and a list of `near_misses` that should not, such as a
-  neighbouring skill's requests. Each request and near miss is one expectation. A run gives each to a headless session
+  drawn from its description's "Use it when" sentence, and two lists of near misses that should not: `near_misses`,
+  a neighbouring skill's requests, and `unserved`, requests no skill serves. Each request and near miss is one
+  expectation. A run gives each to a headless session
   of its own in the model's home, on that model, since the session's model decides whether to start a skill, with no
   grant and a short turn limit, so a session that starts the skill stops soon after. The session started the skill
   when one of its own messages calls the Skill tool naming it. The run writes a trigger record of the skills each
@@ -44,7 +45,8 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   fails without one ("Validation" in [adding-a-skill.md](adding-a-skill.md#validation)). Its requests are several
   ways a user would ask for what the "Use it when" sentence names, at least one of them without the skill's name, so
   the description rather than the name is what is judged. Its near misses are requests a neighbouring skill's
-  sentence names, such as a pull request review beside a document review, and a request no skill serves. The
+  sentence names, such as a pull request review beside a document review, which show the description beats its
+  neighbour's, and at least one request no skill serves, which shows it does not take whatever comes. The
   `change-skill` repository skill owes the run whenever a description is new or changed. Repository skills have none,
   since `--canary-home` deploys none of them for a session to start.
 - **Several runs:** one run is one sample of what a model does, so `--runs N` runs each scenario N times on each
@@ -127,11 +129,30 @@ session model and the judged one. A skill with no row has not been run since its
 
 ### Notes
 
-- **`review-document`, `pdf-gaps`:** not run on any model, because no `pdftotext` the session found met the
-  extraction floor: the one Git for Windows bundles and the Poppler installed beside it were both older, so `build`
-  refused the PDF's text before a reviewer started. Installing a supported Xpdf or Poppler lets it run.
+A note names the skill and the scenario it explains in its bold label, as `` `<skill>`, `<scenario>` ``, and one that
+says the scenario was not run explains a `not run` in that skill's rows: `tests/tools/test_skill_evals.py` fails while
+a scenario a row shows `not run` has no such note, or such a note names a scenario every row of its skill ran.
+
 - **Haiku as a reviewer:** its misses are judgment misses that recur on a rerun and with the earlier wording of the
   shared reviewer guidance, so they are the model's, not the guidance's: it raises should-fix findings on a clean
   design document, and misses a wrong value in an error message that the other models report. The suite supports it
   for finding the planted must-fix and should-fix defects and for re-review, not for approving a clean design or
   for suggestion-level detail.
+
+## Transcript samples
+
+A script grader that passes a wrong run fails nothing, so a failing run's transcript is the only one a reader would
+otherwise open, and a grader's own defect stays unseen. Each run with `--write` therefore samples one run that passed
+every expectation, prints it as `SAMPLE <scenario> <model>`, and replaces the skill's row below with it, unread.
+Successive recorded runs take the next scenario and model after the last sampled, so each scenario on each model is
+read in turn. The reader searches that run's `TRANSCRIPT` for what each expectation claims, such as the finding at its
+line or the Skill tool call that started the skill, and records the reading with
+`python -B tools/skill_evals.py <skill> --sample-read agrees` or `--sample-read disagrees`. A run that disagrees is a
+defect of the grader: its kind's check in `tools/skill_evals_scenarios.py`, or the judging in
+`tools/skill_evals_judging.py`, and it is filed as a bug before the row is committed. `tests/tools/test_skill_evals.py`
+fails while a committed row is still `unread`, so the reading travels with the run it samples.
+
+<!-- skill-evals-samples:begin -->
+| Skill | Scenario | Model | Run | Date | Transcript |
+| --- | --- | --- | --- | --- | --- |
+<!-- skill-evals-samples:end -->

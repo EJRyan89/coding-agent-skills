@@ -55,7 +55,8 @@ TRIGGER_SCENARIO = json.dumps(
         "skill": "review-prs",
         "mode": "trigger",
         "requests": ["Review my pull requests."],
-        "near_misses": ["Write a poem."],
+        "near_misses": ["Review the design document at docs/design/export.md."],
+        "unserved": ["Write a poem."],
     }
 ).encode()
 TRIGGER_FIXTURE = skill_evals_scenarios.load_scenario(

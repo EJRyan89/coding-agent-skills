@@ -168,8 +168,8 @@ def hooked_agents(root: Path) -> set[str]:
 
 
 def user_only(document: frontmatter.Frontmatter) -> bool:
-    """Whether a SKILL.md's frontmatter lets only the user start the skill."""
-    return (document.string("disable-model-invocation") or "").casefold() == "true"
+    """Whether a SKILL.md's frontmatter lets only the user start the skill, as frontmatter reads it."""
+    return document.user_only()
 
 
 def own_needs(root: Path, name: str) -> set[str]:
@@ -766,13 +766,18 @@ def _trigger_problem(spec: dict[str, object], skill: str, shipped: dict[str, boo
         return f"holds {held} requests, fewer than {MINIMUM_TRIGGER_REQUESTS}"
     if not isinstance(near_misses, list) or not near_misses:
         return "holds no near miss"
+    # A neighbour's request shows only that the description beats its neighbour's; one no skill serves shows that it
+    # does not take whatever comes.
+    unserved = spec.get("unserved")
+    if not isinstance(unserved, list) or not unserved:
+        return "holds no unserved request, a near miss no skill serves"
     return None
 
 
 def trigger_scenario_problems(root: Path) -> list[str]:
     """Report a shipped skill the model may start with no trigger scenario, and a trigger scenario that cannot judge
     its skill: one naming another folder's skill, a skill not under skills/, or a user-only one, or holding fewer than
-    MINIMUM_TRIGGER_REQUESTS requests or no near miss.
+    MINIMUM_TRIGGER_REQUESTS requests, no neighbour's near miss, or no unserved one.
 
     Only a run that calls models judges whether a description starts its skill, so validation never imports or starts
     the evaluation; it holds that every description the model reads has a scenario to be judged by, and the

@@ -70,7 +70,7 @@ func (s *Store) Ship(sku string, quantity int) error {
 	if quantity > available {
 		return fmt.Errorf("ship %s: only %d in stock", sku, quantity)
 	}
-	// The condition makes the update atomic: a concurrent change between the read above and here ships nothing.
+	// The condition keeps the stock from going below zero: when a concurrent change leaves too few, nothing ships.
 	result, err := s.db.Exec(
 		"UPDATE stock SET quantity = quantity - ? WHERE sku = ? AND quantity >= ?", quantity, sku, quantity,
 	)

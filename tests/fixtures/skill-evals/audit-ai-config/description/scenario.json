@@ -8,7 +8,9 @@
   ],
   "near_misses": [
     "Write a CLAUDE.md for this repository.",
-    "Tidy up the auto-memory for this project.",
+    "Tidy up the auto-memory for this project."
+  ],
+  "unserved": [
     "Add a .gitignore entry for the build folder."
   ]
 }

@@ -8,7 +8,9 @@
   ],
   "near_misses": [
     "Review pull request octo-org/widgets#42.",
-    "What has octocat contributed to octo-org over the last three months?",
+    "What has octocat contributed to octo-org over the last three months?"
+  ],
+  "unserved": [
     "Merge pull request octo-org/widgets#42."
   ]
 }
