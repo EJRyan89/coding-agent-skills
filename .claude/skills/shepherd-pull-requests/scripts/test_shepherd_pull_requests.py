@@ -22,10 +22,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "validation"))
 
+import premerge_review
 import shepherd_pull_requests as shepherd
 from git_client import GitClient, GitError
 from git_worktrees import list_worktrees
 from github_client import Backoff, CommandResult, GitHubClient
+from review_records import RecordError
 
 # Imported by name, since mypy checks this folder from inside it, where the deployer the pool imports does not resolve;
 # the runner, whose report the script reads, likewise.
@@ -1304,12 +1306,252 @@ class MergedTest(FixtureTestCase):
         self.assertEqual("REMAINING 0", lines[-1])
 
 
+REPORT = "reviews/pull requests/review.md"
+
+
+def reviewed(
+    head: str, version: int | None = 1, verdict: str = "APPROVE", report: str | None = REPORT
+) -> premerge_review.Reviewed:
+    return premerge_review.Reviewed(head, verdict, version, report)
+
+
+class PremergeReviewTest(FixtureTestCase):
+    """The pre-merge review step, with the archive's latest review of each pull request given by a fake reader."""
+
+    def review_tick(
+        self, gh: StubGh, records: Mapping[int, premerge_review.Reviewed | Exception]
+    ) -> tuple[int, list[str], list[str]]:
+        opened: list[str] = []
+
+        def reviews(repository: str) -> premerge_review.Reader:
+            opened.append(repository)
+
+            def read(number: int) -> premerge_review.Reviewed | None:
+                found = records.get(number)
+                if isinstance(found, Exception):
+                    raise found
+                return found
+
+            return read
+
+        lines: list[str] = []
+        client = GitHubClient(gh, backoff=NO_WAIT, sleeper=lambda _: None)
+        status = shepherd.tick(GitClient(), client, self.hub, dry_run=True, emit=lines.append, reviews=reviews)
+        return status, lines, opened
+
+    def topic(self) -> tuple[str, str, str]:
+        """A branch's own commit on the hub's first commit, a merge of origin's newer main into it, and another
+        commit of its own after that merge."""
+        first, after = self.branches_behind_and_current()
+        git("checkout", "-q", "-b", "topic", first, directory=self.hub)
+        (self.hub / "own.md").write_text("own\n", encoding="utf-8")
+        git("add", "own.md", directory=self.hub)
+        git("commit", "-q", "-m", "own", directory=self.hub)
+        own = git("rev-parse", "HEAD", directory=self.hub)
+        git("merge", "-q", "--no-edit", after, directory=self.hub)
+        merged = git("rev-parse", "HEAD", directory=self.hub)
+        (self.hub / "more.md").write_text("more\n", encoding="utf-8")
+        git("add", "more.md", directory=self.hub)
+        git("commit", "-q", "-m", "more", directory=self.hub)
+        more = git("rev-parse", "HEAD", directory=self.hub)
+        git("checkout", "-q", "main", directory=self.hub)
+        return own, merged, more
+
+    def test_each_head_is_named_reviewed_carried_or_due_and_due_ones_get_one_set_of_arguments(self) -> None:
+        own, merged, more = self.topic()
+        gh = StubGh([pull(20, head=own), pull(21, head=own), pull(22, head=merged), pull(23, head=more), pull(24)])
+        records = {
+            21: reviewed(own),
+            22: reviewed(own, 2, "CHANGES_REQUESTED"),
+            23: reviewed(own, None),
+            24: reviewed(HEAD, None, report=None),
+        }
+        status, lines, opened = self.review_tick(gh, records)
+        self.assertEqual(0, status, lines)
+        self.assertEqual([REPOSITORY], opened)
+        self.assertEqual(
+            [
+                f"REVIEW_DUE #20 fix/topic-20 head {own[:7]} first",
+                f'REVIEWED #21 fix/topic-21 head {own[:7]} v1 APPROVE report "{REPORT}"',
+                f'REVIEWED #22 fix/topic-22 head {merged[:7]} v2 CHANGES_REQUESTED report "{REPORT}" carried from '
+                f"{own[:7]}",
+                f"REVIEW_DUE #23 fix/topic-23 head {more[:7]} since {own[:7]}",
+                f"REVIEWED #24 fix/topic-24 head {HEAD[:7]} legacy APPROVE report none",
+                "REVIEW_ARGUMENTS --pull owner/repo#20 --re-review owner/repo#23 --scope auto",
+            ],
+            [line for line in lines if line.startswith("REVIEW")],
+        )
+        # After the PR lines, and before the count.
+        self.assertGreater(lines.index(self.line(lines, "REVIEW_DUE #20 ")), lines.index(self.line(lines, "PR #24 ")))
+        self.assertEqual("REMAINING 5", lines[-1])
+        self.assertEqual([], gh.writes())
+
+    def test_first_reviews_alone_take_no_scope(self) -> None:
+        _, lines, _ = self.review_tick(StubGh([pull(20)]), {})
+        self.assertEqual("REVIEW_ARGUMENTS --pull owner/repo#20", self.line(lines, "REVIEW_ARGUMENTS "))
+
+    def test_a_head_that_is_out_of_step_in_conflict_red_missing_or_from_another_repository_is_not_reviewed(
+        self,
+    ) -> None:
+        first, after = self.branches_behind_and_current()
+        self.push_branch(after, "fix/topic-30")
+        pulls = [
+            pull(30, head=first),
+            pull(31, merge="DIRTY"),
+            pull(32, state="MISSING"),
+            pull(33, cross=True),
+            pull(34, state="CANCELLED"),
+        ]
+        runs = {RUN: run_view([job("Windows shard 2/4", "failure")])}
+        _, lines, opened = self.review_tick(StubGh(pulls, runs=runs, logs={1: failed_log()}), {})
+        self.assertEqual([], [line for line in lines if line.startswith("REVIEW")])
+        self.assertEqual([], opened, "the archive is not opened when no head is to be reviewed")
+
+    def test_a_pending_or_held_head_is_reviewed(self) -> None:
+        held = {**pull(41), "body": "Shepherd-hold: owes a citation\n"}
+        _, lines, _ = self.review_tick(StubGh([pull(40, state="PENDING"), held]), {})
+        self.assertEqual(
+            "REVIEW_ARGUMENTS --pull owner/repo#40 --pull owner/repo#41", self.line(lines, "REVIEW_ARGUMENTS ")
+        )
+
+    def test_an_unreadable_archive_or_record_is_named_and_changes_no_exit_status(self) -> None:
+        unreadable = premerge_review.ReviewUnread("Review JSON payload hash mismatch")
+        status, lines, _ = self.review_tick(StubGh([pull(50), pull(51)]), {50: unreadable})
+        self.assertEqual(0, status, lines)
+        self.assertEqual("REVIEW_UNREAD #50 Review JSON payload hash mismatch", self.line(lines, "REVIEW_UNREAD "))
+        self.assertEqual("REVIEW_ARGUMENTS --pull owner/repo#51", self.line(lines, "REVIEW_ARGUMENTS "))
+
+        def refused(repository: str) -> premerge_review.Reader:
+            raise premerge_review.ReviewUnread(f"the code-review configuration does not configure {repository}")
+
+        lines = []
+        client = GitHubClient(StubGh([pull(50)]), backoff=NO_WAIT, sleeper=lambda _: None)
+        status = shepherd.tick(GitClient(), client, self.hub, dry_run=True, emit=lines.append, reviews=refused)
+        self.assertEqual(0, status, lines)
+        self.assertEqual(
+            ["REVIEW_UNREAD the code-review configuration does not configure owner/repo"],
+            [line for line in lines if line.startswith("REVIEW")],
+        )
+
+    def test_a_head_git_cannot_relate_to_its_reviewed_head_is_due(self) -> None:
+        own, merged, _ = self.topic()
+        base = git("rev-parse", "origin/main", directory=self.hub)
+        self.assertTrue(premerge_review.merges_only(GitClient(), self.hub, own, merged, base))
+        self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, own, merged, None))
+        self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, merged, own, base))
+        self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, "c" * 40, merged, base))
+        self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, own, merged, "c" * 40))
+
+
+class ArchiveReaderTest(unittest.TestCase):
+    """The reader over a code-review configuration and archive written under a temporary folder."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(os.path.realpath(temporary.name))
+        self.config = self.root / "config.json"
+        patched = mock.patch.dict(os.environ, {"CODE_REVIEW_CONFIG": str(self.config)})
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def configure(self, repository: str = "Owner/Repo") -> None:
+        reviews = self.root / "reviews"
+        config = {
+            "schema_version": 1,
+            "default_repository_set": "primary",
+            "repository_sets": {"primary": [repository]},
+            "repositories": {
+                repository.lower(): {
+                    "reviewer": {
+                        "id": "generic",
+                        "protocol_version": 1,
+                        "trusted_ref": None,
+                        "scope": "generic",
+                        "manifest_path": None,
+                    },
+                    "checkout_path": str(self.root / "checkout"),
+                }
+            },
+            "archive_root": str(reviews / "archive"),
+            "local_mirror_root": None,
+            "summary_root": str(reviews / "summaries"),
+            "dashboard_file": str(reviews / "dashboard.md"),
+            "runtime": "auto",
+            "verdict_policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+            "dashboard": {},
+        }
+        self.config.write_text(json.dumps(config), encoding="utf-8")
+
+    def test_a_missing_or_invalid_configuration_is_unread(self) -> None:
+        with self.assertRaisesRegex(premerge_review.ReviewUnread, "^cannot read the code-review configuration: "):
+            premerge_review.archive_reader(REPOSITORY)
+        self.config.write_text("{", encoding="utf-8")
+        with self.assertRaisesRegex(premerge_review.ReviewUnread, "^cannot read the code-review configuration: "):
+            premerge_review.archive_reader(REPOSITORY)
+
+    def test_a_repository_the_configuration_does_not_name_is_unread(self) -> None:
+        self.configure("owner/other")
+        with self.assertRaisesRegex(
+            premerge_review.ReviewUnread, "^the code-review configuration does not configure owner/repo$"
+        ):
+            premerge_review.archive_reader(REPOSITORY)
+
+    def test_a_pull_request_with_no_review_reads_as_none_whatever_the_identity_s_case(self) -> None:
+        self.configure()
+        self.assertIsNone(premerge_review.archive_reader(REPOSITORY)(20))
+
+    def test_a_review_reads_as_its_head_verdict_and_version_and_an_unreadable_one_is_unread(self) -> None:
+        self.configure()
+        read = premerge_review.archive_reader(REPOSITORY)
+        found = {"head_sha": HEAD, "verdict": "COMMENT", "version": 3, "source": "record", "report": REPORT}
+        with mock.patch.object(premerge_review, "reviewed_head", return_value=found) as latest:
+            self.assertEqual(reviewed(HEAD, 3, "COMMENT"), read(20))
+        with mock.patch.object(premerge_review, "reviewed_head", return_value={**found, "report": None}):
+            self.assertEqual(reviewed(HEAD, 3, "COMMENT", None), read(20))
+        self.assertEqual((self.root / "reviews" / "archive", REPOSITORY, 20), latest.call_args.args)
+        failing = mock.patch.object(
+            premerge_review,
+            "reviewed_head",
+            side_effect=RecordError("Review JSON payload hash mismatch"),
+        )
+        with failing, self.assertRaisesRegex(premerge_review.ReviewUnread, "^Review JSON payload hash mismatch$"):
+            read(20)
+
+
 class MainTest(unittest.TestCase):
     def test_main_runs_one_tick_from_the_working_directory(self) -> None:
         with mock.patch.object(shepherd, "tick", return_value=0) as tick:
             self.assertEqual(0, shepherd.main(["--dry-run"]))
-        self.assertTrue(tick.call_args.kwargs["dry_run"])
-        self.assertEqual(Path.cwd(), tick.call_args.args[2])
+        self.assertIs(True, tick.call_args.kwargs["dry_run"])
+        git_client, github_client, directory = tick.call_args.args
+        self.assertIsInstance(git_client, GitClient)
+        self.assertIsInstance(github_client, GitHubClient)
+        self.assertEqual(Path.cwd(), directory)
+        self.assertIs(print, tick.call_args.kwargs["emit"])
+        self.assertIs(premerge_review.archive_reader, tick.call_args.kwargs["reviews"])
+        with mock.patch.object(shepherd, "tick", return_value=1) as tick:
+            self.assertEqual(1, shepherd.main([]))
+        self.assertIs(False, tick.call_args.kwargs["dry_run"])
+
+    def test_the_review_step_finds_skill_core_and_the_code_review_core_on_its_own(self) -> None:
+        # A clean interpreter, with neither on sys.path, imports the step. Its own two statements put the code-review
+        # core in front of skill-core, each at its folder in this checkout, ahead of the folder the step was found in;
+        # the core's modules put skill-core in front again as they load, which leaves that order behind them.
+        scripts = Path(premerge_review.__file__).resolve().parent
+        skills = scripts.parents[3] / "skills"
+        probe = "import sys; sys.path.insert(0, sys.argv[1]); import premerge_review; print(*sys.path, sep='\\n')"
+        ran = subprocess.run(
+            [sys.executable, "-B", "-I", "-c", probe, str(scripts)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(0, ran.returncode, ran.stderr)
+        path = ran.stdout.splitlines()
+        core = str(skills / "ejryan89-code-review-core" / "scripts")
+        self.assertIn(core, path)
+        self.assertEqual(
+            [core, str(skills / "ejryan89-skill-core" / "scripts"), str(scripts)],
+            path[path.index(core) : path.index(str(scripts)) + 1],
+        )
 
     def test_an_unknown_argument_is_a_usage_error(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
