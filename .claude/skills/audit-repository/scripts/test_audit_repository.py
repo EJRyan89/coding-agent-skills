@@ -281,6 +281,17 @@ class Fixture(AuditTestCase):
         return found
 
 
+class VersionTests(AuditTestCase):
+    def test_a_name_whose_version_part_is_past_the_digit_limit_names_no_version(self) -> None:
+        self.assertEqual((0, 12, 3), audit.version_of("v0.12.3"))
+        self.assertEqual((1, 0, 0), audit.version_of("1.0.0"))
+        # Past the digit limit in each part in turn, the others valid.
+        past = "1" * 5000
+        for name in (None, "", "v1.2", "v1.2.3-rc", "v1.2.\u00b3", f"v{past}.0.0", f"v1.{past}.3", f"v1.2.{past}"):
+            with self.subTest(name=(name or "")[:12]):
+                self.assertIsNone(audit.version_of(name))
+
+
 class ClassificationTests(AuditTestCase):
     def test_each_path_belongs_to_the_area_the_issue_names(self) -> None:
         expected = {
