@@ -1721,15 +1721,16 @@ def powershell_switch(word: str) -> str | None:
     not a parameter, such as a script file's name. A lone dash gives the empty name.
 
     pwsh trims the word's white space, every character of which Python's strip removes too, and takes off a leading
-    dash, a hyphen, an en dash, an em dash, or a horizontal bar, and then a second dash the same as the first; where
-    platform_support says so, a leading slash marks a parameter too."""
+    dash, a hyphen, an en dash, an em dash, or a horizontal bar, and then a second dash the same as the first. A
+    leading slash marks a parameter too, on every platform, so an absolute path after it names no parameter the guard
+    knows."""
     text = word.strip()
     if not text:
         return None
     first, name = text[0], text[1:]
     if first in "-\u2013\u2014\u2015":
         name = name[1:] if name.startswith(first) else name
-    elif first != "/" or not platform_support.POWERSHELL_SLASH_PARAMETERS:
+    elif first != "/":
         return None
     return name.lower()
 
@@ -1778,20 +1779,14 @@ def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[s
     """The reader's events for one command, or None when there are none, with why.
 
     pwsh starts with -Command rather than -File, so no execution policy applies, and not with -EncodedCommand,
-    which endpoint protection treats as a sign of malware. The command, how much nesting is left to follow, and
-    whether a child pwsh takes a slash before a parameter travel base64-encoded on stdin, past any console code page.
+    which endpoint protection treats as a sign of malware. The command, and how much nesting is left to follow,
+    travel base64-encoded on stdin, past any console code page.
     """
     pwsh = platform_support.find_pwsh(reading.environment.get("PATH", ""))
     if pwsh is None:
         reading.cannot_read("could not find pwsh to read a PowerShell command")
         return None
-    payload = json.dumps(
-        {
-            "command": command,
-            "limit": NESTING_LIMIT - depth,
-            "slashParameters": platform_support.POWERSHELL_SLASH_PARAMETERS,
-        }
-    )
+    payload = json.dumps({"command": command, "limit": NESTING_LIMIT - depth})
     try:
         # run_bounded takes git's repository-selecting variables out of the hook's environment, and the tree ends
         # every process pwsh starts once it has finished or been killed.

@@ -29,9 +29,6 @@ WINDOWS = sys.platform == "win32"
 # Whether a process's environment matches a variable's name in any case, as Windows does, so git there takes git_dir
 # as GIT_DIR; elsewhere each spelling is a variable of its own and git reads only the upper-case one.
 ENVIRONMENT_NAMES_FOLD_CASE = WINDOWS
-# Whether pwsh reads a word that starts with a slash, as in /Command, as a parameter, as it does on Windows; elsewhere
-# such a word is a path.
-POWERSHELL_SLASH_PARAMETERS = WINDOWS
 # This platform's name as a person knows it, which a report names it by.
 PLATFORM_NAME = SUPPORTED_PLATFORMS.get(sys.platform, sys.platform)
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")

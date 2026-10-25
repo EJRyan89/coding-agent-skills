@@ -265,7 +265,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   unsettled; a name reference that `declare -n`, `local -n`, or `typeset -n` makes stands for the variable it
   names, so an assignment to it, its expansion, and each of those builtins reach that variable, until `unset -n` or
   `declare +n` ends it; in PowerShell, through `$env:<name>` and `${<path>}` on the environment provider (cast,
-  in parentheses, or as any target of a multiple assignment), a `foreach` loop's variable, `PSVariable.Set`, `[Environment]::SetEnvironmentVariable`, and the cmdlets that write the provider: `Set-Item`,
+  in parentheses, or as any target of a multiple assignment), a `foreach` loop's variable, `PSVariable.Set`,
+  `[Environment]::SetEnvironmentVariable`, and the cmdlets that write the provider: `Set-Item`,
   `New-Item`, and `Set-Content` at their path, `Copy-Item` at its destination, `New-Item` on the provider's root
   with `-Name`, and `Rename-Item` with `-NewName`, while `Remove-Item` and `Clear-Item` remove one, and so does
   assigning `$null`. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
@@ -333,12 +334,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **Nested shells.** `bash -c` (alone or in a bundle such as `-lc`), `bash <<< '<script>'`, a here-document handed
   to `bash`, and `pwsh -c` (or `powershell -Command`) or `pwsh -CommandWithArgs` (`-cwa`) with a fixed script are
   read in either shell, by every spelling pwsh takes for a parameter: a leading `-`, en dash, em dash, or
-  horizontal bar, that dash doubled, as in `--command`, white space around the word, and on Windows a leading `/`,
-  as in `/Command`. `tests/tools/test_hub_guard_shells.py` runs pwsh on these spellings and Bash on the builtins
-  above that set a variable, and holds the guard to what each shell does. Each nested shell is read as a process of
-  its own that starts with the variables its parent exported; its directory and what it exports do not outlive it.
-  Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is a command
-  the guard cannot read.
+  horizontal bar, that dash doubled, as in `--command`, white space around the word, and a leading `/`, as in
+  `/Command`, on every platform. `tests/tools/test_hub_guard_shells.py` runs pwsh on these spellings and Bash on
+  the builtins above that set a variable, and holds the guard to what each shell does. Each nested shell is read as
+  a process of its own that starts with the variables its parent exported; its directory and what it exports do not
+  outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
+  a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
   the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the
   command starts or in a hub in view, or command-line alias configuration, each also read with the quotes, backticks,
@@ -363,10 +364,10 @@ command names. While one is, the guard refuses:
   script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression` that the text does not settle or that nests more
   than four deep, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
   inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
-  lone `-` before any of them, or no inline command, script file, or encoded command at all), every `env -S`,
-  whatever follows it, an option of `env` or of a prefix program above that the guard does not read, a PowerShell
-  command when `pwsh` cannot be started or does not finish reading it within 20 seconds, and a command either
-  shell's reader fails on with an error of its own;
+  lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline
+  command, script file, or encoded command at all), every `env -S`, whatever follows it, an option of `env` or of a
+  prefix program above that the guard does not read, a PowerShell command when `pwsh` cannot be started or does not
+  finish reading it within 20 seconds, and a command either shell's reader fails on with an error of its own;
 - an alias that cannot be read, as above.
 
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or

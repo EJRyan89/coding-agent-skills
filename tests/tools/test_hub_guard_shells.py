@@ -162,9 +162,18 @@ class PwshDifferentialTests(unittest.TestCase):
         for words, (reads_input, runs_inline) in zip(PWSH_COMMAND_LINES, runs, strict=True):
             arguments: list[hub_guard.Word] = list(words)
             read = [None] if hub_guard.powershell_reads_input(arguments) else hub_guard.powershell_script(arguments)
-            expected = [None] if reads_input else [INLINE] if runs_inline else None
-            with self.subTest(words=words):
-                self.assertEqual(expected, read)
+            with self.subTest(words=words, reads_input=reads_input, runs_inline=runs_inline):
+                # A script pwsh reads from standard input is refused, whatever else runs; pwsh on Linux reads no
+                # script from the input this suite hands it, so there only the inline script tells the forms apart.
+                if reads_input:
+                    self.assertEqual([None], read)
+                elif runs_inline:
+                    self.assertIn(read, ([INLINE], [None]))
+                else:
+                    self.assertIn(read, (None, [None]))
+                # The guard reads an inline script only where pwsh runs one.
+                if read == [INLINE]:
+                    self.assertTrue(runs_inline)
 
     def test_the_powershell_reader_follows_a_child_pwsh_by_each_spelling(self) -> None:
         spellings = [words[0] for words in PWSH_COMMAND_LINES if words[1:] == (INLINE,)]
