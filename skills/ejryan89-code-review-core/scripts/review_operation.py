@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+import whole_number
 from review_archive import (
     archive_head,
     commit_record,
@@ -61,11 +62,12 @@ PULL_FIELDS = {
 
 
 def parse_pull_selector(value: str) -> tuple[str, int]:
+    refused = ReviewOperationError("Pull selector must be owner/repository#number")
     match = re.fullmatch(r"([^#]+)#([1-9][0-9]*)", READ.string(value, "pull selector"))
     if match is None:
-        raise ReviewOperationError("Pull selector must be owner/repository#number")
+        raise refused
     repository = validate_repository_identity(match.group(1))
-    return repository, int(match.group(2))
+    return repository, whole_number.read(match.group(2), refused)
 
 
 def validate_canary_pull(value: Any, *, repository: str, number: int) -> dict[str, Any]:
@@ -412,14 +414,18 @@ LEGACY_COUNT = re.compile(
 
 
 def legacy_counts(report: Path) -> dict[Severity, int] | None:
-    """Finding counts from a migrated legacy report's collapsible section headings, or None if unreadable."""
+    """Finding counts from a migrated legacy report's collapsible section headings, or None if unreadable, a count
+    in digits past the digit limit or other than ASCII digits included."""
     try:
         text = report.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):
         return None
     counts = dict.fromkeys(SEVERITIES, 0)
     for label, value in LEGACY_COUNT.findall(text):
-        counts[LEGACY_SECTIONS[label]] += int(value)
+        number = whole_number.parse(value)
+        if number is None:
+            return None
+        counts[LEGACY_SECTIONS[label]] += number
     return counts
 
 
