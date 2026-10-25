@@ -454,6 +454,32 @@ class ResolveTests(unittest.TestCase):
             self.failed(),
         )
 
+    def test_a_broken_base_ref_fails_naming_git_instead_of_falling_back(self) -> None:
+        # A loose ref file holding no object name: git warns about it rather than answer that it names nothing.
+        self.repository.git("update-ref", "-d", "refs/remotes/origin/main")
+        broken = self.repository.root / ".git" / "refs" / "remotes" / "origin" / "main"
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("nonsense\n", encoding="utf-8")
+        self.assertEqual(
+            "git could not resolve origin/main: warning: ignoring broken ref refs/remotes/origin/main",
+            self.failed(services=Services("missing")),
+        )
+
+    def test_an_origin_head_git_cannot_read_fails_naming_git(self) -> None:
+        real = Services().git.runner
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            if "symbolic-ref" in command:
+                return GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
+            return real(command, timeout)
+
+        services = Services("missing")
+        services.git = GitClient(run)
+        self.assertEqual(
+            "git could not read refs/remotes/origin/HEAD: fatal: bad config line 1 in file .git/config",
+            self.failed(services=services),
+        )
+
     def test_the_remote_default_branch_of_a_real_clone_is_the_base(self) -> None:
         # A bare remote whose HEAD names develop, with a main branch as a decoy: comparing with origin/main would
         # also list Lib/Shipped.cs, which develop already has.

@@ -12,6 +12,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
@@ -72,17 +73,28 @@ def _git_output(git: GitClient, repository_root: str, arguments: list[str]) -> G
         raise QueryError(f"could not run git: {exc}") from exc
 
 
+def _commit_of(git: GitClient, repository_root: str, reference: str, what: str) -> str | None:
+    """The commit `reference` names, or None when git answers that it names none; any other failure is a QueryError
+    naming `what` and git's reason, so a broken ref or an unreadable repository is never taken for one that is not
+    there."""
+    try:
+        return git.commit_of(reference, directory=repository_root)
+    except GitError as exc:
+        if exc.returncode is None:
+            raise QueryError(f"could not run git: {exc}") from exc
+        raise QueryError(f"cannot resolve {what}: {flat_text(str(exc))}") from exc
+
+
 def _commit_present(git: GitClient, repository_root: str, sha: str) -> bool:
-    return _git_output(git, repository_root, ["cat-file", "-e", f"{sha}^{{commit}}"]).returncode == 0
+    return _commit_of(git, repository_root, sha, f"commit {sha}") is not None
 
 
 def branch_tips(repository_root: str, branch: str, git: GitClient | None = None) -> tuple[str, str | None]:
     """Return the branch's local tip and its fetched upstream tip, or None when it has no existing upstream."""
     git = git or GitClient()
-    local = _git_output(git, repository_root, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"])
-    head = local.stdout.strip()
-    if local.returncode != 0 or not SHA_PATTERN.fullmatch(head):
-        raise QueryError(f"cannot resolve local branch {branch!r}")
+    head = _commit_of(git, repository_root, f"refs/heads/{branch}", f"local branch {branch!r}")
+    if head is None:
+        raise QueryError(f"cannot resolve local branch {branch!r}: it names no commit")
     # NUL-separated: a ref name may hold a | or any other printable character, but never NUL.
     configured = _git_output(
         git, repository_root, ["for-each-ref", "--format=%(upstream)%00%(upstream:track)", f"refs/heads/{branch}"]
@@ -92,10 +104,10 @@ def branch_tips(repository_root: str, branch: str, git: GitClient | None = None)
     upstream_ref, track = configured.stdout.strip().split("\0", 1)
     if not upstream_ref or track == "[gone]":
         return head, None
-    upstream = _git_output(git, repository_root, ["rev-parse", "--verify", "--quiet", f"{upstream_ref}^{{commit}}"])
-    upstream_sha = upstream.stdout.strip()
-    if upstream.returncode != 0 or not SHA_PATTERN.fullmatch(upstream_sha):
-        raise QueryError(f"cannot resolve upstream {upstream_ref!r} of {branch!r}")
+    what = f"upstream {upstream_ref!r} of {branch!r}"
+    upstream_sha = _commit_of(git, repository_root, upstream_ref, what)
+    if upstream_sha is None:
+        raise QueryError(f"cannot resolve {what}: it names no commit")
     return head, upstream_sha
 
 
@@ -190,8 +202,7 @@ def fetched_bases(repository_root: str, git: GitClient | None = None) -> Bases:
     def tests(base: str) -> BaseTests | None:
         if base not in known:
             ref = f"refs/remotes/origin/{base}"
-            resolved = _git_output(client, repository_root, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
-            fetched = resolved.returncode == 0 and SHA_PATTERN.fullmatch(resolved.stdout.strip()) is not None
+            fetched = _commit_of(client, repository_root, ref, f"the fetched base {ref}") is not None
             known[base] = (
                 BaseTests(base_contains(repository_root, ref, client), change_match(repository_root, ref, client))
                 if fetched
