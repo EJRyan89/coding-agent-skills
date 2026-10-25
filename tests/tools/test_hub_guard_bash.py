@@ -152,6 +152,23 @@ class BuiltinAssignmentTests(unittest.TestCase):
         self.assertEqual(["could not read the callback mapfile runs"], reading.unread)
         self.assertEqual(UNSETTLED, git_dir_reaching_git("readarray -C callback other < /dev/null"))
 
+    def test_wait_p_leaves_its_name_unsettled(self) -> None:
+        before = START / "before"
+        self.assert_reading(
+            (
+                ("wait -p GIT_DIR", UNSETTLED),
+                ("wait -n -p GIT_DIR", UNSETTLED),
+                ("wait -fpGIT_DIR", UNSETTLED),
+                ("declare -n ref=GIT_DIR; wait -p ref", UNSETTLED),
+                ('wait -p "$name"', UNSETTLED),
+                ("wait $jobs", UNSETTLED),
+                ("wait", before),
+                ("wait -n", before),
+                ("wait -p other GIT_DIR", before),
+                ("wait -- -p GIT_DIR", before),
+            )
+        )
+
     def test_getopts_leaves_its_name_unsettled(self) -> None:
         before = START / "before"
         self.assert_reading(

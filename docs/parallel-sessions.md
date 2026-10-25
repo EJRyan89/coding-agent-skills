@@ -274,9 +274,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
   `typeset -x`, an assignment under `set -a` or to a variable already exported), and removed by `unset`,
-  `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, and `readarray` leave
-  each variable they set unsettled, and every variable when a word the text does not settle is among their options
-  or names; a name reference that `declare -n`, `local -n`, or `typeset -n` makes stands for the variable it names,
+  `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, `readarray`, and
+  `wait -p` leave each variable they set unsettled, and every variable when a word the text does not settle is among
+  their options or operands; a name reference that `declare -n`, `local -n`, or `typeset -n` makes stands for the variable it names,
   so an assignment to it, its expansion, and each of those builtins reach that variable, until `unset -n` or
   `declare +n` ends it, and one a function makes stands for no variable the guard knows once the function returns;
   in PowerShell, through `$env:<name>` and `${<path>}` on the environment provider (cast,

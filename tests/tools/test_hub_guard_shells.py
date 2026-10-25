@@ -40,7 +40,11 @@ PWSH_COMMAND_LINES = (
             "\u2014command",
             "\u2015co",
             "\u2013\u2013c",
+            "\u2014\u2014command",
+            "\u2015\u2015c",
             " -c ",
+            "\t--command\n",
+            "\u3000-c",
             "-cwa",
             "--cwa",
             "/cwa",
@@ -60,6 +64,8 @@ PWSH_COMMAND_LINES = (
     ("/f", "-"),
     ("\u2014file", "-"),
     ("-",),
+    ("--",),
+    ("", "-c", "-"),
     ("-", "-c", INLINE),
     ("-NoProfile", "-", "-c", INLINE),
 )
@@ -86,6 +92,8 @@ BASH_COMMANDS = (
     "read -- -aGIT_DIR <<< after",
     "export -n GIT_DIR; read GIT_DIR <<< after",
     "getopts ab other GIT_DIR",
+    "sleep 0 & wait -p GIT_DIR",
+    "wait -p other",
     "declare -n ref=GIT_DIR; unset ref; export GIT_DIR",
     "declare -n ref=GIT_DIR; unset ref; GIT_DIR=after",
     "declare -n GIT_DIR=other; unset -n GIT_DIR",
@@ -191,9 +199,8 @@ class PwshDifferentialTests(unittest.TestCase):
                     self.assertEqual([None], read)
                 elif runs_inline:
                     self.assertIn(read, ([INLINE], [None]))
-                else:
-                    self.assertIn(read, (None, [None]))
-                # The guard reads an inline script only where pwsh runs one.
+                # Where pwsh runs neither, as after an empty word, which it takes for a missing script file, the guard
+                # may read more than runs; it reads the inline script only where pwsh runs one.
                 if read == [INLINE]:
                     self.assertTrue(runs_inline)
 

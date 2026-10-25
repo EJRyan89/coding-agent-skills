@@ -1499,6 +1499,18 @@ def bash_mapfile(reader: BashReader, arguments: list[Word], _: object, shell: Sh
     return certain(shell)
 
 
+def bash_wait(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """wait -p NAME, which sets NAME to the job it waited for, left unsettled; a word the text does not settle may
+    name any variable."""
+    parsed = builtin_operands(arguments, "p")
+    if parsed is None:
+        shell.opaque = True
+        return certain(shell)
+    options, _operands = parsed
+    assign_unsettled(shell, [value for flag, value in options if flag == "p"])
+    return certain(shell)
+
+
 def bash_printf(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
     """printf -v NAME, which sets NAME to the text it formats, left unsettled; a word the text does not settle where
     -v may stand may name any variable."""
@@ -1634,6 +1646,7 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
     "printf": bash_printf,
     "getopts": bash_getopts,
     **dict.fromkeys(("mapfile", "readarray"), bash_mapfile),
+    "wait": bash_wait,
     "eval": bash_eval,
     "source": bash_source,
     ".": bash_source,
