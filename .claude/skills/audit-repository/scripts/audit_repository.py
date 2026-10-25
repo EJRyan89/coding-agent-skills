@@ -79,7 +79,6 @@ import argparse
 import ast
 import contextlib
 import json
-import os
 import re
 import sys
 import tempfile
@@ -102,6 +101,7 @@ from git_client import GitClient, GitError, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
+from path_keys import path_key
 from release_tags import is_release_tag, last_release, release_order
 
 # The rotation record, relative to the top of the repository it describes.
@@ -439,7 +439,7 @@ def checkout_top(git: GitClient, repository: Path) -> tuple[Path, bool]:
     if len(output) != 2:
         raise AuditError(f"git rev-parse printed {len(output)} lines where it prints the top and the common directory")
     top, common = Path(output[0]), Path(output[1])
-    return top, os.path.normcase(common.resolve()) == os.path.normcase((top / ".git").resolve())
+    return top, path_key(common, resolve=True) == path_key(top / ".git", resolve=True)
 
 
 def changes(git: GitClient, repository: Path, base: str, head: str) -> list[Change]:
@@ -568,7 +568,7 @@ def record_entry(name: str, number: int, item: object) -> Entry:
     return Entry(when, tag, area)
 
 
-def release_key(tag: str) -> tuple[tuple[int, str], ...]:
+def release_key(tag: str) -> tuple[int, ...]:
     """A recorded tag's place among releases, as ejryan89-skill-core's release_tags orders them, so a read's recency
     never depends on where a record lists it. Both readers refuse any other tag, so AuditError means one got past."""
     order = release_order(tag)
@@ -589,7 +589,7 @@ def last_reads(entries: list[Entry]) -> dict[str, Entry]:
 def next_area(entries: list[Entry]) -> Area:
     """The area read whole least recently: never read first, then the oldest release, ties in the rotation order."""
     reads = last_reads(entries)
-    unread: tuple[tuple[int, str], ...] = ()
+    unread: tuple[int, ...] = ()
     return min(
         AREAS,
         key=lambda area: (release_key(reads[area.name].tag) if area.name in reads else unread, AREAS.index(area)),

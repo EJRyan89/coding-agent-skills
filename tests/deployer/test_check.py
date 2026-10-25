@@ -1000,6 +1000,7 @@ class VersionTests(unittest.TestCase):
             ("ShellCheck - shell script analysis tool\nversion: 0.9.0\nlicense: GNU", (0, 9, 0)),
             ("GitHub Copilot CLI 1.0.89.\nRun 'copilot update'", (1, 0, 89)),
             ("7.6", (7, 6)),
+            ("PowerShell 7.5.1.2", (7, 5, 1)),
             ("no version here", None),
         ):
             with self.subTest(output=output):

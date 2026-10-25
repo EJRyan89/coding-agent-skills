@@ -22,6 +22,7 @@ from executable_locator import PYTHON
 from git_client import Runner, subprocess_runner
 from github_client import GitHubError
 from link_probe import is_plain_file
+from path_keys import path_key
 from process_identity import ProcessStatus, process_status
 from review_archive import ArchiveError
 from review_canary import FixtureError
@@ -95,7 +96,7 @@ def command_script(name: str) -> str:
     started = sys.argv[0] if sys.argv else ""
     if not started.endswith(pipeline.name) or not Path(started).is_absolute() or set(started) & set('"`$\r\n'):
         return resolved
-    if os.path.normcase(str(Path(started).resolve())) != os.path.normcase(str(pipeline)):
+    if path_key(started, resolve=True) != os.path.normcase(str(pipeline)):
         return resolved
     return started.removesuffix(pipeline.name) + name
 

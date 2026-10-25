@@ -339,6 +339,8 @@ class SharedFactPolicy(unittest.TestCase):
     FRONTMATTER = "skills/ejryan89-skill-core/scripts/frontmatter.py"
     TYPED_TEXT = "skills/ejryan89-skill-core/scripts/typed_text.py"
     SKILL_LAYOUT = "tests/validation/skill_layout.py"
+    VERSIONS = "skills/ejryan89-skill-core/scripts/versions.py"
+    PATH_KEYS = "skills/ejryan89-skill-core/scripts/path_keys.py"
     OWNERS: ClassVar[dict[str, str]] = {
         GIT_CLIENT: (
             'GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--attr-source", "--config-env", "--git-dir", '
@@ -362,6 +364,11 @@ class SharedFactPolicy(unittest.TestCase):
             'HOME_SPELLINGS = ("{{HOME}}", "$HOME", "${HOME}", "~")\n'
             "INSTALL_PATH = re.compile('|'.join(map(re.escape, HOME_SPELLINGS)))\n"
         ),
+        VERSIONS: (
+            'SEPARATOR = "."\n\n\ndef read(text):\n'
+            "    return tuple(whole_number.parse(part) for part in text.split(SEPARATOR))\n"
+        ),
+        PATH_KEYS: "def path_key(path):\n    return os.path.normcase(os.path.abspath(path))\n",
     }
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -492,6 +499,45 @@ class SharedFactPolicy(unittest.TestCase):
         prose = 'MESSAGE = "finds a file through $HOME or ~/.claude"\n'
         self.assertEqual([], self.problems({guard: prose}))
 
+    def test_a_version_read_by_hand_fails_and_the_shared_reader_passes(self) -> None:
+        tools = "deployer/tools.py"
+        readings = (
+            'version = tuple(int(part) for part in match.group(0).split("."))\n',
+            'version = [int(number) for number in text.split(".", 2)]\n',
+            'version = tuple(map(int, banner.group(1).split(".")))\n',
+            "version = tuple(map(int, text.split(sep='.')))\n",
+        )
+        for reading in readings:
+            with self.subTest(reading=reading):
+                self.assertEqual([self.restated(tools, 1, "SEPARATOR", self.VERSIONS)], self.problems({tools: reading}))
+        shared = (
+            "version = versions.find(text)\n"
+            # Numbers split on another separator, and parts split on a dot that are not converted, are no version.
+            'ports = [int(port) for port in text.split(",")]\nlabels = [part.strip() for part in name.split(".")]\n'
+            'widths = tuple(map(len, name.split(".")))\n'
+        )
+        self.assertEqual([], self.problems({tools: shared}))
+
+    def test_a_path_case_folded_by_hand_fails_and_the_shared_key_passes(self) -> None:
+        canary = "tools/runtime_canary.py"
+        for folding, line in (
+            ("key = os.path.normcase(os.path.abspath(path))\n", 1),
+            ("key = os.path.normcase(os.path.normpath(path))\n", 1),
+            ("same = os.path.normcase(os.path.realpath(first)) == second\n", 1),
+            ("from os.path import normcase\n\nkey = normcase(str(path.resolve()))\n", 3),
+            ("key = os.path.normcase(os.fspath(Path(candidate).absolute()))\n", 1),
+        ):
+            with self.subTest(folding=folding):
+                self.assertEqual(
+                    [self.restated(canary, line, "path_key", self.PATH_KEYS)], self.problems({canary: folding})
+                )
+        shared = (
+            "key = platform_support.path_key(path)\nsame = path_key(first, resolve=True) == path_key(second)\n"
+            # A name folded against another name is no path.
+            'git = os.path.normcase(directory.name) == ".git"\nfolder = os.path.normcase(str(part))\n'
+        )
+        self.assertEqual([], self.problems({canary: shared}))
+
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'
         self.assertEqual(
@@ -535,13 +581,16 @@ class SharedFactPolicy(unittest.TestCase):
                 'def default_config_path():\n    return HOME / "code-review" / "config.json"\n', encoding="utf-8"
             )
             (root / self.GIT_CLIENT).unlink()
+            # The function renamed, so a re-derived key would go unseen.
+            (root / self.PATH_KEYS).write_text("def comparable(path):\n    return path\n", encoding="utf-8")
             self.assertEqual(
                 [
-                    f"{owner} no longer holds {fact} as a literal; name its new home in the shared facts of "
-                    "tests/validation/duplication.py"
+                    f"{owner} no longer holds {fact} as a literal or a function; name its new home in the shared "
+                    "facts of tests/validation/duplication.py"
                     for owner, fact in (
                         (self.GIT_CLIENT, "GLOBAL_VALUE_OPTIONS"),
                         (self.REVIEW_CONFIG, "DEFAULT_CONFIG_NAME"),
+                        (self.PATH_KEYS, "path_key"),
                     )
                 ],
                 shared_fact_owner_problems(root),

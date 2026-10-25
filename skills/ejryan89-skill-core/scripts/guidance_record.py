@@ -20,7 +20,6 @@ one form, such as a raw GitHub file named by its branch and by `refs/heads/` and
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -28,6 +27,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import json_reader
+import versions
 from release_tags import is_release_tag
 from typed_fields import FieldError, FieldReader
 
@@ -39,8 +39,6 @@ PAGE_SCHEME = "https://"
 # How a runtime publishes its changelog: one Markdown file whose headings name each release, or GitHub releases, one
 # per tag, read through the REST API.
 CHANGELOG_FORMATS = ("markdown", "github-releases")
-# A runtime's release, as its changelog and --version print it: numbers joined by dots, with no tag prefix.
-RUNTIME_RELEASE = re.compile(r"\d+(?:\.\d+)+")
 
 
 class GuidanceRecordError(ValueError):
@@ -159,7 +157,7 @@ def _changelog(value: object, path: str, subjects: Sequence[str]) -> Changelog:
     url = _url(fields["url"], f"{path}.url")
     form = READ.one_of(fields["format"], f"{path}.format", CHANGELOG_FORMATS)
     release = READ.string(fields["read_through"], f"{path}.read_through", single_line=True, trimmed=True)
-    if not RUNTIME_RELEASE.fullmatch(release):
+    if versions.read(release) is None:
         raise READ.fail(f"{path}.read_through", "a release of numbers joined by dots", json.dumps(release))
     return Changelog(subject, url, form, release)
 

@@ -104,7 +104,6 @@ MERGED_FAILED line, or a last line FAILED <reason>; 2 a usage error.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from collections.abc import Callable, Sequence
@@ -121,6 +120,7 @@ from git_client import GitClient, GitError
 from git_worktrees import Worktree, list_worktrees
 from github_client import GitHubClient, GitHubError
 from github_remote import github_repository
+from path_keys import path_key
 from premerge_review import Head, Reader, ReviewUnread, archive_reader, review_lines
 
 REMOTE = "origin"
@@ -254,7 +254,7 @@ def short(commit: str) -> str:
 
 
 def same_path(first: Path, second: Path) -> bool:
-    return os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second))
+    return path_key(first, resolve=True) == path_key(second, resolve=True)
 
 
 def locate(git: GitClient, directory: Path) -> Place:

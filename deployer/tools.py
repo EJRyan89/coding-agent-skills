@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import versions
 from pdf_tool import (
     MINIMUMS,
     PdfIdentity,
@@ -22,7 +23,6 @@ from . import platform_support
 
 # 3.11.4 is the first 3.11 release whose tarfile has extraction filters, which --at extracts a commit's tree with.
 MINIMUM_PYTHON = (3, 11, 4)
-VERSION = re.compile(r"\d+\.\d+(?:\.\d+)?")
 
 
 @dataclass(frozen=True)
@@ -197,12 +197,13 @@ REPORTED_TOOLS = (
 
 
 def parse_version(text: str) -> tuple[int, ...] | None:
-    match = VERSION.search(text)
-    return tuple(int(part) for part in match.group(0).split(".")) if match else None
+    """The first version of two or three numbers a tool's version command prints, as ejryan89-skill-core's `versions`
+    reads it."""
+    return versions.find(text, least=2, most=3)
 
 
 def format_version(version: tuple[int, ...]) -> str:
-    return ".".join(str(part) for part in version)
+    return versions.text(version)
 
 
 @dataclass(frozen=True)
