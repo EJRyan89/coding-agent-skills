@@ -112,3 +112,17 @@ def test_what_a_runtime_lacks_decides_its_declaration() -> None:
         "needs": ["workflow"],
         "reason": runtime_support.DEFAULT_REASONS["workflow"],
     }
+
+
+def test_a_codex_reason_for_lacking_the_network_points_to_the_codex_guide() -> None:
+    pointer = 'See "Network access" in docs/codex-support.md for the ways to open the network.'
+    assert runtime_support.guide_pointer("codex", "sandbox-network") == pointer
+    assert runtime_support.guide_pointer("copilot-cli", "sandbox-network") is None
+    assert runtime_support.guide_pointer("codex", "workflow") is None
+    assert runtime_support.declaration({"workflow", "sandbox-network"})["codex"] == {
+        "level": "partial",
+        "needs": ["workflow", "sandbox-network"],
+        "reason": " ".join(
+            [runtime_support.DEFAULT_REASONS["workflow"], runtime_support.DEFAULT_REASONS["sandbox-network"], pointer]
+        ),
+    }

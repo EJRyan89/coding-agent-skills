@@ -18,11 +18,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import runtime_support
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
     REPOSITORY_SKILL_SHIMS,
     WORKING_FILES_DOC,
     ExecutableFence,
+    capability_guide_problems,
     deploy_variable_problems,
     embedded_program_problems,
     find_executable_fences,
@@ -727,6 +729,41 @@ class SkillLayoutFixtures(unittest.TestCase):
                     f"user-only-start, so it is partial or none; see {doc}",
                 ],
                 runtime_support_problems(root),
+            )
+
+    def test_a_reason_for_a_capability_a_guide_gives_must_point_to_that_guide(self) -> None:
+        pointer = runtime_support.guide_pointer("codex", "sandbox-network")
+
+        def codex(reason: str, needs: tuple[str, ...] = ("sandbox-network",)) -> str:
+            partial = {"level": "partial", "needs": list(needs), "reason": reason}
+            return json.dumps({"runtime_support": {"claude-code": "full", "codex": partial, "copilot-cli": "full"}})
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/points.json": codex(f"Its gh calls need the network. {pointer}"),
+                    "deploy-meta/restates.json": codex(
+                        "Its gh calls need the network unless [sandbox_workspace_write] network_access is true."
+                    ),
+                    "deploy-meta/unguided.json": codex("It uses the Workflow tool.", ("workflow",)),
+                    "deploy-meta/malformed.json": json.dumps({"runtime_support": {"codex": "full"}}),
+                    "docs/codex-support.md": "# Codex support\n\n## Network access\n\nProse.\n",
+                },
+            )
+            self.assertEqual(
+                [
+                    "deploy-meta/restates.json: the codex reason for lacking sandbox-network does not carry "
+                    f"{pointer!r}; point to the guide rather than restating its settings"
+                ],
+                capability_guide_problems(root),
+            )
+            (root / "docs/codex-support.md").write_text("# Codex support\n\n## Network\n\nProse.\n", encoding="utf-8")
+            self.assertIn(
+                'docs/codex-support.md has no "## Network access" section, which runtime_support.CAPABILITY_GUIDES '
+                "names",
+                capability_guide_problems(root),
             )
 
     def test_runtime_page_policy_holds_each_support_statement_to_the_metadata(self) -> None:

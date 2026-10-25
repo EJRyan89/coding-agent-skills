@@ -855,6 +855,35 @@ def deployable_linux_problems(workflow: str) -> list[str]:
     return problems
 
 
+# The file docs/codex-support.md tells a user to write the settings to, ~/.codex/config.toml, as the parts the Codex
+# step's $config is joined from: the runner's profile folder, then each folder and the file under it.
+CODEX_CONFIG_PARTS = ("$env:USERPROFILE", ".codex", "config.toml")
+ASSIGNMENT = re.compile(r"^\$(?P<name>\w+)\s*=\s*(?P<value>.*?)\s*$", re.MULTILINE)
+JOIN_PATH = re.compile(r"Join-Path (?P<parent>\$[\w:]+) '(?P<child>[^']+)'")
+
+
+def _joined_path(script: str, name: str) -> tuple[str, ...] | None:
+    """The parts of the path the script's variable `name` holds, followed back through each
+    `$name = Join-Path $parent '<child>'` to an environment variable, or None when a variable on the way is assigned
+    otherwise, more than once, or in a cycle."""
+    values: dict[str, list[str]] = {}
+    for match in ASSIGNMENT.finditer(script):
+        values.setdefault(match["name"], []).append(match["value"])
+    parts: list[str] = []
+    seen: set[str] = set()
+    while name not in seen:
+        seen.add(name)
+        assigned = values.get(name, [])
+        joined = JOIN_PATH.fullmatch(assigned[0]) if len(assigned) == 1 else None
+        if joined is None:
+            return None
+        parts[:0] = joined["child"].split("/")
+        if joined["parent"].startswith("$env:"):
+            return (joined["parent"], *parts)
+        name = joined["parent"][1:]
+    return None
+
+
 def _toml_problem(text: str | None, where: str) -> tuple[dict[str, object] | None, str | None]:
     """The TOML text as a table, or the problem that keeps it from being read."""
     if text is None:
@@ -867,8 +896,9 @@ def _toml_problem(text: str | None, where: str) -> tuple[dict[str, object] | Non
 
 def codex_settings_problems(workflow: str, guide: str) -> list[str]:
     """Hold the Codex settings deployable.yml's Windows job writes, the `$settings` here-string its Codex step passes
-    to Set-Content, to the TOML block docs/codex-support.md gives after "For MXC with the elevated fallback", so the
-    runner is configured as that page tells a user to configure a machine."""
+    to Set-Content, to the TOML block docs/codex-support.md gives after "For MXC with the elevated fallback", and its
+    `$config` to ~/.codex/config.toml under the runner's profile, so the runner is configured as that page tells a user
+    to configure a machine."""
     steps = [
         step
         for step in _steps(_mapping(read_workflow(workflow), "jobs", "deployable"))
@@ -884,6 +914,8 @@ def codex_settings_problems(workflow: str, guide: str) -> list[str]:
     problems: list[str] = []
     if not re.search(r"^Set-Content -LiteralPath \$config -Value \$settings ", script, re.MULTILINE):
         problems.append(f"{CODEX_SETTINGS_STEP!r} does not write $settings to $config")
+    if _joined_path(script, "config") != CODEX_CONFIG_PARTS:
+        problems.append(f"{CODEX_SETTINGS_STEP!r} does not set $config to .codex/config.toml under $env:USERPROFILE")
     workflow_table, problem = _toml_problem(written.group("toml") if written else None, CODEX_SETTINGS_STEP)
     problems += [problem] if problem else []
     guide_table, problem = _toml_problem(block.group("toml") if block else None, "docs/codex-support.md")
