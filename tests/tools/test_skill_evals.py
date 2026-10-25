@@ -3915,6 +3915,19 @@ def test_the_sample_replaces_the_skill_s_row_unread_and_keeps_the_others_sorted(
     assert skill_evals_results.samples_table(again)[2][0] == "| alpha | one | haiku | 1 | 2026-10-09 | unread |"
 
 
+def test_the_samples_rows_are_ordered_by_skill_however_a_kept_row_is_spaced() -> None:
+    # A row written by hand keeps its spacing, so the rows sort by the skill each names, never by their text.
+    text = samples_text(
+        "|  zeta | one | opus | 1 | 2026-01-01 | agrees |", "|alpha| one | opus | 1 | 2026-01-01 | agrees |"
+    )
+    written = skill_evals_results.replace_sample(text, "beta", ("two", "haiku", None), datetime.date(2026, 10, 8))
+    assert skill_evals_results.samples_table(written)[2] == [
+        "|alpha| one | opus | 1 | 2026-01-01 | agrees |",
+        "| beta | two | haiku | 1 | 2026-10-08 | unread |",
+        "|  zeta | one | opus | 1 | 2026-01-01 | agrees |",
+    ]
+
+
 def test_a_reading_marks_the_skill_s_unread_row_once() -> None:
     text = samples_text(
         "| alpha | one | opus | 1 | 2026-01-01 | agrees |", "| beta | two | haiku | 2 | 2026-10-08 | unread |"
