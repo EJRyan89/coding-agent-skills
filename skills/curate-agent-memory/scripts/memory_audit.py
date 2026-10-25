@@ -1129,7 +1129,11 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
 def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     """Write the JSON audit report to a new file, --output or a temporary one, and name it."""
     user_dir = args.user_dir or config_directory(Path.home(), dict(os.environ))
-    report = json_writer.dumps(audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir), indent=2) + "\n"
+    found = audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir)
+    try:
+        report = json_writer.dumps(found, indent=2) + "\n"
+    except json_writer.JsonWriteRefused as exc:
+        return 1, [f"FAILED the audit report cannot be written: {flat_text(str(exc))}"]
     if args.output:
         try:
             # Created exclusively, so a file that appeared since the check is never replaced either.

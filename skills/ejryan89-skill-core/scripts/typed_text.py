@@ -11,6 +11,8 @@ from pathlib import Path
 
 # The codec that drops one leading byte-order mark and reads the rest as UTF-8.
 TYPED_ENCODING = "utf-8-sig"
+# What `read_typed` raises on bad content: text that is not UTF-8.
+CONTENT_ERRORS: tuple[type[Exception], ...] = (UnicodeDecodeError,)
 
 
 def read_typed(path: Path) -> str:
