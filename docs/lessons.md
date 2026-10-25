@@ -297,6 +297,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   number, a lone surrogate, and what `json_reader:loads` refuses on the read-back, by name, at the write;
   `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_writer_is_the_one_writer_of_json`,
+  `tests/validation/test_python_checks.py::test_json_write_policy_refuses_a_json_write_outside_json_writer`,
   `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
 - **Search for:** `rg -n "json\.dumps?\(" | rg -v allow_nan=False`; `write_text(json.dumps(`; input written back
   without the later reader's pass.
