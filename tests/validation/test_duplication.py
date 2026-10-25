@@ -531,6 +531,9 @@ class SharedFactPolicy(unittest.TestCase):
             ("key = os.path.abspath(path).lower()\n", 1),
             # A path folded as it was given is a key too, as command_script's pipeline was.
             ("same = path_key(started) != os.path.normcase(str(pipeline))\n", 1),
+            # normcase is named through the module's imports, under any alias.
+            ("from os.path import normcase as fold\n\nkey = fold(path)\n", 3),
+            ("import ntpath\n\nkey = ntpath.normcase(ntpath.abspath(path))\n", 3),
         ):
             with self.subTest(folding=folding):
                 self.assertEqual(
@@ -540,6 +543,8 @@ class SharedFactPolicy(unittest.TestCase):
             "key = platform_support.path_key(path)\nsame = path_key(first, resolve=True) == path_key(second)\n"
             # A name folded against another name builds no key, nor does other text folded by str.casefold.
             'git = os.path.normcase(directory.name) == ".git"\n'
+            # A function or method of the module's own that shares normcase's name folds nothing of a path.
+            "def normcase(text):\n    return text\n\n\nkey = normcase(path)\nlabel = self.normcase(path)\n"
             "suffix = path.suffix.casefold()\nlabel = name.lower()\n"
         )
         self.assertEqual([], self.problems({canary: shared}))
