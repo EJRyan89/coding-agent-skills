@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import nesting_depth
 import whole_number
 from json_reader import JsonRefused, loads, raw_decode, read_file
 
@@ -40,6 +41,23 @@ class RefusalTests(unittest.TestCase):
         for text in ("[" * 100_000 + "]" * 100_000, '{"a": ' * 100_000 + "1" + "}" * 100_000):
             with self.subTest(opening=text[:6]):
                 self.assertEqual("the JSON nests deeper than the parser can read", self.refusal(text))
+
+    def test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it(self) -> None:
+        past = nesting_depth.DEPTH_LIMIT + 1
+        for text in ("[" * past + "]" * past, '{"a": ' * past + "1" + "}" * past, "[" * 2000 + "]" * 2000):
+            with self.subTest(opening=text[:6], length=len(text)):
+                self.assertEqual("the JSON nests deeper than the parser can read", self.refusal(text))
+
+    def test_nesting_at_the_shared_limit_reads(self) -> None:
+        limit = nesting_depth.DEPTH_LIMIT
+        value = loads("[" * limit + "]" * limit)
+        for _ in range(limit - 1):
+            value = value[0]
+        self.assertEqual([], value)
+        value = loads('{"a": ' * (limit - 1) + "{}" + "}" * (limit - 1))
+        for _ in range(limit - 1):
+            value = value["a"]
+        self.assertEqual({}, value)
 
     def test_a_refusal_is_a_value_error(self) -> None:
         self.assertTrue(issubclass(JsonRefused, ValueError))
@@ -90,6 +108,7 @@ class RawDecodeTests(unittest.TestCase):
             ('{"k": 1, "k": 2} rest', "the JSON repeats the key 'k' in one object"),
             ('{"value": NaN} rest', "the JSON holds NaN, which JSON does not define"),
             ("[" * 100_000 + "]" * 100_000, "the JSON nests deeper than the parser can read"),
+            ("[" * 101 + "]" * 101 + " rest", "the JSON nests deeper than the parser can read"),
         ):
             with self.subTest(text=text[:12]):
                 with self.assertRaises(JsonRefused) as raised:

@@ -238,10 +238,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 - **Rule:** A parser that recurses into input it does not control stops at a stated depth and ends in its documented
   refusal, never in a `RecursionError`.
-- **Why:** Nesting past Python's recursion limit escapes the reader as an unhandled error instead of its refusal.
-- **Use:** `json_reader:loads`, `msbuild_evaluation:MAX_CHOOSE_DEPTH`; the depth bound for the other recursive parsers
-  comes with #1880.
-- **Guard:** `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_past_the_recursion_limit_is_refused`,
+- **Why:** Nesting past Python's recursion limit escapes the reader as an unhandled error instead of its refusal, and
+  the C JSON scanner and the XML parser nest far deeper than a Python walk over what they read can recurse.
+- **Use:** `nesting_depth:deeper`, the check a recursive parser makes at each level, raising its own error, against
+  `nesting_depth:DEPTH_LIMIT`; `json_reader:loads` and `xml_reader:read_xml`, which refuse a value nested past the
+  same limit, so a walk over what they return, such as MSBuild's Choose evaluation, needs no bound of its own; the
+  hand-written recursive parsers take the check with #1880.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it`,
+  `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_past_the_recursion_limit_is_refused`,
   `tests/tools/test_hub_guard.py::EndToEndTests::test_bash_nested_deeper_than_the_reader_follows_is_refused_alike_in_its_own_process`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
 - **Search for:** a function that calls itself on a child of its input with no depth parameter and no
