@@ -204,6 +204,7 @@ The template's sections ask for the problem and the chosen behavior, and the use
 
 - the local checks [Validation](#validation) names for the touched files pass, with no skipped prerequisites, and the `Validation` check runs every suite, or the subset the runner selects when the change is documentation-only;
 - regression coverage is added or updated for every behavior change;
+- for a `fix`, a `Siblings:` line in the body names the search for the same construct elsewhere and each hit's outcome, as [Pull requests](docs/implementing-changes.md#pull-requests) in the implementation profile says;
 - for a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are in the body, with each runtime's version and any `SKIPPED` or `NOTHING_CHECKED` reason;
 - for a change to a skill's prompt, description, model guidance, or reviewer instructions, the `evaluate-skill` run is cited with its table, and `docs/skill-evaluations.md` holds its result;
 - for a skill change, `audit-skill` audited each changed skill from the source tree with no MUST FIX left, and any SUGGESTION left is named with why;

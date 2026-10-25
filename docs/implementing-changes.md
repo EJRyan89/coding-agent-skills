@@ -193,6 +193,12 @@ squash merge carries the body into `main`, and the release's notes are written f
 status lines, and exit codes are the contract items no check compares, so a change to them owes the note with nothing
 to catch its absence; the `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says how the entry names them.
 
+A `fix` pull request names its sibling search, on a line of the body that opens with `Siblings:`: the search run
+for the same construct elsewhere, as its pattern and the scope searched, and the outcome for each hit, fixed here,
+filed as #N, or not a sibling and why. A fix that reaches one instance of a construct leaves its twin wrong, and the
+author, with the code in hand, is the one placed to look. It is the author's judgment, never an automated result, and
+no check reads it: `review-repository`'s `sibling-search` reviewer holds the search against a change to a script.
+
 A pull request that returns a file to its state before a commit on `main` reverts that commit's change to it, and
 validation's silent-revert check, in `tests/validation/silent_reverts.py`, names each such file with the commit and
 its pull request. A branch left behind, or a conflict resolved by taking the branch's side of a file it never set out
