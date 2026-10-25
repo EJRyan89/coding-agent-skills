@@ -46,6 +46,12 @@ from validation_support import (
 
 from deployer import platform_support
 
+DUPLICATION_ALLOWED = {
+    "SUITE_NAME_PATTERNS": (
+        "the lint policy pins pyproject.toml's ruff per-file-ignores as ruff reads them, globs in a TOML file that "
+        "cannot import skills/ejryan89-skill-core/scripts/suite_names.py"
+    ),
+}
 # The folder each type check keeps mypy's cache under, in a folder of its own, so no two mypy processes of a run share
 # one. CI names a folder actions/cache restores between runs, so mypy reparses no standard-library stubs; unset, each
 # check caches in a temporary folder removed when it ends, so a run writes nothing into the tree.

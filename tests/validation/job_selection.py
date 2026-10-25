@@ -37,19 +37,20 @@ DEVELOPMENT_DEPENDENCIES = ("requirements-dev.in", "requirements-dev.txt")
 PYTHON_CHECK_FILES = ("pyproject.toml", *DEVELOPMENT_DEPENDENCIES)
 # What a change reaches beyond the suites that name, import, or sit in the skill of a changed file, as pairs of
 # changed-path patterns and the suite patterns they add, both fnmatch patterns over repository-relative paths, where *
-# crosses folders. The deployer renders and deploys every shipped skill's files in its rendering suite; it reads each
-# skill's metadata, its dependencies, agents, tools, runtime support, and selection, in the rendering suite and the
-# bundles-and-dependencies suite; the deployer's suites run deploy.py and every module behind it; and the files that
-# set a tool floor are read by the toolchain, upgrade-note, and check suites; and the root conftest.py sets up every
-# Python suite, whose git it isolates and whose shards it deals, and the development dependencies pin the pytest that
-# runs every Python suite. --changed adds them, so no contributor has to remember them.
+# crosses folders. A suite pattern is matched against the suites alone, so it names a folder or a suite and never
+# restates the suite-name rule. The deployer renders and deploys every shipped skill's files in its rendering suite; it
+# reads each skill's metadata, its dependencies, agents, tools, runtime support, and selection, in the rendering suite
+# and the bundles-and-dependencies suite; the deployer's suites run deploy.py and every module behind it; and the files
+# that set a tool floor are read by the toolchain, upgrade-note, and check suites; and the root conftest.py sets up
+# every Python suite, whose git it isolates and whose shards it deals, and the development dependencies pin the pytest
+# that runs every Python suite. --changed adds them, so no contributor has to remember them.
 CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("skills/*",), ("tests/deployer/test_rendering_locking.py",)),
     (
         ("deploy-meta/*",),
         ("tests/deployer/test_rendering_locking.py", "tests/deployer/test_bundles_dependencies.py"),
     ),
-    (("deployer/*", "deploy.py"), ("tests/deployer/test_*",)),
+    (("deployer/*", "deploy.py"), ("tests/deployer/*",)),
     (
         (
             "deployer/tools.py",

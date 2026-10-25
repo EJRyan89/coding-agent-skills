@@ -6,8 +6,9 @@ import ast
 import re
 import sys
 import unittest
-from collections.abc import Iterator
-from pathlib import Path
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from pathlib import Path, PurePath
 
 from skill_roots import SKILL_CORE
 from validation_support import (
@@ -50,7 +51,14 @@ CONSTANT_KEY = "constant:"
 # set of one vocabulary, such as the severities a record allows, are one decision however each module holds it.
 COLLECTION_CALLS = frozenset({"tuple", "list", "set", "frozenset"})
 
+# A restatement of a shared fact's vocabulary holds at least this many of its members: fewer is a command that passes
+# one of them, such as a git invocation with -C.
+MINIMUM_SHARED_MEMBERS = 3
+
 Copy = tuple[str, int, str]
+# A shared fact's restatement test: the node, the fact's members as its owner holds them, and whether the node's
+# module imports the owner.
+Restates = Callable[[ast.AST, frozenset[str], bool], bool]
 
 
 def _definition_key(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> str:
@@ -140,9 +148,145 @@ def _copy_report(key: str, group: list[Copy]) -> str:
     return f"{group[0][2]} is defined identically in {places}; {fix}"
 
 
+def _shares_members(node: ast.AST, members: frozenset[str], _imports_owner: bool) -> bool:
+    """A tuple, list, or set literal holding several of the fact's members: a copy of its vocabulary, however far it
+    has drifted from the owner's."""
+    if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return False
+    held = {item.value for item in node.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)}
+    return len(held & members) >= MINIMUM_SHARED_MEMBERS
+
+
+def _holds_member(node: ast.AST, members: frozenset[str], _imports_owner: bool) -> bool:
+    """A string literal holding one of the fact's members, as a glob or a message re-derives a rule from it."""
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and any(member in node.value for member in members)
+    )
+
+
+def _equals_in_importer(node: ast.AST, members: frozenset[str], imports_owner: bool) -> bool:
+    """The fact's own value as a literal in a module that imports its owner, which could import the value too. A
+    short value such as a file name recurs for unrelated reasons elsewhere, so only an importer is read."""
+    return imports_owner and isinstance(node, ast.Constant) and node.value in members
+
+
+@dataclass(frozen=True)
+class SharedFact:
+    """One value the repository keeps in one module, its owner, under one module-level name, and how another module
+    restates it instead of importing it."""
+
+    owner: str
+    name: str
+    restates: Restates
+
+
+def _shared_facts() -> tuple[SharedFact, ...]:
+    """The facts a diverged or re-derived copy was found of. The gate above compares copies by value, so a copy that
+    has since drifted from its owner's, or a value re-derived from the same rule, is outside its reach; each fact here
+    is read from its owner, never restated, and a second literal copy of it fails."""
+    return (
+        SharedFact(f"{SKILL_CORE_SCRIPTS}/git_client.py", "GLOBAL_VALUE_OPTIONS", _shares_members),
+        SharedFact(f"{SKILL_CORE_SCRIPTS}/suite_names.py", "SUITE_NAME_PATTERNS", _holds_member),
+        SharedFact(
+            "skills/ejryan89-code-review-core/scripts/review_config.py", "DEFAULT_CONFIG_NAME", _equals_in_importer
+        ),
+    )
+
+
+def _fact_members(tree: ast.Module, name: str) -> frozenset[str] | None:
+    """The strings a module-level name holds, as a string literal or a collection of them, or None."""
+    resolver = CallableResolver(tree)
+    for node in module_statements(tree.body):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return frozenset({value.value})
+        if isinstance(value, ast.Call) and resolver.name(value.func) in COLLECTION_CALLS and len(value.args) == 1:
+            value = value.args[0]
+        items = _literals(value)
+        return frozenset(item for item in items if isinstance(item, str)) if items else None
+    return None
+
+
+def _docstring_nodes(tree: ast.Module) -> set[int]:
+    """The docstrings of a module and its definitions, by node identity: prose about a fact, not a copy of it."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                found.add(id(first.value))
+    return found
+
+
+def shared_fact_owner_problems(root: Path) -> list[str]:
+    """Report a shared fact whose owner no longer holds it as a literal, so the restatement check cannot go quiet
+    after a rename or a move."""
+    problems: list[str] = []
+    for fact in _shared_facts():
+        path = root / fact.owner
+        trees = list(python_trees([path] if path.is_file() else [], root, problems))
+        if not trees or _fact_members(trees[0][2], fact.name) is None:
+            problems.append(
+                f"{fact.owner} no longer holds {fact.name} as a literal; name its new home in the shared facts of "
+                "tests/validation/duplication.py"
+            )
+    return problems
+
+
+def _restating_lines(tree: ast.Module, fact: SharedFact, members: frozenset[str]) -> list[int]:
+    """The lines where the module restates the fact, docstrings aside."""
+    stem = PurePath(fact.owner).stem
+    imports_owner = any(stem in found.module.split(".") for found in module_imports(tree))
+    prose = _docstring_nodes(tree)
+    return sorted(
+        {
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.expr) and id(node) not in prose and fact.restates(node, members, imports_owner)
+        }
+    )
+
+
+def _restatement_problems(
+    trees: list[tuple[str, ast.Module]], allowances: dict[str, dict[str, str]], copied: dict[str, set[str]]
+) -> tuple[list[str], list[str]]:
+    """Each restatement of a shared fact outside its owner, and each sanction of one whose reason does not name the
+    owner. A restating module sanctions the copy under the fact's name, and copied records the sanction as needed."""
+    owners = dict(trees)
+    found: list[str] = []
+    problems: list[str] = []
+    for fact in _shared_facts():
+        members = _fact_members(owners[fact.owner], fact.name) if fact.owner in owners else None
+        for module, tree in trees:
+            lines = _restating_lines(tree, fact, members) if members and module != fact.owner else []
+            if not lines:
+                continue
+            copied.setdefault(module, set()).add(fact.name)
+            reason = allowances[module].get(fact.name)
+            if reason is None:
+                found += [
+                    f"{module}:{line} restates {fact.name}, which {fact.owner} holds; import it from there, or "
+                    f"sanction it in {module} with {DUPLICATION_ALLOWANCE}"
+                    for line in lines
+                ]
+            elif fact.owner not in reason:
+                problems.append(
+                    f"{module}: {DUPLICATION_ALLOWANCE} gives a reason for {fact.name} that does not name {fact.owner}"
+                )
+    return found, problems
+
+
 def duplicated_definition_problems(root: Path) -> list[str]:
     """Report a module-level function or class defined identically in two files, a module-level literal or compiled
-    pattern assigned identically in two files, and allowances no longer needed.
+    pattern assigned identically in two files, a shared fact restated outside its owner, and allowances no longer
+    needed.
 
     Copied helpers began identical and then drifted, and so did copied patterns; a copy caught while it is still
     identical is caught before it diverges. Two scripts of one skill count, because one can import the other.
@@ -152,7 +296,9 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     problems: list[str] = []
     files = [path for top in DUPLICATION_ROOTS for path in (root / top).rglob("*.py") if not is_test_script(path)]
     ordered = sorted(files, key=lambda path: path.relative_to(root).as_posix())
+    trees: list[tuple[str, ast.Module]] = []
     for _, name, tree in python_trees(ordered, root, problems):
+        trees.append((name, tree))
         allowed = module_allowance(tree, DUPLICATION_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {DUPLICATION_ALLOWANCE} must map each name to the reason it is allowed")
@@ -182,9 +328,13 @@ def duplicated_definition_problems(root: Path) -> list[str]:
             ]
             continue
         found.append(_copy_report(key, group))
+    restated, unnamed = _restatement_problems(trees, allowances, copied)
+    found += restated
+    problems += unnamed
     for module, allowed in allowances.items():
         problems += [
-            f"{module}: {DUPLICATION_ALLOWANCE} allows {entry}, which no other file defines identically"
+            f"{module}: {DUPLICATION_ALLOWANCE} allows {entry}, which no other file defines identically or restates "
+            "as a shared fact"
             for entry in sorted(allowed)
             if entry not in copied.get(module, set())
         ]
@@ -358,6 +508,9 @@ class DuplicationPolicies(unittest.TestCase):
     def test_repository_copies_only_what_it_sanctions(self) -> None:
         # Copied helpers began identical and then drifted, so a copy is caught while it is still identical.
         self.assertEqual([], duplicated_definition_problems(REPOSITORY_ROOT))
+
+    def test_repository_owners_hold_every_shared_fact(self) -> None:
+        self.assertEqual([], shared_fact_owner_problems(REPOSITORY_ROOT))
 
     def test_repository_keeps_shared_modules_in_skill_core(self) -> None:
         self.assertEqual([], skill_core_copy_problems(REPOSITORY_ROOT))
