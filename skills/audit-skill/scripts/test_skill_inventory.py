@@ -1082,6 +1082,26 @@ class ToolsTests(TemporaryTestCase):
             [found[0], found[1][: found[1].index(" not JSON:") + len(" not JSON:")], *found[2:]],
         )
 
+    def test_a_trigger_scenario_whose_requests_or_near_misses_are_not_a_list_is_unreadable(self) -> None:
+        write(self.root / "deploy-meta" / "alpha.json", "{}")
+        skill = write(self.root / "skills" / "alpha" / "SKILL.md", "---\ndescription: Run.\n---\nBody.\n")
+        spec = self.root / "tests" / "fixtures" / "skill-evals" / "alpha" / "description" / "scenario.json"
+        cases = {
+            '{"mode": "trigger", "requests": "Run it.", "near_misses": []}': "requests",
+            '{"mode": "trigger", "requests": ["a"], "near_misses": {"d": 1}}': "near_misses",
+            '{"mode": "trigger"}': None,
+        }
+        for text, field in cases.items():
+            with self.subTest(text=text):
+                write(spec, text)
+                _, lines, _ = run("tools", str(skill))
+                expected = (
+                    f"TRIGGER_SCENARIO {spec.as_posix()} 0 0"
+                    if field is None
+                    else f"TRIGGER_SCENARIO_UNREADABLE {spec.as_posix()} its {field} is not a list"
+                )
+                self.assertEqual([expected], [line for line in lines if line.startswith("TRIGGER")])
+
     def test_a_user_only_repository_or_deployed_skill_names_no_trigger_scenario(self) -> None:
         write(self.root / "deploy-meta" / "alpha.json", "{}")
         cases = {

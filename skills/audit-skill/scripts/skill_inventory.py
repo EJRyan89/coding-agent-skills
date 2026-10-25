@@ -1418,9 +1418,12 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
         if not isinstance(spec, dict):
             output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} not a JSON object")
         elif spec.get("mode") == "trigger":
-            requests, near_misses = (spec.get(key) for key in ("requests", "near_misses"))
-            counts = [len(value) if isinstance(value, list) else 0 for value in (requests, near_misses)]
-            output.append(f"TRIGGER_SCENARIO {posix(spec_file)} {counts[0]} {counts[1]}")
+            lists = {key: spec.get(key, []) for key in ("requests", "near_misses")}
+            other = [key for key, value in lists.items() if not isinstance(value, list)]
+            if other:
+                output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} its {other[0]} is not a list")
+                continue
+            output.append(f"TRIGGER_SCENARIO {posix(spec_file)} {len(lists['requests'])} {len(lists['near_misses'])}")
     return output or [f"NO_TRIGGER_SCENARIO {posix(scenarios)}"]
 
 
