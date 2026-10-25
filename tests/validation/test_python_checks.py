@@ -6,6 +6,8 @@ Each policy fails on a violating input and passes on a conforming one.
 from __future__ import annotations
 
 import copy
+import importlib
+import json
 import re
 import sys
 import tempfile
@@ -1213,11 +1215,61 @@ class Holder:
             return None
 
 
+def bare(text):
+    try:
+        return read(text)
+    except:
+        return None
+
+
+def broad(text):
+    try:
+        return read(text)
+    except Exception:
+        return None
+
+
+def grouped(text):
+    try:
+        read(text)
+    except* json.JSONDecodeError:
+        pass
+
+
+async def waited(text):
+    try:
+        return read(text)
+    except reader.Refused:
+        return None
+
+
 CONTENT_ERRORS_ALLOWED = {
     "own": "reads text it wrote",
     "trusted": "reads text it wrote",
     "stale": "a reason",
 }
+"""
+
+
+CONTENT_PACKAGE_CALLER_SOURCE = """\
+import json
+
+from . import load
+from .helper import fetch
+
+
+def first(text):
+    try:
+        return load(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def second(text):
+    try:
+        return fetch(text)
+    except json.JSONDecodeError:
+        return None
 """
 
 
@@ -1235,6 +1287,12 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
                 ),
                 "skills/alpha/scripts/alpha.py": CONTENT_CALLER_SOURCE,
                 "skills/alpha/scripts/test_alpha.py": CONTENT_CALLER_SOURCE,
+                # Another skill's script imported by the same name, which the model could not tell apart.
+                "skills/beta/scripts/alpha.py": "",
+                # A package's own module and a relative import of each form.
+                "tools/__init__.py": "from reader import read\n\n\ndef load(text):\n    return read(text)\n",
+                "tools/helper.py": "from reader import read\n\n\ndef fetch(text):\n    return read(text)\n",
+                "tools/caller.py": CONTENT_PACKAGE_CALLER_SOURCE,
                 "tools/broken.py": "CONTENT_ERRORS_ALLOWED = {'scope': ''}\n",
             },
         )
@@ -1249,6 +1307,8 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
 
     both = "json.decoder.JSONDecodeError, reader.Refused"
     assert found == [
+        f"skills/beta/scripts/alpha.py: {alpha} is imported as alpha too, so the content-errors policy, which reads "
+        "modules by the name they are imported as, cannot read both; rename one",
         "skills/ejryan89-skill-core/scripts/unnamed.py: CONTENT_READERS must be a tuple naming each function the "
         "module defines that raises its CONTENT_ERRORS on content",
         "skills/ejryan89-skill-core/scripts/unresolved.py: CONTENT_ERRORS must be a tuple of exception classes its "
@@ -1259,9 +1319,37 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
         f"{alpha}:38 {remedy(both)}",
         f"{alpha}:45 {remedy('reader.Refused')}",
         f"{alpha}:115 {remedy(both)}",
+        f"{alpha}:136 {remedy('reader.Refused')}",
+        f"{alpha}:143 {remedy('json.decoder.JSONDecodeError')}",
         f"{alpha}: CONTENT_ERRORS_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTENT_ERRORS_ALLOWED must map each function, class, or assignment to its reason",
+        f"tools/caller.py:8 {remedy('reader.Refused')}",
+        f"tools/caller.py:15 {remedy('reader.Refused')}",
     ]
+
+
+def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader() -> None:
+    # With no reader every handler would pass, so a tree that lost its readers fails rather than passing empty.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": CONTENT_CALLER_SOURCE})
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    assert found[0] == (
+        "skills/ejryan89-skill-core/scripts names no reader in a CONTENT_READERS beside its CONTENT_ERRORS, so the "
+        "content-errors policy could check no handler"
+    )
+
+
+def test_a_standard_class_is_found_only_through_a_module_that_imports_and_defines_it() -> None:
+    assert python_checks._standard_class("ValueError") is ValueError
+    assert python_checks._standard_class("json.JSONDecodeError") is json.JSONDecodeError
+    # A name that is no class, a class the module lacks, and a module outside the standard library are none the policy
+    # can compare, so a handler naming one is taken to catch everything.
+    for name in ("print", "json.NoSuchError", "reader.Refused"):
+        assert python_checks._standard_class(name) is None, name
+    # Nor is a class of a standard-library module that will not import here, such as one for another platform.
+    with mock.patch.object(importlib, "import_module", side_effect=ImportError("no module named winreg")):
+        assert python_checks._standard_class("winreg.HKEYType") is None
 
 
 INT_SOURCE = """\

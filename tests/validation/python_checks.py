@@ -1245,6 +1245,13 @@ class _ContentModel:
         self.aliases: dict[str, dict[str, str]] = {}
         for path, name, tree in python_trees(claim_files(root, files), root, problems):
             module = _module_name(root, path)
+            if module in self.trees:
+                # A module the model held under the same name would go unread, so the claim would not reach it.
+                problems.append(
+                    f"{name}: {self.trees[module][0]} is imported as {module} too, so the content-errors policy, "
+                    "which reads modules by the name they are imported as, cannot read both; rename one"
+                )
+                continue
             self.trees[module] = (name, tree)
             self.aliases[module] = _content_aliases(tree, module)
         self.bases = {
@@ -1282,6 +1289,12 @@ class _ContentModel:
                 continue
             for reader in readers:
                 self.families[f"{module}.{reader}"] = dict.fromkeys(family, f"{module}.{CONTENT_ERRORS}")
+        if not self.families:
+            # With no reader every handler passes, which would hold nothing; say so instead.
+            problems.append(
+                f"{SKILL_CORE_SCRIPTS} names no reader in a {CONTENT_READERS} beside its {CONTENT_ERRORS}, so the "
+                "content-errors policy could check no handler"
+            )
         self._ancestors: dict[ClassKey, frozenset[ClassKey]] = {}
 
     def ancestors(self, key: ClassKey) -> frozenset[ClassKey]:
