@@ -173,6 +173,7 @@ from file_presence import is_present
 from flat_text import flat_text, single_line
 from git_client import GitClient
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
+from path_keys import path_key
 from suite_names import is_suite_name
 
 MAIN_NAME = "skill.md"
@@ -964,7 +965,7 @@ def skill_files(scope: str, directory: Path) -> list[Path]:
 
 
 def identity(path: Path) -> str:
-    return os.path.normcase(str(path.resolve()))
+    return path_key(path, resolve=True)
 
 
 def plugin_roots(folder: Path, depth: int = PLUGIN_DEPTH) -> list[Path]:
