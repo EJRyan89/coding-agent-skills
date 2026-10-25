@@ -20,6 +20,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import whole_number
 from review_dispatch import REVIEWER_TASK
 
 from tools import plugin_build
@@ -384,7 +385,7 @@ def test_a_probe_record_the_canary_will_not_read_fails_by_name_and_keeps_its_tra
     )
     assert lines[0].startswith(
         f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "cannot read what the run recorded in '
-        f"{records.as_posix()}: line 1: Exceeds the limit"
+        f"{records.as_posix()}: line 1: the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits"
     )
     assert lines[1].startswith("TRANSCRIPT claude probe ")
 

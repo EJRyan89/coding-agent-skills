@@ -5,8 +5,9 @@ reader of the same file may read the first; and it reads `NaN`, `Infinity`, and 
 define and other readers refuse, and which then reach code that compares numbers. `loads` refuses both as
 `JsonRefused`, a `ValueError`, so a reader that already turns a `ValueError` from its parse into its own refusal
 refuses these alike. Nesting past the interpreter's recursion limit, which `json.loads` raises as a `RecursionError`
-that such a reader lets escape, is refused the same way. It bounds nothing else: whatever else `json.loads` raises,
-such as its `JSONDecodeError` or the `ValueError` of an integer past the digit limit, it raises.
+that such a reader lets escape, is refused the same way, and so is an integer of more digits than `whole_number`'s
+`DIGIT_LIMIT`, the one cap on a number read from text, whatever limit the interpreter is configured with. It bounds
+nothing else: whatever else `json.loads` raises, such as its `JSONDecodeError`, it raises.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+
+import whole_number
 
 
 class JsonRefused(ValueError):
@@ -33,11 +36,19 @@ def _constant(name: str) -> Any:
     raise JsonRefused(f"the JSON holds {name}, which JSON does not define")
 
 
+def _integer(text: str) -> int:
+    digits = text.removeprefix("-")
+    refused = JsonRefused(f"the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits")
+    value = whole_number.read(digits, refused)
+    return -value if digits != text else value
+
+
 def loads(text: str | bytes) -> Any:
-    """The value `text` holds, as `json.loads` reads it, or `JsonRefused` when an object repeats a key or a number is
-    `NaN`, `Infinity`, or `-Infinity`, or the value nests past the recursion limit."""
+    """The value `text` holds, as `json.loads` reads it, or `JsonRefused` when an object repeats a key, a number is
+    `NaN`, `Infinity`, or `-Infinity`, an integer has more digits than `DIGIT_LIMIT`, or the value nests past the
+    recursion limit."""
     try:
-        return json.loads(text, object_pairs_hook=_object, parse_constant=_constant)
+        return json.loads(text, object_pairs_hook=_object, parse_constant=_constant, parse_int=_integer)
     except RecursionError as error:
         raise JsonRefused("the JSON nests deeper than the parser can read") from error
 
@@ -45,7 +56,7 @@ def loads(text: str | bytes) -> Any:
 def raw_decode(text: str, index: int = 0) -> tuple[Any, int]:
     """The value `text` holds from `index` and the index just past it, as `json.JSONDecoder.raw_decode` reads it,
     refusing what `loads` refuses, so a value followed by other text, such as a line's next field, is read alike."""
-    decoder = json.JSONDecoder(object_pairs_hook=_object, parse_constant=_constant)
+    decoder = json.JSONDecoder(object_pairs_hook=_object, parse_constant=_constant, parse_int=_integer)
     try:
         return decoder.raw_decode(text, index)
     except RecursionError as error:

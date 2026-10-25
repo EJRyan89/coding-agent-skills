@@ -959,6 +959,8 @@ def test_a_pull_request_author_must_be_an_object_with_a_login(author: object) ->
         pytest.param(["--org", "-acme", "--user", "octo"], id="an-org-starting-with-a-hyphen"),
         pytest.param(["--org", "acme", "--user", "octo", "--months", "0"], id="zero-months"),
         pytest.param(["--org", "acme", "--user", "octo", "--months", "37"], id="37-months"),
+        pytest.param(["--org", "acme", "--user", "octo", "--months", "\u00b2"], id="superscript-months"),
+        pytest.param(["--org", "acme", "--user", "octo", "--months", "1" * 5000], id="months-past-the-digit-limit"),
     ],
 )
 def test_invalid_arguments_are_rejected_before_querying(arguments: list[str]) -> None:

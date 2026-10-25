@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import runtime_support
+import whole_number
 
 from deployer import discovery, platform_support
 from deployer import source as deploy_source
@@ -2323,7 +2324,10 @@ class RecordRefusalTests(RuntimeCanaryTestCase):
     def test_a_line_past_the_digit_limit_or_nested_past_the_recursion_limit_is_refused_by_name(self) -> None:
         records = self.root / "probe.jsonl"
         for line, reason in (
-            ('{"run": ' + "1" * 5000 + "}", "Exceeds the limit"),
+            (
+                '{"run": ' + "1" * 5000 + "}",
+                f"the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits",
+            ),
             ("[" * 200000 + "]" * 200000, "nests deeper than the parser can read"),
             ('{"run": 1, "run": 2}', "repeats the key"),
         ):
@@ -2389,7 +2393,11 @@ class RecordRefusalTests(RuntimeCanaryTestCase):
         self.assertEqual(1, code, lines)
         failed = [line for line in lines if line.startswith(f"RUNTIME codex {FIXTURE} FAILED ")]
         self.assertEqual(1, len(failed), lines)
-        self.assertIn(f'"cannot read what the run recorded in {forward(probe)}: line 1: Exceeds the limit', failed[0])
+        self.assertIn(
+            f'"cannot read what the run recorded in {forward(probe)}: line 1: '
+            f"the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits",
+            failed[0],
+        )
         self.assertTrue([line for line in self.recorded if line.startswith(f"RUNTIME codex {FIXTURE} FAILED ")])
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

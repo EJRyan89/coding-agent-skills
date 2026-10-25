@@ -40,6 +40,7 @@ from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import whole_number
 from bounded_process import streaming
 from executable_locator import find_executables
 from flat_text import flat_text
@@ -346,6 +347,11 @@ def _heading_styles(data: bytes) -> dict[str, int]:
     return levels
 
 
+INT_PARSE_ALLOWED = {
+    "_style_level": "the pattern takes one digit from 1 to 9",
+}
+
+
 def _style_level(style: str, named: dict[str, str], outline: dict[str, int], based: dict[str, str]) -> int | None:
     seen: set[str] = set()
     current: str | None = style
@@ -365,8 +371,8 @@ def _style_level(style: str, named: dict[str, str], outline: dict[str, int], bas
 
 def _number(value: str) -> int | None:
     """An attribute's whole number in ASCII digits, as Word writes it, or None: `str.isdigit` also passes a
-    superscript digit, which `int` refuses."""
-    return int(value) if value.isascii() and value.isdigit() else None
+    superscript digit, which `int` refuses, and `int` refuses digits past the interpreter's limit."""
+    return whole_number.parse(value)
 
 
 def _outline_level(value: int) -> int | None:

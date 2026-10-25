@@ -15,6 +15,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import whole_number
 from flat_text import flat_text
 from markdown_literal import markdown_line as _text
 from markdown_literal import markdown_literal as _literal
@@ -660,12 +661,13 @@ def _record_finding(identifier: str, finding: AdapterFinding, identifiers: dict[
     if "repeats" in finding:
         target = finding["repeats"]
         prior = LEDGER_ID.fullmatch(target)
+        unknown = RecordError(f"Finding {finding['candidate_key']} repeats an unknown finding: {target}")
         if target in identifiers:
             recorded["repeats"] = {"version": version, "id": identifiers[target]}
         elif prior is not None:
-            recorded["repeats"] = {"version": int(prior.group(1)), "id": prior.group(2)}
+            recorded["repeats"] = {"version": whole_number.read(prior.group(1), unknown), "id": prior.group(2)}
         else:
-            raise RecordError(f"Finding {finding['candidate_key']} repeats an unknown finding: {target}")
+            raise unknown
     return recorded
 
 

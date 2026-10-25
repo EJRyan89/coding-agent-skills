@@ -84,6 +84,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/pdf_tool.py",
     f"{SKILL_CORE}/process_identity.py",
     f"{SKILL_CORE}/typed_fields.py",
+    f"{SKILL_CORE}/whole_number.py",
     f"{SKILL_CORE}/xml_reader.py",
 )
 # A group of alternatives in a route's pattern, which holds no group of its own.

@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import whole_number
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
@@ -478,10 +479,11 @@ def environment_configuration(values: Mapping[str, Word]) -> Configuration:
             configuration.add(setting)
     if "GIT_CONFIG_COUNT" in values:
         count = values["GIT_CONFIG_COUNT"]
-        if count is None or not count.strip().isdigit():
+        entries = None if count is None else whole_number.parse(count.strip())
+        if entries is None:
             configuration.settled = False
             return configuration
-        for index in range(int(count)):
+        for index in range(entries):
             key, value = values.get(f"GIT_CONFIG_KEY_{index}"), values.get(f"GIT_CONFIG_VALUE_{index}")
             configuration.add(None if key is None or value is None else f"{key}={value}")
     for key, _ in configuration.entries:

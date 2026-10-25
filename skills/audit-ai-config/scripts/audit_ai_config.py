@@ -809,6 +809,11 @@ BLOCK_SCALAR_HEADER = re.compile(
 )
 
 
+INT_PARSE_ALLOWED = {
+    "_block_scalar_indent": "the pattern takes one digit from 1 to 9",
+}
+
+
 def _block_scalar_indent(lines: list[str], header: re.Match[str]) -> int:
     """The block's content indentation: the indicator's, or the first non-blank line's."""
     explicit = header.group("indent") or header.group("indent2")

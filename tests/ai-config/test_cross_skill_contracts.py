@@ -640,7 +640,7 @@ class CrossSkillContractTests(unittest.TestCase):
             core = profile / ".claude/skills/ejryan89-skill-core/scripts"
             core.mkdir(parents=True)
             modules = ("console.py", "executable_locator.py", "file_presence.py", "flat_text.py", "skill_roots.py")
-            for module in (*modules, "typed_fields.py", "json_reader.py"):
+            for module in (*modules, "typed_fields.py", "json_reader.py", "whole_number.py"):
                 (core / module).write_bytes(
                     (REPOSITORY_ROOT / "skills/ejryan89-skill-core/scripts" / module).read_bytes()
                 )

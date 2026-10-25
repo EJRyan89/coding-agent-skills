@@ -94,6 +94,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 
 import guidance_record
 import json_reader
+import whole_number
 from atomic_file import UnfinishedCopyError, replace_text
 from console import run_main
 from flat_text import flat_text
@@ -480,8 +481,13 @@ def issues_of(payload: Any, what: str) -> list[Issue]:
 
 
 def version_of(name: str | None) -> tuple[int, int, int] | None:
+    """The version a milestone or tag name gives, or None when it names none, a part past the digit limit
+    included."""
     match = VERSION.fullmatch(name or "")
-    return None if match is None else (int(match[1]), int(match[2]), int(match[3]))
+    parts = [] if match is None else [whole_number.parse(part) for part in match.groups()]
+    if len(parts) != 3 or parts[0] is None or parts[1] is None or parts[2] is None:
+        return None
+    return parts[0], parts[1], parts[2]
 
 
 def open_milestones_after(github: GitHubClient, released: str | None) -> list[str]:

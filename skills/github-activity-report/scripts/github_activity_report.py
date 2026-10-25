@@ -24,6 +24,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import whole_number
 from atomic_file import replace_text
 from console import run_main
 from flat_text import flat_text
@@ -986,9 +987,11 @@ def _team(value: str) -> str:
 
 
 def _months(value: str) -> int:
-    if not value.isdigit() or not 1 <= int(value) <= MAX_MONTHS:
-        raise argparse.ArgumentTypeError(f"must be an integer from 1 to {MAX_MONTHS}")
-    return int(value)
+    refused = argparse.ArgumentTypeError(f"must be an integer from 1 to {MAX_MONTHS}")
+    months = whole_number.read(value, refused)
+    if not 1 <= months <= MAX_MONTHS:
+        raise refused
+    return months
 
 
 def _history_path(value: str) -> Path:

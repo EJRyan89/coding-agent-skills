@@ -278,7 +278,8 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
         ),
         # A sequence of scalars is not the subset the hooks are read from.
         ("hooks:\n  PreToolUse:\n    - Read\n", "not a key of its own: Read"),
-        (GUARD_HOOK.replace("timeout: 30", "timeout: ²"), "timeout is not a number of ASCII digits"),
+        (GUARD_HOOK.replace("timeout: 30", "timeout: ²"), r"timeout is not a number of at most \d+ ASCII digits: ²"),
+        (GUARD_HOOK.replace("timeout: 30", "timeout: 3" + "0" * 5000), r"timeout is not a number of at most \d+ ASCII"),
     ],
 )
 def test_hooks_a_plugin_cannot_carry_as_written_are_refused(source: Source, hook: str, problem: str) -> None:
