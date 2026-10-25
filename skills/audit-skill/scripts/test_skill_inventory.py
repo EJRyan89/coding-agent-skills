@@ -2396,6 +2396,17 @@ class RuntimeSupportTests(SourceTreeTestCase):
             [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
         )
 
+    def test_full_on_codex_for_a_git_fetch_in_a_bash_suffixed_script_is_overclaimed(self) -> None:
+        skill = self.skill("Body.\n", self.full())
+        write(skill.parent / "scripts" / "update.BASH", 'git -C "$CLONE" fetch origin\n')
+        self.assertEqual(
+            [
+                "RUNTIME_NEEDS sandbox-network git fetch scripts/update.BASH",
+                "RUNTIME_OVERCLAIMED codex sandbox-network",
+            ],
+            [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
+        )
+
     def test_full_on_codex_for_a_python_git_fetch_is_overclaimed(self) -> None:
         skill = self.skill("Body.\n", self.full())
         write(skill.parent / "scripts" / "test_update.py", 'git(root, "fetch", "origin")\n')
