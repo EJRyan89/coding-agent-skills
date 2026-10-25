@@ -687,6 +687,12 @@ class RotationTests(Fixture):
         self.assertEqual(before, (self.root / RECORD).read_bytes())
         self.assertEqual("", git(self.root, "status", "--porcelain"))
 
+    def test_a_record_is_committed_text_two_space_indented_with_text_past_ascii_kept(self) -> None:
+        # The guidance and rotation records are committed files a diff reads, so their bytes are fixed.
+        path = self.root / "record.json"
+        audit.write_json(path, {"page": "café", "read": ["v0.1.0"]})
+        self.assertEqual('{\n  "page": "café",\n  "read": [\n    "v0.1.0"\n  ]\n}\n'.encode(), path.read_bytes())
+
     def test_a_failed_record_write_leaves_the_record_unchanged_and_no_copy_beside_it(self) -> None:
         linked = self.linked_worktree()
         record = linked / RECORD

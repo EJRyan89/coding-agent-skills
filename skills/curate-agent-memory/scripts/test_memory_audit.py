@@ -432,9 +432,23 @@ class MemoryAuditTests(unittest.TestCase):
         write(self.memory_dir / "MEMORY.md", "")
         write(self.memory_dir / "one.md", memory("one", "Body."))
         target = self.root / "report.json"
-        with mock.patch.object(memory_audit, "audit", return_value={"name": "café", "counts": [1]}):
-            code, _, _ = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
+        instructions = self.root / "CLAUDE.md"
+        write(instructions, "- A rule.\n")
+        with mock.patch.object(memory_audit, "audit", return_value={"name": "café", "counts": [1]}) as audited:
+            code, _, _ = run_main(
+                "audit",
+                "--memory-dir",
+                str(self.memory_dir),
+                "--repo",
+                str(self.root),
+                "--instructions",
+                str(instructions),
+                "--output",
+                str(target),
+            )
         self.assertEqual(0, code)
+        # The report is the audit of the memory directory, the repository, and the instruction files it was given.
+        self.assertEqual((self.memory_dir, self.root, [instructions]), audited.call_args.args)
         # Written in text mode, so each line ends as the platform ends one; read back the same way.
         self.assertEqual(
             '{\n  "name": "caf\\u00e9",\n  "counts": [\n    1\n  ]\n}\n', target.read_text(encoding="utf-8")
