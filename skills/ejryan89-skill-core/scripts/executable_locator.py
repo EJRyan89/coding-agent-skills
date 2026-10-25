@@ -28,14 +28,22 @@ LOOKUP_VARIABLES = ("PATH", "PATHEXT", "LOCALAPPDATA")
 Found = dict[tuple[str | None, ...], str]
 
 
+def environment_path(variable: str) -> Path | None:
+    """The absolute path the environment variable `variable` names, or None when it is unset, empty, or not an
+    absolute path, a drive-relative `C:bin` or a rooted `\\bin` on Windows included, so a caller that looks a program
+    or a settings file up from it never resolves one against the working directory."""
+    path = Path(os.environ.get(variable, ""))
+    return path if path.is_absolute() else None
+
+
 def link_folders() -> list[Path]:
     """The folders a package manager links the commands it installs into: WinGet's Links folder on Windows, and none
     elsewhere, where a distribution's package manager installs into a folder PATH already names. A local application
     data folder that is unset or relative gives none, so nothing is looked up relative to the working directory."""
     if sys.platform != "win32":
         return []
-    local = Path(os.environ.get("LOCALAPPDATA", ""))
-    return [local / "Microsoft" / "WinGet" / "Links"] if local.is_absolute() else []
+    local = environment_path("LOCALAPPDATA")
+    return [] if local is None else [local / "Microsoft" / "WinGet" / "Links"]
 
 
 def path_programs(name: str, search_path: str | None = None) -> list[str]:

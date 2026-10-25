@@ -214,6 +214,52 @@ class WorkingDirectoryTests(DeployerTestCase):
         run_tool.assert_not_called()
 
 
+class GitBashVariableTests(DeployerTestCase):
+    """Windows' Bash lookup, run on every platform: GIT_BASH and PROGRAMFILES name a Bash only by an absolute path,
+    so a Bash in the working directory is never the one that checks rendered scripts."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.planted = self.root / "working directory"
+        for bash in (self.planted / "bash.exe", self.planted / "Git" / "bin" / "bash.exe"):
+            bash.parent.mkdir(parents=True, exist_ok=True)
+            bash.write_bytes(b"")
+        self.started_in = Path.cwd()
+        os.chdir(self.planted)
+        for patcher in (
+            mock.patch.object(platform_support, "WINDOWS", True),
+            mock.patch("deployer.platform_support.find_executable", return_value=None),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def tearDown(self) -> None:
+        # Leave the folder before the harness removes it, which Windows refuses while it is a working directory.
+        os.chdir(self.started_in)
+        super().tearDown()
+
+    def find(self, **variables: str) -> str | None:
+        environment = {
+            key: value for key, value in os.environ.items() if key.upper() not in {"GIT_BASH", "PROGRAMFILES"}
+        }
+        with mock.patch.dict(os.environ, {**environment, **variables}, clear=True):
+            return platform_support.find_bash()
+
+    def test_a_relative_git_bash_or_program_files_folder_finds_no_bash_in_the_working_directory(self) -> None:
+        for variables in ({"GIT_BASH": "bash.exe"}, {"PROGRAMFILES": ""}, {"PROGRAMFILES": "."}, {}):
+            with self.subTest(variables=variables):
+                self.assertIsNone(self.find(**variables))
+
+    def test_an_absolute_git_bash_or_program_files_folder_names_the_bash(self) -> None:
+        self.assertEqual(str(self.planted / "bash.exe"), self.find(GIT_BASH=str(self.planted / "bash.exe")))
+        self.assertEqual(str(self.planted / "Git" / "bin" / "bash.exe"), self.find(PROGRAMFILES=str(self.planted)))
+        # A relative GIT_BASH is passed over for the next place, never refused there.
+        self.assertEqual(
+            str(self.planted / "Git" / "bin" / "bash.exe"),
+            self.find(GIT_BASH="bash.exe", PROGRAMFILES=str(self.planted)),
+        )
+
+
 class HiddenWindowTests(unittest.TestCase):
     def test_console_programs_start_without_a_window(self) -> None:
         # CREATE_NO_WINDOW on Windows; elsewhere a program opens no window by starting, so nothing is asked.
@@ -541,6 +587,13 @@ class InstallHintTests(unittest.TestCase):
         self.assertEqual(bash, platform_support.BASH_NAME)
         self.assertTrue(platform_support.install_hint(bash).startswith(hints))
         self.assertIn('"Installing the tools"', " ".join(platform_support.INSTALL_HELP))
+
+    def test_windows_help_names_git_bash_by_an_absolute_path(self) -> None:
+        # find_bash passes over a relative GIT_BASH, so the help asks for an absolute one.
+        self.assertIn(
+            "To use Git Bash from another location, set GIT_BASH to the absolute path of its bash.exe.",
+            " ".join(platform_support.WINDOWS_INSTALL_HELP),
+        )
 
 
 class HomeDirectoryTests(unittest.TestCase):

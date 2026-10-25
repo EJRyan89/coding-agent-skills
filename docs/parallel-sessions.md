@@ -120,6 +120,19 @@ other repository is named as not admitted and never armed, judged, updated, or r
 maintainer merges it. A script rather than a prompt repeats these steps, so neither session spends its context on
 them, and the orchestrator keeps its own for the decisions.
 
+Each tick also checks the pre-merge review, which is report-only. For each admitted pull request in step, not in
+conflict, and with a check neither red nor missing, the script reads the machine's code-review archive for a
+`review-repository` review of its head. A head is covered by a review of that head, or of an earlier head from which
+every commit since is a merge, such as a merge of `main`. The script prints the `review-prs` arguments that review
+every head no review covers, and the shepherd runs `review-prs` once with them. The review it records covers that
+head from the next tick on, so a tick starts a review only for a head none covers, and never holds, disarms, or delays
+a merge for one. A covered head's line names the record's verdict and report, which the shepherd gives the
+orchestrating session and the session that owns the branch. It posts nothing on the pull request: a public text
+passes a private-term scan the skill cannot run, so the orchestrating session relays the findings and posts any public
+summary itself after that scan.
+[Pull requests](implementing-changes.md#pull-requests) states what the author answers and how a kind of finding is
+promoted to blocking.
+
 Hold a pull request from merging when it comes to owe a gate that calls a model, such as an `evaluate-skill`
 citation, that it does not yet cite. Its owner or the orchestrator adds a line of its own to the pull request's body,
 `Shepherd-hold: <reason>`, with `gh pr edit <number> --body-file '<file>'`. The next tick turns off its auto-merge and

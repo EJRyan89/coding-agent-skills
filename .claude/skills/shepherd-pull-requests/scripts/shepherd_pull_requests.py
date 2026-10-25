@@ -32,6 +32,10 @@ Run it from the hub on main. One tick:
   BEHIND, or, while GitHub has not computed it (UNKNOWN), when origin's main is not an ancestor of its head; while a
   pull request that changes the validation policies or the runner's selection is open, every other pull request's
   update waits for it;
+- checks, for each admitted pull request in step, not in conflict, and with a check neither red nor missing, held
+  or not, whether the machine's code-review archive holds a review-repository review of its head, and prints the
+  review-prs arguments that review those it does not; the review is report-only, and premerge_review.py's docstring
+  lists its lines, which change no exit status;
 - names each worktree a merged pull request carried and no open pull request, a draft included, still carries, for
   repo-cleanup to retire: one whose checked-out branch is the pull request's head branch, or whose HEAD is the pull
   request's head commit or a commit that head reaches and origin's main does not, as when a session pushed its
@@ -80,6 +84,8 @@ Every line is one fact:
                                        failing check
     PR_FAILED #<number> <step> <reason>
                                        a step for one pull request that failed: arm, judge, update, or rerun
+    REVIEWED, REVIEW_DUE, REVIEW_ARGUMENTS, REVIEW_UNREAD
+                                       the pre-merge review of each head, after the PR lines (premerge_review.py)
     MERGED #<number> worktree "<path>" branch <branch> [branch <branch>]
                                        a worktree a merged pull request carried, for repo-cleanup to retire, with one
                                        branch <branch> for each local branch to delete: the worktree's checked-out
@@ -114,6 +120,7 @@ from git_client import GitClient, GitError
 from git_worktrees import Worktree, list_worktrees
 from github_client import GitHubClient, GitHubError
 from github_remote import github_repository
+from premerge_review import Head, Reader, ReviewUnread, archive_reader, review_lines
 
 REMOTE = "origin"
 BASE = "main"
@@ -784,8 +791,39 @@ def act(client: GitHubClient, repository: str, pull: Pull, outcome: Outcome, sta
     judge_red(client, repository, pull, outcome, dry_run)
 
 
-def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool, emit: Callable[[str], None]) -> int:
-    """Run one tick from `directory`, printing each line through `emit`, and return the exit status."""
+def premerge_reviews(
+    git: GitClient, place: Place, pulls: Sequence[Pull], heads: dict[str, str], reviews: Callable[[str], Reader]
+) -> list[str]:
+    """The pre-merge review's lines (premerge_review.py) for each admitted pull request in step with its branch, not
+    in conflict, and with a Validation check that is neither red nor missing; a red head waits for its fix."""
+    ready = [
+        Head(pull.number, pull.branch, pull.head)
+        for pull in pulls
+        if not pull.cross_repository
+        and out_of_step(pull, heads) is None
+        and pull.merge_state != CONFLICTED
+        and pull.check.state in UPDATABLE
+    ]
+    if not ready:
+        return []
+    try:
+        read = reviews(place.repository)
+    except ReviewUnread as exc:
+        return [f"REVIEW_UNREAD {flat_text(str(exc))}"]
+    return review_lines(git, place.top, heads.get(BASE), place.repository, ready, read)
+
+
+def tick(
+    git: GitClient,
+    client: GitHubClient,
+    directory: Path,
+    *,
+    dry_run: bool,
+    emit: Callable[[str], None],
+    reviews: Callable[[str], Reader] | None = None,
+) -> int:
+    """Run one tick from `directory`, printing each line through `emit`, and return the exit status. `reviews` opens
+    the reader of a repository's pre-merge reviews; without it the tick checks none."""
     try:
         place = locate(git, directory)
     except (GitError, ShepherdError) as exc:
@@ -808,6 +846,8 @@ def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool
         return 1
     pulls = [pull for pull in listed if not pull.draft]
     flagged = shepherd_pulls(git, client, place, pulls, heads, dry_run, emit) or flagged
+    for line in premerge_reviews(git, place, pulls, heads, reviews) if reviews is not None else []:
+        emit(line)
     try:
         for line in merged_lines(git, client, place, listed, heads.get(BASE)):
             emit(line)
@@ -861,7 +901,7 @@ def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = parse_arguments(argv)
-    return tick(GitClient(), GitHubClient(), Path.cwd(), dry_run=arguments.dry_run, emit=print)
+    return tick(GitClient(), GitHubClient(), Path.cwd(), dry_run=arguments.dry_run, emit=print, reviews=archive_reader)
 
 
 if __name__ == "__main__":
