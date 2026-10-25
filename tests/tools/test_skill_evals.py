@@ -4031,9 +4031,10 @@ def test_sample_read_takes_agrees_or_disagrees_and_nothing_else(tmp_path: Path) 
     assert skill_evals_results.samples_table(results.read_text(encoding="utf-8"))[2] == [
         "| alpha | one | opus | 1 | 2026-01-01 | disagrees |"
     ]
-    help_text = skill_evals.parser().format_help()
-    assert "record what the transcript the last --write run sampled shows, and run nothing" in " ".join(
-        help_text.split()
+    # The option's entry, the last of the help, whole: its choices and then its help text, read without the wrapping.
+    assert " ".join(skill_evals.parser().format_help().split()).endswith(
+        " --sample-read {agrees,disagrees} record what the transcript the last --write run sampled shows, and run "
+        "nothing"
     )
 
 
