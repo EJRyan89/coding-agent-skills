@@ -2282,6 +2282,13 @@ class RunPieceTests(unittest.TestCase):
                 "          timeout: 30", "          timeout: 30\n        - type: command\n          command: echo"
             ),
             "it has no hooks": re.sub(r"hooks:\n(?: .*\n)+", "", source),
+            # A digit str.isdigit() passes and int() refuses, and a number past the interpreter's digit limit.
+            "its hook's timeout \u00b2 is not a whole number of seconds": source.replace(
+                "timeout: 30", "timeout: \u00b2"
+            ),
+            f"its hook's timeout 3{'0' * 5000} is not a whole number of seconds": source.replace(
+                "timeout: 30", f"timeout: 3{'0' * 5000}"
+            ),
             "it has no frontmatter": "No frontmatter here.\n",
         }
         for number, (reason, text) in enumerate(cases.items()):
@@ -3164,10 +3171,13 @@ class EvaluateTests(unittest.TestCase):
         no_table.write_text("# Skill evaluations\n", encoding="utf-8")
         stray = self.root / "stray.md"
         stray.write_text(RESULTS_TEXT.replace("| zeta |", "a hand note\n| zeta |"), encoding="utf-8")
+        undecodable = self.root / "undecodable.md"
+        undecodable.write_bytes(RESULTS_TEXT.encode("utf-8") + b"\xff\n")
         cases: dict[str, tuple[list[str], dict[str, Any]]] = {
             "Claude Code (claude) is not installed": ([], {"which": lambda _: None}),
             "needs one": (["--write"], {"results": no_table}),
             "is not a row": (["--write"], {"results": stray}),
+            "codec can't decode byte 0xff": (["--write"], {"results": undecodable}),
             "follows another repository's pull request: its branch x follows refs/pull/7/head": (
                 [],
                 {"checkout": lambda: "its branch x follows refs/pull/7/head, a pull request's ref"},
@@ -3728,6 +3738,11 @@ def test_values_are_checked(spec: dict[str, Any], message: str) -> None:
             "entry must look like v1:F001",
             id="version 0",
         ),
+        pytest.param(
+            {"kind": "repeats", "path": "a.go", "lines": [1], "entry": "v1" + "0" * 5000 + ":F001"},
+            "entry must look like v1:F001",
+            id="a version past the digit limit",
+        ),
     ],
 )
 def test_re_review_values_are_checked(spec: dict[str, Any], message: str) -> None:
@@ -4005,6 +4020,18 @@ def test_sample_read_records_the_reading_in_the_results_file_and_runs_nothing(tm
     with contextlib.redirect_stdout(output):
         status = skill_evals.main(["alpha", "--sample-read", "agrees"], seams=seams)
     assert (status, output.getvalue()) == (1, 'FAILED "alpha\'s sampled transcript is already read: agrees"\n')
+
+
+def test_sample_read_of_a_results_file_that_is_not_utf8_fails_by_name_and_writes_nothing(tmp_path: Path) -> None:
+    results = tmp_path / "skill-evaluations.md"
+    held = samples_text("| alpha | one | opus | 1 | 2026-01-01 | unread |").encode("utf-8") + b"\xff\n"
+    results.write_bytes(held)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = skill_evals.main(["alpha", "--sample-read", "agrees"], seams=skill_evals.Seams(results=results))
+    assert status == 1
+    assert output.getvalue().startswith("FAILED \"'utf-8' codec can't decode byte 0xff in position "), output.getvalue()
+    assert results.read_bytes() == held
 
 
 @pytest.mark.parametrize("extra", [["--write"], ["--model", "opus"], ["--scenario", "one"], ["--runs", "2"]])
