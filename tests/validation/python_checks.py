@@ -806,6 +806,92 @@ def int_parse_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# ejryan89-skill-core's json_writer is the one writer of JSON for a file, refusing at the write a non-finite number,
+# a lone surrogate, and what json_reader would refuse on reading the text back, where the json module's own writer
+# writes NaN and a lone surrogate a later strict read refuses. A json.dump, or a json.dumps whose text a write call
+# takes, as its argument or through a name its function binds to it, states why in a module-level
+# JSON_WRITE_ALLOWED = {scope: reason}, as where a function writes a message to a pipe.
+JSON_DUMP = "json.dump"
+JSON_DUMPS = "json.dumps"
+JSON_WRITER = "skills/ejryan89-skill-core/scripts/json_writer.py"
+# The methods that write to a file or a stream, and the functions that replace or append to a file.
+WRITE_METHODS = frozenset({"write", "write_text", "write_bytes", "writelines"})
+FILE_WRITERS = frozenset(
+    {"replace_text", "replace_bytes", "atomic_write_text", "atomic_write_bytes", "write_atomic", "append_line"}
+)
+JSON_WRITE_ALLOWANCE = "JSON_WRITE_ALLOWED"
+
+
+def _writes(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """Whether a call writes what it is given to a file or a stream."""
+    if isinstance(call.func, ast.Attribute) and call.func.attr in WRITE_METHODS:
+        return True
+    return qualified_name(call.func, aliases).rpartition(".")[2] in FILE_WRITERS
+
+
+def _json_text(node: ast.AST, aliases: dict[str, str], bound: set[str]) -> bool:
+    """Whether an expression holds a json.dumps call, or a name its function binds to an expression that does."""
+    return any(
+        (isinstance(inner, ast.Call) and qualified_name(inner.func, aliases) == JSON_DUMPS)
+        or (isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load) and inner.id in bound)
+        for inner in ast.walk(node)
+    )
+
+
+def _json_bindings(nodes: list[tuple[ast.AST, str]], aliases: dict[str, str]) -> dict[str, set[str]]:
+    """Each scope's names bound to an expression holding a json.dumps call, to the fixed point, so a name bound to
+    one of them is one too."""
+    assignments = [
+        (scope, target.id, node.value)
+        for node, scope in nodes
+        if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    ]
+    bound: dict[str, set[str]] = {}
+    while True:
+        found = {
+            (scope, name)
+            for scope, name, value in assignments
+            if name not in bound.get(scope, set()) and _json_text(value, aliases, bound.get(scope, set()))
+        }
+        if not found:
+            return bound
+        for scope, name in found:
+            bound.setdefault(scope, set()).add(name)
+
+
+def json_write_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each json.dump, and each write call that takes json.dumps text, outside json_writer that no JSON_WRITE_ALLOWED
+    entry sanctions."""
+    problems: list[str] = []
+    paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != JSON_WRITER]
+    if not paths:
+        # No module read is no evidence that none writes JSON outside the writer.
+        return [f"could not measure: no module the claims read was given, so no {JSON_DUMPS} write was looked for"]
+    remedy = (
+        "; call ejryan89-skill-core's json_writer, the one writer of JSON, which refuses NaN and a lone surrogate at "
+        f"the write, or state why in {JSON_WRITE_ALLOWANCE}"
+    )
+    for _, name, tree in python_trees(paths, root, problems):
+        aliases = import_aliases(tree)
+        nodes = list(scoped_nodes(tree.body))
+        bound = _json_bindings(nodes, aliases)
+        found: list[tuple[int, str, str]] = []
+        for node, scope in nodes:
+            if not isinstance(node, ast.Call):
+                continue
+            if qualified_name(node.func, aliases) == JSON_DUMP:
+                found.append((node.lineno, scope, f"writes JSON with {JSON_DUMP}{remedy}"))
+            elif _writes(node, aliases) and any(
+                _json_text(argument, aliases, bound.get(scope, set()))
+                for argument in [*node.args, *(keyword.value for keyword in node.keywords)]
+            ):
+                found.append((node.lineno, scope, f"writes {JSON_DUMPS} text to a file or a stream{remedy}"))
+        problems += sanctioned_problems(name, tree, JSON_WRITE_ALLOWANCE, found)
+    return problems
+
+
 # ctypes passes an undeclared foreign function's arguments and its result as C ints, which cuts a pointer-sized handle
 # short, so every function a module calls through a library it loads has its argtypes and restype assigned in that
 # module. A function every call gives no arguments needs no argtypes. Any other exception states why in a module-level
@@ -1289,6 +1375,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_whole_number_is_the_one_reader_of_a_number_from_text(self) -> None:
         self.assertEqual([], int_parse_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_json_writer_is_the_one_writer_of_json(self) -> None:
+        self.assertEqual([], json_write_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_every_ctypes_foreign_function_called_is_declared(self) -> None:
         self.assertEqual([], ctypes_declaration_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

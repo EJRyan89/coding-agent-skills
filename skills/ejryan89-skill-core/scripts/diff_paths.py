@@ -32,6 +32,10 @@ class DiffPathError(ValueError):
     """A quoted path git does not write."""
 
 
+# What `unquote` and `header_path` raise on a path git does not write.
+CONTENT_ERRORS: tuple[type[Exception], ...] = (DiffPathError,)
+
+
 def unquote(value: str) -> str:
     """`value` with git's quoting undone, or as given when it is not quoted. The escaped bytes are decoded as UTF-8,
     with one U+FFFD for each byte that is not, as a diff read with `errors="replace"` holds an unquoted name.

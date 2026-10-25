@@ -116,14 +116,14 @@ session model and the judged one. A skill with no row has not been run since its
 | github-activity-report | haiku | claude-haiku-5-5 | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | sonnet | claude-sonnet-5-5 | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | github-activity-report | opus | claude-opus-5-5 | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
-| review-document | haiku | claude-haiku-5-5 | 30/32 | 1 | committed-edit 3/3, description 5/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-24 |
-| review-document | sonnet | claude-sonnet-5-5 | 32/32 | 1 | committed-edit 3/3, description 7/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-24 |
-| review-document | opus | claude-opus-5-5 | 32/32 | 1 | committed-edit 3/3, description 7/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.302 | 2026-10-24 |
+| review-document | haiku | claude-haiku-5-5 | 29/32 | 1 | committed-edit 3/3, description 5/7, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-25 |
+| review-document | sonnet | claude-sonnet-5-5 | 31/32 | 1 | committed-edit 3/3, description 6/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-25 |
+| review-document | opus | claude-opus-5-5 | 32/32 | 1 | committed-edit 3/3, description 7/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.302 | 2026-10-25 |
 | review-prs | haiku | claude-haiku-5-5 | 24/27 | 1 | clean-change 2/2, description 5/6, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-24 |
 | review-prs | sonnet | claude-sonnet-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-24 |
 | review-prs | opus | claude-opus-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-24 |
 | review-repository | haiku | claude-haiku-5-5 | 14/14 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-25 |
-| review-repository | sonnet | claude-sonnet-5-5 | 13/14 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, tested-change 2/2, text-read-policy 0/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-25 |
+| review-repository | sonnet | claude-sonnet-5-5 | 14/14 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-25 |
 | review-repository | opus | claude-opus-5-5 | 14/14 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-25 |
 <!-- skill-evals:end -->
 
@@ -155,5 +155,6 @@ fails while a committed row is still `unread`, so the reading travels with the r
 <!-- skill-evals-samples:begin -->
 | Skill | Scenario | Model | Run | Date | Transcript |
 | --- | --- | --- | --- | --- | --- |
-| review-repository | branch-name-command | opus | 1 | 2026-10-25 | agrees |
+| review-document | committed-edit | haiku | 1 | 2026-10-25 | agrees |
+| review-repository | build-grant | haiku | 1 | 2026-10-25 | agrees |
 <!-- skill-evals-samples:end -->

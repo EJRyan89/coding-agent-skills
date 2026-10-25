@@ -304,3 +304,12 @@ class DocumentTests(unittest.TestCase):
             ):
                 frontmatter.read(path)
             self.assertEqual(f"{path} cannot be read: Permission denied", str(raised.exception))
+
+
+class ContentErrorsTests(unittest.TestCase):
+    def test_the_family_is_the_frontmatter_error(self) -> None:
+        self.assertEqual((FrontmatterError,), frontmatter.CONTENT_ERRORS)
+
+    def test_a_double_quoted_escape_json_does_not_read_is_the_frontmatter_error(self) -> None:
+        with self.assertRaisesRegex(FrontmatterError, "a double-quoted value uses an escape this reader does not"):
+            parse('name: "a\\q"').value("name")
