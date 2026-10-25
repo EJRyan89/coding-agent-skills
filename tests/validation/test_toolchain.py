@@ -21,8 +21,10 @@ import toolchain
 from job_pool import Terminated
 from toolchain import (
     PREREQUISITES,
+    fence_install_problems,
     find_psscriptanalyzer,
     find_ruff,
+    floor_copy_problems,
     hash_install_problems,
     lock_problems,
     locked_requirements,
@@ -92,7 +94,7 @@ class ToolchainFixtures(unittest.TestCase):
         ):
             self.assertIsNone(find_ruff())
         self.assertEqual(
-            ["  - ruff: python -m pip install -r requirements-dev.txt"],
+            ["  - ruff: python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt"],
             missing_prerequisites((("ruff", "ruff", lambda: None),)),
         )
 
@@ -124,7 +126,7 @@ class ToolchainFixtures(unittest.TestCase):
                 "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
                 "docs/dependency-updates.md: winget install --id Microsoft.PowerShell --installer-type wix",
                 "  - ruff 0.17.0 is older than the floor 0.17.1 in docs/dependency-updates.md: "
-                "python -m pip install -r requirements-dev.txt",
+                "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
             ],
             outdated_prerequisites(
                 {"Git Bash": None, "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None, "ruff": (0, 17, 0)},
@@ -288,6 +290,43 @@ def test_a_workflow_installs_only_its_locks_with_hash_checking() -> None:
     assert hash_install_problems("      - run: python -m pip --version\n        cache: pip\n", ()) == []
 
 
+def test_a_documented_install_from_a_requirements_file_checks_hashes_as_ci_does() -> None:
+    locks = ("requirements-dev.txt",)
+    clean = "```powershell\npython -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt\n```\n"
+    assert fence_install_problems(clean, locks) == []
+    # An install that names no requirements file, such as pip-tools in a virtual environment of its own, and an
+    # install in prose, outside a fence, are not documented installs of a lock.
+    assert fence_install_problems("```bash\npython -m pip install pip-tools==7.6.2\n```\n", locks) == []
+    assert fence_install_problems("Run `python -m pip install -r requirements-dev.txt` once.\n", locks) == []
+    for drifted in (
+        "python -m pip install -r requirements-dev.txt",
+        "~/.venvs/coding-agent-skills/bin/python -m pip install -r requirements-dev.txt",
+        "python -m pip install --require-hashes -r requirements-dev.txt",
+        "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.in",
+        "python -m pip install --requirement requirements-dev.txt",
+        "> python -m pip install -r requirements-dev.txt",
+    ):
+        document = f"Install them:\n\n```bash\n{drifted}\n```\n"
+        assert fence_install_problems(document, locks) == [
+            "line 4 does not install only ['requirements-dev.txt'] with --require-hashes --only-binary :all:: "
+            + repr(drifted)
+        ], drifted
+
+
+def test_a_copy_of_a_floor_that_is_missing_or_names_another_version_fails() -> None:
+    pattern = r"Codex CLI (\S+) or newer"
+    assert floor_copy_problems("| Codex CLI 0.88.0 or newer (optional) |", pattern, "0.88.0") == []
+    assert floor_copy_problems("| Codex CLI 0.87.0 or newer (optional) |", pattern, "0.88.0") == [
+        "0.87.0 is named where the floor is 0.88.0"
+    ]
+    assert floor_copy_problems("Codex CLI 0.88.0 or newer, then Codex CLI 0.90.1 or newer", pattern, "0.88.0") == [
+        "0.90.1 is named where the floor is 0.88.0"
+    ]
+    assert floor_copy_problems("| Codex CLI (optional) |", pattern, "0.88.0") == [
+        f"no copy of the floor matches {pattern!r}"
+    ]
+
+
 def test_an_input_may_hold_its_includes_as_written_and_nothing_else_like_them() -> None:
     includes = ("-r requirements-dev.in", "-c requirements-dev.txt")
     text = "-r requirements-dev.in\n-c requirements-dev.txt\nruff==0.16.10\nmypy==2.4.0\n"
@@ -351,7 +390,7 @@ class PytestPrerequisiteFixtures(unittest.TestCase):
             self.assertIsNone(toolchain.find_pytest())
         python = "python" if platform_support.WINDOWS else "python3"
         self.assertEqual(
-            [f"  - pytest: {python} -m pip install -r requirements-dev.txt"],
+            [f"  - pytest: {python} -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt"],
             toolchain.missing_prerequisites((("pytest", "pytest", lambda: None),)),
         )
 
