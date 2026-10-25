@@ -18,17 +18,25 @@ numbers; `!`, `and`, `or` (the keywords in any case), and parentheses, with `or`
 bare operand; a lone operand read as a boolean (`true`, `on`, `yes`, `false`, `off`, `no`, each optionally after `!`);
 and the functions `Exists('path')` and `HasTrailingSlash('text')`. One operand decides an `or` that holds or an `and`
 that fails whatever the others are. Any other function, a malformed condition, or a lone operand that is not a
-boolean is unsettled.
+boolean is unsettled. So is a condition whose negations and parentheses, or a property function whose arguments,
+nest deeper than ejryan89-skill-core's `nesting_depth.DEPTH_LIMIT`, which the reader stops at rather than recursing
+without bound.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import product
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
+
+import nesting_depth
 
 # The values a property may hold at one point, in the order met: `""` for unset, None for one the reader cannot settle.
 Value = tuple[str | None, ...]
@@ -118,8 +126,12 @@ def file_above(function: str, arguments: list[str], files: FileSystem) -> str | 
     return f"{folder.rstrip('/')}/{name}" if function.casefold() == "getpathoffileabove" else folder
 
 
-def property_expression(inner: str, lookup: Callable[[str], str | None], files: FileSystem) -> str | None:
-    """The value of one `$(...)`, `inner` being its contents, with each property it names holding one value."""
+def property_expression(
+    inner: str, lookup: Callable[[str], str | None], files: FileSystem, depth: int = 0
+) -> str | None:
+    """The value of one `$(...)`, `inner` being its contents, with each property it names holding one value. `depth`
+    is how many property functions enclose it; one whose arguments would nest past nesting_depth's limit is not
+    settled."""
     plain = PLAIN_PROPERTY.fullmatch(inner)
     if plain is not None:
         return lookup(plain.group(1))
@@ -132,24 +144,27 @@ def property_expression(inner: str, lookup: Callable[[str], str | None], files: 
         return str(operation[method.group(2).casefold()](method.group(3)))
     function = FILE_ABOVE.fullmatch(inner)
     if function is not None:
+        if depth >= nesting_depth.DEPTH_LIMIT:
+            return None
         arguments = arguments_of(function.group("arguments"))
-        expanded = [expand_one(argument, lookup, files) for argument in arguments or []]
+        expanded = [expand_one(argument, lookup, files, depth + 1) for argument in arguments or []]
         if arguments is None or None in expanded:
             return None
         return file_above(function.group(1), [value or "" for value in expanded], files)
     return None
 
 
-def expand_one(text: str, lookup: Callable[[str], str | None], files: FileSystem) -> str | None:
+def expand_one(text: str, lookup: Callable[[str], str | None], files: FileSystem, depth: int = 0) -> str | None:
     """`text` with each `$(...)` replaced by its value, each property holding one value; None when a part cannot be
-    settled, such as an item list or metadata reference, which the reader does not expand."""
+    settled, such as an item list or metadata reference, which the reader does not expand. `depth` is how many
+    property functions enclose `text`."""
     parts: list[str] = []
     position = 0
     while (start := text.find("$(", position)) >= 0:
         end = closing(text, start + 1)
         if end is None:
             return None
-        value = property_expression(text[start + 2 : end], lookup, files)
+        value = property_expression(text[start + 2 : end], lookup, files, depth)
         if value is None:
             return None
         parts += [text[position:start], value]
@@ -200,6 +215,8 @@ class Parser:
     def __init__(self, tokens: list[tuple[str, str]]) -> None:
         self.tokens = tokens
         self.position = 0
+        # How many negations and parentheses enclose the position.
+        self.depth = 0
 
     def peek(self, kind: str, text: str | None = None) -> bool:
         if self.position >= len(self.tokens):
@@ -233,9 +250,9 @@ class Parser:
 
     def factor(self) -> Node:
         if self.take("symbol", "!") is not None:
-            return ("not", self.factor())
+            return ("not", self.nested(self.factor))
         if self.take("symbol", "(") is not None:
-            inner = self.disjunction()
+            inner = self.nested(self.disjunction)
             self.expect("symbol", ")")
             return inner
         function = self.take("function")
@@ -246,6 +263,16 @@ class Parser:
             if self.take("symbol", operator) is not None:
                 return ("compare", operator, left, self.expect("string"))
         return ("boolean", left)
+
+    def nested(self, parse: Callable[[], Node]) -> Node:
+        """What `parse` reads one level deeper, a negation's operand or a parenthesis's contents, or Malformed past
+        nesting_depth's limit."""
+        outer = self.depth
+        self.depth = nesting_depth.deeper(outer, Malformed())
+        try:
+            return parse()
+        finally:
+            self.depth = outer
 
     def call_arguments(self) -> list[str]:
         self.expect("symbol", "(")

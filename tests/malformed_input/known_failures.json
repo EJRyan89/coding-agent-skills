@@ -10,11 +10,6 @@
     "issue": 1880
   },
   {
-    "reader": "csharp_layout.section_glob",
-    "case": "deep_nesting",
-    "issue": 1886
-  },
-  {
     "reader": "deployer.discovery.parse_codex",
     "case": "wrong_type:result.data.0",
     "issue": 1892
@@ -35,16 +30,6 @@
     "issue": 1880
   },
   {
-    "reader": "msbuild_conditions.condition_value",
-    "case": "deep_nesting",
-    "issue": 1886
-  },
-  {
-    "reader": "msbuild_conditions.expanded",
-    "case": "deep_nesting",
-    "issue": 1880
-  },
-  {
     "reader": "msbuild_reader.read_assets",
     "case": "wrong_type:project",
     "issue": 1880
@@ -62,11 +47,6 @@
   {
     "reader": "msbuild_reader.read_assets",
     "case": "wrong_type:targets.net8.0",
-    "issue": 1880
-  },
-  {
-    "reader": "untested_functions.python_definitions",
-    "case": "deep_nesting",
     "issue": 1880
   }
 ]

@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import json_reader
+import nesting_depth
 import whole_number
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
@@ -663,10 +664,17 @@ def _range_bound(text: str) -> int:
     return -value if text.startswith("-") else value
 
 
-def _translate(pattern: str, ranges: list[tuple[int, int]]) -> tuple[str, bool]:
+def _brace_level(depth: int) -> int:
+    """The level a brace inside `depth` braces opens, or Failed past nesting_depth's limit."""
+    refused = Failed(f"an .editorconfig section's braces nest more than {nesting_depth.DEPTH_LIMIT} deep")
+    return nesting_depth.deeper(depth, refused)
+
+
+def _translate(pattern: str, ranges: list[tuple[int, int]], depth: int = 0) -> tuple[str, bool]:
     """A regular expression for an EditorConfig glob, and whether it has a path separator outside brackets.
 
     Each {num1..num2} becomes a capturing group, the only one, whose bounds are appended to ranges in group order.
+    `depth` is how many braces enclose `pattern`; one more than nesting_depth's limit is Failed.
     """
     out: list[str] = []
     separator = False
@@ -700,11 +708,12 @@ def _translate(pattern: str, ranges: list[tuple[int, int]]) -> tuple[str, bool]:
                 ranges.append((low, high))
                 out.append(r"([+-]?[0-9]+)")
             elif len(options := _alternatives(body)) == 1:  # braces without a comma are literal
-                inner, inner_separator = _translate(body, ranges)
+                inner, inner_separator = _translate(body, ranges, _brace_level(depth))
                 out.append(r"\{" + inner + r"\}")
                 separator |= inner_separator
             else:
-                translated = [_translate(option, ranges) for option in options]
+                level = _brace_level(depth)
+                translated = [_translate(option, ranges, level) for option in options]
                 out.append("(?:" + "|".join(regex for regex, _ in translated) + ")")
                 separator |= any(has for _, has in translated)
             index = end + 1

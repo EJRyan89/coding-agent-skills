@@ -54,8 +54,29 @@ class ConditionTests(unittest.TestCase):
         self.assertIsNone(holds("'$(Tfm)'=='net8.0'", tfm=either))
         self.assertIsNone(holds("'$(Tfm)'=='net8.0'", tfm=("net8.0", None)))
 
+    def test_negations_and_parentheses_nested_past_the_shared_depth_limit_are_not_settled(self) -> None:
+        # The limit is pinned as a literal: 100 levels settle, and 101 are malformed, never a RecursionError.
+        self.assertIs(True, holds("!" * 100 + "'a'=='a'"))
+        self.assertIs(True, holds("(" * 100 + "'a'=='a'" + ")" * 100))
+        self.assertIs(True, holds("!(" * 50 + "'a'=='a'" + ")" * 50 + "or 'a'=='b'"))
+        for text in ("!" * 101 + "'a'=='a'", "(" * 101 + "'a'=='a'" + ")" * 101, "!(" * 2000 + "'a'" + ")" * 2000):
+            with self.subTest(text=text[:4], length=len(text)):
+                self.assertIsNone(holds(text))
+
 
 class ExpansionTests(unittest.TestCase):
+    def test_property_functions_nested_past_the_shared_depth_limit_are_not_settled(self) -> None:
+        # The limit is pinned as a literal: 100 nested property functions settle, and 101 do not, never a
+        # RecursionError.
+        def nested(levels: int) -> str:
+            opening = "$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', "
+            return opening * levels + "'/repo/src'" + "))" * levels
+
+        self.assertEqual(("/repo/Directory.Build.props",), expand(nested(100)))
+        for levels in (101, 2000):
+            with self.subTest(levels=levels):
+                self.assertEqual(UNKNOWN, expand(nested(levels)))
+
     def test_a_reference_is_replaced_by_each_value_the_property_may_hold(self) -> None:
         self.assertEqual(("net472",), expand("$(Tfm)", tfm="net472"))
         self.assertEqual(("lib;net8.0",), expand("$(LIB);net8.0", lib="lib"))

@@ -237,6 +237,27 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
         self.assertTrue(written.startswith("UNPARSED app/broken.py: SyntaxError: "), written)
 
+    def test_python_nested_past_the_parsers_stack_is_unparsed_or_unreadable_rather_than_a_failure(self) -> None:
+        # ast raises MemoryError for a unary chain this long, which the condition reads as source it cannot parse.
+        nested = "x = " + "-" * 100_000 + "1\n"
+        code, out, written = self.run_condition({"app/deep.py": "x = 1\n"}, {"app/deep.py": nested})
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertEqual(
+            "UNPARSED app/deep.py: SyntaxError: the source nests deeper than the parser reads (MemoryError)\n", written
+        )
+        service = {"app/service.py": SERVICE}
+        changed = {"app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0")}
+        deep_test = {"tests/test_service.py": "import service\n\n" + nested}
+        code, out, written = self.run_condition({**service, **deep_test}, {**changed, **deep_test})
+        self.assertEqual(0, code)
+        self.assertTrue(
+            out.startswith(
+                'UNREADABLE "tests/test_service.py": SyntaxError: the source nests deeper than the parser reads'
+            ),
+            out,
+        )
+        self.assertTrue(written.startswith("UNTESTED app/service.py:4 function total, "), written)
+
     def test_a_test_ast_or_tokenize_cannot_read_names_nothing_and_is_reported_by_name(self) -> None:
         tool, report = "def main():\n    return 0\n", "#!/usr/bin/env bash\ndays_old() {\n  echo 1\n}\n"
         before = {"tools/tool.py": tool, "tools/report.sh": report}
