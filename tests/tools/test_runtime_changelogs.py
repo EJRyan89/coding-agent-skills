@@ -656,3 +656,13 @@ class MainTests(unittest.TestCase):
         with self.assertRaises(watch.WatchError) as caught:
             watch.read_record(top)
         self.assertIn("cannot read the guidance record", str(caught.exception))
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1"])
+def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        watch.main(["--timeout", value])
+    assert exited.value.code == 2
+    refusal = capsys.readouterr().err.splitlines()[-1]
+    assert "argument --timeout: " in refusal
+    assert refusal.endswith(f" seconds, not {value}")

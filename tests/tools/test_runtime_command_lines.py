@@ -15,6 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
@@ -526,3 +528,13 @@ class SummaryTests(unittest.TestCase):
             with mock.patch.object(lines, "run", return_value=['FAILED codex skill-listing "x"']):
                 self.assertEqual(1, lines.main(["--runtime", "codex"]))
             self.assertTrue(summary.read_text(encoding="utf-8").startswith("before\n## Runtime command lines"))
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1"])
+def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        lines.main(["--timeout", value])
+    assert exited.value.code == 2
+    refusal = capsys.readouterr().err.splitlines()[-1]
+    assert "argument --timeout: " in refusal
+    assert refusal.endswith(f" seconds, not {value}")

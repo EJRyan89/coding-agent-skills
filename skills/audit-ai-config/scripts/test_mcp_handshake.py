@@ -803,3 +803,13 @@ def test_each_file_shape_reads_the_same_to_the_audit_and_the_handshake(tmp_path:
     assert audited == config
     failed = any(severity == "CONFIG_ERROR" for severity, _ in audited)
     assert (1 if failed else 0) == code, lines
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1"])
+def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        mcp_handshake.main(["--timeout", value])
+    assert exited.value.code == 2
+    refusal = capsys.readouterr().err.splitlines()[-1]
+    assert "argument --timeout: " in refusal
+    assert refusal.endswith(f" seconds, not {value}")

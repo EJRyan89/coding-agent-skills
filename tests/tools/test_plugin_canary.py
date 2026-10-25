@@ -684,3 +684,13 @@ def test_the_docstring_lists_every_kind_of_line_the_canary_prints(
     printed |= kinds(capsys.readouterr().out)
     assert {"HOME", "BUILT", "VALIDATED", "INSTALLED", "DISCOVERED", "VERSION", "NOTHING_CHECKED", "FAILED"} <= printed
     assert printed - documented_kinds() == set()
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1"])
+def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        canary.main(["--timeout", value])
+    assert exited.value.code == 2
+    refusal = capsys.readouterr().err.splitlines()[-1]
+    assert "argument --timeout: " in refusal
+    assert refusal.endswith(f" seconds, not {value}")

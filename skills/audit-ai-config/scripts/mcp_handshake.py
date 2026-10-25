@@ -76,6 +76,7 @@ from bounded_process import Streaming, streaming
 from console import run_main
 from executable_locator import find_executable
 from flat_text import flat_text
+from seconds_option import positive_seconds
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
 # and the user approves each run.
@@ -373,7 +374,10 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--server", help="handshake only the server with this name")
     parser.add_argument(
-        "--timeout", type=float, default=30.0, help="seconds per server, from its start to its stop (default 30)"
+        "--timeout",
+        type=positive_seconds,
+        default=30.0,
+        help="seconds per server, from its start to its stop (default 30)",
     )
     args = parser.parse_args(arguments)
     if not (args.root / ".git").exists():
