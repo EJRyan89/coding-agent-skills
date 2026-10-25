@@ -76,16 +76,34 @@ def _git_runner(command: Sequence[str], timeout: float) -> GitResult:
     return GitResult(result.returncode, result.output, result.output)
 
 
+def _client() -> GitClient:
+    return GitClient(_git_runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
+
+
 def resolve(source_dir: Path, ref: str) -> Pin:
-    """The commit ref names in the checkout, which must already hold it: the deployer never fetches."""
+    """The commit ref names in the checkout, which must already hold it: the deployer never fetches.
+
+    Only git's answer that the ref names no commit is refused as such, with the advice to fetch; any other failure, such
+    as a broken ref git warns about or a configuration it cannot parse, is refused with git's reason.
+    """
     check_ref(ref)
     shown = platform_support.normalize(source_dir)
     if not (source_dir / ".git").exists():
         raise DeployError(f"ERROR: --at needs a Git checkout, and {shown} is not one.")
-    # --end-of-options keeps a ref from being read as an option even if the pattern above ever let one through.
-    result = _git(source_dir, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}")
-    commit = result.output.strip()
-    if result.returncode != 0 or not COMMIT_PATTERN.fullmatch(commit):
+    # commit_of ends the options before the ref, so a ref is never read as an option even if the pattern above ever
+    # let one through, and answers None only when git says the ref names no commit.
+    try:
+        commit = _client().commit_of(ref, directory=source_dir)
+    except GitError as error:
+        reason = flat_text(str(error))
+        if error.kind == "not_repository":
+            raise DeployError(f"ERROR: --at needs a Git checkout, and {shown} is not one: {reason}") from error
+        raise DeployError(
+            f"ERROR: Git could not read --at {ref} in {shown}: {reason}",
+            "Put right what Git reports in the checkout, then retry.",
+            see_recovery(EARLIER_COMMIT),
+        ) from error
+    if commit is None:
         raise DeployError(
             f"ERROR: --at {ref} names no commit in {shown}.",
             "The deployer does not fetch: run 'git fetch --tags origin' in the checkout, or name a commit it holds, "
@@ -105,9 +123,8 @@ def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> boo
     """
     if ref is None or commit is None or not ref.startswith(TAGS) or not (source_dir / ".git").exists():
         return False
-    client = GitClient(_git_runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
     try:
-        release = last_release(client, source_dir, commit)
+        release = last_release(_client(), source_dir, commit)
     except GitError as error:
         raise TagsUnreadable(flat_text(str(error))) from error
     return release is not None and ref == f"{TAGS}{release}"

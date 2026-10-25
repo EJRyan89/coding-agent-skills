@@ -60,7 +60,7 @@ class RefValidationTests(unittest.TestCase):
                 self.assertEqual(source_ref.Pin("v1.0.0", commit), source_ref.resolve(checkout, "v1.0.0"))
         run_tool.assert_called_once_with(
             ["git", "-C", str(checkout), "rev-parse", "--verify", "--quiet", "--end-of-options", "v1.0.0^{commit}"],
-            timeout=None,
+            timeout=platform_support.TOOL_DEADLINE_SECONDS,
         )
 
     def test_only_a_full_commit_name_is_accepted_from_git(self) -> None:
@@ -74,9 +74,46 @@ class RefValidationTests(unittest.TestCase):
                     mock.patch.object(
                         platform_support, "run_tool", return_value=platform_support.ToolResult(0, output)
                     ),
-                    self.assertRaisesRegex(DeployError, "names no commit"),
+                    self.assertRaisesRegex(DeployError, r"Git could not read --at main .*not one object name"),
                 ):
                     source_ref.resolve(checkout, "main")
+
+    def test_only_gits_quiet_answer_is_a_ref_that_names_no_commit(self) -> None:
+        # Exit 1 with nothing printed is git's answer under --quiet; a warning beside exit 1, or any other exit, is a
+        # failure of git's own, refused with its reason and never with the advice to fetch.
+        failures = {
+            (1, ""): ("ERROR: --at main names no commit in",),
+            (1, "warning: ignoring broken ref refs/heads/main\n"): (
+                "ERROR: Git could not read --at main in",
+                ": warning: ignoring broken ref refs/heads/main",
+            ),
+            (128, "fatal: bad config line 1 in file .git/config\n"): (
+                "ERROR: Git could not read --at main in",
+                ": fatal: bad config line 1 in file .git/config",
+            ),
+            (128, "fatal: not a git repository: .git\n"): (
+                "ERROR: --at needs a Git checkout, and",
+                "is not one: fatal: not a git repository: .git",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            (checkout / ".git").mkdir()
+            for (code, output), expected in failures.items():
+                with (
+                    self.subTest(code=code, output=output),
+                    mock.patch.object(platform_support, "find_executable", return_value="git"),
+                    mock.patch.object(
+                        platform_support, "run_tool", return_value=platform_support.ToolResult(code, output)
+                    ),
+                    self.assertRaises(DeployError) as raised,
+                ):
+                    source_ref.resolve(checkout, "main")
+                first = raised.exception.lines[0]
+                for part in expected:
+                    self.assertIn(part, first)
+                fetch = any("does not fetch" in line for line in raised.exception.lines)
+                self.assertEqual(code == 1 and not output, fetch, raised.exception.lines)
 
 
 class DeployAtTests(DeployerTestCase):
@@ -567,6 +604,42 @@ class DeployAtTests(DeployerTestCase):
         self.assertIn("The deployer does not fetch: run 'git fetch --tags origin' in the checkout", output)
         self.assertIn('See "Deploying an earlier commit" in docs/recovery.md.', output)
         self.assert_exports_removed(0)
+
+    def test_a_ref_git_cannot_read_is_refused_with_gits_reason_not_the_fetch_remedy(self) -> None:
+        # A tag file holding no object name, and a configuration git cannot parse: the ref may be there, so the refusal
+        # names git's fault, before anything is exported or the home changes.
+        tag = self.source / ".git" / "refs" / "tags" / "broken"
+        tag.write_text("not an object name\n", encoding="utf-8")
+        output = self.deploy_fails("--all", "--at", "broken", pattern=r"ERROR: Git could not read --at broken").output
+        self.assertIn("broken", output.split("ERROR: Git could not read --at broken in ", 1)[1].splitlines()[0])
+        self.assertNotIn("does not fetch", output)
+        tag.unlink()
+        config = self.source / ".git" / "config"
+        config.write_bytes(config.read_bytes() + b"[unclosed\n")
+        output = self.deploy_fails("--all", "--at", "v1.0.0", pattern=r"ERROR: Git could not read --at v1\.0\.0").output
+        self.assertIn("bad config line", output)
+        self.assertNotIn("does not fetch", output)
+        self.assert_exports_removed(0)
+
+    def test_check_refuses_a_deployed_commit_git_cannot_read_with_gits_reason(self) -> None:
+        self.deploy_ok("--all", "--at", "v1.0.0")
+        config = self.source / ".git" / "config"
+        config.write_bytes(config.read_bytes() + b"[unclosed\n")
+        result = self.check()
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(f"ERROR: Cannot describe the deployed commit {self.release} in ", result.output)
+        self.assertIn("bad config line", result.output)
+
+    def test_check_names_a_deployed_commit_the_checkout_does_not_hold_by_its_full_name(self) -> None:
+        # Git's quiet answer that the checkout holds no such commit, as after a reset and a prune, is no failure.
+        self.deploy_ok("--all", "--at", "v1.0.0")
+        absent = "0123456789abcdef0123456789abcdef01234567"
+        data = self.manifest()
+        data["sources"][SOURCE_ID]["source_commit"] = absent
+        self.write_manifest(data)
+        result = self.check()
+        self.assertEqual(0, result.code, result.output)
+        self.assertIn(f"\nDeployed commit: {absent}, pinned with --at v1.0.0\n", result.output)
 
     def test_a_ref_whose_source_json_names_another_source_is_refused(self) -> None:
         git(self.source, "switch", "-q", "-c", "other")
