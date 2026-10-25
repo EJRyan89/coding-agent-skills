@@ -1,224 +1,244 @@
 # Lessons
 
-This ledger records what the repository learned from each defect or drift found after its change merged: the
-lesson, the issues it was found in, and the guard that now refuses the mistake, or the reason no guard is possible.
-A contributor or agent reads it to learn which mistakes are already refused, and which are held only by care.
+This catalogue records the design patterns the repository learned from the defects and drift found after a change
+merged. Each pattern states a rule, the mechanism that applies it, the guard that refuses a violation, and the forms a
+violation takes, so a contributor or agent learns which rule to follow, which helper to call, and what to search for,
+not which issues happened.
 
-## Adding a lesson
+## Using the catalogue
 
-A defect or drift found after merge ends in an entry here, in the pull request that fixes it or adds its guard, as
-[Validation](implementing-changes.md#validation) in the implementation profile and the release procedure in
-[releasing.md](releasing.md) say. A finding of a lesson already here adds its issue to that entry's **Found in**, and
-its guard when the fix adds one.
+A defect or drift found after merge is an instance of a pattern. The pull request that fixes it cites the pattern it
+violated and runs that pattern's **Search for** across the repository, fixing or filing each hit, or, when no pattern
+covers it, adds one here, as [Validation](implementing-changes.md#validation) in the implementation profile and the
+release procedure in [releasing.md](releasing.md) say. A fix that adds a mechanism or a guard adds it to its pattern.
 
-Each lesson is a `###` heading under [Lessons](#lessons-1) that states the lesson, followed by these fields, each a
-list item of its own:
+Each pattern is a `###` heading under [Patterns](#patterns) that names it, followed by these fields, each a list item
+of its own:
 
-- **Found in:** the issues the defect or drift was found in, each as `#<number>`.
-- **Lesson:** what went wrong and what holds now.
-- **Guard:** each guard that refuses the mistake, in a code span by its path from the repository root: a test, which
-  a validation policy is too, by its test ID, `<path>::<test>`, `<path>::<class>`, or `<path>::<class>::<test>`; a
-  step of a skill, `<path>/SKILL.md#<fragment>`, by the fragment GitHub gives its heading; or a workflow,
+- **Rule:** the pattern, in one sentence.
+- **Why:** the behavior it protects, in a line.
+- **Use:** the mechanism that applies the rule, each in a code span as a module and a name it binds,
+  `<module>:<name>`, or a name one of its classes binds, `<module>:<class>.<name>`, the form `pkgutil.resolve_name`
+  reads. The module is importable from the repository root, such as `deployer.config`, or from
+  `skills/ejryan89-skill-core/scripts`, such as `json_reader`, the two directories every part of the repository puts
+  on `sys.path`, so a mechanism is one the whole repository can call.
+- **Guard:** each guard that refuses a violation, in a code span by its path from the repository root: a test, which a
+  validation policy is too, by its test ID, `<path>::<test>`, `<path>::<class>`, or `<path>::<class>::<test>`; a step
+  of a skill, `<path>/SKILL.md#<fragment>`, by the fragment GitHub gives its heading; or a workflow,
   `.github/workflows/<file>`.
-- **No guard:** in place of **Guard**, the reason no guard can refuse the mistake, and what holds it instead.
+- **No guard:** in place of **Guard**, the reason no guard refuses a violation yet, and what holds the rule instead.
+- **Search for:** the forms a violation takes, each in a code span a reader can search for, with the context that
+  tells a violation from an innocent use.
+- **Examples:** optional, issues or pull requests that show the pattern. They illustrate it; nothing counts them.
 
-`lessons_ledger_problems` in `tests/validation/markdown_links.py` fails a lesson that names no issue, one that names
-neither a guard nor a reason or names both, and each guard that does not resolve, so a guard renamed or removed fails
-validation until its lesson follows it.
+`lessons_ledger_problems` in `tests/validation/markdown_links.py` fails a pattern that states no **Rule** or **Why**,
+names no **Search for** form, names neither a mechanism, a guard, nor a reason, or names both a guard and a reason, and
+each mechanism or guard that does not resolve, so one renamed or removed fails validation until its pattern follows it.
 
-## Lessons
+## Patterns
 
-### A rule swept in by area holds only in the areas the sweep reached
+### A failure is never read as absence
 
-- **Found in:** #1366, #1598
-- **Lesson:** The rule that no process starts with git's repository-selecting variables landed in several pull
-  requests, each sweeping one area, and the hub guard's PowerShell reader was never swept. A rule stated for every
-  process holds only where a policy refuses the next process that breaks it.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`
-
-### A consolidation into the one implementation leaves a twin that fails open
-
-- **Found in:** #1320, #1599
-- **Lesson:** `link_probe` became the one link test, and the deployer kept its own pair, which read an unreadable path
-  as no link. A module named the one home of a test needs a policy that refuses the test anywhere else.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_link_probe_is_the_one_link_test`
-
-### Every reader of JSON ended the parser's limits its own way
-
-- **Found in:** #1611, #1613, #1617, #1729
-- **Lesson:** A document past Python's integer-digit or nesting limit escaped reader after reader as an unhandled
-  `ValueError` or `RecursionError`, each found and fixed on its own. JSON is now parsed in one place, which ends both
-  limits in the reader's documented failure, and a direct parse elsewhere is refused.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
-
-### A foreign function called without declared types
-
-- **Found in:** #1363, #1600
-- **Lesson:** Some `kernel32` calls set no `argtypes` or `restype`, unlike the module that set the pattern, so a handle
-  could be truncated to a C `int`. Every foreign function a module calls declares both in that module.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_ctypes_foreign_function_called_is_declared`
-
-### A runner's result discarded reads a failure as success
-
-- **Found in:** #1365, #1601
-- **Lesson:** The mutation gate ignored a failed coverage step, so every mutant read as not reached. A process
-  runner that returns its result whatever the exit status has that result checked.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
-  `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`
-
-### Evidence that was never produced reads as a pass
-
-- **Found in:** #1443, #1462, #1603
-- **Lesson:** A reviewer whose guard never claimed it was counted, and an audit with no generator manifest skipped its
-  layering checks and reported the repository compliant. A guard, gate, verdict, count, or measurement has a test in
-  which its evidence never existed, and reports that case apart from a pass.
-- **Guard:** `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::test_finalize_refuses_a_result_the_guard_never_claimed_with_nothing_recorded`,
+- **Rule:** A reader that cannot tell whether something is there reports that it could not tell, never that it is
+  absent or that nothing was wrong.
+- **Why:** An unreadable path, a failed command, or evidence never produced otherwise reads as a clean pass.
+- **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart, and
+  `link_probe:is_link_or_junction`, which lets the error of an unreadable path through. The found, absent, and
+  could-not-tell lookups of git and the GitHub CLI come with #1881.
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_link_probe_is_the_one_link_test`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
+  `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::test_finalize_refuses_a_result_the_guard_never_claimed_with_nothing_recorded`,
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run`,
   `tests/tools/test_hub_guard.py::test_an_event_that_names_no_command_or_file_is_allowed_with_a_note_never_unseen`
+- **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
+  `github_client.py`; `except OSError:` followed by `return False`, `return None`, or `return []`; `.is_file()` or
+  `.exists()` before a read whose `False` is reported as no configuration; `if not result.stdout` read as nothing
+  found; a count, verdict, or summary computed over a list that may be empty because its step never ran.
+- **Examples:** #1320, #1365, #1443, #1462, #1599, #1601, #1603, #1887, #1888
 
-### A fix reaches the reported instance and leaves its siblings
+### A number read from text is bounded
 
-- **Found in:** #1369, #1521
-- **Lesson:** A rollback added to one scaffold left its twin without one, and a reader made strict for most fields of
-  a record left two open. A defect's fix starts by searching for the same construct elsewhere and fixes each sibling
-  or files it.
+- **Rule:** A whole number read from text, an argument, a file, or another program's output is read with its bounds
+  and its digit count limited, and a value outside them is the reader's documented refusal.
+- **Why:** An unbounded `int()` turns a hostile or garbled value into a `ValueError` past the digit limit, a huge
+  allocation, or a negative count the code never expected.
+- **Use:** `json_reader:loads` for a JSON number, and `typed_fields:FieldReader.integer` for its bounds; the bounded
+  reader of a number in other text comes with #1879.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_digit_limit_is_a_value_error`,
+  `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
+- **Search for:** `int(` on a `.group(` of a regular expression; `.isdigit()` before an `int(`, which admits digits
+  `int` reads past any bound; `int(` on a `.split(` of another program's output; `float(` on text from a file or an
+  argument with no `math.isfinite`.
+- **Examples:** #1611, #1729, #1886
+
+### One fact has one owner
+
+- **Rule:** A fact the repository states, a vocabulary, a set the code owns, a status line, a prompt list, or a
+  document's wording a test holds, lives in one place, and every other place reads it from there or is compared with
+  it.
+- **Why:** A copy begins identical and then drifts, so a document, a test, or a second module keeps the old fact while
+  the owner moves on.
+- **Use:** `tests.validation.duplication:_shared_facts`, the registry of facts each read from its owner, and
+  #1882 registers more. A module more than one part of the repository needs moves to skill-core.
+- **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_owners_hold_every_shared_fact`,
+  `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
+  `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
+  `tests/validation/markdown_links.py::MarkdownLinksPolicies::test_every_test_a_document_cites_exists`,
+  `tests/validation/workflows.py::WorkflowsPolicies::test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs`,
+  `tests/tools/test_hub_guard.py::test_the_refused_subcommands_are_the_writing_subcommands`,
+  `tests/tools/test_hub_guard.py::test_each_prefix_program_the_contract_names_is_read_as_the_command_it_starts`,
+  `tests/code-review/test_format_contract.py::test_the_threat_model_rows_name_each_file_the_analyzer_inventory_parses`,
+  `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`
+- **Search for:** a module-level `frozenset({` or tuple of strings whose members another module also spells; a
+  document's list of names, flags, or modules that a module's constant holds; an `assertEqual(` or `assertIn(` on a
+  literal sentence a document states, where the test could read the document or the shared constant; a `print(` of a
+  status line no `SKILL.md` names; a second `json.loads(`, `os.lstat(`, or other helper beside the one skill-core
+  owns.
+- **Examples:** #1317, #1349, #1477, #1495, #1596, #1679
+
+### A reader refuses a shape it does not know
+
+- **Rule:** A reader of input or of another program's output accepts the shapes it was written and tested for, held
+  to captured real output, and refuses or reports as unknown any other, never passing over it and judging what is
+  left.
+- **Why:** A skipped entry, an ignored field, or an unread construct lets the reader judge a partial input as whole.
+- **Use:** `typed_fields:FieldReader.json_object`, which refuses an unknown key, and `xml_reader:read_xml`,
+  which refuses a document type or entity declaration.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
+  `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
+  `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
+  `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
+  `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `tests/tools/test_hub_guard.py::test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call`
+- **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
+  default on a field the reader requires; a regular expression over another program's output with no branch for no
+  match; a hand-written tokenizer of Bash or PowerShell with no case for a construct `bash -n` reads; a test whose
+  sample output was typed rather than captured.
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1890, #1892
+
+### A recursive parser of input has a depth bound
+
+- **Rule:** A parser that recurses into input it does not control stops at a stated depth and ends in its documented
+  refusal, never in a `RecursionError`.
+- **Why:** Nesting past Python's recursion limit escapes the reader as an unhandled error instead of its refusal.
+- **Use:** `json_reader:loads`; the depth bound for the other recursive parsers comes with #1880.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_past_the_recursion_limit_is_refused`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
+- **Search for:** a function that calls itself on a child of its input; `literal_eval(` or `ast.parse(` on text from a
+  file or another program; `except RecursionError`, which marks a parser that met the limit; `json.loads(` outside
+  `json_reader.py`.
+- **Examples:** #1613, #1617, #1729, #1886, #1893
+
+### A time option is a positive finite number of seconds
+
+- **Rule:** An option or setting that gives a time limit accepts only a positive finite number of seconds, and refuses
+  zero, a negative number, `inf`, and `nan` when it is read.
+- **Why:** `float` accepts `inf`, `nan`, and negatives, so a limit can silently become no limit or an immediate
+  timeout.
+- **No guard:** The mechanism, one argument type for a time option and a policy refusing `type=float` on one, is in
+  #1883; until it lands, review holds the rule.
+- **Search for:** `type=float` in an `add_argument(` for a `--timeout`, `--wait`, or other seconds option; `type=int`
+  on such an option; `timeout=` given a value read from an argument or a file with no check that it is above zero and
+  finite.
+- **Examples:** #1883
+
+### A check reaches its whole rule
+
+- **Rule:** A policy, an audit brief, or a gate reaches every place its rule covers, and reads what the thing it holds
+  reads, never a narrower set its author swept by area.
+- **Why:** A rule held only where a sweep reached keeps failing in the places it missed, and passes them as checked.
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
+  `tests/validation/test_suite_discovery.py::test_a_parametrized_test_is_never_recorded_since_the_sharded_run_collects_only_its_cases`,
+  `tests/tools/test_mutation_gate.py::test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement`,
+  `.claude/skills/audit-repository/scripts/test_audit_repository.py::ReleaseTests::test_every_brief_carries_the_kinds_of_drift_and_the_report_template`
+- **Search for:** a policy whose file list is a hand-kept tuple of directories or a `glob(` narrower than the rule's
+  statement in `CLAUDE.md` or `docs/`; a policy that reads test names from source where the runner collects cases; a
+  fixture suite whose violating inputs cover one of the forms the rule names; an audit brief that asks only for
+  drift.
+- **Examples:** #1366, #1368, #1598, #1678, #1722, and #1884, which adds the check that holds a policy's scope to
+  its rule
+
+### A fix reaches every sibling of its construct
+
+- **Rule:** A defect's fix starts by searching for the same construct elsewhere, the other callers of the same reader
+  or writer, and its twin in the other shell or runtime, and fixes each sibling or files it.
+- **Why:** A fix that reaches only the reported instance leaves the rest to be found again.
 - **Guard:** `.claude/skills/implement-change/SKILL.md#3-bug-class`
+- **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
+  and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the pattern's own **Search
+  for** when the defect is an instance of one above.
+- **Examples:** #1369, #1521
 
-### Audit briefs that ask only for drift miss the defect classes that keep shipping
+### A foreign function declares its types
 
-- **Found in:** #1678
-- **Lesson:** Defects with no guard, absent evidence, broken universal claims, malformed records, and unfixed
-  siblings, kept passing release and rotation audits whose briefs asked only for the kinds of drift. Every such brief
-  asks those questions of every file, and a finding names the question that found it.
-- **Guard:** `.claude/skills/audit-repository/scripts/test_audit_repository.py::ReleaseTests::test_every_brief_carries_the_kinds_of_drift_and_the_report_template`
+- **Rule:** Every foreign function a module calls through `ctypes` has its `argtypes` and `restype` set in that module.
+- **Why:** An undeclared function passes and returns a C `int`, which truncates a handle on a 64-bit process.
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_ctypes_foreign_function_called_is_declared`
+- **Search for:** `ctypes.windll.` or `WinDLL(` in a module, with a function of it called and no `.argtypes =` or
+  `.restype =` for that function.
+- **Examples:** #1363, #1600
 
-### `grep -q` reading a pipe under `pipefail` races its writer
+### A pipe's reader never ends before its writer under `pipefail`
 
-- **Found in:** #1557, #1602
-- **Lesson:** `grep -q` exits at its first match, the writer can then fail with `SIGPIPE`, and `pipefail` turns that
-  into a failure that came and went on unrelated pull requests. A Bash suite that sets `pipefail` reads such text
-  from a here-string.
+- **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, never through a pipe into a
+  reader that exits at its first match.
+- **Why:** `grep -q` exits at its match, the writer then fails with `SIGPIPE`, and `pipefail` makes that an
+  intermittent failure.
 - **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_grep_that_ends_at_its_match`
+- **Search for:** `| grep -q` or `| head -n` in a `.sh` file that runs `set -o pipefail` or `set -euo pipefail`.
+- **Examples:** #1557, #1602
 
-### A file a test reads before its writer has finished it
+### A file handed to another process appears whole
 
-- **Found in:** #1354
-- **Lesson:** The canary test read its child's pid file before the child had written it. A file one process hands
-  another is written to a temporary name and renamed into place.
+- **Rule:** A file one process writes for another is written to a temporary name beside it and renamed into place.
+- **Why:** A reader that runs before its writer finishes reads an empty or partial file.
+- **Use:** `atomic_file:replace_text`, `atomic_file:replace_bytes`
 - **No guard:** Whether a reader can run before its writer finishes depends on the processes' timing, which reading
   the code cannot settle. The canary's own case is held by
   `tests/tools/test_runtime_canary.py::test_an_empty_pid_file_is_a_named_wait_rather_than_a_parse_error`, and review
   holds the rest.
+- **Search for:** `.write_text(` or `open(` with `"w"` on a pid, lock, status, or record file another process polls;
+  a reader that loops until `.exists()` and then reads at once.
+- **Examples:** #1354
 
-### A skill's Markdown and its scripts' status lines drift apart
+### A grant is earned by a step that names its tool
 
-- **Found in:** #1349, #1350, #1351, #1579
-- **Lesson:** Status lines a script printed went unnamed in its skill's Markdown, and the comparison that found them
-  ran only when someone ran `audit-skill`. Validation now runs it over every skill.
-- **Guard:** `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`
-
-### A grant that no step uses
-
-- **Found in:** #1482, #1579
-- **Lesson:** A skill kept a tool grant that a step only implied and none named. A grant counts only for a tool a step
-  names.
+- **Rule:** A skill's `allowed-tools` grant counts only for a tool one of its steps names.
+- **Why:** A grant a step only implies widens what the skill may do with nothing in the skill that needs it.
 - **Guard:** `tests/validation/test_skill_grants.py::test_grant_policy_fails_a_grant_whose_tool_a_step_only_implies`
+- **Search for:** an entry of `allowed-tools` in a `SKILL.md` frontmatter whose tool name no step's text names.
+- **Examples:** #1482, #1579
 
-### A document cites a test that was renamed
+### Another program's contract is exercised on its latest release
 
-- **Found in:** #1495, #1580
-- **Lesson:** A decision record named a test class a refactor had replaced, and a rename of a test the contract cites
-  would have passed. Every test a document cites resolves to the file that defines it.
-- **Guard:** `tests/validation/markdown_links.py::MarkdownLinksPolicies::test_every_test_a_document_cites_exists`
-
-### A document's list of a code-owned set drifts from the code
-
-- **Found in:** #1477, #1478, #1492, #1514, #1582
-- **Lesson:** The hub guard's contract, a review route's module list, and the threat model's analyzer inventory each
-  listed a set the code owns, and each fell behind it. A list that must stay in a document is compared with the code
-  that owns the set.
-- **Guard:** `tests/tools/test_hub_guard.py::test_the_refused_subcommands_are_the_writing_subcommands`,
-  `tests/tools/test_hub_guard.py::test_each_prefix_program_the_contract_names_is_read_as_the_command_it_starts`,
-  `tests/code-review/test_format_contract.py::test_the_threat_model_rows_name_each_file_the_analyzer_inventory_parses`,
-  `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`
-
-### A test that restates a document's wording pins the drift
-
-- **Found in:** #1317, #1318, #1584, #1629
-- **Lesson:** Tests asserted the drifted wording of a warning and an error line instead of the wording the documents
-  promised, so the drift passed. A test takes its expected wording from the document it holds, or from the one
-  constant the code and the document share.
-- **No guard:** A literal a test restates from a document cannot be told from one the test needs for itself, so no
-  check can refuse it; review holds the rule [Validation](implementing-changes.md#validation) states.
-
-### A runtime release drops a flag the repository passes
-
-- **Found in:** #1573, #1581
-- **Lesson:** A Copilot CLI release removed a flag every Copilot review passed, and nothing started the repository's
-  command lines on the latest release before a probe found it. Each command line is now started weekly on the latest
-  release of every runtime.
-- **Guard:** `.github/workflows/runtime-command-lines.yml`,
+- **Rule:** Each command line the repository starts on another program, and each changelog entry that mentions a term
+  the code uses, is exercised or read against that program's latest release on a schedule.
+- **Why:** A release that drops a flag or changes a behavior otherwise breaks every run until someone happens to probe
+  it.
+- **Guard:** `.github/workflows/runtime-command-lines.yml`, `.github/workflows/runtime-changelogs.yml`,
   `tests/tools/test_runtime_command_lines.py::CapturedTests::test_each_runtimes_real_refusal_of_a_flag_is_read_as_one`
+- **Search for:** a `"--` flag literal in a list passed to `copilot`, `codex`, or `claude` that
+  `tools/runtime_command_lines.py` does not build; a runtime behavior a document states with no
+  term in the changelog watch.
+- **Examples:** #1362, #1538, #1573, #1581, #1583
 
-### A runtime's changelog states a change nobody read
+### The installed release's update runs against the current tree
 
-- **Found in:** #1362, #1538, #1539, #1574, #1583
-- **Lesson:** Changelog entries, some older than the deployer's own floor, had changed behavior the documents still
-  described the old way. A weekly watch lists each entry that mentions a term the code uses, for the guidance audit
-  to read.
-- **Guard:** `.github/workflows/runtime-changelogs.yml`
-
-### A matcher tested only on invented text misses the real one
-
-- **Found in:** #1412, #1592, #1606
-- **Lesson:** The changelog watch missed a real entry that named a flag the code passes, and a pattern over a
-  runtime's error output was held only to text the tests made up. A reader of another program's output is tested
-  against captured real output with its provenance, and reports a shape it does not know as unknown.
-- **Guard:** `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
-  `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`
-
-### A hand-written reader of Bash misses a construct Bash reads
-
-- **Found in:** #1429, #1430
-- **Lesson:** The hub guard did not see git after an array element assignment, which Bash reads, so the call went
-  unjudged. The guard's Bash reader is held to what `bash -n` reads, and each construct the comparison found has a
-  case of its own.
-- **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
-  `tests/tools/test_hub_guard.py::test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call`
-
-### The installed release's update breaks when a later tree moves what it reads
-
-- **Found in:** #1507, #1607
-- **Lesson:** An installed update read a helper from the fast-forwarded clone by a path a later rename moved, which
-  broke the one path every installation takes across releases. The latest release's installed update now runs against
-  the current tree.
+- **Rule:** The update an installed release runs, which reaches into the fast-forwarded clone, is tested against the
+  current tree, so a move of a path it reads fails before it ships.
+- **Why:** A rename the release's own update did not expect breaks the one path every installation takes.
 - **Guard:** `tests/deployer/test_installed_update.py::test_the_release_names_only_clone_paths_the_current_tree_keeps`,
   `tests/deployer/test_installed_update.py::test_the_update_fails_when_a_commit_moves_a_path_the_release_reads`
+- **Search for:** `"$CLONE/` in the installed `update.sh`, and a rename or removal of the path it names.
+- **Examples:** #1507, #1607
 
-### A workflow answers fewer prompts than configure asks
+### A grader is read against the runs it passes
 
-- **Found in:** #1596
-- **Lesson:** `configure` gained prompts the deployment workflow's piped answers did not cover, and the job hung until
-  cancelled. Each job's answers are held to the prompts `configure` declares.
-- **Guard:** `tests/validation/workflows.py::WorkflowsPolicies::test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs`
-
-### A recorded cost names a test the sharded run never collects
-
-- **Found in:** #1368
-- **Lesson:** A recorded cost for a parametrized test passed the policy, which read test names from the source, and
-  failed the sharded run, which collects only its cases. A policy reads what the runner reads.
-- **Guard:** `tests/validation/test_suite_discovery.py::test_a_parametrized_test_is_never_recorded_since_the_sharded_run_collects_only_its_cases`
-
-### A script grader that passes a wrong run fails nothing
-
-- **Found in:** #1738, #1774
-- **Lesson:** A skill-evaluation scenario passed a review that named no verdict, and no run that passed was ever read.
-  Every recorded evaluation samples a passing run for the author to read against its transcript.
+- **Rule:** A script that judges a run is itself checked by reading a sampled passing run against its transcript.
+- **Why:** A grader that passes a wrong run fails nothing, and no passing run was ever read to show it.
 - **Guard:** `.claude/skills/evaluate-skill/SKILL.md#5-read-the-sampled-transcript`
-
-### A mutant on a continuation line was never run
-
-- **Found in:** #1722
-- **Lesson:** The mutation gate read a mutant on a continuation line of a multi-line statement as not reached, so such
-  a change was never mutation-tested. A mutant's reach is the statement that holds its line.
-- **Guard:** `tests/tools/test_mutation_gate.py::test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement`
+- **Search for:** a judge in `tools/skill_evals.py` or a scenario's check that sets a pass from a field's presence
+  alone; a scenario whose expectation reads only the report the run wrote.
+- **Examples:** #1738, #1774

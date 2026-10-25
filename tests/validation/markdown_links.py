@@ -1,6 +1,6 @@
 """Documents that point elsewhere keep pointing at something: relative Markdown links and their fragments, the
-tests a document cites, the guard each lesson of docs/lessons.md names, and the security-sensitive area SECURITY.md
-gives each boundary of docs/design.md's trust model.
+tests a document cites, the mechanism and guard each pattern of docs/lessons.md names, and the security-sensitive
+area SECURITY.md gives each boundary of docs/design.md's trust model.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from duplication import SKILL_CORE_SCRIPTS
 from validation_support import (
     COMMONMARK_CODE_SPAN,
     OPERATIONS_CONTRACT,
@@ -283,58 +284,143 @@ def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> s
     return f"names {span}, which is not a test ID, a skill's step, or a workflow by its path from the repository root"
 
 
-def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]]) -> list[str]:
-    """The problems of one lesson, its heading line first and then its lines up to the next heading."""
-    document = "docs/lessons.md"
-    field_line = re.compile(r"^- \*\*(Found in|Guard|No guard):\*\*(.*)$")
-    heading_number, heading = entry[0]
-    where = f"{document}:{heading_number} the lesson {heading[4:].strip()!r}"
+def _bound_names(body: list[ast.stmt]) -> dict[str, ast.stmt]:
+    """The names a module or class body binds, to the statement that binds each: its functions and classes, those
+    under an `if`, `try`, or `with` included, and each name a plain or annotated assignment binds in the body itself."""
+    names: dict[str, ast.stmt] = {node.name: node for node in _definitions(body)}
+    for node in body:
+        if isinstance(node, ast.Assign):
+            names |= {target.id: node for target in node.targets if isinstance(target, ast.Name)}
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names[node.target.id] = node
+    return names
+
+
+def _use_problem(root: Path, span: str) -> str | None:
+    """Why a mechanism a pattern uses does not resolve, or None when it does: a module and a name it binds at module
+    level, `<module>:<name>`, or a name one of its classes binds, `<module>:<class>.<name>`, as `pkgutil.resolve_name`
+    reads an object, where the module is importable from the repository root or from skill-core's scripts, the two
+    directories every part of the repository puts on `sys.path`."""
+    mechanism = re.compile(r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*):([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?")
+    if not (use := mechanism.fullmatch(span)):
+        return f"names {span}, which is not a module and a name, <module>:<name> or <module>:<class>.<name>"
+    module, name, member = use.groups()
+    parts = module.split(".")
+    candidates = [
+        base / Path(*parts[:-1]) / last
+        for base in (root, root / SKILL_CORE_SCRIPTS)
+        for last in (f"{parts[-1]}.py", f"{parts[-1]}/__init__.py")
+    ]
+    path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if path is None:
+        return f"uses {span}, but no module {module} is importable from the repository root or {SKILL_CORE_SCRIPTS}"
+    module = path.relative_to(root).as_posix()
+    unreadable: list[str] = []
+    names = {
+        bound: node
+        for _, _, tree in python_trees([path], root, unreadable)
+        for bound, node in _bound_names(tree.body).items()
+    }
+    if unreadable:
+        return f"uses {span}, but {unreadable[0]}"
+    if name not in names:
+        return f"uses {span}, which {module} does not define at module level"
+    if member is None:
+        return None
+    if not isinstance(owner := names[name], ast.ClassDef):
+        return f"uses {span}, but {name} in {module} is not a class"
+    if member not in _bound_names(owner.body):
+        return f"uses {span}, which the class {name} of {module} does not define"
+    return None
+
+
+def _pattern_fields(entry: list[tuple[int, str]]) -> tuple[dict[str, list[tuple[int, str]]], list[tuple[int, str]]]:
+    """A pattern's fields, each the lines of its list item, and the problems, by line, of a field the catalogue does
+    not define or one given twice."""
+    known = {"Rule", "Why", "Use", "Guard", "No guard", "Search for", "Examples"}
+    field_line = re.compile(r"^- \*\*([^*:]+):\*\*(.*)$")
     fields: dict[str, list[tuple[int, str]]] = {}
+    problems: list[tuple[int, str]] = []
     current: list[tuple[int, str]] | None = None
     for number, line in entry[1:]:
         if match := field_line.match(line):
-            current = fields.setdefault(match.group(1), [])
+            name = match.group(1)
+            if name not in known:
+                problems.append((number, f"names the field {name!r}, which a pattern does not have"))
+            elif name in fields:
+                problems.append((number, f"names the field {name!r} more than once"))
+            current = fields.setdefault(name, [])
             current.append((number, match.group(2).strip()))
         elif current is not None and line[:1].isspace() and line.strip():
             # A field's continuation line, indented under its list item, is read with the line it continues.
             current.append((number, line.strip()))
         else:
             current = None
-    problems: list[str] = []
-    if not any(re.search(r"#\d+\b", text) for _, text in fields.get("Found in", [])):
-        problems.append(f"{where} names no issue it was found in")
-    guards = fields.get("Guard", [])
+    return fields, problems
+
+
+def _spans(lines: list[tuple[int, str]]) -> list[tuple[int, list[str]]]:
+    """Each line of a field with the text of the code spans it holds."""
+    return [
+        (number, [match.group(2).strip() for match in COMMONMARK_CODE_SPAN.finditer(text)]) for number, text in lines
+    ]
+
+
+def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]]) -> list[str]:
+    """The problems of one pattern, its heading line first and then its lines up to the next heading."""
+    document = "docs/lessons.md"
+    heading_number, heading = entry[0]
+    name = heading[4:].strip()
+
+    def at(number: int) -> str:
+        return f"{document}:{number} the pattern {name!r}"
+
+    fields, field_problems = _pattern_fields(entry)
+    problems = [f"{at(number)} {problem}" for number, problem in field_problems]
+    problems += [
+        f"{at(heading_number)} states no {field}"
+        for field in ("Rule", "Why")
+        if not any(text for _, text in fields.get(field, []))
+    ]
+    if not any(spans for _, spans in _spans(fields.get("Search for", []))):
+        problems.append(f"{at(heading_number)} names no form a violation takes under Search for, each in a code span")
+    guards, uses = _spans(fields.get("Guard", [])), _spans(fields.get("Use", []))
     reasons = [text for _, text in fields.get("No guard", []) if text]
     if guards and reasons:
-        return [*problems, f"{where} names both a guard and the reason no guard is possible"]
-    if not guards and not reasons:
-        return [*problems, f"{where} names neither a guard nor the reason no guard is possible"]
-    for number, text in guards:
-        spans = [match.group(2).strip() for match in COMMONMARK_CODE_SPAN.finditer(text)]
-        located = f"{document}:{number} the lesson {heading[4:].strip()!r}"
-        if not spans:
-            problems.append(f"{located} names no guard in a code span")
-        problems += [
-            f"{located} {problem}" for span in spans if (problem := _guard_problem(root, index, document, span))
+        return [*problems, f"{at(heading_number)} names both a guard and the reason no guard is possible"]
+    if not guards and not uses and not reasons:
+        return [
+            *problems,
+            f"{at(heading_number)} names neither its mechanism, a guard, nor the reason no guard is possible",
         ]
+    for kind, lines, resolve in (
+        ("guard", guards, lambda span: _guard_problem(root, index, document, span)),
+        ("mechanism", uses, lambda span: _use_problem(root, span)),
+    ):
+        if lines and not any(spans for _, spans in lines):
+            problems.append(f"{at(lines[0][0])} names no {kind} in a code span")
+        for number, spans in lines:
+            problems += [f"{at(number)} {problem}" for span in spans if (problem := resolve(span))]
     return problems
 
 
 def lessons_ledger_problems(root: Path) -> list[str]:
-    """Report each lesson of docs/lessons.md, a `###` heading under its `## Lessons` section, that names no issue it
-    was found in after merge, names neither the guard that now refuses its mistake nor the reason no guard is possible,
-    or names both, and each guard it names that does not resolve: a test ID, `<path>::<test>`, `<path>::<class>`, or
-    `<path>::<class>::<test>`, that names a test or a test class of that file, a skill's step,
-    `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, or a workflow, `.github/workflows/<file>`,
-    that exists."""
+    """Report each pattern of docs/lessons.md, a `###` heading under its `## Patterns` section, that states no Rule or
+    Why, names no form a violation takes under Search for in a code span, names neither the mechanism it uses, a guard
+    that refuses a violation, nor the reason no guard is possible, or names both a guard and that reason, or names a
+    field a pattern does not have or one field twice; and each guard and mechanism it names that does not resolve. A
+    guard is a test ID, `<path>::<test>`, `<path>::<class>`, or `<path>::<class>::<test>`, that names a test or a test
+    class of that file, a skill's step, `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, or a
+    workflow, `.github/workflows/<file>`, that exists. A mechanism is a module importable from the repository root or
+    skill-core's scripts and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
     document = "docs/lessons.md"
     path = root / document
     if not path.is_file():
         return [f"{document} does not exist"]
     lines = _outside_fences(path.read_text(encoding="utf-8"))
-    start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Lessons"), None)
+    start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Patterns"), None)
     if start is None:
-        return [f"{document} has no '## Lessons' section"]
+        return [f"{document} has no '## Patterns' section"]
     entries: list[list[tuple[int, str]]] = []
     for number, line in enumerate(lines[start + 1 :], start=start + 2):
         if line.startswith("## "):
@@ -344,7 +430,7 @@ def lessons_ledger_problems(root: Path) -> list[str]:
         if entries:
             entries[-1].append((number, line))
     if not entries:
-        return [f"{document} has no lesson under '## Lessons'"]
+        return [f"{document} has no pattern under '## Patterns'"]
     problems: list[str] = []
     index = _TestIndex(root, problems)
     for entry in entries:
@@ -415,7 +501,7 @@ class MarkdownLinksPolicies(unittest.TestCase):
     def test_every_test_a_document_cites_exists(self) -> None:
         self.assertEqual([], cited_test_problems(REPOSITORY_ROOT))
 
-    def test_every_lesson_names_a_guard_that_resolves_or_why_none_is_possible(self) -> None:
+    def test_every_pattern_names_its_search_and_a_mechanism_guard_or_reason_that_resolves(self) -> None:
         self.assertEqual([], lessons_ledger_problems(REPOSITORY_ROOT))
 
     def test_every_trust_model_boundary_has_a_security_sensitive_area(self) -> None:

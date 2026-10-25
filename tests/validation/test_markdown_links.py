@@ -199,15 +199,19 @@ class CitedTestPolicy(unittest.TestCase):
 
 class LessonsLedgerPolicy(unittest.TestCase):
     SUITE = (
-        "import unittest\n\n\ndef helper() -> None:\n    pass\n\n\n"
-        "class GuardTests(unittest.TestCase):\n    def test_held(self) -> None:\n        pass\n"
+        "import unittest\n\nLIMIT = 10\nLIMIT_NOTE: str = 'ten'\n\n\ndef helper() -> None:\n    def inner() -> None:\n"
+        "        pass\n\n\nclass GuardTests(unittest.TestCase):\n    WAIT = 1.0\n\n"
+        "    def test_held(self) -> None:\n        pass\n"
     )
     SKILL = "---\nname: a\n---\n\n# A\n\n## 3. Bug class\n\nSearch.\n"
-    ENTRY = "- **Found in:** #12\n- **Lesson:** Text.\n"
+    ENTRY = "- **Rule:** One sentence.\n- **Why:** A line.\n- **Search for:** `int(` on a `.group(`.\n"
 
     def problems(self, ledger: str | None, files: Mapping[str, str] | None = None) -> list[str]:
         tree = {
             "tests/test_a.py": self.SUITE,
+            "skills/ejryan89-skill-core/scripts/core_a.py": self.SUITE,
+            "skills/ejryan89-skill-core/scripts/broken.py": "def broken(:\n",
+            "package/__init__.py": "LIMIT = 1\n",
             ".claude/skills/a/SKILL.md": self.SKILL,
             ".github/workflows/watch.yml": "on: workflow_dispatch\n",
             **(files or {}),
@@ -220,49 +224,57 @@ class LessonsLedgerPolicy(unittest.TestCase):
             write_fixture_tree(root, tree)
             return lessons_ledger_problems(root)
 
-    def test_entries_whose_guards_resolve_or_that_give_a_reason_pass(self) -> None:
+    def test_patterns_whose_use_or_guard_resolves_or_that_give_a_reason_pass(self) -> None:
         ledger = (
-            "# Lessons\n\nPreamble with `tests/test_a.py::helper`, which no entry cites.\n\n## Lessons\n\n"
-            f"### Every reference resolves\n\n{self.ENTRY}"
+            "# Lessons\n\nPreamble with `tests/test_a.py::helper`, which no pattern cites.\n\n## Patterns\n\n"
+            f"### Every guard resolves\n\n{self.ENTRY}"
             "- **Guard:** `tests/test_a.py::GuardTests::test_held`, `tests/test_a.py::GuardTests`,"
             " `tests/test_a.py::test_held`, `.claude/skills/a/SKILL.md#3-bug-class`,\n"
-            "  and `.github/workflows/watch.yml`.\n\n"
-            f"### No check can tell\n\n{self.ENTRY}- **No guard:** A reader cannot tell it from the code.\n\n"
-            "```markdown\n### A fenced heading is no entry\n```\n"
+            "  and `.github/workflows/watch.yml`.\n"
+            "- **Examples:** #12, and no number at all.\n\n"
+            f"### Every mechanism resolves\n\n{self.ENTRY}"
+            "- **Use:** `tests.test_a:helper`, `tests.test_a:LIMIT`, `core_a:LIMIT_NOTE`, `core_a:GuardTests`,\n"
+            "  `core_a:GuardTests.WAIT`, `tests.test_a:GuardTests.test_held`, and `package:LIMIT`.\n\n"
+            f"### A mechanism no check can hold\n\n{self.ENTRY}- **Use:** `core_a:helper`.\n"
+            "- **No guard:** A reader cannot tell it from the code.\n\n"
+            f"### No check can tell\n\n{self.ENTRY}- **No guard:** The mechanism is in #12.\n\n"
+            "```markdown\n### A fenced heading is no pattern\n```\n"
         )
         self.assertEqual([], self.problems(ledger))
 
-    def test_an_entry_with_neither_a_guard_nor_a_reason_fails(self) -> None:
+    def test_a_pattern_with_neither_a_mechanism_a_guard_nor_a_reason_fails(self) -> None:
         ledger = (
-            f"# Lessons\n\n## Lessons\n\n### Nothing holds it\n\n{self.ENTRY}\n"
+            f"# Lessons\n\n## Patterns\n\n### Nothing holds it\n\n{self.ENTRY}\n"
             f"### An empty reason\n\n{self.ENTRY}- **No guard:**\n\n"
-            f"### No reference\n\n{self.ENTRY}- **Guard:** the review\n\n"
+            f"### No reference\n\n{self.ENTRY}- **Guard:** the review\n- **Use:** the helper\n\n"
             f"### Both\n\n{self.ENTRY}- **Guard:** `.github/workflows/watch.yml`\n- **No guard:** None is possible.\n"
         )
         self.assertEqual(
             [
-                "docs/lessons.md:5 the lesson 'Nothing holds it' names neither a guard nor the reason no guard is "
-                "possible",
-                "docs/lessons.md:10 the lesson 'An empty reason' names neither a guard nor the reason no guard is "
-                "possible",
-                "docs/lessons.md:20 the lesson 'No reference' names no guard in a code span",
-                "docs/lessons.md:22 the lesson 'Both' names both a guard and the reason no guard is possible",
+                "docs/lessons.md:5 the pattern 'Nothing holds it' names neither its mechanism, a guard, nor the "
+                "reason no guard is possible",
+                "docs/lessons.md:11 the pattern 'An empty reason' names neither its mechanism, a guard, nor the "
+                "reason no guard is possible",
+                "docs/lessons.md:23 the pattern 'No reference' names no guard in a code span",
+                "docs/lessons.md:24 the pattern 'No reference' names no mechanism in a code span",
+                "docs/lessons.md:26 the pattern 'Both' names both a guard and the reason no guard is possible",
             ],
             self.problems(ledger),
         )
 
     def test_a_guard_that_does_not_resolve_fails(self) -> None:
         ledger = (
-            f"# Lessons\n\n## Lessons\n\n### Gone\n\n{self.ENTRY}- **Guard:**"
+            f"# Lessons\n\n## Patterns\n\n### Gone\n\n{self.ENTRY}- **Guard:**"
             " `tests/test_a.py::test_gone`, `tests/test_a.py::helper`, `tests/test_gone.py::test_held`,"
             " `test_a.py::test_held`, `.claude/skills/a/SKILL.md#4-gone`, `.claude/skills/b/SKILL.md#a`,"
             " `docs/guide.md#a`, `.github/workflows/gone.yml`, and `GuardTests`,\n"
             "  and on its continuation line `tests/test_a.py::GoneTests`.\n"
-            "- **Lesson:** Not a guard: `tests/test_a.py::GoneTests`.\n"
+            "- **Rule:** Not a guard: `tests/test_a.py::GoneTests`.\n"
         )
-        prefix = "docs/lessons.md:9 the lesson 'Gone'"
+        prefix = "docs/lessons.md:10 the pattern 'Gone'"
         self.assertEqual(
             [
+                "docs/lessons.md:12 the pattern 'Gone' names the field 'Rule' more than once",
                 f"{prefix} cites tests/test_a.py::test_gone, which tests/test_a.py does not define as a test or a "
                 "test class",
                 f"{prefix} cites tests/test_a.py::helper, which tests/test_a.py does not define as a test or a test "
@@ -277,31 +289,87 @@ class LessonsLedgerPolicy(unittest.TestCase):
                 f"{prefix} cites .github/workflows/gone.yml, but .github/workflows/gone.yml does not exist",
                 f"{prefix} names GuardTests, which is not a test ID, a skill's step, or a workflow by its path from "
                 "the repository root",
-                "docs/lessons.md:10 the lesson 'Gone' cites tests/test_a.py::GoneTests, which tests/test_a.py does not "
-                "define as a test or a test class",
+                "docs/lessons.md:11 the pattern 'Gone' cites tests/test_a.py::GoneTests, which tests/test_a.py does "
+                "not define as a test or a test class",
             ],
             self.problems(ledger, {"docs/guide.md": "# A\n"}),
         )
 
-    def test_an_entry_that_names_no_issue_fails(self) -> None:
+    def test_a_mechanism_that_does_not_resolve_fails(self) -> None:
         ledger = (
-            "# Lessons\n\n## Lessons\n\n### Unsourced\n\n- **Found in:** the audit\n- **Guard:**"
-            " `.github/workflows/watch.yml`\n\n### Unfielded\n\n- **Guard:** `.github/workflows/watch.yml`\n"
+            f"# Lessons\n\n## Patterns\n\n### Gone\n\n{self.ENTRY}- **Use:**"
+            " `tests.test_a:gone`, `core_a:inner`, `core_a:GuardTests.gone`, `core_a:helper.inner`, `tests.gone:x`,"
+            " `test_a:helper`,\n"
+            "  `broken:broken`, `tests/test_a.py::helper`, `core_a:GuardTests.WAIT.real`, `core_a`, and `helper`.\n"
+        )
+        prefix = "docs/lessons.md:10 the pattern 'Gone'"
+        scripts = "skills/ejryan89-skill-core/scripts"
+        form = "which is not a module and a name, <module>:<name> or <module>:<class>.<name>"
+        problems = self.problems(ledger)
+        unreadable = f"docs/lessons.md:11 the pattern 'Gone' uses broken:broken, but {scripts}/broken.py does not parse"
+        # The parser's own words after the prefix differ between Python releases.
+        self.assertTrue(problems[6].startswith(unreadable), problems[6])
+        self.assertEqual(
+            [
+                f"{prefix} uses tests.test_a:gone, which tests/test_a.py does not define at module level",
+                f"{prefix} uses core_a:inner, which {scripts}/core_a.py does not define at module level",
+                f"{prefix} uses core_a:GuardTests.gone, which the class GuardTests of {scripts}/core_a.py does not "
+                "define",
+                f"{prefix} uses core_a:helper.inner, but helper in {scripts}/core_a.py is not a class",
+                f"{prefix} uses tests.gone:x, but no module tests.gone is importable from the repository root or "
+                f"{scripts}",
+                f"{prefix} uses test_a:helper, but no module test_a is importable from the repository root or "
+                f"{scripts}",
+                problems[6],
+                f"docs/lessons.md:11 the pattern 'Gone' names tests/test_a.py::helper, {form}",
+                f"docs/lessons.md:11 the pattern 'Gone' names core_a:GuardTests.WAIT.real, {form}",
+                f"docs/lessons.md:11 the pattern 'Gone' names core_a, {form}",
+                f"docs/lessons.md:11 the pattern 'Gone' names helper, {form}",
+            ],
+            problems,
+        )
+
+    def test_a_pattern_without_its_rule_its_why_or_a_search_fails(self) -> None:
+        guard = "- **Guard:** `.github/workflows/watch.yml`\n"
+        ledger = (
+            f"# Lessons\n\n## Patterns\n\n### Unsearched\n\n- **Rule:** One.\n- **Why:** A line.\n{guard}\n"
+            f"### Searched in prose\n\n- **Rule:** One.\n- **Why:** A line.\n- **Search for:** the same call.\n"
+            f"{guard}\n### Bare\n\n- **Search for:** `int(`\n{guard}\n"
+            f"### Empty fields\n\n- **Rule:**\n- **Why:**\n- **Search for:** `int(`\n{guard}"
         )
         self.assertEqual(
             [
-                "docs/lessons.md:5 the lesson 'Unsourced' names no issue it was found in",
-                "docs/lessons.md:10 the lesson 'Unfielded' names no issue it was found in",
+                "docs/lessons.md:5 the pattern 'Unsearched' names no form a violation takes under Search for, each "
+                "in a code span",
+                "docs/lessons.md:11 the pattern 'Searched in prose' names no form a violation takes under Search "
+                "for, each in a code span",
+                "docs/lessons.md:18 the pattern 'Bare' states no Rule",
+                "docs/lessons.md:18 the pattern 'Bare' states no Why",
+                "docs/lessons.md:23 the pattern 'Empty fields' states no Rule",
+                "docs/lessons.md:23 the pattern 'Empty fields' states no Why",
             ],
             self.problems(ledger),
         )
 
-    def test_a_missing_ledger_section_or_an_empty_one_fails(self) -> None:
-        self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))
-        self.assertEqual(["docs/lessons.md has no '## Lessons' section"], self.problems("# Lessons\n\nProse.\n"))
+    def test_a_field_the_catalogue_does_not_define_fails(self) -> None:
+        ledger = (
+            f"# Lessons\n\n## Patterns\n\n### Counted\n\n{self.ENTRY}- **Found in:** #12, #13\n"
+            "- **Guard:** `.github/workflows/watch.yml`\n- **Lesson:** Text.\n"
+        )
         self.assertEqual(
-            ["docs/lessons.md has no lesson under '## Lessons'"],
-            self.problems("# Lessons\n\n## Lessons\n\nProse.\n\n## After\n\n### Not a lesson\n"),
+            [
+                "docs/lessons.md:10 the pattern 'Counted' names the field 'Found in', which a pattern does not have",
+                "docs/lessons.md:12 the pattern 'Counted' names the field 'Lesson', which a pattern does not have",
+            ],
+            self.problems(ledger),
+        )
+
+    def test_a_missing_catalogue_section_or_an_empty_one_fails(self) -> None:
+        self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))
+        self.assertEqual(["docs/lessons.md has no '## Patterns' section"], self.problems("# Lessons\n\nProse.\n"))
+        self.assertEqual(
+            ["docs/lessons.md has no pattern under '## Patterns'"],
+            self.problems("# Lessons\n\n## Patterns\n\nProse.\n\n## After\n\n### Not a pattern\n"),
         )
 
 
