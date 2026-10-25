@@ -79,7 +79,6 @@ import argparse
 import ast
 import contextlib
 import json
-import os
 import re
 import sys
 import tempfile
@@ -102,6 +101,7 @@ from git_client import GitClient, GitError, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
+from path_keys import path_key
 from release_tags import is_release_tag, last_release, release_order
 
 # The rotation record, relative to the top of the repository it describes.
@@ -439,7 +439,7 @@ def checkout_top(git: GitClient, repository: Path) -> tuple[Path, bool]:
     if len(output) != 2:
         raise AuditError(f"git rev-parse printed {len(output)} lines where it prints the top and the common directory")
     top, common = Path(output[0]), Path(output[1])
-    return top, os.path.normcase(common.resolve()) == os.path.normcase((top / ".git").resolve())
+    return top, path_key(common, resolve=True) == path_key(top / ".git", resolve=True)
 
 
 def changes(git: GitClient, repository: Path, base: str, head: str) -> list[Change]:
