@@ -46,6 +46,7 @@ from tools.mutation_gate import (
     Report,
     SuiteRunner,
     changed_lines,
+    changed_tables,
     code,
     context_tests,
     counts,
@@ -59,8 +60,10 @@ from tools.mutation_gate import (
     module_mutants,
     named_in,
     no_module_line,
+    policy_tables,
     queue_order,
     run_suite,
+    sanction_table,
     suite_plan,
     suite_selection,
     summary,
@@ -1028,6 +1031,98 @@ class ImportTimeFixtures(unittest.TestCase):
         self.assertEqual([], suite_selection(plain, imports))
 
 
+REPOSITORY = Path(__file__).resolve().parents[2]
+SANCTIONED_MODULE = """\"\"\"A module with a sanction table.\"\"\"
+
+FSOPS_ALLOWED = {
+    "write_1": "a throwaway file",
+}
+LIMIT = 3
+
+
+def scale(a):
+    return a * 2
+"""
+POLICY = """FSOPS_ALLOWANCE = "FSOPS_ALLOWED"
+OTHER = "UNREAD_ALLOWED"
+"""
+
+
+def policy_tree(root: Path) -> None:
+    """A tree holding SANCTIONED_MODULE, a policy that reads FSOPS_ALLOWED, and a suite and a name that read nothing."""
+    (root / "tools").mkdir()
+    (root / "tools" / "table.py").write_text(SANCTIONED_MODULE, encoding="utf-8")
+    (root / "tests" / "validation").mkdir(parents=True)
+    (root / "tests" / "validation" / "policy.py").write_text(POLICY, encoding="utf-8")
+    (root / "tests" / "validation" / "test_policy.py").write_text(
+        'SUITE_ALLOWANCE = "SUITE_ALLOWED"\n', encoding="utf-8"
+    )
+
+
+class SanctionTableFixtures(unittest.TestCase):
+    """A sanction table is held by the validation policy that reads it, never by the module's suites, so its lines make
+    no mutant, and every other changed line keeps its mutants."""
+
+    def test_a_table_line_makes_no_mutant_and_an_ordinary_line_beside_it_still_does(self) -> None:
+        found = module_mutants("tools/table.py", SANCTIONED_MODULE, frozenset({4, 6, 10}), line_generator)
+        self.assertEqual([(6, "LIMIT = 9"), (10, "return a * 9")], [(item.line, item.after) for item in found])
+        # Under any other name the same table is an ordinary assignment, and is mutated.
+        plain = SANCTIONED_MODULE.replace("FSOPS_ALLOWED", "FSOPS_TABLE")
+        mutated = module_mutants("tools/table.py", plain, frozenset({4, 6, 10}), line_generator)
+        self.assertEqual([4, 6, 10], [item.line for item in mutated])
+
+    def test_a_sanction_table_is_one_name_ending_in_allowed_bound_at_module_level(self) -> None:
+        source = "A_ALLOWED = {}\nB_ALLOWED: dict[str, str] = {}\nC_ALLOWED, D = {}, 1\nALLOWED = 1\nimport os\n"
+        names = [sanction_table(statement) for statement in ast.parse(source).body]
+        self.assertEqual(["A_ALLOWED", "B_ALLOWED", None, None, None], names)
+        self.assertIsNone(sanction_table(None))
+        tree = ast.parse(SANCTIONED_MODULE)
+        self.assertEqual(["FSOPS_ALLOWED"], changed_tables(tree, frozenset({5, 10})))
+        self.assertEqual([], changed_tables(tree, frozenset({2, 6, 10})))
+
+    def test_a_policy_reads_the_table_it_names_under_a_name_ending_in_allowance_and_a_suite_reads_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            policy_tree(Path(temporary))
+            self.assertEqual({"FSOPS_ALLOWED": "tests/validation/policy.py"}, policy_tables(Path(temporary)))
+
+    def test_the_repositorys_policies_read_the_tables_their_rules_name(self) -> None:
+        found = policy_tables(REPOSITORY)
+        self.assertEqual("tests/validation/fsops_platform.py", found["FSOPS_ALLOWED"])
+        self.assertEqual("tests/validation/fsops_platform.py", found["PLATFORM_ALLOWED"])
+        self.assertEqual("tests/validation/skill_scripts.py", found["COMMANDS_ALLOWED"])
+        self.assertEqual("tests/validation/duplication.py", found["DUPLICATION_ALLOWED"])
+        self.assertEqual("tests/validation/kinds_table.py", found["KINDS_ALLOWED"])
+
+    def test_every_sanction_table_of_a_module_the_gate_mutates_has_a_policy_that_reads_it(self) -> None:
+        policies = policy_tables(REPOSITORY)
+        unread = []
+        for folder in ("deployer", "tools", "skills", ".claude/skills"):
+            for path in sorted((REPOSITORY / folder).rglob("*.py")):
+                module = path.relative_to(REPOSITORY).as_posix()
+                if not is_gate_module(module):
+                    continue
+                for statement in ast.parse(path.read_bytes().decode("utf-8")).body:
+                    name = sanction_table(statement)
+                    if name and name not in policies:
+                        unread.append(f"{module}: {name}")
+        self.assertEqual([], unread)
+
+    def test_selection_names_each_changed_table_with_its_policy_and_refuses_one_no_policy_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            policy_tree(tree)
+            git = mock.create_autospec(GitClient, instance=True)
+            git.output.return_value = "@@ -0,0 +4 @@\n@@ -0,0 +10 @@\n"
+            gate = Gate(tree, "main", 1, 1, git, line_generator)
+            lines, found, tables = gate.select(tree, ["tools/table.py"])["tools/table.py"]
+            self.assertEqual((2, [10]), (lines, [item.line for item in found]))
+            self.assertEqual((("FSOPS_ALLOWED", "tests/validation/policy.py"),), tables)
+            unread = SANCTIONED_MODULE.replace("FSOPS_ALLOWED", "UNREAD_ALLOWED")
+            (tree / "tools" / "table.py").write_text(unread, encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "tools/table.py changes UNREAD_ALLOWED, which no validation"):
+                gate.select(tree, ["tools/table.py"])
+
+
 def test_the_cap_gives_the_reach_pass_half_of_the_run() -> None:
     assert mutation_gate.run_deadline(100.0, 40) == 100.0 + 40 * 60
     assert mutation_gate.reach_deadline(100.0, 100.0 + 40 * 60) == 100.0 + 20 * 60
@@ -1105,6 +1200,18 @@ class SummaryFixtures(unittest.TestCase):
         self.assertIn(
             "`tools/calc.py` keeps no line this pull request added or changed, so it has nothing to mutate.", deleted
         )
+
+    def test_a_skipped_sanction_table_is_named_with_its_policy_in_place_of_an_empty_selection(self) -> None:
+        report = self.report([])
+        report.modules[0].tables = (("FSOPS_ALLOWED", "tests/validation/fsops_platform.py"),)
+        text = summary(report)
+        self.assertIn(
+            "\n`tools/calc.py`: the changed lines of its sanction tables made no mutant, since the validation policy "
+            "that reads each holds it, not the module's suites: `FSOPS_ALLOWED` "
+            "(`tests/validation/fsops_platform.py`).\n",
+            text,
+        )
+        self.assertNotIn("mutmut made no mutant", text)
 
     def test_the_summary_says_when_the_cap_cut_a_module_short(self) -> None:
         text = summary(self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN)], cut_short=True))
