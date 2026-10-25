@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, assert_never
 
+import versions
 from bounded_process import streaming
 
 # The vendors whose pdftotext the probe accepts.
@@ -112,8 +113,10 @@ def parse_banner(text: str, status: int) -> PdfIdentity:
     if poppler and banner.group(2):
         raise PdfToolRefused("provider/version is ambiguous")
     provider: PdfProvider = "Poppler" if poppler else "Xpdf"
-    version = tuple(map(int, banner.group(1).split(".")))
-    if provider == "Poppler" and (len(version) != 3 or (version[0] >= 20 and not 1 <= version[1] <= 12)):
+    version = versions.read(banner.group(1))
+    if version is None or (
+        provider == "Poppler" and (len(version) != 3 or (version[0] >= 20 and not 1 <= version[1] <= 12))
+    ):
         raise PdfToolRefused("provider/version is malformed")
     identity = PdfIdentity(provider, version)
     statuses = {0} if poppler else {0, 99}

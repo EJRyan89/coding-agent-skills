@@ -229,6 +229,7 @@ class RemovalTests(DeployerTestCase):
             "json_reader.py",
             "whole_number.py",
             "path_containment.py",
+            "path_keys.py",
             "link_probe.py",
         ):
             self.write(core / "scripts" / module, SKILL_ROOTS.with_name(module).read_text(encoding="utf-8"))

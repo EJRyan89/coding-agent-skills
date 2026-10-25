@@ -294,12 +294,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** Two spellings of one thing are compared as the program that consumes them compares them: versions by
   number, URLs and paths in canonical form, and environment names folded as the platform folds them.
 - **Why:** A text comparison takes `1.10` for older than `1.9`, or two spellings of one path for two paths.
-- **Use:** `release_tags:release_order`, `release_tags:highest_release`, `deployer.tools:parse_version`,
-  `guidance_record:canonical_url`; one version reader and one path normalizer are the mechanism in #1909.
-- **Guard:** `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
+- **Use:** `versions:find`, `versions:read`, and `versions:latest`, the one version reader, which reads a version's
+  numbers and orders by them; `release_tags:release_order` and `release_tags:highest_release`, a release tag through
+  it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
+  `deployer.platform_support:path_key`; `guidance_record:canonical_url`.
+- **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
+  which fails a version's numbers read by hand outside the version reader;
+  `skills/ejryan89-skill-core/scripts/test_versions.py::OrderTests::test_versions_order_by_number_never_as_text`,
+  `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
+  `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
   `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`
-- **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; in a workflow, `grep` or
-  `contains(` on a version; `==` between two paths with no normalization.
+- **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
+  `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
+  normalization, or `os.path.normcase` outside `path_keys.py`.
 - **Examples:** #1556, #1855, #1867, #1909
 
 ### A child process starts from an environment built for it

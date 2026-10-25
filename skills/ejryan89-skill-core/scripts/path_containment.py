@@ -22,16 +22,15 @@ import re
 from pathlib import Path
 
 from link_probe import is_link_or_junction
+from path_keys import path_key
 
 StrPath = str | os.PathLike[str]
 
 
 def _compared(path: StrPath) -> Path:
-    """`path` as `within` compares it: absolute, normalized, and case-folded where the platform ignores case."""
-    absolute = Path(path)
-    if not absolute.is_absolute():
-        absolute = Path.cwd() / absolute
-    return Path(os.path.normcase(os.path.normpath(absolute)))
+    """`path` as `within` compares it: `path_keys`' textual key, absolute, normalized by text alone, and case-folded
+    where the platform ignores case."""
+    return Path(path_key(path, textual=True))
 
 
 def within(path: StrPath, tree: StrPath, *, strict: bool = False) -> bool:

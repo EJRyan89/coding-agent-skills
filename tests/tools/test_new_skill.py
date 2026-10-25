@@ -400,6 +400,7 @@ class SkillDependencyTestCase(FixtureRepositoryTestCase):
             "json_reader.py",
             "whole_number.py",
             "path_containment.py",
+            "path_keys.py",
             "link_probe.py",
         ):
             (self.root / "skills" / "ejryan89-skill-core" / "scripts" / module).write_bytes(

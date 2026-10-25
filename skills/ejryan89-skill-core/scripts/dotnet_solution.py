@@ -22,6 +22,7 @@ from pathlib import Path
 
 from folder_walk import SKIPPED_FOLDERS
 from path_containment import within
+from path_keys import path_key
 from xml_reader import read_xml
 
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
@@ -84,8 +85,9 @@ def decode_text(data: bytes) -> str:
 
 
 def same_path(path: Path) -> str:
-    """`path` as the file system compares it: normalized, and case-folded where the platform ignores case."""
-    return os.path.normcase(os.path.normpath(str(path)))
+    """`path` as the file system compares it, `path_keys`' lexical key: absolute, normalized, and case-folded where the
+    platform ignores case."""
+    return path_key(path)
 
 
 def lexical_absolute(path: str | Path) -> Path:

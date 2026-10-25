@@ -251,6 +251,28 @@ def _reads_title_or_body(node: ast.AST, members: frozenset[str], _imports_owner:
     return named and isinstance(encoding, ast.Constant) and encoding.value not in members
 
 
+def _reads_version_numbers(node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str) -> bool:
+    """A version's numbers read by hand: int applied to each part of a text split on the owner's separator, in a
+    comprehension or through map, as a version parser re-derives the shared reader."""
+    if isinstance(node, (ast.GeneratorExp, ast.ListComp)):
+        converted = isinstance(node.elt, ast.Call) and isinstance(node.elt.func, ast.Name) and node.elt.func.id == "int"
+        parts = [generator.iter for generator in node.generators]
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "map" and node.args:
+        first = node.args[0]
+        converted = isinstance(first, ast.Name) and first.id == "int"
+        parts = node.args[1:2]
+    else:
+        return False
+    return converted and any(
+        isinstance(part, ast.Call)
+        and isinstance(part.func, ast.Attribute)
+        and part.func.attr == "split"
+        and isinstance(separator := call_argument(part, 0, "sep"), ast.Constant)
+        and separator.value in members
+        for part in parts
+    )
+
+
 @dataclass(frozen=True)
 class SharedFact:
     """One value the repository keeps in one module, its owner, under one module-level name, and how another module
@@ -275,6 +297,7 @@ def _shared_facts() -> tuple[SharedFact, ...]:
         SharedFact(f"{SKILL_CORE_SCRIPTS}/frontmatter.py", "USER_ONLY_KEY", _reads_key),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/typed_text.py", "TYPED_ENCODING", _reads_title_or_body),
         SharedFact("tests/validation/skill_layout.py", "HOME_SPELLINGS", _patterns_member),
+        SharedFact(f"{SKILL_CORE_SCRIPTS}/versions.py", "SEPARATOR", _reads_version_numbers),
     )
 
 

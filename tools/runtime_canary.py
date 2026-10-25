@@ -418,7 +418,7 @@ def quote(value: str) -> str:
 
 def lexical(path: str | os.PathLike[str]) -> str:
     # Lexical: Path.absolute keeps "..", and Path.resolve follows junctions.
-    return os.path.normcase(os.path.abspath(path))  # noqa: PTH100 - lexical, as the comment says
+    return platform_support.path_key(path)
 
 
 def inside(path: str, directory: Path) -> bool:

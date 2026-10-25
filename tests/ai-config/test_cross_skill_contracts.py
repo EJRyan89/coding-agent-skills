@@ -646,6 +646,7 @@ class CrossSkillContractTests(unittest.TestCase):
                 "flat_text.py",
                 "link_probe.py",
                 "path_containment.py",
+                "path_keys.py",
                 "skill_roots.py",
             )
             for module in (*modules, "typed_fields.py", "json_reader.py", "whole_number.py"):
