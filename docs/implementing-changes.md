@@ -132,7 +132,13 @@ that no longer measures the suite's own process and the process its test starts,
 the job. A mutant of a module-level assignment, such as a table or a compiled pattern, runs at import, so it runs
 instead the tests that ran a line reading a name it binds, when only the module's functions read those names and no
 other file names one, and the whole of each reaching suite otherwise. A mutation anchored on an expression that starts
-on an unchanged line, such as removing an argument from a call that opens above the change, is left out. Its step
+on an unchanged line, such as removing an argument from a call that opens above the change, is left out. A line of a
+module-level sanction table, a name ending in `_ALLOWED` such as `FSOPS_ALLOWED`, makes no mutant: the module's suites
+never read it, and the validation policy that does fails an entry that does not match what the module holds, so the
+gate skips the table, names it and its policy in the step summary, and fails when a changed table is one no policy
+under `tests/validation/` names under a constant ending in `ALLOWANCE`. Routing each table mutant to its policy instead
+was declined: a policy run reads the whole repository's Python, its fixture suite reads synthetic inputs rather than
+the table, and a policy that does not check an entry's reason would leave that mutant alive anyway. Its step
 summary gives each module's changed lines and kill ratio, names each changed module whose changed lines yield no mutant,
 and names each surviving mutant by its line, the mutation, and the suites it passed, with how many of a suite's tests
 ran when not all did; a pull request that changes no such module gets one line saying so. The mutants run from one queue
