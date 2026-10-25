@@ -2090,6 +2090,9 @@ def test_the_sweeps_limits_are_the_documented_ones() -> None:
 def test_removed_lines_are_read_by_each_hunks_counts() -> None:
     diff = "\n".join(
         [
+            # No line before the first header is on either side.
+            "-before any header",
+            "+before any header",
             "@@ -1 +0,0 @@",
             "-first, with no header before it",
             "diff --git a/x b/x",
@@ -2119,6 +2122,15 @@ def test_removed_lines_are_read_by_each_hunks_counts() -> None:
             "-cut by a header",
             "@@ -60 +59,0 @@",
             "-after the early header",
+            # A line past either side's count is outside the hunk.
+            "@@ -70 +70 @@",
+            "-one removed",
+            "+one added",
+            "-past the removed count",
+            "@@ -80,0 +80,2 @@",
+            "+first of two added",
+            "+second of two added",
+            "+past the added count",
             "@@ -20,3 +20 @@",
             "-cut short",
         ]
@@ -2134,9 +2146,17 @@ def test_removed_lines_are_read_by_each_hunks_counts() -> None:
         "ended",
         "cut by a header",
         "after the early header",
+        "one removed",
         "cut short",
     ]
-    assert added == {"added", "only added", "added among the removed"}
+    assert added == {
+        "added",
+        "only added",
+        "added among the removed",
+        "one added",
+        "first of two added",
+        "second of two added",
+    }
 
 
 def test_a_hunk_count_past_the_digit_limit_is_refused_with_its_header() -> None:
