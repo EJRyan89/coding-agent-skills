@@ -101,6 +101,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_reader
 from console import run_main
+from executable_locator import environment_path
 from file_presence import is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -113,6 +114,10 @@ INDEX_NAME = "MEMORY.md"
 MANIFEST_NAME = ".deploy-manifest.json"
 SETTINGS_NOTE = (
     "A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."
+)
+MANAGED_UNKNOWN_NOTE = (
+    "The Program Files folder is not named by an absolute path, so managed settings were not read; one there can set "
+    "autoMemoryDirectory."
 )
 BLOCK_READS = "blockReadsOutsideWorkingDirectories"
 # Claude Code loads the first 200 lines or 25KB of MEMORY.md, whichever comes first.
@@ -714,9 +719,12 @@ def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
     return 0, output
 
 
-def managed_settings_path() -> Path:
+def managed_settings_path() -> Path | None:
+    """Claude Code's managed settings file, or None on Windows when the Program Files folder is not named by an
+    absolute path, so no settings are read relative to the working directory."""
     if sys.platform == "win32":
-        return Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "ClaudeCode" / "managed-settings.json"
+        program_files = environment_path("PROGRAMFILES")
+        return None if program_files is None else program_files / "ClaudeCode" / "managed-settings.json"
     if sys.platform == "darwin":
         return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
     return Path("/etc/claude-code/managed-settings.json")
@@ -793,7 +801,7 @@ def config_directory(home: Path, environment: dict[str, str]) -> Path:
     return Path(environment["CLAUDE_CONFIG_DIR"]) if environment.get("CLAUDE_CONFIG_DIR") else home / ".claude"
 
 
-def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) -> dict[str, Any]:
+def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path | None) -> dict[str, Any]:
     """Locate the auto-memory directory for repo, with the memory directories found when none exists there."""
     config_dir = config_directory(home, environment)
     result = locate(repo, home, environment, managed, config_dir)
@@ -877,15 +885,20 @@ def blocking_scope(scopes: tuple[tuple[str, Path], ...]) -> str | None:
     return None
 
 
-def locate(repo: Path, home: Path, environment: dict[str, str], managed: Path, config_dir: Path) -> dict[str, Any]:
-    """The auto-memory directory Claude Code uses for repo, following its documented order."""
+def locate(
+    repo: Path, home: Path, environment: dict[str, str], managed: Path | None, config_dir: Path
+) -> dict[str, Any]:
+    """The auto-memory directory Claude Code uses for repo, following its documented order, with no managed scope
+    when `managed` is None."""
     notes = [SETTINGS_NOTE]
+    if managed is None:
+        notes.append(MANAGED_UNKNOWN_NOTE)
     # Claude Code reads autoMemoryDirectory from every settings scope, in their precedence order, and honors a
     # project's settings.json or settings.local.json under workspace trust, but not while reads outside the working
     # directories are blocked (https://code.claude.com/docs/en/memory, "Storage location"); the --settings scope
     # between managed and local is in the note above.
     scopes = (
-        ("managed", managed),
+        *([] if managed is None else [("managed", managed)]),
         ("local", repo / ".claude" / "settings.local.json"),
         ("project", repo / ".claude" / "settings.json"),
         ("user", config_dir / "settings.json"),

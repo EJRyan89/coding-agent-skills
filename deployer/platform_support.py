@@ -80,7 +80,7 @@ INSTALL_HINTS = WINDOWS_INSTALL_HINTS if WINDOWS else LINUX_INSTALL_HINTS
 WINDOWS_INSTALL_HELP = (
     'For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in',
     "docs/installation.md. To use Git Bash from another location, set GIT_BASH",
-    "to its bash.exe.",
+    "to the absolute path of its bash.exe.",
     "After installing, open a new terminal. Applications that were already running,",
     "including ones minimized to the system tray, keep the old PATH until restarted.",
 )
@@ -395,8 +395,8 @@ def is_app_execution_alias(program: str | os.PathLike[str]) -> bool:
     folder is unset or relative, so nothing is judged relative to the working directory."""
     if not HAS_APP_EXECUTION_ALIASES:
         return False
-    local = Path(os.environ.get("LOCALAPPDATA", ""))
-    if not local.is_absolute():
+    local = executable_locator.environment_path("LOCALAPPDATA")
+    if local is None:
         return False
     path = Path(program)
     aliases = local / "Microsoft" / "WindowsApps"
@@ -417,14 +417,17 @@ def find_executables(name: str) -> list[str]:
 
 def find_bash() -> str | None:
     """Find the Bash that checks rendered scripts: on Windows Git for Windows' Bash, never another bash on PATH, such
-    as WSL's, and elsewhere the system's, the first bash on PATH."""
+    as WSL's, and elsewhere the system's, the first bash on PATH. On Windows GIT_BASH, then Git under the Program Files
+    folder, each only when its variable names an absolute path, so no Bash is found relative to the working directory,
+    then the Bash beside the git the locator finds."""
     if not WINDOWS:
         return find_executable("bash")
-    configured = os.environ.get("GIT_BASH")
-    if configured and Path(configured).is_file():
-        return configured
-    candidate = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
-    if candidate.is_file():
+    configured = executable_locator.environment_path("GIT_BASH")
+    if configured is not None and configured.is_file():
+        return str(configured)
+    program_files = executable_locator.environment_path("PROGRAMFILES")
+    candidate = None if program_files is None else program_files / "Git" / "bin" / "bash.exe"
+    if candidate is not None and candidate.is_file():
         return str(candidate)
     return _bash_beside_git()
 
