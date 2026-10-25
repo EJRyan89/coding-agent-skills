@@ -85,11 +85,13 @@ skill and agent behavior, not documentation. `DOCUMENTATION_FILES` and `DOCUMENT
 A guard, gate, verdict, count, or measurement has a test in which its evidence never existed, as item 5 of
 [Validation](adding-a-skill.md#validation) in the skill contract states.
 
-A defect or drift found after its change merged ends in an entry in the [lessons ledger](lessons.md), made in the pull
-request that fixes it: the lesson, the issues it was found in, and the guard that now refuses the mistake, a test, a
-validation policy's test, a skill's step, or a workflow, or the reason no guard is possible. A finding of a lesson the
-ledger already holds adds its issue to that entry. Validation fails a lesson whose guard does not resolve, and one
-that names neither a guard nor a reason.
+A defect or drift found after its change merged is an instance of a pattern in the [lessons catalogue](lessons.md).
+The pull request that fixes it cites the pattern it violated and runs that pattern's **Search for** forms across the
+repository, fixing each hit or filing it, which is the sibling search the fix names; when no pattern covers the
+defect, the pull request adds one, with its rule, the mechanism that applies it or the guard that refuses it, or the
+reason no guard can yet, and the forms to search for. A fix that adds a mechanism or a guard adds it to its pattern.
+Validation fails a pattern with no search, one with neither a mechanism, a guard, nor a reason, and each mechanism or
+guard that does not resolve.
 
 A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
 expected wording from that document, or from the one constant the code and the document both use, never from a copy
@@ -193,6 +195,13 @@ squash merge carries the body into `main`, and the release's notes are written f
 status lines, and exit codes are the contract items no check compares, so a change to them owes the note with nothing
 to catch its absence; the `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says how the entry names them.
 
+A `fix` pull request names its sibling search, on a line of the body that opens with `Siblings:`: the search run
+for the same construct elsewhere, as the pattern of the [lessons catalogue](lessons.md) the defect violated, whose
+**Search for** forms are the search, or the pattern the fix adds, and the scope searched, and the outcome for each
+hit, fixed here, filed as #N, or not a sibling and why. A fix that reaches one instance of a construct leaves its twin wrong, and the
+author, with the code in hand, is the one placed to look. It is the author's judgment, never an automated result, and
+no check reads it: `review-repository`'s `sibling-search` reviewer holds the search against a change to a script.
+
 A pull request that returns a file to its state before a commit on `main` reverts that commit's change to it, and
 validation's silent-revert check, in `tests/validation/silent_reverts.py`, names each such file with the commit and
 its pull request. A branch left behind, or a conflict resolved by taking the branch's side of a file it never set out
@@ -245,7 +254,7 @@ Each fact has one owner; update the owner in the same change.
 | `docs/upgrade-notes.md` | What each release changes for an installation, one entry per change a user meets, written at release from each pull request body's `## Upgrade note`. |
 | `docs/code-review-operations-contract.md` | The behavior the code-review skills promise to keep, and the formats of their records. |
 | `docs/skill-evaluations.md` | The latest `evaluate-skill` result per skill and model, written by `python tools/skill_evals.py --write`. |
-| `docs/lessons.md` | Each lesson learned from a defect or drift found after merge, and the guard that refuses it or why none can. |
+| `docs/lessons.md` | The design patterns learned from defects and drift found after merge: each rule, the mechanism that applies it, the guard that refuses a violation or why none can yet, and the forms to search for. |
 
 ## Model guidance
 

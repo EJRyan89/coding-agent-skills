@@ -68,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import json_reader
 import skill_menu
 from console import run_main
+from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -574,7 +575,7 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--discovery-only", action="store_true", help="install and list the plugins; run no model")
     parser.add_argument("--remove-home", metavar="DIR", help="delete a home an earlier run printed as HOME, and exit")
     parser.add_argument("--keep-home", action="store_true", help="keep the home after a run that passed")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, metavar="SECONDS")
+    parser.add_argument("--timeout", type=positive_seconds, default=DEFAULT_TIMEOUT, metavar="SECONDS")
     options = parser.parse_args(arguments)
     if options.remove_home is not None:
         return remove_home(options.remove_home)

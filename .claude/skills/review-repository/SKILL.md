@@ -23,9 +23,10 @@ allowed-tools: ["Bash(python -B skills/ejryan89-code-review-core/scripts/review_
 | `documentation` | `docs/`, top-level Markdown, the templates | Each sentence true of the code and of its owner |
 | `documentation-drift` | scripts, beside the reviewers above, when a document names what changed | Each passage that names changed code still true of it |
 | `untested-changes` | scripts, beside the reviewers above, when a changed function, method, or class has no test naming it | A test for each changed definition, or the body's reason none applies |
+| `sibling-search` | scripts, beside the reviewers above | A fix's `Siblings:` line, held against the twins in the diff's own files |
 | `upgrade-notes` | contract files, skills' `SKILL.md`, `deployer/arguments.py`, `pdf_tool.py` | The body's upgrade-note entry for each contract change, at the level and with the user action it asks for |
 
-The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every pattern matches without regard to case, as a checkout on a case-insensitive file system places a path. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `review-prs` gives every reviewer the pull request's body as untrusted data, `PULL_REQUEST_BODY_FILE`, so `upgrade-notes` reads its `## Upgrade note`. `documentation-drift` and `untested-changes` open only when their conditions find something; they and `skill-scripts` share their files, so the generic reviewer still reviews those files.
+The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every pattern matches without regard to case, as a checkout on a case-insensitive file system places a path. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `review-prs` gives every reviewer the pull request's body as untrusted data, `PULL_REQUEST_BODY_FILE`, so `upgrade-notes` reads its `## Upgrade note` and `sibling-search` its `Siblings:` line. `documentation-drift` and `untested-changes` open only when their conditions find something; they, `sibling-search`, and `skill-scripts` share their files, so the generic reviewer still reviews those files.
 
 ## 1. Configure
 
