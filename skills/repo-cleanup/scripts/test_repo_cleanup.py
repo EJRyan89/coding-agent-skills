@@ -2450,3 +2450,22 @@ class PlanVersionTests(CleanupTestCase):
                     lines[0].startswith(f"FAILED\t{plan} is not a repo-cleanup plan: schema_version must be one of 1"),
                     lines,
                 )
+
+
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def test_a_plan_named_through_a_linked_folder_has_the_seal_of_the_file_it_names(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "linked"
+    link_folder(real, link)
+    assert rc.seal_file(link / "plan.json") == rc.seal_file(real / "plan.json")
+    assert rc.seal_file(real / "other.json") != rc.seal_file(real / "plan.json")
