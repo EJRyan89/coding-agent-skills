@@ -53,9 +53,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/python_checks.py::PythonChecksPolicies::test_link_probe_is_the_one_link_test`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
-  `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`
+  `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
+  `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
-  `github_client.py`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
+  `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
+  `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
   followed by a `return None`, `return []`, or `return False`, where `is_present` should probe; `if not result.stdout`
   read as nothing found.
@@ -116,8 +118,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** each shared reader's family, `json_reader:CONTENT_ERRORS`, `json_writer:CONTENT_ERRORS`,
   `xml_reader:CONTENT_ERRORS`, `frontmatter:CONTENT_ERRORS`, `typed_text:CONTENT_ERRORS`,
   `guidance_record:CONTENT_ERRORS`, `check_provenance:CONTENT_ERRORS`, and `diff_paths:CONTENT_ERRORS`, named whole in
-  the handler; `review_io:CONTENT_ERRORS` and `file_presence:NotAFile`.
-- **Guard:** `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
+  the handler, and the readers each module names, such as `json_reader:CONTENT_READERS`; `review_io:CONTENT_ERRORS`
+  and `file_presence:NotAFile`.
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_each_handler_around_a_reader_catches_its_whole_content_family`,
+  `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`
@@ -211,7 +215,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A skipped entry, an ignored field, or a top-level value of the wrong type lets the reader judge a partial
   input as whole.
 - **Use:** `typed_fields:FieldReader.json_object`, which refuses an unknown key, `xml_reader:read_xml`, which refuses
-  a document type or entity declaration, and `deployer.discovery:ListingError`.
+  a document type or entity declaration, `deployer.discovery:ListingError`, and `skill_inventory:hooks_file_hooks`,
+  which refuses a hooks file member of another kind at every level, by name.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,

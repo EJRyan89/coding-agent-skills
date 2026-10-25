@@ -154,3 +154,7 @@ def test_a_url_urllib_cannot_split_is_a_record_error_naming_the_field(tmp_path: 
     ):
         with pytest.raises(GuidanceRecordError, match=r"url must be a URL urllib can split, found \"https://\["):
             guidance_record.read(write(tmp_path, document), ["alpha"])
+
+
+def test_the_readers_that_raise_the_family_are_named() -> None:
+    assert guidance_record.CONTENT_READERS == ("read",)

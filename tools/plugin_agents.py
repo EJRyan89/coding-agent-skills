@@ -28,6 +28,12 @@ KEY_LINE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(?P<value>.*))?
 DEPLOYED_SCRIPT = re.compile(r"os\.path\.expanduser\('~/\.claude/skills/(?P<path>[A-Za-z0-9_./-]+)'\)")
 
 Node = str | int | list["Node"] | dict[str, "Node"]
+CONTENT_ERRORS_ALLOWED = {
+    "plugin_agent": (
+        "it splits an agent's frontmatter that the deployer's source reader has already read, refusing it as a "
+        "BuildError before plugin_build renders the agent, so frontmatter refuses nothing here"
+    ),
+}
 
 
 class AgentError(ValueError):

@@ -559,7 +559,7 @@ READERS = [
     Reader(
         "skill_inventory.read_metadata",
         "json",
-        b'{"skill_deps": []}',
+        b'{"skill_deps": ["ejryan89-skill-core"]}',
         _metadata,
         (Refused,),
         filename="deploy-meta/example.json",

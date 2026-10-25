@@ -4,6 +4,7 @@ stops as any failure does, with the lock released and the journal as recovery ex
 from __future__ import annotations
 
 import contextlib
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -22,16 +23,19 @@ from deployer import errors, plan, platform_support, source_ref
 GONE_SECONDS = 10.0
 # The deadline the tests give a stub that hangs; the tree holding it starts the clock only once the stub is up.
 SHORT_DEADLINE = 2
+# How long a hung stub runs before it ends by itself: far past every deadline the tests give, and short of the mutation
+# gate's one-minute floor for a suite, so a run whose deadline is lost ends and fails its test rather than hanging.
+HANG_SECONDS = 30
 RECONCILING = "Deployment failed; reconciling the current journal before exit..."
 # Starts a program that runs on, as a tool a hung tool started does, writes its own and that program's process IDs to
 # the file named by its first argument, and then runs on itself.
-HANGING_PROGRAM = textwrap.dedent("""
+HANGING_PROGRAM = textwrap.dedent(f"""
     import os, subprocess, sys, time
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep({HANG_SECONDS})"])
     with open(sys.argv[1] + ".tmp", "w", encoding="utf-8") as handle:
-        handle.write(f"{os.getpid()} {child.pid}")
+        handle.write(f"{{os.getpid()}} {{child.pid}}")
     os.replace(sys.argv[1] + ".tmp", sys.argv[1])
-    time.sleep(120)
+    time.sleep({HANG_SECONDS})
 """)
 
 
@@ -80,9 +84,14 @@ def run_with_deadline(stub: str, seconds: float) -> Any:
     real = platform_support.run_tool
 
     def run(
-        arguments: list[str], environment: dict[str, str] | None = None, *, timeout: float | None = None
+        arguments: list[str],
+        environment: dict[str, str] | None = None,
+        *,
+        timeout: float | None = None,
+        separate_errors: bool = False,
     ) -> platform_support.ToolResult:
-        return real(arguments, environment, timeout=seconds if arguments[0] == stub else timeout)
+        deadline = seconds if arguments[0] == stub else timeout
+        return real(arguments, environment, timeout=deadline, separate_errors=separate_errors)
 
     return mock.patch.object(platform_support, "run_tool", side_effect=run)
 
@@ -112,10 +121,35 @@ class RunToolTests(DeadlineCase):
     def test_the_deadline_is_ten_minutes(self) -> None:
         self.assertEqual(600, platform_support.TOOL_DEADLINE_SECONDS)
 
+    def test_the_deadline_given_or_the_default_reaches_the_bounded_run(self) -> None:
+        # A stub in place of the bounded run starts nothing, so a deadline lost on the way fails here at once.
+        finished: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(["tool"], 0)
+        for timeout, expected in ((7.5, 7.5), (None, 600)):
+            with (
+                self.subTest(timeout=timeout),
+                # platform_support's own name for skill-core's run_bounded, which run_tool calls.
+                mock.patch("deployer.platform_support.run_bounded", return_value=finished) as bounded,
+            ):
+                result = platform_support.run_tool(["tool"], timeout=timeout)
+            self.assertEqual((expected, 0), (bounded.call_args.args[1], result.returncode))
+
     def test_a_slow_tool_within_its_deadline_finishes_with_its_output_in_order(self) -> None:
         program = "import sys, time; print('out', flush=True); time.sleep(1); print('err', file=sys.stderr)"
         result = platform_support.run_tool([sys.executable, "-c", program], timeout=30)
         self.assertEqual((0, ["out", "err"]), (result.returncode, result.output.splitlines()))
+        self.assertEqual("", result.errors)
+
+    def test_stderr_is_kept_apart_from_stdout_when_asked(self) -> None:
+        program = "import sys; print('out', flush=True); print('err', file=sys.stderr, flush=True); sys.exit(3)"
+        result = platform_support.run_tool([sys.executable, "-c", program], separate_errors=True)
+        self.assertEqual((3, "out", "err"), (result.returncode, result.output.strip(), result.errors.strip()))
+
+    def test_bytes_that_are_not_utf_8_are_replaced_on_either_stream(self) -> None:
+        program = (
+            "import sys; sys.stdout.buffer.write(b'o\\xff'); sys.stdout.flush(); sys.stderr.buffer.write(b'e\\xfe')"
+        )
+        result = platform_support.run_tool([sys.executable, "-c", program], separate_errors=True)
+        self.assertEqual((0, "o�", "e�"), (result.returncode, result.output, result.errors))
 
     def test_the_environment_is_added_to_the_deployer_s_own(self) -> None:
         program = "import os; print(os.environ['ADDED'], bool(os.environ.get('PATH')))"
@@ -158,7 +192,7 @@ class RunToolTests(DeadlineCase):
                 mock.patch.object(job_tree, "job_holding", side_effect=refusal),
                 self.assertRaises(errors.DeployError) as raised,
             ):
-                platform_support.run_tool([sys.executable, "-c", "import time; time.sleep(120)"])
+                platform_support.run_tool([sys.executable, "-c", f"import time; time.sleep({HANG_SECONDS})"])
             self.assertEqual(
                 [
                     f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
@@ -177,7 +211,7 @@ class RunToolTests(DeadlineCase):
                 mock.patch.object(job_tree.GroupTree, "start_options", return_value={}),
                 self.assertRaises(errors.DeployError) as raised,
             ):
-                platform_support.run_tool([sys.executable, "-c", "import time; time.sleep(120)"])
+                platform_support.run_tool([sys.executable, "-c", f"import time; time.sleep({HANG_SECONDS})"])
             self.assertEqual(
                 [
                     f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
@@ -337,10 +371,17 @@ class ReadOnlyCommandDeadlineTests(DeadlineCase):
         stub = self.stubs.hanging("codex")
         real = platform_support.run_tool
 
-        def run(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
+        def run(
+            arguments: list[str],
+            environment: dict[str, str] | None = None,
+            *,
+            timeout: float | None = None,
+            separate_errors: bool = False,
+        ) -> platform_support.ToolResult:
             if arguments == [stub, "--version"]:
                 return platform_support.ToolResult(0, "codex-cli 0.160.0\n")
-            return real(arguments, environment, timeout=SHORT_DEADLINE if arguments[0] == stub else None)
+            deadline = SHORT_DEADLINE if arguments[0] == stub else timeout
+            return real(arguments, environment, timeout=deadline, separate_errors=separate_errors)
 
         with (
             mock.patch.object(platform_support, "CODEX_NEEDS_SANDBOX_SETTING", True),

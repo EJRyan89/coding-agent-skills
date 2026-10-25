@@ -73,6 +73,8 @@ class FrontmatterError(ValueError):
 
 # What `split`, `parse`, `read`, and a `Frontmatter`'s readers raise on bad content.
 CONTENT_ERRORS: tuple[type[Exception], ...] = (FrontmatterError,)
+# The functions that raise CONTENT_ERRORS on content.
+CONTENT_READERS = ("split", "parse", "read")
 
 
 def split(lines: list[str]) -> tuple[list[str], int] | None:

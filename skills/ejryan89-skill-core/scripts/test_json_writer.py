@@ -12,6 +12,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import json_writer
 from json_reader import loads
 from json_writer import CONTENT_ERRORS, JsonWriteRefused, dumps, write
 
@@ -137,3 +138,7 @@ class ContentErrorsTests(unittest.TestCase):
                 dumps(value)
         with self.assertRaises(TypeError):
             dumps(object())
+
+
+def test_the_readers_that_raise_the_family_are_named() -> None:
+    assert json_writer.CONTENT_READERS == ("dumps", "write")
