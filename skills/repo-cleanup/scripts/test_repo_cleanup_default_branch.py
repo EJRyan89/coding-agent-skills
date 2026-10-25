@@ -148,6 +148,51 @@ class DefaultBranchTests(CleanupTestCase):
         git(root, "switch", "--quiet", "--detach")
         self.assertEqual("a detached HEAD", rc.current_branch(rc.Services(), root))
 
+    def test_containment_asks_git_for_the_first_ref_that_holds_the_commit(self) -> None:
+        commands: list[list[str]] = []
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            commands.append(list(command))
+            return GitResult(0, "refs/heads/main\n", "")
+
+        services = rc.Services(git=GitClient(run))
+        self.assertTrue(rc.reachable(services, "root", "c" * 40, "refs/heads/main", "refs/remotes"))
+        self.assertEqual(
+            [
+                [
+                    *commands[0][:3],
+                    "--no-optional-locks",
+                    "for-each-ref",
+                    "--count=1",
+                    f"--contains={'c' * 40}",
+                    "--format=%(refname)",
+                    "refs/heads/main",
+                    "refs/remotes",
+                ]
+            ],
+            commands,
+        )
+
+    def test_a_worktree_whose_head_is_detached_no_longer_has_the_branch(self) -> None:
+        root = self.repository("topic")
+        head = git(root, "rev-parse", "HEAD")
+        git(root, "switch", "--quiet", "--detach")
+        found = rc.fast_forward(rc.Services(), str(root), "topic", head, head, str(root))
+        self.assertEqual("the worktree no longer has the branch checked out", found)
+
+    def test_a_sync_from_a_detached_head_switches_to_the_default_branch(self) -> None:
+        root = self.repository("main")
+        git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        git(root, "switch", "--quiet", "--detach")
+        lines: list[str] = []
+        rc._capture.lines = lines
+        try:
+            rc.sync(str(root), False, rc.Services())
+        finally:
+            rc._capture.lines = None
+        self.assertIn("CHECKOUT\tswitched", lines)
+        self.assertEqual("refs/heads/main", git(root, "symbolic-ref", "HEAD"))
+
     def test_git_that_cannot_run_is_unavailable_not_absent(self) -> None:
         def stalled(command: Sequence[str], timeout: float) -> GitResult:
             raise git_client.GitError("git did not finish within 300 seconds", kind="timeout")
