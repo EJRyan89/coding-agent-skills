@@ -354,6 +354,7 @@ class ReadLogTests(GuardFixture):
             # reviewer, and reference files.
             ("Grep", {"pattern": "class", "path": str(self.source)}),
             ("Glob", {"pattern": "**/*.cs", "path": str(self.source)}),
+            ("Glob", {"pattern": "*", "path": service}),  # a pattern, even under a path that names one file
             ("Read", {"file_path": str(self.source / "app" / "Missing.cs")}),
             ("Read", {"file_path": str(self.run_directory / "work" / "csharp-review.diff")}),
             ("Read", {"file_path": str(self.run_directory / "reviewer" / ".claude" / "agents" / "csharp-review.md")}),

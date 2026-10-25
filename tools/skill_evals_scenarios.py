@@ -24,6 +24,7 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 import json_reader
 import whole_number
 from git_client import GitClient
+from path_containment import within
 from review_document import specialists_manifest
 from review_records import LEDGER_ID
 from review_runtime import DOCUMENT_STAGES, RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
@@ -346,7 +347,7 @@ def _document(directory: Path, value: object, what: str) -> Path:
         raise ScenarioError(f"{what} must be a relative path, not {quote(str(value))}")
     root = directory.parents[1].resolve()
     path = (directory / value).resolve()
-    if not path.is_relative_to(root):
+    if not within(path, root):
         raise ScenarioError(f"{what} {value} is outside the scenarios under {root}")
     if not path.is_file():
         raise ScenarioError(f"{what} {value} is missing")
@@ -446,7 +447,7 @@ def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str,
     if not (checkout / folder / "SKILL.md").is_file():
         raise ScenarioError(f"no repository skill {reviewer}: the checkout has no {folder}/SKILL.md")
     manifest_path = _manifest_path(directory)
-    if manifest_path is None or not PurePosixPath(manifest_path).is_relative_to(folder):
+    if manifest_path is None or not within(PurePosixPath(manifest_path), folder):
         raise ScenarioError(f"pull.json's manifest_path must name {reviewer}'s manifest under {folder}/")
     manifest = _manifest(checkout, manifest_path, f"{reviewer}'s manifest")
     own = [str(folder / "SKILL.md"), *_reviewer_folder(checkout, folder), manifest_path]

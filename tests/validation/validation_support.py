@@ -26,6 +26,7 @@ from markdown_sections import Fence as Fence
 from markdown_sections import find_fences as find_fences
 from markdown_sections import markdown_section as markdown_section
 from markdown_sections import prose_code_spans as prose_code_spans
+from path_containment import posix_within
 from skill_menu import MenuEntry, SourceMenu, expand
 from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
@@ -879,7 +880,7 @@ def is_test_script(path: PurePath) -> bool:
 
 def under(name: str, roots: Iterable[str]) -> bool:
     """Whether the repository path is one of roots, each a folder or a file, or lies inside one."""
-    return any(name == top or name.startswith(f"{top}/") for top in roots)
+    return any(posix_within(name, top) for top in roots)
 
 
 def scope_problems(policy: str, modules: Iterable[str], roots: Sequence[str], omitted: Mapping[str, str]) -> list[str]:
