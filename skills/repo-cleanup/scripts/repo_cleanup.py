@@ -242,10 +242,28 @@ def git_output(services: Services, directory: str | Path, *arguments: str) -> st
     return result.stdout
 
 
+def git_failure(root: str | Path, command: str, exc: git_client.GitError) -> GitUnavailable | CleanupError:
+    """GitUnavailable when git could not run or finish, else a CleanupError naming git's reason."""
+    if exc.returncode is None:
+        return GitUnavailable(f"could not run git: {exc}")
+    return CleanupError(f"git {command} failed in {root}: {one_line(str(exc)).strip()}")
+
+
+def quiet(services: Services, root: str | Path, *arguments: str) -> str | None:
+    """The stdout of a git command run with `--quiet`, or None when git answers that what it reads is not there; any
+    other failure raises, so a broken ref or an unreadable repository is never taken for one that is absent."""
+    try:
+        return services.git.quiet_output(["--no-optional-locks", *arguments], directory=root)
+    except git_client.GitError as exc:
+        raise git_failure(root, arguments[0], exc) from exc
+
+
 def resolve(services: Services, root: str | Path, ref: str) -> str | None:
-    result = git(services, root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
-    sha = result.stdout.strip()
-    return sha if result.returncode == 0 and pr_status.SHA_PATTERN.fullmatch(sha) else None
+    """The commit `ref` names, or None when git answers that it names none."""
+    try:
+        return services.git.commit_of(ref, directory=root)
+    except git_client.GitError as exc:
+        raise git_failure(root, "rev-parse", exc) from exc
 
 
 def branch_tip(services: Services, root: str | Path, branch: str) -> str | None:
@@ -258,9 +276,10 @@ def default_refs(default: str) -> tuple[str, str]:
 
 
 def reachable(services: Services, root: str | Path, sha: str, *refs: str) -> bool:
-    """Whether one of `refs` contains `sha`; a ref names itself or, as `refs/remotes` does, every ref below it."""
-    result = git(services, root, "for-each-ref", "--count=1", f"--contains={sha}", "--format=%(refname)", *refs)
-    return result.returncode == 0 and bool(result.stdout.strip())
+    """Whether one of `refs` contains `sha`; a ref names itself or, as `refs/remotes` does, every ref below it. A git
+    failure raises, so a commit git cannot test is never taken for one no ref contains."""
+    listed = git_output(services, root, "for-each-ref", "--count=1", f"--contains={sha}", "--format=%(refname)", *refs)
+    return bool(listed.strip())
 
 
 def ahead_behind(services: Services, root: str | Path, local: str, upstream: str) -> tuple[int, int]:
@@ -311,13 +330,16 @@ def uncommitted(services: Services, path: str) -> str:
 
 
 def name_with_owner(services: Services, root: str | Path) -> str | None:
-    """owner/name of a github.com origin, from the configured URL or its insteadOf expansion."""
-    for arguments in (("config", "--get", "remote.origin.url"), ("remote", "get-url", "origin")):
-        result = git(services, root, *arguments)
-        repository = github_repository(result.stdout) if result.returncode == 0 else None
-        if repository:
-            return repository
-    return None
+    """owner/name of a github.com origin, from the configured URL or its insteadOf expansion; None when git answers
+    that origin has no URL, or the URL names no GitHub repository. Any other git failure raises."""
+    configured = quiet(services, root, "config", "--get", "remote.origin.url")
+    if configured is None:
+        return None
+    repository = github_repository(configured)
+    if repository:
+        return repository
+    # The URL with insteadOf applied, which only `remote get-url` gives.
+    return github_repository(git_output(services, root, "remote", "get-url", "origin"))
 
 
 # Branches and worktrees -----------------------------------------------------------------------------------------
@@ -333,15 +355,15 @@ class DefaultBranch:
 
 
 def origin_has(services: Services, root: str | Path, name: str) -> bool:
-    return git(services, root, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}").returncode == 0
+    return quiet(services, root, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}") is not None
 
 
 def origin_head(services: Services, root: str | Path) -> str | None:
     """The branch refs/remotes/origin/HEAD names, whether or not origin has it, or None when it is unset."""
-    head = git(services, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-    target = head.stdout.strip()
+    head = quiet(services, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    target = (head or "").strip()
     name = target.removeprefix("refs/remotes/origin/")
-    return name if head.returncode == 0 and name and name != target else None
+    return name if name and name != target else None
 
 
 def refresh_origin_head(services: Services, root: str | Path) -> tuple[str | None, str]:
@@ -361,8 +383,8 @@ def refresh_origin_head(services: Services, root: str | Path) -> tuple[str | Non
 
 
 def current_branch(services: Services, root: str | Path) -> str:
-    head = git(services, root, "symbolic-ref", "--quiet", "--short", "HEAD")
-    return head.stdout.strip() if head.returncode == 0 and head.stdout.strip() else "a detached HEAD"
+    head = (quiet(services, root, "symbolic-ref", "--quiet", "--short", "HEAD") or "").strip()
+    return head or "a detached HEAD"
 
 
 def default_branch(services: Services, root: str | Path) -> DefaultBranch:
@@ -434,7 +456,10 @@ def fast_forward(services: Services, root: str, branch: str, old: str, new: str,
     if worktree is None:
         result = git(services, root, "update-ref", "-m", "repo-cleanup: fast-forward", f"refs/heads/{branch}", new, old)
     else:
-        head = git(services, worktree, "symbolic-ref", "--quiet", "HEAD").stdout.strip()
+        try:
+            head = (quiet(services, worktree, "symbolic-ref", "--quiet", "HEAD") or "").strip()
+        except CleanupError as exc:
+            return str(exc)
         if head != f"refs/heads/{branch}":
             return "the worktree no longer has the branch checked out"
         held = uncommitted(services, worktree)
@@ -517,7 +542,7 @@ def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] |
     if skip_checkout:
         checkout = "skipped"
         emit("CHECKOUT", checkout)
-    elif git(services, root, "symbolic-ref", "--quiet", "HEAD").stdout.strip() == f"refs/heads/{default.name}":
+    elif (quiet(services, root, "symbolic-ref", "--quiet", "HEAD") or "").strip() == f"refs/heads/{default.name}":
         checkout = "current"
         emit("CHECKOUT", checkout)
     else:
