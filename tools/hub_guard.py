@@ -948,8 +948,9 @@ def join(first: Shell, second: Shell) -> Shell:
         variables[name] = left if left == right and isinstance(left, str) else None
     references: dict[str, str | None] = {}
     for name in first.references.keys() | second.references.keys():
-        left, right = first.references.get(name, _ABSENT), second.references.get(name, _ABSENT)
-        references[name] = left if left == right and isinstance(left, str) else None
+        # A reference only one path made, or one the two paths point elsewhere, stands for no variable the guard knows.
+        left, right = first.references.get(name), second.references.get(name)
+        references[name] = left if left == right else None
     stack = first.stack if first.stack == second.stack else [None] * max(len(first.stack), len(second.stack))
     return Shell(
         first.cwd if same_place(first.cwd, second.cwd) else None,
@@ -1158,17 +1159,15 @@ class BashReader:
             return certain(shell)
         # Before a command's name Bash refuses an element's assignment, NAME[SUBSCRIPT]=, sets nothing for it, and
         # runs the command all the same. Each other one reaches its variable through any name reference.
+        values = [word_value(word, shell) for word in words[index:]]
         local: dict[str, Word] = {}
-        unsettled = False
         for assignment in assignments:
             target = shell.target(assignment.name)
             if target is None:
-                unsettled = True
+                # One through a reference the text does not settle may give the command any variable.
+                shell.opaque = True
             elif not assignment.element:
                 local[target] = assigned_value(assignment, shell)
-        values = [word_value(word, shell) for word in words[index:]]
-        # One through a reference the text does not settle may give the command any variable.
-        shell.opaque = shell.opaque or unsettled
         return self.run_words(values, node.redirects, shell, local)
 
     def run_words(
@@ -1197,7 +1196,7 @@ class BashReader:
         # declare -g made it, so after the call a reference it made or changed stands for no variable the guard knows.
         for after in (outcome.ok, outcome.fail):
             for reference, target in after.references.items():
-                if before.get(reference, _ABSENT) != target:
+                if before.get(reference) != target:
                     after.references[reference] = None
         return outcome
 
@@ -1425,7 +1424,6 @@ def declared_name(shell: Shell, name: str, value: str | None, referencing: bool 
     if referencing:
         if value is None:
             value = shell.references[name] if name in shell.references else shell.variables.get(name, "")
-            value = None if shell.opaque and name not in shell.references else value
         shell.references[name] = value
         if value or name in shell.variables:
             # The reference's own value, which a program sees when it is exported.
@@ -1510,12 +1508,12 @@ def bash_printf(reader: BashReader, arguments: list[Word], _: object, shell: She
         if word is None:
             assign_unsettled(shell, [None])
             break
-        if word == "--" or not word.startswith("-v"):
-            break
+        if not word.startswith("-v"):
+            break  # the format, or -- before it
         if word == "-v":
             # -v's name is the next word, unless it is attached, as in -vNAME.
             index += 1
-            assign_unsettled(shell, [arguments[index] if index < len(arguments) else ""])
+            assign_unsettled(shell, arguments[index : index + 1])
         else:
             assign_unsettled(shell, [word[2:]])
         index += 1

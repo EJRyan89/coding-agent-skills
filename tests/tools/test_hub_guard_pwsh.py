@@ -126,6 +126,7 @@ class SpellingTests(unittest.TestCase):
             ("-", None),
             ("--", None),
             ("/", None),
+            ("Xc", None),
             (None, None),
         ):
             with self.subTest(word=word):
@@ -149,6 +150,10 @@ class SpellingTests(unittest.TestCase):
         for arguments, expected in (
             (["--command", "-"], True),
             (["--command", "Get-Date"], False),
+            # The inline script is the words after -Command, and the one after -CommandWithArgs, whatever they say.
+            (["-c", "-NoProfile"], False),
+            (["-cwa", "-"], False),
+            (["Xc"], False),
             (["\u2013\u2013file", "-"], True),
             (["--file", "build.ps1"], False),
             (["--ec"], False),

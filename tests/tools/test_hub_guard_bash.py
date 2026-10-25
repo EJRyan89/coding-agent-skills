@@ -70,6 +70,7 @@ class BuiltinAssignmentTests(unittest.TestCase):
                 ("read -d $delimiter other <<< after", UNSETTLED),
                 ("read -u $descriptor other <<< after", UNSETTLED),
                 ("read other $more <<< after", UNSETTLED),
+                ("read - -p GIT_DIR <<< after", UNSETTLED),
             )
         )
 
@@ -83,6 +84,19 @@ class BuiltinAssignmentTests(unittest.TestCase):
                 ("read -d GIT_DIR other <<< after", before),
                 ("read -rp GIT_DIR other <<< after", before),
                 ("read -a other <<< after", before),
+                # Each option that takes a value takes the next word, which is then no name.
+                ("read -d GIT_DIR other <<< after", before),
+                ("read -i GIT_DIR other <<< after", before),
+                ("read -n GIT_DIR other <<< after", before),
+                ("read -N GIT_DIR other <<< after", before),
+                ("read -t GIT_DIR other <<< after", before),
+                ("read -u GIT_DIR other <<< after", before),
+                ("read -p", before),
+                # -- ends the options, and a lone - is the first name.
+                ("read -- other <<< after", before),
+                ("read -p GIT_DIR -- other <<< after", before),
+                ("read -- -aGIT_DIR <<< after", before),
+                ("export -n GIT_DIR; read GIT_DIR <<< after", UNSET),
             )
         )
 
@@ -103,6 +117,7 @@ class BuiltinAssignmentTests(unittest.TestCase):
                 ("printf -v other %s GIT_DIR", before),
                 ("printf -x GIT_DIR", before),
                 ("printf -v", before),
+                ("printf -vother", before),
                 # The program printf sets no variable of the shell.
                 ("env printf -v GIT_DIR %s after", before),
             )
@@ -124,6 +139,9 @@ class BuiltinAssignmentTests(unittest.TestCase):
                 ("mapfile < /dev/null", before),
                 ("mapfile other < /dev/null", before),
                 ("mapfile -u 0 other GIT_DIR < /dev/null", before),
+                # The array a bare mapfile, or a bare read, sets is MAPFILE, or REPLY, through any reference.
+                ("declare -n MAPFILE=GIT_DIR; mapfile < /dev/null", UNSETTLED),
+                ("declare -n REPLY=GIT_DIR; read <<< after", UNSETTLED),
             )
         )
 
@@ -144,6 +162,8 @@ class BuiltinAssignmentTests(unittest.TestCase):
                 ('getopts ab "$name" -a', UNSETTLED),
                 ("getopts ab other -a", before),
                 ("getopts ab", before),
+                ("getopts ab other GIT_DIR", before),
+                ("getopts $options other -a", UNSETTLED),
             )
         )
 
@@ -172,6 +192,10 @@ class NameReferenceTests(unittest.TestCase):
                 # A reference that stands for none names its variable at its first assignment.
                 ("declare -n ref; ref=GIT_DIR; ref=after", after),
                 ("declare -n ref; declare ref=GIT_DIR; ref=after", after),
+                ("declare -n ref; declare ref=GIT_DIR GIT_DIR=after", after),
+                ("declare -n ref; ref=GIT_DIR; declare -n ref; ref=after", after),
+                # A reference both paths make alike stands for its variable after them.
+                ("if [ -n x ]; then declare -n ref=GIT_DIR; else declare -n ref=GIT_DIR; fi; ref=after", after),
                 # Declared again without a value, a reference keeps its variable, and a variable becomes a reference
                 # to the one its value names.
                 ("declare -n ref=GIT_DIR; declare -n ref; ref=after", after),
@@ -190,10 +214,25 @@ class NameReferenceTests(unittest.TestCase):
         reading = hub_guard.Reading({}, text)
         hub_guard.read_bash(text, START, reading, 0, {})
         self.assertEqual([START / "after", None], [call.place.repository for call in reading.calls])
-        text = 'export GIT_DIR=before; declare -n ref=GIT_DIR; git --git-dir="$ref" status'
+        # The expansion of a reference is its variable's value, here given to --git-dir as a word of its own.
+        text = 'GIT_DIR=elsewhere; declare -n ref=GIT_DIR; git --git-dir "$ref" status'
         reading = hub_guard.Reading({}, text)
         hub_guard.read_bash(text, START, reading, 0, {})
-        self.assertEqual([START / "before"], [call.place.repository for call in reading.calls])
+        self.assertEqual([START / "elsewhere"], [call.place.repository for call in reading.calls])
+
+    def test_functions_are_followed_four_calls_deep(self) -> None:
+        definitions = "f1() { f2; }; f2() { f3; }; f3() { f4; }; f4() { git --git-dir after status; }; "
+        reading = hub_guard.Reading({}, definitions + "f1")
+        hub_guard.read_bash(definitions + "f1", START, reading, 0, {})
+        self.assertEqual(([START / "after"], []), ([call.place.repository for call in reading.calls], reading.unread))
+        deeper = "f0() { f1; }; " + definitions + "f0"
+        reading = hub_guard.Reading({}, deeper)
+        hub_guard.read_bash(deeper, START, reading, 0, {})
+        self.assertEqual([], reading.calls)
+        self.assertEqual(["the function f4 nests more than 4 deep"], reading.unread)
+        reading = hub_guard.Reading({}, "f() { f; }; f; git status")
+        hub_guard.read_bash("f() { f; }; f; git status", START, reading, 0, {})
+        self.assertEqual(["the function f nests more than 4 deep"], reading.unread)
 
     def test_a_builtin_that_sets_through_a_reference_leaves_its_variable_unsettled(self) -> None:
         self.assert_reading(
@@ -217,6 +256,17 @@ class NameReferenceTests(unittest.TestCase):
                 ("declare -n ref=GIT_DIR; unset -n ref; ref=after", before),
                 ("declare -n ref=GIT_DIR; declare +n ref; ref=after", before),
                 ("declare -n ref=GIT_DIR; declare -n ref=other; ref=after", before),
+                # unset through a reference removes its variable and the variable's export.
+                ("declare -n ref=GIT_DIR; unset ref; export GIT_DIR", UNSET),
+                ("declare -n ref=GIT_DIR; unset ref; GIT_DIR=after", UNSET),
+                ("declare -n ref=other; unset ref", before),
+                # unset -n removes the reference itself, with its own value and export.
+                ("declare -n GIT_DIR=other; unset -n GIT_DIR", UNSET),
+                ("declare -n GIT_DIR=other; unset -n GIT_DIR; GIT_DIR=after", UNSET),
+                ("declare -n GIT_DIR=other; unset -n GIT_DIR; export GIT_DIR", UNSET),
+                ("declare -n ref; unset -n ref", before),
+                # A reference declared again with no value has no value of its own to give a program.
+                ("unset GIT_DIR; export GIT_DIR; declare -n GIT_DIR", UNSET),
                 # Only declare, typeset, and local make a reference.
                 ("readonly -n ref=GIT_DIR; ref=after", before),
                 ("export -n ref=GIT_DIR; ref=after", before),
