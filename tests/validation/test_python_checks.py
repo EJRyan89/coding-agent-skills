@@ -1243,6 +1243,24 @@ async def waited(text):
         return None
 
 
+def finally_only(text):
+    try:
+        try:
+            return read(text)
+        finally:
+            text = ""
+    except json.JSONDecodeError:
+        return None
+
+
+def entered(text):
+    try:
+        with contextlib.nullcontext():
+            return read(text)
+    except reader.Refused:
+        return None
+
+
 CONTENT_ERRORS_ALLOWED = {
     "own": "reads text it wrote",
     "trusted": "reads text it wrote",
@@ -1321,6 +1339,8 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
         f"{alpha}:115 {remedy(both)}",
         f"{alpha}:136 {remedy('reader.Refused')}",
         f"{alpha}:143 {remedy('json.decoder.JSONDecodeError')}",
+        f"{alpha}:150 {remedy('reader.Refused')}",
+        f"{alpha}:160 {remedy('json.decoder.JSONDecodeError')}",
         f"{alpha}: CONTENT_ERRORS_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTENT_ERRORS_ALLOWED must map each function, class, or assignment to its reason",
         f"tools/caller.py:8 {remedy('reader.Refused')}",
