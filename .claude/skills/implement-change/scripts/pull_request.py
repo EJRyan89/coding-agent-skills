@@ -50,6 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import whole_number
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -89,9 +90,10 @@ def base_argument(value: str) -> Base:
 
 
 def issue_argument(value: str) -> int:
+    refused = argparse.ArgumentTypeError(f"{value!r} is not an issue number")
     if not re.fullmatch(r"[1-9][0-9]*", value):
-        raise argparse.ArgumentTypeError(f"{value!r} is not an issue number")
-    return int(value)
+        raise refused
+    return whole_number.read(value, refused)
 
 
 def blank_comments(text: str) -> str:
@@ -125,9 +127,11 @@ def draft_body(template: str, closes: Sequence[int]) -> str:
 
 
 def closed_issues(body: str) -> list[int]:
-    """The issue each `Closes #<n>` line of the body names, outside comments."""
+    """The issue each `Closes #<n>` line of the body names, outside comments, or PullRequestError for a number too
+    long to read."""
     found = (CLOSES_ONE.fullmatch(line.strip()) for line in blank_comments(body).splitlines())
-    return [int(match.group(1)) for match in found if match]
+    refused = PullRequestError(f"a Closes line names an issue number of more than {whole_number.DIGIT_LIMIT} digits")
+    return [whole_number.read(match.group(1), refused) for match in found if match]
 
 
 def headings(text: str) -> list[str]:
