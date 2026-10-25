@@ -858,7 +858,6 @@ def changelog_section(changelog: Changelog | None) -> list[str]:
 
 
 def guidance_brief(
-    subject: str,
     title: str,
     pages: Sequence[Page],
     facts: Sequence[tuple[str, str]],
@@ -1069,9 +1068,7 @@ def guidance(
     briefs = [
         (
             subject,
-            guidance_brief(
-                subject, titles[subject], found, subject_facts(subject, tracked), head, changelogs.get(subject)
-            ),
+            guidance_brief(titles[subject], found, subject_facts(subject, tracked), head, changelogs.get(subject)),
         )
         for subject, found in by_subject.items()
     ]

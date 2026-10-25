@@ -111,8 +111,9 @@ def read(path: Path, subjects: Sequence[str]) -> GuidanceRecord:
 
 
 def canonical_url(url: str) -> str:
-    """One form for the addresses that name the same document: the scheme and host in lower case, and a raw GitHub
-    file's `refs/heads/<branch>` written as its branch, as raw.githubusercontent.com serves both."""
+    """One form for the addresses that name the same document: the host in lower case, as urlsplit already gives the
+    scheme, and a raw GitHub file's `refs/heads/<branch>` written as its branch, as raw.githubusercontent.com serves
+    both."""
     parts = urlsplit(url)
     host = parts.netloc.lower()
     path = parts.path
@@ -120,7 +121,7 @@ def canonical_url(url: str) -> str:
     segments = path.split("/")
     if host == "raw.githubusercontent.com" and segments[3:5] == ["refs", "heads"]:
         path = "/".join([*segments[:3], *segments[5:]])
-    return parts._replace(scheme=parts.scheme.lower(), netloc=host, path=path).geturl()
+    return parts._replace(netloc=host, path=path).geturl()
 
 
 def document(record: GuidanceRecord) -> dict[str, object]:

@@ -1427,7 +1427,8 @@ class GuidanceTests(Fixture):
         self.assertEqual(0, code, lines)
         briefs = self.briefs(lines)
         expected = (
-            "## Changelog\n\nStart from the latest run of the `runtime-changelogs.yml` workflow. Its step summary "
+            "governs. Last read at no release yet.\n\n## Changelog\n\n"
+            "Start from the latest run of the `runtime-changelogs.yml` workflow. Its step summary "
             "lists the entries of https://example.com/alpha.md for each release after 2.1.0, the release this "
             "changelog was last read through, that mention a flag, environment variable, path, or frontmatter key "
             "this repository's code uses; each such release it could not read, as UNREAD, for you to read in the "
@@ -1437,6 +1438,11 @@ class GuidanceTests(Fixture):
             "each listed entry you did not judge.\n\n## What this repository states about Alpha CLI\n"
         )
         self.assertIn(expected, briefs["alpha"])
+        # Every brief names the commit its files are read at.
+        head = git(self.root, "rev-parse", "HEAD")
+        for name, brief in briefs.items():
+            with self.subTest(brief=name):
+                self.assertIn(f"read the files of this repository listed after the pages as they are at {head},", brief)
         # A subject with no changelog is told of none.
         for name in ("beta", "python"):
             with self.subTest(brief=name):

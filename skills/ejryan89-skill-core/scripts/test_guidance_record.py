@@ -109,6 +109,16 @@ def test_one_document_under_two_addresses_is_refused_in_and_across_the_lists(
         guidance_record.read(path, ["alpha"])
 
 
+def test_the_refusal_names_both_addresses_of_the_document(tmp_path: Path) -> None:
+    long, short = f"{RAW}/refs/heads/main/x.md", f"{RAW}/main/x.md"
+    path = write(tmp_path, {"pages": [page(long)], "changelogs": [changelog("alpha", url=short)]})
+    with pytest.raises(GuidanceRecordError) as caught:
+        guidance_record.read(path, ["alpha"])
+    assert str(caught.value) == (
+        f"{path.as_posix()} names one document as {short} and {long}; write each document's address one way"
+    )
+
+
 def test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case() -> None:
     assert guidance_record.canonical_url(f"{RAW}/refs/heads/main/x.md") == f"{RAW}/main/x.md"
     # Only the third and fourth segments name refs/heads, and only on the raw host; a path elsewhere keeps its form.
