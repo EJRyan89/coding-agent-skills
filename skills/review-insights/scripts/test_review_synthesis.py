@@ -24,6 +24,7 @@ import review_guard
 import review_guidance
 import review_insights as ri
 import review_synthesis as rs
+from json_writer import JsonWriteRefused
 from review_archive import commit_record, current_ledger
 from review_flags import add_flag, load_store, resolve_flag
 from review_io import PersistenceError
@@ -911,6 +912,17 @@ class StageTests(unittest.TestCase):
             "body": body,
         }
         return record, finding, ("owner/repo", 1, 1, finding["id"])
+
+    def test_an_input_or_context_json_cannot_hold_is_refused_before_anything_is_staged(self) -> None:
+        # A finding's body is author text, which an escaped lone surrogate in a record reaches as one.
+        with tempfile.TemporaryDirectory() as temporary:
+            for lines, context, held in (
+                ([{"body": "caf\udce9"}], {}, r"a lone surrogate U\+DCE9"),
+                ([], {"weight": float("nan")}, "NaN or an infinity"),
+            ):
+                with self.subTest(held=held), self.assertRaisesRegex(JsonWriteRefused, held):
+                    rs.staged_inputs(Path(temporary), lines, context)
+            self.assertEqual([], list(Path(temporary).iterdir()))
 
     def test_groups_rank_by_size_then_flags_then_findings_still_present_then_severity_then_headline(self) -> None:
         pairs = [

@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 from console import run_main
 from executable_locator import PYTHON
 from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log
@@ -93,7 +94,7 @@ def _count(log: Path, relative: str) -> None:
     uncounted, as its reads do."""
     if log.is_file():
         with contextlib.suppress(OSError), log.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(relative) + "\n")
+            stream.write(json_writer.dumps(relative) + "\n")
 
 
 def source_file(run: Path, role: str, relative: str) -> list[str]:

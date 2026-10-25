@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import json
 import re
 import shutil
 import sys
@@ -64,6 +63,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import json_reader
+import json_writer
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
@@ -463,12 +463,12 @@ def write_fixture(fixture: Path, document: Document, pull: dict[str, Any], stage
     write_file(fixture / "head", relative, document.content)
     pull = {"schema_version": 1, **pull, "threads": []}
     if design:
-        manifest = (json.dumps(specialists_manifest(relative), indent=2) + "\n").encode("utf-8")
+        manifest = (json_writer.dumps(specialists_manifest(relative), indent=2) + "\n").encode("utf-8")
         for tree in ("base", "head"):
             write_file(fixture / tree, MANIFEST_PATH, manifest)
         pull["manifest_path"] = MANIFEST_PATH
         pull["document_stage"] = stage or DEFAULT_DOCUMENT_STAGE
-    (fixture / "pull.json").write_text(json.dumps(pull, indent=2) + "\n", encoding="utf-8")
+    json_writer.write(fixture / "pull.json", pull, indent=2)
     return [
         f"DOCUMENT {relative}",
         f"BASE committed {base.commit}" if base.commit else f"BASE none {base.reason}",

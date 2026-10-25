@@ -63,6 +63,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 from console import run_main
 from executable_locator import PYTHON
 from path_containment import within
@@ -184,7 +185,7 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
     root = Path(os.path.normcase(str(source.resolve(strict=False))))
     relative = Path(os.path.normcase(str(path))).relative_to(root)
     with contextlib.suppress(OSError), read_log(run, role).open("a", encoding="utf-8") as log:
-        log.write(json.dumps(relative.as_posix()) + "\n")
+        log.write(json_writer.dumps(relative.as_posix()) + "\n")
 
 
 def _path(value: Any, cwd: Path) -> Path:
@@ -306,7 +307,7 @@ def _claim(agent: str, path: Path) -> None:
         _check_in_run("Read", path, claimed[0])
         return
     with os.fdopen(handle, "w", encoding="utf-8") as stream:
-        stream.write(json.dumps({"run": str(run), "role": role["id"]}))
+        stream.write(json_writer.dumps({"run": str(run), "role": role["id"]}))
     _start_log(run, role["id"])
 
 
