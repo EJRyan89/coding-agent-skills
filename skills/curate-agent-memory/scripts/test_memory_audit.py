@@ -1347,6 +1347,18 @@ class ResolveTests(unittest.TestCase):
         self.assertIsNone(result["memory_dir"])
         self.assertEqual([str(other)], result["candidates"])
 
+    def test_without_a_managed_settings_file_no_managed_scope_is_read_and_a_note_says_so(self) -> None:
+        write(self.managed, json.dumps({"autoMemoryDirectory": "~/memory-managed"}))
+        write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "~/memory-user"}))
+        result = memory_audit.resolve(self.repo, self.home, {}, None)
+        self.assertEqual(str(self.home / "memory-user"), result["memory_dir"])
+        note = (
+            "The Program Files folder is not named by an absolute path, so managed settings were not read; one there "
+            "can set autoMemoryDirectory."
+        )
+        self.assertIn(note, result["notes"])
+        self.assertNotIn(note, self.resolve()["notes"])
+
     def test_project_directory_name_and_config_dir_are_honored(self) -> None:
         config = self.root / "config"
         result = self.resolve({"CLAUDE_CONFIG_DIR": str(config), "CLAUDE_CODE_PROJECT_DIR_NAME": "shared"})
@@ -2034,3 +2046,24 @@ class JsonFileDecodingTests(unittest.TestCase):
             [Path("/café") / "skills" / "example" / "SKILL.md"],
             memory_audit.manifest_skill_files(self.root, "example"),
         )
+
+
+class ManagedSettingsPathTests(unittest.TestCase):
+    """Windows' managed settings file, run on every platform: it is under the Program Files folder only when that
+    folder is named by an absolute path, so no settings are read relative to the working directory."""
+
+    def managed(self, program_files: str | None) -> Path | None:
+        environment = {key: value for key, value in os.environ.items() if key.upper() != "PROGRAMFILES"}
+        if program_files is not None:
+            environment["PROGRAMFILES"] = program_files
+        with mock.patch.object(sys, "platform", "win32"), mock.patch.dict(os.environ, environment, clear=True):
+            return memory_audit.managed_settings_path()
+
+    def test_an_absolute_program_files_folder_holds_the_managed_settings(self) -> None:
+        folder = Path(tempfile.gettempdir()).resolve()
+        self.assertEqual(folder / "ClaudeCode" / "managed-settings.json", self.managed(str(folder)))
+
+    def test_an_unset_empty_or_relative_program_files_folder_gives_no_managed_settings(self) -> None:
+        for value in (None, "", ".", "Program Files"):
+            with self.subTest(value=value):
+                self.assertIsNone(self.managed(value))
