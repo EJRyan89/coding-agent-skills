@@ -62,9 +62,9 @@ def path_programs(name: str, search_path: str | None = None) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
     for folder in (os.environ.get("PATH", "") if search_path is None else search_path).split(os.pathsep):
-        if not Path(folder).is_absolute() or os.path.normcase(folder) in seen:
+        if not Path(folder).is_absolute() or path_key(folder) in seen:
             continue
-        seen.add(os.path.normcase(folder))
+        seen.add(path_key(folder))
         found.extend(
             str(candidate)
             for candidate in (Path(folder) / file for file in names)
