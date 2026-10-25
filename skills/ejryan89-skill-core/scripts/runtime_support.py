@@ -54,12 +54,19 @@ DEFAULT_REASONS = {
     "user-only-start": "A headless copilot -p session cannot start it; start it from an interactive session.",
     "sandbox-network": "Its network calls need network access, which this runtime's default sandbox turns off.",
 }
+# The section of a runtime's guide that says how to give a skill a capability the runtime withholds by default, as its
+# document, its heading, and what it gives. Every reason for lacking that capability there carries guide_pointer's
+# sentence rather than restating the settings, so a change to the guide leaves no copy behind; repository validation
+# holds both the reasons and the heading.
+CAPABILITY_GUIDES = {
+    ("codex", "sandbox-network"): ("docs/codex-support.md", "Network access", "the ways to open the network"),
+}
 # Copilot CLI starts subagents, but its `copilot -p` neither expands /<skill> for a user-only skill nor lets the model
 # start one (Copilot CLI 1.0.91; see docs/copilot-support.md). Workflow is Claude Code's alone. Codex and Copilot CLI
 # run hooks, but Codex lets a tool call through when a hook fails or times out, and Copilot CLI when one times out,
 # where Claude Code's agent definition blocks it, so a guard there holds only when it runs (the fail-closed decision in
 # docs/design.md). Codex's default
-# sandbox gives commands no network until [sandbox_workspace_write] network_access is set (docs/codex-support.md).
+# sandbox gives commands no network until a setting opens it ("Network access" in docs/codex-support.md).
 RUNTIME_CAPABILITIES = {
     "claude-code": frozenset(
         {"agent-delegation", "workflow", "fail-closed-agent-hooks", "user-only-start", "sandbox-network"}
@@ -221,14 +228,20 @@ def lacking(runtime: str, needs: set[str]) -> tuple[str, ...]:
     return tuple(capability for capability in CAPABILITIES if capability in needs - RUNTIME_CAPABILITIES[runtime])
 
 
+def guide_pointer(runtime: str, capability: str) -> str | None:
+    """The sentence a reason for lacking `capability` on `runtime` carries, or None when no guide says how to give
+    it."""
+    guide = CAPABILITY_GUIDES.get((runtime, capability))
+    return None if guide is None else f'See "{guide[1]}" in {guide[0]} for {guide[2]}.'
+
+
 def declaration(needs: set[str]) -> dict[str, object]:
-    """The runtime_support value that follows from `needs`, with the default reason for each partial."""
+    """The runtime_support value that follows from `needs`, with the default reason for each partial and the guide
+    pointer for each capability a guide says how to give."""
     value: dict[str, object] = {}
     for runtime in RUNTIMES:
         missing = lacking(runtime, needs)
-        value[runtime] = (
-            {"level": PARTIAL, "needs": list(missing), "reason": " ".join(DEFAULT_REASONS[need] for need in missing)}
-            if missing
-            else FULL
-        )
+        sentences = [DEFAULT_REASONS[need] for need in missing]
+        sentences += [pointer for need in missing if (pointer := guide_pointer(runtime, need))]
+        value[runtime] = {"level": PARTIAL, "needs": list(missing), "reason": " ".join(sentences)} if missing else FULL
     return value
