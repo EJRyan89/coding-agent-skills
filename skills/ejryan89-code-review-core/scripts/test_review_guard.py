@@ -976,10 +976,9 @@ def test_a_read_in_a_run_reached_through_a_link_is_logged_by_its_place_in_the_sn
 
 # Windows drops a name's trailing dots and spaces when it makes a path absolute; the guard and the read count judge a
 # path by its exact spelling, so these hold the textual key where the platform alone can tell it from the lexical one.
-WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="only Windows drops a name's trailing dots")
 
 
-@WINDOWS_ONLY
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows drops a name's trailing dots")
 def test_a_trusted_folder_keeps_its_spelling_where_windows_would_drop_a_trailing_dot(tmp_path: Path) -> None:
     given = guard._spellings(tmp_path / "trusted.")[0]
     assert str(given) == os.path.normcase(str(tmp_path / "trusted."))
@@ -995,7 +994,7 @@ def counted_reads(run: Path, lines: list[str]) -> dict[str, int]:
     return dict(state["reads"]["csharp-review"])
 
 
-@WINDOWS_ONLY
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows drops a name's trailing dots")
 def test_a_read_is_counted_by_the_spelling_the_log_gives_it(tmp_path: Path) -> None:
     read = tmp_path / "run" / "source" / "app" / "a.py"
     read.parent.mkdir(parents=True)
@@ -1004,7 +1003,7 @@ def test_a_read_is_counted_by_the_spelling_the_log_gives_it(tmp_path: Path) -> N
     assert counts == {"files": 2, "bytes": 2 * read.stat().st_size}
 
 
-@WINDOWS_ONLY
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows drops a name's trailing dots")
 def test_the_manifest_is_left_out_of_a_run_whose_folder_ends_in_a_dot(tmp_path: Path) -> None:
     # Windows makes `run.` as `run`; the run is still named `run.`, and its manifest is judged by that spelling.
     run = tmp_path / "run."
