@@ -121,8 +121,13 @@ class NewWorktreeTests(WorktreesTestCase):
         run = worktrees.CLIENT.run
         refused = git_client.GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
 
+        asked: list[tuple[list[str], object]] = []
+
         def answering(arguments: Sequence[str], **options: Any) -> git_client.GitResult:
-            return refused if "show-ref" in arguments else run(arguments, **options)
+            if "show-ref" in arguments:
+                asked.append((list(arguments), options.get("directory")))
+                return refused
+            return run(arguments, **options)
 
         with (
             mock.patch.object(worktrees, "current_hub", return_value=self.hub),
@@ -131,6 +136,7 @@ class NewWorktreeTests(WorktreesTestCase):
         ):
             worktrees.new("fix", "unreadable")
         self.assertIn("bad config line 1", str(raised.exception))
+        self.assertEqual([(["show-ref", "--verify", "--quiet", "refs/heads/fix/unreadable"], self.hub)], asked)
         self.assertFalse((self.worktrees / "fix-unreadable").exists())
 
     def test_new_accepts_every_title_type_and_inv_as_the_kind(self) -> None:
