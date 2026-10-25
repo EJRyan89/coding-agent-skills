@@ -234,7 +234,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `path_containment:refusal`, which judges an entry from input as written, as resolved, and through the link
   probe, and names why; `path_containment:within`, the one comparison of a path with its tree, which every other
   containment test calls on paths it has made absolute or resolved; `path_containment:posix_within` for a repository
-  path a listing gives; `dotnet_solution:refusal` and `dotnet_format_targets:listed_refusal`, which call `within` on a
+  path a listing gives; `dotnet_solution:refusal` and `dotnet_format_targets:listed_refusal`, which compare through it a
   path a solution or a file list names; `link_probe:is_plain_file`, `tools.checkout:checkout_root`,
   `memory_audit:bare_name`.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_path_containment_is_the_one_containment_test`,
