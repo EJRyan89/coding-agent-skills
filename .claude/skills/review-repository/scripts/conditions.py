@@ -17,6 +17,7 @@ from pathlib import Path
 
 from console import failed_line
 from diff_paths import header_path, snapshot_path, unquote
+from json_reader import read_file
 from suite_names import is_suite_name
 
 # The variables are ejryan89-code-review-core's side of the condition protocol as much as this one's.
@@ -79,11 +80,11 @@ def snapshot_exclusions(root: Path) -> dict[str, str]:
     A manifest that cannot be read, or whose `excluded_paths` does not map each path to a reason, raises
     MissingEvidence: an exclusion is never assumed."""
     manifest = root / SNAPSHOT_MANIFEST
-    if not manifest.exists() and not manifest.is_symlink():
-        return {}
     try:
-        metadata = json.loads(manifest.read_bytes().decode("utf-8"))
-    except (OSError, ValueError) as error:  # UnicodeDecodeError is a ValueError
+        metadata = read_file(manifest)
+    except FileNotFoundError:  # no manifest, or a link to none: nothing is excluded, so an absent file stays missing
+        return {}
+    except (OSError, ValueError) as error:  # UnicodeDecodeError and JsonRefused are ValueErrors
         raise MissingEvidence(f"the snapshot's {SNAPSHOT_MANIFEST} cannot be read: {error}") from error
     excluded = metadata.get("excluded_paths") if isinstance(metadata, dict) else None
     if not isinstance(excluded, dict) or not all(

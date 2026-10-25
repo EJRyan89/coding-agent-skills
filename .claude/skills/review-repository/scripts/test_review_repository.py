@@ -527,11 +527,13 @@ class DocumentationDriftTests(unittest.TestCase):
                 f"{SKILL_CORE}/console.py",
                 f"{SKILL_CORE}/diff_paths.py",
                 f"{SKILL_CORE}/flat_text.py",
+                f"{SKILL_CORE}/json_reader.py",
                 f"{SKILL_CORE}/link_probe.py",
                 f"{SKILL_CORE}/markdown_sections.py",
                 f"{SKILL_CORE}/path_containment.py",
                 f"{SKILL_CORE}/path_keys.py",
                 f"{SKILL_CORE}/suite_names.py",
+                f"{SKILL_CORE}/whole_number.py",
             },
             needed,
         )

@@ -126,6 +126,7 @@ class SnapshotExclusionTests(unittest.TestCase):
         for content, message in (
             (b"not json", unreadable),
             (b"\xff", unreadable),
+            (b'{"excluded_paths": {"a": "configured"}, "excluded_paths": {}}', unreadable),
             (b"[]", unmapped),
             (b"{}", unmapped),
             (b'{"excluded_paths": []}', unmapped),
