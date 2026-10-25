@@ -199,7 +199,7 @@ REPORTED_TOOLS = (
 def parse_version(text: str) -> tuple[int, ...] | None:
     """The first version of two or three numbers a tool's version command prints, as ejryan89-skill-core's `versions`
     reads it."""
-    return versions.find(text, least=2, most=3)
+    return versions.find(text)
 
 
 def format_version(version: tuple[int, ...]) -> str:

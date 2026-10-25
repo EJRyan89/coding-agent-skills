@@ -298,6 +298,22 @@ def test_unknown_ambiguous_malformed_and_failed_banners_are_refused(banner: str,
         pdf_tool.parse_banner(banner, status)
 
 
+@pytest.mark.parametrize(
+    ("version", "reason"),
+    [
+        # Poppler numbers its releases by year and month from 20.x on, so a month past 12 is malformed there.
+        ("20.13.0", "provider/version is malformed"),
+        ("21.13.0", "provider/version is malformed"),
+        # Before 20.x a minor number was no month, so 19.13.0 is a version, refused only as older than the floor.
+        ("19.13.0", "Poppler 19.13.0, older than Poppler 26.10.0"),
+    ],
+)
+def test_a_poppler_month_is_held_to_twelve_from_its_year_numbered_releases_on(version: str, reason: str) -> None:
+    with pytest.raises(pdf_tool.PdfToolRefused) as raised:
+        pdf_tool.parse_banner(POPPLER.format(version=version), 0)
+    assert str(raised.value) == reason
+
+
 def test_each_provider_the_probe_accepts_has_a_floor() -> None:
     assert get_args(pdf_tool.PdfProvider) == ("Xpdf", "Poppler")
     assert tuple(pdf_tool.MINIMUMS) == ("Xpdf", "Poppler")

@@ -267,7 +267,7 @@ def find_copilot() -> str:
 
 def parse_copilot_version(output: str) -> versions.Version:
     """The first three-number version `copilot --version` prints, as ejryan89-skill-core's `versions` reads it."""
-    version = versions.find(output, least=3, most=3)
+    version = versions.find(output, least=3)
     if version is None:
         raise RuntimeContractError("Cannot parse GitHub Copilot CLI version")
     return version
