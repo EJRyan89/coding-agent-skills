@@ -9,6 +9,7 @@ import re
 import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -1077,9 +1078,18 @@ def _duration(seconds: int | None) -> str:
     return f"{minutes}m {remainder:02d}s" if minutes else f"{remainder}s"
 
 
+def read_repository_path(read: FieldReader, value: object, path: str) -> str:
+    """A repository file's path as git names it: any string but an empty one, a blank one included, since git takes a
+    file named by Unicode whitespace alone, such as a no-break space."""
+    name = read.string(value, path, empty=True)
+    if not name:
+        raise read.fail(path, "a non-empty string", "an empty string")
+    return name
+
+
 def _read_path_set(value: object, path: str) -> list[str]:
     """A list of distinct non-empty paths."""
-    paths = READ.array(value, path, READ.string)
+    paths = READ.array(value, path, partial(read_repository_path, READ))
     if len(set(paths)) != len(paths):
         raise RecordError("Review coverage is malformed")
     return paths

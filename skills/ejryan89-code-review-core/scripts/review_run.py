@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from functools import partial
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict, TypeVar, cast, get_origin, get_type_hints
 
@@ -32,7 +33,7 @@ from review_hosts import subprocess_runner as copilot_subprocess_runner
 from review_io import PersistenceError, atomic_write_json, read_json
 from review_operation import ReviewOperationError
 from review_process import start_detached
-from review_records import ADAPTER_SOURCES, RE_REVIEW_SCOPES, SCOPE_FIELDS, RecordError, Scope
+from review_records import ADAPTER_SOURCES, RE_REVIEW_SCOPES, SCOPE_FIELDS, RecordError, Scope, read_repository_path
 from review_runtime import (
     MODEL_ALIAS_RUNTIMES,
     NATIVE_EFFORT_RUNTIMES,
@@ -319,7 +320,9 @@ def _read_run(state: dict[str, Any]) -> RunState:
         "notes": READ.array(state["notes"], "run.notes", READ.string),
         "patches": _object_of(state["patches"], "run.patches", READ.json_object),
         "scope": READ.optional(_read_scope, state["scope"], "run.scope"),
-        "uncovered_files": READ.array(state["uncovered_files"], "run.uncovered_files", READ.string),
+        "uncovered_files": READ.array(
+            state["uncovered_files"], "run.uncovered_files", partial(read_repository_path, READ)
+        ),
     }
     _read_optional(state, read, identities)
     return read
