@@ -153,6 +153,11 @@ def read_board(client: GitHubClient) -> Board:
         after = page["pageInfo"]["endCursor"]
 
 
+INT_PARSE_ALLOWED = {
+    "order_problem": "the options are the maintainer's own project field, named for the milestones",
+}
+
+
 def order_problem(options: Sequence[str]) -> str | None:
     """A problem line when the options named like a version are not in version order, else None."""
     keys = {name: tuple(int(part) for part in match.groups()) for name in options if (match := VERSION.fullmatch(name))}
