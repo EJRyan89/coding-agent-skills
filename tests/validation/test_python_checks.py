@@ -1297,7 +1297,11 @@ def reads(client: GitClient, given: GitResult, other):
     fourth = helper_git(".").returncode
     fine = other.run(["status"]).returncode
     caught = client.output(["status"])
-    return direct, first, second, third, fourth, fine, caught
+    held: GitResult = other.answer()
+    fifth = held.returncode
+    assigned: GitResult | None = client.run(["status"])
+    sixth = assigned.returncode
+    return direct, first, second, third, fourth, fine, caught, fifth, sixth
 
 
 def sanctioned(client: GitClient):
@@ -1338,7 +1342,7 @@ def test_git_status_policy_refuses_an_exit_status_read_outside_the_client() -> N
         "commit_of, file_at, or rev_parse_paths, or state why in GIT_STATUS_ALLOWED"
     )
     assert found == [
-        *(f"{alpha}:{line} {refusal}" for line in (11, 13, 14, 15, 16)),
+        *(f"{alpha}:{line} {refusal}" for line in (11, 13, 14, 15, 16, 20, 22)),
         f"{alpha}: GIT_STATUS_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: GIT_STATUS_ALLOWED must map each function, class, or assignment to its reason",
     ]
@@ -1349,6 +1353,9 @@ def listings(client, count):
     client.json(["pr", "list", "--limit", "5"])
     client.json(["pr", "list", f"--limit={count}"])
     client.json(["run", "list", "-L", "5"])
+    client.json(["run", "list", "-L5"])
+    client.json(["run", "list", f"-L{count}"])
+    client.json(["run", "list", "-Lx", "--limits"])
     client.capped_list(["pr", "list"], 5)
 
 
@@ -1370,8 +1377,7 @@ def test_gh_limit_policy_refuses_a_limit_passed_by_hand() -> None:
         "state why in GH_LIMIT_ALLOWED"
     )
     assert found == [
-        f"{alpha}:2 {refusal}",
-        f"{alpha}:3 {refusal}",
+        *(f"{alpha}:{line} {refusal}" for line in (2, 3, 4, 5, 6)),
         f"{alpha}: GH_LIMIT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: GH_LIMIT_ALLOWED must map each function, class, or assignment to its reason",
     ]

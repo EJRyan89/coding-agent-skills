@@ -37,7 +37,6 @@ from tools.release_notes import (
     ReleaseNotesError,
     SourcedEntry,
     body_entries,
-    git,
     git_output,
     range_entries,
     release_reaching,
@@ -89,7 +88,8 @@ def last_release_tag(root: Path) -> tuple[str | None, str | None]:
                 f"{RELEASE_BRANCH} is missing, so the upgrade-notes check cannot find the last tag; "
                 "fetch it with `git fetch origin main --tags`"
             )
-        if git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+        # output raises on a failure, so a clone git cannot read is named, never taken for one that is not shallow.
+        if CLIENT.output(["rev-parse", "--is-shallow-repository"], directory=root).strip() == "true":
             return None, (
                 "this clone is shallow, so the upgrade-notes check cannot see the last tag; "
                 "fetch the history with `git fetch --unshallow --tags`"

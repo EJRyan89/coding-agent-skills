@@ -114,11 +114,6 @@ ISSUE_REFERENCE = re.compile(r"(?<![\w/&#])#\d+\b|\bissues?\s+#?\d+\b", re.IGNOR
 ISSUE_REFERENCE_EXCLUDED = ("tests/fixtures",)
 
 
-GH_LIMIT_ALLOWED = {
-    "gh_limit_problems": "the policy names the option it refuses",
-}
-
-
 def comments(source: str) -> list[tokenize.TokenInfo]:
     """Each comment in the Python source, as tokenize reads it, so text in a string never counts as one."""
     return [token for token in tokenize.generate_tokens(io.StringIO(source).readline) if token.type == tokenize.COMMENT]
@@ -1218,6 +1213,9 @@ def git_status_problems(root: Path, files: list[Path]) -> list[str]:
 # must stay states why in a module-level GH_LIMIT_ALLOWED = {scope: reason}.
 GH_LIMIT_OWNER = "skills/ejryan89-skill-core/scripts/github_client.py"
 GH_LIMIT_ALLOWANCE = "GH_LIMIT_ALLOWED"
+# gh's limit option, long or short, alone, with its value after =, or with digits attached; an f-string's `-L{n}` holds
+# the `-L` alone.
+GH_LIMIT_OPTION = re.compile(r"--limit(?:=.*)?|-L[0-9]*")
 
 
 def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
@@ -1236,7 +1234,7 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
             for node, scope in scoped_nodes(tree.body)
             if isinstance(node, ast.Constant)
             and isinstance(node.value, str)
-            and (node.value == "--limit" or node.value.startswith("--limit="))
+            and GH_LIMIT_OPTION.fullmatch(node.value) is not None
         ]
         problems += sanctioned_problems(name, tree, GH_LIMIT_ALLOWANCE, found)
     return problems
