@@ -47,7 +47,7 @@ When a reason is not enough, search the run's `TRANSCRIPT` file, which is stream
 
 ## 5. Read the sampled transcript
 
-A script grader that passes a wrong run fails nothing, so every run with `--write` samples one passing run for you to read: its `SAMPLE <scenario> <model>` line, before `WROTE`, names it, and the next recorded run samples the next scenario and model. `SAMPLE none` means no run passed, and there is nothing to read. Otherwise, for each `PASS` line of that run, search its `TRANSCRIPT` for what the expectation claims, such as the finding at its line, the verdict, or the Skill tool call that started the skill, and check that the transcript shows it. Then record the reading, which is the step that commits the row:
+A script grader that passes a wrong run fails nothing, so every run with `--write` samples one passing run for you to read: its `SAMPLE <scenario> <model>` line, before `WROTE`, names it, with ` run=<run>` after the model when `--runs` is above 1, and the next recorded run samples the next scenario and model. `SAMPLE none` means no run passed, and there is nothing to read. Otherwise, for each `PASS` line of that run, search its `TRANSCRIPT` for what the expectation claims, such as the finding at its line, the verdict, or the Skill tool call that started the skill, and check that the transcript shows it. Then record the reading, which writes `docs/skill-evaluations.md` again and prints `WROTE <file>`; commit that edit with the run's rows:
 
 ```bash
 python -B tools/skill_evals.py review-prs --sample-read agrees
