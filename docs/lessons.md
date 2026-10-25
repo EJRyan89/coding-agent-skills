@@ -218,7 +218,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a document type or entity declaration, `deployer.discovery:ListingError`, and `skill_inventory:hooks_file_hooks`,
   which refuses a hooks file member of another kind at every level, by name.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
-  `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
+  `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
+  fails a reader that answers on a field or a list item of another type it does not document taking,
   `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
@@ -256,10 +257,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_past_the_recursion_limit_is_refused`,
   `tests/tools/test_hub_guard.py::EndToEndTests::test_bash_nested_deeper_than_the_reader_follows_is_refused_alike_in_its_own_process`,
-  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
+  `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, whose
+  table holds each parser of text by its own grammar's deep nesting
 - **Search for:** a function that calls itself on a child of its input with no depth parameter and no
-  `except RecursionError`; `literal_eval(` or `ast.parse(` on text from a file or another program; `json.loads(`
-  outside `json_reader.py`.
+  `except RecursionError`; `literal_eval(` or `ast.parse(` on text from a file or another program, whose handler
+  must name `MemoryError` and `RecursionError` beside `SyntaxError`; `json.loads(` outside `json_reader.py`.
 - **Examples:** #1613, #1617, #1729, #1886, #1893
 
 ### A path taken from input is judged inside its tree before anything opens it

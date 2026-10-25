@@ -40,6 +40,7 @@ REPOSITORY_SKILLS = REPOSITORY / ".claude" / "skills"
 audit_repository = module_at(REPOSITORY_SKILLS / "audit-repository" / "scripts" / "audit_repository.py")
 change_skill = module_at(REPOSITORY_SKILLS / "change-skill" / "scripts" / "change_skill.py")
 pull_request = module_at(REPOSITORY_SKILLS / "implement-change" / "scripts" / "pull_request.py")
+untested_functions = module_at(REPOSITORY_SKILLS / "review-repository" / "scripts" / "untested_functions.py")
 
 GUIDANCE_SUBJECTS = [*RUNTIMES, PYTHON_SUBJECT]
 GUIDANCE = (REPOSITORY / GUIDANCE_PATH).read_bytes()
@@ -125,6 +126,14 @@ def _skill_metadata(path: Path) -> object:
     return found
 
 
+def _closed_issues(path: Path) -> object:
+    return pull_request.closed_issues(text_of(path))
+
+
+def _python_definitions(path: Path) -> object:
+    return untested_functions.python_definitions(path.name, text_of(path))
+
+
 def _title(path: Path) -> object:
     title, problems = pull_request.read_title(pull_request.read_file(path))
     if problems:
@@ -171,6 +180,21 @@ READERS = [
         accepts={"top_level_list": "an empty list names no known failure, as the list holds once every reader passes"},
     ),
     Reader(
+        "pull_request.closed_issues",
+        "text",
+        b"Body.\n\nCloses #12\n",
+        _closed_issues,
+        (pull_request.PullRequestError,),
+        accepts={
+            "empty": "a body with no Closes line closes no issue",
+            "truncated": "a body with no Closes line closes no issue",
+            "long_line": "a body with no Closes line closes no issue",
+            "bom": "a byte-order mark before the body's first line leaves its Closes lines as they are",
+            "nul_bytes": "NUL bytes after the body's last line leave its Closes lines as they are",
+        },
+        number=lambda digits: b"Closes #" + digits + b"\n",
+    ),
+    Reader(
         "pull_request.read_title",
         "text",
         b"feat: an example title\n",
@@ -181,6 +205,22 @@ READERS = [
             "long_line": ONE_LINE_TITLE,
             "bom": "read_file drops the byte-order mark an editor may save, so the title is judged as typed",
         },
+    ),
+    Reader(
+        "untested_functions.python_definitions",
+        "text",
+        b"def example():\n    return 1\n",
+        _python_definitions,
+        # The condition reports a file it cannot parse as an UNPARSED block, from either error.
+        (SyntaxError, ValueError),
+        filename="example.py",
+        accepts={
+            "empty": "an empty module defines nothing",
+            "bom": "the parser takes a byte-order mark before a module's first line",
+            "long_line": "the case is a valid Python module, which defines nothing",
+        },
+        # A unary chain long enough to overflow the parser's own stack, which nests far deeper than a Python walk.
+        nesting=lambda levels: b"x = " + b"-" * (levels * 50) + b"1\n",
     ),
     Reader(
         "tools.deployable_report._read_results",
@@ -205,6 +245,10 @@ READERS = [
         _marketplace,
         (plugin_release.ReleaseError,),
         filename=plugin_build.MARKETPLACE.as_posix(),
+        accepts={
+            "wrong_type:plugins.0.name": "the release compares each entry's name with each plugin it builds, so a "
+            "name of another type fails it as a plugin the marketplace does not list",
+        },
     ),
     Reader(
         "tools.runtime_canary.read_records",
@@ -215,6 +259,11 @@ READERS = [
         (Refused, OSError, runtime_canary.RecordRefused),
         accepts={
             "empty": "the canary creates each records file empty, so an empty one is a run that recorded nothing",
+            **{
+                f"wrong_type:{field}": "each verdict compares the field with the value it expects, so a field of "
+                "another type matches none and the run fails as one that recorded nothing"
+                for field in ("runtime", "status")
+            },
         },
     ),
     Reader(

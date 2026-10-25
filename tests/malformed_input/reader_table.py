@@ -1,11 +1,14 @@
 """The shape of the reader table test_malformed_input.py runs: one entry per reader of a file or record.
 
-A reader is the function that reads and parses a file the code did not just write, or a record an earlier step or
-another program wrote. Each entry names the reader, its format, a well-formed document it reads, how to call it on a
-path, the refusals its contract names, and each case it documents accepting with the reason. A reader whose contract
-refuses by a return value, a finding, or a printed line rather than an exception is called through an adapter that
-turns that refusal into Refused, so every refusal is an exception the suite can name. readers.py gathers the entries,
-grouped by area in the readers_*.py modules beside it.
+A reader is the function that reads and parses a file the code did not just write, a record an earlier step or
+another program wrote, or text a user or a repository gave, such as an argument, a Markdown line, or a condition.
+Each entry names the reader, its format, a well-formed document it reads, how to call it on a path, the refusals its
+contract names, and each case it documents accepting with the reason. A reader whose contract refuses by a return
+value, a finding, or a printed line rather than an exception is called through an adapter that turns that refusal
+into Refused, so every refusal is an exception the suite can name; a parser of text is called on the file's text,
+which text_of reads. A parser whose grammar nests or takes a number names how its own document nests and where a
+number goes, so the suite holds it to the deep-nesting and long-integer cases a format alone cannot build.
+readers.py gathers the entries, grouped by area in the readers_*.py modules beside it.
 """
 
 from __future__ import annotations
@@ -48,15 +51,49 @@ class Reader:
     # Writes the files the reader takes beside its own, given the path of its own, before the case is read; the
     # reader then writes nothing below the case's folder when it refuses.
     prepare: Callable[[Path], None] | None = None
+    # For a parser whose grammar nests, such as braces or parentheses: its input nested the given number of levels.
+    nesting: Callable[[int], bytes] | None = None
+    # For a parser whose grammar takes a number: its input with that number given the digits passed.
+    number: Callable[[bytes], bytes] | None = None
+    # Why the reader returns each field as the document holds it, for its caller to read by kind, when it does: a
+    # field of another type is then accepted, as a missing field may be. Without it, a reader that answers on a field
+    # of another type passes over a shape it does not know.
+    open_fields: str = ""
+
+
+def grammar_cases(reader: Reader) -> list[corpus.Case]:
+    """The cases a parser's own grammar builds: its input nested past what a walk recurses through, and a number past
+    Python's digit limit."""
+    return [
+        *(
+            [
+                corpus.Case(
+                    "deep_nesting", reader.nesting(corpus.SCANNED_DEPTH), "the grammar nested past the recursion limit"
+                )
+            ]
+            if reader.nesting is not None
+            else []
+        ),
+        *(
+            [corpus.Case("long_integer", reader.number(corpus.LONG_INTEGER), "a number past Python's digit limit")]
+            if reader.number is not None
+            else []
+        ),
+    ]
 
 
 def applicable_cases(reader: Reader) -> list[corpus.Case]:
     """The corpus cases of the reader's format, built around its own document, the link case only where it refuses
-    links."""
+    links, then the cases its grammar builds, each in place of the format's case of the same name."""
+    own = grammar_cases(reader)
+    names = {case.name for case in own}
     return [
-        case
-        for case in corpus.cases(reader.format, reader.valid)
-        if case.content != corpus.LINK or reader.refuses_links
+        *(
+            case
+            for case in corpus.cases(reader.format, reader.valid)
+            if (case.content != corpus.LINK or reader.refuses_links) and case.name not in names
+        ),
+        *own,
     ]
 
 
