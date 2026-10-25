@@ -1598,6 +1598,19 @@ class GuidanceTests(Fixture):
                 self.assertIn(reason, lines[-1])
                 self.assertEqual(before, (repository / GUIDANCE).read_bytes())
 
+    def test_an_assignment_literal_eval_refuses_beside_the_runtimes_is_passed_over(self) -> None:
+        # literal_eval raises TypeError for an unhashable key and ValueError for a call.
+        for unrelated in ("BROKEN = {[1]: 2}\n", "BROKEN = {{1}}\n", "BROKEN = load()\n"):
+            with self.subTest(unrelated=unrelated):
+                write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": unrelated + CATALOGUE})
+                self.assertEqual({"alpha": "Alpha CLI", "beta": "Beta"}, audit.supported_runtimes(self.root))
+
+    def test_a_catalogue_nested_past_the_parsers_stack_fails_by_name(self) -> None:
+        write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": "X = " + "-" * 100_000 + "1\n"})
+        with self.assertRaises(audit.AuditError) as raised:
+            audit.supported_runtimes(self.root)
+        self.assertIn("cannot read the runtime catalogue", str(raised.exception))
+
     def test_a_catalogue_without_literal_runtimes_fails(self) -> None:
         for text in ("RUNTIMES = tuple(load())\n", "RUNTIMES = ('alpha',)\nRUNTIME_TITLES = {}\n", "def (\n"):
             with self.subTest(text=text):

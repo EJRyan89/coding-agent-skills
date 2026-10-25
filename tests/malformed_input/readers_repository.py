@@ -118,6 +118,10 @@ def _rotation(path: Path) -> object:
     return audit_repository.read_record(path)
 
 
+def _runtime_catalogue(path: Path) -> object:
+    return audit_repository.supported_runtimes(path.parents[3])
+
+
 def _guidance_audit(path: Path) -> object:
     return audit_repository.read_guidance_record(path, GUIDANCE_SUBJECTS)
 
@@ -257,6 +261,16 @@ READERS = [
         (REPOSITORY / audit_repository.RECORD_PATH).read_bytes(),
         _rotation,
         (audit_repository.AuditError,),
+    ),
+    Reader(
+        "audit_repository.supported_runtimes",
+        "text",
+        b'RUNTIMES = ("claude-code",)\nRUNTIME_TITLES = {"claude-code": "Claude Code"}\n',
+        _runtime_catalogue,
+        (audit_repository.AuditError,),
+        filename=audit_repository.RUNTIME_CATALOGUE,
+        # A unary chain long enough to overflow the parser's own stack, which nests far deeper than a Python walk.
+        nesting=lambda levels: b"X = " + b"-" * (levels * 50) + b"1\n",
     ),
     Reader(
         "change_skill.metadata",
