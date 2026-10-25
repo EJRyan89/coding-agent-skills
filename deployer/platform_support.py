@@ -60,9 +60,9 @@ WINDOWS_INSTALL_HINTS = {
     # The MSI build: winget's default is the packaged one, whose pwsh is an app execution alias (see below).
     "PowerShell": "winget install --id Microsoft.PowerShell --installer-type wix",
     # A validation-only dependency, installed into the interpreter that runs validation, which is python here.
-    "ruff": "python -m pip install -r requirements-dev.txt",
-    "mypy": "python -m pip install -r requirements-dev.txt",
-    "pytest": "python -m pip install -r requirements-dev.txt",
+    "ruff": "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "mypy": "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "pytest": "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
     # Validation-only too. -Force upgrades an older install and answers the untrusted-PSGallery prompt.
     "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
 }
@@ -71,9 +71,9 @@ LINUX_INSTALL_HINTS = {
     "Bash": "sudo apt install bash",
     "ShellCheck": "sudo apt install shellcheck",
     "PowerShell": "sudo snap install powershell --classic",
-    "ruff": "python3 -m pip install -r requirements-dev.txt",
-    "mypy": "python3 -m pip install -r requirements-dev.txt",
-    "pytest": "python3 -m pip install -r requirements-dev.txt",
+    "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
     "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
 }
 INSTALL_HINTS = WINDOWS_INSTALL_HINTS if WINDOWS else LINUX_INSTALL_HINTS

@@ -17,7 +17,7 @@ The deployer changes your home directory only through a journaled transaction, s
 | `<root>/.backups/<run-id>/<name>` | A permanent backup of a copy a run replaced with `--force` or `--force-item`. |
 | `deploy-at-<random>/` in the system temporary directory | The files of the commit a `--at` run deploys, exported for that run and removed when it ends; one left behind after the process was killed can be deleted. |
 
-`<root>` is whichever of `~/.claude/skills`, `~/.agents/skills`, and `~/.claude/agents` holds the item. A `<run-id>` is the time the run started, in UTC, as `YYYYMMDD-HHMMSS`, followed by four random hexadecimal characters, such as `20261006-214501-3fa2`; runs before October 2026 used local time.
+`<root>` is whichever of `~/.claude/skills`, `~/.agents/skills`, and `~/.claude/agents` holds the item. A `<run-id>` is the time the run started, in UTC, as `YYYYMMDD-HHMMSS`, followed by four random hexadecimal characters, such as `20261006-214501-3fa2`; an older deployer's run IDs give the local time instead.
 
 ## Interrupted deployments
 

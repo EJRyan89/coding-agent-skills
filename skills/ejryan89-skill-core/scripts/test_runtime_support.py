@@ -51,6 +51,32 @@ def test_the_needs_follow_from_grants_start_hooks_tools_and_git() -> None:
     assert runtime_support.frontmatter_needs([], False, git_subcommands=frozenset({"fetch"})) == {"sandbox-network"}
 
 
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ('services.git.run(["fetch", "origin", "--quiet"], directory=root)', {"fetch"}),
+        ('git_in(checkout, runner, "ls-remote", "--symref", "origin", "HEAD")', {"ls-remote"}),
+        ('git(services, root, "-C", path, "push", "origin")', {"push"}),
+        ('GitClient(runner).output(["-c", "core.quotepath=off", "clone", url])', {"clone"}),
+        ('self.client.run(("pull",))', set()),
+        ("git_output(services, root, *arguments)", set()),
+        ('services.git.run(["--no-optional-locks", *arguments])', set()),
+        ('READ.json_object(value, "pull")', set()),
+        ('digits(value, "fetch")', set()),
+        ('print("fetch")', set()),
+    ],
+)
+def test_a_python_git_call_names_its_subcommand(line: str, expected: set[str]) -> None:
+    # The derivation reads a Python script's git calls as it reads a Bash script's, so a Python-only skill that
+    # fetches needs sandbox-network too.
+    assert runtime_support.python_git_subcommands(line) == expected
+
+
+def test_a_python_script_that_does_not_parse_raises() -> None:
+    with pytest.raises(SyntaxError):
+        runtime_support.python_git_subcommands("git(")
+
+
 def test_an_invoked_skill_is_the_first_word_of_a_code_span_on_a_line_that_says_invoke() -> None:
     text = (
         "Then invoke `review-prs --re-review`, or invoke `flag-review-finding`.\n"

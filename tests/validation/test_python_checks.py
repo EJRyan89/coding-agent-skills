@@ -181,7 +181,7 @@ class PythonChecksFixtures(unittest.TestCase):
         ):
             self.assertIsNone(find_mypy())
         self.assertEqual(
-            ["  - mypy: python -m pip install -r requirements-dev.txt"],
+            ["  - mypy: python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt"],
             missing_prerequisites((("mypy", "mypy", lambda: None),)),
         )
         with (
@@ -189,7 +189,10 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertRaises(AssertionError) as raised,
         ):
             mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml")
-        self.assertIn("mypy was not found: python -m pip install -r requirements-dev.txt", str(raised.exception))
+        self.assertIn(
+            "mypy was not found: python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+            str(raised.exception),
+        )
 
     def test_type_check_names_a_wrong_return_type(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -719,7 +722,10 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertRaises(AssertionError) as raised,
         ):
             ruff_lint_check(REPOSITORY_ROOT, ["deploy.py"])
-        self.assertIn("ruff was not found: python -m pip install -r requirements-dev.txt", str(raised.exception))
+        self.assertIn(
+            "ruff was not found: python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+            str(raised.exception),
+        )
 
     def test_mypy_path_policy_names_each_missing_and_stale_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

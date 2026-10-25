@@ -32,6 +32,7 @@ from skill_layout import (
     output_placeholder_problems,
     plugin_tree_problems,
     repository_skill_name_problems,
+    runtime_page_problems,
     runtime_support_problems,
     script_dependency_problems,
     script_language_problems,
@@ -627,6 +628,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                 },
             },
             "reads-git-locally": {"runtime_support": full},
+            # A Python script's git call that reaches a remote needs it as a Bash script's does.
+            "fetches-from-python": {"runtime_support": full},
         }
         user_only_md = "---\nname: {0}\ndescription: d\ndisable-model-invocation: true\n---\n"
         plain_md = "---\nname: {0}\ndescription: d\n---\n"
@@ -654,6 +657,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                     ),
                     "skills/reads-git-locally/scripts/status.sh": 'git -C "$CLONE" status --porcelain  # fetch later\n',
                     "skills/reads-git-locally/scripts/test_status.sh": 'git -C "$CLONE" fetch origin\n',
+                    "skills/reads-git-locally/scripts/test_status.py": 'git(root, "fetch", "origin")\n',
+                    "skills/fetches-from-python/scripts/update.py": 'services.git.run(["fetch", "origin"])\n',
                 },
             )
             doc = '"Metadata" in docs/adding-a-skill.md'
@@ -662,6 +667,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                 [
                     "deploy-meta/delegates.json declares copilot-cli needs agent-delegation, "
                     f"but copilot-cli lacks workflow; see {doc}",
+                    "deploy-meta/fetches-from-python.json declares codex full, but codex lacks sandbox-network, "
+                    f"so it is partial or none; see {doc}",
                     "deploy-meta/fetches.json declares codex full, but codex lacks sandbox-network, "
                     f"so it is partial or none; see {doc}",
                     "deploy-meta/guarded.json declares codex full, but codex lacks fail-closed-agent-hooks, "
@@ -683,6 +690,41 @@ class SkillLayoutFixtures(unittest.TestCase):
                     f"user-only-start, so it is partial or none; see {doc}",
                 ],
                 runtime_support_problems(root),
+            )
+
+    def test_runtime_page_policy_holds_each_support_statement_to_the_metadata(self) -> None:
+        partial = {"level": "partial", "needs": ["fail-closed-agent-hooks"], "reason": "No guard."}
+        support = {"claude-code": "full", "codex": partial, "copilot-cli": partial}
+        page = (
+            "The `synthesizer` synthesis runs without the guard: its support is `partial`, lacking "
+            "`fail-closed-agent-hooks`. The `synthesizer` skill is `full` here.\n\n"
+            "The `synthesizer` support is `partial`, lacking `sandbox-network`. The `fetcher` skill is `full` and the "
+            "`synthesizer` is `partial`. The `fetcher`\nskill is `partial`, lacking `sandbox-network`.\n\n"
+            "```text\nThe `fetcher` skill is `none`.\n```\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/synthesizer.json": json.dumps({"runtime_support": support}),
+                    "deploy-meta/fetcher.json": json.dumps(
+                        {"runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}}
+                    ),
+                    "docs/copilot-support.md": page,
+                },
+            )
+            doc = '"Metadata" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    "docs/copilot-support.md says synthesizer is full on copilot-cli, but its deploy-meta declares "
+                    f"partial lacking fail-closed-agent-hooks; see {doc}",
+                    "docs/copilot-support.md says synthesizer is partial lacking sandbox-network on copilot-cli, but "
+                    f"its deploy-meta declares partial lacking fail-closed-agent-hooks; see {doc}",
+                    "docs/copilot-support.md says fetcher is partial lacking sandbox-network on copilot-cli, but its "
+                    f"deploy-meta declares full; see {doc}",
+                ],
+                runtime_page_problems(root),
             )
 
     def test_deploy_variable_policy_detects_unused_and_undeclared_variables(self) -> None:

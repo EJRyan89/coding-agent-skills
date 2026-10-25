@@ -319,6 +319,11 @@ def test_a_quoted_reason_keeps_its_runs_of_spaces_in_the_summary() -> None:
     assert "| 1.0.54 | none read |  no bullet  in its text:   Fixes  and changes  |\n" in watch.summary(lines)
 
 
+def test_the_line_for_no_watched_entry_is_pinned_once() -> None:
+    # The one pin of the constant's text; every other test takes it from the constant.
+    assert watch.NO_WATCHED_ENTRY == "No entry read mentions a watched term."
+
+
 def test_the_summary_says_how_many_entries_it_read_and_tables_each_unread_release() -> None:
     lines = [
         "CHANGELOG copilot-cli 1.0.53 1.0.54 0 0",
@@ -333,12 +338,12 @@ def test_the_summary_says_how_many_entries_it_read_and_tables_each_unread_releas
     ) in text
     assert (
         "\n\n### copilot-cli: releases after 1.0.53, up to 1.0.54\n\nEntries read: 0.\n\n"
-        "No entry read mentions a watched term.\n\n| Release | Terms | Entry |\n| --- | --- | --- |\n"
+        f"{watch.NO_WATCHED_ENTRY}\n\n| Release | Terms | Entry |\n| --- | --- | --- |\n"
         "| 1.0.54 | none read | no bullet in its text: Fixes &#124; changes |\n"
     ) in text
     assert (
         "### claude-code: releases after 2.1.302, up to 2.1.303\n\nEntries read: 4.\n\n"
-        "No entry read mentions a watched term.\n\n\n### codex"
+        f"{watch.NO_WATCHED_ENTRY}\n\n\n### codex"
     ) in text
 
 
@@ -541,7 +546,7 @@ class MainTests(unittest.TestCase):
         text = summary.read_text(encoding="utf-8")
         self.assertIn("| 99.0.0 | --allowedTools allowed-tools | Changed --allowedTools and `allowed-tools` |", text)
         self.assertIn(f"- MOVED {record.pages[0].url} https://example.com/moved", text)
-        self.assertIn("No entry read mentions a watched term.", text)
+        self.assertIn(watch.NO_WATCHED_ENTRY, text)
         # Every runtime's latest release is 99.0.0 here, so every captured sample is behind it.
         samples = json.loads((REPOSITORY / PROVENANCE).read_text(encoding="utf-8"))["samples"]
         recorded = samples["changelogs/copilot-cli-changelog.md"]["versions"]["copilot-cli"]
