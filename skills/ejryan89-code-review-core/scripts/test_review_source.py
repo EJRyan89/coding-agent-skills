@@ -517,6 +517,13 @@ class CommandTests(LazySnapshotFixture):
         )
         self.assertFalse(self.log.exists())
 
+    def test_a_counted_path_is_one_json_string_line_and_one_the_writer_refuses_stays_uncounted(self) -> None:
+        # A name past ASCII is one escaped JSON string line; a lone surrogate, which no UTF-8 log can hold, is left
+        # uncounted as an unguarded read is, and the command still prints the file.
+        review_source._count(self.log, "src/café.py")
+        review_source._count(self.log, "src/bad\udcff.py")
+        self.assertEqual(['"src/caf\\u00e9.py"'], self.log.read_text(encoding="utf-8").splitlines())
+
     def test_source_search_prints_each_match_then_the_count(self) -> None:
         self.assertEqual(
             (0, ["MATCH src/unchanged.py:1: def helper(value):", "MATCHES 1"]),

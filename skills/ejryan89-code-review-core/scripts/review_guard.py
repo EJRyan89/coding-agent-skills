@@ -297,6 +297,9 @@ def _claim(agent: str, path: Path) -> None:
     role = None if run is None else next((r for r in _roles(run) if _same(path, Path(r["prompt_file"]))), None)
     if run is None or role is None:
         raise Denied(f"{FIRST}; {path} is not a reviewer prompt")
+    # Serialized before the claim file exists, so a run path the JSON writer refuses leaves no empty claim behind:
+    # the refusal fails the guard's evaluation, which denies the call.
+    claim = json_writer.dumps({"run": str(run), "role": role["id"]})
     CLAIMS.mkdir(parents=True, exist_ok=True)
     _prune_claims()
     try:
@@ -308,7 +311,7 @@ def _claim(agent: str, path: Path) -> None:
         _check_in_run("Read", path, claimed[0])
         return
     with os.fdopen(handle, "w", encoding="utf-8") as stream:
-        stream.write(json_writer.dumps({"run": str(run), "role": role["id"]}))
+        stream.write(claim)
     _start_log(run, role["id"])
 
 
