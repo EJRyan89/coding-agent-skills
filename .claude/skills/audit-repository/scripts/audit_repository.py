@@ -1043,34 +1043,32 @@ def merged_fixes(git: GitClient, repository: Path, base: str, head: str) -> list
 
 def removed_lines(diff: str) -> tuple[list[str], set[str]]:
     """The lines a `git diff -U0` removes, in order, and the lines it adds, each stripped, read by each hunk's counts
-    so a removed line that starts with `---` is never taken for a header."""
+    so a removed line that starts with `---` is never taken for a header. A line of neither side ends its hunk early
+    and is read as any line outside one, so a hunk cut short loses no header after it."""
     removed: list[str] = []
     added: set[str] = set()
-    lines = diff.split("\n")
-    index = 0
-    while index < len(lines):
-        header = HUNK_HEADER.match(lines[index])
-        index += 1
-        if header is None:
+    # The lines of each side the current hunk has still to give.
+    old = new = 0
+    for line in diff.split("\n"):
+        if line.startswith("-") and old:
+            removed.append(line[1:].strip())
+            old -= 1
             continue
-        old = whole_number.read(
-            header.group(1) or "1", AuditError(f"git diff printed the hunk header {lines[index - 1]}")
-        )
-        new = whole_number.read(
-            header.group(2) or "1", AuditError(f"git diff printed the hunk header {lines[index - 1]}")
-        )
-        while (old or new) and index < len(lines):
-            line = lines[index]
-            index += 1
-            if line.startswith("-") and old:
-                removed.append(line[1:].strip())
-                old -= 1
-            elif line.startswith("+") and new:
-                added.add(line[1:].strip())
-                new -= 1
-            elif not line.startswith("\\"):
-                break
+        if line.startswith("+") and new:
+            added.add(line[1:].strip())
+            new -= 1
+            continue
+        if line.startswith("\\") and (old or new):
+            continue
+        header = HUNK_HEADER.match(line)
+        old, new = (0, 0) if header is None else hunk_counts(header)
     return removed, added
+
+
+def hunk_counts(header: re.Match[str]) -> tuple[int, int]:
+    """The lines a hunk header says each side gives, 1 where it names no count."""
+    refused = AuditError(f"git diff printed the hunk header {header.string}")
+    return whole_number.read(header.group(1) or "1", refused), whole_number.read(header.group(2) or "1", refused)
 
 
 def searchable(line: str) -> bool:

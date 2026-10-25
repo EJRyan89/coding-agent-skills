@@ -2019,6 +2019,28 @@ TWIN_BRIEF = "\n".join(
 )
 
 
+def test_each_grep_record_is_read_whole_and_one_it_cannot_read_is_skipped() -> None:
+    head = "f" * 40
+    stdout = "".join(
+        [
+            # A line number that is no number, and a record without the tree's prefix, are each skipped, and the scan
+            # goes on past them.
+            f"{head}:a.py\0x\0not a number\n",
+            "other:b.py\x007\0no prefix\n",
+            # The text is everything after the second separator, a separator of its own included.
+            f"{head}:c.py\x003\0one\0two \n",
+            f"{head}:d.py\x004\0last\n",
+        ]
+    )
+
+    def run(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
+        return GitResult(returncode=0, stdout=stdout, stderr="")
+
+    with mock.patch.object(GitClient, "run", run):
+        hits, cut = audit.search_construct(GitClient(), Path(), head, ["a construct line"])
+    assert (hits, cut) == ([audit.Hit("c.py", 3, "one\0two"), audit.Hit("d.py", 4, "last")], False)
+
+
 def test_a_twin_brief_is_written_whole() -> None:
     fixes = [
         audit.Fix(
@@ -2082,6 +2104,11 @@ def test_removed_lines_are_read_by_each_hunks_counts() -> None:
             "-ended",
             " context ends the hunk",
             "-not counted",
+            # A header inside a hunk cut short starts the next hunk.
+            "@@ -50,3 +50 @@",
+            "-cut by a header",
+            "@@ -60 +59,0 @@",
+            "-after the early header",
             "@@ -20,3 +20 @@",
             "-cut short",
         ]
@@ -2095,6 +2122,8 @@ def test_removed_lines_are_read_by_each_hunks_counts() -> None:
         "before",
         "after",
         "ended",
+        "cut by a header",
+        "after the early header",
         "cut short",
     ]
     assert added == {"added", "only added", "added among the removed"}
