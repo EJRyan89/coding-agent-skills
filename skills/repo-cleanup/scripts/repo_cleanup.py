@@ -65,6 +65,7 @@ from github_client import GitHubClient, GitHubError, replace_undecodable, subpro
 from github_client import Runner as GhRunner
 from github_remote import github_repository
 from link_probe import is_plain_directory, is_plain_file
+from path_containment import within
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
@@ -1092,9 +1093,8 @@ def unchanged(
 def strictly_inside(path: str, boundary: str, *, lexical: bool = False) -> bool:
     """Whether `path` lies below `boundary`, both resolved through links, or with `lexical` as written."""
     normalize = os.path.abspath if lexical else os.path.realpath
-    path, boundary = os.path.normcase(normalize(path)), os.path.normcase(normalize(boundary))
     try:
-        return path != boundary and os.path.commonpath([path, boundary]) == boundary
+        return within(normalize(path), normalize(boundary), strict=True)
     except ValueError:
         return False
 

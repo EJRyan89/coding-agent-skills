@@ -68,6 +68,7 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubError
+from path_containment import within
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_github import PULL_PAGE_SIZE, GitHubClient, NotOneFile
 from review_github import READ as RESPONSE
@@ -359,7 +360,7 @@ def fixture_target(root: Path, relative: str) -> Path:
     path rules refuse it in the room `root` leaves, or when it would land outside `root`."""
     refuse_path(relative, path_room(root))
     target = root.joinpath(*PurePosixPath(relative).parts)
-    if not target.resolve().is_relative_to(root.resolve()):
+    if not within(target.resolve(), root.resolve()):
         raise DocumentError(f"{relative} is not a path a fixture can hold: it lands outside the fixture")
     return target
 

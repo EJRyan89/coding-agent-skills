@@ -1030,6 +1030,13 @@ class MaterializationRecordTests(unittest.TestCase):
         self.write(_materialization())
         self.assertEqual(self.root / "SKILL.md", review_hosts.materialized_reviewer_entrypoint(self.root))
 
+    def test_a_declared_file_that_is_a_folder_inside_the_root_is_refused_by_name(self) -> None:
+        (self.root / "rules").mkdir()
+        self.write(_materialization(source_hashes={"SKILL.md": _sha(SKILL), "rules": _sha(SKILL)}))
+        with self.assertRaises(RuntimeContractError) as raised:
+            review_hosts.materialized_reviewer_entrypoint(self.root)
+        self.assertEqual("Copilot reviewer materialization file is invalid: rules", str(raised.exception))
+
     def test_a_record_the_parser_refuses_is_refused_as_invalid(self) -> None:
         for reason, content in {**UNPARSEABLE_JSON, "a lone surrogate": LONE_SURROGATE}.items():
             with self.subTest(reason):
