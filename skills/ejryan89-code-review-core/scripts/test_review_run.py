@@ -126,6 +126,13 @@ def test_a_run_prepared_before_an_optional_field_loads_without_it(tmp_path: Path
     assert state == review_run.load_run(tmp_path)
 
 
+@pytest.mark.parametrize("path", [" ", "\u00a0", "folder/ "])
+def test_an_uncovered_file_git_names_by_whitespace_alone_loads(tmp_path: Path, path: str) -> None:
+    state = prepared_state(uncovered_files=[path])
+    write_run(tmp_path, state)
+    assert review_run.load_run(tmp_path)["uncovered_files"] == [path]
+
+
 def test_a_run_prepared_before_every_optional_field_loads_without_them(tmp_path: Path) -> None:
     state = {name: value for name, value in prepared_state().items() if name not in OPTIONAL_FIELDS}
     state["roles"] = [{key: role[key] for key in ("id", "prompt_file", "result_file")} for role in state["roles"]]
@@ -364,6 +371,11 @@ DAMAGED = [
         _set("uncovered_files", value="assets/logo.png"),
         'run.uncovered_files must be an array, found string "assets/logo.png"',
         id="uncovered-files",
+    ),
+    pytest.param(
+        _set("uncovered_files", 0, value=""),
+        "run.uncovered_files[0] must be a non-empty string, found an empty string",
+        id="uncovered-file-empty",
     ),
     pytest.param(_set("archive_base", value=1), "run.archive_base must be an object, found integer 1", id="archive"),
     pytest.param(
