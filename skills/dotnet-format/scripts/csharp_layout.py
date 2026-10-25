@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import json_reader
+import whole_number
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
@@ -651,6 +652,17 @@ def _bracket(pattern: str, start: int) -> tuple[str, int] | None:
     return ("[^/" if negated else "[") + "".join(members) + "]", index + 1
 
 
+def _range_bound(text: str) -> int:
+    """A bound of a {num1..num2} range, an optional sign and its digits, or Failed when it has more digits than
+    whole_number reads."""
+    digits = text.lstrip("+-")
+    refused = Failed(
+        f"an .editorconfig section's numeric range has a bound of more than {whole_number.DIGIT_LIMIT} digits"
+    )
+    value = whole_number.read(digits, refused)
+    return -value if text.startswith("-") else value
+
+
 def _translate(pattern: str, ranges: list[tuple[int, int]]) -> tuple[str, bool]:
     """A regular expression for an EditorConfig glob, and whether it has a path separator outside brackets.
 
@@ -684,7 +696,7 @@ def _translate(pattern: str, ranges: list[tuple[int, int]]) -> tuple[str, bool]:
         elif char == "{" and (end := _closing_brace(pattern, index)) is not None:
             body = pattern[index + 1 : end]
             if numbers := NUMERIC_RANGE.fullmatch(body):
-                low, high = sorted(int(value) for value in numbers.groups())
+                low, high = sorted(_range_bound(value) for value in numbers.groups())
                 ranges.append((low, high))
                 out.append(r"([+-]?[0-9]+)")
             elif len(options := _alternatives(body)) == 1:  # braces without a comma are literal

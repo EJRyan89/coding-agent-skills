@@ -167,6 +167,7 @@ import git_client
 import json_reader
 import runtime_support
 import skill_menu
+import whole_number
 from console import run_main
 from file_presence import is_present
 from flat_text import flat_text, single_line
@@ -1953,7 +1954,9 @@ def shell_facts(text: str) -> ScriptFacts:
         facts.words.update(ANY_STATUS_WORD.findall(line))
         for match in SHELL_PRINT.finditer(line):
             facts.lines.setdefault(match.group(1), number)
-        facts.codes.update(int(code) for code in SHELL_EXIT.findall(line))
+        # A code past the digit limit, or in digits other than ASCII, is no code a shell exits with.
+        codes = (whole_number.parse(code) for code in SHELL_EXIT.findall(line))
+        facts.codes.update(code for code in codes if code is not None)
     return facts
 
 
@@ -2048,6 +2051,13 @@ def stated_lines(folder: Path, path: Path, lines: list[str], printed: set[str], 
     return output
 
 
+def stated_code(digits: str) -> int | str:
+    """The exit code a line states, or its digits as stated when they are too many to read, which no script exits
+    with."""
+    code = whole_number.parse(digits)
+    return digits if code is None else code
+
+
 def stated_codes(path: Path, lines: list[str], codes: set[int]) -> list[str]:
     languages, _ = parse_fences(lines)
     return [
@@ -2055,7 +2065,7 @@ def stated_codes(path: Path, lines: list[str], codes: set[int]) -> list[str]:
         for index in range(body_start(lines), len(lines))
         if languages[index] is None
         for match in EXIT_STATED.finditer(lines[index])
-        if (code := int(match.group(1) or match.group(2))) not in codes
+        if (code := stated_code(match.group(1) or match.group(2))) not in codes
     ]
 
 
