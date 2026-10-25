@@ -94,6 +94,25 @@ QUESTIONS = (
         "invalid UTF-8, and a directory in the file's place",
     ),
     ("sibling", "for each fix that touched these files since their last audit, the fixed construct's twin elsewhere"),
+    (
+        "successive-runs",
+        "for each record a run writes that a later run reads (the deployment manifest's pin, owned items, and each "
+        "skill's skill_deps; the journal; code-review records and run files; repo-cleanup's plans, seals, and sweep "
+        "record; a reporting skill's history file), follow it through two runs: after run N, who owns each field, the "
+        "user or the tool, and does run N+1 read it as the documents promise, including when run N was given the value "
+        "in another form (a short name, another case, an equivalent path)? A test that asserts the state after one run "
+        "without the next run's behavior is a finding, as the pin recorded as refs/tags/<tag> after one update, which "
+        "the next release's update moved without --unpin, was (#1689)",
+    ),
+    (
+        "installed-copy",
+        "for each deployer refusal, flag, status line, or path the installed update-coding-agent-skills reads: how "
+        "does the previous release's installed copy, which runs this deployer from the fast-forwarded clone, behave "
+        "with it, and does each way out the documents name work for that first update? A route only the new copy can "
+        "take is a finding, and the upgrade note must name the way past it, as the installed copy whose advice to "
+        "rerun with --unpin repeated its stop over a user's pin showed; the test #1607 proposes, the latest release's "
+        "installed update run against a newer clone, is what holds the answer",
+    ),
 )
 QUESTION_LINES = [f"QUESTION {name} {what}" for name, what in QUESTIONS]
 
@@ -1394,11 +1413,47 @@ class GuidanceTests(Fixture):
         )
         self.assertFalse([line for line in lines if line.startswith("BRIEF")])
 
-    def test_a_record_without_python_pages_is_not_refused(self) -> None:
+    def test_refuses_a_record_that_names_no_python_page_and_writes_no_brief(self) -> None:
         write(self.root, {GUIDANCE: guidance_text(FIXTURE_PAGES[:3])})
         code, lines = self.run_main("guidance")
-        self.assertEqual(0, code)
-        self.assertEqual(["alpha", "beta"], list(self.briefs(lines)))
+        self.assertEqual(1, code)
+        self.assertEqual(f"FAILED {GUIDANCE} names no page for python; add Python's pages before the audit", lines[-1])
+        self.assertFalse([line for line in lines if line.startswith(("BRIEF", "SUBJECT"))])
+
+    def test_a_runtime_brief_starts_its_reader_from_the_changelog_watch_and_names_read_through(self) -> None:
+        changelogs = [changelog("alpha", read_through="2.1.0")]
+        write(self.root, {GUIDANCE: json.dumps({"pages": FIXTURE_PAGES, "changelogs": changelogs}, indent=2) + "\n"})
+        code, lines = self.run_main("guidance")
+        self.assertEqual(0, code, lines)
+        briefs = self.briefs(lines)
+        expected = (
+            "## Changelog\n\nStart from the latest run of the `runtime-changelogs.yml` workflow. Its step summary "
+            "lists the entries of https://example.com/alpha.md for each release after 2.1.0, the release this "
+            "changelog was last read through, that mention a flag, environment variable, path, or frontmatter key "
+            "this repository's code uses; each such release it could not read, as UNREAD, for you to read in the "
+            "changelog yourself; and each page of the record that moved or is gone. Answer questions 2 to 5 for each "
+            "entry it lists, as for a page.\n\nWhen the audit is recorded, the maintainer moves this changelog's "
+            "read_through to the latest release whose entries you read, so name that release under Coverage, with "
+            "each listed entry you did not judge.\n\n## What this repository states about Alpha CLI\n"
+        )
+        self.assertIn(expected, briefs["alpha"])
+        # A subject with no changelog is told of none.
+        for name in ("beta", "python"):
+            with self.subTest(brief=name):
+                self.assertNotIn("## Changelog", briefs[name])
+                self.assertNotIn("runtime-changelogs.yml", briefs[name])
+
+    def test_a_page_s_last_read_is_its_latest_release_whatever_order_the_record_lists_its_reads_in(self) -> None:
+        pages = [page("https://example.com/alpha/skills", "alpha", ["v0.10.0", "v0.9.0"]), *FIXTURE_PAGES[2:]]
+        write(self.root, {GUIDANCE: guidance_text(pages)})
+        code, lines = self.run_main("guidance")
+        self.assertEqual(0, code, lines)
+        self.assertIn("SUBJECT alpha 1 v0.10.0", lines)
+        self.assertIn(
+            "- https://example.com/alpha/skills: what https://example.com/alpha/skills governs. "
+            "Last read at v0.10.0.\n",
+            self.briefs(lines)["alpha"],
+        )
 
     def test_record_appends_the_tag_to_every_page_and_writes_no_brief(self) -> None:
         linked = self.linked_worktree()

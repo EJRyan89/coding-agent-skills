@@ -88,6 +88,43 @@ def test_a_malformed_page_list_fails_with_the_reason(tmp_path: Path, document: o
     assert reason in str(caught.value)
 
 
+RAW = "https://raw.githubusercontent.com/owner/repository"
+
+
+@pytest.mark.parametrize(
+    ("pages", "changelog_url"),
+    [
+        pytest.param([f"{RAW}/refs/heads/main/CHANGELOG.md"], f"{RAW}/main/CHANGELOG.md", id="refs-heads-across-lists"),
+        pytest.param([f"{RAW}/main/a.md", f"{RAW}/refs/heads/main/a.md"], None, id="refs-heads-among-pages"),
+        pytest.param(["https://Example.com/a"], "https://example.com/a", id="host-case-across-lists"),
+        pytest.param(["https://EXAMPLE.com/a", "https://example.com/a"], None, id="host-case-among-pages"),
+    ],
+)
+def test_one_document_under_two_addresses_is_refused_in_and_across_the_lists(
+    tmp_path: Path, pages: list[str], changelog_url: str | None
+) -> None:
+    changelogs = [] if changelog_url is None else [changelog("alpha", url=changelog_url)]
+    path = write(tmp_path, {"pages": [page(url) for url in pages], "changelogs": changelogs})
+    with pytest.raises(GuidanceRecordError, match=r"names one document as \S+ and \S+; write each document's address"):
+        guidance_record.read(path, ["alpha"])
+
+
+def test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case() -> None:
+    assert guidance_record.canonical_url(f"{RAW}/refs/heads/main/x.md") == f"{RAW}/main/x.md"
+    # Only the third and fourth segments name refs/heads, and only on the raw host; a path elsewhere keeps its form.
+    assert guidance_record.canonical_url(f"{RAW}/main/refs/heads/x.md") == f"{RAW}/main/refs/heads/x.md"
+    other = "https://example.com/owner/repository/refs/heads/main/x.md"
+    assert guidance_record.canonical_url(other) == other
+    assert guidance_record.canonical_url("https://Example.COM/A?b=C#D") == "https://example.com/A?b=C#D"
+
+
+def test_a_page_and_a_changelog_may_name_one_document_written_the_same_way(tmp_path: Path) -> None:
+    url = f"{RAW}/main/CHANGELOG.md"
+    path = write(tmp_path, {"pages": [page(url)], "changelogs": [changelog("alpha", url=url)]})
+    record = guidance_record.read(path, ["alpha"])
+    assert [record.pages[0].url, record.changelogs[0].url] == [url, url]
+
+
 def test_a_missing_or_unreadable_record_fails_with_the_reason(tmp_path: Path) -> None:
     with pytest.raises(GuidanceRecordError, match="no guidance record at"):
         guidance_record.read(tmp_path / "missing.json", ["alpha"])
