@@ -15,6 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import skill_roots
+from module_closure import copy_with_imports
 from skill_roots import MissingSibling, deployed_skill_roots, plugin_name, sibling_scripts, skills_directory_holding
 
 
@@ -97,21 +98,7 @@ class SiblingScriptsTests(unittest.TestCase):
     def test_a_script_whose_sibling_is_absent_ends_with_a_failed_line_and_exit_1(self) -> None:
         # A home no legacy code page can spell, so the line is shown to print in UTF-8 before run_main sets it up.
         deployed = self.root / "a home 家" / ".claude" / "skills"
-        core = self.make_skill(deployed / "ejryan89-skill-core")
-        for module in (
-            "skill_roots.py",
-            "file_presence.py",
-            "console.py",
-            "flat_text.py",
-            "json_reader.py",
-            "whole_number.py",
-            "path_containment.py",
-            "path_keys.py",
-            "link_probe.py",
-        ):
-            (core / module).write_text(
-                (Path(__file__).resolve().parent / module).read_text(encoding="utf-8"), encoding="utf-8"
-            )
+        copy_with_imports(self.make_skill(deployed / "ejryan89-skill-core"), "skill_roots")
         script = self.make_skill(deployed / "dependent") / "run.py"
         script.write_text(
             "import sys\nfrom pathlib import Path\n"

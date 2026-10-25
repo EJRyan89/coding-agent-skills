@@ -507,3 +507,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that runs a module's suites on what only a policy under `tests/validation/` reads; a new `*_ALLOWED` name with no
   `*_ALLOWANCE` constant naming it in a policy.
 - **Examples:** #1933, #1938
+
+### A fixture derives what it copies from the source
+
+- **Rule:** A suite that builds a throwaway copy of ejryan89-skill-core's modules copies a module with every module it
+  imports, read from the source, and leaves one out only by removing it from the built tree by name.
+- **Why:** A hand-kept list of modules to copy is one short as soon as a copied module imports another, and the
+  fixture's script then fails with `ModuleNotFoundError` in a suite the change never touched.
+- **Use:** `module_closure:copy_with_imports`, given the modules a fixture's script needs, or
+  `module_closure:imports_of` for a script of another skill.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_module_closure.py::ModuleClosureTests::test_a_new_import_of_a_copied_module_is_copied_without_any_list_edited`
+- **Search for:** a tuple or list of `"<module>.py"` names in a suite next to `write_bytes`, `write_text`, or
+  `copyfile` under a path naming `ejryan89-skill-core`; `with_name(module)` in a loop over such names.
+- **Examples:** #1939

@@ -21,12 +21,11 @@ from harness import (
     make_directory_link,
     remove_directory_link,
 )
+from module_closure import copy_with_imports
 
 from deployer import fsops, hashing, manifest, pipeline, render
 from deployer.errors import DeployError
 from deployer.paths import validate_managed_roots
-
-SKILL_ROOTS = Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts" / "skill_roots.py"
 
 
 class RemovalTests(DeployerTestCase):
@@ -221,18 +220,7 @@ class RemovalTests(DeployerTestCase):
         self.write(core / "scripts" / "support.py", 'VALUE = "dependency ready"\n')
         # core plays ejryan89-skill-core: it holds the real sibling lookup, which run.py reaches middle through once
         # deployed, where the manifest's recorded skill_deps keep middle installed beside a skipped or preserved public.
-        self.write(core / "scripts" / "skill_roots.py", SKILL_ROOTS.read_text(encoding="utf-8"))
-        for module in (
-            "file_presence.py",
-            "console.py",
-            "flat_text.py",
-            "json_reader.py",
-            "whole_number.py",
-            "path_containment.py",
-            "path_keys.py",
-            "link_probe.py",
-        ):
-            self.write(core / "scripts" / module, SKILL_ROOTS.with_name(module).read_text(encoding="utf-8"))
+        copy_with_imports(core / "scripts", "skill_roots")
         self.write(
             middle / "scripts" / "bridge.py",
             "import sys\nfrom pathlib import Path\n"
