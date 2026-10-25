@@ -965,6 +965,66 @@ def test_json_parse_policy_refuses_a_parse_outside_json_reader() -> None:
     ]
 
 
+JSON_WRITE_SOURCE = """\
+import json
+import json as j
+from json import dump, dumps
+from pathlib import Path
+
+import json_writer
+from atomic_file import replace_text
+
+
+def writes(path, handle, value):
+    json.dump(value, handle), j.dump(value, handle), dump(value, handle)
+    path.write_text(json.dumps(value) + "\\n", encoding="utf-8")
+    replace_text(path, dumps(value, indent=2))
+    text = json.dumps(value)
+    line = text + "\\n"
+    handle.write(line.encode("utf-8"))
+
+
+def conforms(path, handle, value):
+    json_writer.write(path, value)
+    path.write_text(json_writer.dumps(value), encoding="utf-8")
+    message = f"cannot write {json.dumps(str(path))}"
+    handle.write("plain text")
+    return json.dumps(value), message
+
+
+def other(path, value):
+    text = "unrelated"
+    path.write_text(text)
+
+
+def piped(stream, value):
+    stream.write(json.dumps(value))
+
+
+JSON_WRITE_ALLOWED = {"piped": "writes a message to a pipe no file holds", "stale": "a reason"}
+"""
+
+
+def test_json_write_policy_refuses_a_json_write_outside_json_writer() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.json_write_problems,
+        "JSON_WRITE_ALLOWED",
+        JSON_WRITE_SOURCE,
+        "skills/ejryan89-skill-core/scripts/json_writer.py",
+    )
+    remedy = (
+        "; call ejryan89-skill-core's json_writer, the one writer of JSON, which refuses NaN and a lone surrogate at "
+        "the write, or state why in JSON_WRITE_ALLOWED"
+    )
+    assert found == [
+        *(f"{alpha}:11 writes JSON with json.dump{remedy}" for _ in range(3)),
+        *(f"{alpha}:{line} writes json.dumps text to a file or a stream{remedy}" for line in (12, 13, 16)),
+        f"{alpha}: JSON_WRITE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: JSON_WRITE_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
 def test_claim_policies_read_the_policies_their_runner_and_the_root_modules() -> None:
     # The claims speak of the repository's Python, so a policy's own reader is held to them as a skill's is; a suite
     # and the suites' support trees stay out.
