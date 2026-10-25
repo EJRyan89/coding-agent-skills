@@ -113,6 +113,27 @@ class GuardTestCase(HubTestCase):
         return self.decision(event, environment)
 
 
+class EnvironmentConfigurationTests(unittest.TestCase):
+    def test_a_count_of_whole_ascii_digits_reads_its_pairs(self) -> None:
+        values = {"GIT_CONFIG_COUNT": " 1 ", "GIT_CONFIG_KEY_0": "Core.Worktree", "GIT_CONFIG_VALUE_0": "x"}
+        configuration = hub_guard.environment_configuration(values)
+        self.assertEqual(([("core.worktree", "x")], True), (configuration.entries, configuration.settled))
+
+    def test_a_count_git_would_not_read_leaves_the_configuration_unsettled(self) -> None:
+        # A digit str.isdigit() passes and int() refuses, a count past the interpreter's digit limit, and others.
+        for count in ("\u00b2", "1" * 5000, "", "-1", "x", None):
+            with self.subTest(count=(count or "")[:8]):
+                configuration = hub_guard.environment_configuration({"GIT_CONFIG_COUNT": count})
+                self.assertEqual(([], False), (configuration.entries, configuration.settled))
+
+    def test_a_count_of_more_than_six_digits_is_not_read_so_no_loop_runs_long(self) -> None:
+        pair = {"GIT_CONFIG_KEY_0": "a.b", "GIT_CONFIG_VALUE_0": "x"}
+        read = hub_guard.environment_configuration({"GIT_CONFIG_COUNT": "000001", **pair})
+        self.assertEqual(([("a.b", "x")], True), (read.entries, read.settled))
+        unread = hub_guard.environment_configuration({"GIT_CONFIG_COUNT": "0000001", **pair})
+        self.assertEqual(([], False), (unread.entries, unread.settled))
+
+
 class PowerShellReaderStartTests(unittest.TestCase):
     """pwsh starts as every process a repository tool starts does: through ejryan89-skill-core's run_bounded, without
     git's repository-selecting variables, in a process tree, and with its output bounded."""
