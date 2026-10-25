@@ -82,6 +82,14 @@ class WriteTests(unittest.TestCase):
             with self.subTest(options=options):
                 self.assertEqual(json.dumps(RECORD, **options), dumps(RECORD, **options))
 
+    def test_by_default_keys_keep_their_order_and_text_past_ascii_is_escaped(self) -> None:
+        self.assertEqual('{"z": ["caf\\u00e9"], "a": 1}', dumps({"z": ["café"], "a": 1}))
+        self.assertEqual('{"z": ["café"], "a": 1}', dumps({"z": ["café"], "a": 1}, ensure_ascii=False))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "record.json"
+            write(path, {"z": ["café"], "a": 1})
+            self.assertEqual(b'{"z": ["caf\\u00e9"], "a": 1}\n', path.read_bytes())
+
     def test_a_surrogate_pair_is_a_character_and_is_written(self) -> None:
         self.assertEqual('"\\ud83d\\ude00"', dumps("\U0001f600"))
         self.assertEqual('"\U0001f600"', dumps("\U0001f600", ensure_ascii=False))

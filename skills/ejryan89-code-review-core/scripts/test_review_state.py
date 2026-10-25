@@ -434,6 +434,15 @@ class StateAndLockTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(0o600, path.stat().st_mode & 0o777)
 
+    def test_atomic_json_writes_two_space_indents_sorted_keys_and_text_past_ascii_as_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            atomic_write_json(path, {"z": "café", "a": [1]})
+            self.assertEqual(
+                '{\n  "a": [\n    1\n  ],\n  "z": "café"\n}\n'.encode(),
+                path.read_bytes(),
+            )
+
     def test_atomic_json_refuses_a_value_the_writer_refuses_naming_the_file_and_leaves_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "state.json"
