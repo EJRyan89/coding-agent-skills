@@ -1749,6 +1749,21 @@ class ResolveTests(unittest.TestCase):
             result["notes"][-1],
         )
 
+    def test_an_empty_core_worktree_is_reported_not_followed(self) -> None:
+        separate = self.new_repository(self.root / "separate", f"--separate-git-dir={self.root / 'separate git'}")
+        linked = self.root / "separate worktree"
+        git("-C", str(separate), "worktree", "add", "-q", "-b", "feature", str(linked))
+        shared = (self.root / "separate git").resolve()
+        with (shared / "config").open("a", encoding="utf-8") as config:
+            config.write("[core]\n\tworktree =\n")
+        lines = self.resolve_lines("--repo", str(linked), cwd=self.root, code=1)
+        self.assertEqual(
+            [
+                f"FAILED git could not read the repository: git config gave core.worktree in {shared / 'config'} an empty value"
+            ],
+            lines,
+        )
+
     def test_a_core_worktree_git_cannot_read_is_reported_not_taken_for_none(self) -> None:
         separate = self.new_repository(self.root / "separate", f"--separate-git-dir={self.root / 'separate git'}")
         linked = self.root / "separate worktree"
