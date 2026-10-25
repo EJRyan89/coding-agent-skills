@@ -348,7 +348,6 @@ READERS = [
         filename="packages.config",
         accepts={
             "bom": "an MSBuild file is decoded as UTF-16 by its byte-order mark, else as UTF-8 with an optional one",
-            "deep_nesting": "the case is well-formed XML with no package element, which lists no packages",
         },
     ),
     Reader(

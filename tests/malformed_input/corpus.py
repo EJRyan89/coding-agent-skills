@@ -22,6 +22,9 @@ from pathlib import Path
 LONG_INTEGER = b"9" * 5000
 # Past the default recursion limit of 1000 frames, and past what the C JSON scanner nests before it refuses.
 DEPTH = 100_000
+# Past what a Python walk over a parsed value can recurse, which the C JSON scanner and the XML parser still read, and
+# past nesting_depth's DEPTH_LIMIT, which the shared readers refuse.
+SCANNED_DEPTH = 2000
 BOM = b"\xef\xbb\xbf"
 NOT_UTF8 = b"\xff\xfe\xc3\x28"
 
@@ -128,6 +131,11 @@ def _json(valid: bytes) -> list[Case]:
         Case("top_level_null", b"null", "null where the reader expects an object"),
         Case("long_integer", b'{"value": ' + LONG_INTEGER + b"}", "an integer past Python's digit limit"),
         Case("deep_nesting", b"[" * DEPTH + b"]" * DEPTH, "nesting past the recursion limit"),
+        Case(
+            "scanned_nesting",
+            b'{"value": ' + b"[" * SCANNED_DEPTH + b"]" * SCANNED_DEPTH + b"}",
+            "a field nested as deep as the scanner reads and a walk over the value cannot recurse",
+        ),
         Case("duplicate_keys", b'{"value": 1, "value": 2}', "one key twice in an object"),
         Case("nan", b'{"value": NaN}', "NaN, which Python's JSON reader takes and JSON does not define"),
         *fields(valid),
@@ -168,6 +176,11 @@ def _xml(valid: bytes) -> list[Case]:
         *_common(valid),
         Case("truncated", valid[: len(valid) // 2], "a document cut off part way"),
         Case("deep_nesting", b"<a>" * DEPTH + b"</a>" * DEPTH, "elements nested past the recursion limit"),
+        Case(
+            "scanned_nesting",
+            b"<a>" * SCANNED_DEPTH + b"</a>" * SCANNED_DEPTH,
+            "elements nested as deep as the parser reads and a walk over the tree cannot recurse",
+        ),
         Case("duplicate_attributes", b'<Project a="1" a="2"/>', "one attribute twice on an element"),
         Case(
             "entity_declaration",

@@ -53,9 +53,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/python_checks.py::PythonChecksPolicies::test_link_probe_is_the_one_link_test`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
-  `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`
+  `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
+  `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
-  `github_client.py`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
+  `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
+  `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
   followed by a `return None`, `return []`, or `return False`, where `is_present` should probe; `if not result.stdout`
   read as nothing found.
@@ -241,10 +243,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 - **Rule:** A parser that recurses into input it does not control stops at a stated depth and ends in its documented
   refusal, never in a `RecursionError`.
-- **Why:** Nesting past Python's recursion limit escapes the reader as an unhandled error instead of its refusal.
-- **Use:** `json_reader:loads`, `msbuild_evaluation:MAX_CHOOSE_DEPTH`; the depth bound for the other recursive parsers
-  comes with #1880.
-- **Guard:** `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_past_the_recursion_limit_is_refused`,
+- **Why:** Nesting past Python's recursion limit escapes the reader as an unhandled error instead of its refusal, and
+  the C JSON scanner and the XML parser nest far deeper than a Python walk over what they read can recurse.
+- **Use:** `nesting_depth:deeper`, the check a recursive parser makes at each level, raising its own error, against
+  `nesting_depth:DEPTH_LIMIT`; `json_reader:loads` and `xml_reader:read_xml`, which refuse a value nested past the
+  same limit, so a walk over what they return, such as MSBuild's Choose evaluation, needs no bound of its own; the
+  hand-written recursive parsers take the check with #1880.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it`,
+  `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_past_the_recursion_limit_is_refused`,
   `tests/tools/test_hub_guard.py::EndToEndTests::test_bash_nested_deeper_than_the_reader_follows_is_refused_alike_in_its_own_process`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
 - **Search for:** a function that calls itself on a child of its input with no depth parameter and no

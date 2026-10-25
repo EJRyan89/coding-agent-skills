@@ -49,6 +49,22 @@ class SourceCommitTests(DeployerTestCase):
             self.assertEqual(head, source_commit.describe(self.root, head))
         run_tool.assert_not_called()
 
+    def test_a_git_that_cannot_start_while_describing_is_refused_with_the_reason(self) -> None:
+        head = self.make_repository()
+        with (
+            mock.patch.object(platform_support, "run_tool", side_effect=OSError(13, "Access is denied")),
+            self.assertRaises(DeployError) as raised,
+        ):
+            source_commit.describe(self.source, head)
+        shown = platform_support.normalize(self.source)
+        self.assertEqual(
+            (
+                f"ERROR: Cannot describe the deployed commit {head} in {shown}: Access is denied",
+                "Check that Git runs, then retry.",
+            ),
+            raised.exception.lines,
+        )
+
     def test_a_deployment_from_a_git_checkout_records_its_full_head_commit(self) -> None:
         head = self.make_repository()
         self.deploy_ok("--all")
@@ -156,10 +172,12 @@ class SourceCommitTests(DeployerTestCase):
     def test_a_failing_git_refuses_the_redeployment_with_its_reason_and_keeps_the_recorded_commit(self) -> None:
         real = platform_support.run_tool
 
-        def run_tool(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
+        def run_tool(
+            arguments: list[str], environment: dict[str, str] | None = None, **options: Any
+        ) -> platform_support.ToolResult:
             if "rev-parse" in arguments:
                 return platform_support.ToolResult(128, "fatal: detected dubious ownership\n  in the checkout\n")
-            return real(arguments, environment)
+            return real(arguments, environment, **options)
 
         output = self.refuses_keeping_the_recorded_commit(run_tool=run_tool)
         self.assert_lines(
@@ -171,10 +189,12 @@ class SourceCommitTests(DeployerTestCase):
     def test_a_git_that_cannot_start_refuses_the_redeployment_and_keeps_the_recorded_commit(self) -> None:
         real = platform_support.run_tool
 
-        def run_tool(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
+        def run_tool(
+            arguments: list[str], environment: dict[str, str] | None = None, **options: Any
+        ) -> platform_support.ToolResult:
             if "rev-parse" in arguments:
                 raise PermissionError(13, "Access is denied")
-            return real(arguments, environment)
+            return real(arguments, environment, **options)
 
         output = self.refuses_keeping_the_recorded_commit(run_tool=run_tool)
         self.assert_lines(output, self.cannot("Access is denied"), "Check that Git runs, then retry.")
