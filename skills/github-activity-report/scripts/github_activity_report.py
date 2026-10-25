@@ -735,12 +735,10 @@ def _history_row(fields: list[str], line: int, path: Path, columns: tuple[str, .
         raise refuse(f"has user {user!r}, not a GitHub login")
     counted: dict[str, int] = {}
     for metric, count in zip(METRICS, counts, strict=True):
+        not_a_count = refuse(f"has {metric} {_quoted(count)}, not a count")
         if not COUNT.fullmatch(count):
-            raise refuse(f"has {metric} {_quoted(count)}, not a count")
-        try:
-            counted[metric] = int(count)
-        except ValueError:  # more digits than Python's integer-digit limit converts
-            raise refuse(f"has {metric} {_quoted(count)}, not a count") from None
+            raise not_a_count
+        counted[metric] = whole_number.read(count, not_a_count)
     if partial not in PARTIAL:
         raise refuse(f"has is_partial {partial!r}, not true or false")
     try:

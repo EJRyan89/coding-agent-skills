@@ -128,14 +128,18 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
   number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
   refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds.
-- **Guard:** `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
+  `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
+  `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
   `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
   has `\d+` rather than `\d{1,N}`; `.isdigit()` before an `int(`, which admits digits `int` reads past any bound;
   `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
-  `math.isfinite`.
-- **Examples:** #1611, #1729, #1886
+  `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
+  bounds no length; a refusal worded "more than N digits" for a `\d` group,
+  which also admits digits that are not ASCII.
+- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897
 
 ### One fact has one owner
 
@@ -507,3 +511,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that runs a module's suites on what only a policy under `tests/validation/` reads; a new `*_ALLOWED` name with no
   `*_ALLOWANCE` constant naming it in a policy.
 - **Examples:** #1933, #1938
+
+### A fixture derives what it copies from the source
+
+- **Rule:** A suite that builds a throwaway copy of ejryan89-skill-core's modules copies a module with every module it
+  imports, read from the source, and leaves one out only by removing it from the built tree by name.
+- **Why:** A hand-kept list of modules to copy is one short as soon as a copied module imports another, and the
+  fixture's script then fails with `ModuleNotFoundError` in a suite the change never touched.
+- **Use:** `module_closure:copy_with_imports`, given the modules a fixture's script needs, or
+  `module_closure:imports_of` for a script of another skill.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_module_closure.py::ModuleClosureTests::test_a_new_import_of_a_copied_module_is_copied_without_any_list_edited`
+- **Search for:** a tuple or list of `"<module>.py"` names in a suite next to `write_bytes`, `write_text`, or
+  `copyfile` under a path naming `ejryan89-skill-core`; `with_name(module)` in a loop over such names.
+- **Examples:** #1939

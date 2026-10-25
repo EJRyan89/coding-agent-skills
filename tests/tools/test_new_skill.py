@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import frontmatter as fm
+from module_closure import copy_with_imports
 from skill_grants import skill_grant_problems
 from skill_layout import script_dependency_problems, sibling_path_problems
 
@@ -385,27 +386,8 @@ class SkillDependencyTestCase(FixtureRepositoryTestCase):
     def setUp(self) -> None:
         super().setUp()
         # ejryan89-skill-core, holding the real lookup, and a sibling with a module a dependent script imports.
-        for name in ("ejryan89-skill-core", "alpha"):
-            (self.root / "skills" / name / "scripts").mkdir(parents=True)
-        skill_roots = (
-            Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts" / "skill_roots.py"
-        )
-        (self.root / "skills" / "ejryan89-skill-core" / "scripts" / "skill_roots.py").write_bytes(
-            skill_roots.read_bytes()
-        )
-        for module in (
-            "file_presence.py",
-            "console.py",
-            "flat_text.py",
-            "json_reader.py",
-            "whole_number.py",
-            "path_containment.py",
-            "path_keys.py",
-            "link_probe.py",
-        ):
-            (self.root / "skills" / "ejryan89-skill-core" / "scripts" / module).write_bytes(
-                skill_roots.with_name(module).read_bytes()
-            )
+        (self.root / "skills" / "alpha" / "scripts").mkdir(parents=True)
+        copy_with_imports(self.root / "skills" / "ejryan89-skill-core" / "scripts", "skill_roots")
         (self.root / "skills" / "alpha" / "scripts" / "alpha_values.py").write_text(
             'VALUE = "alpha found"\n', encoding="utf-8"
         )

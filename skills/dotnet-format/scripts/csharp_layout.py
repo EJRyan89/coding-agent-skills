@@ -728,6 +728,11 @@ def section_glob(section: str) -> tuple[re.Pattern[str], tuple[tuple[int, int], 
     return re.compile(prefix + regex, re.DOTALL), tuple(ranges)
 
 
+INT_PARSE_ALLOWED = {
+    "section_matches": "the digits lie in one component of a path, which a file system holds far below the limit",
+}
+
+
 def section_matches(section: str, relative_path: str) -> bool:
     """Whether an .editorconfig section applies to a file at relative_path from that .editorconfig's directory."""
     regex, ranges = section_glob(section)
