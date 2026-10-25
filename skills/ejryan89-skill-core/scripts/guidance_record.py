@@ -12,7 +12,9 @@ file is one JSON object:
 A subject is a runtime the deployer supports or Python, a read is a release tag as release_tags.py defines one, and a
 `read_through` is the last release of that runtime whose changelog entries the guidance audit read, which the
 maintainer moves forward by hand in the pull request that records the audit. `changelogs` may be left out; each
-subject names one changelog at most, and each page is listed once.
+subject names one changelog at most, and each page is listed once. One document has one address in the whole record:
+a changelog that is also read as a page is written the same way in both lists, and two addresses canonical_url gives
+one form, such as a raw GitHub file named by its branch and by `refs/heads/` and its branch, are refused.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from release_tags import is_release_tag
 from typed_fields import FieldError, FieldReader
@@ -96,7 +99,29 @@ def read(path: Path, subjects: Sequence[str]) -> GuidanceRecord:
         repeated = sorted({value for value in values if values.count(value) > 1})
         if repeated:
             raise GuidanceRecordError(f"{name} {what} {', '.join(repeated)} more than once")
+    spellings: dict[str, set[str]] = {}
+    for url in (*(page.url for page in pages), *(changelog.url for changelog in changelogs)):
+        spellings.setdefault(canonical_url(url), set()).add(url)
+    differing = sorted(sorted(written) for written in spellings.values() if len(written) > 1)
+    if differing:
+        raise GuidanceRecordError(
+            f"{name} names one document as {' and '.join(differing[0])}; write each document's address one way"
+        )
     return GuidanceRecord(pages, changelogs)
+
+
+def canonical_url(url: str) -> str:
+    """One form for the addresses that name the same document: the host in lower case, as urlsplit already gives the
+    scheme, and a raw GitHub file's `refs/heads/<branch>` written as its branch, as raw.githubusercontent.com serves
+    both."""
+    parts = urlsplit(url)
+    host = parts.netloc.lower()
+    path = parts.path
+    # "", the owner, the repository, then "refs" and "heads" where the branch is spelled out in full.
+    segments = path.split("/")
+    if host == "raw.githubusercontent.com" and segments[3:5] == ["refs", "heads"]:
+        path = "/".join([*segments[:3], *segments[5:]])
+    return parts._replace(netloc=host, path=path).geturl()
 
 
 def document(record: GuidanceRecord) -> dict[str, object]:
