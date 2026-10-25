@@ -1559,6 +1559,26 @@ class PremergeReviewTest(FixtureTestCase):
         self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, "c" * 40, merged, base))
         self.assertFalse(premerge_review.merges_only(GitClient(), self.hub, own, merged, "c" * 40))
 
+    def test_any_git_failure_carries_no_review(self) -> None:
+        own, merged, _ = self.topic()
+        base = git("rev-parse", "origin/main", directory=self.hub)
+
+        def answering(word: str, answer: GitResult) -> GitClient:
+            def run(command: Sequence[str], timeout: float) -> GitResult:
+                return answer if word in command else subprocess_runner(command, timeout)
+
+            return GitClient(run)
+
+        for word, answer in (
+            ("merge-base", GitResult(1, "", "warning: ignoring broken ref refs/heads/main\n")),
+            ("merge-base", GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")),
+            ("rev-list", GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")),
+        ):
+            with self.subTest(word=word, answer=answer):
+                self.assertFalse(premerge_review.merges_only(answering(word, answer), self.hub, own, merged, base))
+        clean = answering("merge-base", GitResult(0, "", ""))
+        self.assertTrue(premerge_review.merges_only(clean, self.hub, own, merged, base), "a clean ancestor carries it")
+
 
 class ArchiveReaderTest(unittest.TestCase):
     """The reader over a code-review configuration and archive written under a temporary folder."""
