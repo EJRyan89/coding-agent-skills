@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import json
 import os
 import sys
 from collections.abc import Callable
@@ -11,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, TypeGuard, assert_never
 
+import json_writer
 from path_containment import posix_within
 
 from . import fsops, hashing, manifest, platform_support, state_files
@@ -87,7 +87,15 @@ class Journal:
         fsops.write_file(self.path, b"")
 
     def write(self, entry: JournalEntry) -> None:
-        fsops.append_line(self.path, json.dumps(entry, separators=(",", ":")))
+        """Append an entry before the change it records. An entry the JSON writer refuses is a DeployError naming
+        the journal, raised before that change, which the run's journaled recovery handles."""
+        try:
+            line = json_writer.dumps(entry, separators=(",", ":"))
+        except json_writer.JsonWriteRefused as exc:
+            raise DeployError(
+                f"ERROR: Cannot write the journal {platform_support.normalize(self.path)}: {exc}"
+            ) from exc
+        fsops.append_line(self.path, line)
         self.entries.append(entry)
 
     def backup(self, root: str, item: str, backup_hash: str, retain: bool) -> None:

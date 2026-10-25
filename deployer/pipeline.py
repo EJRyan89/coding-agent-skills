@@ -512,9 +512,10 @@ def _claim(
 ) -> tuple[dict[str, str], lock.Lock]:
     """Claim a canary home and its values, or refuse a linked worktree; then take the lock."""
     if options.canary_home:
-        # A throwaway home is discarded with its recorded source path, so a linked worktree may deploy into it.
-        claim_canary_home(paths.home)
+        # A throwaway home is discarded with its recorded source path, so a linked worktree may deploy into it. Its
+        # values are checked first, so a home or checkout path they refuse leaves the home without a marker.
         values = config.canary(source_id, paths.home, paths.source_dir)
+        claim_canary_home(paths.home)
     else:
         source.reject_linked_worktree(paths)
     return values, lock.acquire(paths, probe)

@@ -238,7 +238,7 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
         'python -I -c "import os, runpy; runpy.run_path(os.path.join(os.environ['
         "'CLAUDE_PLUGIN_ROOT'], 'skills', 'core', 'scripts', 'guard.py'))\""
     )
-    assert json.loads(plugin.files[skill_menu.PLUGIN_HOOKS]) == {
+    hooks = {
         "hooks": {
             "PreToolUse": [
                 {
@@ -248,6 +248,10 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
             ]
         }
     }
+    # The archive's checksum is pinned in the marketplace, so the hooks file's bytes are its format: two-space
+    # indents, escaped past ASCII, and a newline.
+    assert plugin.files[skill_menu.PLUGIN_HOOKS].decode("ascii") == json.dumps(hooks, indent=2) + "\n"
+    assert plugin.files[skill_menu.PLUGIN_HOOKS].startswith(b'{\n  "hooks": {\n    "PreToolUse": [\n')
 
 
 @pytest.mark.parametrize(
@@ -302,7 +306,13 @@ def test_a_command_naming_a_folder_that_only_starts_like_the_claude_folder_is_ca
 
 def test_the_manifest_is_the_marketplace_entry_with_the_name_and_version_and_no_source(source: Source) -> None:
     source.skill("alpha")
-    manifest = json.loads(by_name(assembled(source, "1.2.3"))["fixture-skills"].files[skill_menu.PLUGIN_MANIFEST])
+    written = by_name(assembled(source, "1.2.3"))["fixture-skills"].files[skill_menu.PLUGIN_MANIFEST]
+    # The archive's checksum is pinned in the marketplace, so the manifest's bytes are its format: two-space indents
+    # in the entry's order, escaped past ASCII, and a newline.
+    assert written == (
+        b'{\n  "name": "fixture-skills",\n  "version": "1.2.3",\n  "description": "The fixture-skills plugin."\n}\n'
+    )
+    manifest = json.loads(written)
     assert manifest == {"name": "fixture-skills", "version": "1.2.3", "description": "The fixture-skills plugin."}
     default = json.loads(by_name(assembled(source))["fixture-skills"].files[skill_menu.PLUGIN_MANIFEST])
     assert default["version"] == "0.0.0-dev"
