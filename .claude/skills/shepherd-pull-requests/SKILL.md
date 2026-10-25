@@ -2,7 +2,7 @@
 name: shepherd-pull-requests
 description: "Run one merge-shepherd tick from the hub over this repository's open pull requests: fast-forward main, arm auto-merge, merge main into behind branches, judge each red Validation check as a rerun or a defect, review each head report-only once, and name each merged worktree to retire."
 argument-hint: "[--dry-run]"
-allowed-tools: ["Bash(python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py *)", "PowerShell(python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py *)", "Bash(gh pr comment *)", "PowerShell(gh pr comment *)", "Skill"]
+allowed-tools: ["Bash(python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py *)", "PowerShell(python -B .claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py *)", "Skill"]
 disable-model-invocation: true
 ---
 
@@ -42,9 +42,8 @@ The tick admits only pull requests whose head branch is in this repository. One 
 
 The pre-merge review is report-only: it never holds, disarms, or delays a pull request. The tick reads this machine's code-review archive and names each admitted head in step, not in conflict, and with a check neither red nor missing:
 
-- `REVIEWED #<number> ...`: a `review-repository` review covers the head; nothing to do.
-- `REVIEW_DUE #<number> ...`: none does yet. The tick also prints one `REVIEW_ARGUMENTS <arguments>` line covering every due head. From the hub's own session only, invoke `review-prs` through the `Skill` tool once with exactly those arguments. The record it writes covers each head from the next tick on, so a tick without that line starts no review.
-- For each pull request `review-prs` reports recorded, with its verdict and the path of its Markdown report, post that report once as a plain comment, never a review: `gh pr comment <number> --repo <owner/repo> --body-file "<report>"`. Then tell the session whose worktree holds the branch the verdict, and that each SHOULD FIX needs its disposition.
+- `REVIEW_DUE #<number> ...`: no `review-repository` review covers the head yet. The tick also prints one `REVIEW_ARGUMENTS <arguments>` line covering every due head. From the hub's own session only, invoke `review-prs` through the `Skill` tool once with exactly those arguments. The record it writes covers each head from the next tick on, so a tick without that line starts no review.
+- `REVIEWED #<number> <branch> head <commit> <version> <verdict> report "<report>"`, `report none` when a legacy review's report is gone, and `carried from <commit>` when only merges followed the reviewed head: a review covers the head. The first time a head's record appears, tell the orchestrating session and the session whose worktree holds the branch its verdict and report path, and that each SHOULD FIX needs its disposition. Never post a report or a finding on the pull request: a public text passes a scan this skill cannot run, so the orchestrating session relays the findings and posts any summary itself.
 - A pull request `review-prs` fails stays due. Try it again on the next tick, at most once per head, then tell the user.
 - `REVIEW_UNREAD <reason>`: tell the user once. The review needs the configuration entry "Configure" in the `review-repository` repository skill gives.
 

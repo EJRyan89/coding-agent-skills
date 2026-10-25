@@ -204,11 +204,14 @@ no check reads it: `review-repository`'s `sibling-search` reviewer holds the sea
 
 Before merge, `review-prs` reviews each pull request with `review-repository`, once the machine's code-review
 configuration names it, as "Configure" in that repository skill says. The shepherd runs the review once per head on
-every admitted pull request, so every one that reaches a trust-boundary route is reviewed, and posts the report on the
-pull request as a comment ([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)).
-An author may run `review-prs --pull` first; its record then covers that head. The result is the review record
-`review-prs` writes in the configured archive, which `review-insights` and `update-pr-dashboard` read. The review is
-report-only: no finding or verdict holds, disarms, or blocks a merge.
+every admitted pull request, so every one that reaches a trust-boundary route is reviewed
+([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)). An author may run
+`review-prs --pull` first; its record then covers that head. The result is the review record `review-prs` writes in
+the configured archive, which `review-insights` and `update-pr-dashboard` read. It is reported to the orchestrating
+session and the pull request's owner, never posted on the pull request by the shepherd: text posted on a public pull
+request first passes a scan for private terms that no skill here can run, so the orchestrating session relays the
+findings and posts any public summary itself after that scan. The review is report-only: no finding or verdict holds, disarms, or
+blocks a merge.
 
 The author answers the report. A SHOULD FIX needs a disposition: fixed, which the pull request's next review judges
 `addressed`, or not applicable, recorded with its reason through `flag-review-finding` against that finding. A MUST

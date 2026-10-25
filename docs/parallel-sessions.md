@@ -124,9 +124,12 @@ Each tick also checks the pre-merge review, which is report-only. For each admit
 conflict, and with a check neither red nor missing, the script reads the machine's code-review archive for a
 `review-repository` review of its head. A head is covered by a review of that head, or of an earlier head from which
 every commit since is a merge, such as a merge of `main`. The script prints the `review-prs` arguments that review
-every head no review covers, and the shepherd runs `review-prs` once with them and posts each report on its pull
-request. The review it records covers that head from the next tick on, so a tick starts a review only for a head
-none covers, and never holds, disarms, or delays a merge for one.
+every head no review covers, and the shepherd runs `review-prs` once with them. The review it records covers that
+head from the next tick on, so a tick starts a review only for a head none covers, and never holds, disarms, or delays
+a merge for one. A covered head's line names the record's verdict and report, which the shepherd gives the
+orchestrating session and the session that owns the branch. It posts nothing on the pull request: a public text
+passes a private-term scan the skill cannot run, so the orchestrating session relays the findings and posts any public
+summary itself after that scan.
 [Pull requests](implementing-changes.md#pull-requests) states what the author answers and how a kind of finding is
 promoted to blocking.
 

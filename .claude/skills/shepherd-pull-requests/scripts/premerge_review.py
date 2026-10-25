@@ -10,8 +10,9 @@ record review-prs writes covers it on the next tick, so no tick asks for a secon
 
 Its lines, printed after the PR lines:
 
-    REVIEWED #<number> <branch> head <commit> v<version>|legacy <verdict> [carried from <commit>]
-                                       the record that covers the head, or the migrated legacy review
+    REVIEWED #<number> <branch> head <commit> v<version>|legacy <verdict> report "<path>"|none [carried from <commit>]
+                                       the record that covers the head, or the migrated legacy review, with its
+                                       Markdown report, none for a legacy review whose report is gone
     REVIEW_DUE #<number> <branch> head <commit> first|since <commit>
                                        a head no record covers: first when the pull request has no review, else the
                                        head the latest record reviewed
@@ -58,6 +59,7 @@ class Reviewed:
     head: str
     verdict: str
     version: int | None  # None for a migrated legacy review
+    report: str | None  # the Markdown report's path; None for a legacy review whose report is gone
 
 
 Reader = Callable[[int], Reviewed | None]
@@ -84,7 +86,10 @@ def archive_reader(repository: str) -> Reader:
             raise ReviewUnread(str(exc)) from exc
         if found is None:
             return None
-        return Reviewed(str(found["head_sha"]), str(found["verdict"]), found["version"])
+        report = found["report"]
+        return Reviewed(
+            str(found["head_sha"]), str(found["verdict"]), found["version"], None if report is None else str(report)
+        )
 
     return read
 
@@ -120,7 +125,8 @@ def review_lines(
             first.append(pull.number)
             continue
         version = "legacy" if reviewed.version is None else f"v{reviewed.version}"
-        recorded = f"{version} {flat_text(reviewed.verdict)}"
+        report = "none" if reviewed.report is None else f'"{flat_text(Path(reviewed.report).as_posix())}"'
+        recorded = f"{version} {flat_text(reviewed.verdict)} report {report}"
         if reviewed.head == pull.head:
             lines.append(f"REVIEWED {named} {recorded}")
         elif merges_only(git, top, reviewed.head, pull.head, base):

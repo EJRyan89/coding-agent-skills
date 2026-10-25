@@ -1306,8 +1306,13 @@ class MergedTest(FixtureTestCase):
         self.assertEqual("REMAINING 0", lines[-1])
 
 
-def reviewed(head: str, version: int | None = 1, verdict: str = "APPROVE") -> premerge_review.Reviewed:
-    return premerge_review.Reviewed(head, verdict, version)
+REPORT = "reviews/pull requests/review.md"
+
+
+def reviewed(
+    head: str, version: int | None = 1, verdict: str = "APPROVE", report: str | None = REPORT
+) -> premerge_review.Reviewed:
+    return premerge_review.Reviewed(head, verdict, version, report)
 
 
 class PremergeReviewTest(FixtureTestCase):
@@ -1359,7 +1364,7 @@ class PremergeReviewTest(FixtureTestCase):
             21: reviewed(own),
             22: reviewed(own, 2, "CHANGES_REQUESTED"),
             23: reviewed(own, None),
-            24: reviewed(HEAD, None),
+            24: reviewed(HEAD, None, report=None),
         }
         status, lines, opened = self.review_tick(gh, records)
         self.assertEqual(0, status, lines)
@@ -1367,10 +1372,11 @@ class PremergeReviewTest(FixtureTestCase):
         self.assertEqual(
             [
                 f"REVIEW_DUE #20 fix/topic-20 head {own[:7]} first",
-                f"REVIEWED #21 fix/topic-21 head {own[:7]} v1 APPROVE",
-                f"REVIEWED #22 fix/topic-22 head {merged[:7]} v2 CHANGES_REQUESTED carried from {own[:7]}",
+                f'REVIEWED #21 fix/topic-21 head {own[:7]} v1 APPROVE report "{REPORT}"',
+                f'REVIEWED #22 fix/topic-22 head {merged[:7]} v2 CHANGES_REQUESTED report "{REPORT}" carried from '
+                f"{own[:7]}",
                 f"REVIEW_DUE #23 fix/topic-23 head {more[:7]} since {own[:7]}",
-                f"REVIEWED #24 fix/topic-24 head {HEAD[:7]} legacy APPROVE",
+                f"REVIEWED #24 fix/topic-24 head {HEAD[:7]} legacy APPROVE report none",
                 "REVIEW_ARGUMENTS --pull owner/repo#20 --re-review owner/repo#23 --scope auto",
             ],
             [line for line in lines if line.startswith("REVIEW")],
@@ -1498,9 +1504,11 @@ class ArchiveReaderTest(unittest.TestCase):
     def test_a_review_reads_as_its_head_verdict_and_version_and_an_unreadable_one_is_unread(self) -> None:
         self.configure()
         read = premerge_review.archive_reader(REPOSITORY)
-        found = {"head_sha": HEAD, "verdict": "COMMENT", "version": 3, "source": "record"}
+        found = {"head_sha": HEAD, "verdict": "COMMENT", "version": 3, "source": "record", "report": REPORT}
         with mock.patch.object(premerge_review, "reviewed_head", return_value=found) as latest:
             self.assertEqual(reviewed(HEAD, 3, "COMMENT"), read(20))
+        with mock.patch.object(premerge_review, "reviewed_head", return_value={**found, "report": None}):
+            self.assertEqual(reviewed(HEAD, 3, "COMMENT", None), read(20))
         self.assertEqual((self.root / "reviews" / "archive", REPOSITORY, 20), latest.call_args.args)
         failing = mock.patch.object(
             premerge_review,
