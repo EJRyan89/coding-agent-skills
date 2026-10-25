@@ -185,11 +185,35 @@ def git_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> st
         raise PullRequestError(f"git {arguments[0]}: {flat_text(str(exc))}") from exc
 
 
+def quiet_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> str | None:
+    """The stdout of a git command run with `--quiet`, or None when it exits 1 and says nothing, which such a command
+    does only when what it reads is not there; any other failure is git's, with its reason."""
+    try:
+        result = git.run(arguments, directory=repository)
+    except GitError as exc:
+        raise PullRequestError(f"git {arguments[0]}: {flat_text(str(exc))}") from exc
+    if result.returncode == 0:
+        return result.stdout
+    if result.returncode == 1 and not result.stderr.strip():
+        return None
+    reason = flat_text(result.stderr) or f"failed with exit code {result.returncode}"
+    raise PullRequestError(f"git {arguments[0]}: {reason}")
+
+
+def commit_of(git: GitClient, repository: Path, reference: str) -> str | None:
+    """The commit `reference` names, or None when it names none."""
+    output = quiet_output(git, repository, ["rev-parse", "--verify", "--quiet", f"{reference}^{{commit}}"])
+    return None if output is None else output.strip()
+
+
 def top_of(git: GitClient, repository: Path) -> Path:
-    top = git.rev_parse_path("--show-toplevel", directory=repository)
-    if top is None:
-        raise PullRequestError(f'"{repository}" is not in a git repository')
-    return top
+    try:
+        top = git.output(["rev-parse", "--path-format=absolute", "--show-toplevel"], directory=repository)
+    except GitError as exc:
+        if exc.kind == "not_repository":
+            raise PullRequestError(f'"{repository}" is not in a git repository') from exc
+        raise PullRequestError(f"git rev-parse: {flat_text(str(exc))}") from exc
+    return Path(top.rstrip("\r\n"))
 
 
 def template_of(git: GitClient, repository: Path) -> tuple[Path, Path]:
@@ -221,10 +245,9 @@ def branch_facts(git: GitClient, repository: Path, base: Base) -> tuple[list[str
     except GitError as exc:
         raise PullRequestError(f"cannot fetch {base.branch} from {base.remote}: {flat_text(str(exc))}") from exc
     reference = f"refs/remotes/{base}"
-    tip = git.run(["rev-parse", "--verify", "--quiet", f"{reference}^{{commit}}"], directory=repository)
-    if tip.returncode != 0:
+    commit = commit_of(git, repository, reference)
+    if commit is None:
         raise PullRequestError(f"{base} names no commit after the fetch")
-    commit = tip.stdout.strip()
     problems = []
     holds = git.run(["merge-base", "--is-ancestor", commit, "HEAD"], directory=repository)
     if holds.returncode == 1:
@@ -253,13 +276,19 @@ def check(
 
 
 def upstream_problems(git: GitClient, repository: Path) -> list[str]:
-    upstream = git.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], directory=repository)
-    if upstream.returncode != 0:
+    """Whether the branch's upstream holds HEAD. A detached HEAD has no upstream, and an upstream not fetched holds
+    nothing."""
+    branch = quiet_output(git, repository, ["symbolic-ref", "--quiet", "HEAD"])
+    if branch is None:
         return ["UNPUSHED no upstream"]
-    name = upstream.stdout.strip()
-    pushed = git_output(git, repository, ["rev-parse", "@{upstream}"]).strip()
+    upstream = git_output(
+        git, repository, ["for-each-ref", "--format=%(upstream) %(upstream:short)", branch.strip()]
+    ).split()
+    if not upstream:
+        return ["UNPUSHED no upstream"]
+    reference, name = upstream
     head = git_output(git, repository, ["rev-parse", "HEAD"]).strip()
-    return [] if pushed == head else [f"UNPUSHED {name}"]
+    return [] if commit_of(git, repository, reference) == head else [f"UNPUSHED {name}"]
 
 
 def open_pull_request(github: GitHubClient, title: str, body_file: Path, base: Base) -> str:

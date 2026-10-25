@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import pull_request
+from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult, GitHubClient
 
 REPOSITORY = Path(__file__).resolve().parents[4]
@@ -74,6 +76,11 @@ def git(directory: Path, *arguments: str) -> str:
     if result.returncode != 0:
         raise AssertionError(f"git {' '.join(arguments)} failed: {result.stderr}")
     return result.stdout.strip()
+
+
+def printing(stdout: str, command: Sequence[str], timeout: float) -> GitResult:
+    """A git that prints `stdout` and succeeds, whatever it is asked."""
+    return GitResult(0, stdout, "")
 
 
 class DraftTests(unittest.TestCase):
@@ -218,12 +225,26 @@ class Repository(unittest.TestCase):
         self.gh_calls.append(list(command))
         return self.gh_result
 
-    def run_script(self, *arguments: str) -> tuple[int, list[str]]:
+    def run_script(self, *arguments: str, git_client: GitClient | None = None) -> tuple[int, list[str]]:
         output = io.StringIO()
         github = GitHubClient(runner=self.fake_gh)
         with contextlib.redirect_stdout(output):
-            code = pull_request.main(["--repository", str(self.root), *arguments], github=github)
+            code = pull_request.main(["--repository", str(self.root), *arguments], git=git_client, github=github)
         return code, output.getvalue().splitlines()
+
+    def failing_git(self, *marker: str, result: GitResult | None = None) -> GitClient:
+        """Real git, except that the command whose arguments hold `marker` in order gives back `result`, or does not
+        finish when `result` is None."""
+
+        def runner(command: Sequence[str], timeout: float) -> GitResult:
+            for start in range(len(command) - len(marker) + 1):
+                if tuple(command[start : start + len(marker)]) == marker:
+                    if result is None:
+                        raise GitError(f"{' '.join(command)} did not finish within 1 seconds", kind="timeout")
+                    return result
+            return subprocess_runner(command, timeout)
+
+        return GitClient(runner=runner)
 
     def files_arguments(self) -> list[str]:
         return ["--title-file", str(self.title), "--body-file", str(self.body), "--base", "origin/main"]
@@ -305,6 +326,59 @@ class CheckCommandTests(Repository):
         self.assertEqual(1, code)
         self.assertTrue(lines[-1].startswith(f'FAILED cannot read "{self.body}": '), lines)
 
+    def test_a_base_git_cannot_read_is_a_failed_line_with_git_s_reason(self) -> None:
+        broken = GitResult(128, "", "fatal: bad object refs/remotes/origin/main\n")
+        code, lines = self.run_script(
+            "check", *self.files_arguments(), git_client=self.failing_git("rev-parse", "--verify", result=broken)
+        )
+        self.assertEqual((1, ["FAILED git rev-parse: fatal: bad object refs/remotes/origin/main"]), (code, lines))
+
+    def test_a_base_read_that_does_not_finish_is_a_failed_line_not_a_missing_commit(self) -> None:
+        code, lines = self.run_script(
+            "check", *self.files_arguments(), git_client=self.failing_git("rev-parse", "--verify")
+        )
+        self.assertEqual(1, code)
+        self.assertTrue(lines[-1].startswith("FAILED git rev-parse: git -C "), lines)
+        self.assertIn("did not finish", lines[-1])
+
+    def test_a_base_that_names_no_commit_after_the_fetch_is_a_failed_line(self) -> None:
+        missing = GitResult(1, "", "")
+        code, lines = self.run_script(
+            "check", *self.files_arguments(), git_client=self.failing_git("rev-parse", "--verify", result=missing)
+        )
+        self.assertEqual((1, ["FAILED origin/main names no commit after the fetch"]), (code, lines))
+
+    def test_only_an_exit_of_1_that_says_nothing_names_no_commit(self) -> None:
+        for result, line in (
+            (GitResult(128, "", ""), "FAILED git rev-parse: failed with exit code 128"),
+            (GitResult(1, "", "fatal: ambiguous argument\n"), "FAILED git rev-parse: fatal: ambiguous argument"),
+        ):
+            with self.subTest(result=result):
+                git_client = self.failing_git("rev-parse", "--verify", result=result)
+                self.assertEqual((1, [line]), self.run_script("check", *self.files_arguments(), git_client=git_client))
+
+    def test_the_top_folder_loses_only_the_line_break_git_ends_it_with(self) -> None:
+        for printed, top in (("/srv/tree X \n", "/srv/tree X "), ("/srv/treeX\r\n", "/srv/treeX")):
+            with self.subTest(printed=printed):
+                git_client = GitClient(runner=partial(printing, printed))
+                self.assertEqual(Path(top), pull_request.top_of(git_client, self.root))
+
+    def test_a_folder_outside_any_repository_is_a_failed_line(self) -> None:
+        outside = self.temporary / "outside"
+        outside.mkdir()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = pull_request.main(["--repository", str(outside), "draft"])
+        self.assertEqual(
+            (1, [f'FAILED "{outside}" is not in a git repository']), (code, output.getvalue().splitlines())
+        )
+
+    def test_a_top_folder_git_cannot_read_is_a_failed_line_with_git_s_reason(self) -> None:
+        code, lines = self.run_script("draft", git_client=self.failing_git("--show-toplevel"))
+        self.assertEqual(1, code)
+        self.assertTrue(lines[-1].startswith("FAILED git rev-parse: git -C "), lines)
+        self.assertIn("did not finish", lines[-1])
+
     def test_a_base_with_no_remote_is_a_usage_error(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             self.run_script("check", *self.files_arguments()[:-1], "main")
@@ -321,6 +395,40 @@ class OpenCommandTests(Repository):
         self.commit("after the push")
         code, lines = self.run_script("open", *self.files_arguments())
         self.assertEqual((1, "UNPUSHED origin/fix/title"), (code, lines[-1]))
+        self.assertEqual([], self.gh_calls)
+
+    def test_a_detached_head_has_no_upstream(self) -> None:
+        git(self.root, "switch", "--quiet", "--detach")
+        code, lines = self.run_script("open", *self.files_arguments())
+        self.assertEqual((1, "UNPUSHED no upstream"), (code, lines[-1]))
+        self.assertEqual([], self.gh_calls)
+
+    def test_an_upstream_not_fetched_yet_is_unpushed(self) -> None:
+        git(self.root, "push", "--quiet", "-u", "origin", "HEAD")
+        git(self.root, "update-ref", "-d", "refs/remotes/origin/fix/title")
+        code, lines = self.run_script("open", *self.files_arguments())
+        self.assertEqual((1, "UNPUSHED origin/fix/title"), (code, lines[-1]))
+        self.assertEqual([], self.gh_calls)
+
+    def test_a_branch_git_cannot_read_is_a_failed_line_not_unpushed(self) -> None:
+        git(self.root, "push", "--quiet", "-u", "origin", "HEAD")
+        broken = GitResult(128, "", "fatal: your current branch appears to be broken\n")
+        for marker in (("symbolic-ref",), ("for-each-ref",)):
+            with self.subTest(marker=marker):
+                code, lines = self.run_script(
+                    "open", *self.files_arguments(), git_client=self.failing_git(*marker, result=broken)
+                )
+                self.assertEqual(1, code)
+                self.assertEqual(f"FAILED git {marker[0]}: fatal: your current branch appears to be broken", lines[-1])
+                self.assertEqual([], self.gh_calls)
+
+    def test_an_upstream_git_cannot_read_is_a_failed_line_not_unpushed(self) -> None:
+        git(self.root, "push", "--quiet", "-u", "origin", "HEAD")
+        upstream = "refs/remotes/origin/fix/title^{commit}"
+        code, lines = self.run_script("open", *self.files_arguments(), git_client=self.failing_git(upstream))
+        self.assertEqual(1, code)
+        self.assertTrue(lines[-1].startswith("FAILED git rev-parse: git -C "), lines)
+        self.assertIn("did not finish", lines[-1])
         self.assertEqual([], self.gh_calls)
 
     def test_a_check_problem_stops_the_open(self) -> None:
