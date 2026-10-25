@@ -1035,7 +1035,7 @@ def merged_fixes(git: GitClient, repository: Path, base: str, head: str) -> list
     )
     found = []
     for record in log.split("\0"):
-        commit, _, title = record.strip("\n").partition("\x1f")
+        commit, _, title = record.partition("\x1f")
         if commit and FIX_TITLE.match(title):
             found.append((commit, title))
     return found
@@ -1083,12 +1083,12 @@ def searchable(line: str) -> bool:
 
 def construct_of(git: GitClient, repository: Path, commit: str) -> list[str]:
     """The lines a fix removed from files that are not regression suites, long enough to search for and not added back
-    elsewhere in it, in the order its diff gives them. The pathspecs go to git in batches, so a fix that touched many
-    files stays inside the command line's limit."""
+    anywhere in it, a file it added included, in the order its diff gives them. The pathspecs go to git in batches, so
+    a fix that touched many files stays inside the command line's limit."""
     paths = [
         change.path
         for change in changes(git, repository, f"{commit}^", commit)
-        if change.status != "A" and not is_suite_name(change.path.rpartition("/")[2])
+        if not is_suite_name(change.path.rpartition("/")[2])
     ]
     removed: list[str] = []
     added: set[str] = set()
@@ -1166,12 +1166,19 @@ def fix_section(fix: Fix) -> list[str]:
     lines += ["", "Lines it removed, the construct as it stood:", ""]
     lines += [f"- {code_literal(line)}" for line in fix.construct[:MAX_CONSTRUCT_LINES]]
     if len(fix.construct) > MAX_CONSTRUCT_LINES:
-        lines.append(f"- and {len(fix.construct) - MAX_CONSTRUCT_LINES} others, searched too: read them in its diff")
+        lines.append(f"- and {len(fix.construct) - MAX_CONSTRUCT_LINES} more, searched too: read them in its diff")
     lines += ["", "Lines HEAD still holds that contain one of them:", ""]
     lines += [f"- {code_literal(f'{hit.path}:{hit.line}')}: {code_literal(hit.text)}" for hit in fix.hits] or ["- none"]
     if fix.hits_cut:
-        lines.append(f"- and more than {MAX_HITS} others: run the search yourself")
+        lines.append(f"- and more past these {MAX_HITS}: run the search yourself")
     return lines
+
+
+def twin_part_note(part: int, parts: int) -> list[str]:
+    """What a reader of one part of a sweep is told; nothing for a sweep one reader reads."""
+    if parts == 1:
+        return []
+    return ["", f"This brief is part {part} of {parts} of the sweep: other readers read the other fixes."]
 
 
 def twin_brief(fixes: Sequence[Fix], base: str, base_commit: str, head: str, part: int = 1, parts: int = 1) -> str:
@@ -1185,7 +1192,7 @@ def twin_brief(fixes: Sequence[Fix], base: str, base_commit: str, head: str, par
         "are where its removed lines still stand, a start and not the whole search. Search also for its other forms: "
         "the other callers of the same reader or writer, the same call with other names, and its twin in the other "
         "shell or runtime, as the Search for of its pattern in `docs/lessons.md` says.",
-        *part_note(part, parts),
+        *twin_part_note(part, parts),
         "",
         "A twin is a site that does what the fix stopped doing. A site is not a twin when a `*_ALLOWED` table "
         "sanctions it beside the code, when a validation policy under `tests/validation/` already holds it, when a "
