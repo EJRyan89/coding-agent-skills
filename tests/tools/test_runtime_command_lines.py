@@ -385,7 +385,10 @@ class FailedTests(RuntimeCommandLinesTestCase):
     def test_a_runtime_that_is_not_installed_is_missing_and_fails(self) -> None:
         printed: list[str] = []
         found = lines.run(("codex",), 5, self.root, runner=StubRuntimes(), which=lambda name: None, say=printed.append)
-        self.assertEqual(['MISSING codex "it is not installed where deploy.py check looks"'], found)
+        # The reason is the one the module's documentation promises for MISSING.
+        promised = next(line for line in (lines.__doc__ or "").splitlines() if line.startswith('  MISSING <runtime> "'))
+        reason = promised.split('"<reason>"', 1)[1].strip().removesuffix("; exit 1")
+        self.assertEqual([f'MISSING codex "{reason}"'], found)
         self.assertTrue(lines.failed(found))
 
 
@@ -505,7 +508,7 @@ class SummaryTests(unittest.TestCase):
         passed = lines.summary(["VERSION codex 0.163.0", "ACCEPTED codex skill-listing"])
         self.assertIn("| codex | version | 0.163.0 |", passed)
         self.assertIn("| codex | skill-listing | ACCEPTED |", passed)
-        self.assertIn("Every runtime accepted every command line.", passed)
+        self.assertIn(f"\n{lines.ALL_ACCEPTED}\n", passed)
         failed = lines.summary(['REMOVED copilot review-host --no-remote "a | b"'])
         self.assertIn('| copilot | review-host | REMOVED --no-remote "a &#124; b" |', failed)
         self.assertIn("1 line(s) failed.", failed)

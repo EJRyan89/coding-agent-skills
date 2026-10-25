@@ -87,7 +87,12 @@ A guard, gate, verdict, count, or measurement has a test in which its evidence n
 
 A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
 expected wording from that document, or from the one constant the code and the document both use, never from a copy
-restated in the test, so the test cannot pin a change the document does not make.
+restated in the test, so the test cannot pin a change the document does not make. The one exception is a contract
+value a decision in [Design](design.md) fixes, such as what a plugin answers for a template token: its test pins it
+against an independent literal, so a change to the constant fails until the decision and the pin change with it, and
+says beside the pin that it is a pinned contract value and which decision fixes it. No validation check holds this
+rule, since a literal a test restates from a document cannot be told from one the test needs for itself; review holds
+it.
 
 Run the suite in full locally only when the change's reach warrants it, such as a validation policy or the runner.
 When a leg fails in continuous integration, reproduce that leg with

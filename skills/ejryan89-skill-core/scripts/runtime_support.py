@@ -12,9 +12,12 @@ script imports nothing from the deployer.
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
+
+import git_client
 
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
 RUNTIME_TITLES = {"claude-code": "Claude Code", "codex": "Codex CLI", "copilot-cli": "Copilot CLI"}
@@ -37,7 +40,8 @@ CAPABILITY_GRANTS = {"Agent": "agent-delegation", "Workflow": "workflow"}
 # optional, needs sandbox-network.
 NETWORK_TOOLS = frozenset({"gh", "copilot"})
 # The git subcommands that reach a remote. Every skill runs git, so git is never declared as a tool; a skill whose
-# script runs one of these needs sandbox-network as a network tool's does.
+# script runs one of these, a Bash script by its command line or a Python script by python_git_subcommands, needs
+# sandbox-network as a network tool's does.
 NETWORK_GIT_SUBCOMMANDS = frozenset({"clone", "fetch", "ls-remote", "pull", "push"})
 # What a skill loses where a runtime lacks the capability, until its author states it more precisely.
 DEFAULT_REASONS = {
@@ -137,6 +141,46 @@ def frontmatter_needs(
     if tools & NETWORK_TOOLS or git_subcommands & NETWORK_GIT_SUBCOMMANDS:
         needs.add("sandbox-network")
     return needs | {"user-only-start"} if user_only else needs
+
+
+def python_git_subcommands(source: str) -> set[str]:
+    """The subcommand each git call in a Python script names. A skill's Python runs git through git_client's GitClient,
+    often behind a function of its own or a sibling module's, so the call is read by its name, not its import.
+
+    A git call is one whose function's dotted name has a part with the word git in it, such as services.git.run, git_in,
+    or GitClient(runner).output. Its words are the string literals among its positional arguments and among the items
+    of a list or tuple literal there, in order, any other value after the first literal standing as a placeholder, and
+    git_client.subcommand reads past git's own options to the subcommand. A script that does not parse raises what
+    ast.parse raises.
+    """
+    tree = ast.parse(source)
+
+    def names_git(function: ast.expr) -> bool:
+        parts: list[str] = []
+        while isinstance(function, (ast.Attribute, ast.Call)):
+            if isinstance(function, ast.Attribute):
+                parts.append(function.attr)
+                function = function.value
+            else:
+                function = function.func
+        if isinstance(function, ast.Name):
+            parts.append(function.id)
+        return any(word.casefold() == "git" for part in parts for word in re.split(r"_|(?<=[a-z])(?=[A-Z])", part))
+
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not names_git(node.func):
+            continue
+        words: list[str] = []
+        for argument in node.args:
+            for item in argument.elts if isinstance(argument, (ast.List, ast.Tuple)) else [argument]:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    words.append(item.value)
+                elif words:
+                    words.append("")
+        if subcommand := git_client.subcommand(words):
+            found.add(subcommand)
+    return found
 
 
 def invoked_skills(text: str, names: Collection[str]) -> set[str]:
