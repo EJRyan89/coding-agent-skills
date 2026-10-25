@@ -215,6 +215,23 @@ DENY_REASON = (
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
 
 
+GIT_STATUS_ALLOWED = {
+    "guard_enabled": (
+        "reports git's reason to the user: exit 1 is git's answer that the opt-in is unset, and any other failure "
+        "skips the guard with a note naming git's stderr, as the guard's contract says"
+    ),
+    "git_builtins": "fails closed: an empty list makes every subcommand a possible alias, which is read and judged",
+    "hub_protected": (
+        "fails closed: a check-ignore git cannot answer counts the path as tracked, so the edit is refused"
+    ),
+    "Judge.alias_refusal": (
+        "fails closed: any failure but exit 1 refuses the call; exit 1 is git's answer that no such alias is set, or "
+        "that the name is one no alias can have, which git cannot run either"
+    ),
+    "mentions_alias": "fails closed: any failure but exit 1 reads as an alias; exit 1 is git's answer that none is set",
+}
+
+
 def same_place(left: Path | None, right: Path | None) -> bool:
     return left is right or (left is not None and right is not None and same_path(left, right))
 

@@ -563,8 +563,8 @@ class UpgradeNotesPolicy(unittest.TestCase):
     def test_the_tag_and_its_tree_are_the_checkouts_whatever_repository_git_dir_names(self) -> None:
         # The commits since the tag are read through tools/release_notes.py, so the tag must be read through the same
         # git, or the two halves of one check read different repositories.
-        # upgrade_notes imports git from tools/release_notes.py and exports none, so its own binding is read.
-        self.assertIs(release_notes.git, vars(upgrade_notes)["git"])
+        # upgrade_notes reads through tools/release_notes.py's client and exports none, so its own binding is read.
+        self.assertIs(release_notes.CLIENT, vars(upgrade_notes)["CLIENT"])
         self.release()
         other = self.home / "another repository"
         self.git("init", "-q", "-b", "main", str(other))
@@ -650,6 +650,33 @@ class UpgradeNotesPolicy(unittest.TestCase):
             ],
             upgrade_notes_problems(self.root),
         )
+
+    def test_a_shallowness_git_cannot_tell_is_named_not_taken_for_a_full_clone(self) -> None:
+        self.release()
+        run = release_notes.CLIENT.run
+
+        def answering(arguments: list[str], **options: object) -> git_client.GitResult:
+            if "--is-shallow-repository" in arguments:
+                return git_client.GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
+            return run(arguments, **options)  # type: ignore[arg-type]  # the client's own keywords, passed on
+
+        with mock.patch.object(release_notes.CLIENT, "run", side_effect=answering):
+            problems = upgrade_notes_problems(self.root)
+        self.assertEqual(
+            ["the upgrade-notes check cannot find the last tag: fatal: bad config line 1 in file .git/config"],
+            problems,
+        )
+
+    def test_an_origin_main_git_cannot_read_is_named_not_taken_for_missing(self) -> None:
+        self.release()
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        broken = self.root / ".git" / "refs" / "remotes" / "origin" / "main"
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("nonsense\n", encoding="ascii")
+        problems = upgrade_notes_problems(self.root)
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("the upgrade-notes check cannot find the last tag: "), problems)
+        self.assertIn("ignoring broken ref refs/remotes/origin/main", problems[0])
 
     def test_a_shallow_clone_fails_with_the_fetch_command(self) -> None:
         self.release()

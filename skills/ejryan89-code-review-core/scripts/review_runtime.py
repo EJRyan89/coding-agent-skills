@@ -197,6 +197,17 @@ MAX_CONDITION_READS = 100
 MAX_READ_PATTERN_LENGTH = 200
 
 
+GIT_STATUS_ALLOWED = {
+    "PrepareGitRunner.__call__": (
+        "passes git's result on unread: it keeps only a successful answer for reuse and returns every answer to its "
+        "caller"
+    ),
+    "_run_git": "fails closed: any failure raises a RuntimeContractError naming git's stderr",
+    "_runner_blob_reader.read": "fails closed: a blob git cannot print fails the runtime contract",
+    "read_blob": "fails closed: a size or a blob git cannot give fails the runtime contract",
+}
+
+
 class RuntimeContractError(ValueError):
     """Raised when a runtime or repository reviewer violates the trust contract."""
 

@@ -91,6 +91,15 @@ REMOTE_REFS = "refs/remotes/origin/"
 SDK_SOLUTION = "is a .slnx solution, or a .sln of SDK-style projects, which the .NET SDK's dotnet format formats"
 
 
+GIT_STATUS_ALLOWED = {
+    "git_paths": "fails closed: refuses on any failure, ending the resolution",
+    "fetch_failure": (
+        "reports git's reason to the user: a failed fetch is a FETCH_FAILED line naming git's stderr, and the "
+        "remote-tracking refs it left still serve"
+    ),
+}
+
+
 def gh_runner_in(directory: Path) -> GhRunner:
     """A gh runner working in `directory`, since `gh pr view` reads the repository and branch from there."""
     return partial(subprocess_runner, cwd=directory)

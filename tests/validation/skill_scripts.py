@@ -105,6 +105,9 @@ COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
 # The commands that run the program a later word names, each with its options that take the next word as their value:
 # the program is the first word after the options, after the assignments env takes, and after the duration timeout
 # takes. command -v and -V only look a program up.
+GH_LIMIT_ALLOWED = {
+    "COMMAND_WRAPPERS": "xargs's own -L, the count of lines each command it starts takes, which no gh call passes",
+}
 COMMAND_WRAPPERS: dict[str, frozenset[str]] = {
     "command": frozenset(),
     "builtin": frozenset(),

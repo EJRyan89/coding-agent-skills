@@ -188,6 +188,32 @@ ACCESS_FAILURES = {
 }
 
 
+GIT_STATUS_ALLOWED = {
+    "reason": (
+        "reports git's reason to the user: it is the one place a failed command's stderr becomes the reason a line "
+        "gives"
+    ),
+    "git_output": "fails closed: any failure raises a CleanupError naming git's reason",
+    "refresh_origin_head": (
+        "reports git's reason to the user: a set-head git refuses is the reason the default branch note gives"
+    ),
+    "fast_forward": "reports git's reason to the user: a fast-forward git refuses is the reason its line gives",
+    "sync": (
+        "reports git's reason to the user: a failed fetch is a FETCH_FAILED line, and a failed switch a CHECKOUT "
+        "failed line, each naming git's stderr"
+    ),
+    "delete_merged": (
+        "fails closed: a branch -d git refuses is retried as -D only while the branch has not moved, and a moved "
+        "branch is kept"
+    ),
+    "force_delete": (
+        "reports git's reason to the user: a branch -D git refuses keeps the branch, PRESERVED with git's stderr"
+    ),
+    "remove_checkout": "reports git's reason to the user: a worktree git will not remove is kept, with git's stderr",
+    "tracked_reason": "fails closed: a listing git cannot give keeps the folder, naming git's reason",
+}
+
+
 class CleanupError(Exception):
     """An expected problem with one repository: report it and skip the repository."""
 

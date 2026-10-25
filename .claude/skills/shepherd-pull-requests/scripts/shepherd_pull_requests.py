@@ -179,6 +179,11 @@ SERVICE_MARKERS = (
 )
 
 
+GIT_STATUS_ALLOWED = {
+    "fast_forward": "reports git's reason to the user: a fast-forward git refuses is the HUB line, naming git's stderr",
+}
+
+
 class ShepherdError(RuntimeError):
     """A checkout the tick cannot shepherd, such as one whose origin names no GitHub repository."""
 

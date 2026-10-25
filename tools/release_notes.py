@@ -72,6 +72,12 @@ FIELD_END = "\0"
 COMMIT_FIELDS = 3
 
 
+GIT_STATUS_ALLOWED = {
+    "git": "passes git's result on unread, decoded, to callers that judge it",
+    "git_output": "fails closed: any failure raises a ReleaseNotesError naming git's stderr",
+}
+
+
 @dataclass(frozen=True)
 class NotesEntry:
     heading: str

@@ -1603,6 +1603,111 @@ def test_discarded_result_policy_refuses_a_runner_result_left_unread() -> None:
     ]
 
 
+STATUS_SOURCE = """\
+from git_client import GitClient, GitResult
+
+from tools.helper import git as helper_git
+
+
+def local(directory) -> GitResult:
+    return GitClient().run(["status"], directory=directory)
+
+
+def reads(client: GitClient, given: GitResult, other):
+    direct = client.run(["status"]).returncode
+    named = client.run(["status"])
+    first = named.returncode
+    second = local(".").returncode
+    third = given.returncode
+    fourth = helper_git(".").returncode
+    fine = other.run(["status"]).returncode
+    caught = client.output(["status"])
+    held: GitResult = other.answer()
+    fifth = held.returncode
+    assigned: GitResult | None = client.run(["status"])
+    sixth = assigned.returncode
+    return direct, first, second, third, fourth, fine, caught, fifth, sixth
+
+
+def sanctioned(client: GitClient):
+    return client.run(["status"]).returncode
+
+
+GIT_STATUS_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+STATUS_HELPER = """\
+from git_client import GitClient, GitResult
+
+
+def git(cwd) -> GitResult:
+    return GitClient().run(["status"], directory=cwd)
+"""
+
+
+def test_git_status_policy_refuses_an_exit_status_read_outside_the_client() -> None:
+    # A result from GitClient.run, from a function of this module or another annotated to return a GitResult, and a
+    # name annotated as one are each git's; another object's run, and output, which raises, are not.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/alpha/scripts/alpha.py": STATUS_SOURCE,
+                "skills/alpha/scripts/test_alpha.py": STATUS_SOURCE,
+                "tools/helper.py": STATUS_HELPER,
+                python_checks.GIT_STATUS_OWNER: STATUS_SOURCE,
+                "tools/broken.py": "GIT_STATUS_ALLOWED = {'scope': ''}\n",
+            },
+        )
+        found = python_checks.git_status_problems(root, sorted(root.rglob("*.py")))
+    alpha = "skills/alpha/scripts/alpha.py"
+    refusal = (
+        "reads a git command's exit status, where a failure can read as absence; use git_client's quiet_output, "
+        "commit_of, file_at, or rev_parse_paths, or state why in GIT_STATUS_ALLOWED"
+    )
+    assert found == [
+        *(f"{alpha}:{line} {refusal}" for line in (11, 13, 14, 15, 16, 20, 22)),
+        f"{alpha}: GIT_STATUS_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: GIT_STATUS_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+LIMIT_SOURCE = """\
+def listings(client, count):
+    client.json(["pr", "list", "--limit", "5"])
+    client.json(["pr", "list", f"--limit={count}"])
+    client.json(["run", "list", "-L", "5"])
+    client.json(["run", "list", "-L5"])
+    client.json(["run", "list", f"-L{count}"])
+    client.json(["run", "list", "-Lx", "--limits"])
+    client.capped_list(["pr", "list"], 5)
+
+
+def sanctioned(client):
+    client.json(["pr", "list", "--limit", "5"])
+
+
+GH_LIMIT_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_gh_limit_policy_refuses_a_limit_passed_by_hand() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.gh_limit_problems, "GH_LIMIT_ALLOWED", LIMIT_SOURCE, python_checks.GH_LIMIT_OWNER
+    )
+    refusal = (
+        "passes gh a --limit by hand, which reads a cut listing as complete; use github_client's capped_list, or "
+        "state why in GH_LIMIT_ALLOWED"
+    )
+    assert found == [
+        *(f"{alpha}:{line} {refusal}" for line in (2, 3, 4, 5, 6)),
+        f"{alpha}: GH_LIMIT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: GH_LIMIT_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
 TIME_OPTION_SOURCE = """\
 import argparse
 
