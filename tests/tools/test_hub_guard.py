@@ -126,6 +126,13 @@ class EnvironmentConfigurationTests(unittest.TestCase):
                 configuration = hub_guard.environment_configuration({"GIT_CONFIG_COUNT": count})
                 self.assertEqual(([], False), (configuration.entries, configuration.settled))
 
+    def test_a_count_of_more_than_six_digits_is_not_read_so_no_loop_runs_long(self) -> None:
+        pair = {"GIT_CONFIG_KEY_0": "a.b", "GIT_CONFIG_VALUE_0": "x"}
+        read = hub_guard.environment_configuration({"GIT_CONFIG_COUNT": "000001", **pair})
+        self.assertEqual(([("a.b", "x")], True), (read.entries, read.settled))
+        unread = hub_guard.environment_configuration({"GIT_CONFIG_COUNT": "0000001", **pair})
+        self.assertEqual(([], False), (unread.entries, unread.settled))
+
 
 class PowerShellReaderStartTests(unittest.TestCase):
     """pwsh starts as every process a repository tool starts does: through ejryan89-skill-core's run_bounded, without

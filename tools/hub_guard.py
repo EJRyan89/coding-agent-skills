@@ -479,7 +479,9 @@ def environment_configuration(values: Mapping[str, Word]) -> Configuration:
             configuration.add(setting)
     if "GIT_CONFIG_COUNT" in values:
         count = values["GIT_CONFIG_COUNT"]
-        entries = None if count is None else whole_number.parse(count.strip())
+        # git reads the count as an int, so six digits is generous, and a longer one would keep the loop below going
+        # for practically ever; a count past it is one the guard cannot settle.
+        entries = None if count is None else whole_number.parse(count.strip(), limit=6)
         if entries is None:
             configuration.settled = False
             return configuration
