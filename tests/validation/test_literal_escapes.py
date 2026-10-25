@@ -94,6 +94,17 @@ def test_a_literal_that_means_the_control_character_passes(tmp_path: Path, sourc
     assert problems(tmp_path, source) == []
 
 
+@pytest.mark.parametrize(
+    "function", ["compile", "search", "match", "fullmatch", "findall", "finditer", "sub", "subn", "split"]
+)
+def test_every_re_function_reads_its_pattern_by_position_and_by_keyword(tmp_path: Path, function: str) -> None:
+    # " \b" fails only as a pattern, so each refusal comes from the call, never from the literal alone.
+    refusal = ["tests/test_sample.py:2 " + REFUSAL.format(escapes="\\b")]
+    assert problems(tmp_path, f'import re\nW = re.{function}(" \\b", "")\n') == refusal
+    assert problems(tmp_path, f'import re\nW = re.{function}(string="", pattern=" \\b")\n') == refusal
+    assert problems(tmp_path, f'import re\nW = re.{function}(" ", " \\b")\n') == []
+
+
 def test_an_allowance_sanctions_its_scope_and_an_unused_entry_fails(tmp_path: Path) -> None:
     sanctioned = (
         'ESCAPE_ALLOWED = {"f": "it writes the backspace the terminal reads"}\ndef f() -> str:\n    return "\\bin"\n'
