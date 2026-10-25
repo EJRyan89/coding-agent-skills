@@ -6,7 +6,6 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import itertools
-import json
 import os
 import re
 import sys
@@ -24,6 +23,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import frontmatter
 import json_reader
+import json_writer
 import whole_number
 from git_client import GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
@@ -495,7 +495,7 @@ def run_trigger(scenario: Scenario, model: str, home: Path, session: Session, ru
         if failure is None and problem is not None:
             failure = (f"request {number}: {problem[0]}", f"request {number}: {problem[1]}", problem[2])
     record = {"requests": entries, "models": sorted(models)}
-    (run / TRIGGER_RECORD).write_text(json.dumps(record, indent=2), encoding="utf-8")
+    json_writer.write(run / TRIGGER_RECORD, record, indent=2)
     judged = frozenset(models)
     if failure is not None:
         return Run(None, failure[0], judged, judged, failure[1], failure[2]), transcripts
@@ -601,8 +601,8 @@ def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[in
     except AgentError as exc:
         return f"{runtime_canary.forward(home / REVIEWER_AGENT)} cannot be passed with --agents: {exc}"
     (home / STATE).mkdir(exist_ok=True)
-    (home / STATE / AGENTS).write_text(json.dumps(agents, indent=2), encoding="utf-8")
-    (home / STATE / "config.json").write_text(json.dumps(review_config(home / STATE), indent=2), encoding="utf-8")
+    json_writer.write(home / STATE / AGENTS, agents, indent=2)
+    json_writer.write(home / STATE / "config.json", review_config(home / STATE), indent=2)
     return None
 
 
