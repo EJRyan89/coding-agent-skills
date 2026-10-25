@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 from unittest import mock
 
 import pytest
