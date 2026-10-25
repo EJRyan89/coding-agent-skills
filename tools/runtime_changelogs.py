@@ -86,6 +86,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import frontmatter
 import guidance_record
 import json_reader
+import versions
 from agent_skills import CODEX_METADATA
 from console import run_main
 from flat_text import single_line
@@ -118,7 +119,7 @@ ENVIRONMENT_MAPPING = re.compile(r"(?:^|_)(?:environ|env|environment)$", re.IGNO
 VARIABLE_COLLECTION = re.compile(r"(?:^|_)VARIABLES$")
 # A release heading of a Markdown changelog, such as `## 2.1.302` or `## 1.0.103 - 2026-10-22`, and a release whose
 # number goes on into a prerelease suffix, such as `1.0.104-0`.
-RELEASE_HEADING = re.compile(r"^#{1,3}\s+\[?v?(?P<release>\d+(?:\.\d+)+)(?P<suffix>[-+][0-9A-Za-z.]+)?\b")
+RELEASE_HEADING = re.compile(r"^#{1,3}\s+\[?v?(?P<release>[0-9]+(?:\.[0-9]+)+)(?P<suffix>[-+][0-9A-Za-z.]+)?\b")
 BULLET = re.compile(r"^\s*[-*]\s+(?P<text>.*)$")
 YAML_KEY = re.compile(r"^\s*(?P<key>[A-Za-z_][\w-]*):", re.MULTILINE)
 KINDS = ("flag", "variable", "path", "frontmatter")
@@ -356,7 +357,11 @@ class Release:
 
 
 def release_number(text: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in text.split("."))
+    """A release's numbers as ejryan89-skill-core's `versions` reads them, or WatchError when `text` is not one."""
+    release = versions.read(text)
+    if release is None:
+        raise WatchError(f"{quote(text)} is not a release of numbers joined by dots")
+    return release
 
 
 def bullet_entries(lines: Iterable[str]) -> list[str]:
@@ -415,7 +420,7 @@ def github_releases(payload: object, url: str) -> list[Release]:
     for item in payload:
         if not isinstance(item, dict) or item.get("draft") or item.get("prerelease"):
             continue
-        found = re.search(r"(?<![\d.])(\d+(?:\.\d+)+)(?![\d.]|-)", str(item.get("tag_name", "")))
+        found = re.search(r"(?<![0-9.])([0-9]+(?:\.[0-9]+)+)(?![0-9.]|-)", str(item.get("tag_name", "")))
         if found:
             releases.append(read_release(release_number(found.group(1)), str(item.get("body") or "").splitlines()))
     return releases

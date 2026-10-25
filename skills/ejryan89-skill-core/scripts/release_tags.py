@@ -3,7 +3,8 @@
 A release tag is `vMAJOR.MINOR.PATCH` in ASCII digits, the form `release_levels.VERSION` writes a version in and the
 release procedure in docs/releasing.md tags: nothing follows the patch number, so a tag with a pre-release suffix such
 as `v1.0.0-rc.1` is not a release, and neither is any other tag. Releases are ordered by their three numbers, each
-compared as a whole number, so `v0.10.0` follows `v0.9.0` and a leading zero changes nothing. The last release a commit
+read by `versions` as a whole number, so `v0.10.0` follows `v0.9.0`, a leading zero changes nothing, and a number past
+`whole_number`'s digit limit makes no release. The last release a commit
 holds is the highest release tag reachable from it, whatever tag of another name sits nearer to it in the history.
 
 tools/release_notes.py starts a release's notes at the last release before it, the upgrade-notes check in
@@ -26,25 +27,21 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+import versions
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
-from release_levels import VERSION
 
 TAGS = "refs/tags/"
+RELEASE_PREFIX = "v"
 
 
-def _number(digits: str) -> tuple[int, str]:
-    """A version component's order as a whole number, kept as text so a component of any length compares exactly."""
-    significant = digits.lstrip("0")
-    return len(significant), significant
-
-
-def release_order(name: str) -> tuple[tuple[int, str], ...] | None:
-    """The order of a release tag among releases, or None when the name is not a release tag."""
-    if not name.isascii() or not VERSION.fullmatch(name):
+def release_order(name: str) -> versions.Version | None:
+    """The order of a release tag among releases, its three numbers as `versions` reads them, or None when the name is
+    not a release tag."""
+    if not name.startswith(RELEASE_PREFIX):
         return None
-    return tuple(_number(part) for part in name[1:].split("."))
+    return versions.read(name.removeprefix(RELEASE_PREFIX), least=3, most=3)
 
 
 def is_release_tag(name: str) -> bool:
@@ -54,8 +51,7 @@ def is_release_tag(name: str) -> bool:
 def highest_release(names: Iterable[str]) -> str | None:
     """The highest release among tag names, any other name left out; between two names of one version, such as
     `v1.0.0` and `v01.0.0`, the one that sorts last."""
-    releases = [(order, name) for name in names if (order := release_order(name)) is not None]
-    return max(releases)[1] if releases else None
+    return versions.latest(names, release_order)
 
 
 def last_release(client: GitClient, repository: str | Path, commit: str) -> str | None:

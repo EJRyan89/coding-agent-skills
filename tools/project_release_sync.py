@@ -23,7 +23,6 @@ issue is filed or moved between milestones, and the release procedure in docs/re
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -35,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from console import run_main
 from github_client import GitHubClient, GitHubError
+from release_tags import release_order
 
 PROJECT_NUMBER = 1
 FIELD_NAME = "Release"
@@ -43,7 +43,6 @@ PAGE_SIZE = 50
 BATCH_SIZE = 20
 # A batch whose answer was lost is sent again, since each mutation sets a value and setting it twice changes nothing.
 BATCH_ATTEMPTS = 3
-VERSION = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
 
 ITEMS_QUERY = """
 query($owner: String!, $number: Int!, $field: String!, $first: Int!, $after: String) {
@@ -153,14 +152,9 @@ def read_board(client: GitHubClient) -> Board:
         after = page["pageInfo"]["endCursor"]
 
 
-INT_PARSE_ALLOWED = {
-    "order_problem": "the options are the maintainer's own project field, named for the milestones",
-}
-
-
 def order_problem(options: Sequence[str]) -> str | None:
     """A problem line when the options named like a version are not in version order, else None."""
-    keys = {name: tuple(int(part) for part in match.groups()) for name in options if (match := VERSION.fullmatch(name))}
+    keys = {name: order for name in options if (order := release_order(name)) is not None}
     versions = list(keys)
     ordered = sorted(versions, key=keys.__getitem__)
     if versions == ordered:
