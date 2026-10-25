@@ -40,6 +40,7 @@ from validation_support import (
     is_main_guard,
     is_shell_script,
     is_test_script,
+    listed,
     markdown_section,
     module_lookup,
     module_statements,
@@ -563,8 +564,8 @@ def unsuited_script_problems(root: Path) -> list[str]:
             is_test_script(path) for path in files
         ):
             problems.append(
-                f"{scripts.relative_to(root).as_posix()} holds scripts but no regression suite; add a test_*, test-*, "
-                "*_test, *-test, or *.test.* Python, Bash, or PowerShell script beside them"
+                f"{scripts.relative_to(root).as_posix()} holds scripts but no regression suite; add a "
+                f"{listed(SUITE_NAME_PATTERNS)} Python, Bash, or PowerShell script beside them"
             )
     return problems
 

@@ -19,11 +19,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from duplication import (
     duplicated_definition_problems,
+    shared_fact_owner_problems,
     skill_core_copy_problems,
     skill_core_import_problems,
     skill_script_import_problems,
 )
 from validation_support import write_fixture_tree
+
+# What a sanction no copy needs is reported as.
+STALE = "which no other file defines identically or restates as a shared fact"
 
 
 class DuplicatedDefinitionPolicy(unittest.TestCase):
@@ -93,8 +97,8 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
         self.assertEqual(
             [
                 f"whole is defined identically in deployer/whole.py:4 and skills/s/scripts/whole.py:4{self.FIX}",
-                "deployer/whole.py: DUPLICATION_ALLOWED allows *, which no other file defines identically",
-                "skills/s/scripts/whole.py: DUPLICATION_ALLOWED allows *, which no other file defines identically",
+                f"deployer/whole.py: DUPLICATION_ALLOWED allows *, {STALE}",
+                f"skills/s/scripts/whole.py: DUPLICATION_ALLOWED allows *, {STALE}",
             ],
             self.problems(
                 {
@@ -123,8 +127,8 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
     def test_a_stale_or_unexplained_sanction_fails(self) -> None:
         self.assertEqual(
             [
-                "deployer/one.py: DUPLICATION_ALLOWED allows shared, which no other file defines identically",
-                "deployer/whole.py: DUPLICATION_ALLOWED allows *, which no other file defines identically",
+                f"deployer/one.py: DUPLICATION_ALLOWED allows shared, {STALE}",
+                f"deployer/whole.py: DUPLICATION_ALLOWED allows *, {STALE}",
                 "tools/vague.py: DUPLICATION_ALLOWED must map each name to the reason it is allowed",
             ],
             self.problems(
@@ -281,7 +285,7 @@ class DuplicatedConstantPolicy(unittest.TestCase):
     def test_a_stale_sanction_or_one_that_does_not_name_the_other_copy_fails(self) -> None:
         self.assertEqual(
             [
-                "deployer/one.py: DUPLICATION_ALLOWED allows SPAN, which no other file defines identically",
+                f"deployer/one.py: DUPLICATION_ALLOWED allows SPAN, {STALE}",
                 "skills/s/scripts/two.py: DUPLICATION_ALLOWED gives a reason for WIDE that does not name every other "
                 "copy: tools/three.py",
                 "tools/three.py: DUPLICATION_ALLOWED gives a reason for NARROW that does not name every other copy: "
@@ -325,6 +329,132 @@ class DuplicatedConstantPolicy(unittest.TestCase):
                 }
             ),
         )
+
+
+class SharedFactPolicy(unittest.TestCase):
+    GIT_CLIENT = "skills/ejryan89-skill-core/scripts/git_client.py"
+    SUITE_NAMES = "skills/ejryan89-skill-core/scripts/suite_names.py"
+    REVIEW_CONFIG = "skills/ejryan89-code-review-core/scripts/review_config.py"
+    OWNERS: ClassVar[dict[str, str]] = {
+        GIT_CLIENT: (
+            'GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--attr-source", "--config-env", "--git-dir", '
+            '"--work-tree"})\n'
+        ),
+        SUITE_NAMES: 'SUITE_NAME_PATTERNS = ("test_*", "test-*", "*_test", "*-test", "*.test.*")\n',
+        REVIEW_CONFIG: (
+            'DEFAULT_CONFIG_NAME = "config.json"\n\n\ndef default_config_path():\n'
+            '    return HOME / "code-review" / DEFAULT_CONFIG_NAME\n'
+        ),
+    }
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            write_fixture_tree(Path(temporary), {**self.OWNERS, **files})
+            return duplicated_definition_problems(Path(temporary))
+
+    def restated(self, module: str, line: int, fact: str, owner: str) -> str:
+        return (
+            f"{module}:{line} restates {fact}, which {owner} holds; import it from there, or sanction it in {module} "
+            "with DUPLICATION_ALLOWED"
+        )
+
+    def test_a_diverged_copy_of_git_value_options_fails_and_an_imported_one_passes(self) -> None:
+        guard = "tools/hub_guard.py"
+        diverged = 'GIT_OPTIONS_WITH_VALUE = {"-c", "-C", "--git-dir", "--work-tree", "--namespace"}\n'
+        self.assertEqual(
+            [self.restated(guard, 2, "GLOBAL_VALUE_OPTIONS", self.GIT_CLIENT)],
+            self.problems({guard: '"""Guard."""\n' + diverged}),
+        )
+        imported = "from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE\n"
+        # A command that passes two of the options is a call, not a copy of the vocabulary.
+        command = 'def run(path, setting):\n    return ["git", "-C", path, "-c", setting, "status"]\n'
+        self.assertEqual([], self.problems({guard: imported + command}))
+
+    def test_a_re_derived_suite_pattern_fails_and_the_shared_rule_passes(self) -> None:
+        discovery = "tests/validation/suite_discovery.py"
+        derived = 'def suites(paths):\n    return [p for p in paths if fnmatch.fnmatchcase(p.name, "test_*.py")]\n'
+        self.assertEqual(
+            [self.restated(discovery, 2, "SUITE_NAME_PATTERNS", self.SUITE_NAMES)],
+            self.problems({discovery: derived}),
+        )
+        shared = (
+            "from suite_names import is_suite_name\n\n\ndef suites(paths):\n"
+            '    """The suites among paths, each a test_* file or another suite name."""\n'
+            "    return [path for path in paths if is_suite_name(path.name)]\n"
+        )
+        self.assertEqual([], self.problems({discovery: shared}))
+
+    def test_a_restated_config_name_fails_in_an_importer_of_its_owner_only(self) -> None:
+        dashboard = "skills/update-pr-dashboard/scripts/dashboard_pipeline.py"
+        self.assertEqual(
+            [self.restated(dashboard, 2, "DEFAULT_CONFIG_NAME", self.REVIEW_CONFIG)],
+            self.problems({dashboard: 'from review_config import load\nDEFAULT_CONFIG_NAME = "config.json"\n'}),
+        )
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    dashboard: "from review_config import DEFAULT_CONFIG_NAME, load\n",
+                    # A module that does not import the owner names a file of its own.
+                    "tools/canary.py": 'CONFIG = "config.json"\n',
+                }
+            ),
+        )
+
+    def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
+        literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    self.SUITE_NAMES: self.OWNERS[self.SUITE_NAMES] + "GLOB = 'test_*.py'\n",
+                    "tests/validation/test_policy.py": literal,
+                    "tools/test_tool.py": literal,
+                }
+            ),
+        )
+
+    def test_a_sanctioned_restatement_passes_only_with_a_reason_naming_its_owner(self) -> None:
+        module = "tests/validation/python_checks.py"
+        glob = 'IGNORED = {"skills/*/scripts/test_*.py": ["S101"]}\n'
+
+        def sanctioned(reason: str) -> str:
+            return f'DUPLICATION_ALLOWED = {{"SUITE_NAME_PATTERNS": "{reason}"}}\n' + glob
+
+        self.assertEqual([], self.problems({module: sanctioned(f"pyproject.toml cannot import {self.SUITE_NAMES}")}))
+        self.assertEqual(
+            [
+                f"{module}: DUPLICATION_ALLOWED gives a reason for SUITE_NAME_PATTERNS that does not name "
+                f"{self.SUITE_NAMES}"
+            ],
+            self.problems({module: sanctioned("pyproject.toml cannot import it")}),
+        )
+        self.assertEqual(
+            [f"{module}: DUPLICATION_ALLOWED allows SUITE_NAME_PATTERNS, {STALE}"],
+            self.problems({module: sanctioned(f"once restated {self.SUITE_NAMES}").replace(glob, "")}),
+        )
+
+    def test_an_owner_that_no_longer_holds_its_fact_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, self.OWNERS)
+            self.assertEqual([], shared_fact_owner_problems(root))
+            # The literal moved inline, as review_config held it before its constant.
+            (root / self.REVIEW_CONFIG).write_text(
+                'def default_config_path():\n    return HOME / "code-review" / "config.json"\n', encoding="utf-8"
+            )
+            (root / self.GIT_CLIENT).unlink()
+            self.assertEqual(
+                [
+                    f"{owner} no longer holds {fact} as a literal; name its new home in the shared facts of "
+                    "tests/validation/duplication.py"
+                    for owner, fact in (
+                        (self.GIT_CLIENT, "GLOBAL_VALUE_OPTIONS"),
+                        (self.REVIEW_CONFIG, "DEFAULT_CONFIG_NAME"),
+                    )
+                ],
+                shared_fact_owner_problems(root),
+            )
 
 
 class SkillCoreHomePolicy(unittest.TestCase):
