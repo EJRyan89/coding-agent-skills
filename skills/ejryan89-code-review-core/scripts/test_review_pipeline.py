@@ -417,7 +417,8 @@ class WorkflowScriptTextTests(unittest.TestCase):
         # The orchestrator copies the printed script into the Workflow tool as text, so its literals keep each
         # character as itself rather than as a \u escape it would have to carry over exactly.
         with tempfile.TemporaryDirectory() as temporary:
-            run = Path(temporary) / "run café"
+            # Resolved, as the dispatch resolves each run, so an 8.3 short name in the temporary path matches.
+            run = Path(temporary).resolve() / "run café"
             run.mkdir()
             state = {
                 "selector": "owner/café#7",

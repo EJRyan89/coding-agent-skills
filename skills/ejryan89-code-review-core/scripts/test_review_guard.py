@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 import review_dispatch
 import review_guard as guard
 import review_pipeline as rp
@@ -344,10 +345,10 @@ class ReadLogTests(GuardFixture):
     def test_a_claim_records_its_run_and_role_and_a_refused_one_leaves_no_claim(self) -> None:
         # A claim the JSON writer refuses fails the guard's evaluation, which the hook turns into a denial, and leaves
         # no empty claim file a later call would read as unreadable.
-        refused = guard.json_writer.JsonWriteRefused("the value holds a lone surrogate U+DCFF")
+        refused = json_writer.JsonWriteRefused("the value holds a lone surrogate U+DCFF")
         with (
-            mock.patch.object(guard.json_writer, "dumps", side_effect=refused),
-            self.assertRaises(guard.json_writer.JsonWriteRefused),
+            mock.patch.object(json_writer, "dumps", side_effect=refused),
+            self.assertRaises(json_writer.JsonWriteRefused),
         ):
             self.decide("Read", file_path=self.prompt("csharp-review"))
         self.assertFalse((self.claims / f"{AGENT}.json").exists())

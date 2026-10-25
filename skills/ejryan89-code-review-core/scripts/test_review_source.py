@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 import review_guard
 import review_runtime
 import review_source
@@ -524,8 +525,8 @@ class CommandTests(LazySnapshotFixture):
         review_source._count(self.log, "src/bad\udcff.py")
         self.assertEqual(['"src/caf\\u00e9.py"'], self.log.read_text(encoding="utf-8").splitlines())
         # Through the command: a snapshot file whose path the writer refuses is still read, and left uncounted.
-        refusal = review_source.json_writer.JsonWriteRefused("the value holds a lone surrogate U+DCFF")
-        with mock.patch.object(review_source.json_writer, "dumps", side_effect=refusal):
+        refusal = json_writer.JsonWriteRefused("the value holds a lone surrogate U+DCFF")
+        with mock.patch.object(json_writer, "dumps", side_effect=refusal):
             code, lines = self.main(
                 "source-file", "--run", str(self.run_directory), "--role", "generic-review", "--path=src/unchanged.py"
             )
