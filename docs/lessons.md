@@ -125,9 +125,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   and its digit count limited, and a value outside them is the reader's documented refusal.
 - **Why:** An unbounded `int()` turns a hostile or garbled value into a `ValueError` past the digit limit, a huge
   allocation, or a negative count the code never expected.
-- **Use:** `json_reader:loads` for a JSON number, and `typed_fields:FieldReader.integer` for its bounds; the bounded
-  reader of a number in other text comes with #1879.
-- **Guard:** `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_digit_limit_is_a_value_error`,
+- **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
+  number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
+  refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
   `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
   has `\d+` rather than `\d{1,N}`; `.isdigit()` before an `int(`, which admits digits `int` reads past any bound;

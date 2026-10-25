@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import whole_number
 from json_reader import JsonRefused, loads, raw_decode, read_file
 
 
@@ -47,17 +48,42 @@ class RefusalTests(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):
             loads("{")
 
-    def test_an_integer_past_the_digit_limit_is_a_value_error(self) -> None:
-        # A caller turns a ValueError from its parse into its own refusal; this one is neither of the others.
-        with self.assertRaises(ValueError) as raised:
-            loads("1" * 5000)
-        self.assertNotIsInstance(raised.exception, json.JSONDecodeError | JsonRefused)
+    def test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign(self) -> None:
+        refusal = f"the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits"
+        past = "1" * (whole_number.DIGIT_LIMIT + 1)
+        for text in (past, f'{{"a": -{past}}}', f"[{past}]"):
+            with self.subTest(text=text[:8]):
+                self.assertEqual(refusal, self.refusal(text))
+
+    def test_an_integer_up_to_the_cap_reads_with_its_sign(self) -> None:
+        widest = "1" + "0" * (whole_number.DIGIT_LIMIT - 1)
+        self.assertEqual([-int(widest), int(widest)], loads(f"[-{widest}, {widest}]"))
+        self.assertEqual([0, 0, 12, -12, 1.5], loads("[0, -0, 12, -12, 1.5]"))
+
+    def test_the_cap_holds_whatever_limit_the_interpreter_is_configured_with(self) -> None:
+        configured = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(0)
+        try:
+            refusal = self.refusal("1" * (whole_number.DIGIT_LIMIT + 1))
+        finally:
+            sys.set_int_max_str_digits(configured)
+        self.assertEqual(f"the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits", refusal)
 
 
 class RawDecodeTests(unittest.TestCase):
     def test_a_value_followed_by_other_text_reads_with_the_index_past_it(self) -> None:
         self.assertEqual(({"a": 1}, 8), raw_decode('{"a": 1} {"b": 2}'))
         self.assertEqual(({"b": 2}, 17), raw_decode('{"a": 1} {"b": 2}', 9))
+
+    def test_an_integer_past_the_shared_digit_cap_is_refused_and_one_within_it_reads_to_its_end(self) -> None:
+        widest = "1" + "0" * (whole_number.DIGIT_LIMIT - 1)
+        self.assertEqual(([int(widest), -7], len(widest) + 6), raw_decode(f"[{widest}, -7] rest"))
+        self.assertEqual((int(widest), 4 + len(widest)), raw_decode(f"[1] {widest} rest", 4))
+        with self.assertRaises(JsonRefused) as raised:
+            raw_decode(f'{{"a": 1}} [{widest}0] rest', 9)
+        self.assertEqual(
+            f"the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits", str(raised.exception)
+        )
 
     def test_each_shape_loads_refuses_is_refused(self) -> None:
         for text, refusal in (
