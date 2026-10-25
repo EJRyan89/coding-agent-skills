@@ -653,14 +653,14 @@ class UpgradeNotesPolicy(unittest.TestCase):
 
     def test_a_shallowness_git_cannot_tell_is_named_not_taken_for_a_full_clone(self) -> None:
         self.release()
-        run = upgrade_notes.CLIENT.run
+        run = release_notes.CLIENT.run
 
         def answering(arguments: list[str], **options: object) -> git_client.GitResult:
             if "--is-shallow-repository" in arguments:
                 return git_client.GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
             return run(arguments, **options)  # type: ignore[arg-type]  # the client's own keywords, passed on
 
-        with mock.patch.object(upgrade_notes.CLIENT, "run", side_effect=answering):
+        with mock.patch.object(release_notes.CLIENT, "run", side_effect=answering):
             problems = upgrade_notes_problems(self.root)
         self.assertEqual(
             ["the upgrade-notes check cannot find the last tag: fatal: bad config line 1 in file .git/config"],
