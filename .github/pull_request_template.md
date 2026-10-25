@@ -39,7 +39,7 @@ None
 
 - [ ] The local checks "Validation" in `docs/implementing-changes.md` names for the touched files pass, with no skipped prerequisites; the `Validation` check runs every suite, or the subset the runner selects when the change is documentation-only
 - [ ] Regression coverage added or updated for every behavior change
-- [ ] Siblings: for a `fix`, a line below that opens with `Siblings:` names the search for the same construct elsewhere, its pattern and the scope searched, and each hit's outcome: fixed here, filed as #N, or not a sibling and why ("Pull requests" in `docs/implementing-changes.md`)
+- [ ] Siblings: for a `fix`, a line below that opens with `Siblings:` names the search for the same construct elsewhere, the pattern of `docs/lessons.md` the defect violated, whose **Search for** forms are the search, or the pattern this change adds, and the scope searched, and each hit's outcome: fixed here, filed as #N, or not a sibling and why ("Pull requests" in `docs/implementing-changes.md`)
 - [ ] For a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are below, with each runtime's version and any `SKIPPED` or `NOTHING_CHECKED` reason
 - [ ] For a change to a skill's prompt, description, model guidance, or reviewer instructions, the `evaluate-skill` run is cited below with its table, and `docs/skill-evaluations.md` holds its result
 - [ ] For a skill change, `audit-skill` audited each changed skill from the source tree with no MUST FIX left; any SUGGESTION left is named below with why
