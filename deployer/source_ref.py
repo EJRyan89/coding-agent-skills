@@ -55,14 +55,16 @@ class TagsUnreadable(Exception):
     """Git could not read the release tags reaching a pinned commit; the message is Git's reason, on one line."""
 
 
-def _run_git(arguments: Sequence[str], timeout: float | None = None) -> platform_support.ToolResult:
+def _run_git(
+    arguments: Sequence[str], timeout: float | None = None, *, separate_errors: bool = False
+) -> platform_support.ToolResult:
     git = platform_support.find_executable("git")
     if git is None:
         raise DeployError(
             "ERROR: --at needs Git, which was not found.",
             'Install it as "Installing the tools" in docs/installation.md says, then retry.',
         )
-    return platform_support.run_tool([git, *arguments], timeout=timeout)
+    return platform_support.run_tool([git, *arguments], timeout=timeout, separate_errors=separate_errors)
 
 
 def _git(source_dir: Path, *arguments: str) -> platform_support.ToolResult:
@@ -70,10 +72,11 @@ def _git(source_dir: Path, *arguments: str) -> platform_support.ToolResult:
 
 
 def _git_runner(command: Sequence[str], timeout: float) -> GitResult:
-    """GitClient's runner over the deployer's own, for release_tags: the command GitClient builds, git first, run by
-    run_tool, which captures stdout and stderr together, so both carry what Git printed."""
-    result = _run_git(command[1:], timeout)
-    return GitResult(result.returncode, result.output, result.output)
+    """GitClient's runner over the deployer's own, for resolve and release_tags: the command GitClient builds, git
+    first, run by run_tool with stdout and stderr kept apart, so a warning git prints beside an answer is never part of
+    it and a failure's reason is git's stderr."""
+    result = _run_git(command[1:], timeout, separate_errors=True)
+    return GitResult(result.returncode, result.output, result.errors)
 
 
 def _client() -> GitClient:

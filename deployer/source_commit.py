@@ -18,20 +18,20 @@ COMMIT_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 def _client(git: str) -> GitClient:
-    """GitClient over the deployer's run_tool, which captures stdout and stderr together, so both carry what Git
-    printed, and the client tells git's answer that a commit is not there from a failure."""
+    """GitClient over the deployer's run_tool, with stdout and stderr kept apart, so a warning git prints beside an
+    answer is never part of it, and the client tells git's answer that a commit is not there from a failure."""
 
     def runner(command: Sequence[str], timeout: float) -> GitResult:
-        result = platform_support.run_tool([git, *command[1:]], timeout=timeout)
-        return GitResult(result.returncode, result.output, result.output)
+        result = platform_support.run_tool([git, *command[1:]], timeout=timeout, separate_errors=True)
+        return GitResult(result.returncode, result.output, result.errors)
 
     return GitClient(runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
 
 
 def _description(source_dir: Path, commit: str) -> str | None:
-    """What git describe names the commit in source_dir, or None when there is no checkout or Git to ask, git answers
-    that the checkout holds no such commit, or it succeeds with more than the name. Any failure is refused with git's
-    reason."""
+    """What git describe names the commit in source_dir, or None when there is no checkout or Git to ask, or git answers
+    that the checkout holds no such commit. Any other failure, and an answer that is not one name, is refused with
+    git's reason."""
     if not (source_dir / ".git").exists():
         return None
     git = platform_support.find_executable("git")
@@ -50,10 +50,10 @@ def _description(source_dir: Path, commit: str) -> str | None:
         raise DeployError(f"{cannot}: {reason}", "Put right what Git reports in the checkout, then retry.") from error
     except OSError as exc:
         raise DeployError(f"{cannot}: {exc.strerror or exc}", "Check that Git runs, then retry.") from exc
-    # run_tool captures a warning git prints beside a name it succeeded in giving, so only a lone line is the name; git
-    # succeeded, so any other answer leaves the full name to stand alone.
     lines = described.strip().splitlines()
-    return lines[0].strip() if len(lines) == 1 else None
+    if len(lines) != 1:
+        raise DeployError(f"{cannot}: git describe answered {flat_text(described)!r}, not one name")
+    return lines[0].strip()
 
 
 def head_commit(source_dir: Path) -> str | None:
@@ -87,9 +87,9 @@ def head_commit(source_dir: Path) -> str | None:
 def describe(source_dir: Path, commit: str | None) -> str:
     """How check names the deployed commit: git describe with the full name, the full name alone, or unknown.
 
-    The full name stands alone where there is nothing to describe it from (no checkout, no Git, or git's answer that the
-    checkout holds no such commit) and where git describe succeeds with a warning beside the name. Git failing for any
-    other reason is refused with its reason.
+    The full name stands alone only where there is nothing to describe it from: no checkout, no Git, or git's answer
+    that the checkout holds no such commit. Git failing for any other reason is refused with its reason; a warning git
+    prints on stderr beside a name is not part of the name.
     """
     if commit is None:
         return "unknown"

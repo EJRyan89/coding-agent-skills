@@ -52,7 +52,8 @@ class RefValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory)
             (checkout / ".git").mkdir()
-            result = platform_support.ToolResult(0, f"{commit}\n")
+            # A warning git prints on stderr beside the answer, such as an ambiguous name's, is no part of the answer.
+            result = platform_support.ToolResult(0, f"{commit}\n", "warning: refname 'v1.0.0' is ambiguous.\n")
             with (
                 mock.patch.object(platform_support, "find_executable", return_value="git"),
                 mock.patch.object(platform_support, "run_tool", return_value=result) as run_tool,
@@ -61,6 +62,7 @@ class RefValidationTests(unittest.TestCase):
         run_tool.assert_called_once_with(
             ["git", "-C", str(checkout), "rev-parse", "--verify", "--quiet", "--end-of-options", "v1.0.0^{commit}"],
             timeout=platform_support.TOOL_DEADLINE_SECONDS,
+            separate_errors=True,
         )
 
     def test_only_a_full_commit_name_is_accepted_from_git(self) -> None:
@@ -104,7 +106,7 @@ class RefValidationTests(unittest.TestCase):
                     self.subTest(code=code, output=output),
                     mock.patch.object(platform_support, "find_executable", return_value="git"),
                     mock.patch.object(
-                        platform_support, "run_tool", return_value=platform_support.ToolResult(code, output)
+                        platform_support, "run_tool", return_value=platform_support.ToolResult(code, "", output)
                     ),
                     self.assertRaises(DeployError) as raised,
                 ):
@@ -114,6 +116,14 @@ class RefValidationTests(unittest.TestCase):
                     self.assertIn(part, first)
                 fetch = any("does not fetch" in line for line in raised.exception.lines)
                 self.assertEqual(code == 1 and not output, fetch, raised.exception.lines)
+                if first.startswith("ERROR: Git could not read"):
+                    self.assertEqual(
+                        (
+                            "Put right what Git reports in the checkout, then retry.",
+                            'See "Deploying an earlier commit" in docs/recovery.md.',
+                        ),
+                        raised.exception.lines[1:],
+                    )
 
 
 class DeployAtTests(DeployerTestCase):
@@ -292,23 +302,28 @@ class DeployAtTests(DeployerTestCase):
 
     def test_the_release_tag_runner_holds_git_to_the_clients_time_limit(self) -> None:
         # A hung git ends at the client's limit: the runner hands it to run_tool, which ends the process tree.
-        ran = platform_support.ToolResult(0, "listed\n")
+        # Its stdout is the answer and its stderr apart from it.
+        ran = platform_support.ToolResult(0, "listed\n", "warning: aside\n")
         with (
             mock.patch.object(platform_support, "find_executable", return_value="git"),
             mock.patch.object(platform_support, "run_tool", return_value=ran) as run_tool,
         ):
             result = source_ref._git_runner(["git", "-C", str(self.source), "for-each-ref"], 7.0)
-        run_tool.assert_called_once_with(["git", "-C", str(self.source), "for-each-ref"], timeout=7.0)
-        self.assertEqual((0, "listed\n", "listed\n"), (result.returncode, result.stdout, result.stderr))
+        run_tool.assert_called_once_with(
+            ["git", "-C", str(self.source), "for-each-ref"], timeout=7.0, separate_errors=True
+        )
+        self.assertEqual((0, "listed\n", "warning: aside\n"), (result.returncode, result.stdout, result.stderr))
 
     def tags_unreadable(self) -> Any:
         """Git fails, with its reason, every listing of the tags reaching a commit; every other git call runs."""
         real = source_ref._run_git
 
-        def run_git(arguments: Any, timeout: float | None = None) -> platform_support.ToolResult:
+        def run_git(
+            arguments: Any, timeout: float | None = None, *, separate_errors: bool = False
+        ) -> platform_support.ToolResult:
             if "for-each-ref" in arguments:
-                return platform_support.ToolResult(128, "fatal: refused by the test\n")
-            return real(arguments, timeout)
+                return platform_support.ToolResult(128, "", "fatal: refused by the test\n")
+            return real(arguments, timeout, separate_errors=separate_errors)
 
         return mock.patch.object(source_ref, "_run_git", run_git)
 

@@ -80,9 +80,14 @@ def run_with_deadline(stub: str, seconds: float) -> Any:
     real = platform_support.run_tool
 
     def run(
-        arguments: list[str], environment: dict[str, str] | None = None, *, timeout: float | None = None
+        arguments: list[str],
+        environment: dict[str, str] | None = None,
+        *,
+        timeout: float | None = None,
+        separate_errors: bool = False,
     ) -> platform_support.ToolResult:
-        return real(arguments, environment, timeout=seconds if arguments[0] == stub else timeout)
+        deadline = seconds if arguments[0] == stub else timeout
+        return real(arguments, environment, timeout=deadline, separate_errors=separate_errors)
 
     return mock.patch.object(platform_support, "run_tool", side_effect=run)
 
@@ -116,6 +121,12 @@ class RunToolTests(DeadlineCase):
         program = "import sys, time; print('out', flush=True); time.sleep(1); print('err', file=sys.stderr)"
         result = platform_support.run_tool([sys.executable, "-c", program], timeout=30)
         self.assertEqual((0, ["out", "err"]), (result.returncode, result.output.splitlines()))
+        self.assertEqual("", result.errors)
+
+    def test_stderr_is_kept_apart_from_stdout_when_asked(self) -> None:
+        program = "import sys; print('out', flush=True); print('err', file=sys.stderr, flush=True); sys.exit(3)"
+        result = platform_support.run_tool([sys.executable, "-c", program], separate_errors=True)
+        self.assertEqual((3, "out", "err"), (result.returncode, result.output.strip(), result.errors.strip()))
 
     def test_the_environment_is_added_to_the_deployer_s_own(self) -> None:
         program = "import os; print(os.environ['ADDED'], bool(os.environ.get('PATH')))"
