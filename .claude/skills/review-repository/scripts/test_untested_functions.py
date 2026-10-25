@@ -393,6 +393,37 @@ class ConditionTests(unittest.TestCase):
         )
         self.assertFalse(self.output.exists())
 
+    def test_an_excluded_script_s_entry_names_every_hunk_and_gives_the_first(self) -> None:
+        before = {"app/long.py": "".join(f"VALUE_{index} = {index}\n" for index in range(30))}
+        after = {"app/long.py": before["app/long.py"].replace("VALUE_1 = 1", "VALUE_1 = 10").replace("= 25", "= 250")}
+        self.diff.write_bytes(diff_of(before, after).encode("utf-8"))
+        manifest = {"excluded_paths": {"app/long.py": "agent-instruction"}}
+        (self.root / "source-snapshot.json").write_bytes(json.dumps(manifest).encode("utf-8"))
+        environment = {"CODE_REVIEW_DIFF_FILE": str(self.diff), "CODE_REVIEW_CONDITION_OUTPUT": str(self.output)}
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("CODE_REVIEW_")}
+        finished = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "--source-root", str(self.root)],
+            env={**clean, **environment},
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (finished.returncode, finished.stdout.decode("utf-8")))
+        self.assertEqual(
+            "EXCLUDED app/long.py: the snapshot leaves it out (agent-instruction), so no definition in it was read; "
+            "review its hunks from the diff, hunks @@ -1,5 +1,5 @@, @@ -23,7 +23,7 @@\n"
+            "@@ -1,5 +1,5 @@\n VALUE_0 = 0\n-VALUE_1 = 1\n+VALUE_1 = 10\n VALUE_2 = 2\n VALUE_3 = 3\n VALUE_4 = 4\n",
+            self.output.read_bytes().decode("utf-8"),
+        )
+
+    def test_a_changed_script_the_snapshot_holds_is_read_even_when_its_manifest_records_it_excluded(self) -> None:
+        manifest = json.dumps({"excluded_paths": {"app/service.py": "agent-instruction"}})
+        before = {"app/service.py": SERVICE, "source-snapshot.json": manifest}
+        after = {"app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0"), "source-snapshot.json": manifest}
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith("UNTESTED app/service.py:4 function total, added lines 5, "), written)
+
     def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
         self.assertEqual(
             (

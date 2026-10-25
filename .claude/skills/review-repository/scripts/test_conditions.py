@@ -121,15 +121,27 @@ class SnapshotExclusionTests(unittest.TestCase):
         self.assertEqual({}, conditions.snapshot_exclusions(self.root))
 
     def test_a_manifest_it_cannot_read_raises_missing_evidence_rather_than_excluding_nothing(self) -> None:
-        for content in (b"not json", b"\xff", b"[]", b"{}", b'{"excluded_paths": []}', b'{"excluded_paths": {"a": 1}}'):
+        unreadable = "the snapshot's source-snapshot.json cannot be read: "
+        unmapped = "the snapshot's source-snapshot.json records no excluded_paths mapping paths to reasons"
+        for content, message in (
+            (b"not json", unreadable),
+            (b"\xff", unreadable),
+            (b"[]", unmapped),
+            (b"{}", unmapped),
+            (b'{"excluded_paths": []}', unmapped),
+            (b'{"excluded_paths": {"a": 1}}', unmapped),
+        ):
             with self.subTest(content=content):
                 self.manifest.write_bytes(content)
-                with self.assertRaises(conditions.MissingEvidence):
+                with self.assertRaises(conditions.MissingEvidence) as raised:
                     conditions.snapshot_exclusions(self.root)
+                self.assertTrue(str(raised.exception).startswith(message), str(raised.exception))
+                self.assertEqual(message == unmapped, str(raised.exception) == unmapped)
         self.manifest.unlink()
         self.manifest.mkdir()
-        with self.assertRaises(conditions.MissingEvidence):
+        with self.assertRaises(conditions.MissingEvidence) as raised:
             conditions.snapshot_exclusions(self.root)
+        self.assertTrue(str(raised.exception).startswith(unreadable), str(raised.exception))
 
 
 @pytest.mark.parametrize(
