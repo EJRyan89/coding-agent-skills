@@ -259,7 +259,10 @@ def same_path(first: Path, second: Path) -> bool:
 
 def locate(git: GitClient, directory: Path) -> Place:
     """The checkout `directory` lies in, its hub, every worktree of it, and the GitHub repository origin names."""
-    top = git.rev_parse_path("--show-toplevel", directory=directory)
+    try:
+        top = git.rev_parse_path("--show-toplevel", directory=directory)
+    except GitError as exc:
+        raise ShepherdError(f"git could not read the checkout at {directory.as_posix()}: {exc}") from exc
     if top is None:
         raise ShepherdError(f"{directory.as_posix()} is not in a git checkout")
     worktrees = tuple(list_worktrees(git, top))

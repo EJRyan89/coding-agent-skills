@@ -25,6 +25,7 @@ from github_client import (
     CommandResult,
     GitHubClient,
     GitHubError,
+    Listing,
     classify_failure,
     graphql_failure,
     replace_undecodable,
@@ -228,6 +229,41 @@ class BackoffTests(unittest.TestCase):
 
 BAD_GATEWAY = "gh: Bad Gateway (HTTP 502)"
 UNKNOWN_OUTCOME = "GitHub may have applied it, so check before repeating it"
+
+
+class CappedListTests(unittest.TestCase):
+    def test_a_listing_asks_for_one_more_and_says_when_github_held_more(self) -> None:
+        run, calls = scripted(ok("[1, 2, 3]"), ok("[1, 2]"), ok("[]"))
+        client, _sleeper = client_for(run)
+        arguments = ["pr", "list", "--state", "open", "--json", "number"]
+        self.assertEqual(Listing([1, 2], cut=True), client.capped_list(arguments, 2))
+        self.assertEqual(["gh", *arguments, "--limit", "3"], calls[0])
+        self.assertEqual(Listing([1, 2], cut=False), client.capped_list(arguments, 2))
+        self.assertEqual(Listing([], cut=False), client.capped_list(arguments, 2))
+
+    def test_a_limit_of_its_own_or_below_one_is_refused_before_gh_runs(self) -> None:
+        run, calls = scripted()
+        client, _sleeper = client_for(run)
+        for arguments, limit in (
+            (["pr", "list", "--limit", "5"], 2),
+            (["pr", "list", "--limit=5"], 2),
+            (["pr", "list", "-L5"], 2),
+            (["pr", "list", "-L", "5"], 2),
+            (["pr", "list"], 0),
+            (["pr", "list"], True),
+        ):
+            with self.subTest(arguments=arguments, limit=limit), self.assertRaises(GitHubError) as context:
+                client.capped_list(arguments, limit)
+            self.assertEqual("input", context.exception.kind)
+        self.assertEqual([], calls)
+
+    def test_an_answer_that_is_not_a_list_is_malformed(self) -> None:
+        run, _calls = scripted(ok('{"number": 1}'))
+        client, _sleeper = client_for(run)
+        with self.assertRaises(GitHubError) as context:
+            client.capped_list(["pr", "list"], 2)
+        self.assertEqual("malformed", context.exception.kind)
+        self.assertIn("gh pr list answered with something that is not a list", str(context.exception))
 
 
 class TransientTests(unittest.TestCase):

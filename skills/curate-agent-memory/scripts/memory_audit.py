@@ -740,23 +740,6 @@ class UnknownMainWorktree(Exception):
     """A linked worktree whose shared Git directory names no working tree, so its main worktree cannot be found."""
 
 
-def rev_parse_paths(directory: Path, *options: str) -> list[Path] | None:
-    """The absolute path `git rev-parse` prints for each option in directory, or None when it lies in no repository.
-
-    Raises GitError when git cannot run or finish, or fails for any other reason, such as a folder it cannot enter.
-    """
-    try:
-        output = GitClient().output(["rev-parse", "--path-format=absolute", *options], directory=directory)
-    except GitError as exc:
-        if exc.kind == "not_repository":
-            return None
-        raise
-    paths = output.splitlines()
-    if len(paths) != len(options) or not all(paths):
-        raise GitError(f"git rev-parse printed {len(paths)} lines for {' '.join(options)} in {directory}")
-    return [Path(path) for path in paths]
-
-
 def main_worktree(repo: Path) -> Path | None:
     """The top level of the main worktree of the repository holding repo, which every worktree shares, or None when
     repo lies in no repository.
@@ -767,7 +750,7 @@ def main_worktree(repo: Path) -> Path | None:
     the working tree its configuration names, as a submodule's does. One that names none, as a separate Git
     directory does, raises UnknownMainWorktree. Raises GitError when git cannot run, does not finish, or fails.
     """
-    paths = rev_parse_paths(repo, "--show-toplevel", "--absolute-git-dir", "--git-common-dir")
+    paths = GitClient().rev_parse_paths(["--show-toplevel", "--absolute-git-dir", "--git-common-dir"], directory=repo)
     if paths is None:
         return None
     top, git_dir, common = paths
@@ -794,8 +777,7 @@ def repository_root(directory: Path) -> Path | None:
 
     Raises GitError when git cannot run, does not finish, or fails for another reason.
     """
-    paths = rev_parse_paths(directory, "--show-toplevel")
-    return None if paths is None else paths[0]
+    return GitClient().rev_parse_path("--show-toplevel", directory=directory)
 
 
 def config_directory(home: Path, environment: dict[str, str]) -> Path:

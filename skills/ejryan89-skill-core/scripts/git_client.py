@@ -8,6 +8,10 @@ inject the runner.
 
 A git exit status is often an answer, such as `merge-base --is-ancestor` saying no, so `run` returns every result
 that git produced and raises only when git could not run or finish; `output` raises on a nonzero exit as well.
+Where absence is a normal answer, a path query (`rev_parse_paths`), a ref lookup (`commit_of`), a file at a commit
+(`file_at`), and any `--quiet` command (`quiet_output`) give three: what git found, None for what git reports as
+absent, and a GitError with git's reason for every other failure, so a checkout or a ref git cannot read is never
+taken for one that is not there.
 stdout is decoded with surrogateescape, so `stdout.encode("utf-8", "surrogateescape")` is exactly what git printed;
 stderr only feeds messages, so a byte that is not UTF-8 becomes U+FFFD there.
 
@@ -34,6 +38,7 @@ command runs once, and `push` is never repeated. Tests inject the sleeper and th
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -44,6 +49,7 @@ from typing import IO, Literal, Protocol, TypeVar
 
 from bounded_process import Streaming, run_bounded, streaming
 from executable_locator import Found, located_command
+from flat_text import flat_text
 from job_tree import TreeNotEnded, process_tree
 
 T = TypeVar("T")
@@ -54,6 +60,8 @@ GitErrorKind = Literal["git", "prerequisite", "execution", "timeout", "not_repos
 DEFAULT_TIMEOUT_SECONDS = 300.0
 NOT_REPOSITORY_MARKERS = ("not a git repository",)
 MISSING_GIT = "Git executable 'git' was not found; install Git first"
+# A full object name, SHA-1 or SHA-256, as `rev-parse --verify` prints it.
+OBJECT_NAME = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 # The subcommands retried after a transient failure: each only reads from the remote, and a fetch cut off after it
 # updated some refs leaves them where a second fetch of the same refspecs puts them, so a repeat is safe. `push` may
@@ -371,18 +379,79 @@ class GitClient:
             raise GitError(message, kind=classify_failure(result.stderr), returncode=result.returncode)
         return result.stdout
 
-    def rev_parse_path(self, option: str, *, directory: str | Path) -> Path | None:
-        """The absolute path `git rev-parse <option>` names for `directory`, such as `--show-toplevel` (the root of
-        its checkout or worktree) or `--git-common-dir` (the Git directory every worktree of it shares).
+    def rev_parse_paths(self, options: Sequence[str], *, directory: str | Path) -> list[Path] | None:
+        """The absolute path `git rev-parse` names for `directory` for each of `options`, in order, such as
+        `--show-toplevel` (the root of its checkout or worktree) or `--git-common-dir` (the Git directory every
+        worktree of it shares).
 
-        None outside a repository, and when git cannot run, does not finish, fails, or prints nothing.
+        None only when git answers that `directory` lies in no repository. Every other failure, such as a checkout
+        whose ownership git doubts or whose configuration it cannot parse, raises GitError with git's reason, and so
+        does an answer that is not one path for each option.
         """
         try:
-            result = self.run(["rev-parse", "--path-format=absolute", option], directory=directory)
-        except GitError:
+            output = self.output(["rev-parse", "--path-format=absolute", *options], directory=directory)
+        except GitError as exc:
+            if exc.kind == "not_repository":
+                return None
+            raise
+        paths = output.splitlines()
+        if len(paths) != len(options) or not all(paths):
+            raise GitError(
+                f"git rev-parse answered {flat_text(output)!r} for {' '.join(options)} in {directory}, "
+                "not one path for each"
+            )
+        return [Path(path) for path in paths]
+
+    def rev_parse_path(self, option: str, *, directory: str | Path) -> Path | None:
+        """The absolute path `git rev-parse <option>` names for `directory`; see `rev_parse_paths`."""
+        paths = self.rev_parse_paths([option], directory=directory)
+        return None if paths is None else paths[0]
+
+    def quiet_output(
+        self, arguments: Sequence[str], *, directory: str | Path | None = None, timeout: float | None = None
+    ) -> str | None:
+        """The stdout of a git command run with `--quiet`, such as `rev-parse --verify --quiet`, or None when it exits
+        1 and prints nothing on stderr, which such a command does only when what it reads is not there.
+
+        Any other failure is git's, such as a broken ref it warns about or a configuration it cannot parse, and raises
+        a classified GitError with git's reason.
+        """
+        result = self.run(arguments, directory=directory, timeout=timeout)
+        if result.returncode == 0:
+            return result.stdout
+        if result.returncode == 1 and not result.stderr.strip():
             return None
-        value = result.stdout.rstrip("\r\n")
-        return Path(value) if result.returncode == 0 and value else None
+        message = result.stderr.strip() or f"git {' '.join(arguments[:1])} failed with exit code {result.returncode}"
+        raise GitError(message, kind=classify_failure(result.stderr), returncode=result.returncode)
+
+    def commit_of(self, reference: str, *, directory: str | Path) -> str | None:
+        """The full name of the commit `reference` names in `directory`'s repository, or None when git answers that it
+        names none; see `quiet_output`. An answer that is not one object name raises GitError."""
+        return self._object_of(f"{reference}^{{commit}}", directory)
+
+    def file_at(self, commit: str, path: str, *, directory: str | Path) -> bytes | None:
+        """The bytes of the file at `path` in `commit`, or None when git answers that `commit` holds nothing there or
+        is no commit it knows; see `quiet_output`. A path that names a folder, and any other failure, raise
+        GitError."""
+        name = self._object_of(f"{commit}:{path}", directory)
+        if name is None:
+            return None
+        result = self.run(["cat-file", "blob", name], directory=directory)
+        if result.returncode != 0:
+            message = result.stderr.strip() or f"git cat-file failed with exit code {result.returncode}"
+            kind = classify_failure(result.stderr)
+            raise GitError(f"{commit}:{path}: {message}", kind=kind, returncode=result.returncode)
+        return result.output_bytes()
+
+    def _object_of(self, name: str, directory: str | Path) -> str | None:
+        """The object name `git rev-parse --verify --quiet` gives `name`, or None when it names nothing."""
+        output = self.quiet_output(["rev-parse", "--verify", "--quiet", "--end-of-options", name], directory=directory)
+        if output is None:
+            return None
+        found = output.strip()
+        if not OBJECT_NAME.fullmatch(found):
+            raise GitError(f"git rev-parse --verify answered {flat_text(found)!r} for {name}, not one object name")
+        return found
 
     @contextmanager
     def stream(
