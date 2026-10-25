@@ -238,6 +238,31 @@ class ClientTests(unittest.TestCase):
             self.assertEqual((kind, returncode), (context.exception.kind, context.exception.returncode))
             self.assertIn(reason, str(context.exception))
 
+    def test_a_quiet_failure_with_nothing_on_stderr_names_the_subcommand_and_its_exit_code(self) -> None:
+        client = GitClient(scripted(GitResult(2, "", ""))[0])
+        with self.assertRaises(GitError) as context:
+            client.quiet_output(["rev-parse", "--verify", "--quiet", "side"])
+        self.assertEqual("git rev-parse failed with exit code 2", str(context.exception))
+        self.assertEqual(("git", 2), (context.exception.kind, context.exception.returncode))
+
+    def test_a_blob_git_cannot_print_names_the_object_gits_reason_its_kind_and_exit_code(self) -> None:
+        name = "c" * 40
+        runner, calls = scripted(
+            GitResult(0, f"{name}\n", ""), GitResult(128, "", "fatal: not a git repository: '.git'\n")
+        )
+        with self.assertRaises(GitError) as context:
+            GitClient(runner).file_at("HEAD", "a file", directory="d")
+        self.assertEqual("HEAD:a file: fatal: not a git repository: '.git'", str(context.exception))
+        self.assertEqual(("not_repository", 128), (context.exception.kind, context.exception.returncode))
+        self.assertEqual(["git", "-C", "d", "cat-file", "blob", name], calls[1][0])
+
+    def test_a_blob_failure_with_nothing_on_stderr_names_cat_file_and_its_exit_code(self) -> None:
+        runner, _calls = scripted(GitResult(0, "c" * 40 + "\n", ""), GitResult(3, "", ""))
+        with self.assertRaises(GitError) as context:
+            GitClient(runner).file_at("HEAD", "a file", directory="d")
+        self.assertEqual("HEAD:a file: git cat-file failed with exit code 3", str(context.exception))
+        self.assertEqual(("git", 3), (context.exception.kind, context.exception.returncode))
+
     def test_commit_of_refuses_an_answer_that_is_not_one_object_name(self) -> None:
         runner, calls = scripted(GitResult(0, "a" * 40 + "\n", ""), GitResult(0, "b" * 64 + "\n", ""))
         client = GitClient(runner)

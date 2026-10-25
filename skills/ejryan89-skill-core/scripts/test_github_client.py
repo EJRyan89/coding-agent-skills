@@ -261,9 +261,37 @@ class CappedListTests(unittest.TestCase):
         run, _calls = scripted(ok('{"number": 1}'))
         client, _sleeper = client_for(run)
         with self.assertRaises(GitHubError) as context:
-            client.capped_list(["pr", "list"], 2)
+            client.capped_list(["pr", "list", "--state", "open"], 2)
         self.assertEqual("malformed", context.exception.kind)
-        self.assertIn("gh pr list answered with something that is not a list", str(context.exception))
+        self.assertEqual("gh pr list answered with something that is not a list", str(context.exception))
+
+    def test_a_limit_of_one_asks_for_two(self) -> None:
+        run, calls = scripted(ok("[1]"))
+        client, _sleeper = client_for(run)
+        self.assertEqual(Listing([1], cut=False), client.capped_list(["pr", "list"], 1))
+        self.assertEqual(["gh", "pr", "list", "--limit", "2"], calls[0])
+
+    def test_the_refusals_name_what_is_wrong(self) -> None:
+        client, _sleeper = client_for(scripted()[0])
+        with self.assertRaises(GitHubError) as low:
+            client.capped_list(["pr", "list"], 0)
+        self.assertEqual("a capped listing needs a limit of at least 1, not 0", str(low.exception))
+        with self.assertRaises(GitHubError) as own:
+            client.capped_list(["pr", "list", "--limit=5"], 2)
+        self.assertEqual("a capped listing sets its own --limit; the arguments name one", str(own.exception))
+
+    def test_a_rate_limit_is_waited_out_unless_the_caller_turns_retry_off(self) -> None:
+        run, calls = scripted(failed(SECONDARY_LIMIT), ok("[]"))
+        client, sleeper = client_for(run)
+        self.assertEqual(Listing([], cut=False), client.capped_list(["pr", "list"], 2))
+        self.assertEqual(2, len(calls))
+        self.assertEqual(1, len(sleeper.waits))
+        run, calls = scripted(failed(SECONDARY_LIMIT))
+        client, sleeper = client_for(run)
+        with self.assertRaises(GitHubError) as context:
+            client.capped_list(["pr", "list"], 2, retry=False)
+        self.assertEqual("rate_limit", context.exception.kind)
+        self.assertEqual((1, []), (len(calls), sleeper.waits))
 
 
 class TransientTests(unittest.TestCase):
