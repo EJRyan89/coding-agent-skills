@@ -64,5 +64,6 @@ class PathKeyTests(unittest.TestCase):
         self.assertEqual(sys.platform == "win32", path_key(trailing) != path_key(trailing, textual=True))
 
     def test_a_key_is_never_both_resolved_and_textual(self) -> None:
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as raised:
             path_key(self.root, resolve=True, textual=True)
+        self.assertEqual("a path key is resolved or textual, not both", str(raised.exception))
