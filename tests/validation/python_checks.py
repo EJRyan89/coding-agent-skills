@@ -838,6 +838,55 @@ def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# A time limit read with type=float accepts nan, inf, zero, and a negative number, and none of them is a limit, so an
+# option that names a time takes ejryan89-skill-core's seconds_option.positive_seconds as its type. Any other states
+# why in a module-level TIME_OPTION_ALLOWED = {scope: reason}.
+TIME_OPTION_ALLOWANCE = "TIME_OPTION_ALLOWED"
+
+
+def _float_time_option(call: ast.Call, aliases: dict[str, str]) -> str | None:
+    """The name of the time an add_argument call reads with type=float, among its option strings, dest, and metavar,
+    or None when it reads no time so."""
+    time_words = {"timeout", "timeouts", "seconds", "secs", "minutes", "mins", "hours", "deadline"}
+    if not (isinstance(call.func, ast.Attribute) and call.func.attr == "add_argument"):
+        return None
+    types = [qualified_name(keyword.value, aliases) for keyword in call.keywords if keyword.arg == "type"]
+    if "float" not in types:
+        return None
+    names = [
+        *call.args,
+        *(keyword.value for keyword in call.keywords if keyword.arg in ("dest", "metavar")),
+    ]
+    for name in names:
+        if (
+            isinstance(name, ast.Constant)
+            and isinstance(name.value, str)
+            and time_words & set(re.split(r"[-_\s]+", name.value.lower()))
+        ):
+            return name.value
+    return None
+
+
+def time_option_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each add_argument that reads an option naming a time with type=float, which no TIME_OPTION_ALLOWED entry
+    sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        aliases = import_aliases(tree)
+        found = [
+            (
+                node.lineno,
+                scope,
+                f"reads {option} with type=float, which accepts nan, inf, 0, and a negative number; use "
+                f"ejryan89-skill-core's seconds_option.positive_seconds, or state why in {TIME_OPTION_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call) and (option := _float_time_option(node, aliases))
+        ]
+        problems += sanctioned_problems(name, tree, TIME_OPTION_ALLOWANCE, found)
+    return problems
+
+
 def ruff_format_check(root: Path, targets: list[str]) -> None:
     """Fail, naming each file, when ruff format would change any Python file under the targets in root."""
     ruff = find_ruff()
@@ -1062,3 +1111,6 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_no_process_runner_result_is_discarded_unchecked(self) -> None:
         self.assertEqual([], discarded_result_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_every_time_option_refuses_what_is_no_limit(self) -> None:
+        self.assertEqual([], time_option_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

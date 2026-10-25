@@ -64,6 +64,7 @@ from dotnet_format_targets import (
     solution_refusal,
 )
 from executable_locator import find_executable, located_command
+from seconds_option import positive_seconds
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
 ISSUE = re.compile(
@@ -372,7 +373,7 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=positive_seconds,
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"seconds to wait for dotnet-format (default: {DEFAULT_TIMEOUT_SECONDS})",
     )

@@ -38,7 +38,7 @@ conftest.py overrides one.
 
 from __future__ import annotations
 
-import math
+import argparse
 import os
 import re
 import sys
@@ -58,6 +58,7 @@ sys.path.append(str(Path(__file__).resolve().parent / "tests" / "validation"))
 
 from bounded_process import REPOSITORY_VARIABLES
 from dealing import deal, shard_of
+from seconds_option import positive_seconds
 
 # The deployer suites check each run through the plain asserts in tests/deployer/harness.py, which they import by its
 # bare name; pytest rewrites an assert to show both sides only in a test module or one named to it before its import.
@@ -216,11 +217,10 @@ def recorded_seconds(arguments: list[str]) -> dict[str, float]:
     for argument in arguments:
         test, separator, value = argument.partition("=")
         try:
-            seconds[test] = float(value)
-        except ValueError:
-            seconds[test] = 0
-        # float() reads nan, inf, and infinity, which no test's seconds are.
-        if not separator or not 0 < seconds[test] < math.inf:
+            seconds[test] = positive_seconds(value)
+        except argparse.ArgumentTypeError:
+            separator = ""
+        if not separator:
             raise pytest.UsageError(
                 f"{SECONDS_OPTION} expects <test>=<seconds>, a finite number above 0, found {argument!r}"
             )

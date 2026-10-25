@@ -144,6 +144,7 @@ from file_presence import is_present
 from git_client import GitClient, GitError
 from link_probe import is_plain_directory
 from release_tags import last_release
+from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -1414,7 +1415,7 @@ def main(arguments: list[str]) -> int:
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=positive_seconds,
         default=DEFAULT_TIMEOUT,
         metavar="SECONDS",
         help=f"limit for each runtime run (default: {DEFAULT_TIMEOUT})",
