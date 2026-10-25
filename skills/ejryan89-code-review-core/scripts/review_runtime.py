@@ -38,6 +38,14 @@ from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
 from review_vocabularies import DispatchMode
 from typed_fields import FieldError, FieldReader
 
+# A repository's condition scripts read a snapshot's recorded exclusions from its manifest.
+DUPLICATION_ALLOWED = {
+    "SOURCE_SNAPSHOT_MANIFEST": (
+        ".claude/skills/review-repository/scripts/conditions.py reads the manifest by this name, from a reviewer "
+        "folder that holds only the resources its manifest declares, where this module and its imports are not"
+    ),
+}
+
 ADAPTER_PROTOCOL_VERSION = 1
 SOURCE_SNAPSHOT_SCHEMA_VERSION = 1
 SOURCE_SNAPSHOT_MANIFEST = "source-snapshot.json"
