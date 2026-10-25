@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import os
 import shutil
 import stat
 import sys
@@ -97,7 +96,8 @@ def command_script(name: str) -> str:
     started = sys.argv[0] if sys.argv else ""
     if not started.endswith(pipeline.name) or not Path(started).is_absolute() or set(started) & set('"`$\r\n'):
         return resolved
-    if path_key(started, resolve=True) != os.path.normcase(str(pipeline)):
+    # PIPELINE_SCRIPT is resolved where it is defined, so its lexical key is its resolved one.
+    if path_key(started, resolve=True) != path_key(pipeline):
         return resolved
     return started.removesuffix(pipeline.name) + name
 
