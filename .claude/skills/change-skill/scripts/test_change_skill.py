@@ -268,6 +268,20 @@ class GateTests(unittest.TestCase):
             self.gates(uncommitted=new),
         )
 
+    def test_user_only_reads_the_key_as_the_shared_reader_does(self) -> None:
+        # A true in any case is user-only, as the deployer writes the adapter; frontmatter that cannot be read is not.
+        cases = {
+            "---\nname: z\ndisable-model-invocation: TRUE\n---\n": True,
+            "---\nname: z\ndisable-model-invocation: false\n---\n": False,
+            "---\nname: z\ndisable-model-invocation: [true]\n---\n": False,
+            "---\nname: z\n": False,
+            "# No frontmatter\n": False,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertIs(expected, change_skill.user_only(text))
+        self.assertFalse(change_skill.user_only(None))
+
     def test_a_grant_change_owes_the_canary(self) -> None:
         changed = skill_text("Alpha does a thing. Use it when asked.", grants='["Read", "Grep"]')
         self.assertIn("GATE runtime-canary alpha", self.gates(committed={"skills/alpha/SKILL.md": changed}))

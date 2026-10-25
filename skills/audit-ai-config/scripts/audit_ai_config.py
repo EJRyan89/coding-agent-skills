@@ -52,7 +52,15 @@ from check_provenance import Source
 from console import run_main
 from file_presence import is_present
 from folder_walk import LINKED, SKIPPED_FOLDERS
-from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
+from frontmatter import (
+    COMMENT,
+    NESTED_KEY,
+    SEQUENCE_ITEM,
+    USER_ONLY_KEY,
+    Frontmatter,
+    FrontmatterError,
+    user_only_value,
+)
 from frontmatter import split as split_frontmatter
 from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
@@ -1104,10 +1112,6 @@ def _skill_body(text: str) -> list[str]:
     return lines if parts is None else lines[parts[1] :]
 
 
-def _is_true(value: FrontmatterValue | None) -> bool:
-    return isinstance(value, str) and value.strip().lower() == "true"
-
-
 def _codex_skill_rules(path: Path, root: Path, rel: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
     """A skill Codex reads from .agents/skills: whether a user-only skill keeps Codex from invoking it, and whether a
     shim says what the .claude/skills skill it stands for says, and whether its name matches its folder, as the Agent
@@ -1127,7 +1131,7 @@ def _codex_skill_rules(path: Path, root: Path, rel: str, values: dict[str, Front
     canonical_path = root / ".claude/skills" / path.parent.name / "SKILL.md"
     # Nothing when there is no such skill or it cannot be read; the .claude/skills checks report one they cannot read.
     canonical = _frontmatter(root, canonical_path)[0]
-    user_only = _is_true(values.get("disable-model-invocation")) or _is_true(canonical.get("disable-model-invocation"))
+    user_only = any(user_only_value(found.get(USER_ONLY_KEY)) for found in (values, canonical))
     if user_only:
         policy = path.parent / CODEX_METADATA
         implicit, problem = _codex_implicit_invocation(root, policy)

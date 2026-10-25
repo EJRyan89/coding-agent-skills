@@ -162,6 +162,16 @@ class PullRequestBodyOption(unittest.TestCase):
         self.assertIsNone(check.pull_request.body_text())
         self.assertIsNone(check.pull_request.title_text())
 
+    def test_a_title_and_body_saved_with_a_byte_order_mark_are_judged_as_typed(self) -> None:
+        # A Windows editor may save the mark before the text, which a utf-8 read keeps at the head of the title.
+        with tempfile.TemporaryDirectory() as temporary:
+            title, body = Path(temporary) / "title.txt", Path(temporary) / "body.md"
+            title.write_bytes(b"\xef\xbb\xbffix(deployer): keep a thing\n")
+            body.write_bytes(b"\xef\xbb\xbf## Summary\n")
+            pull_request = PullRequest(body, title)
+            self.assertEqual("fix(deployer): keep a thing\n", pull_request.title_text())
+            self.assertEqual("## Summary\n", pull_request.body_text())
+
 
 class ShardOption(unittest.TestCase):
     def test_a_shard_is_an_index_from_one_up_to_its_count(self) -> None:

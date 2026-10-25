@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import frontmatter
+import json_reader
 import skill_menu
+from agent_skills import MAX_NAME
 from markdown_sections import EXECUTABLE_FENCES
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
@@ -47,6 +49,7 @@ from validation_support import (
 
 from deployer import platform_support
 from deployer.render import shipped_files
+from tools.plugin_agents import DEPLOYED_SCRIPT
 from tools.plugin_build import README as PLUGIN_README
 
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
@@ -115,7 +118,7 @@ def deploy_variable_problems(
     skills = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json"), key=path_order):
         skill = metadata.stem
-        required = set(json.loads(metadata.read_text(encoding="utf-8")).get("required_vars", []))
+        required = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("required_vars", []))
         required_anywhere |= required
         directory = skills.get(skill)
         used = _template_tokens(directory) if directory is not None else set()
@@ -133,7 +136,7 @@ def deploy_variable_problems(
         f"configured variable {key} is not required by any skill" for key in sorted(configured - required_anywhere)
     )
 
-    shared = json.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
+    shared = json_reader.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
     for asset in sorted(shared):
         path = root / "skills" / asset
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
@@ -157,7 +160,7 @@ def metadata_format_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         text = metadata.read_bytes().decode("utf-8")
-        if text != new_skill.metadata_text(json.loads(text)):
+        if text != new_skill.metadata_text(json_reader.loads(text)):
             problems.append(f"deploy-meta/{metadata.name} is not in the canonical metadata format; see {METADATA_DOC}")
     return problems
 
@@ -190,7 +193,7 @@ def own_needs(root: Path, name: str) -> set[str]:
     granted = document.value("allowed-tools") or []
     starts_hooked = any(f"`{agent}`" in text for agent in hooked_agents(root))
     metadata = root / "deploy-meta" / f"{name}.json"
-    declared = json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
+    declared = json_reader.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
     tools = frozenset([*declared.get("tools", []), *declared.get("optional_tools", [])])
     scripts = skills[name] / "scripts"
     readers = {
@@ -238,7 +241,7 @@ def runtime_support_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         name = f"deploy-meta/{metadata.name}"
-        document = json.loads(metadata.read_text(encoding="utf-8"))
+        document = json_reader.loads(metadata.read_text(encoding="utf-8"))
         if "runtime_support" not in document:
             problems.append(f"{name} declares no runtime_support; see {METADATA_DOC}")
             continue
@@ -288,7 +291,7 @@ def runtime_page_problems(root: Path) -> list[str]:
     pages = {"codex": "docs/codex-support.md", "copilot-cli": "docs/copilot-support.md"}
     levels = {runtime_support.FULL, runtime_support.PARTIAL, runtime_support.NONE}
     declared = {
-        metadata.stem: json.loads(metadata.read_text(encoding="utf-8")).get("runtime_support")
+        metadata.stem: json_reader.loads(metadata.read_text(encoding="utf-8")).get("runtime_support")
         for metadata in sorted((root / "deploy-meta").glob("*.json"))
     }
     problems: list[str] = []
@@ -321,7 +324,10 @@ def runtime_page_problems(root: Path) -> list[str]:
     return problems
 
 
-INSTALL_PATH = re.compile(r"\{\{HOME\}\}/\.claude/skills/([A-Za-z0-9._-]+)")
+# Every spelling of the home folder a skill's Markdown may hold before an install path: the deployer's token, the
+# shell's variable in both forms, and the tilde a shell expands.
+HOME_SPELLINGS = ("{{HOME}}", "$HOME", "${HOME}", "~")
+INSTALL_PATH = re.compile(f"(?:{'|'.join(map(re.escape, HOME_SPELLINGS))})" + r"/\.claude/skills/([A-Za-z0-9._-]+)")
 SIBLING_PATH = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)")
 # A concrete file a skill names through its directory; a pattern such as scripts/* in a grant names none.
 SKILL_DIR_FILE = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([A-Za-z0-9._/-]+)(?![A-Za-z0-9._/*<-])")
@@ -365,7 +371,7 @@ def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None
     ]
     skills = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        declared: set[str] = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
+        declared: set[str] = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         if (skill_directory := skills.get(metadata.stem)) is not None:
             documents += [
                 (path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"), key=path_order)
@@ -392,10 +398,13 @@ def _line_path_problems(
     directory: Path | None,
 ) -> list[str]:
     """Install paths, bare script runs, $HOME in agents, undeclared siblings, and missing files, in that order."""
+    # An agent's hook has no ${CLAUDE_SKILL_DIR}, so it runs a skill's script through Python's expanduser, the one form
+    # a plugin build rewrites to its own copy.
+    hooked = [match.span() for match in DEPLOYED_SCRIPT.finditer(line)] if dependencies is None else []
     problems: list[str] = [
         f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}"
         for match in INSTALL_PATH.finditer(line)
-        if match.group(1) in skills
+        if match.group(1) in skills and not any(start <= match.start() < end for start, end in hooked)
     ]
     if in_shell_fence and BARE_SCRIPT_PATH.search(line):
         problems.append(f"{name}:{number} runs a script by a bare relative path; see {SKILL_PATHS_DOC}")
@@ -454,7 +463,7 @@ def script_dependency_problems(root: Path) -> list[str]:
     skills = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         skill = metadata.stem
-        declared = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
+        declared = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         scripts = sorted((skills[skill] / "scripts").glob("*.py")) if skill in skills else []
         for path, _, tree in python_trees([path for path in scripts if not is_test_script(path)], root, problems):
             problems.extend(
@@ -514,14 +523,14 @@ def fixture_source_problems(root: Path) -> list[str]:
     A fixture source, such as the runtime canary's, is deployed only into a throwaway home. It must keep its own
     source ID and skill names, the shipped source must never name it, and its skills follow the path contract.
     """
-    shipped = json.loads((root / "source.json").read_text(encoding="utf-8"))
+    shipped = json_reader.loads((root / "source.json").read_text(encoding="utf-8"))
     names = {path.stem for path in (root / "deploy-meta").glob("*.json")} | set(shipped.get("bundles", {}))
     found: list[str] = []
     for source_file in sorted((root / "tests" / "fixtures").glob("*/source.json")):
         fixture = source_file.parent
         label = fixture.relative_to(root).as_posix()
         try:
-            source = json.loads(source_file.read_text(encoding="utf-8"))
+            source = json_reader.loads(source_file.read_text(encoding="utf-8"))
         # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
         except (OSError, ValueError, RecursionError) as exc:
             found.append(f"{label}/source.json cannot be read: {exc}")
@@ -614,7 +623,7 @@ def _without_hooks(text: str) -> tuple[str, str]:
 def _hook_problems(name: str, hooks: bytes, declared: str) -> list[str]:
     """What a plugin's hooks file holds that its agents' declared hooks, with the pinned paths, do not."""
     try:
-        document = json.loads(hooks)
+        document = json_reader.loads(hooks)
         entries = [entry for event in document["hooks"].values() for entry in event]
         handlers = [(entry["matcher"], handler) for entry in entries for handler in entry["hooks"]]
     except (ValueError, KeyError, TypeError, AttributeError):
@@ -644,10 +653,10 @@ def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes], versio
         for option, placeholder in PLUGIN_OPTION_PLACEHOLDERS.items()
         if any(path.endswith("/SKILL.md") and placeholder in content for path, content in files.items())
     }
-    catalogue = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    catalogue = json_reader.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     entry = next((entry for entry in catalogue.get("plugins", []) if entry.get("name") == name), None)
     try:
-        document = json.loads(manifest)
+        document = json_reader.loads(manifest)
     except ValueError:
         document = None
     if entry is None or not isinstance(document, dict):
@@ -724,7 +733,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 def marketplace_problems(root: Path) -> list[str]:
     """Report a marketplace entry whose source is not its own release asset of the one release every entry names,
     with no digest or a sha256 one."""
-    document = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    document = json_reader.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     found, tags = [], set()
     for entry in document.get("plugins", []):
         name, source = entry.get("name"), entry.get("source")
@@ -790,7 +799,7 @@ def trigger_scenario_problems(root: Path) -> list[str]:
     for spec_file in sorted(scenarios.glob("*/*/scenario.json")):
         label = spec_file.parent.relative_to(root).as_posix()
         try:
-            spec = json.loads(spec_file.read_text(encoding="utf-8"))
+            spec = json_reader.loads(spec_file.read_text(encoding="utf-8"))
         # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
         except (OSError, ValueError, RecursionError) as exc:
             problems.append(f"{label}/scenario.json cannot be read: {exc}")
@@ -903,7 +912,7 @@ def skill_tree_problems(root: Path) -> list[str]:
     if not skills.is_dir():
         return []
     source = root / "source.json"
-    shared = json.loads(source.read_text(encoding="utf-8")).get("shared_assets", {}) if source.is_file() else {}
+    shared = json_reader.loads(source.read_text(encoding="utf-8")).get("shared_assets", {}) if source.is_file() else {}
     problems = [
         f"{directory.relative_to(root).as_posix()} holds no SKILL.md and source.json declares no such shared asset"
         for directory in sorted(path for path in skills.iterdir() if path.is_dir())
@@ -937,8 +946,8 @@ def repository_skill_name_problems(root: Path) -> list[str]:
             name, where = skill_md.parent.name, skill_md.relative_to(root).as_posix()
             if not deploy_source.is_valid_name(name):
                 problems.append(
-                    f"{where}: {name!r} is not a skill name: at most 64 lowercase letters, digits, and hyphens, "
-                    f"neither first nor last, and no Windows device name; see {SKILL_NAMES_DOC}"
+                    f"{where}: {name!r} is not a skill name: at most {MAX_NAME} lowercase letters, digits, and "
+                    f"hyphens, neither first nor last, and no Windows device name; see {SKILL_NAMES_DOC}"
                 )
             elif word := deploy_source.reserved_word(name):
                 problems.append(
@@ -962,7 +971,7 @@ def shared_guidance_problems(root: Path) -> list[str]:
     Claude runs a skill directly; only the generated ~/.agents adapter tells other runtimes to read shared Markdown
     guidance first, so a skill that points to it spends a turn on every Claude run.
     """
-    shared = json.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
+    shared = json_reader.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
     guidance = sorted(name for name in shared if name.endswith(".md"))
     return [
         f"{(skill / 'SKILL.md').relative_to(root).as_posix()} points to {name}; the runtime adapter does that"
@@ -987,7 +996,7 @@ class SkillLayoutPolicies(unittest.TestCase):
         self.assertEqual([], embedded_program_problems(REPOSITORY_ROOT))
 
     def test_skills_leave_shared_runtime_guidance_to_their_adapters(self) -> None:
-        shared = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["shared_assets"]
+        shared = json_reader.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["shared_assets"]
         self.assertIn("runtime-compatibility.md", shared)
         self.assertEqual([], shared_guidance_problems(REPOSITORY_ROOT))
 

@@ -234,6 +234,15 @@ def frontmatter_value(text: str | None, key: str) -> object:
         return UNREADABLE
 
 
+def user_only(text: str | None) -> bool:
+    """Whether the document's frontmatter lets only the user start the skill, as the shared reader reads it; False when
+    the document is absent or its frontmatter cannot be read."""
+    try:
+        return text is not None and frontmatter.parse(text).user_only()
+    except frontmatter.FrontmatterError:
+        return False
+
+
 def metadata(text: str | None) -> dict[str, object] | None:
     """A metadata file's object, empty when the file is absent, None when it is not a JSON object."""
     if text is None:
@@ -374,8 +383,7 @@ def needs_trigger(tree: Tree, name: str, paths: set[str]) -> bool:
     if skill_file not in paths:
         return False
     head = tree.head(skill_file)
-    user_only = frontmatter_value(head, "disable-model-invocation")
-    if isinstance(user_only, str) and user_only.casefold() == "true":
+    if user_only(head):
         return False
     return frontmatter_value(tree.base(skill_file), "description") != frontmatter_value(head, "description")
 

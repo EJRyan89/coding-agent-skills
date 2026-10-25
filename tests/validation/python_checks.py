@@ -39,9 +39,11 @@ from validation_support import (
     qualified_name,
     relative,
     repository_files,
+    scope_problems,
     scoped_nodes,
     scripts_put_on_path,
     skill_script_directories,
+    under,
 )
 
 from deployer import platform_support
@@ -420,9 +422,18 @@ def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK
     return problems
 
 
-# The Python whose universal claims the policies below hold: every non-test module under these, the regression suites
-# and their fixture trees left out, since a suite starts processes and makes links to test the code that refuses them.
-CLAIM_ROOTS = ("skills", "deployer", "tools", ".claude/skills")
+# The Python whose universal claims the policies below hold: every non-test module under these folders and these files,
+# the policies and their runner among them. claim_omissions states why the rest of the formatted Python is left out.
+CLAIM_ROOTS = (
+    "skills",
+    "deployer",
+    "deploy.py",
+    "tools",
+    ".claude/skills",
+    "tests/validation",
+    "tests/run_validation.py",
+    "conftest.py",
+)
 
 
 def claim_files(root: Path, files: list[Path]) -> list[Path]:
@@ -430,11 +441,24 @@ def claim_files(root: Path, files: list[Path]) -> list[Path]:
     found = [
         path
         for path in files
-        if path.suffix == ".py"
-        and not is_test_script(path)
-        and any(path.relative_to(root).as_posix().startswith(f"{top}/") for top in CLAIM_ROOTS)
+        if path.suffix == ".py" and not is_test_script(path) and under(path.relative_to(root).as_posix(), CLAIM_ROOTS)
     ]
     return sorted(found, key=lambda path: path_order(path.relative_to(root)))
+
+
+def formatted_modules(root: Path, files: list[Path]) -> list[str]:
+    """The repository path of each non-test Python module ruff checks: the Python a policy whose rule speaks of the
+    repository's Python is held to."""
+    names = [path.relative_to(root).as_posix() for path in files if path.suffix == ".py" and not is_test_script(path)]
+    return [name for name in names if under(name, FORMAT_ROOTS)]
+
+
+def claim_omissions() -> dict[str, str]:
+    """The parts of the formatted Python the claim policies leave out, each with its reason."""
+    return {
+        "tests": "the suites' support and fixture trees start processes, make links, and parse the input the code "
+        "under test refuses, to test that it refuses them",
+    }
 
 
 def sanctioned_problems(name: str, tree: ast.Module, allowance: str, found: list[tuple[int, str, str]]) -> list[str]:
@@ -1102,6 +1126,10 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_link_probe_is_the_one_link_test(self) -> None:
         self.assertEqual([], link_test_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_claim_policies_read_every_module_their_rules_speak_of(self) -> None:
+        modules = formatted_modules(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))
+        self.assertEqual([], scope_problems("the claim policies", modules, CLAIM_ROOTS, claim_omissions()))
 
     def test_json_reader_is_the_one_parse_of_json(self) -> None:
         self.assertEqual([], json_parse_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

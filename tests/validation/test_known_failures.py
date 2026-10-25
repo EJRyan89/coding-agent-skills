@@ -91,6 +91,14 @@ class ListShapeTests(KnownFailureFixture):
         with self.assertRaises(KnownFailuresUnreadable):
             read_known_failures(self.root / KNOWN_FAILURES)
 
+    def test_an_entry_repeating_a_key_is_refused_not_read_by_its_last_value(self) -> None:
+        # A plain parse would keep the last issue and pass the entry; another reader of the file may keep the first.
+        (self.root / KNOWN_FAILURES).write_text(
+            '[{"reader": "module.reader", "case": "deep_nesting", "issue": 0, "issue": 4242}]', encoding="utf-8"
+        )
+        with self.assertRaisesRegex(KnownFailuresUnreadable, "is not JSON this module reads: JsonRefused"):
+            read_known_failures(self.root / KNOWN_FAILURES)
+
 
 class ClosingTests(KnownFailureFixture):
     def test_a_body_closing_an_issue_a_known_failure_still_names_fails(self) -> None:

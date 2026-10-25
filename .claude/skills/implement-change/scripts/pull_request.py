@@ -55,6 +55,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from markdown_sections import HTML_COMMENT
+from typed_text import read_typed
 
 TEMPLATE_NAME = "pull_request_template.md"
 # The folders GitHub reads a pull request template from, relative to the top of the repository.
@@ -173,7 +174,7 @@ def read_file(path: Path) -> str:
     """A title or body file's UTF-8 text, without the byte-order mark an editor on Windows may save before it, so the
     checks judge the text as typed."""
     try:
-        return path.read_text(encoding="utf-8-sig")
+        return read_typed(path)
     except (OSError, UnicodeDecodeError) as exc:
         raise PullRequestError(f'cannot read "{path}": {flat_text(str(exc))}') from exc
 
