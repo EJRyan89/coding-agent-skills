@@ -1297,20 +1297,40 @@ def source_root(directory: Path) -> Path | None:
     return root if (root / "deploy-meta" / f"{directory.name}.json").is_file() else None
 
 
+# The metadata keys that hold a list of names, which the inventory reads.
+NAME_LISTS = ("shared_deps", "skill_deps", "agent_deps", "tools", "optional_tools")
+
+
 def read_metadata(root: Path, name: str) -> dict[str, object] | None:
-    """A skill's deploy metadata in its source tree, or None when the file is missing or not a JSON object."""
+    """A skill's deploy metadata in its source tree, or None when the file is missing, is not a JSON object, or holds
+    a name list of another kind than a list of names, whose names cannot then be known."""
     try:
         metadata = json_reader.read_file(root / "deploy-meta" / f"{name}.json")
     # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
     except (OSError, ValueError, RecursionError):
         return None
-    return metadata if isinstance(metadata, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+    listed = [metadata.get(key, []) for key in NAME_LISTS]
+    if not all(isinstance(value, list) and all(isinstance(item, str) for item in value) for value in listed):
+        return None
+    return metadata
 
 
 def names(metadata: dict[str, object] | None, key: str) -> list[str]:
-    """The names a metadata list holds, or none for a key that is absent or not a list of names."""
+    """The names a metadata list holds, which read_metadata has checked, or none for a key that is absent."""
     value = (metadata or {}).get(key)
     return [name for name in value if isinstance(name, str)] if isinstance(value, list) else []
+
+
+def metadata_path(root: Path, name: str) -> Path:
+    return root / "deploy-meta" / f"{name}.json"
+
+
+def unreadable_metadata(root: Path, name: str) -> bool:
+    """Whether the skill has a metadata file read_metadata cannot read, whose names are then unknown rather than none,
+    as opposed to no metadata file at all."""
+    return read_metadata(root, name) is None and metadata_path(root, name).exists()
 
 
 def skill_closure(root: Path, name: str) -> list[str]:
@@ -1327,12 +1347,16 @@ def skill_closure(root: Path, name: str) -> list[str]:
 
 def declared_agents(directory: Path) -> dict[str, str] | None:
     """The agents a deployment of the skill installs, each with the skill that declares it in agent_deps, its own
-    first: None outside a source tree, where no metadata says."""
+    first: None outside a source tree, where no metadata says, and when a skill the closure reaches has metadata that
+    cannot be read, which may declare any agent or dependency."""
     root = source_root(directory)
     if root is None:
         return None
+    closure = skill_closure(root, directory.name)
+    if any(unreadable_metadata(root, skill) for skill in closure):
+        return None
     agents: dict[str, str] = {}
-    for skill in skill_closure(root, directory.name):
+    for skill in closure:
         for agent in names(read_metadata(root, skill), "agent_deps"):
             agents.setdefault(agent, skill)
     return agents
@@ -1346,9 +1370,14 @@ def declared_lines(directory: Path) -> list[str]:
         return []
     declared = read_metadata(root, directory.name)
     if declared is None:
-        return [f"DECLARED_UNREADABLE {posix(root / 'deploy-meta' / f'{directory.name}.json')}"]
+        return [f"DECLARED_UNREADABLE {posix(metadata_path(root, directory.name))}"]
     agents = declared_agents(directory) or {}
     return [
+        *(
+            f"DECLARED_UNREADABLE {posix(metadata_path(root, skill))}"
+            for skill in skill_closure(root, directory.name)[1:]
+            if unreadable_metadata(root, skill)
+        ),
         *(f"DECLARED shared {name}" for name in names(declared, "shared_deps")),
         *(f"DECLARED skill {name}" for name in names(declared, "skill_deps")),
         *(
@@ -1408,9 +1437,12 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
         if not isinstance(spec, dict):
             output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} not a JSON object")
         elif spec.get("mode") == "trigger":
-            requests, near_misses = (spec.get(key) for key in ("requests", "near_misses"))
-            counts = [len(value) if isinstance(value, list) else 0 for value in (requests, near_misses)]
-            output.append(f"TRIGGER_SCENARIO {posix(spec_file)} {counts[0]} {counts[1]}")
+            lists = {key: spec.get(key, []) for key in ("requests", "near_misses")}
+            other = [key for key, value in lists.items() if not isinstance(value, list)]
+            if other:
+                output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} its {other[0]} is not a list")
+                continue
+            output.append(f"TRIGGER_SCENARIO {posix(spec_file)} {len(lists['requests'])} {len(lists['near_misses'])}")
     return output or [f"NO_TRIGGER_SCENARIO {posix(scenarios)}"]
 
 
@@ -2310,9 +2342,50 @@ def json_hook(event: str, group: int, handler: dict[str, object]) -> Hook:
     return hook
 
 
+def hooks_file_hooks(path: Path, document: dict[str, object]) -> list[tuple[Hook, str]]:
+    """Each command hook a plugin's hooks document holds, with its matcher, as Claude Code reads the file: `hooks` an
+    object of events, each a list of matcher groups, each an object whose optional matcher is text and whose `hooks`
+    is a list of handler objects, each naming its type as text and, for a command, its command as text. A member of
+    any other kind raises InputError naming it, since the hooks Claude Code would run cannot be known without it."""
+
+    def refused(member: str) -> InputError:
+        return InputError(f"{posix(path)} is not a hooks file Claude Code reads: {member}")
+
+    events = document.get("hooks")
+    if events is None:
+        return []
+    if not isinstance(events, dict):
+        raise refused("'hooks' must be an object mapping event names to matcher groups")
+    found: list[tuple[Hook, str]] = []
+    group = 0
+    for event, groups in events.items():
+        if not isinstance(groups, list):
+            raise refused(f"hook event '{event}' must be a list of matcher groups")
+        for entry in groups:
+            group += 1
+            if not isinstance(entry, dict):
+                raise refused(f"each matcher group of hook event '{event}' must be an object")
+            matcher, handlers = entry.get("matcher"), entry.get("hooks")
+            if matcher is not None and not isinstance(matcher, str):
+                raise refused(f"a matcher of hook event '{event}' must be text")
+            if not isinstance(handlers, list):
+                raise refused(f"each matcher group of hook event '{event}' needs a 'hooks' list")
+            for handler in handlers:
+                kind = handler.get("type") if isinstance(handler, dict) else None
+                if not isinstance(handler, dict) or not isinstance(kind, str):
+                    raise refused(f"each handler of hook event '{event}' must be an object naming its type as text")
+                if kind != "command":
+                    continue
+                if not isinstance(handler.get("command"), str):
+                    raise refused(f"a command hook of hook event '{event}' needs its command as text")
+                found.append((json_hook(event, group, handler), matcher or "*"))
+    return found
+
+
 def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
     """Each command hook the hooks file of the skill's plugin holds, with its matcher; none outside a plugin. A hooks
-    file that cannot be read, is not JSON, or is not a JSON object raises InputError."""
+    file that cannot be read, is not JSON, is not a JSON object, or holds a member of another kind than Claude Code
+    reads raises InputError."""
     plugin = plugin_of(folder)
     path = plugin[1] / skill_menu.PLUGIN_HOOKS if plugin is not None else None
     if path is None:
@@ -2329,20 +2402,7 @@ def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
         raise InputError(f"{posix(path)} is not JSON: {exc}") from exc
     if not isinstance(document, dict):
         raise InputError(f"{posix(path)} is not a JSON object")
-    events = document.get("hooks")
-    found: list[tuple[Hook, str]] = []
-    group = 0
-    for event, groups in events.items() if isinstance(events, dict) else []:
-        for entry in groups if isinstance(groups, list) else []:
-            group += 1
-            matcher = entry.get("matcher") if isinstance(entry, dict) else None
-            handlers = entry.get("hooks") if isinstance(entry, dict) else None
-            found += [
-                (json_hook(event, group, handler), matcher if isinstance(matcher, str) and matcher else "*")
-                for handler in (handlers if isinstance(handlers, list) else [])
-                if isinstance(handler, dict) and handler.get("type") == "command"
-            ]
-    return found
+    return hooks_file_hooks(path, document)
 
 
 def started_agents(folder: Path, markdown: list[tuple[Path, list[str]]]) -> list[tuple[str, Path, int, object]]:
@@ -2629,6 +2689,10 @@ def own_needs(folder: Path) -> set[str]:
     except (OSError, UnicodeError, frontmatter.FrontmatterError) as exc:
         raise InputError(f"cannot read {posix(path)}: {exc}") from exc
     metadata = read_metadata(folder.parent.parent, folder.name)
+    if metadata is None and unreadable_metadata(folder.parent.parent, folder.name):
+        raise InputError(
+            f"cannot read {posix(metadata_path(folder.parent.parent, folder.name))}: not metadata it reads"
+        )
     tools = names(metadata, "tools") + names(metadata, "optional_tools")
     return {need for need, _ in needs_evidence(folder, granted, "INVOCATION model" not in listed, tools)}
 
@@ -2658,7 +2722,8 @@ def runtime_lines(folder: Path, granted: list[str], user_only: bool) -> list[str
     root = source_root(folder)
     metadata = read_metadata(root, folder.name) if root is not None else None
     if metadata is None:
-        return []
+        unreadable = root is not None and unreadable_metadata(root, folder.name)
+        return ["RUNTIME_UNREADABLE its metadata cannot be read"] if unreadable else []
     if "runtime_support" not in metadata:
         return ["RUNTIME_UNDECLARED"]
     try:

@@ -515,8 +515,12 @@ def termination_status(returncode: int) -> str | None:
 
 @dataclass(frozen=True)
 class ToolResult:
+    """A tool's exit status and what it printed: stdout and stderr together in `output`, or, when run_tool was asked
+    to keep them apart, stdout in `output` and stderr in `errors`."""
+
     returncode: int
     output: str
+    errors: str = ""
 
 
 def command_line_length(arguments: list[str]) -> int:
@@ -549,9 +553,16 @@ class ToolTimedOut(DeployError):
 
 
 def run_tool(
-    arguments: list[str], environment: dict[str, str] | None = None, *, timeout: float | None = None
+    arguments: list[str],
+    environment: dict[str, str] | None = None,
+    *,
+    timeout: float | None = None,
+    separate_errors: bool = False,
 ) -> ToolResult:
-    """Run a tool with stdout and stderr captured through a file, never inherited pipes, within a deadline.
+    """Run a tool with stdout and stderr captured through files, never inherited pipes, within a deadline.
+
+    Both streams share one file, so `output` holds them in the order printed, unless `separate_errors` asks for stderr
+    in `errors` alone, for a caller whose answer is stdout and whose reason for a failure is stderr, such as git's.
 
     The tool and every process it starts are held in one process tree, which ends them all once it has finished: a
     Windows job object allows no breakaway, and a process group holds every process that does not start a session or
@@ -568,11 +579,10 @@ def run_tool(
     if environment:
         merged.update(environment)
     # MSYS tools can reject inherited anonymous pipes with a spurious text/binary mode error.
-    with tempfile.TemporaryFile() as captured:
+    with tempfile.TemporaryFile() as captured, tempfile.TemporaryFile() as errors:
+        stderr = errors if separate_errors else captured
         try:
-            finished = run_bounded(
-                arguments, seconds, stdout=captured, stderr=captured, env=merged, tree=process_tree()
-            )
+            finished = run_bounded(arguments, seconds, stdout=captured, stderr=stderr, env=merged, tree=process_tree())
         except subprocess.TimeoutExpired:
             raise ToolTimedOut(arguments[0], seconds) from None
         except JobRefused as exc:
@@ -580,7 +590,10 @@ def run_tool(
                 f"ERROR: {Path(arguments[0]).name} could not be run with an end to every process it starts: {exc}."
             ) from exc
         captured.seek(0)
-        return ToolResult(finished.returncode, captured.read().decode("utf-8", "replace"))
+        errors.seek(0)
+        return ToolResult(
+            finished.returncode, captured.read().decode("utf-8", "replace"), errors.read().decode("utf-8", "replace")
+        )
 
 
 # Whether a process is running and when it started, which the lock judges a holder by: ejryan89-skill-core's one probe,
