@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import tomllib
 import unittest
 from collections.abc import Collection
 from pathlib import Path
@@ -820,7 +821,8 @@ def verify_log_problems(workflow: str) -> list[str]:
 
 # The step of deployable.yml's Windows job that its Linux job has no counterpart for: Codex CLI's machine settings
 # exist only on Windows (docs/codex-support.md).
-WINDOWS_ONLY_DEPLOYABLE_STEPS = ("Make the Codex sandbox setting and record the Python aliases",)
+CODEX_SETTINGS_STEP = "Make the Codex sandbox settings and record the Python aliases"
+WINDOWS_ONLY_DEPLOYABLE_STEPS = (CODEX_SETTINGS_STEP,)
 
 
 def deployable_linux_problems(workflow: str) -> list[str]:
@@ -850,6 +852,46 @@ def deployable_linux_problems(workflow: str) -> list[str]:
     found = [str(step.get("name")) for step in _steps(linux)]
     if found != expected:
         problems.append(f"the deployable-linux job's steps are {found}, expected {expected}")
+    return problems
+
+
+def _toml_problem(text: str | None, where: str) -> tuple[dict[str, object] | None, str | None]:
+    """The TOML text as a table, or the problem that keeps it from being read."""
+    if text is None:
+        return None, f"{where} has no Codex settings block"
+    try:
+        return tomllib.loads(text), None
+    except tomllib.TOMLDecodeError as error:
+        return None, f"{where}'s Codex settings are not TOML: {error}"
+
+
+def codex_settings_problems(workflow: str, guide: str) -> list[str]:
+    """Hold the Codex settings deployable.yml's Windows job writes, the `$settings` here-string its Codex step passes
+    to Set-Content, to the TOML block docs/codex-support.md gives after "For MXC with the elevated fallback", so the
+    runner is configured as that page tells a user to configure a machine."""
+    steps = [
+        step
+        for step in _steps(_mapping(read_workflow(workflow), "jobs", "deployable"))
+        if step.get("name") == CODEX_SETTINGS_STEP
+    ]
+    if len(steps) != 1:
+        return [f"the deployable job has {len(steps)} steps named {CODEX_SETTINGS_STEP!r}, expected one"]
+    script = str(steps[0].get("run", ""))
+    written = re.search(r"^\$settings = @'\n(?P<toml>.*?)\n'@$", script, re.MULTILINE | re.DOTALL)
+    block = re.search(
+        r"^For MXC with the elevated fallback[^\n]*\n\n```toml\n(?P<toml>.*?)\n```$", guide, re.MULTILINE | re.DOTALL
+    )
+    problems: list[str] = []
+    if not re.search(r"^Set-Content -LiteralPath \$config -Value \$settings ", script, re.MULTILINE):
+        problems.append(f"{CODEX_SETTINGS_STEP!r} does not write $settings to $config")
+    workflow_table, problem = _toml_problem(written.group("toml") if written else None, CODEX_SETTINGS_STEP)
+    problems += [problem] if problem else []
+    guide_table, problem = _toml_problem(block.group("toml") if block else None, "docs/codex-support.md")
+    problems += [problem] if problem else []
+    if workflow_table is not None and guide_table is not None and workflow_table != guide_table:
+        problems.append(
+            f"{CODEX_SETTINGS_STEP!r} writes {workflow_table}, but docs/codex-support.md gives {guide_table}"
+        )
     return problems
 
 
@@ -1164,6 +1206,11 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_workflow_runs_the_windows_job_again_on_a_fresh_linux_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], deployable_linux_problems(workflow))
+
+    def test_deployable_workflow_writes_the_codex_settings_the_codex_guide_gives(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        guide = (REPOSITORY_ROOT / "docs/codex-support.md").read_text(encoding="utf-8")
+        self.assertEqual([], codex_settings_problems(workflow, guide))
 
     def test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
