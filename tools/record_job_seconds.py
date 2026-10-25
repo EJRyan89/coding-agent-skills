@@ -167,24 +167,10 @@ def render_table(runs: Sequence[int], seconds: Mapping[str, Mapping[str, float]]
 
 
 def latest_runs(client: GitHubClient, count: int) -> list[int]:
-    runs = client.json(
-        [
-            "run",
-            "list",
-            "--workflow",
-            WORKFLOW_FILE,
-            "--branch",
-            "main",
-            "--event",
-            "push",
-            "--status",
-            "success",
-            "--limit",
-            str(count),
-            "--json",
-            "databaseId",
-        ]
-    )
+    """The `count` newest successful push runs on main. GitHub lists the newest first, so a listing cut at `count`
+    leaves out only older runs, which the table is not taken from."""
+    arguments = ["run", "list", "--workflow", WORKFLOW_FILE, "--branch", "main", "--event", "push", "--status"]
+    runs = client.capped_list([*arguments, "success", "--json", "databaseId"], count).items
     if not runs:
         raise GitHubError(f"no successful push run of {WORKFLOW_FILE} on main was found", kind="not_found")
     return [int(run["databaseId"]) for run in runs]
