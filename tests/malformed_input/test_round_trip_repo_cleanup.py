@@ -16,8 +16,11 @@ from pathlib import Path
 from edge_values import NAMES, TEXT, sized
 from reader_table import REPOSITORY
 
-sys.path.insert(0, str(REPOSITORY / "skills" / "repo-cleanup" / "scripts"))
 sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"))
+
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("repo-cleanup")))
 
 import repo_cleanup as rc
 import test_repo_cleanup as cleanup_suite

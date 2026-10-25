@@ -1081,10 +1081,9 @@ def _duration(seconds: int | None) -> str:
 def read_repository_path(read: FieldReader, value: object, path: str) -> str:
     """A repository file's path as git names it: any string but an empty one, a blank one included, since git takes a
     file named by Unicode whitespace alone, such as a no-break space."""
-    name = read.string(value, path, empty=True)
-    if not name:
-        raise read.fail(path, "a non-empty string", "an empty string")
-    return name
+    if not isinstance(value, str) or not value:
+        raise read.fail(path, "a non-empty string", describe(value) if value != "" else "an empty string")
+    return value
 
 
 def _read_path_set(value: object, path: str) -> list[str]:
