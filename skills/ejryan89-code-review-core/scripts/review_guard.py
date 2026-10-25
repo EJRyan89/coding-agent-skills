@@ -239,7 +239,7 @@ def run_root(path: Path) -> Path | None:
 def _roles(run: Path) -> list[dict[str, str]]:
     """The roles a prepared run's `run.json` names, each with its ID, prompt file, and result file."""
     try:
-        state = json_reader.loads((run / RUN_FILE).read_text(encoding="utf-8"))
+        state = json_reader.read_file(run / RUN_FILE)
     except (OSError, ValueError, RecursionError) as exc:
         raise Denied(f"the review run {run} could not be read") from exc
     try:
@@ -262,7 +262,7 @@ def _role(value: Any, path: str) -> dict[str, str]:
 def _load_claim(agent: str) -> Claim | None:
     """The run and role this agent claimed, or None when it has claimed none."""
     try:
-        claim = json_reader.loads((CLAIMS / f"{agent}.json").read_text(encoding="utf-8"))
+        claim = json_reader.read_file(CLAIMS / f"{agent}.json")
     except FileNotFoundError:
         return None
     except (OSError, ValueError, RecursionError) as exc:
@@ -283,7 +283,7 @@ def _prune_claims() -> None:
     """Remove each claim whose run is gone: finalize removes a run's folder, run.json with it."""
     for path in CLAIMS.glob("*.json"):
         with contextlib.suppress(OSError, ValueError, RecursionError):
-            claim = json_reader.loads(path.read_text(encoding="utf-8"))
+            claim = json_reader.read_file(path)
             try:
                 run: str | None = READ.string(READ.json_object(claim, "claim").get("run"), "claim.run", empty=True)
             except FieldError:

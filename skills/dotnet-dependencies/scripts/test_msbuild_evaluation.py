@@ -749,7 +749,9 @@ class EvaluationTests(unittest.TestCase):
         for depth in (MAX_CHOOSE_DEPTH + 1, 5000):
             with self.subTest(depth=depth), self.assertRaises(Unreadable) as refused:
                 self.read("src/b/b.csproj", nested(depth))
-            self.assertEqual(reason, refused.exception.reason)
+            self.assertEqual(
+                (self.root / "src" / "b" / "b.csproj", reason), (refused.exception.file, refused.exception.reason)
+            )
 
     def test_each_file_is_parsed_once_and_each_build_evaluated_once(self) -> None:
         # A project of two frameworks is evaluated once for its files' own values and once per framework, its central

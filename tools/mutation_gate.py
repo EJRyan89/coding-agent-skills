@@ -661,7 +661,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 )
         if not report.is_file():
             return f"failed in {code('coverage json')}, which wrote no report"
-        recorded = json_reader.loads(report.read_text(encoding="utf-8"))
+        recorded = json_reader.read_file(report)
         if not isinstance(recorded, dict) or not isinstance(recorded.get("files"), dict):
             return f"failed in {code('coverage json')}, whose report holds no files object"
         collected = suite_tests(tree, suite, folder / "collected.txt")

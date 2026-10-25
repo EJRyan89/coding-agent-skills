@@ -93,7 +93,7 @@ def plugin_name() -> str | None:
     try:
         if not is_present(manifest):
             return None
-        document: object = json_reader.loads(manifest.read_text(encoding="utf-8"))
+        document: object = json_reader.read_file(manifest)
     except OSError as error:
         raise ValueError(f"{manifest} cannot be read: {error.strerror or error}") from error
     except ValueError as error:

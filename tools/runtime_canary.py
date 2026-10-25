@@ -1356,7 +1356,7 @@ def claimed(home: Path) -> bool:
         # A path whose metadata cannot be read is judged as a link is: not this tool's claim.
         if any(platform_support.is_link_or_junction(path) for path in (state, marker)):
             return False
-        record = json_reader.loads(marker.read_text(encoding="utf-8"))
+        record = json_reader.read_file(marker)
     except (OSError, ValueError):
         return False
     named = record.get("home") if isinstance(record, dict) else None

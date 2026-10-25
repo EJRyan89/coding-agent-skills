@@ -135,6 +135,13 @@ class ConfigCommandTests(unittest.TestCase):
         written = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(["example/one"], written["repository_sets"]["primary"], "it writes the normalized config")
 
+    def test_write_reads_a_candidate_after_a_byte_order_mark(self) -> None:
+        # An editor on Windows may save the candidate with a UTF-8 byte-order mark, which the reader skips.
+        candidate = self.root / "candidate.json"
+        candidate.write_bytes(b"\xef\xbb\xbf" + json.dumps(valid_config()).encode("utf-8"))
+        output = self.root / "config.json"
+        self.assertEqual((0, f"WROTE {output}\n", ""), self.run_main("write", str(candidate), "--output", str(output)))
+
     def test_write_defaults_to_the_configured_path(self) -> None:
         candidate = self.write_json("candidate.json", valid_config())
         output = self.root / "default.json"

@@ -56,7 +56,7 @@ class Source:
 def load(path: Path, checks: Collection[str]) -> dict[str, tuple[Source, ...]]:
     """Each check's sources, read from `path`, which must hold an entry for every one of `checks` and no other."""
     try:
-        document = json_reader.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.read_file(path)
     except (OSError, ValueError) as exc:
         raise ProvenanceError(f"cannot read {path.as_posix()}: {exc}") from exc
     entries = READ.json_object(READ.json_object(document, "$", required={"checks"})["checks"], "$.checks")

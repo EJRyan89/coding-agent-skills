@@ -82,7 +82,7 @@ def read(path: Path, subjects: Sequence[str]) -> GuidanceRecord:
     with it."""
     name = path.as_posix()
     try:
-        document = json_reader.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.read_file(path)
     except FileNotFoundError as exc:
         raise GuidanceRecordError(f"no guidance record at {name}") from exc
     except (OSError, UnicodeDecodeError, ValueError) as exc:

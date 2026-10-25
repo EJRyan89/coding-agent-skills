@@ -207,7 +207,7 @@ def carriers(menu: Menu, skill: str) -> tuple[list[str], dict[str, str]]:
 
 def _json_object(path: Path) -> dict[str, object]:
     try:
-        document = json_reader.loads(path.read_text(encoding="utf-8"))
+        document = json_reader.read_file(path)
     except (OSError, UnicodeError, ValueError) as exc:
         raise MenuError(f"{path.as_posix()} cannot be read: {exc}") from exc
     if not isinstance(document, dict):

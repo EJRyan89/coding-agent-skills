@@ -18,7 +18,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
@@ -53,7 +52,7 @@ class Sample:
 def read(top: Path, runtimes: tuple[str, ...]) -> list[Sample]:
     """Every sample the record at `top` names, each with a version of one or more of `runtimes`, or SampleError."""
     try:
-        record = json_reader.loads((top / PROVENANCE).read_bytes().decode("utf-8"))
+        record = json_reader.read_file(top / PROVENANCE)
     except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise SampleError(f"cannot read {PROVENANCE.as_posix()}: {exc}") from exc
     samples = record.get("samples") if isinstance(record, dict) else None

@@ -108,7 +108,7 @@ def copilot_fixture(directory: Path) -> Path:
         (reviewer / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (reviewer / "SKILL.md").write_text("Review the change for correctness and report defects.\n", encoding="utf-8")
     pull_path = fixture / "pull.json"
-    pull = json_reader.loads(pull_path.read_text(encoding="utf-8"))
+    pull = json_reader.read_file(pull_path)
     pull["manifest_path"] = "review/manifest.json"
     pull["threads"] = [
         {
@@ -152,7 +152,7 @@ def copilot_entrypoint(directory: Path) -> str:
         host = review_hosts.host_state(run, probe=services.probe, now=services.clock())
         if host.outcome != "dispatched":
             raise RenderError(f"Copilot prompt fixture host {host.status}/{host.outcome}: {host.reason}")
-        request = json_reader.loads(Path(prepared["request_path"]).read_text(encoding="utf-8"))
+        request = json_reader.read_file(Path(prepared["request_path"]))
         pull = request["pull_request"]
         return prompts[0].replace(pull["base_sha"], "<base-commit>").replace(pull["head_sha"], "<head-commit>")
     finally:
