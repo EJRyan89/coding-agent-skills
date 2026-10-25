@@ -365,10 +365,17 @@ class ReadOnlyCommandDeadlineTests(DeadlineCase):
         stub = self.stubs.hanging("codex")
         real = platform_support.run_tool
 
-        def run(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
+        def run(
+            arguments: list[str],
+            environment: dict[str, str] | None = None,
+            *,
+            timeout: float | None = None,
+            separate_errors: bool = False,
+        ) -> platform_support.ToolResult:
             if arguments == [stub, "--version"]:
                 return platform_support.ToolResult(0, "codex-cli 0.160.0\n")
-            return real(arguments, environment, timeout=SHORT_DEADLINE if arguments[0] == stub else None)
+            deadline = SHORT_DEADLINE if arguments[0] == stub else timeout
+            return real(arguments, environment, timeout=deadline, separate_errors=separate_errors)
 
         with (
             mock.patch.object(platform_support, "CODEX_NEEDS_SANDBOX_SETTING", True),
