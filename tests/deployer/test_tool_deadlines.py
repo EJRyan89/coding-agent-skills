@@ -4,6 +4,7 @@ stops as any failure does, with the lock released and the journal as recovery ex
 from __future__ import annotations
 
 import contextlib
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -12,7 +13,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-import bounded_process
 import job_tree
 from harness import DeployerTestCase, Result, forward, recorded_temporary_directories
 from test_job_tree import QUICK_LAUNCHER, PausedTree, SignalledTree, ended
@@ -23,16 +23,19 @@ from deployer import errors, plan, platform_support, source_ref
 GONE_SECONDS = 10.0
 # The deadline the tests give a stub that hangs; the tree holding it starts the clock only once the stub is up.
 SHORT_DEADLINE = 2
+# How long a hung stub runs before it ends by itself: far past every deadline the tests give, and short of the mutation
+# gate's one-minute floor for a suite, so a run whose deadline is lost ends and fails its test rather than hanging.
+HANG_SECONDS = 30
 RECONCILING = "Deployment failed; reconciling the current journal before exit..."
 # Starts a program that runs on, as a tool a hung tool started does, writes its own and that program's process IDs to
 # the file named by its first argument, and then runs on itself.
-HANGING_PROGRAM = textwrap.dedent("""
+HANGING_PROGRAM = textwrap.dedent(f"""
     import os, subprocess, sys, time
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep({HANG_SECONDS})"])
     with open(sys.argv[1] + ".tmp", "w", encoding="utf-8") as handle:
-        handle.write(f"{os.getpid()} {child.pid}")
+        handle.write(f"{{os.getpid()}} {{child.pid}}")
     os.replace(sys.argv[1] + ".tmp", sys.argv[1])
-    time.sleep(120)
+    time.sleep({HANG_SECONDS})
 """)
 
 
@@ -119,14 +122,16 @@ class RunToolTests(DeadlineCase):
         self.assertEqual(600, platform_support.TOOL_DEADLINE_SECONDS)
 
     def test_the_deadline_given_or_the_default_reaches_the_bounded_run(self) -> None:
+        # A stub in place of the bounded run starts nothing, so a deadline lost on the way fails here at once.
+        finished: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(["tool"], 0)
         for timeout, expected in ((7.5, 7.5), (None, 600)):
             with (
                 self.subTest(timeout=timeout),
                 # platform_support's own name for skill-core's run_bounded, which run_tool calls.
-                mock.patch("deployer.platform_support.run_bounded", side_effect=bounded_process.run_bounded) as bounded,
+                mock.patch("deployer.platform_support.run_bounded", return_value=finished) as bounded,
             ):
-                platform_support.run_tool([sys.executable, "-c", "pass"], timeout=timeout)
-            self.assertEqual(expected, bounded.call_args.args[1])
+                result = platform_support.run_tool(["tool"], timeout=timeout)
+            self.assertEqual((expected, 0), (bounded.call_args.args[1], result.returncode))
 
     def test_a_slow_tool_within_its_deadline_finishes_with_its_output_in_order(self) -> None:
         program = "import sys, time; print('out', flush=True); time.sleep(1); print('err', file=sys.stderr)"
@@ -187,7 +192,7 @@ class RunToolTests(DeadlineCase):
                 mock.patch.object(job_tree, "job_holding", side_effect=refusal),
                 self.assertRaises(errors.DeployError) as raised,
             ):
-                platform_support.run_tool([sys.executable, "-c", "import time; time.sleep(120)"])
+                platform_support.run_tool([sys.executable, "-c", f"import time; time.sleep({HANG_SECONDS})"])
             self.assertEqual(
                 [
                     f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
@@ -206,7 +211,7 @@ class RunToolTests(DeadlineCase):
                 mock.patch.object(job_tree.GroupTree, "start_options", return_value={}),
                 self.assertRaises(errors.DeployError) as raised,
             ):
-                platform_support.run_tool([sys.executable, "-c", "import time; time.sleep(120)"])
+                platform_support.run_tool([sys.executable, "-c", f"import time; time.sleep({HANG_SECONDS})"])
             self.assertEqual(
                 [
                     f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
