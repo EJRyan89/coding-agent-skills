@@ -283,9 +283,10 @@ def _called_name(node: ast.AST) -> str:
 
 
 def _folds_path_case(node: ast.AST, _members: frozenset[str], _imports_owner: bool, _name: str) -> bool:
-    """A path's comparison key built by hand: a path made absolute, normalized, or resolved, then case-folded, through
-    os.path.normcase, or through str.casefold or str.lower, which fold case even where the file system keeps it. Folding
-    a name, such as a folder's against `.git`, or a path already normalized, builds no key."""
+    """A path's comparison key built by hand: a path case-folded through os.path.normcase, whatever was done to it
+    first, or a path made absolute, normalized, or resolved, then case-folded through str.casefold or str.lower, which
+    fold case even where the file system keeps it. Folding a path's name, such as a folder's against `.git`, builds no
+    key; str.casefold and str.lower of other text are left alone, since most such text is no path."""
     if not isinstance(node, ast.Call):
         return False
     if _called_name(node) == "normcase" and node.args:
@@ -296,6 +297,8 @@ def _folds_path_case(node: ast.AST, _members: frozenset[str], _imports_owner: bo
         return False
     while _called_name(folded) in {"str", "Path", "fspath"} and isinstance(folded, ast.Call) and folded.args:
         folded = folded.args[0]
+    if _called_name(node) == "normcase":
+        return not (isinstance(folded, ast.Attribute) and folded.attr == "name")
     return _called_name(folded) in {"normpath", "abspath", "realpath", "resolve", "absolute"}
 
 
