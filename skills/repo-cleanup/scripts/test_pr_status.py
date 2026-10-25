@@ -595,6 +595,34 @@ class BranchTipListingTests(unittest.TestCase):
         (_, upstream), _ = self.tips(GitResult(0, "refs/remotes/origin/a\0[gone]\0x\n", ""))
         self.assertIsNotNone(upstream, "the tracking state is everything after the first NUL")
 
+    def upstream_answers(self, answer: GitResult) -> Callable[[Sequence[str], float], GitResult]:
+        """A git whose upstream listing names origin/topic, which resolves as `answer` says, and whose local branch
+        resolves to TIP."""
+
+        def answering(command: Sequence[str], timeout: float) -> GitResult:
+            if "for-each-ref" in command:
+                return GitResult(0, "refs/remotes/origin/topic\0[ahead 1]\n", "")
+            if "refs/remotes/origin/topic^{commit}" in command:
+                return answer
+            return GitResult(0, f"{TIP}\n", "")
+
+        return answering
+
+    def test_an_upstream_that_names_no_commit_or_cannot_be_read_says_which_upstream(self) -> None:
+        with self.assertRaises(QueryError) as absent:
+            branch_tips("/repos/example", "topic", GitClient(self.upstream_answers(GitResult(1, "", ""))))
+        self.assertEqual(
+            "cannot resolve upstream 'refs/remotes/origin/topic' of 'topic': it names no commit", str(absent.exception)
+        )
+        failing = self.upstream_answers(GitResult(1, "", "warning: ignoring broken ref refs/remotes/origin/topic\n"))
+        with self.assertRaises(QueryError) as broken:
+            branch_tips("/repos/example", "topic", GitClient(failing))
+        self.assertEqual(
+            "cannot resolve upstream 'refs/remotes/origin/topic' of 'topic': "
+            "warning: ignoring broken ref refs/remotes/origin/topic",
+            str(broken.exception),
+        )
+
     def test_a_listing_that_failed_or_holds_no_nul_is_refused(self) -> None:
         for name, listing in {
             "a failed listing holding a NUL": GitResult(128, "refs/remotes/origin/a\0\n", "fatal: bad"),
@@ -612,6 +640,14 @@ class BaseContainsTests(GitFixture):
         self.assertTrue(contains(base))
         self.assertFalse(contains(tip))
         self.assertFalse(contains("f" * 40), "a commit missing locally is not in the base")
+
+    def test_a_fetched_base_git_cannot_read_is_named_not_taken_for_one_origin_lacks(self) -> None:
+        bases = fetched_bases(str(self.clone))
+        self.assertIsNone(bases("missing"), "origin has no such branch")
+        (self.clone / ".git" / "config").write_text("[core\nbogus\n", encoding="utf-8")
+        pattern = "^cannot resolve the fetched base refs/remotes/origin/main: .*bad config line 1"
+        with self.assertRaisesRegex(QueryError, pattern):
+            fetched_bases(str(self.clone))("main")
 
     def test_a_repository_git_cannot_read_is_not_a_commit_missing_locally(self) -> None:
         base = self.git("-C", str(self.clone), "rev-parse", "main")

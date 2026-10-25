@@ -275,9 +275,10 @@ def default_refs(default: str) -> tuple[str, str]:
 
 
 def reachable(services: Services, root: str | Path, sha: str, *refs: str) -> bool:
-    """Whether one of `refs` contains `sha`; a ref names itself or, as `refs/remotes` does, every ref below it."""
-    result = git(services, root, "for-each-ref", "--count=1", f"--contains={sha}", "--format=%(refname)", *refs)
-    return result.returncode == 0 and bool(result.stdout.strip())
+    """Whether one of `refs` contains `sha`; a ref names itself or, as `refs/remotes` does, every ref below it. A git
+    failure raises, so a commit git cannot test is never taken for one no ref contains."""
+    listed = git_output(services, root, "for-each-ref", "--count=1", f"--contains={sha}", "--format=%(refname)", *refs)
+    return bool(listed.strip())
 
 
 def ahead_behind(services: Services, root: str | Path, local: str, upstream: str) -> tuple[int, int]:
@@ -328,13 +329,16 @@ def uncommitted(services: Services, path: str) -> str:
 
 
 def name_with_owner(services: Services, root: str | Path) -> str | None:
-    """owner/name of a github.com origin, from the configured URL or its insteadOf expansion."""
-    for arguments in (("config", "--get", "remote.origin.url"), ("remote", "get-url", "origin")):
-        result = git(services, root, *arguments)
-        repository = github_repository(result.stdout) if result.returncode == 0 else None
-        if repository:
-            return repository
-    return None
+    """owner/name of a github.com origin, from the configured URL or its insteadOf expansion; None when git answers
+    that origin has no URL, or the URL names no GitHub repository. Any other git failure raises."""
+    configured = quiet(services, root, "config", "--get", "remote.origin.url")
+    if configured is None:
+        return None
+    repository = github_repository(configured)
+    if repository:
+        return repository
+    # The URL with insteadOf applied, which only `remote get-url` gives.
+    return github_repository(git_output(services, root, "remote", "get-url", "origin"))
 
 
 # Branches and worktrees -----------------------------------------------------------------------------------------
@@ -451,7 +455,10 @@ def fast_forward(services: Services, root: str, branch: str, old: str, new: str,
     if worktree is None:
         result = git(services, root, "update-ref", "-m", "repo-cleanup: fast-forward", f"refs/heads/{branch}", new, old)
     else:
-        head = git(services, worktree, "symbolic-ref", "--quiet", "HEAD").stdout.strip()
+        try:
+            head = (quiet(services, worktree, "symbolic-ref", "--quiet", "HEAD") or "").strip()
+        except CleanupError as exc:
+            return str(exc)
         if head != f"refs/heads/{branch}":
             return "the worktree no longer has the branch checked out"
         held = uncommitted(services, worktree)
@@ -534,7 +541,7 @@ def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] |
     if skip_checkout:
         checkout = "skipped"
         emit("CHECKOUT", checkout)
-    elif git(services, root, "symbolic-ref", "--quiet", "HEAD").stdout.strip() == f"refs/heads/{default.name}":
+    elif (quiet(services, root, "symbolic-ref", "--quiet", "HEAD") or "").strip() == f"refs/heads/{default.name}":
         checkout = "current"
         emit("CHECKOUT", checkout)
     else:
