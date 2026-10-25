@@ -117,7 +117,7 @@ from atomic_file import UnfinishedCopyError
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
-from github_client import GitHubClient, GitHubError, subprocess_runner
+from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
 from path_keys import path_key
@@ -473,17 +473,14 @@ def commit_of(git: GitClient, repository: Path, ref: str) -> str:
     if ref.startswith("-"):
         raise AuditError(f"{ref} is not a ref")
     try:
-        result = git.run(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], directory=repository)
+        commit = git.commit_of(ref, directory=repository)
     except GitError as exc:
+        if exc.kind == "not_repository":
+            raise AuditError(f"{repository.as_posix()} is not a Git repository") from exc
         raise AuditError(f"git rev-parse: {exc}") from exc
-    if result.returncode == 0:
-        return result.stdout.strip()
-    if classify_failure(result.stderr) == "not_repository":
-        raise AuditError(f"{repository.as_posix()} is not a Git repository")
-    if result.returncode == 1 and not result.stderr.strip():
+    if commit is None:
         raise AuditError(f"{ref} names no commit in {repository.as_posix()}")
-    reason = result.stderr.strip() or f"exit code {result.returncode}"
-    raise AuditError(f"git rev-parse: {reason}")
+    return commit
 
 
 def released_tag(git: GitClient, repository: Path, head: str) -> str | None:
@@ -535,6 +532,14 @@ def gh_json(github: GitHubClient, arguments: Sequence[str]) -> Any:
         raise AuditError(f"gh {arguments[0]} {arguments[1]}: {exc}") from exc
 
 
+def gh_listing(github: GitHubClient, arguments: Sequence[str], limit: int) -> Listing:
+    """At most `limit` items of a gh listing, and whether GitHub held more; see `GitHubClient.capped_list`."""
+    try:
+        return github.capped_list(arguments, limit)
+    except GitHubError as exc:
+        raise AuditError(f"gh {arguments[0]} {arguments[1]}: {exc}") from exc
+
+
 def issues_of(payload: Any, what: str) -> list[Issue]:
     """The issues a `gh issue list --json number,title` printed, or AuditError when it printed something else."""
     if not isinstance(payload, list) or not all(
@@ -558,10 +563,12 @@ def version_of(name: str | None) -> tuple[int, int, int] | None:
 def open_milestones_after(github: GitHubClient, released: str | None) -> list[str]:
     """The titles of the open milestones named for a version above the released tag's, lowest first; every one named
     for a version when no released tag is a version."""
-    payload = gh_json(github, ["api", "repos/{owner}/{repo}/milestones?state=open&per_page=100"])
-    if not isinstance(payload, list) or not all(
-        isinstance(item, dict) and isinstance(item.get("title"), str) for item in payload
-    ):
+    # Every page, each a list of milestones: one page alone would leave out a milestone past it.
+    pages = gh_json(github, ["api", "repos/{owner}/{repo}/milestones?state=open&per_page=100", "--paginate", "--slurp"])
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise AuditError("gh api printed milestones that are not a list of objects with a title")
+    payload = [item for page in pages for item in page]
+    if not all(isinstance(item, dict) and isinstance(item.get("title"), str) for item in payload):
         raise AuditError("gh api printed milestones that are not a list of objects with a title")
     floor = version_of(released)
     named = []
@@ -575,9 +582,10 @@ def open_milestones_after(github: GitHubClient, released: str | None) -> list[st
 def carried_issues(github: GitHubClient, milestone: str) -> list[Issue]:
     """The next milestone's open issues, or AuditError when it holds more than CARRIED_LIMIT, which every brief could
     not then name."""
-    arguments = ["issue", "list", "--state", "open", f"--milestone={milestone}", f"--limit={CARRIED_LIMIT + 1}"]
-    found = issues_of(gh_json(github, [*arguments, "--json", "number,title"]), f"the open issues of {milestone}")
-    if len(found) > CARRIED_LIMIT:
+    arguments = ["issue", "list", "--state", "open", f"--milestone={milestone}", "--json", "number,title"]
+    listing = gh_listing(github, arguments, CARRIED_LIMIT)
+    found = issues_of(listing.items, f"the open issues of {milestone}")
+    if listing.cut:
         raise AuditError(f"{milestone} holds more than {CARRIED_LIMIT} open issues, more than a brief names")
     return found
 
@@ -1446,12 +1454,12 @@ def duplicates(github: GitHubClient, queries: Sequence[str]) -> list[str]:
     """Each query's open issues, as GitHub's issue search finds them."""
     lines = []
     for number, query in enumerate(queries, start=1):
-        # One more than is listed, so a search that finds more says so.
-        arguments = ["issue", "list", "--state", "open", f"--search={query}", f"--limit={SEARCH_LIMIT + 1}"]
-        found = issues_of(gh_json(github, [*arguments, "--json", "number,title"]), f"for query {number}")
-        lines.append(f"MATCHES {number} {min(len(found), SEARCH_LIMIT)}")
-        lines += [f"MATCH {number} {issue.number} {json_text(issue.title)}" for issue in found[:SEARCH_LIMIT]]
-        if len(found) > SEARCH_LIMIT:
+        arguments = ["issue", "list", "--state", "open", f"--search={query}", "--json", "number,title"]
+        listing = gh_listing(github, arguments, SEARCH_LIMIT)
+        found = issues_of(listing.items, f"for query {number}")
+        lines.append(f"MATCHES {number} {len(found)}")
+        lines += [f"MATCH {number} {issue.number} {json_text(issue.title)}" for issue in found]
+        if listing.cut:
             lines.append(f"MATCHES_CUT {number} {SEARCH_LIMIT}")
     return lines
 

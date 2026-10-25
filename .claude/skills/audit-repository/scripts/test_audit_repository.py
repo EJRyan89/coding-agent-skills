@@ -150,15 +150,19 @@ class StubGitHub:
     def __init__(
         self,
         milestones: Sequence[str] = MILESTONES,
-        issues: Mapping[str, list[dict[str, object]]] | None = None,
-        searches: Mapping[str, list[dict[str, object]]] | None = None,
+        issues: Mapping[str, object] | None = None,
+        searches: Mapping[str, object] | None = None,
         failures: Mapping[str, str] | None = None,
+        page_size: int = 100,
     ) -> None:
         self.milestones = milestones
+        self.page_size = page_size
         self.issues = issues or {}
         self.searches = searches or {}
         self.failures = failures or {}
         self.commands: list[list[str]] = []
+        # What the milestone listing prints instead of the pages of `milestones`, when a test sets it.
+        self.printed: object = None
 
     def __call__(self, command: Sequence[str]) -> CommandResult:
         self.commands.append(list(command))
@@ -166,14 +170,21 @@ class StubGitHub:
             if word in command:
                 return CommandResult(1, "", stderr)
         payload: object
-        if command[1] == "api":
-            payload = [{"title": title, "number": number} for number, title in enumerate(self.milestones)]
+        if command[1] == "api" and self.printed is not None:
+            payload = self.printed
+        elif command[1] == "api":
+            # `--paginate --slurp` prints every page, each a list.
+            listed = [{"title": title, "number": number} for number, title in enumerate(self.milestones)]
+            payload = [listed[start : start + self.page_size] for start in range(0, len(listed), self.page_size)]
         else:
             options = dict(part[2:].split("=", 1) for part in command if part.startswith("--") and "=" in part)
-            if "milestone" in options:
-                payload = self.issues.get(options["milestone"], [])
-            else:
-                payload = self.searches.get(options["search"], [])
+            found = (
+                self.issues.get(options["milestone"], [])
+                if "milestone" in options
+                else self.searches.get(options["search"], [])
+            )
+            # gh cuts a listing at its --limit.
+            payload = found[: int(command[command.index("--limit") + 1])] if isinstance(found, list) else found
         return CommandResult(0, json.dumps(payload), "")
 
     def client(self) -> GitHubClient:
@@ -758,7 +769,27 @@ class MilestoneTests(Fixture):
         head = git(self.root, "rev-parse", "--short=7", "HEAD")
         sentence = f"Found by the release audit of the changes since v0.2.0, at commit {head}, on 2026-03-04."
         self.assertIn(f"PROVENANCE {json.dumps(sentence)}", lines)
-        self.assertEqual([["gh", "api", "repos/{owner}/{repo}/milestones?state=open&per_page=100"]], github.commands)
+        self.assertEqual(
+            [["gh", "api", "repos/{owner}/{repo}/milestones?state=open&per_page=100", "--paginate", "--slurp"]],
+            github.commands,
+        )
+
+    def test_a_milestone_past_the_first_page_is_a_candidate(self) -> None:
+        # One milestone a page: the next milestone above the release, v0.3.0, is on a later page than the first.
+        code, lines = self.run_main("release", github=StubGitHub(page_size=1))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            ['MILESTONE defect "v0.3.0"', 'MILESTONE drift "v1.0.0"', 'MILESTONE polish "v1.0.0"'],
+            [line for line in lines if line.startswith("MILESTONE ")],
+        )
+
+    def test_milestone_pages_or_milestones_of_another_shape_fail(self) -> None:
+        # Pages that are no list, or hold a page that is none, then a milestone that is no object with a title.
+        refused = (1, ["FAILED gh api printed milestones that are not a list of objects with a title"])
+        for printed in (5, [5], [{"title": "v0.3.0"}], [[{"title": 3}]], [[{"number": 1}]], [["v0.3.0"]]):
+            github = StubGitHub()
+            github.printed = printed
+            self.assertEqual(refused, self.run_main("release", github=github), printed)
 
     def test_a_release_names_no_milestone_where_none_is_open(self) -> None:
         for milestones, expected in (
@@ -805,7 +836,18 @@ class MilestoneTests(Fixture):
         )
         self.assertIn(f"PROVENANCE {json.dumps(sentence)}", lines)
         self.assertIn(
-            ["gh", "issue", "list", "--state", "open", "--milestone=v0.3.0", "--limit=1001", "--json", "number,title"],
+            [
+                "gh",
+                "issue",
+                "list",
+                "--state",
+                "open",
+                "--milestone=v0.3.0",
+                "--json",
+                "number,title",
+                "--limit",
+                "1001",
+            ],
             github.commands,
         )
         briefs = self.briefs(lines)
@@ -826,14 +868,16 @@ class MilestoneTests(Fixture):
         )
 
     def test_a_rotation_whose_next_milestone_lists_something_else_fails_naming_it(self) -> None:
-        listing: Any = {"not": "a list"}
-        code, lines = self.run_main("rotation", github=StubGitHub(issues={"v0.3.0": listing}))
-        self.assertEqual(1, code)
-        self.assertEqual(
-            "FAILED gh issue list printed the open issues of v0.3.0 that is not a list of issues with a number and a "
-            "title",
-            lines[-1],
-        )
+        for listing, expected in (
+            ({"not": "a list"}, "FAILED gh issue list: gh issue list answered with something that is not a list"),
+            (
+                [{"number": "7", "title": "One"}],
+                "FAILED gh issue list printed the open issues of v0.3.0 that is not a list of issues with a number "
+                "and a title",
+            ),
+        ):
+            code, lines = self.run_main("rotation", github=StubGitHub(issues={"v0.3.0": listing}))
+            self.assertEqual((1, expected), (code, lines[-1]))
 
     def test_a_rotation_whose_next_milestone_holds_more_than_a_brief_names_fails(self) -> None:
         issues = {"v0.3.0": [{"number": 7, "title": "One"}, {"number": 9, "title": "Two"}]}
@@ -942,11 +986,20 @@ class DuplicateTests(Fixture):
                 "--state",
                 "open",
                 "--search=-no match",
-                "--limit=31",
                 "--json",
                 "number,title",
+                "--limit",
+                "31",
             ],
             github.commands[1],
+        )
+
+    def test_a_search_that_prints_something_else_fails_naming_its_query(self) -> None:
+        found = [{"number": "1", "title": "Issue"}]
+        code, lines = self.run_main("duplicates", "first", "second", github=StubGitHub(searches={"second": found}))
+        self.assertEqual(
+            (1, "FAILED gh issue list printed for query 2 that is not a list of issues with a number and a title"),
+            (code, lines[-1]),
         )
 
     def test_a_search_that_finds_exactly_what_it_lists_is_not_cut(self) -> None:
