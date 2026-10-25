@@ -815,6 +815,17 @@ class PatchMatchTests(SquashFixture):
         with self.assertRaisesRegex(QueryError, pattern):
             change_match(str(self.clone), self.BASE_REF, GitClient(run))(self.tip, squash)
 
+    def test_a_merge_base_git_cannot_run_is_named_as_such(self) -> None:
+        squash = self.squash_merge()
+
+        def stalled(command: Sequence[str], timeout: float) -> GitResult:
+            raise GitError("git merge-base did not finish within 300 seconds", kind="timeout")
+
+        with self.assertRaisesRegex(
+            QueryError, "^could not run git: git merge-base did not finish within 300 seconds$"
+        ):
+            change_match(str(self.clone), self.BASE_REF, GitClient(stalled))(self.tip, squash)
+
     def test_a_tip_sharing_no_history_with_the_base_is_no_match(self) -> None:
         squash = self.squash_merge()
         self.git("-C", str(self.clone), "checkout", "--orphan", "rooted")

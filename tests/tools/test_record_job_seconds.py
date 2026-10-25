@@ -490,8 +490,35 @@ class MainTests(unittest.TestCase):
 
     def test_a_listing_with_more_runs_than_the_count_keeps_the_newest(self) -> None:
         listed = json.dumps([{"databaseId": number} for number in (9, 8, 7)])
-        client = GitHubClient(lambda arguments: CommandResult(0, listed, ""))
-        self.assertEqual([9, 8], record_job_seconds.latest_runs(client, 2))
+        asked: list[list[str]] = []
+
+        def run(arguments: Sequence[str]) -> CommandResult:
+            asked.append(list(arguments))
+            return CommandResult(0, listed, "")
+
+        self.assertEqual([9, 8], record_job_seconds.latest_runs(GitHubClient(run), 2))
+        self.assertEqual(
+            [
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--workflow",
+                    "validate.yml",
+                    "--branch",
+                    "main",
+                    "--event",
+                    "push",
+                    "--status",
+                    "success",
+                    "--json",
+                    "databaseId",
+                    "--limit",
+                    "3",
+                ]
+            ],
+            [[Path(part).stem if index == 0 else part for index, part in enumerate(call)] for call in asked],
+        )
 
     def test_count_sets_how_many_of_the_latest_runs_are_listed(self) -> None:
         stub = runs_stub({50: LOG})
