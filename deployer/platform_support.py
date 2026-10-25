@@ -17,6 +17,7 @@ import device_names
 import executable_locator
 import job_tree
 import link_probe
+import path_keys
 import process_identity
 from bounded_process import ProcessTree, run_bounded, without_repository_variables
 from job_tree import JobRefused
@@ -222,8 +223,13 @@ def ignored_home_variable(home: Path, environment: Mapping[str, str] | None = No
     return None if same_directory(Path(named), home) else normalize(os.path.normpath(named))
 
 
+# The form a path is compared in, which ejryan89-skill-core holds so that a skill script compares paths as the deployer
+# does.
+path_key = path_keys.path_key
+
+
 def same_directory(first: Path, second: Path) -> bool:
-    return os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second))
+    return path_key(first, resolve=True) == path_key(second, resolve=True)
 
 
 def name_key(name: str, directory: str | os.PathLike[str] | None = None) -> str:
@@ -400,7 +406,7 @@ def is_app_execution_alias(program: str | os.PathLike[str]) -> bool:
         return False
     path = Path(program)
     aliases = local / "Microsoft" / "WindowsApps"
-    return os.path.normcase(path.parent) == os.path.normcase(aliases) and is_link_or_junction(path)
+    return path_key(path.parent) == path_key(aliases) and is_link_or_junction(path)
 
 
 def find_executable(name: str) -> str | None:

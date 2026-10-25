@@ -81,9 +81,11 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/link_probe.py",
     f"{SKILL_CORE}/markdown_literal.py",
     f"{SKILL_CORE}/msbuild_xml.py",
+    f"{SKILL_CORE}/path_keys.py",
     f"{SKILL_CORE}/pdf_tool.py",
     f"{SKILL_CORE}/process_identity.py",
     f"{SKILL_CORE}/typed_fields.py",
+    f"{SKILL_CORE}/versions.py",
     f"{SKILL_CORE}/whole_number.py",
     f"{SKILL_CORE}/xml_reader.py",
 )

@@ -568,7 +568,7 @@ def record_entry(name: str, number: int, item: object) -> Entry:
     return Entry(when, tag, area)
 
 
-def release_key(tag: str) -> tuple[tuple[int, str], ...]:
+def release_key(tag: str) -> tuple[int, ...]:
     """A recorded tag's place among releases, as ejryan89-skill-core's release_tags orders them, so a read's recency
     never depends on where a record lists it. Both readers refuse any other tag, so AuditError means one got past."""
     order = release_order(tag)
@@ -589,7 +589,7 @@ def last_reads(entries: list[Entry]) -> dict[str, Entry]:
 def next_area(entries: list[Entry]) -> Area:
     """The area read whole least recently: never read first, then the oldest release, ties in the rotation order."""
     reads = last_reads(entries)
-    unread: tuple[tuple[int, str], ...] = ()
+    unread: tuple[int, ...] = ()
     return min(
         AREAS,
         key=lambda area: (release_key(reads[area.name].tag) if area.name in reads else unread, AREAS.index(area)),

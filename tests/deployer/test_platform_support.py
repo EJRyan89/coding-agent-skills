@@ -402,6 +402,23 @@ class LinkJudgementTests(unittest.TestCase):
         self.assertEqual(self.folder, probed.call_args.args[0])
 
 
+class SameDirectoryTests(unittest.TestCase):
+    """Two directories are one when both resolve to one, whichever of them is the link."""
+
+    def test_a_link_and_its_target_are_one_directory_in_either_order(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        target, other = root / "target", root / "other"
+        target.mkdir()
+        other.mkdir()
+        link = root / "link"
+        make_directory_link(link, target)
+        self.assertTrue(platform_support.same_directory(target, link))
+        self.assertTrue(platform_support.same_directory(link, target))
+        self.assertTrue(platform_support.same_directory(root / "other" / ".." / "target", target))
+        self.assertFalse(platform_support.same_directory(link, other))
+        self.assertFalse(platform_support.same_directory(other, link))
+
+
 class SupportedPlatformTests(unittest.TestCase):
     def test_windows_and_linux_are_supported_and_macos_is_refused_by_name(self) -> None:
         for platform in ("win32", "linux"):

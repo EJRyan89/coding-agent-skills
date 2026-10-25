@@ -178,6 +178,15 @@ class RuntimeHostTests(unittest.TestCase):
                     executable="copilot",
                 )
 
+    def test_the_copilot_version_is_its_first_three_numbers(self) -> None:
+        self.assertEqual((1, 0, 88), parse_copilot_version("GitHub Copilot CLI 1.2 then 1.0.88.1"))
+        for output in ("GitHub Copilot CLI 1.2", "GitHub Copilot CLI unknown"):
+            with (
+                self.subTest(output=output),
+                self.assertRaisesRegex(RuntimeContractError, "^Cannot parse GitHub Copilot CLI version$"),
+            ):
+                parse_copilot_version(output)
+
     if sys.platform == "win32":
 
         def test_copilot_version_parser_and_winget_fallback(self) -> None:

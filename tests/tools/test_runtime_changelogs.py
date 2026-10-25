@@ -404,6 +404,14 @@ def test_the_versions_a_changelog_is_read_across_are_its_recorded_one_and_each_n
     assert watch.versions_read(changelog, releases) == [(1, 0, 100), (1, 0, 103), (1, 0, 102), (1, 0, 101)]
 
 
+def test_a_release_is_read_by_its_numbers_and_one_that_is_none_stops_the_watch() -> None:
+    assert watch.release_number("0.160.0") == (0, 160, 0)
+    for text in ("1.0.0-rc.1", "v1.0.0", "1." + "9" * 4301):
+        with pytest.raises(watch.WatchError) as caught:
+            watch.release_number(text)
+        assert str(caught.value) == f"{json.dumps(text)} is not a release of numbers joined by dots"
+
+
 def test_a_flag_is_matched_only_in_its_own_runtimes_changelog() -> None:
     flag = Term("flag", "--sandbox", "codex")
     assert watch.matching("the --sandbox flag", "copilot-cli", [flag]) == []

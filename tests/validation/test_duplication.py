@@ -339,6 +339,7 @@ class SharedFactPolicy(unittest.TestCase):
     FRONTMATTER = "skills/ejryan89-skill-core/scripts/frontmatter.py"
     TYPED_TEXT = "skills/ejryan89-skill-core/scripts/typed_text.py"
     SKILL_LAYOUT = "tests/validation/skill_layout.py"
+    VERSIONS = "skills/ejryan89-skill-core/scripts/versions.py"
     OWNERS: ClassVar[dict[str, str]] = {
         GIT_CLIENT: (
             'GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--attr-source", "--config-env", "--git-dir", '
@@ -361,6 +362,10 @@ class SharedFactPolicy(unittest.TestCase):
         SKILL_LAYOUT: (
             'HOME_SPELLINGS = ("{{HOME}}", "$HOME", "${HOME}", "~")\n'
             "INSTALL_PATH = re.compile('|'.join(map(re.escape, HOME_SPELLINGS)))\n"
+        ),
+        VERSIONS: (
+            'SEPARATOR = "."\n\n\ndef read(text):\n'
+            "    return tuple(whole_number.parse(part) for part in text.split(SEPARATOR))\n"
         ),
     }
 
@@ -491,6 +496,25 @@ class SharedFactPolicy(unittest.TestCase):
                 )
         prose = 'MESSAGE = "finds a file through $HOME or ~/.claude"\n'
         self.assertEqual([], self.problems({guard: prose}))
+
+    def test_a_version_read_by_hand_fails_and_the_shared_reader_passes(self) -> None:
+        tools = "deployer/tools.py"
+        readings = (
+            'version = tuple(int(part) for part in match.group(0).split("."))\n',
+            'version = [int(number) for number in text.split(".", 2)]\n',
+            'version = tuple(map(int, banner.group(1).split(".")))\n',
+            "version = tuple(map(int, text.split(sep='.')))\n",
+        )
+        for reading in readings:
+            with self.subTest(reading=reading):
+                self.assertEqual([self.restated(tools, 1, "SEPARATOR", self.VERSIONS)], self.problems({tools: reading}))
+        shared = (
+            "version = versions.find(text)\n"
+            # Numbers split on another separator, and parts split on a dot that are not converted, are no version.
+            'ports = [int(port) for port in text.split(",")]\nlabels = [part.strip() for part in name.split(".")]\n'
+            'widths = tuple(map(len, name.split(".")))\n'
+        )
+        self.assertEqual([], self.problems({tools: shared}))
 
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'

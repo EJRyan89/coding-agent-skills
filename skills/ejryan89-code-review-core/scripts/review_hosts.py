@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 import secrets
 import subprocess
 import sys
@@ -23,6 +22,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import versions
 from bounded_process import run_bounded, without_repository_variables
 from executable_locator import find_executables
 from job_tree import JobRefused, process_tree
@@ -265,15 +265,12 @@ def find_copilot() -> str:
     raise RuntimeContractError("GitHub Copilot CLI is not available")
 
 
-def parse_copilot_version(output: str) -> tuple[int, int, int]:
-    match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)", output)
-    if match is None:
+def parse_copilot_version(output: str) -> versions.Version:
+    """The first three-number version `copilot --version` prints, as ejryan89-skill-core's `versions` reads it."""
+    version = versions.find(output, least=3)
+    if version is None:
         raise RuntimeContractError("Cannot parse GitHub Copilot CLI version")
-    return (
-        int(match.group(1)),
-        int(match.group(2)),
-        int(match.group(3)),
-    )
+    return version
 
 
 def isolated_copilot_environment(
@@ -554,14 +551,14 @@ def _verified_copilot_source(run_directory: Path, request: _CopilotRequest, stam
 
 def _copilot_version(
     runner: Runner, executable: str, execution_directory: Path, environment: Mapping[str, str], diagnostic_path: Path
-) -> tuple[int, int, int]:
+) -> versions.Version:
     """The version the bounded `--version` run names, once the run succeeded and the version is at least the minimum."""
     version_result = _run_bounded(runner, [executable, "--version"], execution_directory, environment, diagnostic_path)
     if version_result.returncode != 0:
         raise RuntimeContractError("Cannot determine GitHub Copilot CLI version")
     version = parse_copilot_version(version_result.stdout)
     if version < MINIMUM_COPILOT_CLI_VERSION:
-        minimum = ".".join(str(part) for part in MINIMUM_COPILOT_CLI_VERSION)
+        minimum = versions.text(MINIMUM_COPILOT_CLI_VERSION)
         raise RuntimeContractError(f"GitHub Copilot CLI {minimum} or newer is required")
     return version
 
