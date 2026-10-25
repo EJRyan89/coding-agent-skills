@@ -484,16 +484,21 @@ class MainTests(unittest.TestCase):
             ("--branch", "main"),
             ("--event", "push"),
             ("--status", "success"),
-            ("--limit", "5"),
+            ("--limit", "6"),  # one more than the count, so a cut shows
         ):
             self.assertEqual(value, listing[listing.index(option) + 1])
+
+    def test_a_listing_with_more_runs_than_the_count_keeps_the_newest(self) -> None:
+        listed = json.dumps([{"databaseId": number} for number in (9, 8, 7)])
+        client = GitHubClient(lambda arguments: CommandResult(0, listed, ""))
+        self.assertEqual([9, 8], record_job_seconds.latest_runs(client, 2))
 
     def test_count_sets_how_many_of_the_latest_runs_are_listed(self) -> None:
         stub = runs_stub({50: LOG})
         stub.answers["gh run list"] = json.dumps([{"databaseId": 50}])
         code, _, _, _ = self.run_main(["--count", "1"], stub)
         self.assertEqual(0, code)
-        self.assertEqual("1", stub.commands[0][stub.commands[0].index("--limit") + 1])
+        self.assertEqual("2", stub.commands[0][stub.commands[0].index("--limit") + 1])
         for arguments in (["--count", "0"], ["--count", "-2"]):
             with self.subTest(arguments=arguments), self.assertRaises(SystemExit):
                 self.run_main(arguments, Stub({}))

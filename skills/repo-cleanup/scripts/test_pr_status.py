@@ -138,7 +138,7 @@ class ClassifyTests(unittest.TestCase):
         fields = arguments[arguments.index("--json") + 1].split(",")
         for field in ("state", "headRefOid", "headRepository", "headRepositoryOwner", "mergeCommit", "baseRefName"):
             self.assertIn(field, fields)
-        self.assertEqual(str(LIMIT), arguments[arguments.index("--limit") + 1])
+        self.assertEqual(str(LIMIT + 1), arguments[arguments.index("--limit") + 1])
 
     def test_missing_gh_fails_closed(self) -> None:
         def missing(arguments: Sequence[str]) -> CommandResult:
@@ -289,7 +289,7 @@ LIST_CALL = [
     "--json",
     "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit,baseRefName",
     "--limit",
-    "1000",
+    "1001",
 ]
 
 
@@ -661,6 +661,17 @@ class BaseContainsTests(GitFixture):
         with self.assertRaisesRegex(QueryError, "cannot test whether"):
             base_contains(str(self.clone), "refs/remotes/origin/missing")(base)
 
+    def test_a_containment_git_warns_about_is_named_not_taken_for_outside_the_base(self) -> None:
+        base = self.git("-C", str(self.clone), "rev-parse", "main")
+        warned = GitResult(1, "", "warning: ignoring broken ref refs/remotes/origin/main\n")
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            return warned if "merge-base" in command else subprocess_runner(command, timeout)
+
+        pattern = f"^cannot test whether {base} is in refs/remotes/origin/main: warning: ignoring broken ref"
+        with self.assertRaisesRegex(QueryError, pattern):
+            base_contains(str(self.clone), "refs/remotes/origin/main", GitClient(run))(base)
+
 
 class SquashFixture(GitFixture):
     """A topic branch with a file change, pushed from the clone, which another clone squash-merges."""
@@ -792,6 +803,17 @@ class PatchMatchTests(SquashFixture):
         squash = self.squash_merge()
         with self.assertRaisesRegex(QueryError, "cannot find the merge base of refs/remotes/origin/missing"):
             self.same_change(self.tip, squash, "refs/remotes/origin/missing")
+
+    def test_a_merge_base_git_warns_about_is_named_not_taken_for_none(self) -> None:
+        squash = self.squash_merge()
+        warned = GitResult(1, "", "warning: ignoring broken ref refs/remotes/origin/main\n")
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            return warned if "merge-base" in command else subprocess_runner(command, timeout)
+
+        pattern = f"^cannot find the merge base of {self.BASE_REF} and {self.tip}: warning: ignoring broken ref"
+        with self.assertRaisesRegex(QueryError, pattern):
+            change_match(str(self.clone), self.BASE_REF, GitClient(run))(self.tip, squash)
 
     def test_a_tip_sharing_no_history_with_the_base_is_no_match(self) -> None:
         squash = self.squash_merge()
@@ -1309,9 +1331,9 @@ def test_any_open_pull_request_makes_the_branch_active(pulls: tuple[dict[str, An
         for message, run in {
             "gh pr list failed": responder("", returncode=1, stderr="HTTP 500"),
             "gh pr list failed: GitHub returned malformed JSON": responder("not json"),
-            "did not return a list": responder("{}"),
+            "answered with something that is not a list": responder("{}"),
             "unexpected pull request state": responder(listing(pull("OPEN"), pull("DRAFT"))),
-            "may be incomplete": responder(listing(*([pull("CLOSED")] * LIMIT))),
+            "would be incomplete": responder(listing(*([pull("CLOSED")] * (LIMIT + 1)))),
         }.items()
     ],
 )
@@ -1431,12 +1453,20 @@ def test_identities_are_refused_in_order_before_any_query(arguments: dict[str, s
             "gh pr list failed: GitHub returned malformed JSON: Expecting value: line 1 column 1 (char 0)",
             id="malformed JSON",
         ),
-        pytest.param(responder("{}"), "gh pr list did not return a list", id="an object"),
-        pytest.param(responder('"OPEN"'), "gh pr list did not return a list", id="a string"),
         pytest.param(
-            responder(listing(*([pull("CLOSED", OLD)] * 1000))),
-            "branch matches 1000 or more pull requests; the result may be incomplete",
-            id="as many pull requests as the limit",
+            responder("{}"),
+            "gh pr list failed: gh pr list answered with something that is not a list",
+            id="an object",
+        ),
+        pytest.param(
+            responder('"OPEN"'),
+            "gh pr list failed: gh pr list answered with something that is not a list",
+            id="a string",
+        ),
+        pytest.param(
+            responder(listing(*([pull("CLOSED", OLD)] * 1001))),
+            "branch matches more than 1000 pull requests; the result would be incomplete",
+            id="more pull requests than the limit",
         ),
         pytest.param(
             responder(json.dumps(["a pull"])),

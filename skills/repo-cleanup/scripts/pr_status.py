@@ -8,7 +8,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -22,6 +22,7 @@ FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit
 # GitHub's pull request commits endpoint lists at most this many commits, so a list this long may be truncated.
 COMMIT_LIMIT = 250
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+T = TypeVar("T")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 # GitHubError kinds meaning gh itself did not run to completion: missing, unable to start, or out of time.
 RUN_FAILURES = frozenset({"prerequisite", "execution", "timeout"})
@@ -85,6 +86,17 @@ def _commit_of(git: GitClient, repository_root: str, reference: str, what: str) 
         raise QueryError(f"cannot resolve {what}: {flat_text(str(exc))}") from exc
 
 
+def _quiet(git: GitClient, repository_root: str, arguments: list[str], cannot: str) -> str | None:
+    """The stdout of a git command that exits 1 saying nothing for what is not there, or None for that answer; any
+    other failure is a QueryError, `cannot` then git's reason."""
+    try:
+        return git.quiet_output(arguments, directory=repository_root)
+    except GitError as exc:
+        if exc.returncode is None:
+            raise QueryError(f"could not run git: {exc}") from exc
+        raise QueryError(f"{cannot}: {flat_text(str(exc))}") from exc
+
+
 def _commit_present(git: GitClient, repository_root: str, sha: str) -> bool:
     return _commit_of(git, repository_root, sha, f"commit {sha}") is not None
 
@@ -118,10 +130,9 @@ def base_contains(repository_root: str, base_ref: str, git: GitClient | None = N
     def contains(sha: str) -> bool:
         if not _commit_present(client, repository_root, sha):
             return False
-        result = _git_output(client, repository_root, ["merge-base", "--is-ancestor", sha, base_ref])
-        if result.returncode not in (0, 1):
-            raise QueryError(f"cannot test whether {sha} is in {base_ref}: {(result.stderr or '').strip()}")
-        return result.returncode == 0
+        # merge-base --is-ancestor exits 1 saying nothing for a commit base_ref does not reach.
+        arguments = ["merge-base", "--is-ancestor", sha, base_ref]
+        return _quiet(client, repository_root, arguments, f"cannot test whether {sha} is in {base_ref}") is not None
 
     return contains
 
@@ -173,12 +184,13 @@ def change_match(repository_root: str, base_ref: str, git: GitClient | None = No
         return change_identity(diff.output_bytes())
 
     def tip_change(tip: str) -> Change | None:
-        found = _git_output(client, repository_root, ["merge-base", base_ref, tip])
-        if found.returncode == 1:
+        cannot = f"cannot find the merge base of {base_ref} and {tip}"
+        found = _quiet(client, repository_root, ["merge-base", base_ref, tip], cannot)
+        if found is None:
             return None  # no merge base: the tip never left base_ref, so no change of it is a change since then
-        fork_point = found.stdout.strip()
-        if found.returncode != 0 or not SHA_PATTERN.fullmatch(fork_point):
-            raise QueryError(f"cannot find the merge base of {base_ref} and {tip}: {(found.stderr or '').strip()}")
+        fork_point = found.strip()
+        if not SHA_PATTERN.fullmatch(fork_point):
+            raise QueryError(f"{cannot}: git answered {fork_point!r}, not a commit")
         return change(fork_point, tip)
 
     def same_change(tip: str, merge_commit: str) -> bool:
@@ -230,8 +242,14 @@ def _commit_parents(commit: Any) -> tuple[str, list[str]] | None:
 def _gh_json(runner: GhRunner, arguments: list[str], failure: str) -> Any:
     """Run gh through the shared client, which retries rate limits, and return its JSON; any failure, output that is
     not JSON included, is a QueryError."""
+    return _gh_request(runner, lambda client: client.json(arguments), failure)
+
+
+def _gh_request(runner: GhRunner, request: Callable[[GitHubClient], T], failure: str) -> T:
+    """`request` on the shared client over `runner`; any failure, output that is not JSON included, is a
+    QueryError."""
     try:
-        return GitHubClient(runner).json(arguments)
+        return request(GitHubClient(runner))
     except GitHubError as exc:
         if exc.kind in RUN_FAILURES:
             raise QueryError(f"could not run gh: {exc}") from exc
@@ -337,11 +355,10 @@ def _check_identities(repository: str, head_sha: str, upstream_sha: str | None) 
 def _list_pulls(repository: str, branch: str, runner: GhRunner) -> list[dict[str, Any]]:
     """Every pull request with this head name, each with a known state, failing closed on any query problem."""
     arguments = ["pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--json", FIELDS]
-    pulls = _gh_json(runner, [*arguments, "--limit", str(LIMIT)], "gh pr list failed")
-    if not isinstance(pulls, list):
-        raise QueryError("gh pr list did not return a list")
-    if len(pulls) >= LIMIT:
-        raise QueryError(f"branch matches {LIMIT} or more pull requests; the result may be incomplete")
+    listing = _gh_request(runner, lambda client: client.capped_list(arguments, LIMIT), "gh pr list failed")
+    if listing.cut:
+        raise QueryError(f"branch matches more than {LIMIT} pull requests; the result would be incomplete")
+    pulls = listing.items
     for pull in pulls:
         state = pull.get("state") if isinstance(pull, dict) else None
         if state not in ("OPEN", "MERGED", "CLOSED"):
