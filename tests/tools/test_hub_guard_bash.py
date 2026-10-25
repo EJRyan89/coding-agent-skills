@@ -65,6 +65,11 @@ class BuiltinAssignmentTests(unittest.TestCase):
                 ('read "$name" <<< after', UNSETTLED),
                 ('read -a "$name" <<< after', UNSETTLED),
                 ('read "$option" other <<< after', UNSETTLED),
+                # An option's value the text does not settle may split into names too.
+                ("read -p $prompt other <<< after", UNSETTLED),
+                ("read -d $delimiter other <<< after", UNSETTLED),
+                ("read -u $descriptor other <<< after", UNSETTLED),
+                ("read other $more <<< after", UNSETTLED),
             )
         )
 
@@ -102,6 +107,32 @@ class BuiltinAssignmentTests(unittest.TestCase):
                 ("env printf -v GIT_DIR %s after", before),
             )
         )
+
+    def test_mapfile_and_readarray_leave_the_array_they_name_unsettled(self) -> None:
+        before = START / "before"
+        self.assert_reading(
+            (
+                ("mapfile GIT_DIR < /dev/null", UNSETTLED),
+                ("readarray GIT_DIR < /dev/null", UNSETTLED),
+                ("mapfile -t GIT_DIR < /dev/null", UNSETTLED),
+                ("mapfile -d , -n 2 -O 1 -s 0 -u 0 GIT_DIR < /dev/null", UNSETTLED),
+                ("mapfile -td, GIT_DIR < /dev/null", UNSETTLED),
+                ("mapfile -- GIT_DIR < /dev/null", UNSETTLED),
+                ("declare -n ref=GIT_DIR; mapfile ref < /dev/null", UNSETTLED),
+                ('mapfile "$name" < /dev/null', UNSETTLED),
+                ("mapfile -n $count other < /dev/null", UNSETTLED),
+                ("mapfile < /dev/null", before),
+                ("mapfile other < /dev/null", before),
+                ("mapfile -u 0 other GIT_DIR < /dev/null", before),
+            )
+        )
+
+    def test_a_mapfile_callback_is_a_command_the_guard_does_not_read(self) -> None:
+        text = "mapfile -C 'git commit' -c 1 lines < /dev/null"
+        reading = hub_guard.Reading({}, text)
+        hub_guard.read_bash(text, START, reading, 0, {})
+        self.assertEqual(["could not read the callback mapfile runs"], reading.unread)
+        self.assertEqual(UNSETTLED, git_dir_reaching_git("readarray -C callback other < /dev/null"))
 
     def test_getopts_leaves_its_name_unsettled(self) -> None:
         before = START / "before"
@@ -141,6 +172,12 @@ class NameReferenceTests(unittest.TestCase):
                 # A reference that stands for none names its variable at its first assignment.
                 ("declare -n ref; ref=GIT_DIR; ref=after", after),
                 ("declare -n ref; declare ref=GIT_DIR; ref=after", after),
+                # Declared again without a value, a reference keeps its variable, and a variable becomes a reference
+                # to the one its value names.
+                ("declare -n ref=GIT_DIR; declare -n ref; ref=after", after),
+                ("ref=GIT_DIR; declare -n ref; ref=after", after),
+                # A function's reference that was made before the call, and that it does not change, outlives it.
+                ("declare -n ref=GIT_DIR; f() { true; }; f; ref=after", after),
                 # A chain of references ends at the variable the last one names.
                 ("declare -n first=second second=GIT_DIR; first=after", after),
                 ("declare -gn ref=GIT_DIR; ref=after", after),
@@ -191,6 +228,11 @@ class NameReferenceTests(unittest.TestCase):
             (
                 ('declare -n ref="$name"; ref=after', UNSETTLED),
                 ("declare -n ref; ref=$(echo GIT_DIR); ref=after", UNSETTLED),
+                ("source ./env.sh; declare -n ref; ref=after", UNSETTLED),
+                # A reference a function makes is its own, which Bash drops when it returns.
+                ("f() { local -n ref=GIT_DIR; }; f; ref=after", UNSETTLED),
+                ("f() { declare -n ref=GIT_DIR; }; f; ref=after", UNSETTLED),
+                ("declare -n ref=other; f() { local -n ref=GIT_DIR; }; f; ref=after", UNSETTLED),
                 ("declare -n ref; for ref in GIT_DIR; do ref=after; done", UNSETTLED),
                 ("declare -n ref=other; for ref in GIT_DIR; do ref=after; done", UNSETTLED),
                 ("declare -n ref; unset ref", UNSETTLED),

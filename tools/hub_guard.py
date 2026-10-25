@@ -1191,7 +1191,15 @@ class BashReader:
             lost = shell.copy()
             lost.cwd, lost.opaque = None, True
             return certain(lost)
-        return BashReader(self.reading, self.depth + 1).run_command(shell.functions[name], shell)
+        before = dict(shell.references)
+        outcome = BashReader(self.reading, self.depth + 1).run_command(shell.functions[name], shell)
+        # declare -n and local -n make a reference local to the function, which Bash drops when it returns, unless
+        # declare -g made it, so after the call a reference it made or changed stands for no variable the guard knows.
+        for after in (outcome.ok, outcome.fail):
+            for reference, target in after.references.items():
+                if before.get(reference, _ABSENT) != target:
+                    after.references[reference] = None
+        return outcome
 
     def run_program(
         self,
@@ -1435,30 +1443,61 @@ def declared_name(shell: Shell, name: str, value: str | None, referencing: bool 
     return target
 
 
-def bash_read(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """read, which sets each name it is given, or REPLY, to what it reads, and with -a makes its name an array: each
-    is left unsettled, and a word the text does not settle before or among the names may name any variable."""
-    names: list[Word] = []
+def builtin_operands(arguments: list[Word], with_value: str) -> tuple[list[tuple[str, str]], list[str]] | None:
+    """A builtin's options, each flag with its value or "", and its operands, as Bash's own option reader takes them:
+    flags bundled in one word, a value attached or else the next word, and -- ending the options. None when a word
+    the text does not settle is among them, since it may split into any options and operands."""
+    words = [word for word in arguments if word is not None]
+    if len(words) < len(arguments):
+        return None
+    options: list[tuple[str, str]] = []
     index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None or word == "--":
-            index += word == "--"
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            index += 1
             break
         if not word.startswith("-") or word == "-":
             break
         for position, flag in enumerate(word[1:], start=2):
-            if flag in "adinNptu":
-                # The option's value is the rest of the word, or else the next word.
-                attached = word[position:]
-                if not attached:
+            if flag in with_value:
+                value = word[position:]
+                if not value:
                     index += 1
-                if flag == "a":
-                    names.append(attached or (arguments[index] if index < len(arguments) else ""))
+                    value = words[index] if index < len(words) else ""
+                options.append((flag, value))
                 break
+            options.append((flag, ""))
         index += 1
-    names.extend(arguments[index:])
-    assign_unsettled(shell, names or ["REPLY"])
+    return options, words[index:]
+
+
+def bash_read(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """read, which sets each name it is given, or REPLY, to what it reads, and with -a makes its name an array: each
+    is left unsettled, and a word the text does not settle may name any variable."""
+    parsed = builtin_operands(arguments, "adinNptu")
+    if parsed is None:
+        shell.opaque = True
+        return certain(shell)
+    options, operands = parsed
+    names: list[Word] = [value for flag, value in options if flag == "a"]
+    assign_unsettled(shell, [*names, *operands] or ["REPLY"])
+    return certain(shell)
+
+
+def bash_mapfile(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """mapfile and readarray, which make the variable they name, or MAPFILE, an array of the lines they read, which
+    no program sees: left unsettled, and a word the text does not settle may name any variable. A callback -C names
+    runs as a command of this shell, where the guard does not read it."""
+    parsed = builtin_operands(arguments, "dnOsuCc")
+    if parsed is None:
+        shell.opaque = True
+        return certain(shell)
+    options, operands = parsed
+    if any(flag == "C" for flag, _ in options):
+        reader.reading.cannot_read(f"could not read the callback {reader.current_builtin} runs")
+        shell.opaque = True
+    assign_unsettled(shell, operands[:1] or ["MAPFILE"])
     return certain(shell)
 
 
@@ -1490,7 +1529,7 @@ def bash_getopts(reader: BashReader, arguments: list[Word], _: object, shell: Sh
     return certain(shell)
 
 
-def assign_unsettled(shell: Shell, names: list[Word]) -> None:
+def assign_unsettled(shell: Shell, names: Iterable[Word]) -> None:
     """Gives each name a value the text does not settle, through any name reference; a name of one element sets its
     array. A name the text does not settle may be any variable."""
     for name in names:
@@ -1596,6 +1635,7 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
     "read": bash_read,
     "printf": bash_printf,
     "getopts": bash_getopts,
+    **dict.fromkeys(("mapfile", "readarray"), bash_mapfile),
     "eval": bash_eval,
     "source": bash_source,
     ".": bash_source,

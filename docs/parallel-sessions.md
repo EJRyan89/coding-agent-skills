@@ -261,10 +261,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
   `typeset -x`, an assignment under `set -a` or to a variable already exported), and removed by `unset`,
-  `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, and `getopts` leave each variable they set
-  unsettled; a name reference that `declare -n`, `local -n`, or `typeset -n` makes stands for the variable it
-  names, so an assignment to it, its expansion, and each of those builtins reach that variable, until `unset -n` or
-  `declare +n` ends it; in PowerShell, through `$env:<name>` and `${<path>}` on the environment provider (cast,
+  `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, and `readarray` leave
+  each variable they set unsettled, and every variable when a word the text does not settle is among their options
+  or names; a name reference that `declare -n`, `local -n`, or `typeset -n` makes stands for the variable it names,
+  so an assignment to it, its expansion, and each of those builtins reach that variable, until `unset -n` or
+  `declare +n` ends it, and one a function makes stands for no variable the guard knows once the function returns;
+  in PowerShell, through `$env:<name>` and `${<path>}` on the environment provider (cast,
   in parentheses, or as any target of a multiple assignment), a `foreach` loop's variable, `PSVariable.Set`,
   `[Environment]::SetEnvironmentVariable`, and the cmdlets that write the provider: `Set-Item`,
   `New-Item`, and `Set-Content` at their path, `Copy-Item` at its destination, `New-Item` on the provider's root
@@ -365,9 +367,10 @@ command names. While one is, the guard refuses:
   than four deep, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
   inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
   lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline
-  command, script file, or encoded command at all), every `env -S`, whatever follows it, an option of `env` or of a
-  prefix program above that the guard does not read, a PowerShell command when `pwsh` cannot be started or does not
-  finish reading it within 20 seconds, and a command either shell's reader fails on with an error of its own;
+  command, script file, or encoded command at all), a callback `mapfile -C` runs, every `env -S`, whatever follows
+  it, an option of `env` or of a prefix program above that the guard does not read, a PowerShell command when `pwsh`
+  cannot be started or does not finish reading it within 20 seconds, and a command either shell's reader fails on
+  with an error of its own;
 - an alias that cannot be read, as above.
 
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
