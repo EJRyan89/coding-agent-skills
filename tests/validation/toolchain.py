@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from job_pool import Terminated, refuse_termination
-from validation_support import REPOSITORY_ROOT
+from validation_support import REPOSITORY_ROOT, find_fences, markdown_section, repository_files
 
 from deployer import platform_support, tools
 
@@ -297,25 +297,52 @@ def pip_installs(workflow: str) -> list[tuple[int, list[str], str]]:
     return found
 
 
+def checks_hashes(words: list[str], locks: tuple[str, ...]) -> bool:
+    """Whether the words after a pip read `install --require-hashes --only-binary :all:` and then only `-r <lock>` for
+    one of `locks`."""
+    flags = ["install", *HASH_CHECKED_INSTALL.split()]
+    files = words[len(flags) :]
+    pairs = list(zip(files[::2], files[1::2], strict=False))
+    return (
+        words[: len(flags)] == flags
+        and bool(pairs)
+        and not len(files) % 2
+        and all(flag == "-r" and path in locks for flag, path in pairs)
+    )
+
+
 def hash_install_problems(workflow: str, locks: tuple[str, ...]) -> list[str]:
     """Report each line of a workflow whose pip install does not check hashes, may build a source distribution, or
     installs anything but a lock: pip must be followed by `install --require-hashes --only-binary :all:` and then only
     `-r <lock>` for one of `locks`, so a workflow with no locks may run no pip install at all."""
-    problems: list[str] = []
-    flags = ["install", *HASH_CHECKED_INSTALL.split()]
-    for number, words, line in pip_installs(workflow):
-        files = words[len(flags) :]
-        pairs = list(zip(files[::2], files[1::2], strict=False))
-        if (
-            words[: len(flags)] != flags
-            or not pairs
-            or len(files) % 2
-            or any(flag != "-r" or path not in locks for flag, path in pairs)
-        ):
-            problems.append(
-                f"line {number} does not install only {list(locks)} with {HASH_CHECKED_INSTALL}: {line.strip()!r}"
-            )
-    return problems
+    return [
+        f"line {number} does not install only {list(locks)} with {HASH_CHECKED_INSTALL}: {line.strip()!r}"
+        for number, words, line in pip_installs(workflow)
+        if not checks_hashes(words, locks)
+    ]
+
+
+def fence_install_problems(markdown: str, locks: tuple[str, ...]) -> list[str]:
+    """Report each pip install in a Markdown fence that installs from a requirements file other than as CI installs
+    a lock, so a documented install of a lock checks hashes and builds no source distribution, as hash_install_problems
+    holds a workflow's. A fence's pip install that names no requirements file, such as one of pip-tools, is not
+    one."""
+    lines = markdown.splitlines()
+    body = {index + 1 for fence in find_fences(lines) for index in fence.body()}
+    return [
+        f"line {number} does not install only {list(locks)} with {HASH_CHECKED_INSTALL}: {line.strip()!r}"
+        for number, words, line in pip_installs(markdown)
+        if number in body and {"-r", "--requirement"} & set(words) and not checks_hashes(words, locks)
+    ]
+
+
+def floor_copy_problems(text: str, pattern: str, floor: str) -> list[str]:
+    """Report a document that names no copy of a floor where `pattern`, whose one group is the version, finds it, and
+    each copy that names a version other than the floor."""
+    found = re.findall(pattern, text)
+    if not found:
+        return [f"no copy of the floor matches {pattern!r}"]
+    return [f"{version} is named where the floor is {floor}" for version in found if version != floor]
 
 
 def read_tool_version(path: str) -> tuple[int, ...] | None:
@@ -442,6 +469,68 @@ class ToolchainPolicies(unittest.TestCase):
                 text = workflow.read_text(encoding="utf-8")
                 self.assertEqual(installs, len(pip_installs(text)))
                 self.assertEqual([], hash_install_problems(text, locks))
+
+    def test_every_documented_install_of_a_lock_checks_hashes_as_ci_does(self) -> None:
+        locks = (DEVELOPMENT_LOCK, MUTATION_LOCK)
+        documented: set[str] = set()
+        for path in repository_files(REPOSITORY_ROOT):
+            if path.suffix != ".md":
+                continue
+            name = path.relative_to(REPOSITORY_ROOT).as_posix()
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(document=name):
+                self.assertEqual([], fence_install_problems(text, locks))
+            # With no lock allowed, each install from a requirements file in a fence is reported, so this counts them.
+            if fence_install_problems(text, ()):
+                documented.add(name)
+        self.assertLessEqual({"CONTRIBUTING.md", DEPENDENCY_DOC}, documented)
+        # The command validation prints for a missing or outdated development dependency installs the lock the same
+        # way, on each platform.
+        for hints in (platform_support.WINDOWS_INSTALL_HINTS, platform_support.LINUX_INSTALL_HINTS):
+            for package in DEVELOPMENT_PACKAGES:
+                with self.subTest(hint=hints[package]):
+                    self.assertEqual(1, len(pip_installs(hints[package])))
+                    self.assertEqual([], hash_install_problems(hints[package], (DEVELOPMENT_LOCK,)))
+
+    def test_each_documented_copy_of_a_floor_is_the_floor_and_the_dependency_document_names_it(self) -> None:
+        catalogue = {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}
+        floors = {name: tools.format_version(tool.minimum) for name, tool in catalogue.items() if tool.minimum}
+        python = tools.format_version(tools.MINIMUM_PYTHON)
+        shellcheck = tools.format_version(VALIDATION_FLOORS["ShellCheck"])
+        found_python = r"Python (\d+\.\d+\.\d+)"
+        copilot = r"Copilot CLI (?:older than )?(\d+(?:\.\d+)+)"
+        dotnet = r"\.NET SDK (\S+) or newer"
+        # Each copy of a floor outside its declaration: the part of the dependency document that names the copy (a
+        # floor's row, or the runtime tool floors section), the document that holds it, the pattern whose group is
+        # the version, and the floor it must be.
+        copies = (
+            ("| Python |", "CLAUDE.md", found_python, python),
+            ("| Python |", "CONTRIBUTING.md", found_python, python),
+            ("| Python |", "README.md", found_python, python),
+            ("| Python |", "docs/installation.md", found_python, python),
+            ("| Python |", "docs/code-review-operations.md", found_python, python),
+            ("| Python |", "docs/design.md", r"the Python floor is (\d+\.\d+\.\d+)", python),
+            ("| ShellCheck |", "docs/installation.md", r"CI uses (\d+\.\d+\.\d+)", shellcheck),
+            ("## Runtime tool floors", "docs/installation.md", r"GitHub CLI \(`gh`\) (\S+) or newer", floors["gh"]),
+            ("## Runtime tool floors", "docs/installation.md", r"Codex CLI (\S+) or newer", floors["codex"]),
+            ("## Runtime tool floors", "docs/codex-support.md", r"Codex CLI before (\S+) ", floors["codex"]),
+            ("## Runtime tool floors", "docs/installation.md", copilot, floors["copilot"]),
+            ("## Runtime tool floors", "docs/copilot-support.md", copilot, floors["copilot"]),
+            ("## Runtime tool floors", "docs/code-review-operations.md", copilot, floors["copilot"]),
+            ("## Runtime tool floors", "docs/code-review-operations-contract.md", copilot, floors["copilot"]),
+            ("## Runtime tool floors", "docs/installation.md", dotnet, floors["dotnet"]),
+            ("## Runtime tool floors", "docs/skills.md", dotnet, floors["dotnet"]),
+        )
+        dependencies = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
+        for part, document, pattern, expected in copies:
+            if part.startswith("|"):
+                named = next(line for line in dependencies.splitlines() if line.startswith(part))
+            else:
+                named = markdown_section(dependencies, part) or ""
+            with self.subTest(document=document, pattern=pattern):
+                text = (REPOSITORY_ROOT / document).read_text(encoding="utf-8")
+                self.assertEqual([], floor_copy_problems(text, pattern, expected))
+                self.assertIn("the README" if document == "README.md" else f"`{document}`", named)
 
     def test_ci_exercises_each_floor(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
