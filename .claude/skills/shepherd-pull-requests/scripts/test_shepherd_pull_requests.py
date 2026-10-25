@@ -1523,9 +1523,35 @@ class MainTest(unittest.TestCase):
     def test_main_runs_one_tick_from_the_working_directory(self) -> None:
         with mock.patch.object(shepherd, "tick", return_value=0) as tick:
             self.assertEqual(0, shepherd.main(["--dry-run"]))
-        self.assertTrue(tick.call_args.kwargs["dry_run"])
-        self.assertEqual(Path.cwd(), tick.call_args.args[2])
+        self.assertIs(True, tick.call_args.kwargs["dry_run"])
+        git_client, github_client, directory = tick.call_args.args
+        self.assertIsInstance(git_client, GitClient)
+        self.assertIsInstance(github_client, GitHubClient)
+        self.assertEqual(Path.cwd(), directory)
+        self.assertIs(print, tick.call_args.kwargs["emit"])
         self.assertIs(premerge_review.archive_reader, tick.call_args.kwargs["reviews"])
+        with mock.patch.object(shepherd, "tick", return_value=1) as tick:
+            self.assertEqual(1, shepherd.main([]))
+        self.assertIs(False, tick.call_args.kwargs["dry_run"])
+
+    def test_the_review_step_finds_skill_core_and_the_code_review_core_on_its_own(self) -> None:
+        # A clean interpreter, with neither on sys.path, imports the step. Its own two statements put the code-review
+        # core in front of skill-core, each at its folder in this checkout, ahead of the folder the step was found in;
+        # the core's modules put skill-core in front again as they load, which leaves that order behind them.
+        scripts = Path(premerge_review.__file__).resolve().parent
+        skills = scripts.parents[3] / "skills"
+        probe = "import sys; sys.path.insert(0, sys.argv[1]); import premerge_review; print(*sys.path, sep='\\n')"
+        ran = subprocess.run(
+            [sys.executable, "-B", "-I", "-c", probe, str(scripts)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(0, ran.returncode, ran.stderr)
+        path = ran.stdout.splitlines()
+        core = str(skills / "ejryan89-code-review-core" / "scripts")
+        self.assertIn(core, path)
+        self.assertEqual(
+            [core, str(skills / "ejryan89-skill-core" / "scripts"), str(scripts)],
+            path[path.index(core) : path.index(str(scripts)) + 1],
+        )
 
     def test_an_unknown_argument_is_a_usage_error(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
