@@ -133,14 +133,18 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
   number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
   refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds.
-- **Guard:** `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
+  `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
+  `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
   `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
   has `\d+` rather than `\d{1,N}`; `.isdigit()` before an `int(`, which admits digits `int` reads past any bound;
   `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
-  `math.isfinite`.
-- **Examples:** #1611, #1729, #1886
+  `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
+  bounds no length; a refusal worded "more than N digits" for a `\d` group,
+  which also admits digits that are not ASCII.
+- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897
 
 ### One fact has one owner
 
@@ -272,9 +276,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   writer cannot hold, such as a non-finite number or text UTF-8 cannot encode.
 - **Why:** A value the first step accepted and a later one cannot write ends the run part-way, after state has
   changed.
-- **Use:** `review_io:atomic_write_json`, `review_io:read_json`, `typed_fields:FieldReader`; one JSON writer and a
-  policy refusing a direct write are the mechanism in #1906.
-- **Guard:** `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
+- **Use:** `json_writer:dumps` for JSON text and `json_writer:write` for a JSON file, which refuse a non-finite
+  number, a lone surrogate, and what `json_reader:loads` refuses on the read-back, by name, at the write;
+  `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`.
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests`,
+  `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
 - **Search for:** `rg -n "json\.dumps?\(" | rg -v allow_nan=False`; `write_text(json.dumps(`; input written back
   without the later reader's pass.
 - **Examples:** #1552, #1634, #1874, #1906
