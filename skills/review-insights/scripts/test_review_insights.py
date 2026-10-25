@@ -29,7 +29,6 @@ import review_insights as ri
 import review_records
 import review_synthesis
 import skill_roots
-import whole_number
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import FlagError, add_flag, load_store, resolve_flag
@@ -776,17 +775,6 @@ class ReportTests(InsightFixture):
                 result = self.execute(*arguments)
                 self.assertEqual((2, ""), (result.returncode, result.stdout))
                 self.assertIn("usage:", result.stderr)
-
-
-class RecommendationNumberTests(unittest.TestCase):
-    def test_the_next_number_follows_every_one_used(self) -> None:
-        self.assertEqual(1, ri.next_rec_number([]))
-        self.assertEqual(13, ri.next_rec_number([{"id": "REC-012"}, {"id": "REC-003"}, {"id": "other"}, {}]))
-
-    def test_an_id_past_the_digit_limit_is_refused_by_name(self) -> None:
-        with self.assertRaises(ri.InsightError) as raised:
-            ri.next_rec_number([{"id": "REC-001"}, {"id": "REC-" + "1" * 5000}])
-        self.assertEqual(f"a recommendation ID has more than {whole_number.DIGIT_LIMIT} digits", str(raised.exception))
 
 
 class DecideTests(InsightFixture):

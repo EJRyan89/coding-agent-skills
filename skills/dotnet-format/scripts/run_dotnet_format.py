@@ -208,11 +208,6 @@ def display_path(path: str, root: Path) -> str:
         return candidate.as_posix()
 
 
-INT_PARSE_ALLOWED = {
-    "parse_diagnostics": "dotnet format writes each diagnostic's line and column",
-}
-
-
 def parse_diagnostics(log: str, root: Path) -> list[Diagnostic]:
     """Distinct issues in a dotnet-format log, in first-seen order."""
     found: dict[Diagnostic, None] = {}

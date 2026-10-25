@@ -1604,12 +1604,6 @@ def _write_object_ids(stdin: IO[bytes], blobs: Sequence[str]) -> None:
             stdin.write(f"{blob}\n".encode("ascii"))
 
 
-INT_PARSE_ALLOWED = {
-    "_batch_blob_size": "git cat-file writes the blob's size",
-    "_commit_members": "git ls-tree writes each blob's size",
-}
-
-
 def _batch_blob_size(stdout: GitStream, blob: str) -> int:
     """The size a `git cat-file --batch` answer's `<id> blob <size>` line gives the blob it names."""
     header = stdout.readline()

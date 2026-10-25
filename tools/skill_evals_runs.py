@@ -24,7 +24,6 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import frontmatter
 import json_reader
-import whole_number
 from git_client import GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
@@ -287,14 +286,15 @@ def _guard_hook(lines: Sequence[str], home: Path) -> dict[str, Any]:
     if UNQUOTABLE.search(runtime_canary.forward(home)):
         raise AgentError(f"its hook cannot quote the home's path {runtime_canary.forward(home)}")
     timeout = _nested(lines, "timeout")
-    seconds = whole_number.read(timeout, AgentError(f"its hook's timeout {timeout} is not a whole number of seconds"))
+    if not timeout.isdigit():
+        raise AgentError(f"its hook's timeout {timeout} is not a whole number of seconds")
     # A guard that cannot start or times out lets the call through unless its hook blocks on failure, so a session
     # never runs a reviewer whose hook does not.
     on_failure = _nested(lines, "onFailure")
     if on_failure != "block":
         raise AgentError(f"its hook's onFailure is {on_failure}, not block")
     hook = {"type": "command", "command": command.replace(PROFILE_GUARD, runtime_canary.forward(guard))}
-    return {"matcher": _nested(lines, "matcher"), "hooks": [{**hook, "timeout": seconds, "onFailure": on_failure}]}
+    return {"matcher": _nested(lines, "matcher"), "hooks": [{**hook, "timeout": int(timeout), "onFailure": on_failure}]}
 
 
 def reviewer_agents(home: Path) -> dict[str, Any]:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import contextlib
 import io
 import shutil
@@ -20,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import pull_request
-import whole_number
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult, GitHubClient
 
@@ -471,21 +469,6 @@ class EntryPointTests(unittest.TestCase):
         )
         self.assertEqual(0, ran.returncode, ran.stderr)
         self.assertIn("draft", ran.stdout)
-
-
-def test_a_closes_number_past_the_digit_limit_fails_by_name() -> None:
-    body = FILLED.replace("Closes #34", "Closes #1" + "0" * 5000)
-    with pytest.raises(pull_request.PullRequestError) as raised:
-        pull_request.closed_issues(body)
-    assert f"a Closes line names an issue number of more than {whole_number.DIGIT_LIMIT} digits" == str(raised.value)
-
-
-def test_an_issue_argument_past_the_digit_limit_is_not_an_issue_number() -> None:
-    value = "1" + "0" * 5000
-    with pytest.raises(argparse.ArgumentTypeError) as raised:
-        pull_request.issue_argument(value)
-    assert f"{value!r} is not an issue number" == str(raised.value)
-    assert pull_request.issue_argument("12") == 12
 
 
 @pytest.mark.parametrize(

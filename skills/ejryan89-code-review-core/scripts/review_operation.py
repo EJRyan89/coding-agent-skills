@@ -8,7 +8,6 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-import whole_number
 from review_archive import (
     archive_head,
     commit_record,
@@ -62,12 +61,11 @@ PULL_FIELDS = {
 
 
 def parse_pull_selector(value: str) -> tuple[str, int]:
-    refused = ReviewOperationError("Pull selector must be owner/repository#number")
     match = re.fullmatch(r"([^#]+)#([1-9][0-9]*)", READ.string(value, "pull selector"))
     if match is None:
-        raise refused
+        raise ReviewOperationError("Pull selector must be owner/repository#number")
     repository = validate_repository_identity(match.group(1))
-    return repository, whole_number.read(match.group(2), refused)
+    return repository, int(match.group(2))
 
 
 def validate_canary_pull(value: Any, *, repository: str, number: int) -> dict[str, Any]:

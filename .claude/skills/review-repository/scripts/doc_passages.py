@@ -149,11 +149,6 @@ class Passage:
     at: int  # where in the unit's text the name matched
 
 
-INT_PARSE_ALLOWED = {
-    "read_diff": "git writes a hunk header's numbers, and a diff prefixes each line of a file's text",
-}
-
-
 def read_diff(files: list[FileDiff]) -> tuple[list[tuple[str, str]], list[Hunk], list[tuple[str, str, Hunk]]]:
     """The paths whose names to look for in diff order, each with the changed file's path, a renamed file's old path
     after its new one; the changed files' hunks; and each top-level definition a hunk adds, removes, or changes

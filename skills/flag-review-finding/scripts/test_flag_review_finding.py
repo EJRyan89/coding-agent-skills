@@ -469,15 +469,6 @@ class FlagCliTests(unittest.TestCase):
         )
         self.assertFalse(Path(self.store).exists())
 
-    def test_a_report_label_whose_version_is_past_the_digit_limit_fails_by_name(self) -> None:
-        label = "v1" + "0" * 5000 + " F001"
-        self.assert_result(
-            self.flag_finding(None, label),
-            1,
-            f"FAILED Report label {label!r} names a review version too long to read\n",
-        )
-        self.assertFalse(Path(self.store).exists())
-
     def test_a_report_label_names_what_its_split_form_names(self) -> None:
         review_fixture.commit_fixture(self.archive)
         self.assert_result(self.flag_finding(None, "v3 F002"), 0, "ADDED RF-000001\n")

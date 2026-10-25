@@ -260,11 +260,6 @@ def changed_modules(root: Path, base: str, git: GitClient) -> list[str]:
     return sorted(name for name in names.splitlines() if name and is_gate_module(name))
 
 
-INT_PARSE_ALLOWED = {
-    "changed_lines": "git writes a hunk header's numbers, and a diff prefixes each line of a file's text",
-}
-
-
 def changed_lines(diff: str) -> set[int]:
     """The new side's line numbers each hunk of a zero-context diff adds or changes."""
     lines: set[int] = set()

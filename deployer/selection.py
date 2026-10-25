@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import sys
 
-import whole_number
-
 from . import config, source, tools
 from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE, usage_error
 from .context import Context, Selection
@@ -82,7 +80,9 @@ def select(context: Context) -> Selection | None:
         selection.deselect_all = True
     else:
         for token in answer.split():
-            index = whole_number.read(token, DeployError(f"ERROR: Invalid selection '{token}'")) - 1
+            if not token.isdigit():
+                raise DeployError(f"ERROR: Invalid selection '{token}'")
+            index = int(token) - 1
             if index < 0 or index >= len(choices):
                 raise DeployError(f"ERROR: Selection '{token}' is out of range")
             name, kind = choices[index]

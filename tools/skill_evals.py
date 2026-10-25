@@ -433,7 +433,7 @@ def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
         return executable, None
     try:
         text = seams.results.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:  # missing, unreadable, or not UTF-8
+    except OSError as exc:
         raise ScenarioError(f"cannot read {seams.results}: {exc}") from exc
     results_table(text)
     samples_table(text)
@@ -534,7 +534,7 @@ def record_reading(skill: str, reading: str, results: Path) -> int:
     """Mark the skill's sampled transcript in the results file with the reader's reading."""
     try:
         text = read_sample(results.read_text(encoding="utf-8"), skill, reading)
-    except (OSError, UnicodeDecodeError, ScenarioError) as exc:  # a results file missing, not UTF-8, or not as read
+    except (OSError, ScenarioError) as exc:
         print(f"FAILED {quote(str(exc))}")
         return 1
     results.write_text(text, encoding="utf-8", newline="\n")

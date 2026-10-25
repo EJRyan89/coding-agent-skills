@@ -265,11 +265,6 @@ def find_copilot() -> str:
     raise RuntimeContractError("GitHub Copilot CLI is not available")
 
 
-INT_PARSE_ALLOWED = {
-    "parse_copilot_version": "Copilot CLI writes its own version",
-}
-
-
 def parse_copilot_version(output: str) -> tuple[int, int, int]:
     match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)", output)
     if match is None:

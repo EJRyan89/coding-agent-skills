@@ -79,11 +79,6 @@ LEG_SHAPES = (
 PLATFORMS = tuple(sorted(platform_support.SUPPORTED_PLATFORMS.values()))
 
 
-INT_PARSE_ALLOWED = {
-    "leg_of": "the validate workflow names each job with its shard and their count",
-}
-
-
 def leg_of(job: str) -> tuple[str, int, int] | None:
     """The leg's platform, its index, and the matrix's count when the job is named as a leg, else None."""
     if job in UNSHARDED_LEGS:

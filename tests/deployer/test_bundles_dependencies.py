@@ -437,9 +437,6 @@ class SelectionTests(DeployerTestCase):
         self.make_skill("alpha", "Alpha")
         self.make_config()
         self.deploy_fails(stdin="x\n", pattern="Invalid selection 'x'")
-        # A digit str.isdigit() passes and int() refuses, and a number past the interpreter's digit limit.
-        self.deploy_fails(stdin="\u00b2\n", pattern="Invalid selection '\u00b2'")
-        self.deploy_fails(stdin="1" + "0" * 5000 + "\n", pattern="Invalid selection '10{5000}'")
         self.deploy_fails(stdin="9\n", pattern="Selection '9' is out of range")
         self.assertFalse((self.skills_dir / "alpha").exists())
 

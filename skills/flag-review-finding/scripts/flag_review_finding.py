@@ -33,7 +33,6 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
-import whole_number
 from console import run_main
 from flat_text import flat_text
 from review_archive import ArchiveError, pull_directory, pull_records, record_paths
@@ -119,8 +118,7 @@ def named_finding(review_version: int | None, finding: str | None) -> tuple[int 
     match = REPORT_LABEL.fullmatch(finding) if finding is not None else None
     if match is None:
         return review_version, finding
-    refused = FlagError(f"Report label {finding!r} names a review version too long to read")
-    version = whole_number.read(match[1], refused)
+    version = int(match[1])
     if review_version not in (None, version):
         raise FlagError(f"Report label {finding!r} names review version {version}, not {review_version}")
     return version, match[2]

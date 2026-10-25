@@ -261,11 +261,6 @@ def _validate_review_state(item: dict[str, Any], key: str, path: str) -> None:
         raise TrackerError(f"Tracker item {key}.user_review_sha is required for {review_state}")
 
 
-INT_PARSE_ALLOWED = {
-    "normalize_pull_keys": "the pattern takes at most ten ASCII digits",
-}
-
-
 def normalize_pull_keys(values: set[str] | list[str], field: str) -> set[str]:
     normalized: set[str] = set()
     for value in values:

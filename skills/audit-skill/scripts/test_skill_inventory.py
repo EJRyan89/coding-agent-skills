@@ -1673,11 +1673,6 @@ class StatusLineTests(TemporaryTestCase):
         )
         self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
 
-    def test_an_exit_code_past_the_digit_limit_is_a_mismatch_as_stated(self) -> None:
-        code = "1" + "0" * 5000
-        folder = self.skill(f"It exits with code {code} when the plan is stale.\n", "import sys\n\nsys.exit(1)\n")
-        self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 {code}"], self.status(folder))
-
     def test_exit_codes_come_from_exit_calls_and_named_constants(self) -> None:
         folder = self.skill(
             "It exits 3 or exits with status 5, never 2.\n",

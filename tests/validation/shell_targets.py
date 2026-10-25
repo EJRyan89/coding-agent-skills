@@ -458,11 +458,6 @@ def markdown_shell_targets(root: Path, files: list[Path]) -> list[BashFence]:
     return targets
 
 
-INT_PARSE_ALLOWED = {
-    "markdown_shell_check": "ShellCheck writes each warning's line number",
-}
-
-
 def markdown_shell_check(root: Path, files: list[Path]) -> None:
     """Fail, naming each finding by file, line, and code, when ShellCheck warns on a Bash fence in Markdown.
 

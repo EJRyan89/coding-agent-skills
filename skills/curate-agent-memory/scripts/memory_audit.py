@@ -244,11 +244,6 @@ def indentation(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
 
-INT_PARSE_ALLOWED = {
-    "block_scalar": "the pattern takes one digit from 1 to 9",
-}
-
-
 def block_scalar(header: re.Match[str], key_indent: int, following: list[str]) -> tuple[str, int]:
     """The value of a `|` or `>` block scalar and how many following lines it spans.
 

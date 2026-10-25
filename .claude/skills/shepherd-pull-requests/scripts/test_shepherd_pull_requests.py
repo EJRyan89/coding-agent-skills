@@ -24,10 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "validati
 
 import premerge_review
 import shepherd_pull_requests as shepherd
-import whole_number
 from git_client import GitClient, GitError
 from git_worktrees import list_worktrees
-from github_client import Backoff, CommandResult, GitHubClient, GitHubError
+from github_client import Backoff, CommandResult, GitHubClient
 from review_records import RecordError
 
 # Imported by name, since mypy checks this folder from inside it, where the deployer the pool imports does not resolve;
@@ -967,17 +966,6 @@ class JudgementTest(FixtureTestCase):
                 )
                 self.assertEqual([], gh.writes())
                 self.assertFalse(any(line.startswith(("RERUN", "DEFECT")) for line in lines))
-
-    def test_a_run_id_past_the_digit_limit_is_malformed(self) -> None:
-        url = "https://github.com/o/r/actions/runs/" + "1" * 5000 + "/job/2"
-        with self.assertRaises(GitHubError) as raised:
-            shepherd.run_of({"detailsUrl": url})
-        self.assertEqual(
-            ("malformed", f"GitHub returned a run id of more than {whole_number.DIGIT_LIMIT} digits"),
-            (raised.exception.kind, str(raised.exception)),
-        )
-        self.assertEqual(RUN, shepherd.run_of({"detailsUrl": f"https://github.com/o/r/actions/runs/{RUN}/job/2"}))
-        self.assertIsNone(shepherd.run_of({"detailsUrl": None}))
 
     def test_the_newest_run_on_a_head_decides_its_check(self) -> None:
         newer_pending = [*rollup("CANCELLED"), *rollup("PENDING", RUN + 1)]

@@ -128,16 +128,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
   number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
   refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
-  `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
-  `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
   `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
   has `\d+` rather than `\d{1,N}`; `.isdigit()` before an `int(`, which admits digits `int` reads past any bound;
   `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
   `math.isfinite`.
-- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897
+- **Examples:** #1611, #1729, #1886
 
 ### One fact has one owner
 

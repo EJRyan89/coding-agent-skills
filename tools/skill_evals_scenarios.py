@@ -22,7 +22,6 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 
 import json_reader
-import whole_number
 from git_client import GitClient
 from review_document import specialists_manifest
 from review_records import LEDGER_ID
@@ -157,11 +156,10 @@ def _lines(value: object) -> tuple[int, ...]:
 
 
 def _entry(value: object) -> tuple[int, str]:
-    refused = ScenarioError(f"entry must look like v1:F001, not {quote(str(value))}")
     match = LEDGER_ID.fullmatch(value) if isinstance(value, str) else None
     if match is None:
-        raise refused
-    return whole_number.read(match[1], refused), match[2]
+        raise ScenarioError(f"entry must look like v1:F001, not {quote(str(value))}")
+    return int(match[1]), match[2]
 
 
 def _where(path: str, lines: tuple[int, ...]) -> str:

@@ -26,11 +26,6 @@ def deal(names: list[str], count: int, seconds: Mapping[str, float]) -> dict[str
     return shards
 
 
-INT_PARSE_ALLOWED = {
-    "shard_of": "it turns the ValueError int() raises past the digit limit into its own refusal",
-}
-
-
 def shard_of(text: str) -> tuple[int, int]:
     """A shard's `<index>/<count>`, the index counted from 1. Raises ValueError naming what it expects, which each
     caller turns into its own usage error."""

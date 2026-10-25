@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import csharp_layout as layout
 import dotnet_solution
-import whole_number
 from run_dotnet_format import Completed, Services
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
@@ -1297,22 +1296,6 @@ def test_usage_errors_exit_2_with_usage_on_stderr(arguments: list[str]) -> None:
 )
 def test_section_matching_follows_the_editorconfig_glob_specification(section: str, path: str, expected: bool) -> None:
     assert expected == layout.section_matches(section, path)
-
-
-def test_a_numeric_range_bound_past_the_digit_limit_fails_by_name() -> None:
-    refusal = f"an .editorconfig section's numeric range has a bound of more than {whole_number.DIGIT_LIMIT} digits"
-    for section in ("*.{1..1" + "0" * 5000 + "}", "*.{-" + "9" * 5000 + "..1}"):
-        with pytest.raises(layout.Failed) as raised:
-            layout.section_glob(section)
-        assert refusal == str(raised.value)
-
-
-@pytest.mark.parametrize(
-    ("section", "bounds"),
-    [("File{+2..-3}.cs", ((-3, 2),)), ("{1..1}{-0..07}", ((1, 1), (0, 7)))],
-)
-def test_a_numeric_range_reads_each_bound_with_its_sign(section: str, bounds: tuple[tuple[int, int], ...]) -> None:
-    assert bounds == layout.section_glob(section)[1]
 
 
 @pytest.mark.parametrize(
