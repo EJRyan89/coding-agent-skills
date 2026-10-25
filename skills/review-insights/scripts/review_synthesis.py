@@ -1088,7 +1088,7 @@ class _Checker:
             return
         for entry in findings:
             self.field(f"{where}.findings", entry["assessment"], "long")
-        if isinstance(small, list) and sorted(entry["ref"] for entry in findings) != sorted(small):
+        if sorted(entry["ref"] for entry in findings) != sorted(small):
             self.problem(f"{where}.findings", f"must address exactly this category's findings: {', '.join(small)}")
 
 

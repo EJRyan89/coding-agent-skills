@@ -958,7 +958,24 @@ class PythonChecksPolicies(unittest.TestCase):
         # Default strictness, and no module, suite, or import is exempt; every root is also checked with --strict, as
         # [tool.validation] lists them. No platform: each host checks the code as it runs there, so every platform's
         # branches are checked on the platform that runs them.
-        self.assertEqual(["explicit_package_bases", "mypy_path", "python_version"], sorted(configuration))
+        # The optional error codes beyond --strict, each a check every root passes; warn_unreachable is not set.
+        self.assertEqual(
+            [
+                "deprecated",
+                "exhaustive-match",
+                "ignore-without-code",
+                "possibly-undefined",
+                "redundant-expr",
+                "redundant-self",
+                "truthy-bool",
+                "truthy-iterable",
+                "unused-awaitable",
+            ],
+            configuration["enable_error_code"],
+        )
+        self.assertEqual(
+            ["enable_error_code", "explicit_package_bases", "mypy_path", "python_version"], sorted(configuration)
+        )
 
     def test_strict_type_check_areas_only_grow(self) -> None:
         # A pull request that makes an area strict adds it to STRICT_TYPE_CHECK_AREAS and to pyproject.toml together.

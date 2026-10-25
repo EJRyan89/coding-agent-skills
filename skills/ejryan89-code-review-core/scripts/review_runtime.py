@@ -685,7 +685,8 @@ def _reused_query(arguments: Sequence[str]) -> bool:
         case ["ls-tree", *rest]:
             treeish = next((argument for argument in rest if not argument.startswith("-")), "")
             return bool(FULL_OBJECT_NAME.fullmatch(treeish))
-    return False
+        case _:
+            return False
 
 
 def _read_only(arguments: Sequence[str]) -> bool:
@@ -695,7 +696,8 @@ def _read_only(arguments: Sequence[str]) -> bool:
             return True
         case ["remote", "get-url", name]:
             return not name.startswith("-")
-    return False
+        case _:
+            return False
 
 
 class PrepareGitRunner:

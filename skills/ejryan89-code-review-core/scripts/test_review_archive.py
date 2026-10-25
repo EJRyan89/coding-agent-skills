@@ -84,15 +84,17 @@ class ArchiveTests(unittest.TestCase):
     def test_eleventh_review_follows_the_tenth(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for version in range(1, 12):
-                json_path, _, _ = commit_record(
+            paths = [
+                commit_record(
                     root,
                     "example/one",
                     12,
                     self._record("example/one", 12, version),
                     expected_latest_version=version - 1 if version > 1 else None,
-                )
-            self.assertEqual("review-v11.json", json_path.name)
+                )[0]
+                for version in range(1, 12)
+            ]
+            self.assertEqual("review-v11.json", paths[-1].name)
             latest = latest_record(root, "example/one", 12)
             if latest is None:
                 self.fail("eleven versions are archived")

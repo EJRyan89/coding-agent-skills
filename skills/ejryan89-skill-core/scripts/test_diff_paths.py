@@ -216,7 +216,7 @@ class UnresolvableSnapshotPathTests(unittest.TestCase):
 def test_a_hunk_header_gives_its_new_side_s_first_line_with_or_without_a_count(line: str, first: str) -> None:
     match = HUNK_HEADER.match(line)
     assert match is not None
-    assert first == (match.group(1) if match else None)
+    assert first == match.group(1)
 
 
 @pytest.mark.parametrize("line", ["+@@ -1 +1 @@", "@@ +1 -1 @@", "@@@ -1 -1 +1 @@@", "@@ -a +1 @@"])

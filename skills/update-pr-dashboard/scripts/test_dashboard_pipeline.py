@@ -926,9 +926,9 @@ class UpdateTests(TrackerPipelineFixture):
         report = directory / "legacy-review.md"
         report.write_text("<summary><strong>MUST FIX (1)</strong></summary>\n", encoding="utf-8")
         verdicts: tuple[object, ...] = (None, True, 7, 0.5, [], {})
+        path = directory / "legacy-review.json"
         for overrides in ({}, *({"verdict": value} for value in verdicts)):
             with self.subTest(overrides=overrides):
-                path = directory / "legacy-review.json"
                 path.write_text(json.dumps({**index, **overrides}), encoding="utf-8")
                 before = path.read_bytes()
                 item, row = self.collect_fixture([])
@@ -1668,15 +1668,17 @@ class RepositoryTests(TrackerPipelineFixture):
     def test_a_configuration_that_does_not_validate_is_refused_before_any_change(self) -> None:
         missing_set = json.loads(self.config_path.read_text(encoding="utf-8"))
         missing_set["repository_sets"]["tracked"].append("example/three")  # a set member with no entry
+        outputs: list[str] = []
         for content in ("{", json.dumps({"schema_version": 1}), json.dumps(missing_set)):
             with self.subTest(content=content):
                 self.config_path.write_text(content, encoding="utf-8")
                 code, out, err = self.run_main("repository", "--add", "other/three")
+                outputs.append(out)
                 self.assertEqual((1, ""), (code, err))
                 self.assertEqual(1, len(out.splitlines()), out)
                 self.assertTrue(out.startswith("FAILED "), out)
                 self.assertEqual(content, self.config_path.read_text(encoding="utf-8"))
-        self.assertIn("Missing per-repository configuration for: example/three", out)
+        self.assertIn("Missing per-repository configuration for: example/three", outputs[-1])
 
     def test_ignore_and_unignore_change_only_the_ignored_list(self) -> None:
         original = self.written()

@@ -151,7 +151,7 @@ def check_layout(paths: Paths, find: Find | None = None) -> RuntimeResult:
     """Claude Code reads the deployed files directly, so check that it is installed and the files are in place."""
     find = find or platform_support.find_executable
     owned = manifest.load(paths.manifest_file)
-    entries = [entry for entry in owned.sources.values() if isinstance(entry, dict)]
+    entries = list(owned.sources.values())
     skills = sorted({name for entry in entries for name in (entry.get("skills") or {})})
     agents = sorted({name for entry in entries for name in (entry.get("agents") or {})})
     if not skills:
