@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -54,8 +55,49 @@ class ConditionTests(unittest.TestCase):
         self.assertIsNone(holds("'$(Tfm)'=='net8.0'", tfm=either))
         self.assertIsNone(holds("'$(Tfm)'=='net8.0'", tfm=("net8.0", None)))
 
+    def test_negations_and_parentheses_nested_past_the_shared_depth_limit_are_not_settled(self) -> None:
+        # The limit is pinned as a literal: 100 levels settle, and 101 are malformed, never a RecursionError.
+        self.assertIs(True, holds("!" * 100 + "'a'=='a'"))
+        self.assertIs(True, holds("(" * 100 + "'a'=='a'" + ")" * 100))
+        self.assertIs(True, holds("!(" * 50 + "'a'=='a'" + ")" * 50 + "or 'a'=='b'"))
+        for text in ("!" * 101 + "'a'=='a'", "(" * 101 + "'a'=='a'" + ")" * 101, "!(" * 2000 + "'a'" + ")" * 2000):
+            with self.subTest(text=text[:4], length=len(text)):
+                self.assertIsNone(holds(text))
+
+
+def test_the_module_puts_skill_core_first_on_the_path_itself_and_imports_alone() -> None:
+    # A caller that puts only this folder on sys.path, as this suite does, still finds nesting_depth. Isolated mode
+    # (-I) starts the child with the standard library alone on its path.
+    folder = Path(__file__).resolve().parent
+    core = folder.parents[1] / "ejryan89-skill-core" / "scripts"
+    program = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(folder)!r})\n"
+        "import msbuild_conditions, nesting_depth\n"
+        "print(sys.path[0])\n"
+        "print(nesting_depth.__file__)\n"
+    )
+    result = subprocess.run([sys.executable, "-I", "-c", program], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    first, found = result.stdout.splitlines()
+    # Compared as text, so a folder spelled in another case fails here too, as its import fails where case matters.
+    assert first == str(core)
+    assert str(Path(found).parent) == str(core)
+
 
 class ExpansionTests(unittest.TestCase):
+    def test_property_functions_nested_past_the_shared_depth_limit_are_not_settled(self) -> None:
+        # The limit is pinned as a literal: 100 nested property functions settle, and 101 do not, never a
+        # RecursionError.
+        def nested(levels: int) -> str:
+            opening = "$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', "
+            return opening * levels + "'/repo/src'" + "))" * levels
+
+        self.assertEqual(("/repo/Directory.Build.props",), expand(nested(100)))
+        for levels in (101, 2000):
+            with self.subTest(levels=levels):
+                self.assertEqual(UNKNOWN, expand(nested(levels)))
+
     def test_a_reference_is_replaced_by_each_value_the_property_may_hold(self) -> None:
         self.assertEqual(("net472",), expand("$(Tfm)", tfm="net472"))
         self.assertEqual(("lib;net8.0",), expand("$(LIB);net8.0", lib="lib"))

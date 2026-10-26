@@ -232,6 +232,15 @@ def _declares_only(node: ast.ClassDef) -> bool:
     return all(isinstance(item, ast.AnnAssign | ast.Assign | ast.Expr | ast.Pass) for item in node.body)
 
 
+def parse_python(text: str) -> ast.Module:
+    """The module `text` holds, or SyntaxError, which the parser also raises here for source nested past its own
+    stack, where it would otherwise raise MemoryError or RecursionError."""
+    try:
+        return ast.parse(text)
+    except (MemoryError, RecursionError) as error:
+        raise SyntaxError(f"the source nests deeper than the parser reads ({type(error).__name__})") from error
+
+
 def python_definitions(path: str, text: str) -> list[Definition]:
     """A Python file's module-level functions and classes and each such class's methods. Raises SyntaxError."""
     lines = text.split("\n")
@@ -253,7 +262,7 @@ def python_definitions(path: str, text: str) -> list[Definition]:
                 for block in _python_blocks(node):
                     visit(block, None)
 
-    visit(ast.parse(text).body, None)
+    visit(parse_python(text).body, None)
     return found
 
 
@@ -362,7 +371,7 @@ def _dotted(node: ast.expr) -> str | None:
 def read_python_test(text: str) -> PythonTest:
     """The names a Python test uses in code. Raises SyntaxError or ValueError when `ast` cannot read it."""
     test = PythonTest()
-    tree = ast.parse(text)
+    tree = parse_python(text)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
