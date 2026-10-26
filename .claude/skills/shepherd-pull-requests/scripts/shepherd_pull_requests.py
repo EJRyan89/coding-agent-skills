@@ -330,8 +330,32 @@ def malformed(what: str) -> GitHubError:
     return GitHubError(f"GitHub returned {what}", kind="malformed")
 
 
+def objects(value: Any, what: str) -> list[dict[str, Any]]:
+    """The objects a listing GitHub returned holds, or the malformed GitHubError naming `what` when it is not a list of
+    objects: a shape the shepherd does not know is never read as an empty listing."""
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise malformed(f"{what} that is not a list of objects")
+    return value
+
+
+# How a refusal names the kind of value a member must hold.
+KIND_NAMES: dict[type, str] = {str: "text", int: "an integer", bool: "a boolean", dict: "an object"}
+
+
+def member(entry: dict[str, Any], key: str, kind: type, what: str) -> Any:
+    """`entry`'s `key`, None when it is absent or null, or the malformed GitHubError naming `what` when it holds a value
+    of another kind than `kind`, which the shepherd would otherwise read as some verdict it never meant."""
+    value = entry.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, kind) or (kind is not bool and isinstance(value, bool)):
+        raise malformed(f"{what} whose {key} is not {KIND_NAMES[kind]}")
+    return value
+
+
 def run_of(entry: dict[str, Any]) -> int | None:
-    match = RUN_URL.search(str(entry.get("detailsUrl") or ""))
+    url = member(entry, "detailsUrl", str, "a check")
+    match = RUN_URL.search(url) if url is not None else None
     refused = malformed(f"a run id that is not at most {whole_number.DIGIT_LIMIT} ASCII digits")
     return whole_number.read(match.group(1), refused) if match else None
 
@@ -340,11 +364,13 @@ def required_check(rollup: Any) -> Check:
     """The required check's state in the newest run on the head, PENDING while that run's legs run before it starts,
     and MISSING without it, with the share of that run's legs that finished. An older run on the same head, such as
     one a newer run cancelled, is not read."""
-    entries = [
-        entry
-        for entry in (rollup if isinstance(rollup, list) else [])
-        if isinstance(entry, dict) and entry.get("workflowName") == REQUIRED_CHECK
-    ]
+    # GitHub gives a head with no status at all a null rollup.
+    listed = objects([] if rollup is None else rollup, "a check rollup")
+    for entry in listed:
+        # A check's URL is read, and checked, only where the run it names matters (run_of).
+        for key in ("name", "workflowName", "status", "conclusion", "startedAt"):
+            member(entry, key, str, "a check")
+    entries = [entry for entry in listed if entry.get("workflowName") == REQUIRED_CHECK]
     newest = max((run_of(entry) or 0 for entry in entries), default=0)
     entries = [entry for entry in entries if (run_of(entry) or 0) == newest]
     named = [entry for entry in entries if entry.get("name") == REQUIRED_CHECK]
@@ -371,23 +397,27 @@ def hold_of(body: Any) -> str | None:
 def pull_of(item: Any) -> Pull:
     if not isinstance(item, dict):
         raise malformed("a pull request that is not an object")
-    number, branch, head = item.get("number"), item.get("headRefName"), item.get("headRefOid")
-    if not isinstance(number, int) or not isinstance(branch, str) or not isinstance(head, str):
+    number = member(item, "number", int, "a pull request")
+    branch = member(item, "headRefName", str, "a pull request")
+    head = member(item, "headRefOid", str, "a pull request")
+    if number is None or branch is None or head is None:
         raise malformed("a pull request without its number, branch, or head")
-    listed = item.get("files")
-    files = listed if isinstance(listed, list) else []
-    paths = tuple(str(entry.get("path")) for entry in files if isinstance(entry, dict) and entry.get("path"))
+    listed_paths = [entry.get("path") for entry in objects(item.get("files"), "a pull request's files")]
+    paths = tuple(path for path in listed_paths if isinstance(path, str) and path)
+    if len(paths) != len(listed_paths):
+        raise malformed("a pull request file without its path")
+    what = "a pull request"
     return Pull(
         number,
         branch,
         head,
-        str(item.get("mergeStateStatus") or "UNKNOWN"),
-        bool(item.get("autoMergeRequest")),
+        member(item, "mergeStateStatus", str, what) or "UNKNOWN",
+        member(item, "autoMergeRequest", dict, what) is not None,
         required_check(item.get("statusCheckRollup")),
         paths,
-        bool(item.get("isCrossRepository")),
-        bool(item.get("isDraft")),
-        hold_of(item.get("body")),
+        bool(member(item, "isCrossRepository", bool, what)),
+        bool(member(item, "isDraft", bool, what)),
+        hold_of(member(item, "body", str, what)),
     )
 
 
@@ -517,20 +547,28 @@ def classify_log(lines: Sequence[str]) -> tuple[str | None, str | None]:
 
 
 def judge_leg(client: GitHubClient, repository: str, job: dict[str, Any]) -> Leg:
-    name = flat_text(str(job.get("name") or "unnamed leg"))
+    """Why a failed leg failed. `judge` has checked the job's name and conclusion by kind; its steps are checked
+    here."""
+    name = flat_text(job.get("name") or "unnamed leg")
     conclusion = job.get("conclusion")
     if conclusion == "cancelled":
         return Leg(name, "cancelled", "the leg was cancelled")
     if conclusion == "startup_failure":
         return Leg(name, "service", "the leg did not start")
-    steps = [step for step in job.get("steps") or [] if isinstance(step, dict)]
+    steps = objects(job.get("steps"), "a job's steps")
+    for step in steps:
+        for key in ("name", "conclusion"):
+            member(step, key, str, "a step")
     failed = [str(step.get("name")) for step in steps if step.get("conclusion") == "failure"]
     if conclusion == "timed_out":
         return Leg(name, None, f"the leg's time limit{f' in {flat_text(failed[0])}' if failed else ''}")
     setup = next((step for step in failed if step not in VALIDATION_STEPS), None)
     if setup is not None:
         return Leg(name, "service", flat_text(setup))
-    log = client.run(["run", "view", "--repo", repository, "--job", str(job.get("databaseId")), "--log-failed"])
+    job_id = member(job, "databaseId", int, "a job")
+    if job_id is None:
+        raise malformed("a failed job without its id")
+    log = client.run(["run", "view", "--repo", repository, "--job", str(job_id), "--log-failed"])
     reason, check = classify_log(log_lines(log.stdout))
     return Leg(name, reason, flat_text(check or (failed[0] if failed else "unknown")))
 
@@ -542,15 +580,24 @@ def judge(client: GitHubClient, repository: str, pull: Pull) -> Judgement:
     run = client.json(["run", "view", str(pull.check.run), "--repo", repository, "--json", RUN_FIELDS])
     if not isinstance(run, dict):
         raise malformed("a workflow run that is not an object")
-    head = str(run.get("headSha") or "")
-    counted = run.get("attempt")
-    attempt = counted if isinstance(counted, int) else 1
+    head = member(run, "headSha", str, "a workflow run")
+    if not head:
+        raise malformed("a workflow run without its head")
+    counted = member(run, "attempt", int, "a workflow run")
+    attempt = 1 if counted is None else counted
     if head != pull.head:
         return Judgement(pull.check.run, attempt, head, "superseded", "", "", "", short(pull.head))
     newest = newest_run(client, repository, head)
     if newest > pull.check.run:
         return Judgement(pull.check.run, attempt, head, "superseded", "", "", "", f"run {newest}")
-    jobs = [job for job in run.get("jobs") or [] if isinstance(job, dict)]
+    jobs = objects(run.get("jobs"), "a workflow run's jobs")
+    for job in jobs:
+        for key in ("name", "conclusion"):
+            member(job, key, str, "a job")
+    if not jobs:
+        # A finished run lists its jobs, so judging one that lists none would read no legs as legs that passed.
+        raise malformed("a workflow run that lists no jobs")
+    member(run, "conclusion", str, "a workflow run")
     legs = [job for job in jobs if job.get("name") != REQUIRED_CHECK and job.get("conclusion") in FAILED_LEG]
     if legs:
         judged = [judge_leg(client, repository, job) for job in legs]
@@ -569,8 +616,11 @@ def newest_run(client: GitHubClient, repository: str, head: str) -> int:
     arguments = ["run", "list", "--repo", repository, "--workflow", REQUIRED_CHECK, "--commit", head]
     # GitHub lists the newest run first, so a listing cut at RUNS_LISTED leaves out only older runs.
     listing = client.capped_list([*arguments, "--event", PULL_EVENT, "--json", "databaseId"], RUNS_LISTED)
-    ids = [item.get("databaseId") for item in listing.items if isinstance(item, dict)]
-    return max((each for each in ids if isinstance(each, int)), default=0)
+    listed = [item.get("databaseId") for item in objects(listing.items, "a workflow run listing")]
+    ids = [each for each in listed if isinstance(each, int) and not isinstance(each, bool)]
+    if len(ids) != len(listed):
+        raise malformed("a workflow run without its integer id")
+    return max(ids, default=0)
 
 
 def judge_red(client: GitHubClient, repository: str, pull: Pull, outcome: Outcome, dry_run: bool) -> None:
@@ -692,11 +742,14 @@ def read_merged(client: GitHubClient, repository: str) -> list[Merged]:
     saw."""
     arguments = ["pr", "list", "--repo", repository, "--state", "merged", "--json", "number,headRefName,headRefOid"]
     listing = client.capped_list(arguments, MERGED_LISTED)
-    return [
-        Merged(item["number"], item["headRefName"], str(item.get("headRefOid") or ""))
-        for item in listing.items
-        if isinstance(item, dict) and isinstance(item.get("number"), int) and isinstance(item.get("headRefName"), str)
-    ]
+    found = []
+    for item in objects(listing.items, "a merged pull request listing"):
+        number = member(item, "number", int, "a merged pull request")
+        branch = member(item, "headRefName", str, "a merged pull request")
+        if number is None or branch is None:
+            raise malformed("a merged pull request without its number or branch")
+        found.append(Merged(number, branch, member(item, "headRefOid", str, "a merged pull request") or ""))
+    return found
 
 
 def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | None) -> dict[str, list[str]]:

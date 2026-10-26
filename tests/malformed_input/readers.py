@@ -20,13 +20,6 @@ READERS: list[Reader] = sorted(
 
 # Each reader of another program's output or of text a repository gives that no table holds yet, by the name its
 # entry will take, mapped to the issue whose pull request adds it.
-PENDING: dict[str, int] = {
-    "audit_repository.supported_runtimes": 1893,
-    "shepherd_pull_requests.judge": 1892,
-    "shepherd_pull_requests.judge_leg": 1892,
-    "shepherd_pull_requests.newest_run": 1892,
-    "shepherd_pull_requests.pull_of": 1892,
-    "shepherd_pull_requests.run_of": 1892,
-}
+PENDING: dict[str, int] = {}
 
 __all__ = ["PENDING", "READERS", "NotText", "Reader", "applicable_cases"]

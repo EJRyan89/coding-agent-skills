@@ -322,6 +322,27 @@ class ParsingTests(unittest.TestCase):
                     reader(lines)
                 self.assertEqual(f"its skills/list answer's {field} is {shape}, not an array", str(caught.exception))
 
+    def test_a_codex_group_or_error_message_of_an_unknown_shape_is_a_listing_error(self) -> None:
+        for data, shape in ((["oops", 7], "str"), ([{"cwd": "C:/work", "skills": []}, 7], "int")):
+            lines = [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": data}})]
+            for reader in (discovery.parse_codex, discovery.parse_codex_refusals):
+                with self.subTest(data=data, reader=reader.__name__), self.assertRaises(ListingError) as caught:
+                    reader(lines)
+                self.assertEqual(
+                    f"its skills/list answer has a group of a shape this reader does not know: {shape}",
+                    str(caught.exception),
+                )
+        error = {"path": "C:/home/.agents/skills/alpha/SKILL.md", "message": {"text": "missing field"}}
+        lines = [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [{"errors": [error]}]}})]
+        with self.assertRaises(ListingError) as caught:
+            discovery.parse_codex_refusals(lines)
+        self.assertEqual(
+            "its skills/list answer has an error whose message is an object with text, not text", str(caught.exception)
+        )
+        unexplained = {"path": "C:/home/.agents/skills/alpha/SKILL.md"}
+        lines = [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [{"errors": [unexplained]}]}})]
+        self.assertEqual(["no reason given"], [refused.reason for refused in discovery.parse_codex_refusals(lines)])
+
     def test_a_codex_skill_or_error_of_an_unknown_shape_is_a_listing_error(self) -> None:
         cases = {
             "its skills/list answer has an entry of a shape this reader does not know: an object with name, path": (

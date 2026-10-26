@@ -17,6 +17,8 @@ sys.path.insert(0, str(REPOSITORY))
 sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(REPOSITORY / "tests" / "validation"))
 
+import json_reader
+from github_client import CommandResult, Listing
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT
 from job_selection import job_seconds
 from known_failures import KnownFailuresUnreadable, read_known_failures
@@ -41,6 +43,7 @@ audit_repository = module_at(REPOSITORY_SKILLS / "audit-repository" / "scripts" 
 change_skill = module_at(REPOSITORY_SKILLS / "change-skill" / "scripts" / "change_skill.py")
 pull_request = module_at(REPOSITORY_SKILLS / "implement-change" / "scripts" / "pull_request.py")
 untested_functions = module_at(REPOSITORY_SKILLS / "review-repository" / "scripts" / "untested_functions.py")
+shepherd = module_at(REPOSITORY_SKILLS / "shepherd-pull-requests" / "scripts" / "shepherd_pull_requests.py")
 
 GUIDANCE_SUBJECTS = [*RUNTIMES, PYTHON_SUBJECT]
 GUIDANCE = (REPOSITORY / GUIDANCE_PATH).read_bytes()
@@ -134,6 +137,105 @@ def _python_definitions(path: Path) -> object:
     return untested_functions.python_definitions(path.name, text_of(path))
 
 
+# What the shepherd reads from gh, with the fields PULL_FIELDS and RUN_FIELDS request: one open pull request, its
+# Validation run with a failed leg, and the runs on its head. GitHub's JSON for each is an object or a list of them.
+SHEPHERD_HEAD = "a" * 40
+SHEPHERD_PULL = {
+    "number": 12,
+    "headRefName": "fix/example",
+    "headRefOid": SHEPHERD_HEAD,
+    "isCrossRepository": False,
+    "isDraft": False,
+    "mergeStateStatus": "CLEAN",
+    "autoMergeRequest": {"enabledAt": "2026-10-25T12:00:00Z", "mergeMethod": "SQUASH"},
+    "files": [{"path": "tools/example.py", "additions": 1, "deletions": 0}],
+    "statusCheckRollup": [
+        {
+            "__typename": "CheckRun",
+            "name": "Validation",
+            "workflowName": "Validation",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-10-25T12:00:00Z",
+            "detailsUrl": "https://github.com/owner/repo/actions/runs/7/job/8",
+        }
+    ],
+    "body": "Closes #1",
+}
+SHEPHERD_RUN = {
+    "headSha": SHEPHERD_HEAD,
+    "attempt": 1,
+    "conclusion": "failure",
+    "status": "completed",
+    "jobs": [
+        {
+            "databaseId": 8,
+            "name": "Linux shard 1/2",
+            "conclusion": "failure",
+            "steps": [
+                {"name": "Set up job", "conclusion": "success"},
+                {"name": "Run repository validation", "conclusion": "failure"},
+            ],
+        }
+    ],
+}
+
+
+SHEPHERD_UNREAD = (
+    "the shepherd reads a file's path, a check's name, workflow, state, start, and run, and whether auto-merge is "
+    "requested, never this field"
+)
+
+
+class _ShepherdGh:
+    """A gh client that answers the shepherd's run view, run listing, and failed-leg log from the case's file."""
+
+    def __init__(self, path: Path, answer: str) -> None:
+        self.path, self.answer = path, answer
+
+    def document(self) -> object:
+        try:
+            return json_reader.read_file(self.path)
+        except (OSError, ValueError) as exc:
+            raise shepherd.GitHubError(f"gh printed no JSON: {exc}", kind="malformed") from exc
+
+    def json(self, arguments: list[str]) -> object:
+        return self.document() if self.answer == "run" else {"headSha": SHEPHERD_HEAD, "attempt": 1, "jobs": []}
+
+    def capped_list(self, arguments: list[str], limit: int) -> object:
+        items = self.document() if self.answer == "runs" else [{"databaseId": 7}]
+        if not isinstance(items, list):
+            raise shepherd.GitHubError("gh printed a listing that is not a JSON list", kind="malformed")
+        return Listing(items, False)
+
+    def run(self, arguments: list[str]) -> CommandResult:
+        return CommandResult(0, "", "")
+
+
+def _shepherd_pull(path: Path) -> object:
+    try:
+        item = json_reader.read_file(path)
+    except (OSError, ValueError) as exc:
+        raise shepherd.GitHubError(f"gh printed no JSON: {exc}", kind="malformed") from exc
+    return shepherd.pull_of(item)
+
+
+def _shepherd_pull_on(head: str) -> object:
+    return shepherd.Pull(12, "fix/example", head, "CLEAN", False, shepherd.Check("FAILURE", 7), (), False, False, None)
+
+
+def _shepherd_judge(path: Path) -> object:
+    return shepherd.judge(_ShepherdGh(path, "run"), "owner/repo", _shepherd_pull_on(SHEPHERD_HEAD))
+
+
+def _shepherd_runs(path: Path) -> object:
+    return shepherd.newest_run(_ShepherdGh(path, "runs"), "owner/repo", SHEPHERD_HEAD)
+
+
+def _shepherd_run_of(path: Path) -> object:
+    return shepherd.run_of({"detailsUrl": text_of(path)})
+
+
 def _title(path: Path) -> object:
     title, problems = pull_request.read_title(pull_request.read_file(path))
     if problems:
@@ -221,6 +323,51 @@ READERS = [
         },
         # A unary chain long enough to overflow the parser's own stack, which nests far deeper than a Python walk.
         nesting=lambda levels: b"x = " + b"-" * (levels * 50) + b"1\n",
+    ),
+    Reader(
+        "shepherd_pull_requests.judge",
+        "json",
+        json.dumps(SHEPHERD_RUN).encode(),
+        _shepherd_judge,
+        (shepherd.GitHubError,),
+        accepts={"wrong_type:status": "the judgment reads a run's conclusion and jobs, never its status"},
+    ),
+    Reader(
+        "shepherd_pull_requests.newest_run",
+        "json",
+        json.dumps([{"databaseId": 7}, {"databaseId": 5}]).encode(),
+        _shepherd_runs,
+        (shepherd.GitHubError,),
+        accepts={"top_level_list": "an empty listing is a head with no run, whose newest is none"},
+    ),
+    Reader(
+        "shepherd_pull_requests.pull_of",
+        "json",
+        json.dumps(SHEPHERD_PULL).encode(),
+        _shepherd_pull,
+        (shepherd.GitHubError,),
+        accepts={
+            f"wrong_type:{field}": SHEPHERD_UNREAD
+            for field in (
+                "files.0.additions",
+                "files.0.deletions",
+                "statusCheckRollup.0.__typename",
+                "autoMergeRequest.enabledAt",
+                "autoMergeRequest.mergeMethod",
+            )
+        },
+    ),
+    Reader(
+        "shepherd_pull_requests.run_of",
+        "text",
+        b"https://github.com/owner/repo/actions/runs/7/job/8",
+        _shepherd_run_of,
+        (shepherd.GitHubError,),
+        accepts=dict.fromkeys(
+            ("empty", "bom", "nul_bytes", "truncated", "long_line"),
+            "a check whose URL names no run is one the shepherd reads as naming none",
+        ),
+        number=lambda digits: b"https://github.com/owner/repo/actions/runs/" + digits + b"/job/8",
     ),
     Reader(
         "tools.deployable_report._read_results",

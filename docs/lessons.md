@@ -219,9 +219,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A skipped entry, an ignored field, or a top-level value of the wrong type lets the reader judge a partial
   input as whole.
 - **Use:** `typed_fields:FieldReader.json_object`, which refuses an unknown key, `xml_reader:read_xml`, which refuses
-  a document type or entity declaration, `deployer.discovery:ListingError`, and `skill_inventory:hooks_file_hooks`,
-  which refuses a hooks file member of another kind at every level, by name, and `msbuild_reader:mapping`, which
-  reads an absent section as empty and refuses one of another kind.
+  a document type or entity declaration, `deployer.discovery:ListingError`, `skill_inventory:hooks_file_hooks`,
+  which refuses a hooks file member of another kind at every level, by name, `msbuild_reader:mapping`, which reads an
+  absent section as empty and refuses one of another kind, and the shepherd's `shepherd_pull_requests:objects` and
+  `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
