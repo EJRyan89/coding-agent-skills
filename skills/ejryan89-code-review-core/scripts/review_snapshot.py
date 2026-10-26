@@ -55,6 +55,12 @@ from review_specialists import (
 )
 from review_vocabularies import DispatchMode
 
+GIT_STATUS_ALLOWED = {
+    "ensure_local_commit": (
+        "reports git's reason to the user: a failed fetch raises a PipelineError naming git's stderr"
+    ),
+}
+
 
 def _has_commit(checkout: Path, commit: str, git: Runner) -> bool:
     """Whether the checkout holds `commit`. Only git's answer that it names no commit is no; any other failure, such

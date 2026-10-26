@@ -40,6 +40,12 @@ InBase = Callable[[str], bool]
 SameChange = Callable[[str, str], bool]
 
 
+GIT_STATUS_ALLOWED = {
+    "branch_tips": "fails closed: an upstream listing git cannot give raises a QueryError naming git's stderr",
+    "change_match.change": "fails closed: a diff git cannot give raises a QueryError naming git's stderr",
+}
+
+
 @dataclass(frozen=True)
 class BaseTests:
     """The proofs one fetched base branch gives: whether it contains a commit, and whether a tip's whole change

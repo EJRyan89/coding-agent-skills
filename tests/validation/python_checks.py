@@ -22,7 +22,7 @@ import tomllib
 import unittest
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
@@ -1106,6 +1106,145 @@ def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# A git command's exit status read outside ejryan89-skill-core's git_client.py is where a failure turns into absence:
+# a nonzero exit taken for "not there". The client's forms give the three answers, found, absent as git reports it,
+# and could not tell, so a module reads them instead. A git result is what GitClient.run returns on a client the
+# module holds, what a function annotated to return git_client.GitResult returns, in any module the repository's
+# Python reads, and a name annotated as one. A read that must stay, such as a status reported with git's reason or
+# one whose failure is refused, states why in a module-level GIT_STATUS_ALLOWED = {scope: reason}.
+GIT_STATUS_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
+GIT_RESULT = "git_client.GitResult"
+GIT_STATUS_ALLOWANCE = "GIT_STATUS_ALLOWED"
+
+
+def _module_key(name: str) -> str:
+    """The name a module is imported by: a skill script's bare name, or the dotted path from the repository root."""
+    path = PurePosixPath(name).with_suffix("")
+    return path.name if "scripts" in path.parts else ".".join(path.parts)
+
+
+def _returns_git_result(function: ast.FunctionDef | ast.AsyncFunctionDef, resolver: CallableResolver) -> bool:
+    returns = function.returns
+    return returns is not None and any(
+        isinstance(part, ast.Name | ast.Attribute) and resolves_to(resolver.name(part), GIT_RESULT)
+        for part in ast.walk(returns)
+    )
+
+
+def git_result_producers(trees: list[tuple[str, ast.Module]]) -> set[str]:
+    """Each function, by the qualified name a caller reaches it by, that is annotated to return a GitResult."""
+    producers: set[str] = set()
+    for name, tree in trees:
+        resolver = CallableResolver(tree)
+        producers |= {
+            f"{_module_key(name)}.{node.name}"
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _returns_git_result(node, resolver)
+        }
+    return producers
+
+
+class _GitResults:
+    """What a module holds as a git result: a call that returns one, and each name bound to such a call or annotated
+    as a GitResult."""
+
+    def __init__(self, tree: ast.Module, resolver: CallableResolver, producers: set[str]) -> None:
+        self.resolver = resolver
+        self.clients = _GitClients(tree, resolver)
+        self.local = {
+            f"<local>.{node.name}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _returns_git_result(node, resolver)
+        }
+        self.producers = producers
+        self.names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and self.is_result(node.value):
+                self.names |= {target.id for target in node.targets if isinstance(target, ast.Name)}
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if self.annotated(node.annotation) or self.is_result(node.value):
+                    self.names.add(node.target.id)
+            elif isinstance(node, ast.arg) and node.annotation is not None and self.annotated(node.annotation):
+                self.names.add(node.arg)
+
+    def annotated(self, annotation: ast.expr) -> bool:
+        return any(
+            isinstance(part, ast.Name | ast.Attribute) and resolves_to(self.resolver.name(part), GIT_RESULT)
+            for part in ast.walk(annotation)
+        )
+
+    def is_result(self, node: ast.expr | None) -> bool:
+        """Whether an expression is a call that returns a git result."""
+        if not isinstance(node, ast.Call):
+            return False
+        function = node.func
+        if isinstance(function, ast.Attribute) and function.attr == "run" and self.clients.holds(function.value):
+            return True
+        called = self.resolver.name(function)
+        return bool(called) and (called in self.local or any(resolves_to(called, name) for name in self.producers))
+
+    def holds(self, node: ast.expr) -> bool:
+        return (isinstance(node, ast.Name) and node.id in self.names) or self.is_result(node)
+
+
+def git_status_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each read of a git result's exit status outside git_client.py that no GIT_STATUS_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    trees = [(name, tree) for _, name, tree in python_trees(claim_files(root, files), root, problems)]
+    producers = git_result_producers(trees)
+    for name, tree in trees:
+        if name == GIT_STATUS_OWNER:
+            continue
+        results = _GitResults(tree, CallableResolver(tree), producers)
+        found = [
+            (
+                node.lineno,
+                scope,
+                "reads a git command's exit status, where a failure can read as absence; use git_client's "
+                f"quiet_output, commit_of, file_at, or rev_parse_paths, or state why in {GIT_STATUS_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "returncode"
+            and isinstance(node.ctx, ast.Load)
+            and results.holds(node.value)
+        ]
+        problems += sanctioned_problems(name, tree, GIT_STATUS_ALLOWANCE, found)
+    return problems
+
+
+# A gh listing cut at its --limit reads as complete, so a listing asks github_client's capped_list for one more than
+# it keeps and says when GitHub held more. A --limit any other way is refused outside github_client.py, and one that
+# must stay states why in a module-level GH_LIMIT_ALLOWED = {scope: reason}.
+GH_LIMIT_OWNER = "skills/ejryan89-skill-core/scripts/github_client.py"
+GH_LIMIT_ALLOWANCE = "GH_LIMIT_ALLOWED"
+# gh's limit option, long or short, alone, with its value after =, or with digits attached; an f-string's `-L{n}` holds
+# the `-L` alone.
+GH_LIMIT_OPTION = re.compile(r"--limit(?:=.*)?|-L[0-9]*")
+
+
+def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each `--limit` a module passes gh outside github_client.py that no GH_LIMIT_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        if name == GH_LIMIT_OWNER:
+            continue
+        found = [
+            (
+                node.lineno,
+                scope,
+                f"passes gh a --limit by hand, which reads a cut listing as complete; use github_client's capped_list, "
+                f"or state why in {GH_LIMIT_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and GH_LIMIT_OPTION.fullmatch(node.value) is not None
+        ]
+        problems += sanctioned_problems(name, tree, GH_LIMIT_ALLOWANCE, found)
+    return problems
+
+
 # A time limit read with type=float accepts nan, inf, zero, and a negative number, and none of them is a limit, so an
 # option that names a time takes ejryan89-skill-core's seconds_option.positive_seconds as its type. Any other states
 # why in a module-level TIME_OPTION_ALLOWED = {scope: reason}.
@@ -1731,6 +1870,12 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_every_ctypes_foreign_function_called_is_declared(self) -> None:
         self.assertEqual([], ctypes_declaration_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_no_git_exit_status_is_read_outside_the_client(self) -> None:
+        self.assertEqual([], git_status_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_no_gh_listing_is_capped_outside_the_client(self) -> None:
+        self.assertEqual([], gh_limit_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_no_process_runner_result_is_discarded_unchecked(self) -> None:
         self.assertEqual([], discarded_result_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

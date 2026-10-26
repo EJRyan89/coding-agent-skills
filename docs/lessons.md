@@ -48,7 +48,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   absent, and could-not-tell lookups, `git_client:GitClient.rev_parse_paths` for a path query,
   `git_client:GitClient.commit_of` for a ref, `git_client:GitClient.file_at` for a file at a commit, and
   `git_client:GitClient.quiet_output` for any command run quiet, each None only for what git reports as absent.
-- **Guard:** `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests`,
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_git_exit_status_is_read_outside_the_client`,
+  which refuses a git exit status read outside the git client unless its module states why,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests`,
   `skills/audit-skill/scripts/test_skill_inventory.py::LocateTests::test_a_checkout_git_cannot_read_fails_naming_git_instead_of_searching_no_repository`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_link_probe_is_the_one_link_test`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
@@ -136,7 +138,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `github_client:GitHubClient.capped_list`, which asks gh for one more item than its limit and says whether
   GitHub held more; `bounded_process:run_bounded`, `pr_status:_list_pulls`, `audit_repository:duplicates`,
   `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`.
-- **Guard:** `skills/ejryan89-skill-core/scripts/test_github_client.py::CappedListTests`,
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_gh_listing_is_capped_outside_the_client`,
+  which refuses a limit passed to gh by hand outside the GitHub client unless its module states why,
+  `skills/ejryan89-skill-core/scripts/test_github_client.py::CappedListTests`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::DuplicateTests::test_a_search_that_finds_exactly_what_it_lists_is_not_cut`,
   `skills/review-insights/scripts/test_review_guidance.py::ReportTests::test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input`,
   `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`

@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+from git_client import GitError
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from validation_support import (
     OPERATIONS_CONTRACT,
@@ -30,12 +31,12 @@ from validation_support import (
 
 from tools.release_notes import (
     BODY_HEADING,
+    CLIENT,
     RELEASE_BRANCH,
     UPGRADE_NOTES,
     ReleaseNotesError,
     SourcedEntry,
     body_entries,
-    git,
     git_output,
     range_entries,
     release_reaching,
@@ -81,18 +82,20 @@ def last_release_tag(root: Path) -> tuple[str | None, str | None]:
     """The last release on origin/main, as ejryan89-skill-core's release_tags reads it, and a problem; no release tag
     reachable means nothing has been released yet."""
     try:
-        if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
+        # Only git's answer that it names no commit means the branch is missing; any other failure names git's reason.
+        if CLIENT.commit_of(RELEASE_BRANCH, directory=root) is None:
             return None, (
                 f"{RELEASE_BRANCH} is missing, so the upgrade-notes check cannot find the last tag; "
                 "fetch it with `git fetch origin main --tags`"
             )
-        if git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+        # output raises on a failure, so a clone git cannot read is named, never taken for one that is not shallow.
+        if CLIENT.output(["rev-parse", "--is-shallow-repository"], directory=root).strip() == "true":
             return None, (
                 "this clone is shallow, so the upgrade-notes check cannot see the last tag; "
                 "fetch the history with `git fetch --unshallow --tags`"
             )
         return release_reaching(root, RELEASE_BRANCH), None
-    except ReleaseNotesError as error:
+    except (GitError, ReleaseNotesError) as error:
         return None, f"the upgrade-notes check cannot find the last tag: {error}"
 
 
