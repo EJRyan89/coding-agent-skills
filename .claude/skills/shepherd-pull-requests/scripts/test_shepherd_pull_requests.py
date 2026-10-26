@@ -988,6 +988,11 @@ class ShapeTest(unittest.TestCase):
         listed = pull(20)
         check = rollup("FAILURE")[1]
         cases = {
+            "number": (True, "a pull request whose number is not an integer"),
+            "number ": ("20", "a pull request whose number is not an integer"),
+            "number  ": (None, "a pull request without its number, branch, or head"),
+            "headRefName": (["fix/topic-20"], "a pull request whose headRefName is not text"),
+            "headRefOid": (7, "a pull request whose headRefOid is not text"),
             "files": ("docs/a.md", "a pull request's files that is not a list of objects"),
             "files ": ([{"additions": 1}], "a pull request file without its path"),
             "isDraft": ("true", "a pull request whose isDraft is not a boolean"),

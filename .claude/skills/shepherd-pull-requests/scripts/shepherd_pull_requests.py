@@ -395,8 +395,10 @@ def hold_of(body: Any) -> str | None:
 def pull_of(item: Any) -> Pull:
     if not isinstance(item, dict):
         raise malformed("a pull request that is not an object")
-    number, branch, head = item.get("number"), item.get("headRefName"), item.get("headRefOid")
-    if not isinstance(number, int) or not isinstance(branch, str) or not isinstance(head, str):
+    number = member(item, "number", int, "a pull request")
+    branch = member(item, "headRefName", str, "a pull request")
+    head = member(item, "headRefOid", str, "a pull request")
+    if number is None or branch is None or head is None:
         raise malformed("a pull request without its number, branch, or head")
     listed_paths = [entry.get("path") for entry in objects(item.get("files"), "a pull request's files")]
     paths = tuple(path for path in listed_paths if isinstance(path, str) and path)
