@@ -691,16 +691,20 @@ def write_json(path: Path, document: object) -> None:
 
 def supported_runtimes(top: Path) -> dict[str, str]:
     """The runtimes the deployer supports, with their titles, read as the literal RUNTIMES and RUNTIME_TITLES of its
-    catalogue in the checkout."""
+    catalogue in the checkout. Any other assignment literal_eval cannot evaluate, such as a call or a dict keyed by a
+    list, is passed over; RUNTIMES and RUNTIME_TITLES themselves are then refused when they are not literals."""
     path = top / RUNTIME_CATALOGUE
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as exc:
+    # MemoryError and RecursionError, source nested past the parser's limits
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError, MemoryError, RecursionError) as exc:
         raise AuditError(f"cannot read the runtime catalogue {path.as_posix()}: {exc}") from exc
     values: dict[str, object] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            with contextlib.suppress(ValueError):
+            # ValueError for a node that is no literal, TypeError for an unhashable key, and the rest for nesting
+            # past what literal_eval recurses through
+            with contextlib.suppress(ValueError, TypeError, MemoryError, RecursionError):
                 values[node.targets[0].id] = ast.literal_eval(node.value)
     runtimes, titles = values.get("RUNTIMES"), values.get("RUNTIME_TITLES")
     if (
