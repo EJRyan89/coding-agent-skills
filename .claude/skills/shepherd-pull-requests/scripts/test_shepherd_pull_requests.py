@@ -1037,6 +1037,7 @@ class ShapeTest(unittest.TestCase):
             ({"jobs": [{**failed, "steps": "Validate"}]}, "a job's steps that is not a list of objects"),
             ({"jobs": [{**failed, "steps": [{"name": 3, "conclusion": "success"}]}]}, "a step whose name is not text"),
             ({"jobs": [{**failed, "databaseId": "8"}]}, "a job whose databaseId is not an integer"),
+            ({"jobs": [{**failed, "databaseId": True}]}, "a job whose databaseId is not an integer"),
             ({"jobs": [{**failed, "databaseId": None}]}, "a failed job without its id"),
         ]
         for change, reason in cases:
@@ -1050,6 +1051,7 @@ class ShapeTest(unittest.TestCase):
         for listing, reason in (
             (["5"], "a merged pull request listing that is not a list of objects"),
             ([{**merged, "number": "5"}], "a merged pull request whose number is not an integer"),
+            ([{**merged, "number": True}], "a merged pull request whose number is not an integer"),
             ([{**merged, "headRefName": ["fix/done"]}], "a merged pull request whose headRefName is not text"),
             ([{**merged, "headRefOid": 7}], "a merged pull request whose headRefOid is not text"),
             ([{"headRefName": "fix/done"}], "a merged pull request without its number or branch"),
