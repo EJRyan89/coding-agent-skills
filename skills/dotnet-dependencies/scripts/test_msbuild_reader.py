@@ -269,6 +269,22 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(("Quill.Http", "Quill.Http.Abstractions"), quill.assemblies)
         self.assertEqual({"net8.0": [PackageRef("Quill.Http", "[1.2.0, )", "PackageReference")]}, assets.direct)
 
+    def test_a_direct_dependency_with_no_target_or_an_empty_one_is_a_package(self) -> None:
+        document = json.loads(json.dumps(ASSETS))
+        document["project"]["frameworks"]["net8.0"]["dependencies"] = {
+            "Quill.Http": {"version": "[1.2.0, )"},
+            "Lantern.Json": {"target": "", "version": "12.0.3"},
+            "Harbor.Core": {"target": "Project"},
+        }
+        assets = read_assets(self.write("obj/project.assets.json", json.dumps(document)))
+        self.assertEqual(
+            [
+                PackageRef("Quill.Http", "[1.2.0, )", "PackageReference"),
+                PackageRef("Lantern.Json", "12.0.3", "PackageReference"),
+            ],
+            assets.direct["net8.0"],
+        )
+
     def test_an_unreadable_assets_file_names_the_file_and_the_reason(self) -> None:
         with self.assertRaises(Unreadable):
             read_assets(self.write("obj/project.assets.json", "{not json"))

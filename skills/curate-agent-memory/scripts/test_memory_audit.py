@@ -1977,6 +1977,9 @@ class SkillSourceTests(unittest.TestCase):
         self.assertEqual([missing.format("demo")], self.source("demo", code=1))
         self.manifest(main=str(self.checkout))
         self.assertEqual([missing.format("other")], self.source("other", code=1))
+        # A manifest that records no sources at all names none, unlike one whose sources are of another kind.
+        write(self.home / ".claude" / "skills" / ".deploy-manifest.json", json.dumps({"manifest_version": 8}))
+        self.assertEqual([missing.format("demo")], self.source("demo", code=1))
 
     def test_a_source_inside_a_skills_directory_or_holding_a_line_break_is_passed_over(self) -> None:
         deployed = self.home / ".claude" / "skills" / "demo-home"
