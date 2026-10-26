@@ -866,11 +866,14 @@ def blocking_scope(scopes: tuple[tuple[str, Path], ...]) -> str | None:
     """The first scope whose settings turn permissions.blockReadsOutsideWorkingDirectories on, or None.
 
     Claude Code honors `true` from any scope, even over a managed `false` (https://code.claude.com/docs/en/settings,
-    "Exceptions to managed settings precedence").
+    "Exceptions to managed settings precedence"). A `permissions` that is not an object raises UnreadableSettings:
+    whether reads are blocked cannot be known from it.
     """
     for scope, path in scopes:
-        permissions = read_settings(path).get("permissions")
-        if isinstance(permissions, dict) and permissions.get(BLOCK_READS) is True:
+        permissions = read_settings(path).get("permissions", {})
+        if not isinstance(permissions, dict):
+            raise UnreadableSettings(f"Cannot read {path}: its permissions is not an object")
+        if permissions.get(BLOCK_READS) is True:
             return scope
     return None
 
@@ -1063,22 +1066,28 @@ def manifest_skill_files(home: Path, name: str) -> list[Path]:
     """The skills/<name>/SKILL.md of each source checkout the deployer's manifest records as deploying `name`.
 
     Raises OSError or ValueError when the manifest exists but cannot be read as JSON, as when a directory stands in its
-    place.
+    place, or holds a source entry of another shape than the deployer records, whose skills cannot then be known.
     """
     manifest = home / ".claude" / "skills" / MANIFEST_NAME
     if not is_present(manifest):
         return []
     data = json_reader.read_file(manifest)
-    sources = data.get("sources") if isinstance(data, dict) else None
-    entries = sources.values() if isinstance(sources, dict) else []
-    return [
-        Path(entry["source_dir"]) / "skills" / name / "SKILL.md"
-        for entry in entries
-        if isinstance(entry, dict)
-        and isinstance(entry.get("source_dir"), str)
-        and isinstance(entry.get("skills"), dict)
-        and name in entry["skills"]
-    ]
+    if not isinstance(data, dict):
+        raise ValueError("it is not a JSON object")
+    sources = data.get("sources", {})
+    if not isinstance(sources, dict):
+        raise ValueError("its sources is not an object")
+    found: list[Path] = []
+    for source, entry in sources.items():
+        if not (
+            isinstance(entry, dict)
+            and isinstance(entry.get("source_dir"), str)
+            and isinstance(entry.get("skills"), dict)
+        ):
+            raise ValueError(f"its source {source!r} does not name its source_dir and skills")
+        if name in entry["skills"]:
+            found.append(Path(entry["source_dir"]) / "skills" / name / "SKILL.md")
+    return found
 
 
 def source_refusal(path: Path) -> str | None:

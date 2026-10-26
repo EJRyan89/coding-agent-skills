@@ -172,6 +172,20 @@ class SectionTests(unittest.TestCase):
         self.assertRegex(completed.stdout.splitlines()[0], r'^SECTION "docs/adding-a-skill\.md" \d+-\d+ ### Granting')
 
 
+def test_reach_follows_skill_deps_through_a_chain_past_a_cycle_and_an_unreadable_skill() -> None:
+    meta: dict[str, dict[str, object] | None] = {
+        "alpha": {"skill_deps": ["beta"]},
+        "beta": {"skill_deps": ["gamma", "alpha"]},
+        "gamma": None,
+        "delta": {"skill_deps": ["alpha"]},
+    }
+    assert change_skill.reach("alpha", meta) == {"alpha", "beta", "gamma"}
+    assert change_skill.reach("gamma", meta) == {"gamma"}
+    assert change_skill.reach("unlisted", meta) == {"unlisted"}
+    assert change_skill.unreadable_in(change_skill.reach("alpha", meta), meta)
+    assert not change_skill.unreadable_in(change_skill.reach("delta", {**meta, "gamma": {}}), {**meta, "gamma": {}})
+
+
 class GateTests(unittest.TestCase):
     git_config = GIT_CONFIG
 
@@ -334,6 +348,46 @@ class GateTests(unittest.TestCase):
         git(self.root, "commit", "-q", "-am", "gamma's metadata in another codec")
         git(self.root, "branch", "-f", "main", "HEAD")
         self.assertEqual(["GATE audit-skill alpha"], self.gates(uncommitted={"skills/alpha/scripts/alpha.py": "1\n"}))
+
+    def on_main(self, files: Mapping[str, str]) -> None:
+        """The files committed as main's own, so the change the gates read starts from them."""
+        write(self.root, files)
+        git(self.root, "commit", "-q", "-am", "metadata on main")
+        git(self.root, "branch", "-f", "main", "HEAD")
+
+    def test_skill_deps_of_another_kind_owe_the_evaluation_their_reach_could_hold(self) -> None:
+        pipeline = {"skills/ejryan89-code-review-core/scripts/review_pipeline.py": "print('more')\n"}
+        for skill_deps in ('"ejryan89-code-review-core"', "[1]"):
+            with self.subTest(skill_deps=skill_deps):
+                git(self.root, "checkout", "-q", "--", ".")
+                self.on_main({"deploy-meta/review-prs.json": '{"skill_deps": ' + skill_deps + "}\n"})
+                self.assertEqual(
+                    [
+                        "REGENERATE python tools/runtime_prompts.py --write",
+                        "GATE audit-skill ejryan89-code-review-core",
+                        "GATE evaluate-skill review-prs if-prompt",
+                    ],
+                    self.gates(uncommitted=pipeline),
+                )
+
+    def test_agent_deps_of_another_kind_owe_the_canary_when_an_agent_changes(self) -> None:
+        self.on_main({"deploy-meta/gamma.json": '{"agent_deps": "helper"}\n'})
+        self.assertEqual(
+            ["GATE audit-skill gamma", "GATE runtime-canary gamma"],
+            self.gates(uncommitted={"agents/helper.md": "---\nname: helper\n---\n\nHelp more.\n"}),
+        )
+
+    def test_unreadable_metadata_owes_nothing_while_no_skill_is_touched_and_no_agent_changes(self) -> None:
+        self.on_main({"deploy-meta/gamma.json": '{"agent_deps": "helper"}\n'})
+        self.assertEqual([], self.gates(uncommitted={"docs/guide.md": "# Guide, again\n"}))
+        self.assertEqual(["GATE audit-skill alpha"], self.gates(uncommitted={"skills/alpha/scripts/alpha.py": "1\n"}))
+
+    def test_a_dependencys_unreadable_metadata_owes_the_evaluation_its_reach_could_hold(self) -> None:
+        self.on_main({"deploy-meta/ejryan89-code-review-core.json": '{"skill_deps": "ejryan89-skill-core"}\n'})
+        self.assertEqual(
+            ["GATE audit-skill alpha", "GATE evaluate-skill review-prs if-prompt"],
+            self.gates(uncommitted={"skills/alpha/scripts/alpha.py": "1\n"}),
+        )
 
     def test_a_folder_in_place_of_metadata_reads_as_empty(self) -> None:
         (self.root / "deploy-meta" / "gamma.json").unlink()

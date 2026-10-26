@@ -269,12 +269,86 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(("Quill.Http", "Quill.Http.Abstractions"), quill.assemblies)
         self.assertEqual({"net8.0": [PackageRef("Quill.Http", "[1.2.0, )", "PackageReference")]}, assets.direct)
 
+    def test_a_direct_dependency_with_no_target_or_an_empty_one_is_a_package(self) -> None:
+        document = json.loads(json.dumps(ASSETS))
+        document["project"]["frameworks"]["net8.0"]["dependencies"] = {
+            "Quill.Http": {"version": "[1.2.0, )"},
+            "Lantern.Json": {"target": "", "version": "12.0.3"},
+            "Harbor.Core": {"target": "Project"},
+        }
+        assets = read_assets(self.write("obj/project.assets.json", json.dumps(document)))
+        self.assertEqual(
+            [
+                PackageRef("Quill.Http", "[1.2.0, )", "PackageReference"),
+                PackageRef("Lantern.Json", "12.0.3", "PackageReference"),
+            ],
+            assets.direct["net8.0"],
+        )
+
     def test_an_unreadable_assets_file_names_the_file_and_the_reason(self) -> None:
         with self.assertRaises(Unreadable):
             read_assets(self.write("obj/project.assets.json", "{not json"))
+        path = self.write("obj/project.assets.json", "{}")
         with self.assertRaises(Unreadable) as refused:
-            read_assets(self.write("obj/project.assets.json", "{}"))
-        self.assertIn("no targets", refused.exception.reason)
+            read_assets(path)
+        self.assertEqual((path, "the assets file has no targets"), (refused.exception.file, refused.exception.reason))
+
+    def test_a_section_of_another_kind_makes_the_assets_file_unreadable_by_name(self) -> None:
+        def changed(where: tuple[str, ...], value: object) -> dict[str, object]:
+            document: dict[str, object] = json.loads(json.dumps(ASSETS))
+            parent: Any = document
+            for step in where[:-1]:
+                parent = parent.setdefault(step, {})
+            parent[where[-1]] = value
+            return document
+
+        restore = {"projectPath": "/repo/a.csproj", "frameworks": "net8.0"}
+        quill = ("targets", "net8.0", "Quill.Http/1.2.0")
+        harbor = ("project", "frameworks", "net8.0", "dependencies", "Harbor.Core")
+        restored = ("project", "restore")
+        quill_at = "the assets file's target net8.0's Quill.Http/1.2.0"
+        harbor_at = "the assets file's project.frameworks.net8.0.dependencies.Harbor.Core"
+        cases = {
+            f"{quill_at} is not an object": changed(quill, "package"),
+            f"{quill_at}.type is not text": changed((*quill, "type"), ["package"]),
+            f"{quill_at}.dependencies is not an object": changed((*quill, "dependencies"), ["Lantern.Json"]),
+            f"{quill_at}.dependencies.Lantern.Json is not text": changed((*quill, "dependencies", "Lantern.Json"), 12),
+            f"{quill_at}.compile is not an object": changed((*quill, "compile"), "lib/net8.0/Quill.Http.dll"),
+            "the assets file's target net8.0's Quill.Http is a package that names no version": changed(
+                ("targets", "net8.0", "Quill.Http"), {"type": "package"}
+            ),
+            "the assets file's project.frameworks.net8.0.dependencies is not an object": changed(
+                ("project", "frameworks", "net8.0", "dependencies"), ["Quill.Http"]
+            ),
+            f"{harbor_at} is not an object": changed(harbor, "Project"),
+            f"{harbor_at}.target is not text": changed((*harbor, "target"), {"kind": "Project"}),
+            "the assets file's project.frameworks.net8.0.dependencies.Quill.Http.version is not text": changed(
+                ("project", "frameworks", "net8.0", "dependencies", "Quill.Http", "version"), 1.2
+            ),
+            "the assets file's project.restore.projectPath is not text": changed((*restored, "projectPath"), 1),
+            "the assets file's project.restore.frameworks.net8.0 is not an object": changed(
+                restored, {"projectPath": "/repo/a.csproj", "frameworks": {"net8.0": []}}
+            ),
+            "the assets file's project.restore.frameworks.net8.0.projectReferences is not an object": changed(
+                restored, {"projectPath": "/repo/a.csproj", "frameworks": {"net8.0": {"projectReferences": "a"}}}
+            ),
+            "the assets file's target net8.0 is not an object": changed(("targets", "net8.0"), "text"),
+            "the assets file's target net8.0/win-x64 is not an object": changed(("targets", "net8.0/win-x64"), []),
+            "the assets file's project is not an object": changed(("project",), "text"),
+            "the assets file's project.frameworks is not an object": changed(("project", "frameworks"), ["net8.0"]),
+            "the assets file's project.frameworks.net8.0 is not an object": changed(
+                ("project", "frameworks", "net8.0"), "text"
+            ),
+            "the assets file's project.restore is not an object": changed(("project", "restore"), 1),
+            "the assets file's project.restore.frameworks is not an object": changed(("project", "restore"), restore),
+        }
+        for reason, document in cases.items():
+            with self.subTest(reason=reason):
+                path = self.write("obj/project.assets.json", json.dumps(document))
+                with self.assertRaises(Unreadable) as refused:
+                    read_assets(path)
+                # The UNREADABLE line names the file a user fixes, and why.
+                self.assertEqual((path, reason), (refused.exception.file, refused.exception.reason))
 
     def test_a_framework_version_of_any_length_is_read(self) -> None:
         digits = "9" * 5000

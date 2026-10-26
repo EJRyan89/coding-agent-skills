@@ -1556,6 +1556,18 @@ class ResolveTests(unittest.TestCase):
         self.block_reads(self.home / ".claude" / "settings.json")
         self.assertEqual(self.blocked_note("user", "project", project), self.resolve()["notes"][-1])
 
+    def test_permissions_of_another_kind_leave_the_directory_unresolved_by_name(self) -> None:
+        (self.home / "chosen").mkdir(parents=True)
+        project = self.repo / ".claude" / "settings.json"
+        user = self.home / ".claude" / "settings.json"
+        for permissions in ("text", ["blockReadsOutsideWorkingDirectories"], None):
+            with self.subTest(permissions=permissions):
+                write(project, json.dumps({"autoMemoryDirectory": "~/chosen"}))
+                write(user, json.dumps({"permissions": permissions}))
+                result = self.resolve()
+                self.assertIsNone(result["memory_dir"])
+                self.assertEqual(f"Cannot read {user}: its permissions is not an object", result["notes"][-1])
+
     def test_an_untracked_local_choice_is_the_user_own_and_used(self) -> None:
         (self.home / "chosen").mkdir(parents=True)
         local = self.repo / ".claude" / "settings.local.json"
@@ -1965,6 +1977,9 @@ class SkillSourceTests(unittest.TestCase):
         self.assertEqual([missing.format("demo")], self.source("demo", code=1))
         self.manifest(main=str(self.checkout))
         self.assertEqual([missing.format("other")], self.source("other", code=1))
+        # A manifest that records no sources at all names none, unlike one whose sources are of another kind.
+        write(self.home / ".claude" / "skills" / ".deploy-manifest.json", json.dumps({"manifest_version": 8}))
+        self.assertEqual([missing.format("demo")], self.source("demo", code=1))
 
     def test_a_source_inside_a_skills_directory_or_holding_a_line_break_is_passed_over(self) -> None:
         deployed = self.home / ".claude" / "skills" / "demo-home"
@@ -2020,6 +2035,24 @@ class SkillSourceTests(unittest.TestCase):
         for name in ("../demo", "demo\nSKILL_FILE forged", "demo\u2028x"):
             with self.subTest(name=repr(name)):
                 self.assertEqual([f"FAILED {flat_text(repr(name))} is not a skill name"], self.source(name, code=1))
+
+    def test_a_manifest_of_another_shape_is_a_failed_line_rather_than_no_source(self) -> None:
+        manifest = self.home / ".claude" / "skills" / ".deploy-manifest.json"
+        cases = {
+            "it is not a JSON object": [],
+            "its sources is not an object": {"sources": ["main"]},
+            "its source 'main' does not name its source_dir and skills": {"sources": {"main": "checkout"}},
+            "its source 'other' does not name its source_dir and skills": {
+                "sources": {"other": {"source_dir": 7, "skills": {"demo": {}}}}
+            },
+            "its source 'third' does not name its source_dir and skills": {
+                "sources": {"third": {"source_dir": str(self.checkout), "skills": ["demo"]}}
+            },
+        }
+        for reason, document in cases.items():
+            with self.subTest(reason=reason):
+                write(manifest, json.dumps(document))
+                self.assertEqual([f"FAILED cannot read the deployer manifest: {reason}"], self.source("demo", code=1))
 
     def test_a_git_failure_is_a_note_and_the_manifest_source_is_still_named(self) -> None:
         self.manifest(main=str(self.checkout))

@@ -20,7 +20,10 @@ its own files by, changes the metadata its agents, guidance, or declared runtime
 is selectable, which decides whether it has a runtime adapter, or declares a changed agent; the evaluation for each
 skill with a review scenario, any scenario but a trigger one, whose skill_deps reach a touched skill; and the trigger
 evaluation for each present shipped skill the model may start whose description is new or changed, since the
-description is all the model reads when deciding whether to start it.
+description is all the model reads when deciding whether to start it. Metadata that cannot be read, or whose
+skill_deps or agent_deps is not a list of names, may declare anything, so a gate it could decide is owed: the
+canary of a skill whose metadata cannot be read when an agent changed, and the evaluation of a skill whose reach
+holds one while any skill is touched.
 
 Every line is one fact:
 
@@ -244,15 +247,25 @@ def user_only(text: str | None) -> bool:
         return False
 
 
+# The metadata keys whose names the gates read.
+NAME_LISTS = ("skill_deps", "agent_deps")
+
+
 def metadata(text: str | None) -> dict[str, object] | None:
-    """A metadata file's object, empty when the file is absent, None when it is not a JSON object."""
+    """A metadata file's object, empty when the file is absent, None when it is not a JSON object or a name list the
+    gates read is not a list of names."""
     if text is None:
         return {}
     try:
         value = json_reader.loads(text)
     except ValueError:  # malformed, refused, or an integer past the digit limit
         return None
-    return value if isinstance(value, dict) else None
+    if not isinstance(value, dict):
+        return None
+    listed = [value.get(key, []) for key in NAME_LISTS]
+    if not all(isinstance(names, list) and all(isinstance(name, str) for name in names) for names in listed):
+        return None
+    return value
 
 
 def metadata_file(path: Path) -> dict[str, object] | None:
@@ -289,24 +302,30 @@ def agent_of(path: str) -> str | None:
     return None
 
 
-def head_metadata(root: Path) -> dict[str, dict[str, object]]:
-    """Every shipped skill's metadata in the working tree, by name; metadata that cannot be read reads as empty."""
+def head_metadata(root: Path) -> dict[str, dict[str, object] | None]:
+    """Every shipped skill's metadata in the working tree, by name, None for metadata that cannot be read."""
     files = (root / METADATA).glob("*.json")
-    return {path.stem: metadata_file(path) or {} for path in files}
+    return {path.stem: metadata_file(path) for path in files}
 
 
 def _names(value: object) -> set[str]:
     return {item for item in value if isinstance(item, str)} if isinstance(value, list) else set()
 
 
-def reach(name: str, meta: dict[str, dict[str, object]]) -> set[str]:
-    """The skill and every skill its skill_deps reach, by the working tree's metadata."""
-    reached, pending = {name}, [name]
-    while pending:
-        for dependency in _names(meta.get(pending.pop(), {}).get("skill_deps")) - reached:
-            reached.add(dependency)
-            pending.append(dependency)
-    return reached
+def reach(name: str, meta: dict[str, dict[str, object] | None]) -> set[str]:
+    """The skill and every skill its skill_deps reach, by the working tree's metadata. The walk visits each skill of
+    a list that grows only by skills not yet in it, so it ends."""
+    reached = [name]
+    for current in reached:
+        reached += [
+            found for found in sorted(_names((meta.get(current) or {}).get("skill_deps"))) if found not in reached
+        ]
+    return set(reached)
+
+
+def unreadable_in(names: Iterable[str], meta: dict[str, dict[str, object] | None]) -> bool:
+    """Whether any of the skills has metadata that cannot be read, which may declare anything."""
+    return any(name in meta and meta[name] is None for name in names)
 
 
 @dataclass(frozen=True)
@@ -399,7 +418,11 @@ def owed(tree: Tree, changed: Iterable[str]) -> Owed:
         if found is not None:
             touched.setdefault(found[1], found[0])
     agents = {agent for agent in map(agent_of, paths) if agent is not None}
-    declaring = {name for name, value in meta.items() if _names(value.get("agent_deps")) & agents}
+    declaring = {
+        name
+        for name, value in meta.items()
+        if (value is None and agents) or _names((value or {}).get("agent_deps")) & agents
+    }
     for name in declaring:
         touched.setdefault(name, SHIPPED)
     present = sorted(name for name, kind in touched.items() if tree.head(f"{kind}/{name}/SKILL.md") is not None)
@@ -407,7 +430,12 @@ def owed(tree: Tree, changed: Iterable[str]) -> Owed:
         name for name in present if touched[name] == SHIPPED and (name in declaring or needs_canary(tree, name, paths))
     ]
     scenario_skills = sorted(path.name for path in (tree.root / SCENARIOS).glob("*") if path.is_dir())
-    evaluate = [name for name in scenario_skills if reach(name, meta) & set(touched) and reviews(tree.root, name)]
+    evaluate = [
+        name
+        for name in scenario_skills
+        if (reach(name, meta) & set(touched) or (touched and unreadable_in(reach(name, meta), meta)))
+        and reviews(tree.root, name)
+    ]
     trigger = [name for name in present if touched[name] == SHIPPED and needs_trigger(tree, name, paths)]
     return Owed(regenerations(tree, touched, paths), present, canary, evaluate, trigger)
 
