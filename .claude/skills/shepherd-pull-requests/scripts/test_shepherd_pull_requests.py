@@ -979,6 +979,9 @@ class OutOfStepTest(FixtureTestCase):
 class ShapeTest(unittest.TestCase):
     """What GitHub returns in a shape the shepherd does not know is the malformed error naming it, never a verdict."""
 
+    def setUp(self) -> None:
+        self.commands: list[list[str]] = []
+
     def malformed(self, reason: str, call: Callable[..., object], *arguments: object) -> None:
         with self.assertRaises(GitHubError) as raised:
             call(*arguments)
@@ -1012,11 +1015,33 @@ class ShapeTest(unittest.TestCase):
     def test_a_pull_request_without_auto_merge_status_checks_or_body_still_reads(self) -> None:
         found = shepherd.pull_of({**pull(20, armed=False), "statusCheckRollup": None, "body": None})
         self.assertEqual((False, shepherd.Check("MISSING", None), None), (found.armed, found.check, found.hold))
+        listed = pull(20)
+        del listed["mergeStateStatus"]
+        self.assertEqual("UNKNOWN", shepherd.pull_of(listed).merge_state)
+
+    def test_a_run_with_no_attempt_is_its_first_and_a_nameless_leg_is_named_so(self) -> None:
+        nameless = {
+            key: value for key, value in job("unused", "failure", failed_step="Set up job").items() if key != "name"
+        }
+        run = {key: value for key, value in run_view([nameless]).items() if key != "attempt"}
+        found = shepherd.pull_of(pull(20, state="FAILURE"))
+        judged = shepherd.judge(self.client(run, [{"databaseId": RUN}]), "owner/repo", found)
+        self.assertEqual((1, "unnamed leg", "service"), (judged.attempt, judged.leg, judged.reason))
+
+    def test_a_failed_validation_leg_reads_its_log_by_the_job_id(self) -> None:
+        failed = job("Linux shard 1/4", "failure", number=8)
+        found = shepherd.pull_of(pull(20, state="FAILURE"))
+        shepherd.judge(self.client(run_view([failed]), [{"databaseId": RUN}]), "owner/repo", found)
+        logs = [command for command in self.commands if "--log-failed" in command]
+        self.assertEqual(
+            [["run", "view", "--repo", "owner/repo", "--job", "8", "--log-failed"]], [log[-7:] for log in logs]
+        )
 
     def client(self, run: object = None, runs: Sequence[object] = ()) -> GitHubClient:
         """gh answering a run view with `run`, a run listing with `runs`, and a failed leg's log with nothing."""
 
         def answer(command: Sequence[str]) -> CommandResult:
+            self.commands.append(list(command))
             if "--log-failed" in command:
                 return CommandResult(0, "", "")
             return CommandResult(0, json.dumps(run if "view" in command else list(runs)), "")
@@ -1034,8 +1059,13 @@ class ShapeTest(unittest.TestCase):
             ({"attempt": True}, "a workflow run whose attempt is not an integer"),
             ({"conclusion": ["failure"]}, "a workflow run whose conclusion is not text"),
             ({"jobs": [{**failed, "conclusion": {"value": 1}}]}, "a job whose conclusion is not text"),
+            ({"jobs": [{**failed, "name": 5}]}, "a job whose name is not text"),
             ({"jobs": [{**failed, "steps": "Validate"}]}, "a job's steps that is not a list of objects"),
             ({"jobs": [{**failed, "steps": [{"name": 3, "conclusion": "success"}]}]}, "a step whose name is not text"),
+            (
+                {"jobs": [{**failed, "steps": [{"name": "Run repository validation", "conclusion": 0}]}]},
+                "a step whose conclusion is not text",
+            ),
             ({"jobs": [{**failed, "databaseId": "8"}]}, "a job whose databaseId is not an integer"),
             ({"jobs": [{**failed, "databaseId": True}]}, "a job whose databaseId is not an integer"),
             ({"jobs": [{**failed, "databaseId": None}]}, "a failed job without its id"),

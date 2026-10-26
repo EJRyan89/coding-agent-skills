@@ -354,7 +354,8 @@ def member(entry: dict[str, Any], key: str, kind: type, what: str) -> Any:
 
 
 def run_of(entry: dict[str, Any]) -> int | None:
-    match = RUN_URL.search(member(entry, "detailsUrl", str, "a check") or "")
+    url = member(entry, "detailsUrl", str, "a check")
+    match = RUN_URL.search(url) if url is not None else None
     refused = malformed(f"a run id that is not at most {whole_number.DIGIT_LIMIT} ASCII digits")
     return whole_number.read(match.group(1), refused) if match else None
 
@@ -366,7 +367,8 @@ def required_check(rollup: Any) -> Check:
     # GitHub gives a head with no status at all a null rollup.
     listed = objects([] if rollup is None else rollup, "a check rollup")
     for entry in listed:
-        for key in ("name", "workflowName", "status", "conclusion", "startedAt", "detailsUrl"):
+        # A check's URL is read, and checked, only where the run it names matters (run_of).
+        for key in ("name", "workflowName", "status", "conclusion", "startedAt"):
             member(entry, key, str, "a check")
     entries = [entry for entry in listed if entry.get("workflowName") == REQUIRED_CHECK]
     newest = max((run_of(entry) or 0 for entry in entries), default=0)
@@ -545,8 +547,10 @@ def classify_log(lines: Sequence[str]) -> tuple[str | None, str | None]:
 
 
 def judge_leg(client: GitHubClient, repository: str, job: dict[str, Any]) -> Leg:
-    name = flat_text(member(job, "name", str, "a job") or "unnamed leg")
-    conclusion = member(job, "conclusion", str, "a job")
+    """Why a failed leg failed. `judge` has checked the job's name and conclusion by kind; its steps are checked
+    here."""
+    name = flat_text(job.get("name") or "unnamed leg")
+    conclusion = job.get("conclusion")
     if conclusion == "cancelled":
         return Leg(name, "cancelled", "the leg was cancelled")
     if conclusion == "startup_failure":
@@ -555,11 +559,7 @@ def judge_leg(client: GitHubClient, repository: str, job: dict[str, Any]) -> Leg
     for step in steps:
         for key in ("name", "conclusion"):
             member(step, key, str, "a step")
-    failed = [
-        str(member(step, "name", str, "a step"))
-        for step in steps
-        if member(step, "conclusion", str, "a step") == "failure"
-    ]
+    failed = [str(step.get("name")) for step in steps if step.get("conclusion") == "failure"]
     if conclusion == "timed_out":
         return Leg(name, None, f"the leg's time limit{f' in {flat_text(failed[0])}' if failed else ''}")
     setup = next((step for step in failed if step not in VALIDATION_STEPS), None)
