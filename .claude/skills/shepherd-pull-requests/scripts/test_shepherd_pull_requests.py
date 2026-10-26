@@ -994,6 +994,8 @@ class ShapeTest(unittest.TestCase):
             "number": (True, "a pull request whose number is not an integer"),
             "number ": ("20", "a pull request whose number is not an integer"),
             "number  ": (None, "a pull request without its number, branch, or head"),
+            "headRefName ": (None, "a pull request without its number, branch, or head"),
+            "headRefOid ": (None, "a pull request without its number, branch, or head"),
             "headRefName": (["fix/topic-20"], "a pull request whose headRefName is not text"),
             "headRefOid": (7, "a pull request whose headRefOid is not text"),
             "files": ("docs/a.md", "a pull request's files that is not a list of objects"),
