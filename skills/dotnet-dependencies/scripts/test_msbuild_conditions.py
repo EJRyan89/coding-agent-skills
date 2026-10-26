@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -62,6 +63,26 @@ class ConditionTests(unittest.TestCase):
         for text in ("!" * 101 + "'a'=='a'", "(" * 101 + "'a'=='a'" + ")" * 101, "!(" * 2000 + "'a'" + ")" * 2000):
             with self.subTest(text=text[:4], length=len(text)):
                 self.assertIsNone(holds(text))
+
+
+def test_the_module_puts_skill_core_first_on_the_path_itself_and_imports_alone() -> None:
+    # A caller that puts only this folder on sys.path, as this suite does, still finds nesting_depth. Isolated mode
+    # (-I) starts the child with the standard library alone on its path.
+    folder = Path(__file__).resolve().parent
+    core = folder.parents[1] / "ejryan89-skill-core" / "scripts"
+    program = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(folder)!r})\n"
+        "import msbuild_conditions, nesting_depth\n"
+        "print(sys.path[0])\n"
+        "print(nesting_depth.__file__)\n"
+    )
+    result = subprocess.run([sys.executable, "-I", "-c", program], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    first, found = result.stdout.splitlines()
+    # Compared as text, so a folder spelled in another case fails here too, as its import fails where case matters.
+    assert first == str(core)
+    assert str(Path(found).parent) == str(core)
 
 
 class ExpansionTests(unittest.TestCase):

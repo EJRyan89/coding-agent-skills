@@ -126,9 +126,7 @@ def file_above(function: str, arguments: list[str], files: FileSystem) -> str | 
     return f"{folder.rstrip('/')}/{name}" if function.casefold() == "getpathoffileabove" else folder
 
 
-def property_expression(
-    inner: str, lookup: Callable[[str], str | None], files: FileSystem, depth: int = 0
-) -> str | None:
+def property_expression(inner: str, lookup: Callable[[str], str | None], files: FileSystem, depth: int) -> str | None:
     """The value of one `$(...)`, `inner` being its contents, with each property it names holding one value. `depth`
     is how many property functions enclose it; one whose arguments would nest past nesting_depth's limit is not
     settled."""

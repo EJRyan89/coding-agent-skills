@@ -1307,6 +1307,15 @@ def test_a_numeric_range_bound_past_the_digit_limit_fails_by_name() -> None:
         assert refusal == str(raised.value)
 
 
+def test_a_numeric_range_inside_literal_braces_is_read_into_the_globs_ranges() -> None:
+    # Braces without a comma are literal, and the range inside them is still the glob's one capturing group.
+    pattern, ranges = layout.section_glob("{a{1..3}}.cs")
+    assert ranges == ((1, 3),)
+    assert layout.section_matches("{a{1..3}}.cs", "{a2}.cs")
+    assert not layout.section_matches("{a{1..3}}.cs", "{a4}.cs")
+    assert pattern.fullmatch("{a2}.cs") is not None
+
+
 def test_braces_nested_past_the_shared_depth_limit_fail_by_name() -> None:
     # The limit is pinned as a literal: a glob of 100 nested braces reads, and one of 101 fails, never in a
     # RecursionError, whether the braces hold alternatives or are literal.
