@@ -1040,6 +1040,20 @@ class ShapeTest(unittest.TestCase):
                 found = shepherd.pull_of(pull(20, state="FAILURE"))
                 self.malformed(reason, shepherd.judge, self.client(run, [{"databaseId": RUN}]), "owner/repo", found)
 
+    def test_a_merged_listing_of_another_shape_is_malformed(self) -> None:
+        merged = {"number": 5, "headRefName": "fix/done", "headRefOid": HEAD}
+        for listing, reason in (
+            (["5"], "a merged pull request listing that is not a list of objects"),
+            ([{**merged, "number": "5"}], "a merged pull request whose number is not an integer"),
+            ([{**merged, "headRefName": ["fix/done"]}], "a merged pull request whose headRefName is not text"),
+            ([{**merged, "headRefOid": 7}], "a merged pull request whose headRefOid is not text"),
+            ([{"headRefName": "fix/done"}], "a merged pull request without its number or branch"),
+        ):
+            with self.subTest(listing=listing):
+                self.malformed(reason, shepherd.read_merged, self.client(runs=listing), "o/r")
+        found = shepherd.read_merged(self.client(runs=[merged, {"number": 6, "headRefName": "fix/two"}]), "o/r")
+        self.assertEqual([shepherd.Merged(5, "fix/done", HEAD), shepherd.Merged(6, "fix/two", "")], found)
+
     def test_a_run_listing_of_another_shape_is_malformed(self) -> None:
         for listing, reason in (
             (["7001"], "a workflow run listing that is not a list of objects"),

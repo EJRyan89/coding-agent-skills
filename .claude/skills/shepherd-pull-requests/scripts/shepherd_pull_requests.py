@@ -740,11 +740,14 @@ def read_merged(client: GitHubClient, repository: str) -> list[Merged]:
     saw."""
     arguments = ["pr", "list", "--repo", repository, "--state", "merged", "--json", "number,headRefName,headRefOid"]
     listing = client.capped_list(arguments, MERGED_LISTED)
-    return [
-        Merged(item["number"], item["headRefName"], str(item.get("headRefOid") or ""))
-        for item in listing.items
-        if isinstance(item, dict) and isinstance(item.get("number"), int) and isinstance(item.get("headRefName"), str)
-    ]
+    found = []
+    for item in objects(listing.items, "a merged pull request listing"):
+        number = member(item, "number", int, "a merged pull request")
+        branch = member(item, "headRefName", str, "a merged pull request")
+        if number is None or branch is None:
+            raise malformed("a merged pull request without its number or branch")
+        found.append(Merged(number, branch, member(item, "headRefOid", str, "a merged pull request") or ""))
+    return found
 
 
 def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | None) -> dict[str, list[str]]:
