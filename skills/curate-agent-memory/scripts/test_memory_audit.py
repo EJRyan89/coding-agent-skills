@@ -2033,6 +2033,24 @@ class SkillSourceTests(unittest.TestCase):
             with self.subTest(name=repr(name)):
                 self.assertEqual([f"FAILED {flat_text(repr(name))} is not a skill name"], self.source(name, code=1))
 
+    def test_a_manifest_of_another_shape_is_a_failed_line_rather_than_no_source(self) -> None:
+        manifest = self.home / ".claude" / "skills" / ".deploy-manifest.json"
+        cases = {
+            "it is not a JSON object": [],
+            "its sources is not an object": {"sources": ["main"]},
+            "its source 'main' does not name its source_dir and skills": {"sources": {"main": "checkout"}},
+            "its source 'other' does not name its source_dir and skills": {
+                "sources": {"other": {"source_dir": 7, "skills": {"demo": {}}}}
+            },
+            "its source 'third' does not name its source_dir and skills": {
+                "sources": {"third": {"source_dir": str(self.checkout), "skills": ["demo"]}}
+            },
+        }
+        for reason, document in cases.items():
+            with self.subTest(reason=reason):
+                write(manifest, json.dumps(document))
+                self.assertEqual([f"FAILED cannot read the deployer manifest: {reason}"], self.source("demo", code=1))
+
     def test_a_git_failure_is_a_note_and_the_manifest_source_is_still_named(self) -> None:
         self.manifest(main=str(self.checkout))
         with (

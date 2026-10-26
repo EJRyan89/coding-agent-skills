@@ -172,6 +172,20 @@ class SectionTests(unittest.TestCase):
         self.assertRegex(completed.stdout.splitlines()[0], r'^SECTION "docs/adding-a-skill\.md" \d+-\d+ ### Granting')
 
 
+def test_reach_follows_skill_deps_through_a_chain_past_a_cycle_and_an_unreadable_skill() -> None:
+    meta: dict[str, dict[str, object] | None] = {
+        "alpha": {"skill_deps": ["beta"]},
+        "beta": {"skill_deps": ["gamma", "alpha"]},
+        "gamma": None,
+        "delta": {"skill_deps": ["alpha"]},
+    }
+    assert change_skill.reach("alpha", meta) == {"alpha", "beta", "gamma"}
+    assert change_skill.reach("gamma", meta) == {"gamma"}
+    assert change_skill.reach("unlisted", meta) == {"unlisted"}
+    assert change_skill.unreadable_in(change_skill.reach("alpha", meta), meta)
+    assert not change_skill.unreadable_in(change_skill.reach("delta", {**meta, "gamma": {}}), {**meta, "gamma": {}})
+
+
 class GateTests(unittest.TestCase):
     git_config = GIT_CONFIG
 
@@ -361,6 +375,18 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             ["GATE audit-skill gamma", "GATE runtime-canary gamma"],
             self.gates(uncommitted={"agents/helper.md": "---\nname: helper\n---\n\nHelp more.\n"}),
+        )
+
+    def test_unreadable_metadata_owes_nothing_while_no_skill_is_touched_and_no_agent_changes(self) -> None:
+        self.on_main({"deploy-meta/gamma.json": '{"agent_deps": "helper"}\n'})
+        self.assertEqual([], self.gates(uncommitted={"docs/guide.md": "# Guide, again\n"}))
+        self.assertEqual(["GATE audit-skill alpha"], self.gates(uncommitted={"skills/alpha/scripts/alpha.py": "1\n"}))
+
+    def test_a_dependencys_unreadable_metadata_owes_the_evaluation_its_reach_could_hold(self) -> None:
+        self.on_main({"deploy-meta/ejryan89-code-review-core.json": '{"skill_deps": "ejryan89-skill-core"}\n'})
+        self.assertEqual(
+            ["GATE audit-skill alpha", "GATE evaluate-skill review-prs if-prompt"],
+            self.gates(uncommitted={"skills/alpha/scripts/alpha.py": "1\n"}),
         )
 
     def test_a_folder_in_place_of_metadata_reads_as_empty(self) -> None:

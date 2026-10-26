@@ -313,13 +313,14 @@ def _names(value: object) -> set[str]:
 
 
 def reach(name: str, meta: dict[str, dict[str, object] | None]) -> set[str]:
-    """The skill and every skill its skill_deps reach, by the working tree's metadata."""
-    reached, pending = {name}, [name]
-    while pending:
-        for dependency in _names((meta.get(pending.pop()) or {}).get("skill_deps")) - reached:
-            reached.add(dependency)
-            pending.append(dependency)
-    return reached
+    """The skill and every skill its skill_deps reach, by the working tree's metadata. The walk visits each skill of
+    a list that grows only by skills not yet in it, so it ends."""
+    reached = [name]
+    for current in reached:
+        reached += [
+            found for found in sorted(_names((meta.get(current) or {}).get("skill_deps"))) if found not in reached
+        ]
+    return set(reached)
 
 
 def unreadable_in(names: Iterable[str], meta: dict[str, dict[str, object] | None]) -> bool:
