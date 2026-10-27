@@ -140,8 +140,9 @@ under `tests/validation/` names under a constant ending in `ALLOWANCE`. Routing 
 was declined: a policy run reads the whole repository's Python, its fixture suite reads synthetic inputs rather than
 the table, and a policy that does not check an entry's reason would leave that mutant alive anyway. Its step
 summary gives each module's changed lines and kill ratio, names each changed module whose changed lines yield no mutant,
-and names each surviving mutant by its line, the mutation, and the suites it passed, with how many of a suite's tests
-ran when not all did; a pull request that changes no such module gets one line saying so. The mutants run from one queue
+names each surviving mutant by its line, the mutation, and the suites it passed, with how many of a suite's tests
+ran when not all did, and names each mutant no suite reached by its line and the mutation, as the run log does beside
+each mutant killed and each that survived; a pull request that changes no such module gets one line saying so. The mutants run from one queue
 that takes one from each module in turn, and the run is capped by `DEFAULT_MINUTES` in the gate. A run the cap cuts
 short, leaving a mutant not run or a suite's reach unmeasured, is unfinished: its summary's first line says so, naming
 each module's mutants not run and how many lie on lines that run at import, and the job fails. An unfinished gate is not
