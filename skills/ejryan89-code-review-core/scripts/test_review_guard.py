@@ -199,8 +199,11 @@ class ReadTests(GuardFixture):
         ]
         self.assertEqual(
             [
-                Path(os.path.normcase(f"{nested.name}/{name}")).as_posix()
-                for name in ("run.json", "Service.cs", "Service.cs", "Service.cs")
+                *[
+                    Path(os.path.normcase(f"{nested.name}/{name}")).as_posix()
+                    for name in ("run.json", "Service.cs", "Service.cs", "Service.cs")
+                ],
+                *[guard.search_entry(tool) for tool in ("Grep", "Grep", "Glob", "Glob")],
             ],
             logged,
         )
@@ -339,7 +342,7 @@ class ReadLogTests(GuardFixture):
         state: Any = {"reads": {}}
         self.assertTrue(review_dispatch.count_reads(self.run_directory, state, ["csharp-review"]))
         size = sum((self.source / "app" / name).stat().st_size for name in ("Service.cs", "Role.cs"))
-        self.assertEqual({"csharp-review": {"files": 2, "bytes": size}}, state["reads"])
+        self.assertEqual({"csharp-review": {"files": 2, "bytes": size, "searches": 0}}, state["reads"])
         self.assertFalse(log.exists(), "a counted log is removed")
 
     def test_a_claim_records_its_run_and_role_and_a_refused_one_leaves_no_claim(self) -> None:
@@ -369,25 +372,58 @@ class ReadLogTests(GuardFixture):
             ("Read", {"file_path": service, "offset": 10}),  # read again: check counts it once
             ("Read", {"file_path": str(self.source / "app" / ".." / "app" / "Service.cs")}),
             ("Grep", {"pattern": "class", "path": str(self.source / "app" / "Role.cs")}),  # a search of one file
-            # Allowed, but not a read of a snapshot file: a folder search, a pattern, a missing file, and the work,
-            # reviewer, and reference files.
+            # Searches, each logged as one: of the snapshot, a folder in it, and the run folder holding it.
             ("Grep", {"pattern": "class", "path": str(self.source)}),
+            ("Grep", {"pattern": "class", "path": str(self.source / "app")}),
             ("Glob", {"pattern": "**/*.cs", "path": str(self.source)}),
-            ("Glob", {"pattern": "*", "path": service}),  # a pattern, even under a path that names one file
+            ("Grep", {"pattern": "class", "path": str(self.run_directory)}),
+            ("Glob", {"pattern": "**/*.cs", "path": str(self.run_directory)}),
+            # Allowed, but neither a read of a snapshot file nor a search of the snapshot: a pattern under one file, a
+            # missing file or folder, the work folder, and the work, reviewer, and reference files.
+            ("Glob", {"pattern": "*", "path": service}),
+            ("Read", {"file_path": str(self.source / "app")}),  # a Read of a folder reads no file and is no search
             ("Read", {"file_path": str(self.source / "app" / "Missing.cs")}),
+            ("Grep", {"pattern": "class", "path": str(self.source / "missing")}),
+            ("Grep", {"pattern": "class", "path": str(self.run_directory / "work")}),
+            ("Glob", {"pattern": "*", "path": str(self.run_directory / "work")}),
             ("Read", {"file_path": str(self.run_directory / "work" / "csharp-review.diff")}),
+            ("Grep", {"pattern": "class", "path": str(self.run_directory / "work" / "csharp-review.diff")}),
             ("Read", {"file_path": str(self.run_directory / "reviewer" / ".claude" / "agents" / "csharp-review.md")}),
             ("Read", {"file_path": str(guard.REFERENCES / "generic-reviewer.md")}),
+            ("Grep", {"pattern": "class", "path": str(guard.REFERENCES)}),
         ):
             with self.subTest(tool=tool, input=tool_input):
                 self.assertIsNone(self.decide(tool, **tool_input))
-        # A denied read is not logged, and a reviewer cannot write its log.
+        # A denied read or search is not logged, and a reviewer cannot write its log.
         self.assert_denied(self.decide("Read", file_path=str(self.other_run / "source" / "app" / "Service.cs")))
+        self.assert_denied(self.decide("Grep", pattern="class", path=str(self.other_run / "source")))
         self.assert_denied(self.decide("Write", file_path=str(log), content="[]"))
         self.assertEqual(
-            [*[self.entry("app/Service.cs")] * 3, self.entry("app/Role.cs")],
+            [
+                *[self.entry("app/Service.cs")] * 3,
+                self.entry("app/Role.cs"),
+                *[guard.search_entry(tool) for tool in ("Grep", "Grep", "Glob", "Grep", "Glob")],
+            ],
             self.logged(),
         )
+        state: Any = {"reads": {}}
+        self.assertTrue(review_dispatch.count_reads(self.run_directory, state, ["csharp-review"]))
+        size = sum((self.source / "app" / name).stat().st_size for name in ("Service.cs", "Role.cs"))
+        self.assertEqual({"csharp-review": {"files": 2, "bytes": size, "searches": 5}}, state["reads"])
+
+    def test_check_adds_a_rerun_s_searches_and_keeps_unknown_the_searches_of_a_role_counted_before_them(self) -> None:
+        log = guard.read_log(self.run_directory, "csharp-review")
+        entries = [guard.search_entry("Grep"), "app/Service.cs", guard.search_entry("source-search")]
+        # Not a search: an object with another key, or another value, or more keys.
+        others: list[object] = [{"search": 1}, {"searched": "Grep"}, {"search": "Grep", "path": "app/Role.cs"}, None]
+        for counted in ({"files": 1, "bytes": 5, "searches": 2}, {"files": 1, "bytes": 5}):
+            with self.subTest(counted=counted):
+                log.write_text("".join(json.dumps(entry) + "\n" for entry in [*entries, *others]), encoding="utf-8")
+                state: Any = {"reads": {"csharp-review": counted}}
+                self.assertTrue(review_dispatch.count_reads(self.run_directory, state, ["csharp-review"]))
+                size = (self.source / "app" / "Service.cs").stat().st_size
+                expected = {"files": 2, "bytes": 5 + size, **({"searches": 4} if "searches" in counted else {})}
+                self.assertEqual({"csharp-review": expected}, state["reads"])
 
     def test_each_role_has_its_own_log(self) -> None:
         self.claim()
@@ -1025,7 +1061,7 @@ def test_a_read_is_counted_by_the_spelling_the_log_gives_it(tmp_path: Path) -> N
     read.parent.mkdir(parents=True)
     read.write_text("x\n", encoding="utf-8")
     counts = counted_reads(tmp_path / "run", ["app/a.py", "app/a.py."])
-    assert counts == {"files": 2, "bytes": 2 * read.stat().st_size}
+    assert counts == {"files": 2, "bytes": 2 * read.stat().st_size, "searches": 0}
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows drops a name's trailing dots")
@@ -1035,4 +1071,4 @@ def test_the_manifest_is_left_out_of_a_run_whose_folder_ends_in_a_dot(tmp_path: 
     manifest = run / "source" / review_runtime.SOURCE_SNAPSHOT_MANIFEST
     manifest.parent.mkdir(parents=True)
     manifest.write_text("{}\n", encoding="utf-8")
-    assert counted_reads(run, [review_runtime.SOURCE_SNAPSHOT_MANIFEST]) == {"files": 0, "bytes": 0}
+    assert counted_reads(run, [review_runtime.SOURCE_SNAPSHOT_MANIFEST]) == {"files": 0, "bytes": 0, "searches": 0}

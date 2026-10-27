@@ -91,6 +91,7 @@ from review_io import (
     working_path,
 )
 from review_operation import (
+    ReportInputs,
     archive_base,
     commit_adapter_result,
     parse_pull_selector,
@@ -860,8 +861,11 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         patches=state.get("patches"),  # absent from runs prepared before patches were recorded
         scope=state.get("scope"),
         uncovered_files=state.get("uncovered_files"),  # absent from runs prepared before they were recorded
-        model_names=config["model_names"],
-        flags=[] if canary_root else load_store(default_flags_path())["flags"],  # a canary reads no flag store
+        report=ReportInputs(
+            model_names=config["model_names"],
+            flags=[] if canary_root else load_store(default_flags_path())["flags"],  # a canary reads no flag store
+            unread_source_lines=config["unread_source_lines"],
+        ),
         dispatch=run_dispatch(state),
         snapshot=state.get("snapshot"),  # absent from runs prepared before snapshots were measured
         documents=state.get("documents"),  # absent from runs prepared before documents were extracted

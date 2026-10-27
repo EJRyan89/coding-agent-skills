@@ -15,7 +15,7 @@ import json_reader
 import json_writer
 from path_keys import path_key
 from review_config import ConfigurationError, load_config
-from review_guard import PLUGIN, UNGUARDED, claimed, read_log, reviewer_agent_type
+from review_guard import PLUGIN, UNGUARDED, claimed, is_search_entry, read_log, reviewer_agent_type
 from review_hosts import (
     HostSuperseded,
     claim_holds,
@@ -38,6 +38,7 @@ from review_run import (
     RECORDED_FILE,
     RUN_FILE,
     PipelineError,
+    ReadCount,
     RunRole,
     RunState,
     Services,
@@ -89,8 +90,9 @@ def role_errors(run: Path, state: RunState) -> dict[str, str]:
 
 def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     """Reduce each named role's read log, which the reviewer guard writes, to the distinct snapshot files it names and
-    their bytes, add them to the role's counts in run.json's `reads`, and delete the log, so no path outlives this
-    step. Returns whether any log was counted. A role without a log is not counted: no guard ran for it, and on
+    their bytes and the searches it holds, add them to the role's counts in run.json's `reads`, and delete the log, so
+    no path outlives this step. Returns whether any log was counted. A role counted before searches were keeps no
+    `searches`, since its earlier searches are unknown. A role without a log is not counted: no guard ran for it, and on
     Claude Code `unguarded_roles` refuses its result. A run prepared before reads were counted has no `reads` and
     counts nothing. The snapshot's own manifest is not a file of the snapshot, as `review.snapshot.files` leaves it
     out, so reading it counts for nothing."""
@@ -104,15 +106,20 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
         if not log.is_file():
             continue
         sizes: dict[str, int] = {}
+        searches = 0
         for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
             with contextlib.suppress(*CONTENT_ERRORS):
                 relative = json_reader.loads(line)
+                searches += is_search_entry(relative)
                 target = source.joinpath(relative) if isinstance(relative, str) else source
                 key = path_key(target, textual=True)
                 if key not in sizes and key != manifest and _inside(target, source) and target.is_file():
                     sizes[key] = target.stat().st_size
-        total = state["reads"].get(role, {"files": 0, "bytes": 0})
-        state["reads"][role] = {"files": total["files"] + len(sizes), "bytes": total["bytes"] + sum(sizes.values())}
+        total: ReadCount = state["reads"].get(role, {"files": 0, "bytes": 0, "searches": 0})
+        count: ReadCount = {"files": total["files"] + len(sizes), "bytes": total["bytes"] + sum(sizes.values())}
+        if "searches" in total:
+            count["searches"] = total["searches"] + searches
+        state["reads"][role] = count
         log.unlink()
         counted = True
     return counted

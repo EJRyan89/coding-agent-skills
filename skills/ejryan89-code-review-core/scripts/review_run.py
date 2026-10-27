@@ -117,10 +117,12 @@ class RunRole(TypedDict):
 
 
 class ReadCount(TypedDict):
-    """The distinct snapshot files a role read, and their bytes."""
+    """The distinct snapshot files a role read, their bytes, and how many times it searched the snapshot. A run
+    counted before searches were has no `searches`, which is unknown, not zero."""
 
     files: int
     bytes: int
+    searches: NotRequired[int]
 
 
 class Seal(TypedDict):
@@ -410,11 +412,14 @@ def _attempt_count(value: object, path: str) -> int:
 
 
 def _read_count(value: object, path: str) -> ReadCount:
-    count = READ.json_object(value, path, required=("files", "bytes"))
-    return {
+    count = READ.json_object(value, path, required=("files", "bytes"), optional=("searches",))
+    read: ReadCount = {
         "files": READ.integer(count["files"], f"{path}.files", minimum=0),
         "bytes": READ.integer(count["bytes"], f"{path}.bytes", minimum=0),
     }
+    if "searches" in count:
+        read["searches"] = READ.integer(count["searches"], f"{path}.searches", minimum=0)
+    return read
 
 
 def _document_places(value: object, path: str) -> list[str]:

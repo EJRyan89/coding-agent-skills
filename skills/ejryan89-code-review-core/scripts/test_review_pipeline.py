@@ -1001,14 +1001,17 @@ class GenericReviewTests(PipelineFixture):
                     # The guard claimed the role and logged no read of the snapshot: zero, not unknown.
                     "files_read": 0,
                     "bytes_read": 0,
+                    "searches": 0,
                 }
             ],
             record["review"]["reviewers"],
         )
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
-        self.assertIn("| Reviewer | Focus | Model | Files | Findings | Retries | Time | Files read |", markdown)
         self.assertIn(
-            "| `generic-review` | General | claude&#45;haiku&#45;4&#45;5 | 2 | 1 | 1 | 2m 05s | 0 (0 B) |", markdown
+            "| Reviewer | Focus | Model | Files | Findings | Retries | Time | Files read | Searches |", markdown
+        )
+        self.assertIn(
+            "| `generic-review` | General | claude&#45;haiku&#45;4&#45;5 | 2 | 1 | 1 | 2m 05s | 0 (0 B) | 0 |", markdown
         )
 
     def test_a_result_must_name_its_model(self) -> None:
@@ -2444,6 +2447,7 @@ class RepositoryReviewerTests(PipelineFixture):
                     "seconds": 42,
                     "files_read": 0,
                     "bytes_read": 0,
+                    "searches": 0,
                 }
             ],
             record["review"]["reviewers"],
@@ -2674,12 +2678,21 @@ class ReadCountTests(PipelineFixture):
             event = {"tool_name": "Read", "tool_input": {"file_path": path}, "cwd": str(self.root), "agent_id": agent}
             self.assertIsNone(guard.decide(event), path)
 
+    def searched(self, role: dict[str, Any], agent: str, tool: str, *folders: str) -> None:
+        """A guarded reviewer of `role` searching each snapshot folder with `tool`, as the hook sees the calls."""
+        source = Path(role["prompt_file"]).parents[1] / "source"
+        for folder in folders:
+            tool_input = {"pattern": "*.py" if tool == "Glob" else "def", "path": str(source / folder)}
+            event = {"tool_name": tool, "tool_input": tool_input, "cwd": str(self.root), "agent_id": agent}
+            self.assertIsNone(guard.decide(event), folder)
+
     def test_check_counts_distinct_files_across_a_rerun_and_finalize_records_them(self) -> None:
         ready = self.prepare()
         run, role = Path(ready["run"]), ready["roles"][0]
         log = guard.read_log(run, role["id"])
         self.assertEqual({}, review_run.load_run(run)["reads"])
         self.guarded(role, "a71dab35ebc1b97eb", "app/service.py", "app/service.py")
+        self.searched(role, "a71dab35ebc1b97eb", "Glob", ".")
         self.write_role_result(role, findings=[self.finding(line=1)])  # line 1 is not an added line: one retry
         self.assertEqual(1, self.run_main("check", "--run", str(run))[0])
         self.assertEqual({}, review_run.load_run(run)["reads"], "a role set aside keeps its log for its rerun")
@@ -2691,19 +2704,22 @@ class ReadCountTests(PipelineFixture):
             review_source.source_file(run, role["id"], "review/rules.md"),
         )
         self.guarded(role, "a73176509870d6114", "app/service.py", "review/rules.md")
+        self.searched(role, "a73176509870d6114", "Grep", ".", "app")  # every search counts, each attempt's too
         with log.open("a", encoding="utf-8") as stream:  # lines that name no file of the snapshot count for nothing
             stream.write('"../run.json"\n"app/missing.py"\nnot json\n42\n')
         sizes = [(run / "source" / path).stat().st_size for path in ("app/service.py", "review/rules.md")]
         self.write_role_result(role, findings=[self.finding()])
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
-        self.assertEqual({role["id"]: {"files": 2, "bytes": sum(sizes)}}, review_run.load_run(run)["reads"])
+        self.assertEqual(
+            {role["id"]: {"files": 2, "bytes": sum(sizes), "searches": 3}}, review_run.load_run(run)["reads"]
+        )
         self.assertFalse(log.exists(), "check keeps counts, never the paths")
 
         rp.finalize(run)
         [reviewer] = archived_record(self.archive, 12)["review"]["reviewers"]
-        self.assertEqual((2, sum(sizes)), (reviewer["files_read"], reviewer["bytes_read"]))
+        self.assertEqual((2, sum(sizes), 3), (reviewer["files_read"], reviewer["bytes_read"], reviewer["searches"]))
         report = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
-        self.assertIn(f"| 2 ({sum(sizes)} B) |\n", report)
+        self.assertIn(f"| 2 ({sum(sizes)} B) | 3 |\n", report)
 
     def test_the_snapshot_manifest_is_not_a_file_read(self) -> None:
         # files_read counts files of the snapshot, as review.snapshot.files does, and that leaves the manifest out.
@@ -2716,7 +2732,7 @@ class ReadCountTests(PipelineFixture):
         self.write_role_result(role, findings=[self.finding()])
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
         size = (run / "source" / "app" / "service.py").stat().st_size
-        self.assertEqual({role["id"]: {"files": 1, "bytes": size}}, review_run.load_run(run)["reads"])
+        self.assertEqual({role["id"]: {"files": 1, "bytes": size, "searches": 0}}, review_run.load_run(run)["reads"])
 
     def test_finalize_counts_a_log_check_did_not_reach(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
@@ -2730,7 +2746,33 @@ class ReadCountTests(PipelineFixture):
         rp.finalize(run)  # no check in between
         reviewers = {item["id"]: item for item in archived_record(self.archive, 12)["review"]["reviewers"]}
         self.assertEqual(1, reviewers[reader["id"]]["files_read"])
-        self.assertEqual((0, 0), (reviewers[idle["id"]]["files_read"], reviewers[idle["id"]]["bytes_read"]))
+        idle_counts = reviewers[idle["id"]]
+        self.assertEqual((0, 0, 0), (idle_counts["files_read"], idle_counts["bytes_read"], idle_counts["searches"]))
+
+    def test_the_report_notes_a_reviewer_that_read_and_searched_no_source_of_a_change_above_the_setting(self) -> None:
+        for threshold, noted in ((1, True), (None, False)):  # the fixture's change is under the default
+            with self.subTest(threshold=threshold):
+                self.archive = self.root / f"archive {threshold}"
+                setting: dict[str, Any] = {} if threshold is None else {"unread_source_lines": threshold}
+                self.configure(self.repository_reviewer("review/specialists.json"), **setting)
+                ready = self.prepare()
+                run = Path(ready["run"])
+                searcher, idle = ready["roles"][0], ready["roles"][1]
+                self.guarded(searcher, f"searcher-{threshold}")
+                self.searched(searcher, f"searcher-{threshold}", "Grep", ".")
+                self.guarded(idle, f"idle-{threshold}")
+                for role in ready["roles"]:
+                    self.write_role_result(role, findings=[self.finding()] if role is searcher else [], claimed=False)
+                rp.finalize(run)
+                record = archived_record(self.archive, 12)
+                lines = sum(patch["lines"] for patch in record["review"]["patches"].values())
+                report = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
+                note = (
+                    f"> **No source read:** reviewer `{idle['id']}` read and searched no file of the source beyond "
+                    f"the diff of this {lines}-line change.\n"
+                )
+                self.assertEqual(noted, note in report, report)
+                self.assertEqual(noted, "No source read" in report)
 
     def test_a_reviewer_no_guard_held_has_unknown_reads_not_zero(self) -> None:
         # A Codex reviewer runs with no guard, so it has no log and its counts are unknown.
@@ -2739,7 +2781,7 @@ class ReadCountTests(PipelineFixture):
         self.write_role_result(ready["roles"][0], findings=[self.finding()], claimed=False)
         rp.finalize(Path(ready["run"]))
         [reviewer] = archived_record(self.archive, 12)["review"]["reviewers"]
-        self.assertEqual((None, None), (reviewer["files_read"], reviewer["bytes_read"]))
+        self.assertEqual((None, None, None), (reviewer["files_read"], reviewer["bytes_read"], reviewer["searches"]))
 
 
 # Literal: the reason check gives for a role the reviewer guard never claimed, as review-prs's SKILL.md names it.
@@ -2790,7 +2832,7 @@ class GuardClaimTests(PipelineFixture):
         self.write_role_result(role, findings=[self.finding()], claimed=False)
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
         self.assertFalse(guard.read_log(run, role["id"]).exists(), "check counted the log and removed it")
-        self.assertEqual({role["id"]: {"files": 0, "bytes": 0}}, review_run.load_run(run)["reads"])
+        self.assertEqual({role["id"]: {"files": 0, "bytes": 0, "searches": 0}}, review_run.load_run(run)["reads"])
         self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
         self.assertEqual(1, len(list_versions(pull_directory(self.archive, REPOSITORY, 12))))
 
@@ -5068,23 +5110,25 @@ class FixtureCanaryTests(PipelineFixture):
             (1, ['FAILED The head commit has no file "../run.json" the snapshot can hold']), (code, refused)
         )
         read = (source / "app" / "service.py").stat().st_size + fetched.stat().st_size
-        lines = self.finish(state, findings=[])
+        with mock.patch.object(rp, "load_store", side_effect=AssertionError("a canary reads no flag store")):
+            lines = self.finish(state, findings=[])
         _, record = self.canary_record(lines)
         snapshot, [reviewer] = record["review"]["snapshot"], record["review"]["reviewers"]
         self.assertEqual(state["snapshot"], snapshot)
         self.assertEqual((2, read), (reviewer["files_read"], reviewer["bytes_read"]), "the fetch counts as a read")
+        self.assertEqual(1, reviewer["searches"], "the source-search counts as a search")
         seconds = " ".join(f"{phase}={value:.1f}s" for phase, value in snapshot["seconds"].items())
         selector = state["selector"]
         self.assertEqual(
             [
                 f"STATS {selector} snapshot source=checkout-lazy files={len(kept)} bytes={snapshot['bytes']} "
                 f"excluded=agent-instruction:1 {seconds}",
-                f"STATS {selector} reviewer {role['id']} files_read=2 bytes_read={read}",
+                f"STATS {selector} reviewer {role['id']} files_read=2 bytes_read={read} searches=1",
             ],
             [line for line in lines if line.startswith("STATS ")],
         )
         self.assertLess(
-            lines.index(f"STATS {selector} reviewer {role['id']} files_read=2 bytes_read={read}"),
+            lines.index(f"STATS {selector} reviewer {role['id']} files_read=2 bytes_read={read} searches=1"),
             next(index for index, line in enumerate(lines) if line.startswith("RECORDED ")),
         )
         self.assertNotIn(str(source), "\n".join(lines), "counts and seconds only, never a path")
@@ -6209,6 +6253,20 @@ class StatsLineTests(unittest.TestCase):
                 self.assertEqual(
                     [f"snapshot source=tarball files=2 bytes=83{shown} {timing}"], review_reporting.stats_lines(review)
                 )
+
+    def test_a_reviewer_line_gives_searches_unknown_for_null_and_none_for_an_older_record(self) -> None:
+        counted = {"id": "a", "files_read": 2, "bytes_read": 9, "searches": 3}
+        unknown = {"id": "b", "files_read": None, "bytes_read": None, "searches": None}
+        older = {"id": "c", "files_read": 1, "bytes_read": 4}
+        review: Any = {"reviewers": [counted, unknown, older, {"id": "d"}]}
+        self.assertEqual(
+            [
+                "reviewer a files_read=2 bytes_read=9 searches=3",
+                "reviewer b files_read=unknown bytes_read=unknown searches=unknown",
+                "reviewer c files_read=1 bytes_read=4",
+            ],
+            review_reporting.stats_lines(review),
+        )
 
 
 def test_a_run_whose_repository_holds_read_only_files_is_removed(tmp_path: Path) -> None:

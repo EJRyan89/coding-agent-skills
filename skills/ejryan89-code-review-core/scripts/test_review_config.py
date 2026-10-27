@@ -321,6 +321,16 @@ class ConfigurationTests(unittest.TestCase):
             default_manifest_path(Path("C:/Config/config.json"), "Example/One"),
         )
 
+    def test_unread_source_lines_defaults_to_200_and_takes_a_positive_integer(self) -> None:
+        self.assertEqual(200, validate_config(valid_config())["unread_source_lines"])
+        self.assertEqual(1, validate_config({**valid_config(), "unread_source_lines": 1})["unread_source_lines"])
+        for value, found in ((0, "integer 0"), (2.5, "number 2.5"), (None, "null"), ("200", "string")):
+            with self.subTest(value=value), self.assertRaises(ConfigurationError) as raised:
+                validate_config({**valid_config(), "unread_source_lines": value})
+            self.assertIn(
+                f"config.unread_source_lines must be an integer of at least 1, found {found}", str(raised.exception)
+            )
+
     def test_re_review_scope_thresholds_have_defaults_and_are_validated(self) -> None:
         self.assertEqual({"full_share": 0.5, "full_lines": 1000}, validate_config(valid_config())["re_review_scope"])
         config = valid_config()

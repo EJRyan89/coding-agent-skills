@@ -179,27 +179,40 @@ def _start_log(run: Path, role: str) -> None:
             read_log(run, role).touch()
 
 
+def search_entry(tool: str) -> dict[str, str]:
+    """The read log's entry for one search of the snapshot by `tool`, beside the path it holds for each file read."""
+    return {"search": tool}
+
+
+def is_search_entry(entry: object) -> bool:
+    return isinstance(entry, dict) and set(entry) == {"search"} and isinstance(entry["search"], str)
+
+
 def _log_read(tool: str, path: Path, claim: Claim) -> None:
-    """Append a file a reviewer read under its run's snapshot to its role's read log. A search of a folder or a
-    pattern is not a read of a file, so only a Read, or a Grep naming one file, counts."""
+    """Append what a reviewer examined under its run's snapshot to its role's read log: a file it read, by its path
+    relative to the snapshot, for a Read or a Grep naming one file; or a search, for a Grep of a folder or a Glob
+    whose path is the snapshot, a folder in it, or the run folder that holds it. A search names no file, so it is
+    counted apart from the files read."""
     run, role = claim[0], claim[1]["id"]
-    source = run / SOURCE
-    if (
-        tool == "Glob"
-        or not ROLE_ID.fullmatch(role)
-        or not within(path, source.resolve(strict=False))
-        or not path.is_file()
-    ):
+    if not ROLE_ID.fullmatch(role):
         return
-    root = Path(path_key(source, resolve=True))
-    relative = Path(os.path.normcase(str(path))).relative_to(root)
+    source = run / SOURCE
+    snapshot = source.resolve(strict=False)
+    entry: str | dict[str, str]
+    if tool != "Glob" and within(path, snapshot) and path.is_file():
+        root = Path(path_key(source, resolve=True))
+        entry = Path(os.path.normcase(str(path))).relative_to(root).as_posix()
+    elif tool != "Read" and (within(path, snapshot) or within(snapshot, path)) and path.is_dir():
+        entry = search_entry(tool)
+    else:
+        return
     # The read is already allowed and the log only counts it, so a path the JSON writer refuses, such as one holding
     # a lone surrogate, stays uncounted, as review_source counts it, and never turns the read into a denial.
     with (
         contextlib.suppress(OSError, json_writer.JsonWriteRefused),
         read_log(run, role).open("a", encoding="utf-8") as log,
     ):
-        log.write(json_writer.dumps(relative.as_posix()) + "\n")
+        log.write(json_writer.dumps(entry) + "\n")
 
 
 def _path(value: Any, cwd: Path) -> Path:

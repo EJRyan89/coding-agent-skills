@@ -152,6 +152,7 @@ The code-review configuration file, validated by `validate_config` in `review_co
 | `operation_repository_sets` | object | no | Keyed by operation (`review-prs`, `update-pr-dashboard`, or `review-insights`). Each value names a key of `repository_sets`: the operation's own default set. |
 | `reviewer_effort` | string or null | no | One of `low`, `medium`, `high`, `xhigh`, or `max`. Reasoning effort for reviewers the Workflow tool starts, those Codex starts, and the Copilot CLI host; null or absent keeps the session's effort. |
 | `re_review_scope` | object | no | When an `auto` re-review reviews in full; see [re-review scope](#re-review-scope-configre_review_scope). |
+| `unread_source_lines` | integer | no | A report notes each reviewer whose record shows it read no file of the source snapshot and searched it not once, when the pull request changes more than this many lines. Positive; defaults to `200`. The note changes no verdict. |
 | `model_names` | object | no | Keyed by a model identifier reviewers report, a trimmed single line of at most 200 characters. Each value is the non-empty single-line name of at most 100 characters that a report's Reviewers table shows instead. |
 | `dashboard` | object | no | How the tracker section is marked and shown; see [dashboard](#dashboard-configdashboard). |
 
@@ -446,6 +447,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `seconds` | integer | no | Whole seconds from handing it the role to its accepted result, reruns included, and 0 for a result dated less than a second before it was handed out; absent when not timed or when the result is dated a second or more before. |
 | `files_read` | integer or null | with `bytes_read` | How many distinct files of the source snapshot, not counting its manifest, it opened, with Read or a Grep of one file, or fetched or found with `source-file`, as the reviewer guard logged them, reruns included. Null when no guard counted its reads (an inline, Copilot CLI host, Codex, or general-purpose fallback reviewer), which means unknown, not zero. Absent from older records. |
 | `bytes_read` | integer or null | with `files_read` | Those files' total size in bytes, each counted whole whatever part of it was read; null together with `files_read`. |
+| `searches` | integer or null | no | How many times it searched the source snapshot, apart from the files it read: a Grep of a folder or a Glob whose path is the snapshot, a folder in it, or the run folder holding it, or a `source-search`, as the reviewer guard logged them, reruns included. Only with `files_read`; null when `files_read` is, and when the run counted reads before it counted searches, which means unknown, not zero. Absent from older records. |
 
 #### Source snapshot measured (`record.review.snapshot`)
 

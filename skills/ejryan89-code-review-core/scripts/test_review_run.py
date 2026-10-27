@@ -321,6 +321,11 @@ DAMAGED = [
         id="read-count-below-zero",
     ),
     pytest.param(
+        _set("reads", "generic-review", "searches", value=-1),
+        f"run.reads.generic-review.searches must be {AT_LEAST_ZERO}, found integer -1",
+        id="search-count-below-zero",
+    ),
+    pytest.param(
         _drop("reads", "generic-review", "bytes"),
         "run.reads.generic-review must be an object with field bytes, found an object without it",
         id="read-count-missing",

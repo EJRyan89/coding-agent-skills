@@ -285,10 +285,26 @@ class ReviewOperationTests(unittest.TestCase):
                     "source_hashes": {"SKILL.md": "d" * 64},
                 },
                 base=archive_base(None, []),
+                # A reviewer that read and searched nothing of a large change: without report inputs, no note.
+                reviewers=[
+                    {
+                        "id": "generic",
+                        "category": "General",
+                        "files": 1,
+                        "findings": 1,
+                        "retries": 0,
+                        "dispositions_only": False,
+                        "files_read": 0,
+                        "bytes_read": 0,
+                        "searches": 0,
+                    }
+                ],
+                patches={"src/app.py": {"sha256": "e" * 64, "lines": 5000}},
             )
             self.assertTrue(json_path.is_file())
             self.assertTrue(markdown_path.is_file())
             self.assertEqual("F001", persisted["findings"][0]["id"])
+            self.assertNotIn("No source read", markdown_path.read_text(encoding="utf-8"))
 
     def test_archive_retry_reuses_validated_pending_local_record(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

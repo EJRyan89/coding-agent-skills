@@ -90,6 +90,7 @@ SNAPSHOT = {
 }
 REVIEWER = {"id": "generic", "category": "General", "files": 1, "findings": 1, "retries": 0, "dispositions_only": False}
 READ_COUNTS = "Review reviewer generic files_read and bytes_read must both be non-negative integers or both null"
+SEARCHES = "Review reviewer generic searches must come with files_read and bytes_read, and be null when they are"
 SNAPSHOT_SECONDS = "Review snapshot seconds must give fetch, materialize, prompts as non-negative numbers"
 SNAPSHOT_EXCLUDED = "Review snapshot excluded must give a positive count for each exclusion reason"
 
@@ -308,6 +309,14 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
     ),
     ("reads counted", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": 0, "bytes_read": 0}])),
     ("reads unknown", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": None, "bytes_read": None}])),
+    *[
+        (f"searches {name}", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, **counts}]))
+        for name, counts in (
+            ("counted", {"files_read": 0, "bytes_read": 0, "searches": 4}),
+            ("unknown", {"files_read": None, "bytes_read": None, "searches": None}),
+            ("unknown beside counted reads", {"files_read": 2, "bytes_read": 9, "searches": None}),
+        )
+    ],
     ("reads not recorded", _record, _set((*REVIEW, "reviewers"), [REVIEWER])),
     ("coverage without uncovered files", _record, _set((*REVIEW, "coverage"), {"unavailable_sources": []})),
     # A version 1 record, written before unreviewed files were recorded, is still read, as is a version 2 one.
@@ -876,6 +885,23 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
         )
         for name, value in (("negative", -1), ("not integers", 1.0), ("true", True))
     ],
+    *[
+        (f"searches {name}", _set((*REVIEW, "reviewers"), [{**REVIEWER, **counts}]), R, SEARCHES)
+        for name, counts in (
+            ("alone", {"searches": 3}),
+            ("null alone", {"searches": None}),
+            ("counted beside unknown reads", {"files_read": None, "bytes_read": None, "searches": 0}),
+        )
+    ],
+    *[
+        (
+            f"searches {name}",
+            _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": 1, "bytes_read": 2, "searches": value}]),
+            F,
+            _wrong("record.review.reviewers[0].searches", f"{COUNT} or null", value),
+        )
+        for name, value in (("negative", -1), ("not integers", 1.0), ("true", True))
+    ],
     ("reviewed_at not a string", _set((*REVIEW, "reviewed_at"), 1), F, _wrong("record.review.reviewed_at", TEXT, 1)),
     ("reviewed_at unparsable", _set((*REVIEW, "reviewed_at"), "yesterday"), R, "Review timestamp is invalid"),
     *_blank_and_non_string((*REVIEW, "summary")),
@@ -1290,6 +1316,13 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
         _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": -1, "bytes_read": 0}]),
         F,
         _wrong(FILES_READ, f"{COUNT} or null", -1),
+    ),
+    ("searches", _set((*REVIEW, "reviewers"), [{**REVIEWER, "searches": 0}]), R, SEARCHES),
+    (
+        "searches kind",
+        _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": 1, "bytes_read": 0, "searches": -1}]),
+        F,
+        _wrong("record.review.reviewers[0].searches", f"{COUNT} or null", -1),
     ),
     ("patches", _set((*REVIEW, "patches"), {}), R, "Review patches must be a non-empty object"),
     ("verdict", _set((*REVIEW, "verdict"), "MAYBE"), F, _wrong("record.review.verdict", VERDICT_KIND, "MAYBE")),

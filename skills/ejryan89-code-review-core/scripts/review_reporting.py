@@ -25,10 +25,11 @@ def reviewer_summaries(
     reads: dict[str, ReadCount] | None = None,
 ) -> list[dict[str, Any]]:
     """Which reviewers ran, the files each covered, the findings it raised, how often it was rerun, its time, and the
-    snapshot files it read, and with `own_summaries`, its own summary.
+    snapshot files it read and its searches of the snapshot, and with `own_summaries`, its own summary.
 
     A finding merged from several specialists counts for each of them. With `reads`, a reviewer it does not count, as
-    no guard held it, reads null for both counts: unknown, not zero.
+    no guard held it, reads null for every count, and one counted before searches were reads null for its searches:
+    unknown, not zero.
     """
     summaries = []
     for role in roles:
@@ -55,6 +56,7 @@ def reviewer_summaries(
             counted = reads.get(role["id"])
             summaries[-1]["files_read"] = None if counted is None else counted["files"]
             summaries[-1]["bytes_read"] = None if counted is None else counted["bytes"]
+            summaries[-1]["searches"] = None if counted is None else counted.get("searches")
     return summaries
 
 
@@ -64,7 +66,8 @@ def _count_or_unknown(value: int | None) -> str:
 
 def stats_lines(review: Review) -> list[str]:
     """A canary's snapshot and read counts, as finalize prints them after `STATS <selector> `: the numbers its record
-    holds, and none for a field the record leaves out."""
+    holds, and none for a field the record leaves out, as a record written before searches were counted leaves out
+    `searches`."""
     lines = []
     snapshot = review.get("snapshot")
     if snapshot is not None:
@@ -83,6 +86,7 @@ def stats_lines(review: Review) -> list[str]:
     lines.extend(
         f"reviewer {reviewer['id']} files_read={_count_or_unknown(reviewer['files_read'])} "
         f"bytes_read={_count_or_unknown(reviewer['bytes_read'])}"
+        + (f" searches={_count_or_unknown(reviewer['searches'])}" if "searches" in reviewer else "")
         for reviewer in review.get("reviewers", [])
         if "files_read" in reviewer
     )
