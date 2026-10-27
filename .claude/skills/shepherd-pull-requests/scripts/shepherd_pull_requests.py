@@ -37,11 +37,13 @@ Run it from the hub on main. One tick:
   review-prs arguments that review those it does not; the review is report-only, and premerge_review.py's docstring
   lists its lines, which change no exit status;
 - names each worktree a merged pull request carried and no open pull request, a draft included, still carries, for
-  repo-cleanup to retire: one whose checked-out branch is the pull request's head branch, or whose HEAD is the pull
-  request's head commit or a commit that head reaches and origin's main does not, as when a session pushed its
-  branch's commits under another name; a head commit git does not hold, as when it was never fetched, is matched by
-  its branch's name alone, and while git does not hold origin's main, which leaves each merged head's own commits
-  unknown, it names none.
+  repo-cleanup to retire, judged by commit as repo-cleanup judges a branch merged (pull_carried.py in
+  ejryan89-skill-core): one whose HEAD is the pull request's head commit, or one of the pull request's own commits
+  that its head follows only through merges that brought in origin's main, as GitHub's update-branch makes, whatever
+  branch the worktree has checked out, as when a session pushed its branch's commits under another name; a branch's
+  name alone never matches, so a worktree created later on a merged pull request's branch name is not named; a head
+  commit git does not hold, as when it was never fetched, matches only a worktree whose HEAD is that commit, and while
+  git does not hold origin's main, which leaves each merged head's own commits unknown, it names none.
 
 With --dry-run it lists and judges the same way and writes nothing: it reads origin's main instead of fetching, and
 prints what it would arm, update, and rerun. Either way it reads origin's branches with ls-remote.
@@ -90,7 +92,8 @@ Every line is one fact:
                                        a worktree a merged pull request carried, for repo-cleanup to retire, with one
                                        branch <branch> for each local branch to delete: the worktree's checked-out
                                        branch first, then the pull request's head branch when a local branch of that
-                                       name exists and no other worktree has it checked out
+                                       name holds a commit the pull request carried and no other worktree has it
+                                       checked out
     MERGED_FAILED <reason>             the merged pull requests could not be listed or matched to the worktrees
     REMAINING <count>                  the open pull requests that are not drafts; 0 means none remains
 
@@ -122,6 +125,7 @@ from github_client import GitHubClient, GitHubError
 from github_remote import github_repository
 from path_keys import path_key
 from premerge_review import Head, Reader, ReviewUnread, archive_reader, review_lines
+from pull_carried import carried
 
 REMOTE = "origin"
 BASE = "main"
@@ -770,24 +774,15 @@ def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | Non
     return {commit: parents for commit, *parents in (line.split() for line in listing.splitlines() if line)}
 
 
-def reaches(history: dict[str, list[str]], head: str, commit: str) -> bool:
-    """Whether `commit` is `head` or one of its ancestors within `history`."""
-    seen: set[str] = set()
-    pending = [head]
-    while pending:
-        current = pending.pop()
-        if current == commit:
-            return True
-        if current in seen or current not in history:
-            continue
-        seen.add(current)
-        pending.extend(history[current])
-    return False
-
-
-def local_branches(git: GitClient, top: Path) -> set[str]:
-    listing = git.output(["for-each-ref", "--format=%(refname)", "refs/heads/"], directory=top)
-    return {line[len("refs/heads/") :] for line in listing.split("\n") if line.startswith("refs/heads/")}
+def local_branches(git: GitClient, top: Path) -> dict[str, str]:
+    """The commit each local branch holds, by its name."""
+    listing = git.output(["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/"], directory=top)
+    tips = {}
+    for line in listing.split("\n"):
+        commit, _, name = line.partition(" ")
+        if name.startswith("refs/heads/"):
+            tips[name[len("refs/heads/") :]] = commit
+    return tips
 
 
 def merged_lines(
@@ -806,24 +801,30 @@ def merged_lines(
     if not candidates or not merged:
         return []
     history = own_history(git, place.top, sorted({each.head for each in merged if each.head}), base)
+
+    def in_base(commit: str) -> bool:
+        # Asked only of a parent of a merged head's own commit, which origin's main holds unless it is one too.
+        return commit not in history
+
     local = local_branches(git, place.top)
     lines = []
     for worktree in candidates:
-        carried = [
-            each
-            for each in merged
-            if each.branch == worktree.branch
-            or (worktree.head in history and reaches(history, each.head, worktree.head))
-        ]
-        if not carried:
+        found = [each for each in merged if each.head and carried(worktree.head, each.head, history, in_base)]
+        if not found:
             continue
         others = {other.branch for other in place.worktrees if other.path != worktree.path}
         branches = [worktree.branch] if worktree.branch else []
-        for each in sorted(carried, key=lambda item: -item.number):
-            if each.branch in local and each.branch not in others and each.branch not in branches:
+        for each in sorted(found, key=lambda item: -item.number):
+            tip = local.get(each.branch)
+            if (
+                tip is not None
+                and each.branch not in others
+                and each.branch not in branches
+                and carried(tip, each.head, history, in_base)
+            ):
                 branches.append(each.branch)
         named = "".join(f" branch {flat_text(branch)}" for branch in branches)
-        number = max(each.number for each in carried)
+        number = max(each.number for each in found)
         lines.append(f'MERGED #{number} worktree "{Path(worktree.path).as_posix()}"{named}')
     return lines
 
