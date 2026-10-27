@@ -1483,6 +1483,33 @@ class MergedTest(FixtureTestCase):
             self.merged_lines(StubGh(merged=merged)),
         )
 
+    def test_a_local_branch_the_merged_head_follows_through_update_merges_is_named(self) -> None:
+        carried = self.add_worktree("carried", "claude/carried")
+        pushed = self.commit_in(carried, "carried")
+        main = git("rev-parse", "main", directory=self.hub)
+        tree = git("rev-parse", f"{pushed}^{{tree}}", directory=self.hub)
+        updated = git("commit-tree", tree, "-p", pushed, "-p", main, "-m", "Merge main", directory=self.hub)
+        git("branch", "fix/pushed", pushed, directory=self.hub)
+        merged = [{"number": 18, "headRefName": "fix/pushed", "headRefOid": updated}]
+        self.assertEqual(
+            [f'MERGED #18 worktree "{carried.as_posix()}" branch claude/carried branch fix/pushed'],
+            self.merged_lines(StubGh(merged=merged)),
+        )
+
+    def test_the_local_branches_of_several_carrying_pull_requests_are_named_newest_first(self) -> None:
+        both = self.add_worktree("both", "claude/both")
+        pushed = self.commit_in(both, "both")
+        git("branch", "fix/first", pushed, directory=self.hub)
+        git("branch", "fix/second", pushed, directory=self.hub)
+        merged = [
+            {"number": 19, "headRefName": "fix/first", "headRefOid": pushed},
+            {"number": 20, "headRefName": "fix/second", "headRefOid": pushed},
+        ]
+        self.assertEqual(
+            [f'MERGED #20 worktree "{both.as_posix()}" branch claude/both branch fix/second branch fix/first'],
+            self.merged_lines(StubGh(merged=merged)),
+        )
+
     def test_a_worktree_matched_by_commit_names_the_pull_request_s_local_branch_too(self) -> None:
         both = self.add_worktree("both", "claude/both")
         pushed = self.commit_in(both, "both")
