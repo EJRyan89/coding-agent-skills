@@ -40,7 +40,7 @@ class RepositoryTestCase(unittest.TestCase):
 
     def git(self, directory: Path, *arguments: str) -> str:
         return subprocess.run(
-            ["git", "-C", str(directory), *arguments], capture_output=True, text=True, check=True
+            ["git", "-C", str(directory), *arguments], capture_output=True, text=True, encoding="utf-8", check=True
         ).stdout.strip()
 
 

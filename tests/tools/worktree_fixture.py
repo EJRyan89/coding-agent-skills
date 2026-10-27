@@ -30,7 +30,12 @@ def isolated_environment() -> dict[str, str]:
 
 def run_git(cwd: Path, environment: dict[str, str], *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", "-C", str(cwd), *arguments], capture_output=True, text=True, env=environment, check=False
+        ["git", "-C", str(cwd), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        check=False,
     )
 
 

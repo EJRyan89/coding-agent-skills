@@ -426,7 +426,9 @@ class SkillDependencyTestCase(FixtureRepositoryTestCase):
         script.parent.mkdir()
         start = ["import sys", "from pathlib import Path", *header]
         script.write_text("\n".join([*start, "from alpha_values import VALUE", "print(VALUE)", ""]), encoding="utf-8")
-        result = subprocess.run([sys.executable, "-B", str(script)], capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            [sys.executable, "-B", str(script)], capture_output=True, text=True, encoding="utf-8", check=False
+        )
         self.assertEqual((0, "alpha found\n"), (result.returncode, result.stdout), result.stderr)
         self.assertEqual([], sibling_path_problems(self.root))
         self.assertEqual([], script_dependency_problems(self.root))

@@ -141,7 +141,12 @@ def test_the_module_imports_on_its_own_from_any_folder(tmp_path: Path) -> None:
     module = REPOSITORY / "tools" / "captured_samples.py"
     program = f"import json, runpy, sys; runpy.run_path({str(module)!r}); print(json.dumps(sys.path[:3]))"
     done = subprocess.run(
-        [sys.executable, "-I", "-c", program], cwd=tmp_path, capture_output=True, text=True, check=False
+        [sys.executable, "-I", "-c", program],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     assert done.returncode == 0, done.stderr
     core = REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"

@@ -1043,6 +1043,108 @@ def test_json_write_policy_with_no_module_to_read_could_not_measure() -> None:
     assert found == ["could not measure: no module the claims read was given, so no json.dumps write was looked for"]
 
 
+ENCODING_SOURCE = """\
+import gzip
+import io as text_io
+import lzma
+import os
+import subprocess as sp
+import tarfile
+import tempfile
+from io import TextIOWrapper as Wrapper
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+
+def opened(path: Path, mode: str, stream, fd: int, options: dict, archive) -> None:
+    open(path)  # refused: opens text with open()
+    open(path, "w")  # refused: opens text with open()
+    open(path, mode=mode)  # refused: opens text with open()
+    open(path, "w", encoding=None)  # refused: opens text with open()
+    open(path, "rb")
+    open(path, "w", -1, "utf-8")
+    open(path, "w", encoding="locale")
+    open(path, "w", **options)
+    text_io.open(path, "a")  # refused: opens text with io.open()
+    os.fdopen(fd, "w")  # refused: opens text with os.fdopen()
+    Wrapper(stream)  # refused: opens text with io.TextIOWrapper()
+    Wrapper(stream, "utf-8")
+    path.read_text()  # refused: opens text with read_text()
+    path.read_text("utf-8")
+    path.write_text("x")  # refused: opens text with write_text()
+    path.write_text("x", encoding="utf-8")
+    path.open()  # refused: opens text with open()
+    path.open("w", encoding="utf-8")
+    path.open("rb")
+    archive.open(path.name)
+    tarfile.open(path)
+    os.open(path, os.O_RDONLY)
+    NamedTemporaryFile("w")  # refused: opens text with tempfile.NamedTemporaryFile()
+    NamedTemporaryFile("w", encoding="utf-8")
+    tempfile.TemporaryFile()
+    tempfile.SpooledTemporaryFile(0, "w+")  # refused: opens text with tempfile.SpooledTemporaryFile()
+    gzip.open(path, "rt")  # refused: opens text with gzip.open()
+    gzip.open(path)
+    lzma.open(path, "rt", encoding="utf-8")
+    sp.run(["git"], text=True)  # refused: decodes subprocess.run's output as text
+    sp.check_output(["git"], universal_newlines=True)  # refused: decodes subprocess.check_output's output as text
+    sp.run(["git"], text=True, encoding="utf-8")
+    sp.run(["git"], text=False)
+    sp.run(["git"])
+
+
+def sanctioned(path: Path) -> str:
+    return path.read_text()
+
+
+ENCODING_ALLOWED = {"sanctioned": "reads what a program wrote in the locale's encoding", "stale": "a reason"}
+"""
+
+
+def test_encoding_policy_refuses_text_io_that_names_no_encoding() -> None:
+    remedy = (
+        " without an encoding, which reads the locale's before Python 3.15 and UTF-8 from it; pass encoding=, "
+        '"locale" where the locale\'s is meant, or state why in ENCODING_ALLOWED'
+    )
+    refused = [
+        (number, line.partition("# refused: ")[2])
+        for number, line in enumerate(ENCODING_SOURCE.splitlines(), start=1)
+        if "# refused: " in line
+    ]
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        # A skill's module, its suite, and a suites' support module are all read: suites are what drift by version.
+        names = ["skills/alpha/scripts/alpha.py", "skills/alpha/scripts/test_alpha.py", "tests/helper.py"]
+        write_fixture_tree(
+            root,
+            {
+                **dict.fromkeys(names, ENCODING_SOURCE),
+                "tools/broken.py": "ENCODING_ALLOWED = {'scope': ''}\n",
+                "docs/outside.py": "open('notes.txt')\n",
+            },
+        )
+        found = python_checks.encoding_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        *(
+            entry
+            for name in names
+            for entry in [
+                *(f"{name}:{number} {what}{remedy}" for number, what in refused),
+                f"{name}: ENCODING_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+            ]
+        ),
+        "tools/broken.py: ENCODING_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+def test_encoding_policy_with_no_python_to_read_could_not_measure() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"docs/outside.py": "open('notes.txt')\n", "skills/alpha/SKILL.md": "open()\n"})
+        found = python_checks.encoding_problems(root, sorted(root.rglob("*.*")))
+    assert found == ["could not measure: no Python under the format roots was given, so no text open was looked for"]
+
+
 def test_claim_policies_read_the_policies_their_runner_and_the_root_modules() -> None:
     # The claims speak of the repository's Python, so a policy's own reader is held to them as a skill's is; a suite
     # and the suites' support trees stay out.

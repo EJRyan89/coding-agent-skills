@@ -41,7 +41,7 @@ class LastReleaseTests(unittest.TestCase):
 
     def git(self, *arguments: str) -> str:
         return subprocess.run(
-            ["git", "-C", str(self.root), *arguments], capture_output=True, text=True, check=True
+            ["git", "-C", str(self.root), *arguments], capture_output=True, text=True, encoding="utf-8", check=True
         ).stdout.strip()
 
     def commit(self, message: str, *tags: str) -> str:

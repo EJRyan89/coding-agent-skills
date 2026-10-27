@@ -245,6 +245,7 @@ class CrossSkillContractTests(unittest.TestCase):
                         ],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
                         check=False,
                     )
                     self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
@@ -264,7 +265,11 @@ class CrossSkillContractTests(unittest.TestCase):
                 with self.subTest(skill=name):
                     arguments = ["locate", name, "--repo", str(REPOSITORY_ROOT), "--home", home]
                     completed = subprocess.run(
-                        [sys.executable, "-B", str(script), *arguments], capture_output=True, text=True, check=False
+                        [sys.executable, "-B", str(script), *arguments],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        check=False,
                     )
                     self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
                     lines = completed.stdout.splitlines()
@@ -532,7 +537,12 @@ class CrossSkillContractTests(unittest.TestCase):
                         if executable is None:
                             self.fail(f"{shell} is a validation prerequisite")
                         result = subprocess.run(
-                            [executable, *arguments], capture_output=True, text=True, check=False, timeout=30
+                            [executable, *arguments],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            check=False,
+                            timeout=30,
                         )
                         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                         self.assertEqual(expected, json.loads(result.stdout))
@@ -558,6 +568,7 @@ class CrossSkillContractTests(unittest.TestCase):
                     env={**os.environ, "GUARD_PARSE_ONLY": command},
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     check=False,
                     timeout=30,
                 )
@@ -606,6 +617,7 @@ class CrossSkillContractTests(unittest.TestCase):
                             input=event,
                             capture_output=True,
                             text=True,
+                            encoding="utf-8",
                             cwd=root,
                             env=environment,
                             check=False,
@@ -681,6 +693,7 @@ class CrossSkillContractTests(unittest.TestCase):
                         input=event,
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
                         cwd=cwd,
                         env=environment,
                         check=False,

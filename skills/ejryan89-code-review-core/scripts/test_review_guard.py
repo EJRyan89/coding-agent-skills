@@ -195,7 +195,8 @@ class ReadTests(GuardFixture):
                 self.assertIsNone(self.decide(tool, **tool_input))
         self.assertEqual(claim, (self.claims / f"{AGENT}.json").read_bytes())
         logged = [
-            json.loads(line) for line in guard.read_log(self.run_directory, "csharp-review").read_text().splitlines()
+            json.loads(line)
+            for line in guard.read_log(self.run_directory, "csharp-review").read_text(encoding="utf-8").splitlines()
         ]
         self.assertEqual(
             [

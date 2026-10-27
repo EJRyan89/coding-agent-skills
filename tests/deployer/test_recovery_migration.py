@@ -792,6 +792,7 @@ with mock.patch("deployer.fsops.move", side_effect=failing_move):
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,
         )
         self.assert_run_unchanged(
@@ -914,7 +915,10 @@ class RecoveryBranchTests(RecoveryTestCase):
             f"  Preserved backup: alpha -> .backups/{run_id}/alpha",
             "  Recovery complete.",
         )
-        self.assertEqual("edited by hand\n", (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text())
+        self.assertEqual(
+            "edited by hand\n",
+            (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text(encoding="utf-8"),
+        )
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
         self.assertIn("Updated alpha", self.skill_text("alpha"))
         self.assertFalse((self.home / ".claude" / "deployer" / "staging" / run_id).exists())
@@ -968,7 +972,9 @@ class RecoveryBranchTests(RecoveryTestCase):
             journal_file, f"  WARNING: Installed alpha hash mismatch (expected {installed}, got {edited})"
         )
         self.assertIn("edited after the run", self.skill_text("alpha"))
-        self.assertEqual("previous alpha\n", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+        self.assertEqual(
+            "previous alpha\n", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text(encoding="utf-8")
+        )
         self.assertFalse(destination.exists())
 
     def test_an_installed_copy_holding_a_link_never_matches_and_stops_completion(self) -> None:
@@ -1042,7 +1048,9 @@ class RecoveryBranchTests(RecoveryTestCase):
             "installed by the interrupted run\nedited after the run\n",
             (self.skills_dir / "alpha" / "SKILL.md").read_text(encoding="utf-8"),
         )
-        self.assertIn("Alpha content", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+        self.assertIn(
+            "Alpha content", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text(encoding="utf-8")
+        )
 
     def test_an_installed_copy_that_appears_while_rollback_reads_it_is_not_removed(self) -> None:
         journal_file = self.uncommitted_replacement()
@@ -1060,7 +1068,9 @@ class RecoveryBranchTests(RecoveryTestCase):
                 "  WARNING: Both alpha and alpha.deploying-bak exist during rollback",
             )
         self.assertEqual("installed by the interrupted run\n", (alpha / "SKILL.md").read_text(encoding="utf-8"))
-        self.assertIn("Alpha content", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+        self.assertIn(
+            "Alpha content", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text(encoding="utf-8")
+        )
 
     def test_a_backup_that_cannot_be_moved_back_stops_rollback_and_the_next_deployment_restores_it(self) -> None:
         journal_file = self.uncommitted_replacement()
@@ -1202,7 +1212,10 @@ class RecoveryBranchTests(RecoveryTestCase):
             f"  Preserved backup: alpha -> .backups/{run_id}/alpha",
             "  Recovery complete.",
         )
-        self.assertEqual("edited by hand\n", (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text())
+        self.assertEqual(
+            "edited by hand\n",
+            (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text(encoding="utf-8"),
+        )
         self.assertIn("Updated alpha", self.skill_text("alpha"))
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
         self.assertFalse(self.lock_dir.exists())
@@ -1233,7 +1246,9 @@ class UnkeptBackupTests(RecoveryTestCase):
             "BACKED UP (1):",
             f"  {item}: .backups/{run_id}/{item}",
         )
-        self.assertEqual(self.EDIT, (self.skills_dir / ".backups" / run_id / item / "SKILL.md").read_text())
+        self.assertEqual(
+            self.EDIT, (self.skills_dir / ".backups" / run_id / item / "SKILL.md").read_text(encoding="utf-8")
+        )
         self.assertFalse((self.skills_dir / f"{item}.deploying-bak").exists())
 
     def test_an_update_keeps_a_copy_edited_between_the_plan_and_the_move(self) -> None:
@@ -1272,7 +1287,7 @@ class UnkeptBackupTests(RecoveryTestCase):
         ):
             self.deploy("--all", changes_home=FAILS_PARTWAY)
         run_id = self.manifest()["last_run_id"]
-        self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+        self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text(encoding="utf-8"))
         result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))
         self.assert_lines(
             result.output,
@@ -1282,7 +1297,9 @@ class UnkeptBackupTests(RecoveryTestCase):
             f"  Preserved backup: alpha -> .backups/{run_id}/alpha",
             "  Recovery complete.",
         )
-        self.assertEqual(self.EDIT, (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text())
+        self.assertEqual(
+            self.EDIT, (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+        )
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
         self.assertIn("Updated alpha", self.skill_text("alpha"))
 
@@ -1319,7 +1336,9 @@ class UnkeptBackupTests(RecoveryTestCase):
             f"  Preserved backup: alpha -> .backups/{self.RUN}/alpha",
             "  Recovery complete.",
         )
-        self.assertEqual(self.EDIT, (self.skills_dir / ".backups" / self.RUN / "alpha" / "SKILL.md").read_text())
+        self.assertEqual(
+            self.EDIT, (self.skills_dir / ".backups" / self.RUN / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+        )
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
 
     def test_a_changed_backup_whose_permanent_destination_exists_stops_completion(self) -> None:
@@ -1329,8 +1348,8 @@ class UnkeptBackupTests(RecoveryTestCase):
         result = self.deploy_fails("--all", pattern="Recovery failed")
         self.assert_lines(result.output, "  WARNING: Both transient and permanent backups exist for alpha")
         self.assertTrue(journal_file.is_file())
-        self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
-        self.assertEqual("already there\n", (destination / "SKILL.md").read_text())
+        self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertEqual("already there\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
 
 class TornJournalTests(RecoveryTestCase):

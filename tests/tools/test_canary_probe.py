@@ -23,7 +23,12 @@ from tools.runtime_canary import FIXTURE_SKILL, FIXTURE_SOURCE, RUN_ID, STATE, C
 def run_probe(script: Path, cwd: Path) -> subprocess.CompletedProcess[str]:
     """The probe run as a runtime's shell runs it, with the arguments the canary's prompt asks for."""
     return subprocess.run(
-        [sys.executable, "-B", str(script), "--help"], cwd=cwd, capture_output=True, text=True, check=False
+        [sys.executable, "-B", str(script), "--help"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
 
 

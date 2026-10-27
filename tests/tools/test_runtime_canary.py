@@ -138,7 +138,13 @@ def run_python(*arguments: str, timed_out: bool = False) -> Callable[[list[str],
 
     def action(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
         process = subprocess.run(
-            [sys.executable, "-B", *arguments], cwd=cwd, env=environment, capture_output=True, text=True, check=False
+            [sys.executable, "-B", *arguments],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
         stdout = json.dumps({"stdout": process.stdout}) + "\n"
         return Completed(-1 if timed_out else 0, stdout, process.stderr, timed_out=timed_out)
@@ -158,7 +164,13 @@ def run_bash(*arguments: str) -> Callable[[list[str], Path, dict[str, str]], Com
 
     def action(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
         process = subprocess.run(
-            [git_bash(), *arguments], cwd=cwd, env=environment, capture_output=True, text=True, check=False
+            [git_bash(), *arguments],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
         return Completed(0, json.dumps({"stdout": process.stdout, "code": process.returncode}) + "\n", process.stderr)
 
@@ -415,6 +427,7 @@ class DeploymentTests(RuntimeCanaryTestCase):
             cwd=elsewhere,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         self.assertEqual(f"RUNTIME_CANARY_PROBE RAN {forward(script)}\n", process.stdout)
@@ -1452,6 +1465,7 @@ class BashTests(RuntimeCanaryTestCase):
                 input=stdin,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 check=False,
             )
             return process.returncode, process.stdout, process.stderr

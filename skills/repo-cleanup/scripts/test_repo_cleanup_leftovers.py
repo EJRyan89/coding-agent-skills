@@ -616,6 +616,7 @@ class LeftoverTests(Fixture):
             ["git", "-C", str(trees["rebasing"]), "rebase", "--exec", "exit 1", "main~2"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertNotEqual(0, stopped.returncode, "the rebase stops at its failing exec line")

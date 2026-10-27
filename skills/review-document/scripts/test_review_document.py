@@ -68,7 +68,11 @@ UNCHANGED_TEXT = (
 
 def git(directory: Path, *arguments: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(directory), *IDENTITY, *arguments], capture_output=True, text=True, check=False
+        ["git", "-C", str(directory), *IDENTITY, *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     if result.returncode != 0:
         raise AssertionError(result.stderr)
