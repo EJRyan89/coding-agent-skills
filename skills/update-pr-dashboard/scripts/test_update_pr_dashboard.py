@@ -437,6 +437,13 @@ class LayoutTests(unittest.TestCase):
             bad[field] = value
             with self.subTest(field=field), self.assertRaises(TrackerError):
                 validate_items([bad])
+        none_open = {"open": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 0}, "since": None, "repeats": 1}
+        bad = item() | {"ai_review": ai("APPROVED") | {"ledger": good | none_open}}
+        with self.assertRaises(TrackerError) as raised:
+            validate_items([bad])
+        self.assertEqual(
+            f"Tracker item {bad['repository']}#{bad['number']}.ai_review.ledger is invalid", str(raised.exception)
+        )
 
 
 class TrackerTests(unittest.TestCase):
@@ -1236,6 +1243,12 @@ class ValidateItemsSequenceTests(unittest.TestCase):
                 ".ledger.since",
                 "an integer of at least 0 or null",
                 'string "1"',
+            ),
+            (
+                valid | {"ledger": ledger | {"repeats": "3"}},
+                ".ledger.repeats",
+                "an integer of at least 0",
+                'string "3"',
             ),
             (valid | reading | {"flagged": True}, ".flagged", "an integer of at least 0", "boolean true"),
             (valid | reading | {"flagged": -1}, ".flagged", "an integer of at least 0", "integer -1"),
