@@ -307,6 +307,25 @@ def test_one_bash_reading_every_text_gives_the_verdicts_bash_n_gives_each_as_a_f
     assert {True, False} == set(verdicts.values())
 
 
+# Ends the subshell reading a text that holds "ended" with exit 0 before its reading finishes, as an MSYS Bash reads a
+# subshell Windows ends, and reads every other text as before.
+ENDED_SUBSHELL = 'eval() { case $1 in *ended*) exit 0 ;; esac; builtin eval "$1"; }\n'
+
+
+def test_a_text_whose_batch_reading_ends_takes_the_verdict_of_its_own_bash_n(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bash_agreement, "READ_EACH", ENDED_SUBSHELL + bash_agreement.READ_EACH)
+    texts = ["echo the batch reads (", "echo the batch ended )", "echo the batch ended too"]
+    verdicts = bash_agreement.bash_verdicts(texts)
+    assert {text: read for text, (read, _) in verdicts.items()} == {texts[0]: False, texts[1]: False, texts[2]: True}
+    assert "syntax error" in verdicts[texts[1]][1]
+
+
+def test_a_batch_whose_every_reading_ends_still_holds_the_reader_to_bash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bash_agreement, "READ_EACH", ENDED_SUBSHELL + bash_agreement.READ_EACH)
+    # Bash and the reader both refuse the first and read the second, so only an end read as a verdict disagrees.
+    bash_agreement.assert_reader_agrees(["echo first ended )", "echo second ended"])
+
+
 class HereDocumentTests(unittest.TestCase):
     def test_a_here_document_body_is_data_never_commands(self) -> None:
         tree = parse("cat > run.sh <<EOF\ncd '/wt'\ngit status\nEOF\ngit add run.sh")

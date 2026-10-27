@@ -508,7 +508,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** `" && ".join(` building a command line a shell runs; `"-c"` beside `find_git_bash()` or
   `find_bash()` whose script starts several programs and whose one status is read as their verdict; a `( ... )`
   subshell's `$?` in a Bash loop read as a child's verdict.
-- **Examples:** #654, #1355, #1798
+- **Examples:** #654, #1355, #1798, #1963
 
 ### A file handed to another process appears whole
 
