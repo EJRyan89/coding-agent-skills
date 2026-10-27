@@ -832,7 +832,7 @@ class TryMutantFixtures(unittest.TestCase):
     def test_the_log_names_each_mutant_a_suite_ran_against_and_each_no_suite_reached(self) -> None:
         unreached = Mutant("tools/calc.py", 7, "x = 1", "x = 2", "z")
         left = Mutant("tools/calc.py", 9, "y = 1", "y = 2", "w")
-        output = io.StringIO()
+        output = FlushRecorder()
         with contextlib.redirect_stdout(output):
             outcomes = try_mutants(
                 Workers([self.tree], lambda: 0.0),
@@ -844,10 +844,11 @@ class TryMutantFixtures(unittest.TestCase):
             try_mutants(Workers([self.tree], lambda: 200.0), [left], self.reach, 100.0, self.runner({}))
         self.assertEqual([KILLED, NOT_REACHED], [outcome.status for outcome in outcomes])
         # A mutant the deadline left untested ran against nothing and reached nothing to log.
-        self.assertEqual(
-            "killed      tools/calc.py:2 return a + b -> return a - b\nnot reached tools/calc.py:7 x = 1 -> x = 2\n",
-            output.getvalue(),
-        )
+        killed = "killed      tools/calc.py:2 return a + b -> return a - b\n"
+        unreached_line = "not reached tools/calc.py:7 x = 1 -> x = 2\n"
+        self.assertEqual(killed + unreached_line, output.getvalue())
+        # Each line reaches the live log as its mutant finishes, not when the run ends.
+        self.assertEqual([killed, killed + unreached_line], output.flushed)
 
     def test_the_deadline_leaves_a_mutant_not_run_and_the_module_put_back_even_when_a_suite_raises(self) -> None:
         times = iter([0.0, 200.0])
