@@ -294,6 +294,7 @@ class EndToEndTests(GuardTestCase):
             env=self.environment,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertNotIn(said.returncode, (0, 1))
@@ -483,6 +484,7 @@ class HookCommandTests(GuardTestCase):
                     env=self.environment,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     check=False,
                 )
                 self.assertNotIn(said.returncode, (0, 1))

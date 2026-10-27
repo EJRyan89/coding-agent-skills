@@ -1010,7 +1010,12 @@ HOSTILE_DOCUMENT = word_document(
 
 def git(checkout: Path, *arguments: str) -> str:
     return subprocess.run(
-        ["git", "-c", "core.autocrlf=false", *arguments], cwd=checkout, check=True, capture_output=True, text=True
+        ["git", "-c", "core.autocrlf=false", *arguments],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     ).stdout.strip()
 
 

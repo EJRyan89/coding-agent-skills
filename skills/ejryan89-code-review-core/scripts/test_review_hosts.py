@@ -271,7 +271,7 @@ class RuntimeHostTests(unittest.TestCase):
             self.assertEqual(2, len(invocations))
             self.assertEqual((["copilot", "--version"], ""), (invocations[0][0], invocations[0][3]))
             self.assertIn("assistant.message", diagnostic.read_text(encoding="utf-8"))
-            self.assertEqual({"protocol_version": 1}, json.loads(result_path.read_text()))
+            self.assertEqual({"protocol_version": 1}, json.loads(result_path.read_text(encoding="utf-8")))
             self.assertFalse(staging.exists(), "the staging file is renamed into place, never copied")
             command, cwd, environment, prompt = invocations[-1]
             # Copilot may write only its staging file; the result appears whole, by rename, or not at all.

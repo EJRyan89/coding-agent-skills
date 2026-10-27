@@ -409,6 +409,7 @@ class MeasurementCanaryFixtures(unittest.TestCase):
                 cwd=tree,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 check=False,
             )
             self.assertEqual(0, done.returncode, done.stdout + done.stderr)

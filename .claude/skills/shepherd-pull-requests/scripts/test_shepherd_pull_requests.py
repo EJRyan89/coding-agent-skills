@@ -348,7 +348,7 @@ def limited(arguments: Sequence[str], items: list[Any]) -> list[Any]:
 
 def git(*arguments: str, directory: Path) -> str:
     return subprocess.run(
-        ["git", "-C", str(directory), *arguments], check=True, capture_output=True, text=True
+        ["git", "-C", str(directory), *arguments], check=True, capture_output=True, text=True, encoding="utf-8"
     ).stdout.strip()
 
 
@@ -1875,7 +1875,11 @@ class MainTest(unittest.TestCase):
         skills = scripts.parents[3] / "skills"
         probe = "import sys; sys.path.insert(0, sys.argv[1]); import premerge_review; print(*sys.path, sep='\\n')"
         ran = subprocess.run(
-            [sys.executable, "-B", "-I", "-c", probe, str(scripts)], capture_output=True, text=True, check=False
+            [sys.executable, "-B", "-I", "-c", probe, str(scripts)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
         self.assertEqual(0, ran.returncode, ran.stderr)
         path = ran.stdout.splitlines()

@@ -604,7 +604,9 @@ class DeployAtTests(DeployerTestCase):
         canary = self.root / "canary"
         canary.mkdir()
         self.deploy_ok("--all", "--at", "v1.0.0", "--canary-home", str(canary))
-        self.assertIn("Alpha at the release", (canary / ".claude" / "skills" / "alpha" / "SKILL.md").read_text())
+        self.assertIn(
+            "Alpha at the release", (canary / ".claude" / "skills" / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+        )
         self.assert_exports_removed()
 
     def test_a_ref_that_reads_as_an_option_is_refused_before_git_runs(self) -> None:

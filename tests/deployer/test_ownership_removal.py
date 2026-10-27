@@ -246,6 +246,7 @@ class RemovalTests(DeployerTestCase):
             [sys.executable, "-B", str(self.skills_dir / "public" / "scripts" / "run.py")],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertEqual(0, result.returncode, result.stderr)

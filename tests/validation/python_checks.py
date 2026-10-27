@@ -898,6 +898,134 @@ def json_write_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# Python 3.15 made UTF-8 the default text encoding where earlier releases read the locale's, so text I/O that names no
+# encoding reads and writes one way on the supported floor and another on the latest release. Every call that opens,
+# reads, or writes text in the repository's Python, suites included, passes encoding=, as "locale" where the locale's
+# is meant; any other exception states why in a module-level ENCODING_ALLOWED = {scope: reason}.
+ENCODING_ALLOWANCE = "ENCODING_ALLOWED"
+
+
+@dataclass(frozen=True)
+class TextOpener:
+    """Where a call that may open text takes its mode and its encoding, by position (None for a keyword alone or no
+    mode at all), and the mode it opens in when given none, empty for a call that opens only text."""
+
+    mode: int | None
+    default_mode: str
+    encoding: int | None
+
+
+BINARY_DEFAULT = "rb"
+# The module functions and classes that open text, by the name they are imported as.
+TEXT_OPENERS = {
+    "open": TextOpener(1, "r", 3),
+    "io.open": TextOpener(1, "r", 3),
+    "os.fdopen": TextOpener(1, "r", 3),
+    "io.TextIOWrapper": TextOpener(None, "", 1),
+    "tempfile.TemporaryFile": TextOpener(0, "w+b", 2),
+    "tempfile.NamedTemporaryFile": TextOpener(0, "w+b", 2),
+    "tempfile.SpooledTemporaryFile": TextOpener(1, "w+b", 3),
+    "gzip.open": TextOpener(1, BINARY_DEFAULT, 3),
+    "bz2.open": TextOpener(1, BINARY_DEFAULT, 3),
+    "lzma.open": TextOpener(1, BINARY_DEFAULT, None),
+}
+# The path methods that open, read, or write text, by the attribute a call names: pathlib's and zipfile's alike.
+TEXT_METHODS = {
+    "read_text": TextOpener(None, "", 0),
+    "write_text": TextOpener(None, "", 1),
+    "open": TextOpener(0, "r", 2),
+}
+# The module functions named open that take no text encoding: a call through one is no path's open.
+OTHER_OPENS = frozenset(
+    {"os.open", "tarfile.open", "shelve.open", "dbm.open", "webbrowser.open", "codecs.open", "wave.open"}
+)
+# The functions that start a process, whose text=True or universal_newlines=True decodes its output.
+TEXT_PROCESS_STARTS = frozenset(
+    f"subprocess.{start}" for start in ("run", "Popen", "check_output", "call", "check_call")
+)
+TEXT_PROCESS_OPTIONS = ("text", "universal_newlines")
+
+
+def _opener(call: ast.Call, aliases: dict[str, str]) -> TextOpener | None:
+    """Where a call takes its mode and encoding when it may open text, or None for any other call."""
+    qualified = qualified_name(call.func, aliases)
+    if qualified in TEXT_OPENERS:
+        return TEXT_OPENERS[qualified]
+    if isinstance(call.func, ast.Attribute) and qualified not in OTHER_OPENS:
+        return TEXT_METHODS.get(call.func.attr)
+    return None
+
+
+def _opens_text(call: ast.Call, opener: TextOpener, method: bool) -> bool:
+    """Whether a call opens text by its mode: a mode it cannot read counts as text for a module's opener, and as some
+    other object's open, such as an archive member's, for a method."""
+    if opener.mode is None and not opener.default_mode:
+        return True
+    given = call_argument(call, opener.mode, "mode")
+    if given is None:
+        return "b" not in opener.default_mode
+    if isinstance(given, ast.Constant) and isinstance(given.value, str):
+        return "b" not in given.value
+    return not method
+
+
+def _names_encoding(call: ast.Call, position: int | None) -> bool:
+    """Whether a call passes an encoding other than None, or an unpacking that may hold one."""
+    given = call_argument(call, position, "encoding")
+    return given is not None and not (isinstance(given, ast.Constant) and given.value is None)
+
+
+def _starts_text_process(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """Whether a call starts a process whose output it decodes as text."""
+    if qualified_name(call.func, aliases) not in TEXT_PROCESS_STARTS:
+        return False
+    return any(
+        not (isinstance(keyword.value, ast.Constant) and not keyword.value.value)
+        for keyword in call.keywords
+        if keyword.arg in TEXT_PROCESS_OPTIONS
+    )
+
+
+def _encoding_refusal(call: ast.Call, aliases: dict[str, str]) -> str | None:
+    """What a text open, read, write, or process start that names no encoding is refused for, or None."""
+    if _starts_text_process(call, aliases):
+        if _names_encoding(call, None):
+            return None
+        return f"decodes {qualified_name(call.func, aliases)}'s output as text"
+    opener = _opener(call, aliases)
+    qualified = qualified_name(call.func, aliases)
+    method = qualified not in TEXT_OPENERS
+    if opener is None or not _opens_text(call, opener, method) or _names_encoding(call, opener.encoding):
+        return None
+    what = call.func.attr if method and isinstance(call.func, ast.Attribute) else qualified
+    return f"opens text with {what}()"
+
+
+def encoding_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each call in the repository's Python, suites included, that opens, reads, or writes text or decodes a process's
+    output without an encoding, that no ENCODING_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    paths = [path for path in files if path.suffix == ".py" and under(path.relative_to(root).as_posix(), FORMAT_ROOTS)]
+    if not paths:
+        # No module read is no evidence that every text open names its encoding.
+        return ["could not measure: no Python under the format roots was given, so no text open was looked for"]
+    remedy = (
+        " without an encoding, which reads the locale's before Python 3.15 and UTF-8 from it; pass encoding=, "
+        f'"locale" where the locale\'s is meant, or state why in {ENCODING_ALLOWANCE}'
+    )
+    for _, name, tree in python_trees(
+        sorted(paths, key=lambda path: path_order(path.relative_to(root))), root, problems
+    ):
+        aliases = import_aliases(tree)
+        found = [
+            (node.lineno, scope, f"{refusal}{remedy}")
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call) and (refusal := _encoding_refusal(node, aliases))
+        ]
+        problems += sanctioned_problems(name, tree, ENCODING_ALLOWANCE, found)
+    return problems
+
+
 # ctypes passes an undeclared foreign function's arguments and its result as C ints, which cuts a pointer-sized handle
 # short, so every function a module calls through a library it loads has its argtypes and restype assigned in that
 # module. A function every call gives no arguments needs no argtypes. Any other exception states why in a module-level
@@ -1989,6 +2117,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_json_writer_is_the_one_writer_of_json(self) -> None:
         self.assertEqual([], json_write_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_every_text_open_names_its_encoding(self) -> None:
+        self.assertEqual([], encoding_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_every_ctypes_foreign_function_called_is_declared(self) -> None:
         self.assertEqual([], ctypes_declaration_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

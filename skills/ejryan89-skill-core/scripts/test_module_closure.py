@@ -47,6 +47,7 @@ class ModuleClosureTests(unittest.TestCase):
             [sys.executable, "-B", "-c", "from entry import VALUE; print(VALUE)"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=built,
             check=False,
         )
@@ -101,6 +102,7 @@ class ModuleClosureTests(unittest.TestCase):
             [sys.executable, "-B", "-c", program, str(SCRIPTS), str(self.scripts)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
             check=False,
         )
@@ -123,6 +125,8 @@ class ModuleClosureTests(unittest.TestCase):
             [sys.executable, "-B", "-c", program, str(SCRIPTS), str(self.scripts), str(script)],
             capture_output=True,
             text=True,
+            # The child writes in the locale's encoding, which its environment turns UTF-8 mode off to keep.
+            encoding="locale",
             env={**os.environ, **LOCALE_ENCODING_ENVIRONMENT},
             check=False,
         )

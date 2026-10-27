@@ -121,6 +121,7 @@ def git(directory: Path, *arguments: str) -> str:
         ["git", "-C", str(directory), *arguments],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     return completed.stdout.strip()

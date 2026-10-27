@@ -44,7 +44,9 @@ def git(*arguments: str) -> None:
 
 
 def execute(*arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True, text=True, check=False)
+    return subprocess.run(
+        [sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True, text=True, encoding="utf-8", check=False
+    )
 
 
 class TemporaryTestCase(unittest.TestCase):
@@ -89,6 +91,7 @@ class LocateTests(TemporaryTestCase):
             cwd=self.repo / "nested",
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
@@ -105,6 +108,7 @@ class LocateTests(TemporaryTestCase):
             cwd=self.repo,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertEqual(1, completed.returncode, completed.stderr)

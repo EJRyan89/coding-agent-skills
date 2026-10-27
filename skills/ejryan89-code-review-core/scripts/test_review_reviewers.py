@@ -320,6 +320,7 @@ class InspectionTests(unittest.TestCase):
                 [sys.executable, "-B", "-c", script],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 env={**os.environ, "PYTHONHASHSEED": seed},
                 check=True,
             )

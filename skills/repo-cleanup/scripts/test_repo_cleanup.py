@@ -294,6 +294,7 @@ class Fixture(CleanupTestCase):
             ["git", "-C", str(self.clone), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         return result.stdout.strip() or None
 
@@ -1891,6 +1892,7 @@ class WorktreeTestCase(CleanupTestCase):
             ["git", "-C", str(self.repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         return result.stdout.strip() or None
 
