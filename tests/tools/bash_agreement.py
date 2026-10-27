@@ -29,14 +29,20 @@ VERDICTS_LOCK = threading.Lock()
 WORKSPACE = tempfile.TemporaryDirectory(prefix="bash-agreement.")
 NAMES = itertools.count()
 
-# One Bash reads every unchecked text, since a start costs far more than a reading: each text in a subshell that turns
-# on `set -n`, read but do not run, before `eval` parses the text, so the subshell's status is the one `bash -n` gives
-# that text as a file. tests/tools/test_bash_syntax.py holds the two to the same verdicts.
-READ_EACH = r"""for ((index = 0; index < $2; index++)); do
+# One Bash reads every unchecked text, since a start costs far more than a reading: each text in a subshell whose
+# function turns on `set -n`, read but do not run, before `eval` parses the text, so its status is the one `bash -n`
+# gives that text as a file. tests/tools/test_bash_syntax.py holds the two to the same verdicts. The subshell's own
+# `$?` is never the verdict, since an MSYS Bash reads a subshell Windows ends as exit 0: `local -` restores the options
+# when the function returns, so the subshell itself prints its reading's status after the reading, and a text with no
+# such line was not read in the batch.
+READ_EACH = r"""read_text() {
+  local -
+  eval $'set -n\n'"$1"
+}
+for ((index = 0; index < $2; index++)); do
   file="$1/$index.sh"
   IFS= read -r -d '' text < "$file"
-  ( eval $'set -n\n'"$text" ) 2> "$file.said"
-  printf 'status %s\n' "$?"
+  ( read_text "$text"; printf 'read %s %s\n' "$index" "$?" ) 2> "$file.said"
 done"""
 
 
@@ -65,12 +71,24 @@ def _read_each(texts: list[str]) -> list[tuple[bool, str]]:
     result = platform_support.run_tool(
         [find_bash(), "-c", READ_EACH, "read-each", platform_support.normalize(folder), str(len(texts))]
     )
-    statuses = [line.split()[1] for line in result.output.splitlines() if line.startswith("status ")]
-    if result.returncode != 0 or len(statuses) != len(texts):
+    if result.returncode != 0:
         raise AssertionError(f"Bash did not read each of {len(texts)} texts: {result.output.strip()}")
+    # The index and status each subshell printed after its reading. A subshell that ended first printed none: Windows
+    # ended it, or a syntax error such as an open array assignment left it from inside `eval`, so that text goes to a
+    # `bash -n` of its own, whose status this process reads.
+    statuses = {
+        words[1]: words[2] for words in (line.split() for line in result.output.splitlines()) if words[:1] == ["read"]
+    }
     return [
-        (status == "0", (folder / f"{index}.sh.said").read_text(encoding="utf-8", errors="replace").strip())
-        for index, status in enumerate(statuses)
+        (
+            (
+                statuses[str(index)] == "0",
+                (folder / f"{index}.sh.said").read_text(encoding="utf-8", errors="replace").strip(),
+            )
+            if str(index) in statuses
+            else bash_n_verdict(text)
+        )
+        for index, text in enumerate(texts)
     ]
 
 
