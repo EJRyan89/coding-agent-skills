@@ -167,6 +167,7 @@ from review_specialists import (
     renamed_from,
     render_entrypoint_prompt,
     reviewer_models,
+    role_summaries,
 )
 
 # Seconds between finalize's attempts to remove a recorded run whose files another process, such as antivirus or the
@@ -806,6 +807,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         atomic_write_json(result_path, result)
         roles = plan["roles"]
         models = reviewer_models(plan)
+        summaries = role_summaries(plan)
     else:
         result = read_json(result_path)
         request = read_json(request_path)
@@ -818,6 +820,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
             }
         ]
         models = None  # the repository entrypoint protocol has no model field
+        summaries = {}
     reviewers = reviewer_summaries(
         roles,
         result["findings"],
@@ -825,6 +828,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         single=state["kind"] == "entrypoint",
         seconds=seconds,
         models=models,
+        own_summaries=summaries,
         reads=state.get("reads"),  # absent from runs prepared before reads were counted
     )
     config = load_config(Path(state["config_path"]))

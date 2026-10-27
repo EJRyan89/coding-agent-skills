@@ -1226,6 +1226,16 @@ class FindingCategoryTests(unittest.TestCase):
             undeclared = self.role(root, "csharp-review", [self.finding(category="Anything")])
             self.assertEqual(1, len(rs.load_role_result(undeclared, added)["findings"]), "without them, unchecked")
 
+    def test_several_roles_keep_their_own_summaries_and_a_combined_summary_without_markup(self) -> None:
+        request = {"repository": "example/one", "pull_number": 7, "pull_request": {"head_sha": "b" * 40}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roles = [self.role(root, "qualifier-review", []), self.role(root, "csharp-review", [])]
+            plan = {"reviewer": "fixture", "added_lines": {"Sources/Q.cs": {"134": "x"}}, "roles": roles}
+            self.assertEqual("qualifier-review: s\n\ncsharp-review: s", rs.assemble(plan, request)["summary"])
+            self.assertEqual({"qualifier-review": "s", "csharp-review": "s"}, rs.role_summaries(plan))
+            self.assertEqual({}, rs.role_summaries({**plan, "roles": roles[:1]}), "one role's is the review's")
+
     def test_findings_keep_their_own_category_through_a_merge(self) -> None:
         request = {"repository": "example/one", "pull_number": 7, "pull_request": {"head_sha": "b" * 40}}
         with tempfile.TemporaryDirectory() as temporary:
@@ -1318,7 +1328,7 @@ class DedupeTests(unittest.TestCase):
             request = {"repository": "example/one", "pull_number": 7, "pull_request": {"head_sha": "b" * 40}}
             result = rs.assemble(plan, request)
         self.assertEqual(1, len(result["findings"]))
-        self.assertEqual("**qualifier-review:** s\n\n**csharp-review:** s", result["summary"])
+        self.assertEqual("qualifier-review: s\n\ncsharp-review: s", result["summary"])
         merged = result["findings"][0]
         self.assertEqual(
             ("MUST_FIX", "C#", "qualifier-review + csharp-review", "C# headline", CSHARP_134),
@@ -1946,7 +1956,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         )
         self.assertEqual("complete", result["status"])
         self.assertEqual("fixture-specialists", result["reviewer"])
-        self.assertEqual("**db-review:** db-review ok\n\n**csharp-review:** csharp-review ok", result["summary"])
+        self.assertEqual("db-review: db-review ok\n\ncsharp-review: csharp-review ok", result["summary"])
         self.assertEqual(
             [("db/Procs.sql", 2, "SHOULD_FIX", "Database"), ("src/A.cs", 2, "MUST_FIX", "C#")],
             [(f["path"], f["line"], f["severity"], f["category"]) for f in result["findings"]],

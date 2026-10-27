@@ -477,14 +477,16 @@ class RecordTests(unittest.TestCase):
                 lambda r: r["review"]["reviewers"][0].update(model=5),
                 field_pattern("record.review.reviewers[0].model", REVIEWER_MODEL, "integer 5"),
             ),
+            (lambda r: r["review"]["reviewers"][0].update(summary=" "), r"record\.review\.reviewers\[0\]\.summary"),
+            (lambda r: r["review"]["reviewers"][0].update(summary=5), r"record\.review\.reviewers\[0\]\.summary"),
         ):
             broken = copy.deepcopy(record)
             mutate(broken)
             with self.subTest(message=message), self.assertRaisesRegex(RecordError, message):
                 validate_record(broken)
         timed = copy.deepcopy(record)
-        timed["review"]["reviewers"][0].update({"seconds": 0, "model": "claude-sonnet-5"})
-        validate_record(timed)  # a reviewer's time is optional and may be zero
+        timed["review"]["reviewers"][0].update({"seconds": 0, "model": "claude-sonnet-5", "summary": "Its own."})
+        validate_record(timed)  # a reviewer's time is optional and may be zero, and its own summary is optional
         without = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
         self.assertNotIn("github_comments", without)
         self.assertNotIn("reviewers", without["review"])

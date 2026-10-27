@@ -21,10 +21,11 @@ def reviewer_summaries(
     single: bool,
     seconds: dict[str, int] | None = None,
     models: dict[str, str] | None = None,
+    own_summaries: dict[str, str] | None = None,
     reads: dict[str, ReadCount] | None = None,
 ) -> list[dict[str, Any]]:
     """Which reviewers ran, the files each covered, the findings it raised, how often it was rerun, its time, and the
-    snapshot files it read.
+    snapshot files it read, and with `own_summaries`, its own summary.
 
     A finding merged from several specialists counts for each of them. With `reads`, a reviewer it does not count, as
     no guard held it, reads null for both counts: unknown, not zero.
@@ -48,6 +49,8 @@ def reviewer_summaries(
             summaries[-1]["seconds"] = seconds[role["id"]]
         if models and role["id"] in models:
             summaries[-1]["model"] = models[role["id"]]
+        if own_summaries and role["id"] in own_summaries:
+            summaries[-1]["summary"] = own_summaries[role["id"]]
         if reads is not None:
             counted = reads.get(role["id"])
             summaries[-1]["files_read"] = None if counted is None else counted["files"]
