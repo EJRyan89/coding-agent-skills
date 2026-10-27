@@ -221,6 +221,7 @@ class ResolveTests(unittest.TestCase):
         repo.write("Forms/My Form.cs")
         repo.write("notes.txt", "not C#\n")
         repo.commit("feature")
+        repo.write("notes.txt", "still not C#\n")
         (repo.root / "App/Deleted.cs").unlink()
         repo.git("mv", "App/Renamed.cs", "App/RenamedAgain.cs")
         repo.write("App/Modified.cs", "class Modified { }\n")
@@ -564,7 +565,7 @@ class ResolveTests(unittest.TestCase):
             return real(command, timeout)
 
         services.git = GitClient(run)
-        self.assertEqual("git ls-files --others --exclude-standard -- *.cs failed", self.failed(services=services))
+        self.assertEqual("git ls-files -z --others --exclude-standard -- *.cs failed", self.failed(services=services))
 
     def test_a_git_command_that_never_finishes_fails_but_a_stalled_fetch_does_not(self) -> None:
         self.repository.write("Code.cs")

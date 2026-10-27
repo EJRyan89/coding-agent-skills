@@ -20,11 +20,12 @@ import tempfile
 import tokenize
 import tomllib
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from git_client import GLOBAL_VALUE_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from path_containment import posix_within, within
 from toolchain import find_mypy, find_ruff
@@ -1245,6 +1246,127 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# git quotes a name holding a non-ASCII byte or a newline in a listing it prints without -z, and a byte a ref name, a
+# path, or a message can hold joins a format's fields, so a reader that splits on lines or on that byte misreads the
+# name. NUL is the one byte git refuses in them. The arguments that start a name listing, a call's positional ones or
+# a list's or tuple's items, pass -z or go to GitClient.names, which adds it, and a for-each-ref or log format joins
+# its fields with NUL. A listing or a format that must stay states why in a module-level
+# GIT_SEPARATOR_ALLOWED = {scope: reason}.
+GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
+GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
+# Each subcommand that lists names, with the options that make it list them; none means it always does. An option
+# counts alone or with a value after =, as --porcelain=v2.
+GIT_NAME_LISTINGS: dict[str, frozenset[str]] = {
+    "diff": frozenset({"--name-only", "--name-status"}),
+    "ls-files": frozenset(),
+    "ls-tree": frozenset(),
+    "status": frozenset({"--porcelain", "--short", "-s"}),
+}
+GIT_FORMAT_COMMANDS = frozenset({"for-each-ref", "log"})
+# The options a format follows, after = or as the next argument, and the prefixes --pretty's form may give it.
+GIT_FORMAT_OPTIONS = frozenset({"--format", "--pretty"})
+GIT_FORMAT_PREFIXES = ("format:", "tformat:")
+# A format's placeholders: an atom such as %(refname), a log field such as %H or %an, NUL as for-each-ref (%00) and
+# log (%x00) write it, and the escapes that print a byte, which join fields as literal text does.
+GIT_FORMAT_TOKEN = re.compile(r"%%|%x00|%00|%x[0-9a-fA-F]{2}|%n|%\([^)]*\)|%[a-zA-Z][a-zA-Z?]?")
+GIT_FORMAT_NUL = frozenset({"%00", "%x00"})
+GIT_FORMAT_ESCAPES = re.compile(r"%%|%x[0-9a-fA-F]{2}|%n")
+
+
+def _git_command(elements: Sequence[ast.expr]) -> tuple[str, list[str]] | None:
+    """The git subcommand a sequence of arguments starts, and the strings after it, or None when it starts none: the
+    first string that is not git itself, an option of git's own, or that option's value."""
+    strings = [(element.value if isinstance(element, ast.Constant) else None) for element in elements]
+    index = 0
+    while index < len(strings):
+        value = strings[index]
+        if isinstance(value, str) and value in GLOBAL_VALUE_OPTIONS:
+            index += 2
+            continue
+        if isinstance(value, str) and value != "git" and not value.startswith("-"):
+            return value, [later for later in strings[index + 1 :] if isinstance(later, str)]
+        index += 1
+    return None
+
+
+def _lists_names(command: str, options: list[str]) -> bool:
+    """Whether a git command with these options lists names."""
+    listing = GIT_NAME_LISTINGS.get(command)
+    if listing is None:
+        return False
+    return not listing or any(option.split("=", 1)[0] in listing for option in options)
+
+
+def _git_formats(options: list[str]) -> Iterator[str]:
+    """Each format among a git command's options."""
+    for index, option in enumerate(options):
+        name, equals, value = option.partition("=")
+        if name not in GIT_FORMAT_OPTIONS:
+            continue
+        text = value if equals else next(iter(options[index + 1 :]), None)
+        if text is not None:
+            yield text.removeprefix(GIT_FORMAT_PREFIXES[0]).removeprefix(GIT_FORMAT_PREFIXES[1])
+
+
+def _format_joint(text: str) -> str | None:
+    """The first text that joins two fields of a git format, when it is anything but NUL."""
+    end: int | None = None
+    for token in GIT_FORMAT_TOKEN.finditer(text):
+        if GIT_FORMAT_ESCAPES.fullmatch(token.group()) or token.group() in GIT_FORMAT_NUL:
+            continue
+        if end is not None and text[end : token.start()] not in GIT_FORMAT_NUL:
+            return text[end : token.start()]
+        end = token.end()
+    return None
+
+
+def _separator_refusal(elements: Sequence[ast.expr]) -> str | None:
+    """Why a sequence of arguments reads git output split on a byte the data can hold, or None when it does not."""
+    started = _git_command(elements)
+    if started is None:
+        return None
+    command, options = started
+    if _lists_names(command, options) and "-z" not in options:
+        return (
+            f"lists names with git {command} without -z, so git quotes one holding a non-ASCII byte or a newline; "
+            f"use GitClient.names, or pass -z and split on NUL, or state why in {GIT_SEPARATOR_ALLOWANCE}"
+        )
+    if command in GIT_FORMAT_COMMANDS:
+        for text in _git_formats(options):
+            if (joint := _format_joint(text)) is not None:
+                return (
+                    f"joins the fields of a git {command} format with {joint!r}, which a name or a message can hold; "
+                    f"join them with NUL, %00 for for-each-ref or %x00 for log, or state why in "
+                    f"{GIT_SEPARATOR_ALLOWANCE}"
+                )
+    return None
+
+
+def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each name listing without -z and each git format whose fields a byte other than NUL joins, outside
+    git_client.py, that no GIT_SEPARATOR_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        if name == GIT_SEPARATOR_OWNER:
+            continue
+        # GitClient.names adds -z itself, so neither its call nor a list it is given is read.
+        named = {
+            id(part)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "names"
+            for part in (node, *node.args)
+        }
+        found = [
+            (node.lineno, scope, refusal)
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call | ast.List | ast.Tuple)
+            and id(node) not in named
+            and (refusal := _separator_refusal(node.args if isinstance(node, ast.Call) else node.elts)) is not None
+        ]
+        problems += sanctioned_problems(name, tree, GIT_SEPARATOR_ALLOWANCE, found)
+    return problems
+
+
 # A time limit read with type=float accepts nan, inf, zero, and a negative number, and none of them is a limit, so an
 # option that names a time takes ejryan89-skill-core's seconds_option.positive_seconds as its type. Any other states
 # why in a module-level TIME_OPTION_ALLOWED = {scope: reason}.
@@ -1879,6 +2001,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_no_process_runner_result_is_discarded_unchecked(self) -> None:
         self.assertEqual([], discarded_result_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_every_git_listing_and_format_separates_on_nul(self) -> None:
+        self.assertEqual([], git_separator_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_every_time_option_refuses_what_is_no_limit(self) -> None:
         self.assertEqual([], time_option_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

@@ -309,7 +309,7 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
     name = (git.quiet_output(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=hub) or "").strip()
     if name != BASE:
         return f"not fast-forwarded: it is on {name or 'a detached HEAD'}, not {BASE}"
-    if git.output(["status", "--porcelain", "--untracked-files=no"], directory=hub).strip():
+    if git.names(["status", "--porcelain", "--untracked-files=no"], directory=hub):
         return "not fast-forwarded: it has uncommitted changes"
     before = git.output(["rev-parse", "HEAD"], directory=hub).strip()
     if dry_run:
@@ -776,10 +776,10 @@ def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | Non
 
 def local_branches(git: GitClient, top: Path) -> dict[str, str]:
     """The commit each local branch holds, by its name."""
-    listing = git.output(["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/"], directory=top)
+    listing = git.output(["for-each-ref", "--format=%(objectname)%00%(refname)", "refs/heads/"], directory=top)
     tips = {}
     for line in listing.split("\n"):
-        commit, _, name = line.partition(" ")
+        commit, _, name = line.partition("\0")
         if name.startswith("refs/heads/"):
             tips[name[len("refs/heads/") :]] = commit
     return tips

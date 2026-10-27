@@ -203,15 +203,24 @@ def classify_failure(stderr: str) -> GitErrorKind:
     return "git"
 
 
+def subcommand_index(arguments: Sequence[str]) -> int | None:
+    """Where the git subcommand `arguments` run stands in them, after any of git's own options, or None when they
+    name none."""
+    index = 0
+    while index < len(arguments):
+        if arguments[index] in GLOBAL_VALUE_OPTIONS:
+            index += 2
+        elif not arguments[index].startswith("-"):
+            return index
+        else:
+            index += 1
+    return None
+
+
 def subcommand(arguments: Sequence[str]) -> str | None:
     """The git subcommand `arguments` run, after any of git's own options, or None when they name none."""
-    parts = iter(arguments)
-    for part in parts:
-        if part in GLOBAL_VALUE_OPTIONS:
-            next(parts, None)
-        elif not part.startswith("-"):
-            return part
-    return None
+    index = subcommand_index(arguments)
+    return None if index is None else arguments[index]
 
 
 def transient_failure(result: GitResult) -> bool:
@@ -378,6 +387,22 @@ class GitClient:
             )
             raise GitError(message, kind=classify_failure(result.stderr), returncode=result.returncode)
         return result.stdout
+
+    def names(
+        self, arguments: Sequence[str], *, directory: str | Path | None = None, timeout: float | None = None
+    ) -> list[str]:
+        """The fields a name-listing command prints, such as `diff --name-only`, `diff --name-status`, `ls-files`,
+        `ls-tree`, or `status --porcelain`, each exactly as git holds it.
+
+        Runs the command as `output` does with `-z` after its subcommand, so git neither quotes a name holding a
+        non-ASCII byte or a newline nor ends a field on a byte a name can hold, and splits on NUL, the one byte git
+        refuses in a name. A status or a rename's old name is a field of its own, in the order git prints it.
+        """
+        index = subcommand_index(arguments)
+        position = len(arguments) if index is None else index + 1
+        command = list(arguments) if "-z" in arguments else [*arguments[:position], "-z", *arguments[position:]]
+        listed = self.output(command, directory=directory, timeout=timeout)
+        return listed.removesuffix("\0").split("\0") if listed else []
 
     def rev_parse_paths(self, options: Sequence[str], *, directory: str | Path) -> list[Path] | None:
         """The absolute path `git rev-parse` names for `directory` for each of `options`, in order, such as

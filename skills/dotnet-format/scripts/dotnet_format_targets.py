@@ -195,7 +195,7 @@ def git(services: Services, directory: Path, *arguments: str) -> GitResult:
 
 
 def git_paths(services: Services, root: Path, *arguments: str) -> list[str]:
-    result = git(services, root, arguments[0], "-z", *arguments[1:])
+    result = git(services, root, *arguments)
     if result.returncode != 0:
         raise Failed(f"git {' '.join(arguments)} failed")
     return [name for name in result.stdout.split("\0") if name]
@@ -288,9 +288,11 @@ def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str
 
 def changed_files(services: Services, root: Path, base: str) -> list[str]:
     """Committed, uncommitted, and untracked C# files changed on this branch that still exist."""
-    names = set(git_paths(services, root, "diff", "--name-only", "--diff-filter=AMR", f"{base}...HEAD", "--", "*.cs"))
-    names |= set(git_paths(services, root, "diff", "--name-only", "HEAD", "--", "*.cs"))
-    names |= set(git_paths(services, root, "ls-files", "--others", "--exclude-standard", "--", "*.cs"))
+    names = set(
+        git_paths(services, root, "diff", "-z", "--name-only", "--diff-filter=AMR", f"{base}...HEAD", "--", "*.cs")
+    )
+    names |= set(git_paths(services, root, "diff", "-z", "--name-only", "HEAD", "--", "*.cs"))
+    names |= set(git_paths(services, root, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.cs"))
     return sorted(name for name in names if (root / name).is_file())
 
 

@@ -480,6 +480,74 @@ class TransientTests(unittest.TestCase):
         self.assertIn("couldn't find remote ref", git_client.PERMANENT_MARKERS)
 
 
+# A path holding a non-ASCII character and one holding a newline, which git quotes in a listing without -z.
+AWKWARD_NAMES = ("line\nbreak.py", "modülé.py")
+
+
+def plumbing(root: Path, *arguments: str, data: bytes = b"") -> str:
+    """What a git plumbing command run in `root` prints, given `data` as its stdin, stripped."""
+    identity = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com"]
+    done = subprocess.run(["git", "-C", str(root), *identity, *arguments], input=data, capture_output=True, check=True)
+    return done.stdout.decode("utf-8").strip()
+
+
+def awkward_history(root: Path) -> tuple[str, str]:
+    """A repository whose second commit adds AWKWARD_NAMES beside the first's README.md, and the two commits.
+
+    Built from trees, since Git for Windows refuses a newline in a path in the index."""
+    plumbing(root, "init", "--quiet")
+    blob = plumbing(root, "hash-object", "-w", "--stdin", data=b"text\n")
+    commits: list[str] = []
+    for names in (("README.md",), ("README.md", *AWKWARD_NAMES)):
+        entries = "".join(f"100644 blob {blob}\t{name}\0" for name in names)
+        tree = plumbing(root, "mktree", "-z", data=entries.encode("utf-8"))
+        parents = [option for commit in commits for option in ("-p", commit)]
+        commits.append(plumbing(root, "commit-tree", tree, *parents, "-m", "commit"))
+    return commits[0], commits[1]
+
+
+class NamesTests(unittest.TestCase):
+    def test_names_runs_the_listing_with_z_after_its_subcommand_and_splits_on_nul(self) -> None:
+        runner, calls = scripted(
+            GitResult(0, "M\0a b\0?? c\0", ""), GitResult(0, "", ""), GitResult(0, "d\0", ""), GitResult(0, "", "")
+        )
+        client = GitClient(runner)
+        self.assertEqual(["M", "a b", "?? c"], client.names(["-c", "x=y", "status", "--porcelain"], directory="r"))
+        self.assertEqual([], client.names(["ls-files"], timeout=7))
+        self.assertEqual(["d"], client.names(["ls-files", "-z", "--others"]))
+        # Arguments that name no subcommand take -z last.
+        self.assertEqual([], client.names(["--literal-pathspecs"]))
+        self.assertEqual(
+            [
+                (["git", "-C", "r", "-c", "x=y", "status", "-z", "--porcelain"], 300.0),
+                (["git", "ls-files", "-z"], 7),
+                (["git", "ls-files", "-z", "--others"], 300.0),
+                (["git", "--literal-pathspecs", "-z"], 300.0),
+            ],
+            calls,
+        )
+
+    def test_names_raises_a_failed_listing_as_output_does(self) -> None:
+        runner, _calls = scripted(GitResult(128, "", NOT_A_REPOSITORY))
+        with self.assertRaises(GitError) as context:
+            GitClient(runner).names(["ls-files"])
+        self.assertEqual(("not_repository", 128), (context.exception.kind, context.exception.returncode))
+
+    def test_names_reads_a_name_holding_a_non_ascii_character_or_a_newline_exactly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base, head = awkward_history(root)
+            client = GitClient()
+            self.assertEqual(list(AWKWARD_NAMES), client.names(["diff", "--name-only", base, head], directory=root))
+            self.assertEqual(
+                ["A", AWKWARD_NAMES[0], "A", AWKWARD_NAMES[1]],
+                client.names(["diff", "--name-status", base, head], directory=root),
+            )
+            self.assertEqual(
+                ["README.md", *AWKWARD_NAMES], client.names(["ls-tree", "--name-only", head], directory=root)
+            )
+
+
 class SubprocessRunnerTests(unittest.TestCase):
     def test_the_runner_goes_through_the_bounded_layer(self) -> None:
         finished = bounded_process.Finished(2, b"out \xff", b"bad \xff")
