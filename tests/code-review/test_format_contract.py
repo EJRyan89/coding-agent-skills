@@ -573,6 +573,7 @@ def record_fixtures() -> list[ReviewRecord]:
                     "seconds": 95,
                     "files_read": 4,
                     "bytes_read": 2048,
+                    "searches": 3,
                 },
                 {
                     "id": "database-review",
@@ -754,6 +755,7 @@ def config_fixtures() -> list[dict[str, Any]]:
         "operation_repository_sets": {"update-pr-dashboard": "tracked"},
         "reviewer_effort": "high",
         "re_review_scope": {"full_share": 0.5, "full_lines": 1000},
+        "unread_source_lines": 200,
         "model_names": {"arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc": "Opus 5.5"},
         "dashboard": {
             "start_marker": "<!-- tracker:start -->",

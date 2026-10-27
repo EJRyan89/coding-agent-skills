@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from collections.abc import Callable, Iterable
 from datetime import date, timedelta
@@ -265,6 +266,17 @@ def check_archive_base(base: object, current: int | None, ledger: list[LedgerEnt
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class ReportInputs:
+    """What a review's report shows beyond its record: the names its Reviewers table gives models, the flag store's
+    flags, and the changed lines above which it notes a reviewer that read and searched no source, or None for no
+    such note."""
+
+    model_names: dict[str, str] | None = None
+    flags: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    unread_source_lines: int | None = None
+
+
 def commit_adapter_result(
     *,
     request_path: Path,
@@ -279,8 +291,7 @@ def commit_adapter_result(
     patches: dict[str, Any] | None = None,
     scope: Scope | None = None,
     uncovered_files: list[str] | None = None,
-    model_names: dict[str, str] | None = None,
-    flags: list[dict[str, Any]] | None = None,
+    report: ReportInputs | None = None,
     dispatch: DispatchMode | None = None,
     snapshot: dict[str, Any] | None = None,
     documents: dict[str, list[str]] | None = None,
@@ -288,6 +299,7 @@ def commit_adapter_result(
     """Archive a validated reviewer result as the pull request's next review record. `documents` holds, for each
     changed document whose extracted text the reviewers read, each line's place in the document, which a finding on
     that line records as its `location`."""
+    report = report or ReportInputs()
     request = read_json(request_path)
     result_value = read_json(result_path)
     prior_ids = _ids(request.get("prior_findings", []), "request.prior_findings")
@@ -354,8 +366,9 @@ def commit_adapter_result(
                 number,
                 record,
                 expected_latest_version=local_current,
-                model_names=model_names,
-                flags=flags or [],
+                model_names=report.model_names,
+                flags=report.flags,
+                unread_source_lines=report.unread_source_lines,
             )
     return commit_record(
         archive_root,
@@ -363,8 +376,9 @@ def commit_adapter_result(
         number,
         record,
         expected_latest_version=current,
-        model_names=model_names,
-        flags=flags or [],
+        model_names=report.model_names,
+        flags=report.flags,
+        unread_source_lines=report.unread_source_lines,
     )
 
 

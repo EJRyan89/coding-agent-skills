@@ -13,6 +13,7 @@ Claude Code does not give a subagent that lists Bash on macOS, Linux, and WSL:
   python -B "<this script>" source-search --run "<run>" --role "<role>" --pattern="<pattern>"
       Prints `MATCH <path>:<line>: <text>` for each line of the commit's files that matches the extended regular
       expression, in the paths the snapshot can hold, then `MATCHES <n>`, or `MATCHES more than <n>` when it stopped.
+      The search is counted as one search by the role.
 
 The reviewer guard allows exactly these two commands for a reviewer's own run and role (see review_guard.py). The
 blob is read from the repository the run names in `run.json` as `source_repository`: the configured checkout, or the
@@ -33,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import json_writer
 from console import run_main
 from executable_locator import PYTHON
-from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log
+from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log, search_entry
 from review_io import PersistenceError, read_json
 from review_runtime import RuntimeContractError, fetch_source_file, search_source
 from typed_fields import FieldError, FieldReader
@@ -89,11 +90,11 @@ def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
     return (None if repository is None else Path(repository)), name, head, read_log(run, role)
 
 
-def _count(log: Path, relative: str) -> None:
-    """Add a file to the role's read log, which only a reviewer the guard holds has: an unguarded one stays
-    uncounted, as its reads do, and so does a path the JSON writer refuses."""
+def _count(log: Path, entry: str | dict[str, str]) -> None:
+    """Add a file or a search to the role's read log, which only a reviewer the guard holds has: an unguarded one
+    stays uncounted, as its reads do, and so does a path the JSON writer refuses."""
     try:
-        line = json_writer.dumps(relative) + "\n"
+        line = json_writer.dumps(entry) + "\n"
     except json_writer.JsonWriteRefused:
         return
     if log.is_file():
@@ -118,8 +119,9 @@ def source_file(run: Path, role: str, relative: str) -> list[str]:
 def source_search(run: Path, role: str, pattern: str) -> list[str]:
     if not pattern or "\n" in pattern or "\r" in pattern:
         raise SourceError("the pattern must be one non-empty line")
-    repository, name, head, _ = _run(run, role)
+    repository, name, head, log = _run(run, role)
     matches, more = search_source(repository, run.resolve() / "source", pattern, repository=name, commit=head)
+    _count(log, search_entry("source-search"))
     lines = [f"MATCH {path}:{number}: {text}" for path, number, text in matches]
     return [*lines, f"MATCHES more than {len(lines)}; narrow the pattern" if more else f"MATCHES {len(lines)}"]
 

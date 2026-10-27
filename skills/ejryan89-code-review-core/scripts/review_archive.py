@@ -128,6 +128,7 @@ def commit_record(
     expected_latest_version: int | None,
     model_names: dict[str, str] | None = None,
     flags: Iterable[dict[str, Any]] = (),
+    unread_source_lines: int | None = None,
 ) -> tuple[Path, Path, ReviewRecord]:
     """Archive the next review version. A re-review's report shows findings raised by earlier versions, so it is
     rendered from the records already archived here."""
@@ -154,6 +155,12 @@ def commit_record(
         )
         directory.mkdir(parents=True, exist_ok=True)
         persisted = write_record_pair(
-            json_path, markdown_path, record, prior_records=prior_records, model_names=model_names, flags=flags
+            json_path,
+            markdown_path,
+            record,
+            prior_records=prior_records,
+            model_names=model_names,
+            flags=flags,
+            unread_source_lines=unread_source_lines,
         )
         return json_path, markdown_path, persisted

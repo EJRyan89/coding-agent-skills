@@ -944,9 +944,9 @@ class LedgerReportTests(unittest.TestCase):
     def test_configured_model_names_replace_identifiers_in_the_reviewers_table(self) -> None:
         review_fixture.commit_fixture(self.archive, model_names={review_fixture.MODEL_ARN: "Fixture Opus"})
         report = fixture_report(self.archive, 3)
-        self.assertIn("| `generic` | General | Fixture Opus | 3 | 1 | 0 | 40s | - |\n", report)
+        self.assertIn("| `generic` | General | Fixture Opus | 3 | 1 | 0 | 40s | - | - |\n", report)
         self.assertIn(
-            "| `style` | Style | claude&#45;sonnet&#45;5&#45;5 | 1 | 1 | 0 | 12s | - |\n",
+            "| `style` | Style | claude&#45;sonnet&#45;5&#45;5 | 1 | 1 | 0 | 12s | - | - |\n",
             report,
             "unmapped stays literal",
         )
@@ -973,9 +973,9 @@ class LedgerReportTests(unittest.TestCase):
             "| **Snapshot** | tarball: 12,700 files, 204.0 MiB; fetch 6.0s, materialize 33.2s, prompts 0.4s |\n",
             report,
         )
-        self.assertIn("| Retries | Time | Files read |\n", report)
-        self.assertIn(" | 0 | 40s | 14 (50.8 KiB) |\n", report)
-        self.assertIn(" | 0 | 12s | unknown |\n", report)
+        self.assertIn("| Retries | Time | Files read | Searches |\n", report)
+        self.assertIn(" | 0 | 40s | 14 (50.8 KiB) | - |\n", report)
+        self.assertIn(" | 0 | 12s | unknown | - |\n", report)
         # A record that counted its exclusions names them by reason; one that excluded nothing names none.
         review["review"]["snapshot"]["excluded"] = {"agent-instruction": 3, "configured": 1_200}
         self.assertIn(
@@ -991,7 +991,78 @@ class LedgerReportTests(unittest.TestCase):
         del review["review"]["snapshot"]["excluded"]
         generic.update({"files_read": 0, "bytes_read": 0})
         report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
-        self.assertIn(" | 0 | 40s | 0 (0 B) |\n", report)
+        self.assertIn(" | 0 | 40s | 0 (0 B) | - |\n", report)
+
+    def test_the_searches_column_and_what_the_read_columns_measure(self) -> None:
+        first, second, third = review_fixture.commit_fixture(self.archive)
+        review = copy.deepcopy(third)
+        generic, style = review["review"]["reviewers"]
+        generic.update({"files_read": 14, "bytes_read": 52_000, "searches": 6})
+        style.update({"files_read": None, "bytes_read": None, "searches": None})
+        self.assertIs(review, validate_record(review))
+        report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
+        self.assertIn("| Retries | Time | Files read | Searches |\n", report)
+        self.assertIn(" | 0 | 40s | 14 (50.8 KiB) | 6 |\n", report)
+        self.assertIn(" | 0 | 12s | unknown | unknown |\n", report)
+        self.assertIn(
+            "\n*Files read* counts the distinct files of the source snapshot a reviewer read or fetched, with their "
+            "size, beyond its prompt and the diff; *Searches* counts its searches of the snapshot: a Grep of a folder, "
+            "a Glob, or a `source-search`. `unknown` is a count no guard measured, never zero, and `-` one the record "
+            "predates.\n",
+            report,
+        )
+        generic.update({"searches": 0})
+        report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
+        self.assertIn(" | 0 | 40s | 14 (50.8 KiB) | 0 |\n", report)
+        del generic["searches"]
+        report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
+        self.assertIn(" | 0 | 40s | 14 (50.8 KiB) | - |\n", report)
+
+    def test_a_reviewer_that_read_and_searched_no_source_of_a_large_change_is_noted(self) -> None:
+        first, second, third = review_fixture.commit_fixture(self.archive)
+        review: Any = copy.deepcopy(third)
+        review["review"]["patches"] = {
+            "src/file.cs": {"sha256": "a" * 64, "lines": 150},
+            "src/other.cs": {"sha256": "b" * 64, "lines": 51},
+        }
+        generic, style = review["review"]["reviewers"]
+        unread = {"files_read": 0, "bytes_read": 0, "searches": 0}
+        generic.update(unread)
+        style.update(unread)
+
+        def report(threshold: int | None = 200) -> str:
+            return render_markdown(
+                review, record_payload_hash="0" * 64, prior_records=[first, second], unread_source_lines=threshold
+            )
+
+        self.assertIn(
+            "> **No source read:** reviewers `generic`, `style` read and searched no file of the source beyond the "
+            "diff of this 201-line change.\n",
+            report(),
+        )
+        self.assertNotIn("No source read", report(201), "a change of exactly the threshold is not above it")
+        self.assertNotIn("No source read", report(None), "a report given no threshold notes nothing")
+        style.update({"searches": 1})
+        self.assertIn(
+            "> **No source read:** reviewer `generic` read and searched no file of the source beyond the diff of this "
+            "201-line change.\n",
+            report(),
+        )
+        for counts in (
+            {"files_read": 1, "bytes_read": 9, "searches": 0},  # read a file
+            {"files_read": None, "bytes_read": None, "searches": None},  # unmeasured
+            {"files_read": 0, "bytes_read": 0, "searches": None},  # searches unmeasured
+            {"files_read": 0, "bytes_read": 0},  # a record written before searches were counted
+            {"dispositions_only": True, **unread},  # it reviewed nothing new
+        ):
+            with self.subTest(counts=counts):
+                generic.pop("searches", None)
+                generic.update(counts)
+                self.assertNotIn("No source read", report())
+                generic.update({"dispositions_only": False, **unread})
+        self.assertIn("No source read", report())
+        del review["review"]["patches"]
+        self.assertNotIn("No source read", report(), "a record without patches does not know the change's size")
 
     def test_the_reviewer_source_line_names_where_the_reviewer_came_from(self) -> None:
         first, second, third = review_fixture.commit_fixture(self.archive)
@@ -1030,7 +1101,8 @@ class LedgerReportTests(unittest.TestCase):
         self.assertIs(third, validate_record(third))
         report = render_markdown(third, record_payload_hash="0" * 64, prior_records=[first, second])
         self.assertNotIn("**Snapshot**", report)
-        self.assertIn(" | 0 | 40s | - |\n", report)
+        self.assertIn(" | 0 | 40s | - | - |\n", report)
+        self.assertNotIn("*Files read* counts", report, "a record without read counts has nothing to explain")
 
     def test_without_model_names_the_reviewers_table_shows_the_identifier(self) -> None:
         review_fixture.commit_fixture(self.archive)

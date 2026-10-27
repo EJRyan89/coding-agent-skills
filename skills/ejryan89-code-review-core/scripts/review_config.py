@@ -45,6 +45,7 @@ TOP_LEVEL_KEYS = {
     "reviewer_effort",
     "re_review_scope",
     "model_names",
+    "unread_source_lines",
 }
 # A model identifier reviewers report (up to the 200 characters a record allows) and the shorter name reports show.
 MODEL_IDENTIFIER_MAXIMUM_LENGTH = 200
@@ -54,6 +55,9 @@ REVIEWER_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 # When an `auto` re-review reviews the whole pull request instead of only what changed since the last review:
 # at least this share of its changed lines changed again, or at least this many lines did.
 RE_REVIEW_SCOPE_DEFAULTS = {"full_share": 0.5, "full_lines": 1000}
+# A report notes each reviewer that read and searched no file of the source snapshot when the pull request changes more
+# than this many lines.
+UNREAD_SOURCE_LINES_DEFAULT = 200
 OPERATIONS = {"review-prs", "update-pr-dashboard", "review-insights"}
 # An operation a skill rename retired, with the name it has now: a configuration still naming it is refused with both
 # names, as any unknown operation is refused, so the user renames the key rather than losing its set silently.
@@ -205,6 +209,9 @@ def validate_config(value: Any) -> dict[str, Any]:
     normalized["reviewer_effort"] = effort
     normalized["re_review_scope"] = scope
     normalized["model_names"] = normalize_model_names(config.get("model_names", {}))
+    normalized["unread_source_lines"] = READ.integer(
+        config.get("unread_source_lines", UNREAD_SOURCE_LINES_DEFAULT), "config.unread_source_lines", minimum=1
+    )
     normalized["archive_root"] = validate_absolute_path(config.get("archive_root"), "archive_root")
     normalized["local_mirror_root"] = validate_absolute_path(
         config.get("local_mirror_root"), "local_mirror_root", nullable=True

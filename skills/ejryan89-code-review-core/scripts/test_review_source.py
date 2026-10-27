@@ -545,6 +545,12 @@ class CommandTests(LazySnapshotFixture):
                 "source-search", "--run", str(self.run_directory), "--role", "generic-review", "--pattern=helper"
             )
         self.assertEqual((0, "MATCHES more than 1; narrow the pattern"), (code, lines[-1]))
+        # Each search is logged as one search, naming no path; a refused one is not.
+        self.main("source-search", "--run", str(self.run_directory), "--role", "generic-review", "--pattern=a\nb")
+        self.assertEqual(
+            ['{"search":"source-search"}'] * 2,
+            [line.replace(" ", "") for line in self.log.read_text(encoding="utf-8").splitlines()],
+        )
 
     def test_each_refusal_is_one_failed_line(self) -> None:
         run = str(self.run_directory)

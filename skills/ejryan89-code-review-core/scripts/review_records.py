@@ -85,9 +85,17 @@ REVIEWER_FIELDS = frozenset({"id", "category", "files", "findings", "retries", "
 # Records written before reviewer timing, model reporting, or read counts existed, or by a reviewer that does not
 # report them (a repository entrypoint reviewer has no model field in its protocol), omit them. Only a specialist of a
 # review that ran more than one has its own summary, and records written before it was kept omit it. The read counts are
-# null together when no guard counted the reviewer's reads: an inline, Copilot CLI host, or unguarded reviewer.
-OPTIONAL_REVIEWER_FIELDS = frozenset({"seconds", "model", "summary", "files_read", "bytes_read"})
+# null together when no guard counted the reviewer's reads: an inline, Copilot CLI host, or unguarded reviewer. Its
+# searches of the snapshot are counted apart, come only with the read counts, and are null whenever they are, and when
+# a run counted reads before it counted searches; a record written before searches were counted omits them.
+OPTIONAL_REVIEWER_FIELDS = frozenset({"seconds", "model", "summary", "files_read", "bytes_read", "searches"})
 READ_COUNT_FIELDS = ("files_read", "bytes_read")
+# What the Reviewers table's read columns measure, below the table of a record that has them.
+READ_COUNTS_LEGEND = (
+    "*Files read* counts the distinct files of the source snapshot a reviewer read or fetched, with their size, beyond "
+    "its prompt and the diff; *Searches* counts its searches of the snapshot: a Grep of a folder, a Glob, or a "
+    "`source-search`. `unknown` is a count no guard measured, never zero, and `-` one the record predates."
+)
 # Where a review's source snapshot came from, how large it was, and how long each step of prepare around it took:
 # fetching the head, materializing the snapshot, and writing the request and every role's prompt.
 SNAPSHOT_SOURCES = ("checkout", "checkout-lazy", "tarball")
@@ -254,6 +262,7 @@ class ReviewerRun(TypedDict):
     summary: NotRequired[str]
     files_read: NotRequired[int | None]
     bytes_read: NotRequired[int | None]
+    searches: NotRequired[int | None]
 
 
 class DiffFallback(TypedDict):
@@ -1064,6 +1073,37 @@ def _files_read(reviewer: ReviewerRun) -> str:
     return f"{files_read} ({_size(bytes_read)})"
 
 
+def _searches(reviewer: ReviewerRun) -> str:
+    """A reviewer's searches of the snapshot, `unknown` when they were not counted, or `-` in a record written
+    before searches were counted."""
+    if "searches" not in reviewer:
+        return "-"
+    return "unknown" if reviewer["searches"] is None else str(reviewer["searches"])
+
+
+def _unread_source(review: Review, threshold: int | None) -> list[str]:
+    """The note naming each reviewer that read no file of the source snapshot and searched it not once, on a change of
+    more than `threshold` lines. A count that was not measured is unknown, so it gives no note; nor does a reviewer
+    that only gave dispositions, which reviews nothing new; nor a record without patches, whose size is not known."""
+    patches = review.get("patches")
+    if threshold is None or patches is None:
+        return []
+    changed = sum(patch["lines"] for patch in patches.values())
+    unread = [
+        reviewer["id"]
+        for reviewer in review.get("reviewers", [])
+        if not reviewer["dispositions_only"] and reviewer.get("files_read") == 0 and reviewer.get("searches") == 0
+    ]
+    if changed <= threshold or not unread:
+        return []
+    return [
+        f"> **No source read:** {'reviewer' if len(unread) == 1 else 'reviewers'} "
+        f"{', '.join(_code(identifier) for identifier in unread)} read and searched no file of the source beyond the "
+        f"diff of this {changed}-line change.",
+        "",
+    ]
+
+
 def snapshot_seconds(seconds: dict[str, float]) -> dict[str, float]:
     """Each phase's seconds as a review records them: to a tenth of a second, and never below zero."""
     return {phase: round(max(seconds[phase], 0.0), 1) for phase in SNAPSHOT_PHASES}
@@ -1153,8 +1193,16 @@ def _validate_reviewers(value: object) -> None:
 
 
 def _validate_read_counts(reviewer: dict[str, Any], path: str) -> None:
-    """A reviewer's read counts: both absent, both null (not counted), or both non-negative integers."""
+    """A reviewer's read counts: both absent, both null (not counted), or both non-negative integers; and its
+    searches, which come only with them: a non-negative integer, or null, as they must be when the counts are."""
     present = [field for field in READ_COUNT_FIELDS if field in reviewer]
+    if "searches" in reviewer:
+        searches = READ.optional(READ.integer, reviewer["searches"], f"{path}.searches", minimum=0)
+        if not present or (searches is not None and reviewer[present[0]] is None):
+            raise RecordError(
+                f"Review reviewer {reviewer['id']} searches must come with files_read and bytes_read, and be null "
+                "when they are"
+            )
     if not present:
         return
     if len(present) != len(READ_COUNT_FIELDS) or len({reviewer[field] is None for field in READ_COUNT_FIELDS}) > 1:
@@ -1915,10 +1963,12 @@ def render_markdown(
     prior_records: Iterable[ReviewRecord] = (),
     model_names: dict[str, str] | None = None,
     flags: Iterable[dict[str, Any]] = (),
+    unread_source_lines: int | None = None,
 ) -> str:
     """The Markdown report. Its findings are the ledger's open and unverified entries, each shown from the record
     that raised it, so a re-review needs the pull request's earlier records. `model_names` maps a reviewer's model
-    identifier to the name the Reviewers table shows, and `flags` are the flag store's flags."""
+    identifier to the name the Reviewers table shows, and `flags` are the flag store's flags. With
+    `unread_source_lines`, a change of more lines notes each reviewer that read and searched no source."""
     pull = record["pull_request"]
     review = record["review"]
     adapter = review["adapter"]
@@ -1987,6 +2037,7 @@ def render_markdown(
                 "",
             ]
         )
+    lines.extend(_unread_source(review, unread_source_lines))
     lines.extend(["---", "", "## Summary", "", _summary(review), "", "## Findings", ""])
     lines.extend(_findings_section(ledger, re_review))
     comments = {comment["id"]: comment for comment in record.get("github_comments", [])}
@@ -2018,8 +2069,8 @@ def render_markdown(
             [
                 "## Reviewers",
                 "",
-                "| Reviewer | Focus | Model | Files | Findings | Retries | Time | Files read |",
-                "|----------|-------|-------|-------|----------|---------|------|------------|",
+                "| Reviewer | Focus | Model | Files | Findings | Retries | Time | Files read | Searches |",
+                "|----------|-------|-------|-------|----------|---------|------|------------|----------|",
             ]
         )
         for reviewer in review["reviewers"]:
@@ -2032,9 +2083,11 @@ def render_markdown(
                 f"| {_text(names.get(model, model)) if 'model' in reviewer else '-'} "
                 f"| {reviewer['files']} "
                 f"| {reviewer['findings']} | {reviewer['retries']} | {_duration(reviewer.get('seconds'))} "
-                f"| {_files_read(reviewer)} |"
+                f"| {_files_read(reviewer)} | {_searches(reviewer)} |"
             )
         lines.append("")
+        if any("files_read" in reviewer for reviewer in review["reviewers"]):
+            lines.extend([READ_COUNTS_LEGEND, ""])
     lines.extend(
         [
             "---",
@@ -2136,11 +2189,17 @@ def write_record_pair(
     prior_records: Iterable[ReviewRecord] = (),
     model_names: dict[str, str] | None = None,
     flags: Iterable[dict[str, Any]] = (),
+    unread_source_lines: int | None = None,
 ) -> ReviewRecord:
     validate_record(record)
     payload_sha = payload_hash(record)
     markdown = render_markdown(
-        record, record_payload_hash=payload_sha, prior_records=prior_records, model_names=model_names, flags=flags
+        record,
+        record_payload_hash=payload_sha,
+        prior_records=prior_records,
+        model_names=model_names,
+        flags=flags,
+        unread_source_lines=unread_source_lines,
     )
     markdown_sha = sha256_text(markdown)
     persisted = copy.deepcopy(record)
