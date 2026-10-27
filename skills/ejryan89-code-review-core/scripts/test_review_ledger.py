@@ -1001,14 +1001,18 @@ class LedgerReportTests(unittest.TestCase):
         style.update({"files_read": None, "bytes_read": None, "searches": None})
         self.assertIs(review, validate_record(review))
         report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
-        self.assertIn("| Retries | Time | Files read | Searches |\n", report)
+        self.assertIn(
+            "| Retries | Time | Files read | Searches |\n"
+            "|----------|-------|-------|-------|----------|---------|------|------------|----------|\n",
+            report,
+        )
         self.assertIn(" | 0 | 40s | 14 (50.8 KiB) | 6 |\n", report)
         self.assertIn(" | 0 | 12s | unknown | unknown |\n", report)
         self.assertIn(
             "\n*Files read* counts the distinct files of the source snapshot a reviewer read or fetched, with their "
             "size, beyond its prompt and the diff; *Searches* counts its searches of the snapshot: a Grep of a folder, "
             "a Glob, or a `source-search`. `unknown` is a count no guard measured, never zero, and `-` one the record "
-            "predates.\n",
+            "predates.\n\n---\n",
             report,
         )
         generic.update({"searches": 0})
@@ -1037,7 +1041,7 @@ class LedgerReportTests(unittest.TestCase):
 
         self.assertIn(
             "> **No source read:** reviewers `generic`, `style` read and searched no file of the source beyond the "
-            "diff of this 201-line change.\n",
+            "diff of this 201-line change.\n\n---\n",
             report(),
         )
         self.assertNotIn("No source read", report(201), "a change of exactly the threshold is not above it")
@@ -1061,6 +1065,9 @@ class LedgerReportTests(unittest.TestCase):
                 self.assertNotIn("No source read", report())
                 generic.update({"dispositions_only": False, **unread})
         self.assertIn("No source read", report())
+        reviewers = review["review"].pop("reviewers")
+        self.assertNotIn("No source read", report(), "a record without reviewers names none")
+        review["review"]["reviewers"] = reviewers
         del review["review"]["patches"]
         self.assertNotIn("No source read", report(), "a record without patches does not know the change's size")
 

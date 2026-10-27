@@ -381,6 +381,7 @@ class ReadLogTests(GuardFixture):
             # Allowed, but neither a read of a snapshot file nor a search of the snapshot: a pattern under one file, a
             # missing file or folder, the work folder, and the work, reviewer, and reference files.
             ("Glob", {"pattern": "*", "path": service}),
+            ("Read", {"file_path": str(self.source / "app")}),  # a Read of a folder reads no file and is no search
             ("Read", {"file_path": str(self.source / "app" / "Missing.cs")}),
             ("Grep", {"pattern": "class", "path": str(self.source / "missing")}),
             ("Grep", {"pattern": "class", "path": str(self.run_directory / "work")}),

@@ -5110,7 +5110,8 @@ class FixtureCanaryTests(PipelineFixture):
             (1, ['FAILED The head commit has no file "../run.json" the snapshot can hold']), (code, refused)
         )
         read = (source / "app" / "service.py").stat().st_size + fetched.stat().st_size
-        lines = self.finish(state, findings=[])
+        with mock.patch.object(rp, "load_store", side_effect=AssertionError("a canary reads no flag store")):
+            lines = self.finish(state, findings=[])
         _, record = self.canary_record(lines)
         snapshot, [reviewer] = record["review"]["snapshot"], record["review"]["reviewers"]
         self.assertEqual(state["snapshot"], snapshot)
@@ -6252,6 +6253,20 @@ class StatsLineTests(unittest.TestCase):
                 self.assertEqual(
                     [f"snapshot source=tarball files=2 bytes=83{shown} {timing}"], review_reporting.stats_lines(review)
                 )
+
+    def test_a_reviewer_line_gives_searches_unknown_for_null_and_none_for_an_older_record(self) -> None:
+        counted = {"id": "a", "files_read": 2, "bytes_read": 9, "searches": 3}
+        unknown = {"id": "b", "files_read": None, "bytes_read": None, "searches": None}
+        older = {"id": "c", "files_read": 1, "bytes_read": 4}
+        review: Any = {"reviewers": [counted, unknown, older, {"id": "d"}]}
+        self.assertEqual(
+            [
+                "reviewer a files_read=2 bytes_read=9 searches=3",
+                "reviewer b files_read=unknown bytes_read=unknown searches=unknown",
+                "reviewer c files_read=1 bytes_read=4",
+            ],
+            review_reporting.stats_lines(review),
+        )
 
 
 def test_a_run_whose_repository_holds_read_only_files_is_removed(tmp_path: Path) -> None:
