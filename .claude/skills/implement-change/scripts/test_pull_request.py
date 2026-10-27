@@ -303,7 +303,8 @@ class CheckCommandTests(Repository):
         self.assertEqual((1, "NO_COMMITS origin/main"), (code, lines[-1]))
 
     def test_uncommitted_changes_are_counted(self) -> None:
-        (self.root / "scratch.txt").write_text("scratch\n", encoding="utf-8")
+        # A name holding a space is one path, whatever byte the listing ends it with.
+        (self.root / "scratch notes.txt").write_text("scratch\n", encoding="utf-8")
         (self.root / "tool.py").write_text("print('changed')\n", encoding="utf-8")
         code, lines = self.run_script("check", *self.files_arguments())
         self.assertEqual((1, "UNCOMMITTED 2"), (code, lines[-1]))

@@ -508,18 +508,23 @@ def awkward_history(root: Path) -> tuple[str, str]:
 
 class NamesTests(unittest.TestCase):
     def test_names_runs_the_listing_with_z_after_its_subcommand_and_splits_on_nul(self) -> None:
-        runner, calls = scripted(GitResult(0, "M\0a b\0?? c\0", ""), GitResult(0, "", ""), GitResult(0, "d\0", ""))
+        runner, calls = scripted(
+            GitResult(0, "M\0a b\0?? c\0", ""), GitResult(0, "", ""), GitResult(0, "d\0", ""), GitResult(0, "", "")
+        )
         client = GitClient(runner)
         self.assertEqual(["M", "a b", "?? c"], client.names(["-c", "x=y", "status", "--porcelain"], directory="r"))
-        self.assertEqual([], client.names(["ls-files"]))
+        self.assertEqual([], client.names(["ls-files"], timeout=7))
         self.assertEqual(["d"], client.names(["ls-files", "-z", "--others"]))
+        # Arguments that name no subcommand take -z last.
+        self.assertEqual([], client.names(["--literal-pathspecs"]))
         self.assertEqual(
             [
-                ["git", "-C", "r", "-c", "x=y", "status", "-z", "--porcelain"],
-                ["git", "ls-files", "-z"],
-                ["git", "ls-files", "-z", "--others"],
+                (["git", "-C", "r", "-c", "x=y", "status", "-z", "--porcelain"], 300.0),
+                (["git", "ls-files", "-z"], 7),
+                (["git", "ls-files", "-z", "--others"], 300.0),
+                (["git", "--literal-pathspecs", "-z"], 300.0),
             ],
-            [command for command, _ in calls],
+            calls,
         )
 
     def test_names_raises_a_failed_listing_as_output_does(self) -> None:

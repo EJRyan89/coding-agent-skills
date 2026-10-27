@@ -221,6 +221,7 @@ class ResolveTests(unittest.TestCase):
         repo.write("Forms/My Form.cs")
         repo.write("notes.txt", "not C#\n")
         repo.commit("feature")
+        repo.write("notes.txt", "still not C#\n")
         (repo.root / "App/Deleted.cs").unlink()
         repo.git("mv", "App/Renamed.cs", "App/RenamedAgain.cs")
         repo.write("App/Modified.cs", "class Modified { }\n")

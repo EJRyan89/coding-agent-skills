@@ -1049,7 +1049,8 @@ def merged_fixes(git: GitClient, repository: Path, base: str, head: str) -> list
     log = git_output(
         git, repository, ["log", "--first-parent", "--reverse", "-z", "--format=%H%x00%s", f"{base}..{head}"]
     )
-    fields = log.removesuffix("\0").split("\0") if log else []
+    # Each field ends with NUL, so the split leaves one empty field after the last, which the pairing drops.
+    fields = log.split("\0")
     return [(commit, title) for commit, title in zip(fields[::2], fields[1::2], strict=False) if FIX_TITLE.match(title)]
 
 
