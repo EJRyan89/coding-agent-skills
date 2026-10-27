@@ -1047,14 +1047,10 @@ def merged_fixes(git: GitClient, repository: Path, base: str, head: str) -> list
     """Each commit `main`'s first-parent history merged after base whose title names a fix, oldest first, with its
     title."""
     log = git_output(
-        git, repository, ["log", "--first-parent", "--reverse", "-z", "--format=%H%x1f%s", f"{base}..{head}"]
+        git, repository, ["log", "--first-parent", "--reverse", "-z", "--format=%H%x00%s", f"{base}..{head}"]
     )
-    found = []
-    for record in log.split("\0"):
-        commit, _, title = record.partition("\x1f")
-        if commit and FIX_TITLE.match(title):
-            found.append((commit, title))
-    return found
+    fields = log.removesuffix("\0").split("\0") if log else []
+    return [(commit, title) for commit, title in zip(fields[::2], fields[1::2], strict=False) if FIX_TITLE.match(title)]
 
 
 def removed_lines(diff: str) -> tuple[list[str], set[str]]:

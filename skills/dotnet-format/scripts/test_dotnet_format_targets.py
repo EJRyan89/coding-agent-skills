@@ -564,7 +564,7 @@ class ResolveTests(unittest.TestCase):
             return real(command, timeout)
 
         services.git = GitClient(run)
-        self.assertEqual("git ls-files --others --exclude-standard -- *.cs failed", self.failed(services=services))
+        self.assertEqual("git ls-files -z --others --exclude-standard -- *.cs failed", self.failed(services=services))
 
     def test_a_git_command_that_never_finishes_fails_but_a_stalled_fetch_does_not(self) -> None:
         self.repository.write("Code.cs")

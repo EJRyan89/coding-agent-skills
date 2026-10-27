@@ -48,6 +48,7 @@ from tools.mutation_gate import (
     SuiteRunner,
     Workers,
     changed_lines,
+    changed_modules,
     changed_tables,
     code,
     context_tests,
@@ -97,6 +98,35 @@ from tools.mutation_gate import (
 )
 def test_the_gate_mutates_modules_under_its_roots_and_never_a_suite(path: str, mutated: bool) -> None:
     assert mutated == is_gate_module(path)
+
+
+def plumbing(root: Path, *arguments: str, data: bytes = b"") -> str:
+    """What a git plumbing command run in `root` prints, given `data` as its stdin, stripped."""
+    identity = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com"]
+    done = subprocess.run(["git", "-C", str(root), *identity, *arguments], input=data, capture_output=True, check=True)
+    return done.stdout.decode("utf-8").strip()
+
+
+def test_the_gate_reads_a_changed_module_whose_path_holds_a_non_ascii_character_or_a_newline() -> None:
+    # Built from trees, since Git for Windows refuses a newline in a path in the index; git quotes both names in a
+    # listing without -z.
+    awkward = ["line\nbreak.py", "modülé.py"]
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        plumbing(root, "init", "--quiet", "--initial-branch=main")
+        blob = plumbing(root, "hash-object", "-w", "--stdin", data=b"VALUE = 1\n")
+        commits: list[str] = []
+        for names in (["calc.py"], ["calc.py", *awkward]):
+            tools = plumbing(
+                root, "mktree", "-z", data="".join(f"100644 blob {blob}\t{name}\0" for name in names).encode()
+            )
+            tree = plumbing(root, "mktree", "-z", data=f"040000 tree {tools}\ttools\0".encode())
+            parents = [option for commit in commits for option in ("-p", commit)]
+            commits.append(plumbing(root, "commit-tree", tree, *parents, "-m", "commit"))
+        plumbing(root, "update-ref", "refs/heads/main", commits[0])
+        plumbing(root, "update-ref", "refs/heads/feature", commits[1])
+        plumbing(root, "symbolic-ref", "HEAD", "refs/heads/feature")
+        assert [f"tools/{name}" for name in awkward] == changed_modules(root, "main", GitClient())
 
 
 def mutant(line: int, module: str = "tools/calc.py") -> Mutant:

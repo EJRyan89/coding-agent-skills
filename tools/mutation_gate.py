@@ -274,8 +274,8 @@ def is_gate_module(path: str) -> bool:
 def changed_modules(root: Path, base: str, git: GitClient) -> list[str]:
     """The modules the gate mutates among the files the commits since the merge base with `base` change, deleted
     files left out."""
-    names = git.output(["diff", "--name-only", "--no-renames", "--diff-filter=d", f"{base}...HEAD"], directory=root)
-    return sorted(name for name in names.splitlines() if name and is_gate_module(name))
+    names = git.names(["diff", "--name-only", "--no-renames", "--diff-filter=d", f"{base}...HEAD"], directory=root)
+    return sorted(name for name in names if is_gate_module(name))
 
 
 INT_PARSE_ALLOWED = {

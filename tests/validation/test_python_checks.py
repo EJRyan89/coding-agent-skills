@@ -1708,6 +1708,71 @@ def test_gh_limit_policy_refuses_a_limit_passed_by_hand() -> None:
     ]
 
 
+GIT_SEPARATOR_SOURCE = """\
+def listings(client, git_output, root):
+    client.output(["diff", "--name-only", "main"])
+    client.output(["-C", root, "status", "--porcelain=v2"])
+    git_output(root, "ls-files", "--others")
+    client.output(("ls-tree", "-r", "HEAD"))
+    client.output(["git", "for-each-ref", "--format=%(refname) %(objectname)"])
+    client.output(["log", "--format", "%H%x1f%s"])
+    client.output(["log", "--pretty=tformat:%H%n%an"])
+    client.output(["for-each-ref", "--format=%(refname)%0a%(upstream)"])
+    client.output(["diff", "-z", "--name-status", "main"])
+    client.names(["ls-files", "--others"])
+    client.output(["diff", "--stat", "main"])
+    client.output(["status", "--untracked-files=no"])
+    client.output(["for-each-ref", "--format=%(refname)%00%(upstream)", "refs/heads"])
+    client.output(["log", "-z", "--format=commit %H%x00%s%n"])
+    client.output(["log", "--format=%H"])
+    client.output(["archive", "--format=tar", "HEAD"])
+
+
+def sanctioned(client):
+    client.output(["ls-files"])
+
+
+GIT_SEPARATOR_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a_byte_but_nul() -> None:
+    # A call's positional arguments and a list's or a tuple's items start a git command, after git itself and its own
+    # options; GitClient.names adds -z, and text before the first field or after the last joins none.
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.git_separator_problems,
+        "GIT_SEPARATOR_ALLOWED",
+        GIT_SEPARATOR_SOURCE,
+        python_checks.GIT_SEPARATOR_OWNER,
+    )
+
+    def listing(command: str) -> str:
+        return (
+            f"lists names with git {command} without -z, so git quotes one holding a non-ASCII byte or a newline; "
+            "use GitClient.names, or pass -z and split on NUL, or state why in GIT_SEPARATOR_ALLOWED"
+        )
+
+    def joined(command: str, joint: str) -> str:
+        return (
+            f"joins the fields of a git {command} format with {joint!r}, which a name or a message can hold; join "
+            "them with NUL, %00 for for-each-ref or %x00 for log, or state why in GIT_SEPARATOR_ALLOWED"
+        )
+
+    assert found == [
+        f"{alpha}:2 {listing('diff')}",
+        f"{alpha}:3 {listing('status')}",
+        f"{alpha}:4 {listing('ls-files')}",
+        f"{alpha}:5 {listing('ls-tree')}",
+        f"{alpha}:6 {joined('for-each-ref', ' ')}",
+        f"{alpha}:7 {joined('log', '%x1f')}",
+        f"{alpha}:8 {joined('log', '%n')}",
+        f"{alpha}:9 {joined('for-each-ref', '%0a')}",
+        f"{alpha}: GIT_SEPARATOR_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: GIT_SEPARATOR_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
 TIME_OPTION_SOURCE = """\
 import argparse
 

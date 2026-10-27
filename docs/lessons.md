@@ -333,13 +333,20 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   for git.
 - **Why:** A name holding the separator, or a path git quotes, is split or misread, and the listing names a file that
   is not there.
-- **Use:** `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a git listing that asks for NUL separators itself, and a
-  policy requiring it, are the mechanism in #1908.
-- **Guard:** `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
+- **Use:** `git_client:GitClient.names`, which runs a name listing with -z and splits it on NUL;
+  `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
+  joined by %x00.
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
+  which refuses a git name listing without -z and a for-each-ref or log format whose fields a byte but NUL joins
+  unless its module states why,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::NamesTests::test_names_reads_a_name_holding_a_non_ascii_character_or_a_newline_exactly`,
+  `tests/tools/test_mutation_gate.py::test_the_gate_reads_a_changed_module_whose_path_holds_a_non_ascii_character_or_a_newline`,
+  `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
   `tests/tools/test_release_notes.py::RangeEntriesTests::test_a_message_holding_any_byte_but_nul_is_read_whole`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_a_line_holding_a_nul_is_refused_naming_it`
-- **Search for:** a `"diff"`, `"ls-files"`, `"ls-tree"`, `"log"`, or `"status"` git call with no `-z`; a git format
-  such as `%(refname)|%(upstream)` joined by a bar, a tab, or a space; `split("|")` on another program's output.
+- **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
+  name listing whose arguments a function builds from names rather than string literals; `split("|")` or
+  `splitlines()` on another program's output.
 - **Examples:** #1816, #1848, #1862, #1908
 
 ### Two spellings are compared as their consumer compares them

@@ -519,7 +519,7 @@ class CheckTests(FixtureRepository):
         self.history()
         code, printed, errors = self.run_main("v0.2.0", "--check", "--from", "v0.1.0", "--to", "no-such-ref")
         self.assertEqual((2, ""), (code, printed))
-        self.assertTrue(errors.startswith(f"ERROR: git ls-tree --name-only no-such-ref -- {NOTES} failed: "), errors)
+        self.assertTrue(errors.startswith(f"ERROR: git ls-tree -z --name-only no-such-ref -- {NOTES} failed: "), errors)
         self.assertNotIn("has no ## v0.2.0 section", errors)
 
 

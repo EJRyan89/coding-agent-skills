@@ -255,7 +255,7 @@ def branch_facts(git: GitClient, repository: Path, base: Base) -> tuple[list[str
         problems.append(f"BEHIND {base} {commit}")
     if git_output(git, repository, ["rev-list", "--count", f"{commit}..HEAD"]).strip() == "0":
         problems.append(f"NO_COMMITS {base}")
-    changed = git_output(git, repository, ["status", "--porcelain"]).splitlines()
+    changed = git_output(git, repository, ["status", "--porcelain", "--no-renames", "-z"]).split("\0")[:-1]
     if changed:
         problems.append(f"UNCOMMITTED {len(changed)}")
     return [f"BASE {base} {commit}"], problems
@@ -280,12 +280,13 @@ def upstream_problems(git: GitClient, repository: Path) -> list[str]:
     branch = quiet_output(git, repository, ["symbolic-ref", "--quiet", "HEAD"])
     if branch is None:
         return ["UNPUSHED no upstream"]
-    upstream = git_output(
-        git, repository, ["for-each-ref", "--format=%(upstream) %(upstream:short)", branch.strip()]
-    ).split()
-    if not upstream:
+    reference, _, name = (
+        git_output(git, repository, ["for-each-ref", "--format=%(upstream)%00%(upstream:short)", branch.strip()])
+        .removesuffix("\n")
+        .partition("\0")
+    )
+    if not reference:
         return ["UNPUSHED no upstream"]
-    reference, name = upstream
     head = git_output(git, repository, ["rev-parse", "HEAD"]).strip()
     return [] if commit_of(git, repository, reference) == head else [f"UNPUSHED {name}"]
 
