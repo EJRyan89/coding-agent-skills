@@ -33,7 +33,7 @@
       "id": "F001",
       "candidate_key": "search-injection",
       "severity": "MUST_FIX",
-      "category": "Security",
+      "category": "General",
       "path": "store.go",
       "line": 45,
       "title": "Search concatenates the prefix into its SQL",
@@ -45,7 +45,7 @@
       "id": "F002",
       "candidate_key": "ship-message",
       "severity": "SUGGESTION",
-      "category": "Correctness",
+      "category": "General",
       "path": "store.go",
       "line": 71,
       "title": "Shortage error reports the requested quantity as the stock",
@@ -57,7 +57,7 @@
       "id": "F003",
       "candidate_key": "ship-lost-update",
       "severity": "SHOULD_FIX",
-      "category": "Concurrency",
+      "category": "General",
       "path": "store.go",
       "line": 73,
       "title": "Ship overwrites the stock with a value read earlier",
@@ -68,8 +68,8 @@
   ],
   "prior_dispositions": [],
   "ledger": [
-    {"version": 1, "id": "F001", "severity": "MUST_FIX", "category": "Security", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []},
-    {"version": 1, "id": "F002", "severity": "SUGGESTION", "category": "Correctness", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []},
-    {"version": 1, "id": "F003", "severity": "SHOULD_FIX", "category": "Concurrency", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []}
+    {"version": 1, "id": "F001", "severity": "MUST_FIX", "category": "General", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []},
+    {"version": 1, "id": "F002", "severity": "SUGGESTION", "category": "General", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []},
+    {"version": 1, "id": "F003", "severity": "SHOULD_FIX", "category": "General", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []}
   ]
 }
