@@ -83,9 +83,10 @@ LedgerKey = tuple[int, str]
 COMMENT_FIELDS = ("id", "author", "path", "line", "outdated", "body", "url")
 REVIEWER_FIELDS = frozenset({"id", "category", "files", "findings", "retries", "dispositions_only"})
 # Records written before reviewer timing, model reporting, or read counts existed, or by a reviewer that does not
-# report them (a repository entrypoint reviewer has no model field in its protocol), omit them. The read counts are
+# report them (a repository entrypoint reviewer has no model field in its protocol), omit them. Only a specialist of a
+# review that ran more than one has its own summary, and records written before it was kept omit it. The read counts are
 # null together when no guard counted the reviewer's reads: an inline, Copilot CLI host, or unguarded reviewer.
-OPTIONAL_REVIEWER_FIELDS = frozenset({"seconds", "model", "files_read", "bytes_read"})
+OPTIONAL_REVIEWER_FIELDS = frozenset({"seconds", "model", "summary", "files_read", "bytes_read"})
 READ_COUNT_FIELDS = ("files_read", "bytes_read")
 # Where a review's source snapshot came from, how large it was, and how long each step of prepare around it took:
 # fetching the head, materializing the snapshot, and writing the request and every role's prompt.
@@ -250,6 +251,7 @@ class ReviewerRun(TypedDict):
     dispositions_only: bool
     seconds: NotRequired[int]
     model: NotRequired[str]
+    summary: NotRequired[str]
     files_read: NotRequired[int | None]
     bytes_read: NotRequired[int | None]
 
@@ -1125,6 +1127,8 @@ def _validate_reviewers(value: object) -> None:
             READ.integer(reviewer["seconds"], f"{path}.seconds", minimum=0)
         if "model" in reviewer:
             read_model(READ, reviewer["model"], f"{path}.model")
+        if "summary" in reviewer:
+            READ.string(reviewer["summary"], f"{path}.summary")
         _validate_read_counts(reviewer, path)
 
 
@@ -1692,6 +1696,15 @@ def _prose(text: str, *, table: bool = False) -> str:
     )
 
 
+def _summary(review: Review) -> str:
+    """The summary, one paragraph per reviewer under its bold role when each of several reviewers kept its own, and
+    each part literal."""
+    reviewers = review.get("reviewers", [])
+    if len(reviewers) < 2 or any("summary" not in reviewer for reviewer in reviewers):
+        return _prose(review["summary"])
+    return "\n\n".join(f"**{_text(reviewer['id'])}:** {_prose(reviewer['summary'])}" for reviewer in reviewers)
+
+
 def _quote(text: str) -> list[str]:
     return [f"> {line}".rstrip() for line in _prose(text).splitlines()]
 
@@ -1954,7 +1967,7 @@ def render_markdown(
                 "",
             ]
         )
-    lines.extend(["---", "", "## Summary", "", _prose(review["summary"]), "", "## Findings", ""])
+    lines.extend(["---", "", "## Summary", "", _summary(review), "", "## Findings", ""])
     lines.extend(_findings_section(ledger, re_review))
     comments = {comment["id"]: comment for comment in record.get("github_comments", [])}
     if comments:

@@ -3714,6 +3714,11 @@ class ProfileModelTests(PipelineFixture):
             {"python-review": "codex-session-model", "generic-review": "fixture-model"},
             {reviewer["id"]: reviewer["model"] for reviewer in reviewers},
         )
+        # Each of several specialists keeps its own summary, which the report labels with its role.
+        self.assertEqual(
+            {"python-review": "Reviewed the change.", "generic-review": "Reviewed the change."},
+            {reviewer["id"]: reviewer["summary"] for reviewer in reviewers},
+        )
 
     def test_a_claude_code_session_keeps_the_model_line(self) -> None:
         self.services.resolve_runtime = lambda configured, host: "claude-code"

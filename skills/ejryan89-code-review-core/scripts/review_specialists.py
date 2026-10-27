@@ -1782,6 +1782,12 @@ def reviewer_models(plan: dict[str, Any]) -> dict[str, str]:
     return {role["id"]: _load(plan, role)["model"] for role in plan["roles"]}
 
 
+def role_summaries(plan: dict[str, Any]) -> dict[str, str]:
+    """Each role's validated summary, which the report labels with its role, or none when a single role ran."""
+    roles = plan["roles"]
+    return {} if len(roles) == 1 else {role["id"]: _load(plan, role)["summary"] for role in roles}
+
+
 def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     base = {
         "protocol_version": 1,
@@ -1855,8 +1861,9 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
                 item["link"] = link
     links = _resolve_repeats(merged, prior_severities)
     keys = [f"{item['sources'][0]}-{index}" for index, item in enumerate(merged, start=1)]
-    # One paragraph per specialist, labelled only when there is more than one.
-    summary = summaries[0][1] if len(summaries) == 1 else "\n\n".join(f"**{role}:** {text}" for role, text in summaries)
+    # One paragraph per specialist, labelled only when there is more than one. The label is plain text: the report
+    # escapes the summary, and bolds each role itself from the role summaries its reviewer runs hold.
+    summary = summaries[0][1] if len(summaries) == 1 else "\n\n".join(f"{role}: {text}" for role, text in summaries)
     return {
         **base,
         "summary": summary,

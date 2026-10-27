@@ -61,6 +61,31 @@ class LiteralReportTests(unittest.TestCase):
         self.assertEqual(before, record)
         self.assertEqual(PROSE, record["review"]["summary"])
 
+    def test_each_specialist_summary_is_literal_under_its_bold_role(self) -> None:
+        request = valid_request()
+        run = {"category": "Style", "files": 1, "findings": 0, "retries": 0, "dispositions_only": False}
+        request["reviewers"] = [
+            {**run, "id": "qualifier-review", "summary": "Use *bold* and _this_ #now [x](y)."},
+            {**run, "id": "csharp-review", "summary": "Fine."},
+        ]
+        result = valid_adapter_result()
+        result["summary"] = "qualifier-review: Use *bold* and _this_ #now [x](y).\n\ncsharp-review: Fine."
+        record = records.build_record(request, result, version=1, policy={})
+        records.validate_record(record)
+        report = records.render_markdown(record, record_payload_hash="0" * 64)
+        self.assertIn(
+            "## Summary\n\n**qualifier&#45;review:** Use &#42;bold&#42; and &#95;this&#95; &#35;now "
+            "&#91;x&#93;&#40;y&#41;&#46;\n\n**csharp&#45;review:** Fine&#46;\n\n## Findings",
+            report,
+        )
+        # A record written before each specialist kept its own summary shows the stored summary, all of it literal.
+        for reviewer in record["review"]["reviewers"]:
+            del reviewer["summary"]
+        self.assertIn(
+            "## Summary\n\nqualifier&#45;review&#58; Use &#42;bold&#42;",
+            records.render_markdown(record, record_payload_hash="0" * 64),
+        )
+
     def test_word_heading_location_is_literal_on_both_evidence_routes_in_a_validated_pair(self) -> None:
         heading = "![i](https://example.invalid/a) [l](https://example.invalid/b) <img> `x` \\|"
         content = word_document(paragraph(html.escape(heading), style="Titre1"), paragraph("Body"))
