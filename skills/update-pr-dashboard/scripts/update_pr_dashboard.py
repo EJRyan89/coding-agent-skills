@@ -139,12 +139,18 @@ class Row:
 
 def _validate_ledger(ledger: Any, key: str, path: str) -> None:
     """The latest review's finding-ledger summary. A migrated legacy review's has no version and cannot say what was
-    addressed, so both are None; it is None itself when the legacy report is unreadable."""
-    if READ.optional(READ.json_object, ledger, path, required={"open", "addressed", "since", "version"}) is None:
+    addressed, so both are None; it is None itself when the legacy report is unreadable. The repeats the latest review
+    reported of open entries are absent from a legacy review's summary and from an input collected before they were
+    counted."""
+    required = {"open", "addressed", "since", "version"}
+    if READ.optional(READ.json_object, ledger, path, required=required, optional={"repeats"}) is None:
         return
     opened = READ.json_object(ledger["open"], f"{path}.open", required=SEVERITY_KEYS)
     for severity in sorted(SEVERITY_KEYS):
         READ.integer(opened[severity], f"{path}.open.{severity}", minimum=0)
+    repeats = READ.integer(ledger["repeats"], f"{path}.repeats", minimum=0) if "repeats" in ledger else 0
+    if repeats and not any(opened.values()):
+        raise TrackerError(f"Tracker item {key}.ai_review.ledger is invalid")
     version = READ.optional(READ.integer, ledger["version"], f"{path}.version", minimum=1)
     addressed = READ.optional(READ.integer, ledger["addressed"], f"{path}.addressed", minimum=0)
     since = READ.optional(READ.integer, ledger["since"], f"{path}.since", minimum=0)
@@ -521,16 +527,22 @@ def _findings(counts: dict[str, int]) -> str:
 
 
 def _ledger_findings(review: dict[str, Any] | None) -> str:
-    """The remaining work, then the progress: open findings by severity and how many are flagged, then what moved
-    since the user's last review, such as `1M 1S open (1 flagged) · 1 new, 1 addressed since your review` or
-    `… · unchanged since your review`. Without that review, how many findings were addressed, such as
-    `1H 3S open · 2 addressed`, or the head alone when none were or the review cannot say (a legacy review)."""
+    """The remaining work, then the progress: open findings by severity, the repeats of them the review reported at
+    other places, and how many are flagged, then what moved since the user's last review, such as
+    `1M 1S open (2 repeats, 1 flagged) · 1 new, 1 addressed since your review` or `… · unchanged since your review`.
+    Without that review, how many findings were addressed, such as `1H 3S open · 2 addressed`, or the head alone
+    when none were or the review cannot say (a legacy review)."""
     if review is None or not review.get("ledger"):
         return "-"
     ledger = review["ledger"]
     opened = _findings(ledger["open"])
-    flagged = f" ({review['flagged']} flagged)" if review.get("flagged") else ""
-    head = f"{opened} open{flagged}" if opened else "none open"
+    repeats = ledger.get("repeats", 0)
+    notes = [
+        *([f"{repeats} repeat{'s' * (repeats != 1)}"] if repeats else []),
+        *([f"{review['flagged']} flagged"] if review.get("flagged") else []),
+    ]
+    noted = f" ({', '.join(notes)})" if notes else ""
+    head = f"{opened} open{noted}" if opened else "none open"
     since = review.get("since_review")
     if since is not None:
         moved = [f"{since[key]} {key}" for key in ("new", "addressed") if since[key]]

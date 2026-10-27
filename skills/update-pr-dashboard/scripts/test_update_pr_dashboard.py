@@ -323,6 +323,24 @@ class LayoutTests(unittest.TestCase):
                 unreviewed(ledger(1, 0, 1, addressed=3, since=1), flagged=1),
                 "1M 1S open (1 flagged) · 3 addressed",
             ),
+            # A repeat is linked to the entry it repeats, so the severity counts leave it out and the head names it.
+            (
+                "repeats",
+                unreviewed(ledger(0, 0, 2, addressed=0, since=1) | {"repeats": 3}, flagged=0),
+                "2S open (3 repeats)",
+            ),
+            (
+                "one repeat, flagged",
+                open_since_v1
+                | {"ledger": open_since_v1["ledger"] | {"repeats": 1}, "since_review": since(3)}
+                | {"flagged": 1},
+                "1M 1S open (1 repeat, 1 flagged) · unchanged since your review",
+            ),
+            (
+                "collected before repeats were counted",
+                unreviewed(ledger(0, 0, 2, addressed=0, since=1) | {"repeats": 0}, flagged=0),
+                "2S open",
+            ),
             (
                 "flagged head after the user's review",
                 open_since_v1 | {"since_review": since(2, addressed=2), "flagged": 1},
@@ -361,6 +379,7 @@ class LayoutTests(unittest.TestCase):
     def test_presentation_fields_are_validated(self) -> None:
         good = {"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, "addressed": 0, "since": 1, "version": 2}
         validate_items([item() | {"ai_review": ai("CHANGES_REQUESTED") | {"ledger": good}}])
+        validate_items([item() | {"ai_review": ai("CHANGES_REQUESTED") | {"ledger": good | {"repeats": 3}}}])
         legacy = {"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, "addressed": None, "since": None}
         validate_items([item() | {"ai_review": ai("CHANGES_REQUESTED") | {"ledger": legacy | {"version": None}}}])
         validate_items(
@@ -378,6 +397,17 @@ class LayoutTests(unittest.TestCase):
             ("ai_review", {"verdict": "OK"}),
             ("ai_review", ai("APPROVED") | {"counts": {"MUST_FIX": -1, "SHOULD_FIX": 0, "SUGGESTION": 0}}),
             ("ai_review", ai("APPROVED") | {"ledger": good | {"addressed": -1}}),
+            ("ai_review", ai("APPROVED") | {"ledger": good | {"repeats": -1}}),
+            ("ai_review", ai("APPROVED") | {"ledger": good | {"repeats": "3"}}),
+            # A repeat is of an open entry, so a ledger with none open has none.
+            (
+                "ai_review",
+                ai("APPROVED")
+                | {
+                    "ledger": good
+                    | {"open": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 0}, "since": None, "repeats": 1}
+                },
+            ),
             # Only a legacy review, which has no version, may leave what was addressed unknown.
             ("ai_review", ai("APPROVED") | {"ledger": good | {"addressed": None}}),
             ("ai_review", ai("APPROVED") | {"ledger": legacy | {"version": None, "addressed": 0}}),
