@@ -16,6 +16,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
+from pull_carried import InBase, carried
 
 LIMIT = 1000
 FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit,baseRefName"
@@ -35,7 +36,6 @@ CHANGE_ARGUMENTS = ("diff-tree", "-r", "-z", "--raw", "--no-abbrev", "--no-renam
 # One file's entry in that listing, before its name: both modes, both object names, and the kind of change.
 CHANGE_ENTRY = re.compile(rb":[0-7]{6} [0-7]{6} [0-9a-f]{40,64} [0-9a-f]{40,64} [A-Z]")
 
-InBase = Callable[[str], bool]
 # Whether a branch tip's whole change since it left the base is the change a merge commit made.
 SameChange = Callable[[str, str], bool]
 
@@ -287,26 +287,6 @@ def pull_commits(repository: str, number: int, runner: GhRunner = subprocess_run
     return commits
 
 
-def only_base_merged_after(tip: str, pull_head: str, commits: dict[str, list[str]], in_base: InBase) -> bool:
-    """Whether the pull request's head follows tip only through merges that brought in base commits.
-
-    Walks first parents from the pull request's head back to tip, which must itself be a pull request commit.
-    Every commit passed on the way must be a pull request commit with two or more parents, each of whose
-    non-first parents is reachable from the base.
-    """
-    if tip not in commits:
-        return False
-    current = pull_head
-    for _ in range(len(commits)):
-        if current == tip:
-            return True
-        parents = commits.get(current)
-        if parents is None or len(parents) < 2 or not all(in_base(parent) for parent in parents[1:]):
-            return False
-        current = parents[0]
-    return False
-
-
 def classify(
     repository: str,
     branch: str,
@@ -429,7 +409,7 @@ def _merged_after_update(
         if (
             isinstance(number, int)
             and isinstance(pull_head, str)
-            and only_base_merged_after(head_sha, pull_head, pull_commits(repository, number, runner), tests.contains)
+            and carried(head_sha, pull_head, pull_commits(repository, number, runner), tests.contains)
         ):
             return True
     return False

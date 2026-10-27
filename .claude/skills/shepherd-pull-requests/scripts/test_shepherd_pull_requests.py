@@ -789,7 +789,8 @@ class FlatTextTest(FixtureTestCase):
     def test_a_merged_branch_name_is_flattened(self) -> None:
         worktree = self.root / "odd"
         git("worktree", "add", "-q", "-b", ODD_BRANCH, str(worktree), directory=self.hub)
-        merged = [{"number": 9, "headRefName": ODD_BRANCH, "headRefOid": OTHER}]
+        head = git("rev-parse", "HEAD", directory=worktree)
+        merged = [{"number": 9, "headRefName": ODD_BRANCH, "headRefOid": head}]
         _, lines = self.tick(StubGh(merged=merged), dry_run=True)
         self.assertEqual(
             f'MERGED #9 worktree "{worktree.as_posix()}" branch {FLAT_BRANCH}', self.line(lines, "MERGED ")
@@ -1391,10 +1392,12 @@ class MergedTest(FixtureTestCase):
         git("worktree", "add", "-q", "-b", "fix/done", str(done), directory=self.hub)
         git("worktree", "add", "-q", "-b", "fix/busy", str(busy), directory=self.hub)
         git("worktree", "add", "-q", "-b", "fix/topic-30", str(reused), directory=self.hub)
+        pushed = self.commit_in(done, "done")
+        open_head = self.commit_in(reused, "reused")
         merged = [
-            {"number": 5, "headRefName": "fix/done"},
-            {"number": 8, "headRefName": "fix/done"},
-            {"number": 6, "headRefName": "fix/topic-30"},
+            {"number": 5, "headRefName": "fix/done", "headRefOid": OTHER},
+            {"number": 8, "headRefName": "fix/done", "headRefOid": pushed},
+            {"number": 6, "headRefName": "fix/topic-30", "headRefOid": open_head},
             {"number": 7, "headRefName": "main"},
         ]
         status, lines = self.tick(StubGh([pull(30)], merged=merged), dry_run=True)
@@ -1441,6 +1444,44 @@ class MergedTest(FixtureTestCase):
             self.merged_lines(StubGh([pull(31, head=again)], merged=merged)),
         )
         self.assertNotIn(fresh.as_posix(), " ".join(self.merged_lines(StubGh(merged=merged))))
+
+    def assert_a_reused_name_is_not_named(self, own_commit: bool) -> None:
+        """A worktree created on a merged branch's name, at main's head or with a commit of its own, is never named,
+        and the same worktree at the head that pull request merged is."""
+        reused = self.add_worktree("reused", "fix/reused")
+        if own_commit:
+            self.commit_in(reused, "reused")
+        main = git("rev-parse", "main", directory=self.hub)
+        tree = git("rev-parse", f"{main}^{{tree}}", directory=self.hub)
+        # The head the earlier pull request of that name merged, which the new branch never held.
+        earlier = git("commit-tree", tree, "-p", main, "-m", "earlier", directory=self.hub)
+        merged = [{"number": 14, "headRefName": "fix/reused", "headRefOid": earlier}]
+        self.assertEqual([], self.merged_lines(StubGh(merged=merged)))
+        git("reset", "-q", "--hard", earlier, directory=reused)
+        self.assertEqual(
+            [f'MERGED #14 worktree "{reused.as_posix()}" branch fix/reused'], self.merged_lines(StubGh(merged=merged))
+        )
+
+    def test_a_worktree_at_main_that_reuses_a_merged_branch_s_name_is_not_named(self) -> None:
+        self.assert_a_reused_name_is_not_named(own_commit=False)
+
+    def test_a_worktree_with_its_own_commit_that_reuses_a_merged_branch_s_name_is_not_named(self) -> None:
+        self.assert_a_reused_name_is_not_named(own_commit=True)
+
+    def test_a_worktree_that_reuses_the_name_of_a_merged_head_git_does_not_hold_is_not_named(self) -> None:
+        unfetched = self.add_worktree("unfetched", "fix/unfetched")
+        merged = [{"number": 16, "headRefName": "fix/unfetched", "headRefOid": "c" * 40}]
+        self.assertNotIn(unfetched.as_posix(), " ".join(self.merged_lines(StubGh(merged=merged))))
+
+    def test_a_local_branch_that_reuses_a_merged_branch_s_name_is_not_named_for_deletion(self) -> None:
+        carried = self.add_worktree("carried", "claude/carried")
+        pushed = self.commit_in(carried, "carried")
+        git("branch", "fix/carried", "main", directory=self.hub)
+        merged = [{"number": 17, "headRefName": "fix/carried", "headRefOid": pushed}]
+        self.assertEqual(
+            [f'MERGED #17 worktree "{carried.as_posix()}" branch claude/carried'],
+            self.merged_lines(StubGh(merged=merged)),
+        )
 
     def test_a_worktree_matched_by_commit_names_the_pull_request_s_local_branch_too(self) -> None:
         both = self.add_worktree("both", "claude/both")

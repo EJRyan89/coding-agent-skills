@@ -392,7 +392,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** Whether something is merged, retired, or owned is decided by its identity, a commit, never by a name that
   can be reused.
 - **Why:** A branch name or a path outlives what it named, so a new branch with an old name is judged merged.
-- **No guard:** The mechanism is in #1901; until it lands, review holds the rule.
+- **Use:** `pull_carried:carried`
+- **Guard:** `skills/ejryan89-skill-core/scripts/test_pull_carried.py::CarriedTests`,
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_at_main_that_reuses_a_merged_branch_s_name_is_not_named`,
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_with_its_own_commit_that_reuses_a_merged_branch_s_name_is_not_named`,
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_local_branch_that_reuses_a_merged_branch_s_name_is_not_named_for_deletion`
 - **Search for:** a branch, a ref, or a path compared by name, `== branch` or `in branches`, in a decision that a
   pull request is merged, a worktree retired, or a file owned; a `headRefName` read where a `headRefOid` or a commit
   is meant.
