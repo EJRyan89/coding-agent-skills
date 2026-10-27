@@ -5,6 +5,7 @@ suites with a stub generator and reach, since mutmut and coverage.py are install
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib
 import io
 import itertools
@@ -45,6 +46,7 @@ from tools.mutation_gate import (
     ReachRunner,
     Report,
     SuiteRunner,
+    Workers,
     changed_lines,
     changed_tables,
     code,
@@ -68,6 +70,7 @@ from tools.mutation_gate import (
     suite_selection,
     summary,
     try_mutant,
+    try_mutants,
     unfinished_line,
 )
 
@@ -826,6 +829,26 @@ class TryMutantFixtures(unittest.TestCase):
         )
         self.assertEqual([], self.calls)
 
+    def test_the_log_names_each_mutant_a_suite_ran_against_and_each_no_suite_reached(self) -> None:
+        unreached = Mutant("tools/calc.py", 7, "x = 1", "x = 2", "z")
+        left = Mutant("tools/calc.py", 9, "y = 1", "y = 2", "w")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            outcomes = try_mutants(
+                Workers([self.tree], lambda: 0.0),
+                [self.mutant, unreached],
+                self.reach,
+                100.0,
+                self.runner({"tests/fast.py": KILLED}),
+            )
+            try_mutants(Workers([self.tree], lambda: 200.0), [left], self.reach, 100.0, self.runner({}))
+        self.assertEqual([KILLED, NOT_REACHED], [outcome.status for outcome in outcomes])
+        # A mutant the deadline left untested ran against nothing and reached nothing to log.
+        self.assertEqual(
+            "killed      tools/calc.py:2 return a + b -> return a - b\nnot reached tools/calc.py:7 x = 1 -> x = 2\n",
+            output.getvalue(),
+        )
+
     def test_the_deadline_leaves_a_mutant_not_run_and_the_module_put_back_even_when_a_suite_raises(self) -> None:
         times = iter([0.0, 200.0])
         outcome = try_mutant(self.tree, self.mutant, self.reach, 100.0, self.runner({}), lambda: next(times))
@@ -1177,6 +1200,32 @@ class SummaryFixtures(unittest.TestCase):
         self.assertIn("`tests/broken.py` failed unmutated with exit code 1, so no mutant ran against it.", text)
         self.assertIn("left these suites' reach unmeasured, so no mutant ran against them: `tests/late.py`.", text)
         self.assertNotIn("cut", text.split("Kill ratio")[1].split("###")[0].replace("unmutated", ""))
+
+    def test_the_summary_names_each_mutant_not_reached_by_line_and_mutation_under_its_module(self) -> None:
+        outcomes = [
+            Outcome(mutant(1), KILLED, ("t",)),
+            Outcome(mutant(3), SURVIVED, ("t",)),
+            Outcome(Mutant("tools/calc.py", 5, "`a`", "b", "s"), NOT_REACHED),
+            Outcome(mutant(9), NOT_REACHED),
+        ]
+        report = self.report(outcomes)
+        report.modules.append(
+            ModuleReport("tools/other.py", [Outcome(mutant(2, "tools/other.py"), NOT_REACHED)], False, 1)
+        )
+        text = summary(report)
+        self.assertTrue(
+            text.endswith(
+                "### `tools/calc.py`: 1 surviving mutant\n\n"
+                "- Line 3: `line 3` became `mutated 3`; passed `t`\n\n"
+                "### `tools/calc.py`: 2 mutants not reached\n\n"
+                "- Line 5: `` `a` `` became `b`; no suite executed its statement\n"
+                "- Line 9: `line 9` became `mutated 9`; no suite executed its statement\n\n"
+                "### `tools/other.py`: 1 mutant not reached\n\n"
+                "- Line 2: `line 2` became `mutated 2`; no suite executed its statement\n"
+            ),
+            text,
+        )
+        self.assertNotIn("not reached\n", summary(self.report([Outcome(mutant(1), KILLED, ("t",))])))
 
     def test_a_survivor_names_how_many_of_a_suites_tests_it_ran_against_when_not_all_of_them(self) -> None:
         survivor = Outcome(mutant(4), SURVIVED, ("tests/fast.py", "tests/slow.py", "tests/one.py"), (3, 0, 1))

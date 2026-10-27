@@ -68,15 +68,16 @@ left unmeasured is named. Either leaves the run unfinished, which is no verdict:
 naming each module's mutants not run and how many of them lie on lines that run at import, and the count of unmeasured
 suites. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
 
-The report, each module's changed lines, counts, and kill ratio, each changed module with no mutant, and each surviving
-mutant by its line, the mutation, and the suites it ran against, each with the count of its tests that ran when not
-all of them did, goes to stdout and to the step summary
-GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line saying so. It exits 0 once the
-gate has run to its end, whatever survived, and 1 when the run was unfinished, after its summary and an error
-annotation repeating its first line, or when it cannot run: mutmut no longer makes the mutant its canary expects on the
-canary's line alone, the reach run no longer measures its canary suite's own process and the process the suite's test
-starts, each line named with that test, which a missing coverage.py .pth file would cause, a changed sanction table is
-one no policy reads, or a git command fails.
+While the mutants run, the log gets a line for each one a suite ran against and each one no suite reached, with its
+outcome, module, line, and mutation. The report, each module's changed lines, counts, and kill ratio, each changed
+module with no mutant, each surviving mutant by its line, the mutation, and the suites it ran against, each with the
+count of its tests that ran when not all of them did, and each mutant not reached by its line and the mutation, goes to
+stdout and to the step summary GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line
+saying so. It exits 0 once the gate has run to its end, whatever survived, and 1 when the run was unfinished, after its
+summary and an error annotation repeating its first line, or when it cannot run: mutmut no longer makes the mutant its
+canary expects on the canary's line alone, the reach run no longer measures its canary suite's own process and the
+process the suite's test starts, each line named with that test, which a missing coverage.py .pth file would cause, a
+changed sanction table is one no policy reads, or a git command fails.
 """
 
 from __future__ import annotations
@@ -938,8 +939,8 @@ def try_mutants(
         if workers.clock() >= deadline:
             return Outcome(mutant, NOT_RUN)
         outcome = try_mutant(tree, mutant, reach, deadline, run, workers.clock)
-        if outcome.suites:
-            print(f"{outcome.status:<9} {mutant.module}:{mutant.line} {mutant.before} -> {mutant.after}", flush=True)
+        if outcome.suites or outcome.status == NOT_REACHED:
+            print(f"{outcome.status:<11} {mutant.module}:{mutant.line} {mutant.before} -> {mutant.after}", flush=True)
         return outcome
 
     return workers.map(attempt, len(mutants))
@@ -995,6 +996,21 @@ def survivor_lines(module: ModuleReport) -> list[str]:
     return lines
 
 
+def unreached_lines(module: ModuleReport) -> list[str]:
+    """Each of a module's mutants that no suite executed unmutated, by its line and the mutation, so that its author
+    need not infer the line from the gaps between the mutants that ran."""
+    unreached = [outcome.mutant for outcome in module.outcomes if outcome.status == NOT_REACHED]
+    if not unreached:
+        return []
+    noun = "mutant" if len(unreached) == 1 else "mutants"
+    lines = ["", f"### `{module.module}`: {len(unreached)} {noun} not reached", ""]
+    lines.extend(
+        f"- Line {mutant.line}: {code(mutant.before)} became {code(mutant.after)}; no suite executed its statement"
+        for mutant in unreached
+    )
+    return lines
+
+
 def empty_selection_line(module: ModuleReport) -> str:
     """Why a changed module has no mutant, said so that a selection empty by mistake is seen."""
     if not module.lines:
@@ -1039,7 +1055,8 @@ def unfinished_line(report: Report) -> str | None:
 
 def summary(report: Report) -> str:
     """The Markdown the run's summary page shows: a first line saying so when the cap cut the run short, then each
-    module's changed lines, counts, and kill ratio, each module with no mutant, then each surviving mutant."""
+    module's changed lines, counts, and kill ratio, each module with no mutant, then each surviving mutant and each
+    mutant not reached."""
     unfinished = unfinished_line(report)
     lines = [
         *([unfinished, ""] if unfinished else []),
@@ -1073,7 +1090,7 @@ def summary(report: Report) -> str:
     for suite, reason in report.failed_suites.items():
         lines += ["", f"`{suite}` {reason}, so no mutant ran against it."]
     for module in report.modules:
-        lines += survivor_lines(module)
+        lines += survivor_lines(module) + unreached_lines(module)
     return "\n".join(lines) + "\n"
 
 
