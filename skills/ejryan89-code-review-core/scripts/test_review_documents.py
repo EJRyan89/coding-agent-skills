@@ -1297,7 +1297,9 @@ class PdfSnapshotTests(unittest.TestCase):
         self.assertEqual([json.dumps(HELD)], log.read_text(encoding="utf-8").splitlines())
         counted: Any = {"reads": {}}
         self.assertTrue(review_dispatch.count_reads(run, counted, ["generic-review"]))
-        self.assertEqual({"generic-review": {"files": 1, "bytes": len(HEAD_PDF_LINES)}}, counted["reads"])
+        self.assertEqual(
+            {"generic-review": {"files": 1, "bytes": len(HEAD_PDF_LINES), "searches": 0}}, counted["reads"]
+        )
 
     def test_source_search_leaves_out_a_held_pdf_as_it_does_a_word_document(self) -> None:
         # The PDF's bytes hold the line uncompressed, and so do the text held beside it and a text file.

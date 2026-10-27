@@ -118,6 +118,7 @@ def _expected() -> dict[str, Any]:
         "reviewer_effort": None,
         "re_review_scope": {"full_share": 0.5, "full_lines": 1000},
         "model_names": {},
+        "unread_source_lines": 200,
         "local_mirror_root": None,
         "verdict_policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
         "dashboard": {
@@ -189,6 +190,7 @@ def _full_config() -> dict[str, Any]:
         "reviewer_effort": "high",
         "re_review_scope": {"full_lines": 200},
         "model_names": {"arn:aws:bedrock:model/x": " Model X "},
+        "unread_source_lines": 50,
     }
 
 
@@ -277,6 +279,7 @@ def _full_expected() -> dict[str, Any]:
         "reviewer_effort": "high",
         "re_review_scope": {"full_share": 0.5, "full_lines": 200},
         "model_names": {"arn:aws:bedrock:model/x": "Model X"},
+        "unread_source_lines": 50,
     }
 
 
@@ -2209,6 +2212,7 @@ class ConfigValidationTests(unittest.TestCase):
                 "reviewer_effort",
                 "re_review_scope",
                 "model_names",
+                "unread_source_lines",
                 "local_mirror_root",
                 "verdict_policy",
                 "dashboard",
