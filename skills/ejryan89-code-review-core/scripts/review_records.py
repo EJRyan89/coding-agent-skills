@@ -858,19 +858,22 @@ def carried_findings(records: Iterable[ReviewRecord], flags: Iterable[dict[str, 
 
 
 def ledger_summary(ledger: Iterable[LedgerEntry], version: int) -> dict[str, Any]:
-    """Open entries by severity, entries addressed, the earliest version an open entry dates from, and the version
-    whose ledger this is. For a record written before ledgers, pass the ledger `ledger_history` computes: such a
+    """Open entries by severity, the repeats of them that version reported (each linked to the entry it repeats and
+    never counted as one), entries addressed, the earliest version an open entry dates from, and the version whose
+    ledger this is. For a record written before ledgers, pass the ledger `ledger_history` computes: such a
     re-review's counts cover only the findings it raised, not a prior one it judged still present."""
     opened = dict.fromkeys(sorted(SEVERITIES), 0)
+    repeats = 0
     addressed = 0
     since: int | None = None
     for entry in ledger:
         if entry["state"] == "open":
             opened[entry["severity"]] += 1
+            repeats += sum(repeat["version"] == version for repeat in entry["repeats"])
             since = entry["version"] if since is None else min(since, entry["version"])
         elif entry["state"] == "closed" and entry["dispositions"][-1]["disposition"] == "addressed":
             addressed += 1
-    return {"open": opened, "addressed": addressed, "since": since, "version": version}
+    return {"open": opened, "repeats": repeats, "addressed": addressed, "since": since, "version": version}
 
 
 def flagged_entries(
@@ -2065,7 +2068,14 @@ def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
         group = sorted((entry for entry in shown if entry["severity"] == severity), key=ledger.order)
         if not group:
             continue
-        lines.extend(["<details open>", f"<summary><strong>{title} ({len(group)})</strong></summary>", ""])
+        # The count is of entries, as the ledger counts them; this review's repeats of them are named beside it.
+        repeated = sum(repeat["version"] == ledger.version for entry in group for repeat in entry["repeats"])
+        count = (
+            f"{len(group)} issue{'s' * (len(group) != 1)}, {repeated} repeat{'s' * (repeated != 1)}"
+            if repeated
+            else str(len(group))
+        )
+        lines.extend(["<details open>", f"<summary><strong>{title} ({count})</strong></summary>", ""])
         for entry in group:
             label = display_id(entry["version"], entry["id"])
             block = _finding_block(

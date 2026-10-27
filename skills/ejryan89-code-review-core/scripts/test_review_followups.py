@@ -671,6 +671,7 @@ class ReviewedHeadTests(unittest.TestCase):
                     "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1},
                     "ledger": {
                         "open": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                        "repeats": 0,
                         "addressed": 0,
                         "since": 2,
                         "version": 2,

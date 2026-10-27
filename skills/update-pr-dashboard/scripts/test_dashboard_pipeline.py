@@ -751,14 +751,19 @@ class UpdateTests(TrackerPipelineFixture):
             (
                 heads[1],
                 {"version": 1, "new": 1, "addressed": 1},
-                "1M 1S open · 1 new, 1 addressed since your review",
+                "1M 1S open (1 repeat) · 1 new, 1 addressed since your review",
                 0,
             ),
-            (between, {"version": 2, "new": 1, "addressed": 0}, "1M 1S open · 1 new since your review", 2),
-            (OLD_HEAD, {"version": 0, "new": 2, "addressed": 0}, "1M 1S open · 2 new since your review", 3),
-            (heads[3], {"version": 3, "new": 0, "addressed": 0}, "1M 1S open · unchanged since your review", 0),
-            (USER_REVIEWED, None, "1M 1S open · 1 addressed", 1),  # GitHub cannot compare it
-            (None, None, "1M 1S open · 1 addressed", 0),
+            (between, {"version": 2, "new": 1, "addressed": 0}, "1M 1S open (1 repeat) · 1 new since your review", 2),
+            (OLD_HEAD, {"version": 0, "new": 2, "addressed": 0}, "1M 1S open (1 repeat) · 2 new since your review", 3),
+            (
+                heads[3],
+                {"version": 3, "new": 0, "addressed": 0},
+                "1M 1S open (1 repeat) · unchanged since your review",
+                0,
+            ),
+            (USER_REVIEWED, None, "1M 1S open (1 repeat) · 1 addressed", 1),  # GitHub cannot compare it
+            (None, None, "1M 1S open (1 repeat) · 1 addressed", 0),
         ):
             with self.subTest(sha=sha):
                 self.github.calls.clear()
@@ -767,6 +772,7 @@ class UpdateTests(TrackerPipelineFixture):
                 self.assertEqual(
                     {
                         "open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                        "repeats": 1,
                         "addressed": 1,
                         "since": 1,
                         "version": 3,
@@ -866,6 +872,7 @@ class UpdateTests(TrackerPipelineFixture):
                 self.assertEqual(
                     {
                         "open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                        "repeats": 0,
                         "addressed": 1,
                         "since": 1,
                         "version": 2,
@@ -971,7 +978,7 @@ class UpdateTests(TrackerPipelineFixture):
         )
         item, row = self.collect_fixture([])
         self.assertEqual(1, item["ai_review"]["flagged"])
-        self.assertIn("| 1M 1S open (1 flagged) · 1 addressed |", row)
+        self.assertIn("| 1M 1S open (1 repeat, 1 flagged) · 1 addressed |", row)
         self.flags_path.write_text("{}", encoding="utf-8")
         code, out, err = self.run_main("collect", "--output", str(self.input))
         self.assertEqual(

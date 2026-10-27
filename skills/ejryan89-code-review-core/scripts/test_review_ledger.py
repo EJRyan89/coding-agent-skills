@@ -244,7 +244,7 @@ class CarriedFindingTests(unittest.TestCase):
                 [entry(1, "F001", "MUST_FIX", "open", 3, [(2, "still_present"), (3, "still_present")])], third["ledger"]
             )
             self.assertEqual(
-                {"open": {**NO_OPEN, "MUST_FIX": 1}, "addressed": 0, "since": 1, "version": 3},
+                {"open": {**NO_OPEN, "MUST_FIX": 1}, "repeats": 0, "addressed": 0, "since": 1, "version": 3},
                 ledger_summary(third["ledger"], 3),
             )
             self.assertEqual(ledger_summary(third["ledger"], 3), reviewed_ledger(reviews.archive))
@@ -252,7 +252,8 @@ class CarriedFindingTests(unittest.TestCase):
             self.assertEqual("APPROVED", fourth["review"]["verdict"])
             self.assertEqual("closed", fourth["ledger"][0]["state"])
             self.assertEqual(
-                {"open": NO_OPEN, "addressed": 1, "since": None, "version": 4}, ledger_summary(fourth["ledger"], 4)
+                {"open": NO_OPEN, "repeats": 0, "addressed": 1, "since": None, "version": 4},
+                ledger_summary(fourth["ledger"], 4),
             )
             self.assertEqual([], reviews.prior())
 
@@ -296,7 +297,7 @@ class CarriedFindingTests(unittest.TestCase):
                 markdown,
             )
             self.assertIn("<summary>v2 F001. Repeats v1 F001: [Correctness] Problem again</summary>", markdown)
-            self.assertIn("<summary><strong>SHOULD FIX (1)</strong></summary>", markdown)
+            self.assertIn("<summary><strong>SHOULD FIX (1 issue, 1 repeat)</strong></summary>", markdown)
             self.assertIn("<summary>v2 F002. [Correctness] Problem other</summary>\n\n> **New in v2.**\n", markdown)
 
     def test_an_initial_review_starts_a_fresh_ledger(self) -> None:
@@ -320,7 +321,13 @@ class CarriedFindingTests(unittest.TestCase):
             commit_record(reviews.archive, "example/one", 12, older, expected_latest_version=None)
             # The reviewed head's summary is computed from the records, never read as missing.
             self.assertEqual(
-                {"open": {**NO_OPEN, "MUST_FIX": 1, "SHOULD_FIX": 1}, "addressed": 0, "since": 1, "version": 1},
+                {
+                    "open": {**NO_OPEN, "MUST_FIX": 1, "SHOULD_FIX": 1},
+                    "repeats": 0,
+                    "addressed": 0,
+                    "since": 1,
+                    "version": 1,
+                },
                 reviewed_ledger(reviews.archive),
             )
             # A record written before ledgers disposes bare IDs of the version it compared with.
@@ -347,7 +354,13 @@ class CarriedFindingTests(unittest.TestCase):
             # so the summary counts the computed ledger's open entries and what it addressed.
             self.assertEqual({**NO_OPEN, "SUGGESTION": 1}, legacy["review"]["counts"])
             self.assertEqual(
-                {"open": {**NO_OPEN, "SHOULD_FIX": 1, "SUGGESTION": 1}, "addressed": 1, "since": 1, "version": 2},
+                {
+                    "open": {**NO_OPEN, "SHOULD_FIX": 1, "SUGGESTION": 1},
+                    "repeats": 0,
+                    "addressed": 1,
+                    "since": 1,
+                    "version": 2,
+                },
                 reviewed_ledger(reviews.archive),
             )
             self.assertEqual(["v1:F002", "v2:F001"], [item["id"] for item in reviews.prior()])
@@ -356,7 +369,7 @@ class CarriedFindingTests(unittest.TestCase):
                 [("open", 3), ("closed", 3)], [(item["state"], item["judged_in"]) for item in third["ledger"][1:]]
             )
             self.assertEqual(
-                {"open": {**NO_OPEN, "SHOULD_FIX": 1}, "addressed": 2, "since": 1, "version": 3},
+                {"open": {**NO_OPEN, "SHOULD_FIX": 1}, "repeats": 0, "addressed": 2, "since": 1, "version": 3},
                 ledger_summary(third["ledger"], 3),
             )
 
@@ -381,10 +394,30 @@ class RepeatTests(unittest.TestCase):
             build_record(record_request(), validate(adapter_result(linked)), version=1, policy=POLICY),
             record_payload_hash="0" * 64,
         )
-        self.assertIn("<summary><strong>SHOULD FIX (2)</strong></summary>", markdown)
+        self.assertIn("<summary><strong>SHOULD FIX (2 issues, 1 repeat)</strong></summary>", markdown)
         self.assertIn("<summary>v1 F003. Repeats v1 F001: [Correctness] Problem a&#45;again</summary>", markdown)
         self.assertLess(markdown.index("v1 F001. [Correctness]"), markdown.index("v1 F003. Repeats v1 F001"))
         self.assertLess(markdown.index("v1 F003. Repeats v1 F001"), markdown.index("v1 F002. [Correctness]"))
+
+    def test_a_group_heading_counts_entries_and_names_their_repeats_beside_them(self) -> None:
+        linked = [
+            finding("a", "SUGGESTION", line=10),
+            finding("b", "SUGGESTION", line=20),
+            *(finding(f"a-{line}", "SUGGESTION", line=line, repeats="a") for line in (30, 40, 50)),
+            finding("c", line=60),
+        ]
+        record = build_record(record_request(), validate(adapter_result(linked)), version=1, policy=POLICY)
+        markdown = render_markdown(record, record_payload_hash="0" * 64)
+        self.assertIn("<summary><strong>SUGGESTIONS (2 issues, 3 repeats)</strong></summary>", markdown)
+        self.assertEqual(6, markdown.count("<summary>v1 F00"), "every entry and every repeat is shown")
+        # A group without repeats keeps its bare count.
+        self.assertIn("<summary><strong>SHOULD FIX (1)</strong></summary>", markdown)
+        self.assertEqual(
+            {"open": {**NO_OPEN, "SHOULD_FIX": 1, "SUGGESTION": 2}, "repeats": 3, "addressed": 0, "since": 1},
+            {key: value for key, value in ledger_summary(record["ledger"], 1).items() if key != "version"},
+        )
+        # Only the summarized version's repeats are counted: a later review that reports none has none.
+        self.assertEqual(0, ledger_summary(record["ledger"], 2)["repeats"])
 
     def test_a_repeat_of_a_prior_version_past_the_digit_limit_is_an_unknown_finding(self) -> None:
         target = "v1" + "0" * 5000 + ":F001"
@@ -604,7 +637,7 @@ class RepeatTests(unittest.TestCase):
         validate_record(record)
         self.assertEqual({1: [entry(1, "F001", "MUST_FIX", "open", 1)]}, ledger_history([record]))
         self.assertEqual(
-            {"open": {**NO_OPEN, "MUST_FIX": 1}, "addressed": 0, "since": 1, "version": 1},
+            {"open": {**NO_OPEN, "MUST_FIX": 1}, "repeats": 0, "addressed": 0, "since": 1, "version": 1},
             ledger_summary(ledger_history([record])[1], 1),
         )
 
@@ -762,7 +795,7 @@ class LedgerReportTests(unittest.TestCase):
         report = fixture_report(self.archive, 3)
         self.assertIn("| **Verdict** | CHANGES REQUESTED, 2 open since v1, 1 addressed |\n", report)
         self.assertIn(
-            "## Findings\n\n<details open>\n<summary><strong>MUST FIX (1)</strong></summary>\n\n"
+            "## Findings\n\n<details open>\n<summary><strong>MUST FIX (1 issue, 1 repeat)</strong></summary>\n\n"
             + FIXTURE_V3_OPEN_ENTRY
             + "\n</details>\n",
             report,
