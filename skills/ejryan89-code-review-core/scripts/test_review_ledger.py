@@ -300,6 +300,59 @@ class CarriedFindingTests(unittest.TestCase):
             self.assertIn("<summary><strong>SHOULD FIX (1 issue, 1 repeat)</strong></summary>", markdown)
             self.assertIn("<summary>v2 F002. [Correctness] Problem other</summary>\n\n> **New in v2.**\n", markdown)
 
+    def test_a_repeat_of_a_prior_finding_of_another_category_opens_its_own_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            reviews = ArchiveFixture(Path(temporary))
+            cleanup = finding("cleanup", category="Error handling", title="Cleanup stops when one call throws")
+            reviews.commit([cleanup], mode="initial")
+            # A new defect in the same method, which the reviewer linked to the earlier one.
+            race = finding("race", line=11, category="Concurrency", title="Method is not safe against concurrent calls")
+            second = reviews.commit(
+                [{**race, "repeats": "v1:F001"}],
+                [disposition("v1:F001", "still_present")],
+            )
+            self.assertNotIn("repeats", second["findings"][0])
+            self.assertEqual(
+                [
+                    {**entry(1, "F001", "SHOULD_FIX", "open", 2, [(2, "still_present")]), "category": "Error handling"},
+                    {**entry(2, "F001", "SHOULD_FIX", "open", 2), "category": "Concurrency"},
+                ],
+                second["ledger"],
+            )
+            self.assertEqual(
+                {"open": {**NO_OPEN, "SHOULD_FIX": 2}, "repeats": 0, "addressed": 0, "since": 1, "version": 2},
+                ledger_summary(second["ledger"], 2),
+            )
+            markdown = render_markdown(
+                second, record_payload_hash="0" * 64, prior_records=pull_records(reviews.archive, "example/one", 12)[:1]
+            )
+            self.assertIn("<summary><strong>SHOULD FIX (2)</strong></summary>", markdown)
+            self.assertIn(
+                "<summary>v2 F001. [Concurrency] Method is not safe against concurrent calls</summary>", markdown
+            )
+            # Resolving the earlier defect leaves the new one open.
+            third = reviews.commit([], [disposition("v1:F001", "addressed"), disposition("v2:F001", "still_present")])
+            self.assertEqual(["v2:F001"], [item["id"] for item in reviews.prior()])
+            self.assertEqual({**NO_OPEN, "SHOULD_FIX": 1}, ledger_summary(third["ledger"], 3)["open"])
+
+    def test_a_repeat_of_a_prior_finding_of_the_same_category_links_in_another_file_and_letter_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            reviews = ArchiveFixture(Path(temporary))
+            reviews.commit([finding("boundary", "SHOULD_FIX")], mode="initial")
+            second = reviews.commit(
+                [
+                    finding(
+                        "again", "SHOULD_FIX", line=12, path="src/other.cs", category="correctness", repeats="v1:F001"
+                    )
+                ],
+                [disposition("v1:F001", "still_present")],
+            )
+            self.assertEqual({"version": 1, "id": "F001"}, second["findings"][0]["repeats"])
+            self.assertEqual(
+                [entry(1, "F001", "SHOULD_FIX", "open", 2, [(2, "still_present")], [(2, "F001")])], second["ledger"]
+            )
+            self.assertEqual(1, ledger_summary(second["ledger"], 2)["repeats"])
+
     def test_an_initial_review_starts_a_fresh_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             reviews = ArchiveFixture(Path(temporary))
@@ -398,6 +451,22 @@ class RepeatTests(unittest.TestCase):
         self.assertIn("<summary>v1 F003. Repeats v1 F001: [Correctness] Problem a&#45;again</summary>", markdown)
         self.assertLess(markdown.index("v1 F001. [Correctness]"), markdown.index("v1 F003. Repeats v1 F001"))
         self.assertLess(markdown.index("v1 F003. Repeats v1 F001"), markdown.index("v1 F002. [Correctness]"))
+
+    def test_a_repeat_of_a_finding_of_another_category_in_the_same_review_opens_its_own_entry(self) -> None:
+        linked = [finding("a", line=10), finding("b", line=20, category="Security", repeats="a")]
+        record = build_record(record_request(), validate(adapter_result(linked)), version=1, policy=POLICY)
+        self.assertEqual([None, None], [item.get("repeats") for item in record["findings"]])
+        self.assertEqual(
+            [
+                entry(1, "F001", "SHOULD_FIX", "open", 1),
+                {**entry(1, "F002", "SHOULD_FIX", "open", 1), "category": "Security"},
+            ],
+            record["ledger"],
+        )
+        self.assertEqual(
+            {"open": {**NO_OPEN, "SHOULD_FIX": 2}, "repeats": 0, "addressed": 0, "since": 1, "version": 1},
+            ledger_summary(record["ledger"], 1),
+        )
 
     def test_a_group_heading_counts_entries_and_names_their_repeats_beside_them(self) -> None:
         linked = [
