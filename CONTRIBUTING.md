@@ -164,6 +164,22 @@ Every type check also enables the optional error codes `enable_error_code` lists
 
 The configuration sets no platform, so mypy checks each module as the host running it sees it. A helper that only one platform runs starts with a `sys.platform` check that raises elsewhere, which mypy reads, so the rest of it is checked only on its platform. Code the suites also run on the other platform, with the missing call stubbed, carries a `type: ignore` naming its platform, with `unused-ignore` among its codes so that a strict check on the platform that has the call does not report the ignore as unused. Fix each error, or, where one must stay, write `# type: ignore[<code>]  # <reason>` on its line; validation fails on a `type: ignore` without its codes and reason. Regression suites are type-checked too, so a fixture that is malformed on purpose is typed as the loose shape it is, never silenced. `mypy_path` lists each `skills/<name>/scripts` directory a module or suite puts on `sys.path`, and each test directory whose suites import a module beside them by its bare name; validation fails until the list matches.
 
+### Organizing modules
+
+A Python module is organized around one cohesive responsibility, the module-per-concern layout `CLAUDE.md` describes for ejryan89-skill-core, and not around one class. A module is a namespace for related definitions, and neither Python nor PEP 8 asks for a file per class, so the one-class-per-file convention of languages such as C# does not apply here.
+
+Definitions that serve the same responsibility live together: the classes, dataclasses, and `TypedDict` schemas that describe one shape of data, the exceptions its functions raise, the constants they read, and the helper functions only they call. `deployer/context.py` holds `Options`, `Selection`, and `Context`, the dataclasses that together describe one deployment run, and `skills/ejryan89-skill-core/scripts/atomic_file.py` keeps `UnfinishedCopyError` beside the functions that raise it. Adding a small typed record or exception to the module that uses it needs no file of its own.
+
+Extract a module, from a group of functions as much as from classes, when the split earns its place:
+
+- the part is a responsibility useful on its own, which other callers would import without the rest;
+- the part has dependencies or callers distinct from the rest of the module, so keeping it apart narrows what each side imports;
+- the split makes the code easier to find and keeps imports flowing one way, with no circular import between the new module and the old.
+
+No rule limits the classes a module holds or the lines it runs to; split for one of those reasons, never to meet a count.
+
+Names follow PEP 8: a module's name is snake_case, such as `atomic_file`, a class's is PascalCase, such as `UnfinishedCopyError`, and nothing requires a file's name to match a class it holds. A function that needs no state of its own is a module-level function, not a method of a class made only to hold it.
+
 ## How `main` is protected
 
 `main` changes only through a pull request, and its branch protection is what keeps it green:
