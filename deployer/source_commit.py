@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from flat_text import flat_text
-from git_client import GitClient, GitError, GitResult
+from git_client import GitClient, GitError, GitResult, output_lines
 
 from . import platform_support
 from .errors import DeployError
@@ -77,7 +77,7 @@ def head_commit(source_dir: Path) -> str | None:
     except OSError as exc:
         raise DeployError(f"{cannot}: {exc.strerror or exc}", "Check that Git runs, then retry.") from exc
     # Git's warnings share the captured output with the name, so the name is the one line that is a full name.
-    commits = [line.strip() for line in result.output.splitlines() if COMMIT_PATTERN.fullmatch(line.strip())]
+    commits = [line.strip() for line in output_lines(result.output) if COMMIT_PATTERN.fullmatch(line.strip())]
     if result.returncode == 0 and len(commits) == 1:
         return commits[0]
     reason = flat_text(result.output) or f"git exited with {result.returncode}"

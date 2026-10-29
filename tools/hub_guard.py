@@ -38,7 +38,7 @@ import whole_number
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
-from git_client import GitError
+from git_client import GitError, output_lines
 from job_tree import process_tree
 
 from deployer import platform_support
@@ -280,7 +280,7 @@ def guarded_hub_of_repository(path: Path) -> Path | None:
         if exc.kind == "not_repository":
             return None
         raise
-    lines = output.splitlines()
+    lines = output_lines(output)
     if len(lines) != 2:
         raise GitError(f"git rev-parse answered {len(lines)} lines for the git directory {path}, not two")
     if not same_path(Path(lines[0]), Path(lines[1])):
@@ -1965,7 +1965,7 @@ def mentions_alias(command: str, directories: Iterable[Path]) -> bool:
             continue
         if result.returncode != 0:
             return True
-        names = (line.partition(".")[2] for line in result.stdout.splitlines())
+        names = (line.partition(".")[2] for line in output_lines(result.stdout))
         for name in filter(None, names):
             if mentions(re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])", re.IGNORECASE), command):
                 return True

@@ -240,6 +240,19 @@ class FileGuardTests(GuardTestCase):
             self.assertEqual("deny", self.edit(str(self.hub / "README.md")))
             self.assertIsNone(self.edit(f"/c{self.hub / 'README.md'}"))
 
+    def test_a_guarded_hub_whose_path_holds_a_character_splitlines_breaks_on_is_protected(self) -> None:
+        # git ends each path rev-parse prints with a newline alone; U+2028 and U+0085 also end a line to splitlines().
+        for character in (chr(0x2028), chr(0x85)):
+            hub = self.root / f"a{character}hub"
+            hub.mkdir()
+            self.git(hub, "init", "-q")
+            (hub / "tracked.txt").write_text("x\n", encoding="utf-8")
+            self.git(hub, "add", "tracked.txt")
+            self.git(hub, "config", "coding-agent-skills.hubGuard", "true")
+            with self.subTest(character=hex(ord(character))):
+                self.assertEqual("deny", self.edit(hub / "tracked.txt"))
+                self.assertEqual("deny", self.edit(hub / ".git" / "config"))
+
     def test_guard_is_inert_unless_this_clone_opts_in(self) -> None:
         for value in (None, "false"):
             with self.subTest(value=value):
