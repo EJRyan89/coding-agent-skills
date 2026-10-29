@@ -844,7 +844,8 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     "type ignore with codes and a reason": _form(
         type_ignore_without_reason, "x: int = ''  # type: ignore[assignment]  # a reason\n", refused=False
     ),
-    # "never as an issue number such as `#12`, `(#12)`, `#12's`, or `issue 12`", in a comment or a docstring.
+    # A reason is never an issue number, in each form "Python checks" names: alone, in parentheses, possessive, or after
+    # the word issue, in a comment or a docstring.
     **{
         f"an issue number as {form}": _form(issue_numbers_in_comments, f"x = 1  # see {form}\n")
         for form in ("#12", "(#12)", "#12's", "issue 12")
