@@ -144,8 +144,10 @@ names each surviving mutant by its line, the mutation, and the suites it passed,
 ran when not all did, and names each mutant no suite reached by its line and the mutation, as the run log does beside
 each mutant killed and each that survived; a pull request that changes no such module gets one line saying so. The mutants run from one queue
 that takes one from each module in turn, and the run is capped by `DEFAULT_MINUTES` in the gate. A run the cap cuts
-short, leaving a mutant not run or a suite's reach unmeasured, is unfinished: its summary's first line says so, naming
-each module's mutants not run and how many lie on lines that run at import, and the job fails. An unfinished gate is not
+short, leaving a mutant not run, or a suite's reach unmeasured on a leg where a mutant it ran survived or went
+unreached, is unfinished: its summary's first line says so, naming each module's mutants not run and how many lie on
+lines that run at import, and the job fails. A suite left unmeasured beside only mutants killed on either leg opens no
+verdict, since nothing it could do changes a kill, so the run finishes and the summary says so beside the suite's name. An unfinished gate is not
 a verdict, whatever its table shows. Split the pull request, or move the module-level tables its changed lines hold into
 the functions that use them, until its gate finishes. The summary of a finished run is the record: read it, and for a
 surviving mutant on a line the pull request changed that alters behavior a caller relies on, such as a refusal or a line
@@ -157,7 +159,7 @@ which never runs mutmut, for each module whose behavior differs on Windows: `dep
 table, and each whose own code compares a platform name the platform policy's `PLATFORM_TOKENS` catalogues, such as
 `sys.platform` or `os.name`. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
 lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its
-own cap, and either leg's cut leaves the run unfinished. The gate's docstring in `tools/mutation_gate.py` gives the
+own cap, and either leg's cut leaves the run unfinished while it leaves a mutant without a verdict. The gate's docstring in `tools/mutation_gate.py` gives the
 details.
 
 ## Contract files

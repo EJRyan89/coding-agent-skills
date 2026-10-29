@@ -74,9 +74,12 @@ When no changed line yields a mutant, no suite runs. Otherwise each leg is bound
 reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
 one queue that takes one mutant from each module in turn, each module's in line order, so a module late in the list
 starts as soon as the first. A mutant the cap leaves untested is counted as not run, and a suite whose reach the cap
-left unmeasured is named. Either leaves the run unfinished, which is no verdict: the summary's first line says so,
-naming each module's mutants not run and how many of them lie on lines that run at import, and the count of unmeasured
-suites. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
+left unmeasured is named. A mutant not run leaves the run unfinished, which is no verdict, and so do a leg's unmeasured
+suites while a mutant that leg ran survived or went unreached, since one of them might have killed it; a mutant killed
+on either leg keeps its verdict, so unmeasured suites beside only such mutants leave the run finished, and the summary
+says so beside their names. An unfinished run's summary says so on its first line, naming each module's mutants not
+run and how many of them lie on lines that run at import, and each such leg's count of unmeasured suites and of the
+mutants they leave open. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
 
 While the mutants run, the log gets a line for each one a suite ran against and each one no suite reached, with its
 outcome, module, line, and mutation. The report, each module's changed lines, counts, and kill ratio, each changed
@@ -1186,7 +1189,8 @@ def table_line(module: ModuleReport) -> str:
 
 def unfinished_line(report: Report) -> str | None:
     """The line that leads the summary of a run the cap cut short, naming each module's mutants not run, how many of
-    them run at import, and the suites whose reach was not measured; None for a finished run."""
+    them run at import, and each leg's count of suites whose reach was not measured where they leave a mutant open, as
+    left_open counts them; None for a finished run."""
     parts = []
     for module in report.modules:
         left = [index for index, outcome in enumerate(module.outcomes) if outcome.status == NOT_RUN]
@@ -1198,14 +1202,29 @@ def unfinished_line(report: Report) -> str | None:
                 + (f" ({at_import} on lines that run at import)" if at_import else "")
             )
     for leg in report.legs:
-        if leg.unmeasured_suites:
-            count = len(leg.unmeasured_suites)
-            parts.append(f"the reach of {count} {'suite' if count == 1 else 'suites'} was not measured on {leg.name}")
+        count, opened = len(leg.unmeasured_suites), left_open(report, leg)
+        if count and opened:
+            parts.append(
+                f"the reach of {count} {'suite' if count == 1 else 'suites'} was not measured on {leg.name}, which "
+                f"leaves {opened} {'mutant' if opened == 1 else 'mutants'} that survived or no suite reached open there"
+            )
     if not parts:
         return None
     return (
         f"**Unfinished, so not a verdict:** a leg's cap cut the run short: {'; '.join(parts)}. "
         "Split the pull request, or move its module-level tables into the functions that use them, until it finishes."
+    )
+
+
+def left_open(report: Report, leg: LegRun) -> int:
+    """How many mutants a leg ran whose verdict a suite whose reach it left unmeasured could still change: each that
+    survived or that no suite reached, over every leg. A mutant killed or timed out on any leg keeps that verdict
+    whatever another suite would do, and one not run is counted as such."""
+    return sum(
+        outcome.status in (SURVIVED, NOT_REACHED)
+        for module in report.modules
+        if leg.name in module.legs
+        for outcome in module.outcomes
     )
 
 
@@ -1263,10 +1282,15 @@ def summary(report: Report) -> str:
     for leg in report.legs:
         if leg.unmeasured_suites:
             names = ", ".join(f"`{suite}`" for suite in leg.unmeasured_suites)
+            closed = (
+                ""
+                if left_open(report, leg)
+                else " No mutant it ran survived or went unreached, so they leave no verdict open."
+            )
             lines += [
                 "",
                 f"The cap left these suites' reach unmeasured on {leg.name}, so no mutant ran against them there: "
-                f"{names}.",
+                f"{names}.{closed}",
             ]
         for suite, reason in leg.failed_suites.items():
             lines += ["", f"`{suite}` {reason} on {leg.name}, so no mutant ran against it there."]
