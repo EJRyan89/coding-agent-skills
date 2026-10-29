@@ -256,6 +256,10 @@ function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [Collections.Generic
         $arguments[1].VariablePath.UserPath -eq 'null'
         $settled = $name -is [StringConstantExpressionAst]
         $Events.Add([ordered]@{ kind = 'setVariable'; name = if ($settled) { $name.Value }; removed = $removed })
+    } elseif (($Node.Member.Value -eq 'Create' -and $Node.Expression.Extent.Text -match 'ScriptBlock\]$') -or
+        $Node.Member.Value -in @('NewScriptBlock', 'InvokeScript')) {
+        # A script block built from a string runs text the parser never saw as a command.
+        $Events.Add([ordered]@{ kind = 'unread'; text = "a script block built from a string ($($Node.Member.Value))" })
     } elseif ($Node.Member.Value -eq 'Set' -and $Node.Expression.Extent.Text -match 'PSVariable$') {
         if ($name -is [StringConstantExpressionAst]) {
             $Events.Add([ordered]@{ kind = 'assigned'; path = $name.Value; removed = $false })

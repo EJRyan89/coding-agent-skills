@@ -1731,6 +1731,14 @@ def bash_eval(reader: BashReader, arguments: list[Word], _: object, shell: Shell
     return BashReader(reader.reading, reader.depth + 1).run_text(text, shell)
 
 
+def bash_alias(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """alias defines a name a later command may use for git, which the reader would take for another program; it
+    only lists aliases when every word is an option or a name without a value."""
+    if any(word is None or "=" in word for word in arguments):
+        reader.reading.cannot_read("an alias the command defines (alias)")
+    return certain(shell)
+
+
 def bash_source(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
     """A sourced file runs in this shell, where the guard does not read it: it may change the directory and any
     variable, so both are unknown after it."""
@@ -1782,6 +1790,7 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
     **dict.fromkeys(("mapfile", "readarray"), bash_mapfile),
     "wait": bash_wait,
     "eval": bash_eval,
+    "alias": bash_alias,
     "source": bash_source,
     ".": bash_source,
     **dict.fromkeys(("exec", "command", "builtin"), bash_exec),
@@ -2202,6 +2211,19 @@ def environment_names(paths: list[Word], literal: bool, known: Iterable[str] = (
     return found
 
 
+def defines_powershell_alias(name: str | None, arguments: list[Word]) -> bool:
+    """Whether a PowerShell command defines an alias: a cmdlet that defines one, by its name or an alias of it, or one
+    that writes an item at a path on the alias: drive the text names.
+
+    The tables sit in the function, not the module, so that they run in the tests that call the function rather than
+    at import."""
+    definers = {"set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"}
+    item_writers = {"set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi", "rename-item", "ren", "rni"}
+    if name in definers:
+        return True
+    return name in item_writers and any(word is not None and word.lower().startswith("alias:") for word in arguments)
+
+
 class PowerShellReader:
     def __init__(self, reading: Reading, depth: int) -> None:
         self.reading = reading
@@ -2287,6 +2309,9 @@ class PowerShellReader:
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
         if name is not None and name in session.functions:
             return self.call_function(name, session)
+        if defines_powershell_alias(name, arguments):
+            # An alias may stand for git in a later command, which the reader would take for another program.
+            self.reading.cannot_read(f"an alias the command defines ({name})")
         if name in LOCATION_NAMES | PUSH_LOCATION_NAMES | POP_LOCATION_NAMES:
             return self.location(name, arguments, parameters, session)
         if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS:
