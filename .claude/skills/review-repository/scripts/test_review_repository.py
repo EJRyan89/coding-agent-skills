@@ -136,7 +136,10 @@ PROFILE_SECTIONS = {
         "docs/design.md": ["Trust model"],
     },
     "sibling-search": {"docs/implementing-changes.md": ["Pull requests"]},
-    "untested-changes": {"docs/design.md": ["Tested scripts over prose"]},
+    "untested-changes": {
+        "docs/design.md": ["Tested scripts over prose"],
+        "docs/implementing-changes.md": ["Shared code"],
+    },
     "upgrade-notes": {"docs/design.md": ["The structured record is the contract"], "docs/releasing.md": ["Versioning"]},
     "validation-policy": {
         "CLAUDE.md": ["Required validation", "Architecture"],
@@ -1134,6 +1137,26 @@ def test_the_drift_profile_reads_the_condition_file_and_anchors_on_added_lines(p
 def test_the_untested_profile_reads_the_condition_file_and_the_body_and_anchors_on_added_lines(phrase: str) -> None:
     profile = " ".join((REPOSITORY / SKILL / "references" / "untested-changes.md").read_text("utf-8").split())
     assert phrase in profile
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "routes existing call sites through a shared helper",
+        "the bytes it writes, the key it compares, or the line it prints",
+        "against a literal",
+        "a converted call site whose output no test pins",
+        "says so beside that site's test",
+    ],
+)
+def test_the_untested_profile_reports_a_converted_call_site_whose_output_no_test_pins(phrase: str) -> None:
+    # Whether a test pins a site's output is a judgment, so this reviewer is the rule's only guard (#1961).
+    profile = " ".join((REPOSITORY / SKILL / "references" / "untested-changes.md").read_text("utf-8").split())
+    assert phrase in profile
+
+
+def test_the_untested_route_reads_the_shared_code_rule_it_holds() -> None:
+    assert "docs/implementing-changes.md" in untested_route()["resources"]
 
 
 @pytest.mark.parametrize("name", ["deployer.md", "skill-contract.md"])

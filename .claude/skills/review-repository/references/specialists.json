@@ -131,7 +131,7 @@
       "profile": ".claude/skills/review-repository/references/untested-changes.md",
       "include": ["(?i)\\.(?:py|ps1|sh)$"],
       "exclude": [],
-      "resources": [],
+      "resources": ["docs/implementing-changes.md"],
       "when": "untested-functions",
       "shares_files": true
     },
