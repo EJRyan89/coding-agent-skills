@@ -75,6 +75,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from collections import deque
@@ -86,6 +87,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from atomic_file import replace_text
 from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
 from flat_text import flat_text
@@ -115,6 +117,8 @@ from skill_roots import skills_directory_holding
 
 PROJECT_SUFFIX = ".csproj"
 PATH_LIMIT = 200
+# The permissions of a graph file the script creates: its owner writes it and everyone reads it, as an editor's.
+NEW_FILE_MODE = 0o644
 FINDING_KEYS = ("CONFLICT", "REDIRECT_STALE", "UNREADABLE")
 NO_FRAMEWORK = "-"
 Hop = tuple[str, str, str]  # kind (package, project, assembly, framework), name, version or ""
@@ -1004,10 +1008,16 @@ def refuse_output(requested: Path | None) -> None:
 
 def write_graph(text: str, requested: Path | None, fmt: str) -> Path:
     """Write the graph to the requested path, else to a file in a new temporary directory named for the skill, made
-    only once there is a graph to write and removed again when the write fails, so a failed query leaves nothing."""
+    only once there is a graph to write and removed again when the write fails, so a failed query leaves nothing.
+
+    The requested file is replaced whole through ejryan89-skill-core's `atomic_file`, keeping the permissions of a
+    file already there, so a write that fails part way leaves that file as it was."""
     if requested is not None:
-        requested.parent.mkdir(parents=True, exist_ok=True)
-        requested.write_text(text, encoding="utf-8", newline="\n")
+        try:
+            mode = stat.S_IMODE(requested.stat().st_mode)
+        except FileNotFoundError:
+            mode = NEW_FILE_MODE
+        replace_text(requested, text, mode=mode)
         return requested
     folder = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-"))
     target = folder / ("graph.dot" if fmt == "dot" else "graph.mmd")

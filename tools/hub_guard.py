@@ -15,6 +15,7 @@ the hub and its worktrees. It is inert unless `git config coding-agent-skills.hu
 from __future__ import annotations
 
 import base64
+import contextlib
 import fnmatch
 import functools
 import json
@@ -25,7 +26,7 @@ import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -38,12 +39,12 @@ import whole_number
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
-from git_client import GitError
+from git_client import GitError, GitResult
 from job_tree import process_tree
 
 from deployer import platform_support
-from tools import bash_syntax
-from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, checkout_of, git, same_path
+from tools import bash_syntax, worktrees
+from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, Checkout, same_path
 
 GUARD_SETTING = "coding-agent-skills.hubGuard"
 FILE_TOOLS = {"Edit", "NotebookEdit", "Write"}
@@ -199,7 +200,8 @@ LOOP_NESTING_LIMIT = 8
 POWERSHELL_READER = Path(__file__).with_name("hub_guard-powershell.ps1")
 # How long the guard reads and judges one command, pwsh included, before it is a command the guard cannot read in
 # time. The hook's own 30-second timeout in .claude/settings.json lets a command it cuts short run, so this leaves room
-# for starting Python and for one git call still running at the end, GUARD_GIT_TIMEOUT_SECONDS.
+# for starting Python and writing the decision; the hub lookups before and after reading, and each git call they
+# start, are held to it too (lookups_within).
 READING_SECONDS = 15
 # How much of the reader's output is kept: far more than the events of any command a tool call carries, and a reading
 # cut short is not JSON, so it is a command the guard cannot read rather than one read in part.
@@ -275,7 +277,7 @@ def guarded_hub_of_repository(path: Path) -> Path | None:
         return None
     arguments = ["--git-dir", str(path), "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]
     try:
-        output = CLIENT.output(arguments, directory=directory, timeout=GUARD_GIT_TIMEOUT_SECONDS)
+        output = CLIENT.output(arguments, directory=directory, timeout=lookup_timeout())
     except GitError as exc:
         if exc.kind == "not_repository":
             return None
@@ -396,10 +398,7 @@ class Reading:
     def time_left(self) -> float:
         """The seconds left of the reading time; past it, raises ReadingTimeout, which the hook refuses as a failure
         of the guard's own when the command names git while a guarded hub is in view."""
-        left = self.deadline - reading_clock()
-        if left <= 0:
-            raise ReadingTimeout(f"the guard did not finish reading it within {READING_SECONDS} seconds")
-        return left
+        return time_left(self.deadline)
 
 
 class ReadingTimeout(Exception):
@@ -408,6 +407,51 @@ class ReadingTimeout(Exception):
 
 def reading_clock() -> float:
     return time.monotonic()
+
+
+def time_left(deadline: float) -> float:
+    """The seconds until deadline, by reading_clock; past it, raises ReadingTimeout."""
+    left = deadline - reading_clock()
+    if left <= 0:
+        raise ReadingTimeout(f"the guard did not finish reading it within {READING_SECONDS} seconds")
+    return left
+
+
+@dataclass
+class LookupBound:
+    """When the hub lookups must end, by reading_clock: the reading deadline of the command being read and judged,
+    while it is, and no bound otherwise, as for a file event, whose git calls each keep GUARD_GIT_TIMEOUT_SECONDS."""
+
+    deadline: float = math.inf
+
+
+LOOKUPS = LookupBound()
+
+
+def lookup_timeout() -> float:
+    """How long one git call of a hub lookup may take: GUARD_GIT_TIMEOUT_SECONDS, or the reading time left when that
+    is less; past the reading time, raises ReadingTimeout, so a lookup starts no git call the deadline has passed."""
+    return min(time_left(LOOKUPS.deadline), GUARD_GIT_TIMEOUT_SECONDS)
+
+
+@contextlib.contextmanager
+def lookups_within(deadline: float) -> Iterator[None]:
+    """Holds every hub lookup made inside the block, and each git call it starts, to deadline."""
+    outer, LOOKUPS.deadline = LOOKUPS.deadline, deadline
+    try:
+        yield
+    finally:
+        LOOKUPS.deadline = outer
+
+
+def git(cwd: Path, *arguments: str) -> GitResult:
+    """Every git call the guard makes, run as tools/worktrees.py runs one, within what lookup_timeout leaves it."""
+    return worktrees.git(cwd, *arguments, timeout=lookup_timeout())
+
+
+def checkout_of(path: Path) -> Checkout | None:
+    """The checkout holding path, as tools/worktrees.py finds it, its git call within what lookup_timeout leaves it."""
+    return worktrees.checkout_of(path, lookup_timeout())
 
 
 def mentions(pattern: re.Pattern[str], text: str) -> bool:
@@ -908,7 +952,8 @@ def alias_lookups(place: Place) -> list[AliasLookup]:
 def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str | None:
     """Why a reading's calls would write a guarded hub, or None; notes on what was passed over join the reading's."""
     judge = Judge(set(hubs), reading.environment, reading.notes, reading.deadline)
-    return judge.denied(reading, depth)
+    with lookups_within(reading.deadline):
+        return judge.denied(reading, depth)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -2369,8 +2414,14 @@ SHELL_READERS: dict[str, ShellReader] = {"Bash": read_bash, "Monitor": read_bash
 def read_command(tool: str, command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
     """Every git call a shell tool's command makes, with where each acts, and what could not be read."""
     reading = start_reading(command, cwd, environment)
-    SHELL_READERS[tool](command, cwd, reading, 0, inherited_variables(environment))
+    read_into(reading, tool, cwd, environment)
     return reading
+
+
+def read_into(reading: Reading, tool: str, cwd: Path, environment: Mapping[str, str]) -> None:
+    """Reads the reading's command with the tool's shell reader, its hub lookups held to the reading time."""
+    with lookups_within(reading.deadline):
+        SHELL_READERS[tool](reading.text, cwd, reading, 0, inherited_variables(environment))
 
 
 def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
@@ -2378,16 +2429,21 @@ def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Re
     deadline = reading_clock() + READING_SECONDS
     guarded_hub_at.cache_clear()
     guarded_hub_of_repository.cache_clear()
+    # The hubs in view decide whether a command the guard cannot read in time is refused, so their lookups keep
+    # GUARD_GIT_TIMEOUT_SECONDS for each git call rather than end with the reading time; the session's own directories
+    # bound them, never the command.
     return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), deadline=deadline)
 
 
 def reached_hubs(reading: Reading) -> set[Path]:
-    """The guarded hubs a reading's settled places name."""
+    """The guarded hubs a reading's settled places name, each looked up within the reading time."""
     found: set[Path] = set()
-    for call in reading.calls:
-        hub, _ = reached_hub(call.place)
-        if hub is not None:
-            found.add(hub)
+    with lookups_within(reading.deadline):
+        for call in reading.calls:
+            reading.time_left()
+            hub, _ = reached_hub(call.place)
+            if hub is not None:
+                found.add(hub)
     return found
 
 
@@ -2417,7 +2473,7 @@ def guard(stream: str) -> int:
             reading = start_reading(tool_input["command"], cwd, os.environ)
             hubs = set(reading.context_hubs)
             in_view = (reading.text, hubs)
-            SHELL_READERS[tool](reading.text, cwd, reading, 0, inherited_variables(os.environ))
+            read_into(reading, tool, cwd, os.environ)
             hubs |= reached_hubs(reading)
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
