@@ -563,6 +563,32 @@ class TrackerTests(unittest.TestCase):
                 with self.subTest(value=value), self.assertRaisesRegex(TrackerError, "computed tracker state"):
                     run([item()], overrides={"owner/repo#1": value})
 
+    def test_statuses_differing_in_case_or_spacing_share_one_section_headed_as_the_first_row_spells_it(self) -> None:
+        # Spelled differently, delegated and Delegated made two sections, which the headings could not tell apart.
+        items = [item(number=number) for number in (1, 2, 3, 4)]
+        overrides = {
+            "owner/repo#1": "on  HOLD",
+            "owner/repo#2": "delegated",
+            "owner/repo#3": "Delegated",
+            "owner/repo#4": "On hold",
+        }
+        content, _ = run(items, overrides=overrides)
+        self.assertEqual(
+            {"Delegated": ["owner/repo#2", "owner/repo#3"], "On HOLD": ["owner/repo#1", "owner/repo#4"]},
+            sections(content),
+        )
+        reordered, _ = run(items, overrides=overrides | {"owner/repo#2": "DELEGATED", "owner/repo#3": "delegated"})
+        self.assertEqual(
+            {"DELEGATED": ["owner/repo#2", "owner/repo#3"], "On HOLD": ["owner/repo#1", "owner/repo#4"]},
+            sections(reordered),
+        )
+
+    def test_a_computed_state_spaced_differently_is_refused(self) -> None:
+        # The heading collapses the spaces, so "to  review" rendered a second To Review section.
+        for value in ("to  review", "Awaiting\tResponse", " my  PULL requests "):
+            with self.subTest(value=value), self.assertRaisesRegex(TrackerError, "computed tracker state"):
+                normalize_overrides({"owner/repo#1": value})
+
     def test_an_authored_row_survives_an_override_naming_another_status(self) -> None:
         mine = item(number=1)
         mine["author"] = "reviewer"

@@ -1601,6 +1601,9 @@ REJECTED: list[Case] = [
             "Awaiting Response",
             " Incomplete ",
             "INCOMPLETE",
+            "to  review",
+            "Awaiting	Response",
+            " my  PULL requests ",
         ]
     ],
     (

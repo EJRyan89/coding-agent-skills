@@ -33,6 +33,7 @@ from review_config import (
     DASHBOARD_SECTION_MINE,
     DASHBOARD_SECTION_TO_REVIEW,
     ConfigurationError,
+    dashboard_status_key,
     normalize_author_names,
     validate_repository_identity,
 )
@@ -294,7 +295,7 @@ def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
         status = READ.string(raw_status, f"status overrides.{raw_key}", empty=True).strip()
         if not status:
             raise TrackerError(f"Status override {key} must be non-empty")
-        if status.casefold() in COMPUTED_DASHBOARD_STATES:
+        if dashboard_status_key(status) in COMPUTED_DASHBOARD_STATES:
             raise TrackerError(f"Status override {key} duplicates a computed tracker state")
         if key in normalized:
             raise TrackerError(f"Duplicate status override after normalization: {key}")
@@ -621,36 +622,46 @@ def render(
     home_repositories: set[str] | None = None,
     config_path: str | None = None,
 ) -> str:
-    """Render the owned section: collapsible sections, rows grouped by requestor, AI verdict and findings."""
+    """Render the owned section: collapsible sections, rows grouped by requestor, AI verdict and findings. Pinned rows
+    share a section when their statuses have one `dashboard_status_key`, headed as the first of them in row order
+    spells it."""
     home = {repository.lower() for repository in (home_repositories or set())}
     lines = [start_marker, ""]
     if rows:
         lines.extend([FINDINGS_LEGEND, ""])
-    pinned_sections = sorted({row.section for row in rows if row.overridden}, key=str.casefold)
+    pinned_groups: dict[str, list[Row]] = {}
+    for row in rows:
+        if row.overridden:
+            pinned_groups.setdefault(dashboard_status_key(row.section), []).append(row)
     # Summaries sit in an HTML block (a line starting with <summary> opens one), so this one is written in HTML.
     config_link = (
         f'<a href="{html.escape(_file_url(config_path))}">the code-review configuration</a>'
         if config_path
         else "the code-review configuration"
     )
-    order = [SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_DRAFTS, *pinned_sections, SECTION_MINE]
-    for section in order:
-        pinned = section in pinned_sections
-        members = [row for row in rows if row.section == section and row.overridden == pinned]
-        if not members:
-            continue
-        summary = (
-            f"Pinned by a status override in {config_link}. Set or clear one through update-pr-dashboard, which runs "
-            "<code>dashboard_pipeline.py override</code>; do not edit the file by hand."
-            if pinned
-            else SECTION_SUMMARIES[section]
-        )
-        heading = " ".join(word[:1].upper() + word[1:] for word in section.split()) if pinned else section
-        lines += _section_lines(heading, members, summary, home)
+    pinned_summary = (
+        f"Pinned by a status override in {config_link}. Set or clear one through update-pr-dashboard, which runs "
+        "<code>dashboard_pipeline.py override</code>; do not edit the file by hand."
+    )
+    pinned = [
+        (" ".join(word[:1].upper() + word[1:] for word in members[0].section.split()), members, pinned_summary)
+        for _, members in sorted(pinned_groups.items())
+    ]
+    for heading, members, summary in [
+        *(_computed_section(section, rows) for section in (SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_DRAFTS)),
+        *pinned,
+        _computed_section(SECTION_MINE, rows),
+    ]:
+        if members:
+            lines += _section_lines(heading, members, summary, home)
     if not rows:
         lines.extend(["_No matching open pull requests_", ""])
     lines.append(end_marker)
     return "\n".join(lines)
+
+
+def _computed_section(section: str, rows: list[Row]) -> tuple[str, list[Row], str]:
+    return section, [row for row in rows if row.section == section and not row.overridden], SECTION_SUMMARIES[section]
 
 
 def _owned_span(document: str, start_marker: str, end_marker: str) -> tuple[int, int]:
