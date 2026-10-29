@@ -79,7 +79,6 @@ TOOLS = {
     "badtool": {"tools": [{"name": "search"}]},
     "nonobject": {"tools": ["search"]},
     "loop": {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "again"},
-    "surrogate": {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "\\ud800"},
 }
 for line in sys.stdin.buffer:
     if mode == "record":
@@ -128,6 +127,29 @@ for line in sys.stdin.buffer:
     elif message.get("method") == "tools/call":
         open("called.txt", "w").write("called")
 """
+
+
+class _Running:
+    """A started server's stdin, as Session writes to it."""
+
+    def __init__(self) -> None:
+        self.stdin = io.BytesIO()
+
+
+def test_a_message_json_cannot_carry_fails_the_server_never_the_audit() -> None:
+    # A request is built from the server's own values, such as a tools/list cursor; json_writer refuses what JSON
+    # cannot carry, and the refusal is the server's failure, a RuntimeError its caller reports, with nothing written.
+    running = _Running()
+    session = mcp_handshake.Session(running)  # type: ignore[arg-type]  # a stdin is all send reads
+    with pytest.raises(RuntimeError, match=r"cannot send the server's value back: .*lone surrogate"):
+        session.send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"cursor": "\ud800"}})
+    assert running.stdin.getvalue() == b""
+    message = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    session.send(message)
+    written = running.stdin.getvalue()
+    assert written.endswith(b"\n")
+    assert written.count(b"\n") == 1
+    assert json.loads(written) == message
 
 
 class HandshakeTests(unittest.TestCase):
@@ -210,12 +232,6 @@ class HandshakeTests(unittest.TestCase):
             ("badtool", "tools/list returned a tool without a name and object inputSchema"),
             ("nonobject", "tools/list returned a tool without a name and object inputSchema"),
             ("loop", "tools/list returned an invalid or repeated nextCursor"),
-            # A cursor JSON cannot carry back fails this server alone, never the whole audit.
-            (
-                "surrogate",
-                "cannot send the server's value back: the value holds a lone surrogate U+D800, which UTF-8 cannot "
-                "encode",
-            ),
         ):
             with self.subTest(mode=mode):
                 self._write(".mcp.json", "mcpServers", {"bad": self._stdio(mode)})
