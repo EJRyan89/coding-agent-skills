@@ -20,11 +20,24 @@ import tempfile
 import tokenize
 import tomllib
 import unittest
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from bounded_process import REPOSITORY_VARIABLES
+from call_tables import (
+    EVENT_LOOP,
+    EVENT_LOOP_STARTS,
+    LAST,
+    OTHER_OPENS,
+    PROCESS_STARTS,
+    TEXT_METHODS,
+    TEXT_OPENERS,
+    ProcessStart,
+    TextOpener,
+)
 from git_client import GLOBAL_VALUE_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from path_containment import posix_within, within
@@ -491,17 +504,8 @@ def resolves_to(qualified: str, name: str) -> bool:
 
 # Every process the repository starts runs without git's repository-selecting variables. ejryan89-skill-core's
 # bounded_process starts it so; a start anywhere else passes an environment that module's without_repository_variables
-# built, or states why in a module-level PROCESS_ENV_ALLOWED = {scope: reason}.
-PROCESS_STARTS = frozenset(
-    {
-        *(f"subprocess.{start}" for start in ("run", "Popen", "call", "check_call", "check_output")),
-        *(
-            f"{module}.create_subprocess_{kind}"
-            for module in ("asyncio", "asyncio.subprocess")
-            for kind in ("exec", "shell")
-        ),
-    }
-)
+# built, or states why in a module-level PROCESS_ENV_ALLOWED = {scope: reason}. The starts are call_tables'
+# PROCESS_STARTS: one that takes no environment inherits this process's, and one that clears it itself needs none.
 CLEARED_ENVIRONMENT = "bounded_process.without_repository_variables"
 PROCESS_RUNNER = "skills/ejryan89-skill-core/scripts/bounded_process.py"
 PROCESS_ENV_ALLOWANCE = "PROCESS_ENV_ALLOWED"
@@ -526,16 +530,53 @@ def _clears(value: ast.expr | None, resolver: CallableResolver) -> bool:
     return isinstance(value, ast.Call) and resolves_to(resolver.name(value.func), CLEARED_ENVIRONMENT)
 
 
+def _clear_key(key: ast.expr | None) -> bool:
+    """Whether a key is a constant that names none of git's repository-selecting variables, in any case."""
+    return (
+        isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value.upper() not in REPOSITORY_VARIABLES
+    )
+
+
+def _clear_mapping(value: ast.expr) -> bool:
+    """Whether an expression is a dict literal whose every key is clear, so adding it to an environment adds none of
+    git's repository-selecting variables; a `**` unpacking in it adds keys no one can read."""
+    return isinstance(value, ast.Dict) and all(_clear_key(key) for key in value.keys)
+
+
+def _updated_name(node: ast.AST) -> tuple[ast.Name, bool] | None:
+    """The name a statement or call changes in place, with whether the change is proven to add no repository variable:
+    an `update` of clear dict literals and clear keywords, a `setdefault` or a subscript assignment of a clear key, or
+    `|=` a clear dict literal. None for a node that changes no name in place."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+        if node.func.attr == "update":
+            proven = all(_clear_mapping(argument) for argument in node.args) and all(
+                keyword.arg is not None and keyword.arg.upper() not in REPOSITORY_VARIABLES for keyword in node.keywords
+            )
+            return node.func.value, proven
+        if node.func.attr == "setdefault":
+            return node.func.value, bool(node.args) and _clear_key(node.args[0])
+    if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and isinstance(node.value, ast.Name):
+        return node.value, _clear_key(node.slice)
+    if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+        return node.target, isinstance(node.op, ast.BitOr) and _clear_mapping(node.value)
+    return None
+
+
 def _cleared_names(tree: ast.Module, holders: dict[int, ast.AST], resolver: CallableResolver) -> dict[int, set[str]]:
-    """The names each function, by its id, binds only to an environment without_repository_variables builds. A
-    parameter is bound by the caller, so it is none; an update in place, such as `env.update(...)` or `env |= ...`,
-    keeps the name bound to that environment."""
+    """The names each function, by its id, binds only to an environment without_repository_variables builds and
+    changes in place, if at all, only by keys that name none of git's repository-selecting variables. A parameter is
+    bound by the caller, so it is none. An update in place, such as `env.update(...)`, `env[key] = ...`, or
+    `env |= ...`, keeps the name cleared only when every key it can add is such a constant, as
+    `env.update({"LC_ALL": "C"})`; one that adds keys from elsewhere, such as `env.update(os.environ)`, does not."""
     assigned: dict[int, ast.expr] = {}
+    augmented: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             assigned |= {id(target): node.value for target in node.targets if isinstance(target, ast.Name)}
         elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
             assigned[id(node.target)] = node.value
+        elif isinstance(node, ast.AugAssign):
+            augmented.add(id(node.target))
     bound: dict[int, dict[str, list[bool]]] = {}
     for node in ast.walk(tree):
         if isinstance(node, FUNCTIONS):
@@ -543,10 +584,38 @@ def _cleared_names(tree: ast.Module, holders: dict[int, ast.AST], resolver: Call
             for parameter in [*parameters, node.args.vararg, node.args.kwarg]:
                 if parameter is not None:
                     bound.setdefault(id(node), {}).setdefault(parameter.arg, []).append(False)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        elif (updated := _updated_name(node)) is not None:
+            # A proven update leaves the name as its bindings make it; an unproven one makes it not cleared.
+            name, proven = updated
+            if not proven:
+                bound.setdefault(id(holders[id(node)]), {}).setdefault(name.id, []).append(False)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and id(node) not in augmented:
             cleared = _clears(assigned.get(id(node)), resolver)
             bound.setdefault(id(holders[id(node)]), {}).setdefault(node.id, []).append(cleared)
     return {holder: {name for name, values in names.items() if all(values)} for holder, names in bound.items()}
+
+
+def _process_start(call: ast.Call, resolver: CallableResolver) -> tuple[str, ProcessStart] | None:
+    """The PROCESS_STARTS entry a call names, through the module's imports or, for an event loop's runner, by its
+    method on any receiver, with its name, or None."""
+    named = resolver.name(call.func)
+    if named in PROCESS_STARTS:
+        return named, PROCESS_STARTS[named]
+    if isinstance(call.func, ast.Attribute) and call.func.attr in EVENT_LOOP_STARTS:
+        method = f"{EVENT_LOOP}.{call.func.attr}"
+        return method, PROCESS_STARTS[method]
+    return None
+
+
+def _environment_argument(call: ast.Call, start: ProcessStart) -> ast.expr | None:
+    """The environment a process start is given, or None when it is given none or can take none."""
+    if start.environment is None:
+        return None
+    position, keyword = start.environment
+    if position != LAST:
+        return call_argument(call, position, keyword)
+    last = call.args[-1] if call.args and not isinstance(call.args[-1], ast.Starred) else None
+    return call_argument(call, None, keyword) or last
 
 
 def process_environment_problems(root: Path, files: list[Path]) -> list[str]:
@@ -561,9 +630,10 @@ def process_environment_problems(root: Path, files: list[Path]) -> list[str]:
         cleared = _cleared_names(tree, holders, resolver)
         found: list[tuple[int, str, str]] = []
         for node, scope in scoped_nodes(tree.body):
-            if not isinstance(node, ast.Call) or (start := resolver.name(node.func)) not in PROCESS_STARTS:
+            if not isinstance(node, ast.Call) or (named := _process_start(node, resolver)) is None or named[1].clears:
                 continue
-            env = call_argument(node, None, "env")
+            start, table = named
+            env = _environment_argument(node, table)
             if _clears(env, resolver) or (
                 isinstance(env, ast.Name) and env.id in cleared.get(id(holders[id(node)]), set())
             ):
@@ -637,6 +707,19 @@ JSON_READER = "skills/ejryan89-skill-core/scripts/json_reader.py"
 JSON_PARSE_ALLOWANCE = "JSON_PARSE_ALLOWED"
 
 
+def _looked_up(node: ast.AST, aliases: dict[str, str]) -> str:
+    """The qualified name a node reads: a name or an attribute it loads, or what a getattr of a constant name on one
+    reads, as `getattr(json, "loads")` reads json.loads; "" for anything else."""
+    if isinstance(node, ast.Attribute | ast.Name) and isinstance(node.ctx, ast.Load):
+        return qualified_name(node, aliases)
+    if isinstance(node, ast.Call) and qualified_name(node.func, aliases) in ATTRIBUTE_LOOKUPS and node.args:
+        owner = qualified_name(node.args[0], aliases)
+        attribute = call_argument(node, 1, "name")
+        if owner and isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
+            return f"{owner}.{attribute.value}"
+    return ""
+
+
 def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
     """Each use of the json module's own parsers outside json_reader, as an attribute or an imported name, that no
     JSON_PARSE_ALLOWED entry sanctions."""
@@ -652,9 +735,7 @@ def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
                 f"ejryan89-skill-core's json_reader, the one parse of JSON, or state why in {JSON_PARSE_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Attribute | ast.Name)
-            and isinstance(node.ctx, ast.Load)
-            and (parser := qualified_name(node, aliases)) in JSON_PARSERS
+            if isinstance(node, ast.expr) and (parser := _looked_up(node, aliases)) in JSON_PARSERS
         ]
         problems += sanctioned_problems(name, tree, JSON_PARSE_ALLOWANCE, found)
     return problems
@@ -766,16 +847,36 @@ class _ScopeNumbers:
             self.tested.setdefault(ast.dump(_unstripped(node.args[index])), f"a regular-expression {method}()")
 
     def refusal(self, call: ast.Call) -> str | None:
-        """What a one-argument int() call converts that it must not, or None."""
+        """What a one-argument int() call converts that it must not, or a map(int, ...) over groups, or None. A
+        strip() leaves a group's digits as they were, so a stripped group is one too."""
+        if _maps_int(call):
+            over = call.args[1:]
+            groups = any(
+                self.is_group(item) or _method_call(item, "groups", "findall") is not None
+                for argument in over
+                for item in _iterated(argument)
+            )
+            return "regular-expression groups" if groups else None
         if not (
             isinstance(call.func, ast.Name) and call.func.id == "int" and len(call.args) == 1 and not call.keywords
         ):
             return None
         argument = call.args[0]
-        if self.is_group(argument):
+        if self.is_group(_unstripped(argument)):
             return "a regular-expression group"
         test = self.tested.get(ast.dump(_unstripped(argument)))
         return f"a value {test} admitted" if test else None
+
+
+def _maps_int(call: ast.Call) -> bool:
+    """Whether a call is map(int, ...), which converts each item as a one-argument int() does."""
+    return (
+        isinstance(call.func, ast.Name)
+        and call.func.id == "map"
+        and len(call.args) >= 2
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "int"
+    )
 
 
 def _unstripped(node: ast.expr) -> ast.expr:
@@ -826,13 +927,19 @@ FILE_WRITERS = frozenset(
     {"replace_text", "replace_bytes", "atomic_write_text", "atomic_write_bytes", "write_atomic", "append_line"}
 )
 JSON_WRITE_ALLOWANCE = "JSON_WRITE_ALLOWED"
+PRINTS = frozenset({"print", "builtins.print"})
 
 
 def _writes(call: ast.Call, aliases: dict[str, str]) -> bool:
-    """Whether a call writes what it is given to a file or a stream."""
+    """Whether a call writes what it is given to a file or a stream: a write method, a file writer, or a print given a
+    file= other than None, which prints to that stream."""
     if isinstance(call.func, ast.Attribute) and call.func.attr in WRITE_METHODS:
         return True
-    return qualified_name(call.func, aliases).rpartition(".")[2] in FILE_WRITERS
+    called = qualified_name(call.func, aliases)
+    if called in PRINTS:
+        stream = call_argument(call, None, "file")
+        return stream is not None and not (isinstance(stream, ast.Constant) and stream.value is None)
+    return called.rpartition(".")[2] in FILE_WRITERS
 
 
 def _json_text(node: ast.AST, aliases: dict[str, str], bound: set[str]) -> bool:
@@ -846,11 +953,11 @@ def _json_text(node: ast.AST, aliases: dict[str, str], bound: set[str]) -> bool:
 
 def _json_bindings(nodes: list[tuple[ast.AST, str]], aliases: dict[str, str]) -> dict[str, set[str]]:
     """Each scope's names bound to an expression holding a json.dumps call, to the fixed point, so a name bound to
-    one of them is one too."""
+    one of them is one too, and a name an augmented assignment such as `text += json.dumps(d)` adds one to."""
     assignments = [
         (scope, target.id, node.value)
         for node, scope in nodes
-        if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None
+        if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign) and node.value is not None
         for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
         if isinstance(target, ast.Name)
     ]
@@ -905,44 +1012,8 @@ def json_write_problems(root: Path, files: list[Path]) -> list[str]:
 ENCODING_ALLOWANCE = "ENCODING_ALLOWED"
 
 
-@dataclass(frozen=True)
-class TextOpener:
-    """Where a call that may open text takes its mode and its encoding, by position (None for a keyword alone or no
-    mode at all), and the mode it opens in when given none, empty for a call that opens only text."""
-
-    mode: int | None
-    default_mode: str
-    encoding: int | None
-
-
-BINARY_DEFAULT = "rb"
-# The module functions and classes that open text, by the name they are imported as.
-TEXT_OPENERS = {
-    "open": TextOpener(1, "r", 3),
-    "io.open": TextOpener(1, "r", 3),
-    "os.fdopen": TextOpener(1, "r", 3),
-    "io.TextIOWrapper": TextOpener(None, "", 1),
-    "tempfile.TemporaryFile": TextOpener(0, "w+b", 2),
-    "tempfile.NamedTemporaryFile": TextOpener(0, "w+b", 2),
-    "tempfile.SpooledTemporaryFile": TextOpener(1, "w+b", 3),
-    "gzip.open": TextOpener(1, BINARY_DEFAULT, 3),
-    "bz2.open": TextOpener(1, BINARY_DEFAULT, 3),
-    "lzma.open": TextOpener(1, BINARY_DEFAULT, None),
-}
-# The path methods that open, read, or write text, by the attribute a call names: pathlib's and zipfile's alike.
-TEXT_METHODS = {
-    "read_text": TextOpener(None, "", 0),
-    "write_text": TextOpener(None, "", 1),
-    "open": TextOpener(0, "r", 2),
-}
-# The module functions named open that take no text encoding: a call through one is no path's open.
-OTHER_OPENS = frozenset(
-    {"os.open", "tarfile.open", "shelve.open", "dbm.open", "webbrowser.open", "codecs.open", "wave.open"}
-)
-# The functions that start a process, whose text=True or universal_newlines=True decodes its output.
-TEXT_PROCESS_STARTS = frozenset(
-    f"subprocess.{start}" for start in ("run", "Popen", "check_output", "call", "check_call")
-)
+# The opens and process starts come from call_tables: TEXT_OPENERS, TEXT_METHODS, and OTHER_OPENS, and each
+# PROCESS_STARTS entry that decodes its output as text, always or when one of TEXT_PROCESS_OPTIONS asks.
 TEXT_PROCESS_OPTIONS = ("text", "universal_newlines")
 
 
@@ -976,10 +1047,12 @@ def _names_encoding(call: ast.Call, position: int | None) -> bool:
 
 
 def _starts_text_process(call: ast.Call, aliases: dict[str, str]) -> bool:
-    """Whether a call starts a process whose output it decodes as text."""
-    if qualified_name(call.func, aliases) not in TEXT_PROCESS_STARTS:
+    """Whether a call starts a process whose output it decodes as text: always, as os.popen and subprocess.getoutput
+    do, or because its text= or universal_newlines= asks."""
+    start = PROCESS_STARTS.get(qualified_name(call.func, aliases))
+    if start is None or start.text == "never":
         return False
-    return any(
+    return start.text == "always" or any(
         not (isinstance(keyword.value, ast.Constant) and not keyword.value.value)
         for keyword in call.keywords
         if keyword.arg in TEXT_PROCESS_OPTIONS
@@ -1260,9 +1333,31 @@ def _returns_git_result(function: ast.FunctionDef | ast.AsyncFunctionDef, resolv
     )
 
 
+def _reaches(called: str, producer: str) -> bool:
+    """Whether a call's qualified name reaches a producer's: the same name, or either one the other's dotted tail, as a
+    module imported by its bare name reaches one keyed by its path from the repository root."""
+    return "." in called and (called == producer or producer.endswith(f".{called}") or called.endswith(f".{producer}"))
+
+
+def _module_bindings(tree: ast.Module, resolver: CallableResolver) -> list[tuple[str, str]]:
+    """Each name a module's top level binds to another, with what it resolves to: an import, or a simple assignment of
+    a name or an attribute."""
+    bindings: list[tuple[str, str]] = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            bindings += [(alias.asname or alias.name, f"{node.module}.{alias.name}") for alias in node.names]
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name | ast.Attribute):
+            bindings += [
+                (target.id, resolver.name(node.value)) for target in node.targets if isinstance(target, ast.Name)
+            ]
+    return bindings
+
+
 def git_result_producers(trees: list[tuple[str, ast.Module]]) -> set[str]:
-    """Each function, by the qualified name a caller reaches it by, that is annotated to return a GitResult."""
+    """Each function, by the qualified name a caller reaches it by, that is annotated to return a GitResult, and each
+    name a module's top level binds to one, as a re-export does, followed through every module that binds it again."""
     producers: set[str] = set()
+    bindings: list[tuple[str, str]] = []
     for name, tree in trees:
         resolver = CallableResolver(tree)
         producers |= {
@@ -1270,12 +1365,19 @@ def git_result_producers(trees: list[tuple[str, ast.Module]]) -> set[str]:
             for node in tree.body
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _returns_git_result(node, resolver)
         }
+        bindings += [(f"{_module_key(name)}.{bound}", target) for bound, target in _module_bindings(tree, resolver)]
+    while found := {
+        bound
+        for bound, target in bindings
+        if bound not in producers and any(_reaches(target, producer) for producer in producers)
+    }:
+        producers |= found
     return producers
 
 
 class _GitResults:
-    """What a module holds as a git result: a call that returns one, and each name bound to such a call or annotated
-    as a GitResult."""
+    """What a module holds as a git result: a call that returns one, and each name a scope binds to such a call, by an
+    assignment or an assignment expression, or annotates as a GitResult, held for that scope alone."""
 
     def __init__(self, tree: ast.Module, resolver: CallableResolver, producers: set[str]) -> None:
         self.resolver = resolver
@@ -1286,15 +1388,31 @@ class _GitResults:
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _returns_git_result(node, resolver)
         }
         self.producers = producers
-        self.names: set[str] = set()
+        # Each name by the scope that binds it, so a name another function binds to a result is not one here.
+        self.names: set[tuple[int, str]] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and self.is_result(node.value):
-                self.names |= {target.id for target in node.targets if isinstance(target, ast.Name)}
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self._bind(target, target.id)
+            elif isinstance(node, ast.NamedExpr) and self.is_result(node.value):
+                # The scope reader visits a walrus but not its target, and binds the name where the walrus sits.
+                self._bind(node, node.target.id)
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 if self.annotated(node.annotation) or self.is_result(node.value):
-                    self.names.add(node.target.id)
+                    self._bind(node.target, node.target.id)
             elif isinstance(node, ast.arg) and node.annotation is not None and self.annotated(node.annotation):
-                self.names.add(node.arg)
+                self._bind(node, node.arg)
+
+    def _key(self, node: ast.AST, name: str) -> tuple[int, str] | None:
+        """The scope that binds a name where the node reads or binds it, with the name, or None when none does."""
+        scope = self.resolver.scopes.get(id(node))
+        owner = scope.owner(name) if scope is not None else None
+        return (id(owner), name) if owner is not None else None
+
+    def _bind(self, node: ast.AST, name: str) -> None:
+        if (key := self._key(node, name)) is not None:
+            self.names.add(key)
 
     def annotated(self, annotation: ast.expr) -> bool:
         return any(
@@ -1310,10 +1428,27 @@ class _GitResults:
         if isinstance(function, ast.Attribute) and function.attr == "run" and self.clients.holds(function.value):
             return True
         called = self.resolver.name(function)
-        return bool(called) and (called in self.local or any(resolves_to(called, name) for name in self.producers))
+        return bool(called) and (called in self.local or any(_reaches(called, name) for name in self.producers))
 
     def holds(self, node: ast.expr) -> bool:
-        return (isinstance(node, ast.Name) and node.id in self.names) or self.is_result(node)
+        if isinstance(node, ast.NamedExpr):
+            return self.holds(node.value)
+        if isinstance(node, ast.Name):
+            return self._key(node, node.id) in self.names
+        return self.is_result(node)
+
+    def status_read(self, node: ast.expr) -> bool:
+        """Whether a node reads a held result's returncode, as an attribute or through getattr."""
+        if isinstance(node, ast.Attribute):
+            return node.attr == "returncode" and isinstance(node.ctx, ast.Load) and self.holds(node.value)
+        return (
+            isinstance(node, ast.Call)
+            and self.resolver.name(node.func) == "getattr"
+            and len(node.args) >= 2
+            and isinstance(attribute := node.args[1], ast.Constant)
+            and attribute.value == "returncode"
+            and self.holds(node.args[0])
+        )
 
 
 def git_status_problems(root: Path, files: list[Path]) -> list[str]:
@@ -1333,10 +1468,7 @@ def git_status_problems(root: Path, files: list[Path]) -> list[str]:
                 f"quiet_output, commit_of, file_at, or rev_parse_paths, or state why in {GIT_STATUS_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Attribute)
-            and node.attr == "returncode"
-            and isinstance(node.ctx, ast.Load)
-            and results.holds(node.value)
+            if isinstance(node, ast.expr) and results.status_read(node)
         ]
         problems += sanctioned_problems(name, tree, GIT_STATUS_ALLOWANCE, found)
     return problems
@@ -1568,19 +1700,50 @@ def _module_name(root: Path, path: Path) -> str:
 
 
 def _content_aliases(tree: ast.Module, module: str) -> dict[str, str]:
-    """import_aliases, with what a package module's relative imports bind and each name the module defines itself."""
+    """import_aliases, with what a package module's relative imports bind, each name the module defines itself, a
+    lambda its top level binds among them, and each name its top level binds once to another name or an attribute, as
+    `READ = json_reader.read_file` does, which stands for what that one does."""
     aliases = {
         node.name: f"{module}.{node.name}"
         for node in tree.body
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
     }
-    aliases |= {name: f"{module}.{name}" for name in _module_tuples(tree)}
+    aliases |= {name: f"{module}.{name}" for name in [*_module_tuples(tree), *_module_lambdas(tree)]}
     package = module.rpartition(".")[0]
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level == 1 and package:
             base = f"{package}.{node.module}" if node.module else package
             aliases |= {alias.asname or alias.name: f"{base}.{alias.name}" for alias in node.names}
-    return aliases | import_aliases(tree)
+    aliases |= import_aliases(tree)
+    bound = [_module_binding(node) for node in tree.body]
+    counts = Counter(name for name, _ in filter(None, bound))
+    for name, value in filter(None, bound):
+        if counts[name] == 1 and (target := qualified_name(value, aliases)):
+            aliases[name] = target
+    return aliases
+
+
+def _module_binding(node: ast.stmt) -> tuple[str, ast.expr] | None:
+    """The name a top-level statement binds to a name or an attribute, with that value, or None."""
+    if (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(target := node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Name | ast.Attribute)
+    ):
+        return target.id, node.value
+    return None
+
+
+def _module_lambdas(tree: ast.Module) -> dict[str, ast.Lambda]:
+    """Each top-level name assigned a lambda, which a call of the name runs as a function."""
+    return {
+        target.id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Lambda)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
 
 
 def _module_tuples(tree: ast.Module) -> dict[str, ast.Tuple]:
@@ -1625,6 +1788,33 @@ def _standard_class(qualified: str) -> type | None:
     return found if isinstance(found, type) else None
 
 
+RepositoryFunctions = dict[str, tuple[str, str, Sequence[ast.AST]]]
+
+
+def _repository_functions(
+    trees: dict[str, tuple[str, ast.Module]],
+) -> tuple[RepositoryFunctions, dict[str, dict[str, list[str]]]]:
+    """Each repository function a call may run, by its qualified name, with its module, the scope an allowance names
+    it by, and its body: a module-level function, a lambda the top level binds, and a class's method. And each method
+    name a module's classes define, with the methods by that name, which a call of the name on any receiver may run,
+    since the reader cannot tell which object a receiver is."""
+    functions: RepositoryFunctions = {}
+    methods: dict[str, dict[str, list[str]]] = {}
+    for module, (_, tree) in trees.items():
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                functions[f"{module}.{node.name}"] = (module, node.name, node.body)
+            elif isinstance(node, ast.ClassDef):
+                for method in node.body:
+                    if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef):
+                        scope = f"{node.name}.{method.name}"
+                        functions[f"{module}.{scope}"] = (module, scope, method.body)
+                        methods.setdefault(module, {}).setdefault(method.name, []).append(f"{module}.{scope}")
+        for name, function in _module_lambdas(tree).items():
+            functions[f"{module}.{name}"] = (module, name, [function.body])
+    return functions, methods
+
+
 class _ContentModel:
     """The repository's modules as the content-errors policy reads them: its classes, its tuples of classes, its
     module-level functions, and each skill-core reader's family."""
@@ -1654,12 +1844,7 @@ class _ContentModel:
             for module, (_, tree) in self.trees.items()
             for name, value in _module_tuples(tree).items()
         }
-        self.functions = {
-            f"{module}.{node.name}": (module, node)
-            for module, (_, tree) in self.trees.items()
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-        }
+        self.functions, self.methods = _repository_functions(self.trees)
         self.families: dict[str, dict[ClassKey, str]] = {}
         for module, (name, tree) in self.trees.items():
             if not posix_within(name, SKILL_CORE_SCRIPTS) or f"{module}.{CONTENT_ERRORS}" not in self.tuples:
@@ -1725,10 +1910,15 @@ class _ContentModel:
         qualified = qualified_name(node, self.aliases[module])
         return self.classes(qualified, depth) if qualified else None
 
-    def callee(self, call: ast.Call, module: str) -> str:
-        """The reader or repository function a call names, by its qualified name, or ""."""
+    def callees(self, call: ast.Call, module: str) -> list[str]:
+        """The reader or repository function a call names, by its qualified name, or for a method call on a receiver
+        the policy cannot resolve, each method of the module's classes by that name; none for any other call."""
         qualified = qualified_name(call.func, self.aliases[module])
-        return qualified if qualified in self.families or qualified in self.functions else ""
+        if qualified in self.families or qualified in self.functions:
+            return [qualified]
+        if isinstance(call.func, ast.Attribute):
+            return list(self.methods.get(module, {}).get(call.func.attr, []))
+        return []
 
 
 def class_text(key: ClassKey) -> str:
@@ -1767,13 +1957,14 @@ class _ContentEscapes:
             ]
             for module, (_, tree) in model.trees.items()
         }
-        self.shapes = {f"{module}.{scope}": shape for module, found in self.scoped.items() for scope, _, shape in found}
+        # Every function a call may run, a top-level lambda's included, with its shape.
+        self.shapes = {qualified: self.shape(body, module) for qualified, (module, _, body) in model.functions.items()}
         self.escapes: dict[str, dict[ClassKey, str]] = {qualified: {} for qualified in model.functions}
         changed = True
         while changed:
             changed = False
-            for qualified, (module, node) in model.functions.items():
-                found = {} if node.name in self.allowed[module] else self.escaping(self.shapes[qualified], None, "")
+            for qualified, (module, scope, _) in model.functions.items():
+                found = {} if scope in self.allowed[module] else self.escaping(self.shapes[qualified], None, "")
                 if found != self.escapes[qualified]:
                     self.escapes[qualified], changed = found, True
 
@@ -1789,8 +1980,8 @@ class _ContentEscapes:
                 continue
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
                 continue
-            if isinstance(node, ast.Call) and (callee := self.model.callee(node, module)):
-                found.append(callee)
+            if isinstance(node, ast.Call):
+                found += self.model.callees(node, module)
             pending += ast.iter_child_nodes(node)
         return tuple(found)
 

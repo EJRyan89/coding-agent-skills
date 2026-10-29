@@ -21,10 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import skill_scripts
+from call_tables import EVENT_LOOP
 from skill_scripts import (
     CLIENT_CLASSES,
     COMMAND_RUNNERS,
-    EVENT_LOOP,
     UNREAD_PROGRAM,
     CommandReader,
     client_command_problems,

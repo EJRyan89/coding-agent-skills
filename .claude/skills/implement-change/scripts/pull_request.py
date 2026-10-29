@@ -51,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import whole_number
+from closing_references import CLOSING_KEYWORDS, REPOSITORY
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -61,9 +62,10 @@ from typed_text import read_typed
 TEMPLATE_NAME = "pull_request_template.md"
 # The folders GitHub reads a pull request template from, relative to the top of the repository.
 TEMPLATE_FOLDERS = (".github", "", "docs")
-# A line GitHub reads as closing an issue: a closing keyword, then an issue reference.
-CLOSING_LINE = re.compile(r"(?i)\s*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+(?:[\w.-]+/[\w.-]+)?#")
-BARE_CLOSING_LINE = re.compile(r"(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+#")
+# A line GitHub reads as closing an issue: a closing keyword, then an issue reference in any of the forms
+# closing_references reads, `#`, `<owner>/<repo>#`, or the issue's URL.
+CLOSING_LINE = re.compile(rf"(?i)\s*{CLOSING_KEYWORDS}\b:?\s+(?:(?:{REPOSITORY})?#|https://github\.com/)")
+BARE_CLOSING_LINE = re.compile(rf"(?i){CLOSING_KEYWORDS}\b:?\s+#")
 CLOSES_ONE = re.compile(r"Closes #([1-9][0-9]*)")
 EMPTY_LIST_ITEM = re.compile(r"\s*(?:[-*+]|[0-9]+[.)])\s*")
 HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$", re.MULTILINE)
