@@ -2,7 +2,8 @@
 
 Python's reader keeps the last value of a key an object repeats, which RFC 8259 leaves to each reader, so another
 reader of the same file may read the first; and it reads `NaN`, `Infinity`, and `-Infinity`, which JSON does not
-define and other readers refuse, and which then reach code that compares numbers. `loads` refuses both as
+define and other readers refuse, and which then reach code that compares numbers, as does a number such as `1e400`
+that is too large for a float and which Python's reader turns into an infinity. `loads` refuses each as
 `JsonRefused`, a `ValueError`, so a reader that already turns a `ValueError` from its parse into its own refusal
 refuses these alike. Nesting past `nesting_depth`'s `DEPTH_LIMIT` is refused the same way, whether `json.loads`
 raises it as a `RecursionError` that such a reader lets escape or reads a value deeper than a Python walk over it can
@@ -15,6 +16,7 @@ every error it raises on bad content, the family a caller's handler names whole.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +51,13 @@ def _constant(name: str) -> Any:
     raise JsonRefused(f"the JSON holds {name}, which JSON does not define")
 
 
+def _float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise JsonRefused("the JSON holds a number too large for a float")
+    return value
+
+
 def _integer(text: str) -> int:
     digits = text.removeprefix("-")
     refused = JsonRefused(f"the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits")
@@ -69,10 +78,12 @@ def _bounded(value: Any) -> Any:
 
 def loads(text: str | bytes) -> Any:
     """The value `text` holds, as `json.loads` reads it, or `JsonRefused` when an object repeats a key, a number is
-    `NaN`, `Infinity`, or `-Infinity`, an integer has more digits than `DIGIT_LIMIT`, or the value nests past
-    `DEPTH_LIMIT`."""
+    `NaN`, `Infinity`, `-Infinity`, or too large for a float, an integer has more digits than `DIGIT_LIMIT`, or the
+    value nests past `DEPTH_LIMIT`."""
     try:
-        value = json.loads(text, object_pairs_hook=_object, parse_constant=_constant, parse_int=_integer)
+        value = json.loads(
+            text, object_pairs_hook=_object, parse_constant=_constant, parse_float=_float, parse_int=_integer
+        )
     except RecursionError as error:
         raise JsonRefused(NESTED) from error
     return _bounded(value)
@@ -81,7 +92,9 @@ def loads(text: str | bytes) -> Any:
 def raw_decode(text: str, index: int = 0) -> tuple[Any, int]:
     """The value `text` holds from `index` and the index just past it, as `json.JSONDecoder.raw_decode` reads it,
     refusing what `loads` refuses, so a value followed by other text, such as a line's next field, is read alike."""
-    decoder = json.JSONDecoder(object_pairs_hook=_object, parse_constant=_constant, parse_int=_integer)
+    decoder = json.JSONDecoder(
+        object_pairs_hook=_object, parse_constant=_constant, parse_float=_float, parse_int=_integer
+    )
     try:
         value, end = decoder.raw_decode(text, index)
     except RecursionError as error:

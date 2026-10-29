@@ -322,14 +322,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   changed.
 - **Use:** `json_writer:dumps` for JSON text and `json_writer:write` for a JSON file, which refuse a non-finite
   number, a lone surrogate, and what `json_reader:loads` refuses on the read-back, by name, at the write;
-  `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`.
+  `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`, and
+  `json_reader:loads`, which refuses a number too large for a float before it becomes an infinity the writer refuses.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_number_that_overflows_to_an_infinity_is_refused_whatever_its_sign_or_nesting`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_writer_is_the_one_writer_of_json`,
   `tests/validation/test_python_checks.py::test_json_write_policy_refuses_a_json_write_outside_json_writer`,
   `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
 - **Search for:** `rg -n "json\.dumps?\(" | rg -v allow_nan=False`; `write_text(json.dumps(`; input written back
   without the later reader's pass.
-- **Examples:** #1552, #1634, #1874, #1906
+- **Examples:** #1552, #1634, #1874, #1906, #2006
 
 ### A record separator is one the data cannot hold
 
