@@ -398,7 +398,9 @@ says nothing about where the call acts; a defect before that, such as an event i
 no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
 stderr, so that it cannot block every tool and is never passed unseen. A directory below a checkout, which a `.git`
 in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
-a place outside every repository, and the other hubs in view still count. The hook command reads the project's own
+a place outside every repository, and the other hubs in view still count. A file an edit names in such a checkout, or
+in a git directory git answers with an error for, may lie in a guarded hub, so the edit is refused; one where git did
+not run or finish is allowed with a note. The hook command reads the project's own
 opt-in before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
 
 #### What it does not see

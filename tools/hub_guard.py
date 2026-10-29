@@ -315,7 +315,12 @@ def hub_protected(path: Path) -> bool:
             except GitError:
                 return True  # a git directory git cannot read may be a guarded hub's
 
-    hub = guarded_hub_at(normalized)
+    try:
+        hub = guarded_hub_at(normalized)
+    except GitError as exc:
+        if exc.returncode is None:
+            raise  # git did not run or finish, which says nothing of the checkout: allowed with a note
+        return True  # a checkout git answers with an error for may be a guarded hub's
     if hub is None:
         return False
     return git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode != 0
