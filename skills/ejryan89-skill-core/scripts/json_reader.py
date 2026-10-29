@@ -92,11 +92,12 @@ def _strings(value: Any) -> list[str]:
     return found
 
 
-def _bounded(value: Any) -> Any:
-    """`value`, or `JsonRefused` when it nests past `DEPTH_LIMIT` or a string or key holds a lone surrogate."""
+def _bounded(value: Any, *, surrogates: bool = False) -> Any:
+    """`value`, or `JsonRefused` when it nests past `DEPTH_LIMIT` or, unless `surrogates` keeps them, a string or key
+    holds a lone surrogate."""
     if nesting_depth.nests_past(value, _containers):
         raise JsonRefused(NESTED)
-    for text in _strings(value):
+    for text in () if surrogates else _strings(value):
         try:
             text.encode("utf-8")
         except UnicodeEncodeError as error:
@@ -107,17 +108,19 @@ def _bounded(value: Any) -> Any:
     return value
 
 
-def loads(text: str | bytes) -> Any:
+def loads(text: str | bytes, *, surrogates: bool = False) -> Any:
     """The value `text` holds, as `json.loads` reads it, or `JsonRefused` when an object repeats a key, a number is
     `NaN`, `Infinity`, `-Infinity`, or too large for a float, an integer has more digits than `DIGIT_LIMIT`, the
-    value nests past `DEPTH_LIMIT`, or a string or key holds a lone surrogate."""
+    value nests past `DEPTH_LIMIT`, or a string or key holds a lone surrogate. With `surrogates`, a lone surrogate is
+    kept, for a record whose own writer keeps one, such as a name another program gave as bytes that are not UTF-8,
+    held as its surrogate escapes; a module that writes such a record states why in its `JSON_WRITE_ALLOWED`."""
     try:
         value = json.loads(
             text, object_pairs_hook=_object, parse_constant=_constant, parse_float=_float, parse_int=_integer
         )
     except RecursionError as error:
         raise JsonRefused(NESTED) from error
-    return _bounded(value)
+    return _bounded(value, surrogates=surrogates)
 
 
 def raw_decode(text: str, index: int = 0) -> tuple[Any, int]:

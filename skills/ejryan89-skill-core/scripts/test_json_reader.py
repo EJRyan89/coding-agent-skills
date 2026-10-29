@@ -95,6 +95,18 @@ class RefusalTests(unittest.TestCase):
                     f"the JSON holds a lone surrogate U+{code}, which UTF-8 cannot encode", self.refusal(text)
                 )
 
+    def test_a_lone_surrogate_is_kept_only_when_the_caller_asks_and_every_other_refusal_still_holds(self) -> None:
+        kept = loads('{"branch": "caf\\udce9", "\\ud800": ["\\udfff"]}', surrogates=True)
+        self.assertEqual({"branch": "caf\udce9", "\ud800": ["\udfff"]}, kept)
+        for text, refusal in (
+            ('{"k": "\\ud800", "k": 2}', "the JSON repeats the key 'k' in one object"),
+            ("[" * 101 + '"\\ud800"' + "]" * 101, "the JSON nests deeper than the parser can read"),
+        ):
+            with self.subTest(text=text[:12]):
+                with self.assertRaises(JsonRefused) as raised:
+                    loads(text, surrogates=True)
+                self.assertEqual(refusal, str(raised.exception))
+
     def test_a_surrogate_pair_reads_as_the_character_it_spells(self) -> None:
         self.assertEqual(["\U0001f600"], loads('["\\ud83d\\ude00"]'))
         self.assertEqual({"\U0001f600": 1}, loads('{"\\ud83d\\ude00": 1}'))
