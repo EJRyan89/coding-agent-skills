@@ -109,12 +109,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `console:run_main`, `console:failed_line`, `skill_roots:MissingSibling`; holding each entry point's exit
   codes to its docstring is the mechanism in #1910.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
-  `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`
+  `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
+  `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
   `FAILED AttributeError` expected by a test.
-- **Examples:** #1511, #1840, #1855, #1910
+- **Examples:** #1511, #1840, #1855, #1910, #2022
 
 ### A caller catches the whole error family its callee raises on content
 
