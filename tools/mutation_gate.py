@@ -253,8 +253,8 @@ class SelectedModule:
     module: str
     lines: int
     mutants: tuple[Mutant, ...]
-    tables: tuple[tuple[str, str], ...] = ()
-    windows: bool = False
+    tables: tuple[tuple[str, str], ...]
+    windows: bool
 
 
 @dataclass(frozen=True)
@@ -1198,15 +1198,19 @@ def summary(report: Report) -> str:
     module's legs, changed lines, counts, and kill ratio, each module with no mutant, then each surviving mutant, each
     mutant one leg alone killed, and each mutant not reached."""
     unfinished = unfinished_line(report)
-    legs = "; on ".join(leg_line(leg) for leg in report.legs) if report.legs else "no leg ran"
+    ran = (
+        f"- On {'; on '.join(leg_line(leg) for leg in report.legs)}; a mutant ran against the suites that executed its "
+        "statement unmutated, fastest first, until one failed."
+        if report.legs
+        else "- No leg ran, since no changed line made a mutant."
+    )
     lines = [
         *([unfinished, ""] if unfinished else []),
         "## Mutation gate",
         "",
         f"- Modules changed since `{report.base}`: {len(report.modules)}; mutants made by mutmut {report.mutmut} on "
         "the lines the pull request changed.",
-        f"- On {legs}; a mutant ran against the suites that executed its statement unmutated, fastest first, until "
-        "one failed.",
+        ran,
         "- The Linux leg runs every module's mutants, and the Windows leg those of each module that is or imports "
         "`deployer/platform_support.py`, `path_keys`, `link_probe`, or `device_names`, or holds a `PLATFORM_ALLOWED` "
         "table; a mutant either leg killed counts as killed.",
