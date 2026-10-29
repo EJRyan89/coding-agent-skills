@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from closing_references import ClosingReference, closing_references
+from closing_references import REPOSITORY, ClosingReference, closing_references
 
 
 # Each form GitHub closes an issue by, after each keyword form, in any case, with or without a colon.
@@ -55,6 +56,15 @@ def test_every_reference_is_read_in_order() -> None:
         ClosingReference("o/r", 2),
         ClosingReference("o/r", 3),
     ]
+
+
+def test_the_repository_form_matches_a_name_in_any_case_on_its_own() -> None:
+    # A caller may build on REPOSITORY without a case-insensitive flag, and GitHub names keep the case they were made
+    # with, so the form itself takes both cases; a name with any other character is none.
+    for name in ("EJRyan89/coding-agent-skills", "owner/REPO.name", "lower/case_name-1"):
+        assert re.fullmatch(REPOSITORY, name), name
+    for name in ("owner", "owner/repo/extra", "own er/repo", "owner/rep#o"):
+        assert not re.fullmatch(REPOSITORY, name), name
 
 
 def test_a_reference_is_in_a_repository_by_its_name_in_any_case_or_by_naming_none() -> None:
