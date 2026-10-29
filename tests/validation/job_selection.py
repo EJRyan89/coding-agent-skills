@@ -299,7 +299,7 @@ def job_seconds(path: Path = JOB_SECONDS) -> dict[str, dict[str, float]]:
     try:
         table = json_reader.loads(path.read_text(encoding="utf-8"))
     # ValueError covers the decode errors, UnicodeError, an over-long integer, and what json_reader refuses: a repeated
-    # key, NaN or Infinity, and nesting too deep
+    # key, NaN or Infinity, a number too large for a float, and nesting too deep
     except (OSError, ValueError) as error:
         raise ValueError(f"{path.name} cannot be read as JSON: {error}") from error
     if isinstance(table, dict) and "run" in table and "runs" not in table:
@@ -328,7 +328,7 @@ def job_seconds(path: Path = JOB_SECONDS) -> dict[str, dict[str, float]]:
         raise ValueError(f"{path.name} records seconds for {sorted(seconds)}; it records each of {platforms}")
     for platform, jobs in seconds.items():
         for name, value in jobs.items():
-            # A float past the largest one, such as 1e999, parses to infinity without naming a constant.
+            # json_reader refuses a float past the largest one, such as 1e999; the bound keeps the rule whole here.
             if isinstance(value, bool) or not isinstance(value, int | float) or not 0 < value < math.inf:
                 raise ValueError(
                     f"{path.name} records {name} on {platform} at {value!r}; a job's seconds are a finite number "

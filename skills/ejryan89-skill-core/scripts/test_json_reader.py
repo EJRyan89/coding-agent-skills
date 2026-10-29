@@ -15,6 +15,9 @@ import nesting_depth
 import whole_number
 from json_reader import CONTENT_ERRORS, JsonRefused, loads, raw_decode, read_file
 
+# The refusal of a number whose float is an infinity, spelled here rather than read from the module.
+OVERFLOW = "the JSON holds a number too large for a float"
+
 
 class RefusalTests(unittest.TestCase):
     def refusal(self, text: str | bytes) -> str:
@@ -79,6 +82,15 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual([-int(widest), int(widest)], loads(f"[-{widest}, {widest}]"))
         self.assertEqual([0, 0, 12, -12, 1.5], loads("[0, -0, 12, -12, 1.5]"))
 
+    def test_a_number_that_overflows_to_an_infinity_is_refused_whatever_its_sign_or_nesting(self) -> None:
+        for text in ("1e400", "-1e400", '{"value": 1e400}', "[[-1.5e309]]"):
+            with self.subTest(text=text):
+                self.assertEqual(OVERFLOW, self.refusal(text))
+
+    def test_a_finite_float_reads_as_json_loads_reads_it_subnormals_and_negative_zero_included(self) -> None:
+        text = "[1.5, -0.0, 5e-324, 1e-400, 1.7976931348623157e308, -2.5E+3]"
+        self.assertEqual([repr(number) for number in json.loads(text)], [repr(number) for number in loads(text)])
+
     def test_the_cap_holds_whatever_limit_the_interpreter_is_configured_with(self) -> None:
         configured = sys.get_int_max_str_digits()
         sys.set_int_max_str_digits(0)
@@ -104,10 +116,17 @@ class RawDecodeTests(unittest.TestCase):
             f"the JSON holds an integer of more than {whole_number.DIGIT_LIMIT} digits", str(raised.exception)
         )
 
+    def test_a_number_that_overflows_is_refused_and_a_finite_float_reads_to_its_end(self) -> None:
+        self.assertEqual((-0.0, 4), raw_decode("-0.0 rest"))
+        with self.assertRaises(JsonRefused) as raised:
+            raw_decode("1e400 rest")
+        self.assertEqual(OVERFLOW, str(raised.exception))
+
     def test_each_shape_loads_refuses_is_refused(self) -> None:
         for text, refusal in (
             ('{"k": 1, "k": 2} rest', "the JSON repeats the key 'k' in one object"),
             ('{"value": NaN} rest', "the JSON holds NaN, which JSON does not define"),
+            ('{"value": -1e400} rest', OVERFLOW),
             ("[" * 100_000 + "]" * 100_000, "the JSON nests deeper than the parser can read"),
             ("[" * 101 + "]" * 101 + " rest", "the JSON nests deeper than the parser can read"),
         ):
@@ -138,6 +157,12 @@ class ReadFileTests(unittest.TestCase):
         self.path.write_bytes(b'{"k": 1, "k": 2}')
         with self.assertRaises(JsonRefused):
             read_file(self.path)
+
+    def test_a_number_that_overflows_to_an_infinity_is_refused_as_loads_refuses_it(self) -> None:
+        self.path.write_bytes(b'{"value": 1e400}')
+        with self.assertRaises(JsonRefused) as raised:
+            read_file(self.path)
+        self.assertEqual(OVERFLOW, str(raised.exception))
 
     def test_a_missing_file_is_an_os_error(self) -> None:
         with self.assertRaises(OSError):

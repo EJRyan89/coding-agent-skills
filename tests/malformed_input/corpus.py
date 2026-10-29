@@ -143,6 +143,9 @@ def _json(valid: bytes) -> list[Case]:
         ),
         Case("duplicate_keys", b'{"value": 1, "value": 2}', "one key twice in an object"),
         Case("nan", b'{"value": NaN}', "NaN, which Python's JSON reader takes and JSON does not define"),
+        Case(
+            "float_overflow", b'{"value": -1e400}', "a number too large for a float, which Python's reader makes -inf"
+        ),
         *fields(valid),
     ]
 
