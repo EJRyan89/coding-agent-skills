@@ -18,7 +18,7 @@ import tempfile
 import threading
 import types
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -48,6 +48,8 @@ from tools.mutation_gate import (
     Outcome,
     Reach,
     ReachRunner,
+    RecordError,
+    RecordFieldError,
     Report,
     Selected,
     SelectedModule,
@@ -1625,13 +1627,87 @@ class LegFixtures(unittest.TestCase):
             mutants.write_text(json.dumps(selection_record(selected)), encoding="utf-8")
             outcomes.write_text(json.dumps(leg_record(leg)), encoding="utf-8")
             self.assertEqual(selected, read_selection(mutants))
-            self.assertEqual(leg, read_leg(outcomes, selected))
+            self.assertEqual(leg, read_leg(outcomes, selected, WINDOWS_LEG))
             # A leg's outcomes that do not match the selection's mutants one for one stop the join.
             record = leg_record(leg)
             record["outcomes"][PATH_MODULE].pop()
             outcomes.write_text(json.dumps(record), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "holds 1 outcomes of tools/paths.py, not one for each"):
-                read_leg(outcomes, selected)
+            with self.assertRaisesRegex(RecordError, "holds 1 outcomes of tools/paths.py, not one for each"):
+                read_leg(outcomes, selected, WINDOWS_LEG)
+
+    def test_a_leg_record_that_names_another_leg_or_leaves_out_or_adds_a_module_stops_the_join(self) -> None:
+        platform = SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True)
+        plain = SelectedModule("tools/calc.py", 1, (mutant(1),), (), False)
+        selected = Selected("origin/main", "3.8.0", (platform, plain))
+        both = {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))], "tools/calc.py": [Outcome(mutant(1), KILLED)]}
+        windows = {PATH_MODULE: [Outcome(TEXTUAL, KILLED, ("t",))]}
+        records = [
+            (LINUX_LEG, LegRun(LINUX_LEG, 40, 1.0, 1, {}, {}, []), "holds no outcomes of tools/paths.py, tools/calc"),
+            (WINDOWS_LEG, LegRun(WINDOWS_LEG, 40, 1.0, 1, {}, {}, []), "holds no outcomes of tools/paths.py, so"),
+            (WINDOWS_LEG, LegRun(LINUX_LEG, 40, 1.0, 1, windows, {}, []), "holds the Linux leg's run, not the Windows"),
+            (WINDOWS_LEG, LegRun(WINDOWS_LEG, 40, 1.0, 1, both, {}, []), "tools/calc.py, whose mutants the Windows"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "mutants.json").write_text(json.dumps(selection_record(selected)), encoding="utf-8")
+            linux = LegRun(LINUX_LEG, 40, 1.0, 1, both, {}, [])
+            good = LegRun(WINDOWS_LEG, 40, 1.0, 1, windows, {}, [])
+            for leg, record, message in records:
+                with self.subTest(leg=leg, message=message):
+                    written = {LINUX_LEG: linux, WINDOWS_LEG: good, leg: record}
+                    for name, run in written.items():
+                        path = folder / f"outcomes-{name.casefold()}.json"
+                        path.write_text(json.dumps(leg_record(run)), encoding="utf-8")
+                    with self.assertRaisesRegex(RecordError, message):
+                        mutation_gate.join(folder)
+            # Both legs' own records join.
+            for name, run in ((LINUX_LEG, linux), (WINDOWS_LEG, good)):
+                (folder / f"outcomes-{name.casefold()}.json").write_text(json.dumps(leg_record(run)), encoding="utf-8")
+            self.assertTrue(mutation_gate.join(folder).finished)
+
+    def test_a_record_field_of_another_kind_stops_the_join_by_name(self) -> None:
+        selected = Selected("origin/main", "3.8.0", (SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True),))
+        leg = LegRun(WINDOWS_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, KILLED, ("t",), (1,))]}, {}, [])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "record.json"
+            selection_changes: list[tuple[str, Callable[[dict[str, Any]], object]]] = [
+                ("record.json must be an object with field modules", lambda record: record.pop("modules")),
+                (
+                    r"record.json.modules\[0\].tables\[0\] must be an array of a table's name",
+                    lambda record: record["modules"][0].update(tables=[["X_ALLOWED"]]),
+                ),
+                (
+                    r"record.json.modules\[0\].mutants\[0\].line must be an integer of at least 1",
+                    lambda record: record["modules"][0]["mutants"][0].update(line="4"),
+                ),
+            ]
+            for message, change in selection_changes:
+                with self.subTest(message=message):
+                    record = selection_record(selected)
+                    change(record)
+                    path.write_text(json.dumps(record), encoding="utf-8")
+                    with self.assertRaisesRegex(RecordFieldError, message):
+                        read_selection(path)
+            leg_changes: list[tuple[str, Callable[[dict[str, Any]], object]]] = [
+                (
+                    r"record.json.outcomes.tools/paths.py\[0\].status must be one of",
+                    lambda record: record["outcomes"][PATH_MODULE][0].update(status="won"),
+                ),
+                (
+                    "record.json.failed_suites.t must be a non-empty string",
+                    lambda record: record["failed_suites"].update(t=1),
+                ),
+            ]
+            for message, change in leg_changes:
+                with self.subTest(message=message):
+                    record = leg_record(leg)
+                    change(record)
+                    path.write_text(json.dumps(record), encoding="utf-8")
+                    with self.assertRaisesRegex(RecordFieldError, message):
+                        read_leg(path, selected, WINDOWS_LEG)
+            path.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(RecordError, "record.json cannot be read"):
+                read_selection(path)
 
 
 CALC = "def add(a, b):\n    return a + b\n\n\ndef double(a):\n    return a * 2\n"
@@ -2080,8 +2156,12 @@ class SplitRunFixtures(unittest.TestCase):
             ):
                 self.assertEqual(0, mutation_gate.main(["leg", str(folder)], {}))
             leg.assert_called_once_with(selected)
-            self.assertEqual(unfinished, read_leg(folder / "outcomes-windows.json", selected))
-            linux = LegRun(LINUX_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))]}, {}, [])
+            self.assertEqual(unfinished, read_leg(folder / "outcomes-windows.json", selected, WINDOWS_LEG))
+            linux_outcomes = {
+                PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))],
+                "tools/calc.py": [Outcome(mutant(1), KILLED)],
+            }
+            linux = LegRun(LINUX_LEG, 40, 1.0, 1, linux_outcomes, {}, [])
             (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(linux)), encoding="utf-8")
             summary_file = Path(temporary) / "summary.md"
             with mock.patch("sys.stdout", io.StringIO()) as printed:
