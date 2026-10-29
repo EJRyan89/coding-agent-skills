@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import itertools
 import json
 import re
 import sys
@@ -18,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from github_client import CommandResult, GitHubError
 from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError
-from review_config import ConfigurationError
+from review_config import ConfigurationError, dashboard_status_heading, dashboard_status_key
 from review_github import GitHubClient
 from typed_fields import FieldError
 from update_pr_dashboard import (
@@ -582,6 +583,46 @@ class TrackerTests(unittest.TestCase):
             {"DELEGATED": ["owner/repo#2", "owner/repo#3"], "On HOLD": ["owner/repo#1", "owner/repo#4"]},
             sections(reordered),
         )
+
+    def test_statuses_whose_headings_are_the_same_share_one_section(self) -> None:
+        # Capitalized, the dotless i (U+0131) and i are both I, so the two spellings of ix were two sections headed Ix.
+        items = [item(number=number) for number in (1, 2, 3, 4)]
+        overrides = {
+            "owner/repo#1": "\u0131x",
+            "owner/repo#2": "ix",
+            "owner/repo#3": "wait  on\tci",
+            "owner/repo#4": "Wait On ci",
+        }
+        content, _ = run(items, overrides=overrides)
+        self.assertEqual(
+            {"Ix": ["owner/repo#1", "owner/repo#2"], "Wait On Ci": ["owner/repo#3", "owner/repo#4"]},
+            sections(content),
+        )
+
+    def test_two_statuses_are_one_exactly_when_their_headings_are_the_same_ignoring_case(self) -> None:
+        # Letters a word's capital first letter folds together, and ones it leaves apart because they are not first.
+        statuses = (
+            "\u0131x",
+            "ix",
+            "Ix",
+            "x\u0131",
+            "xi",
+            "\u00dfa",
+            "ssa",
+            "SSA",
+            "\u01c6x",
+            "\u01c4x",
+            "a  b",
+            "A B",
+        )
+        for first, second in itertools.product(statuses, repeat=2):
+            with self.subTest(first=first, second=second):
+                self.assertEqual(
+                    dashboard_status_heading(first).casefold() == dashboard_status_heading(second).casefold(),
+                    dashboard_status_key(first) == dashboard_status_key(second),
+                )
+        self.assertEqual("Ix", dashboard_status_heading("\u0131x"))
+        self.assertNotEqual(dashboard_status_key("x\u0131"), dashboard_status_key("xi"))
 
     def test_a_computed_state_spaced_differently_is_refused(self) -> None:
         # The heading collapses the spaces, so "to  review" rendered a second To Review section.

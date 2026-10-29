@@ -15,6 +15,7 @@ the hub and its worktrees. It is inert unless `git config coding-agent-skills.hu
 from __future__ import annotations
 
 import base64
+import contextlib
 import fnmatch
 import functools
 import json
@@ -25,7 +26,7 @@ import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -38,12 +39,12 @@ import whole_number
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
-from git_client import GitError
+from git_client import GitError, GitResult
 from job_tree import process_tree
 
 from deployer import platform_support
-from tools import bash_syntax
-from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, checkout_of, git, same_path
+from tools import bash_syntax, worktrees
+from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, Checkout, same_path
 
 GUARD_SETTING = "coding-agent-skills.hubGuard"
 FILE_TOOLS = {"Edit", "NotebookEdit", "Write"}
@@ -199,7 +200,8 @@ LOOP_NESTING_LIMIT = 8
 POWERSHELL_READER = Path(__file__).with_name("hub_guard-powershell.ps1")
 # How long the guard reads and judges one command, pwsh included, before it is a command the guard cannot read in
 # time. The hook's own 30-second timeout in .claude/settings.json lets a command it cuts short run, so this leaves room
-# for starting Python and for one git call still running at the end, GUARD_GIT_TIMEOUT_SECONDS.
+# for starting Python and writing the decision; the hub lookups before and after reading, and each git call they
+# start, are held to it too (lookups_within).
 READING_SECONDS = 15
 # How much of the reader's output is kept: far more than the events of any command a tool call carries, and a reading
 # cut short is not JSON, so it is a command the guard cannot read rather than one read in part.
@@ -275,7 +277,7 @@ def guarded_hub_of_repository(path: Path) -> Path | None:
         return None
     arguments = ["--git-dir", str(path), "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]
     try:
-        output = CLIENT.output(arguments, directory=directory, timeout=GUARD_GIT_TIMEOUT_SECONDS)
+        output = CLIENT.output(arguments, directory=directory, timeout=lookup_timeout())
     except GitError as exc:
         if exc.kind == "not_repository":
             return None
@@ -315,7 +317,12 @@ def hub_protected(path: Path) -> bool:
             except GitError:
                 return True  # a git directory git cannot read may be a guarded hub's
 
-    hub = guarded_hub_at(normalized)
+    try:
+        hub = guarded_hub_at(normalized)
+    except GitError as exc:
+        if exc.returncode is None:
+            raise  # git did not run or finish, which says nothing of the checkout: allowed with a note
+        return True  # a checkout git answers with an error for may be a guarded hub's
     if hub is None:
         return False
     return git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode != 0
@@ -396,10 +403,7 @@ class Reading:
     def time_left(self) -> float:
         """The seconds left of the reading time; past it, raises ReadingTimeout, which the hook refuses as a failure
         of the guard's own when the command names git while a guarded hub is in view."""
-        left = self.deadline - reading_clock()
-        if left <= 0:
-            raise ReadingTimeout(f"the guard did not finish reading it within {READING_SECONDS} seconds")
-        return left
+        return time_left(self.deadline)
 
 
 class ReadingTimeout(Exception):
@@ -408,6 +412,51 @@ class ReadingTimeout(Exception):
 
 def reading_clock() -> float:
     return time.monotonic()
+
+
+def time_left(deadline: float) -> float:
+    """The seconds until deadline, by reading_clock; past it, raises ReadingTimeout."""
+    left = deadline - reading_clock()
+    if left <= 0:
+        raise ReadingTimeout(f"the guard did not finish reading it within {READING_SECONDS} seconds")
+    return left
+
+
+@dataclass
+class LookupBound:
+    """When the hub lookups must end, by reading_clock: the reading deadline of the command being read and judged,
+    while it is, and no bound otherwise, as for a file event, whose git calls each keep GUARD_GIT_TIMEOUT_SECONDS."""
+
+    deadline: float = math.inf
+
+
+LOOKUPS = LookupBound()
+
+
+def lookup_timeout() -> float:
+    """How long one git call of a hub lookup may take: GUARD_GIT_TIMEOUT_SECONDS, or the reading time left when that
+    is less; past the reading time, raises ReadingTimeout, so a lookup starts no git call the deadline has passed."""
+    return min(time_left(LOOKUPS.deadline), GUARD_GIT_TIMEOUT_SECONDS)
+
+
+@contextlib.contextmanager
+def lookups_within(deadline: float) -> Iterator[None]:
+    """Holds every hub lookup made inside the block, and each git call it starts, to deadline."""
+    outer, LOOKUPS.deadline = LOOKUPS.deadline, deadline
+    try:
+        yield
+    finally:
+        LOOKUPS.deadline = outer
+
+
+def git(cwd: Path, *arguments: str) -> GitResult:
+    """Every git call the guard makes, run as tools/worktrees.py runs one, within what lookup_timeout leaves it."""
+    return worktrees.git(cwd, *arguments, timeout=lookup_timeout())
+
+
+def checkout_of(path: Path) -> Checkout | None:
+    """The checkout holding path, as tools/worktrees.py finds it, its git call within what lookup_timeout leaves it."""
+    return worktrees.checkout_of(path, lookup_timeout())
 
 
 def mentions(pattern: re.Pattern[str], text: str) -> bool:
@@ -908,7 +957,8 @@ def alias_lookups(place: Place) -> list[AliasLookup]:
 def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str | None:
     """Why a reading's calls would write a guarded hub, or None; notes on what was passed over join the reading's."""
     judge = Judge(set(hubs), reading.environment, reading.notes, reading.deadline)
-    return judge.denied(reading, depth)
+    with lookups_within(reading.deadline):
+        return judge.denied(reading, depth)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1294,8 +1344,7 @@ class BashReader:
             script = bash_script(arguments, redirects, shell)
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read_bash)
         elif program in POWERSHELL_NAMES:
-            script = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
-            follow(program, script, shell.cwd, variables, self.reading, self.depth, read_powershell)
+            follow_powershell(program, arguments, shell.cwd, variables, self.reading, self.depth)
         elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
             command = started_command(program, arguments, shell.cwd, variables, self.reading)
             if command is not None:
@@ -1740,21 +1789,23 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
 
 
 def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], shell: Shell) -> list[Word] | None:
-    """The one word bash runs from -c, alone or in a bundle such as -lc, or, with no script file or with -s, the
-    here-string or here-document it reads; [None], a script the text does not hold, for one it reads from a pipe or
-    the standard input the command inherits; None for a script file, which the guard does not read."""
+    """The one word bash runs from -c, alone or in a bundle such as -lc: its first operand, after every option and a
+    `--`, as in `bash -c -e '<script>'`; or, with no script file or with -s, the here-string or here-document it reads;
+    [None], a script the text does not hold, for one it reads from a pipe or the standard input the command inherits;
+    None for a script file, which the guard does not read."""
     index = 0
-    from_input = False
+    from_input = command_mode = False
     while index < len(arguments):
         word = arguments[index]
         if word is None or not word.startswith(("-", "+")) or word == "--":
             index += word == "--"
             break
-        if not word.startswith("--") and "c" in word[1:]:
-            return arguments[index + 1 : index + 2]
+        command_mode = command_mode or (not word.startswith("--") and "c" in word[1:])
         # -s reads the script from standard input and takes every operand as a positional parameter.
         from_input = from_input or (word.startswith("-") and not word.startswith("--") and "s" in word[1:])
         index += 2 if word in BASH_OPTIONS_WITH_VALUE else 1
+    if command_mode:
+        return arguments[index : index + 1]
     if index < len(arguments) and not from_input:
         return None  # a script file, which the guard does not read
     script: list[Word] | None = [None]
@@ -1820,6 +1871,53 @@ def powershell_reads_input(arguments: list[Word]) -> bool:
             return following == "-"
         index += 2 if powershell_takes_value(word) else 1
     return True
+
+
+def powershell_arguments(program: str, arguments: list[Word]) -> list[Word]:
+    """The arguments as the shell reads them: Windows PowerShell runs a leading word that names no parameter as
+    -Command does, every word from it on, where pwsh runs it as a script file, so for Windows PowerShell -Command goes
+    before that word. A word the text does not settle, an inline command, a script file, or an encoded command before
+    it leaves the arguments as they are."""
+    if program != "powershell":
+        return arguments
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None or powershell_starts_script(word):
+            return arguments
+        name = powershell_switch(word)
+        if name is None:
+            return [*arguments[:index], "-Command", *arguments[index:]]
+        if not name:
+            return arguments
+        index += 2 if powershell_takes_value(word) else 1
+    return arguments
+
+
+def powershell_starts_script(word: str) -> bool:
+    """Whether a pwsh argument names the script it runs: an inline command, a script file, or an encoded command."""
+    script = (("encodedcommand", "e"), ("ec", "ec"), ("file", "f"))
+    return powershell_inline(word) is not None or powershell_parameter(word, script)
+
+
+def powershell_directory(arguments: list[Word], cwd: Path | None) -> Path | None:
+    """Where a pwsh started with these arguments in cwd starts: the directory -WorkingDirectory (-wd) names before its
+    script, read from cwd, or else cwd; None when the text does not settle it."""
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None:
+            return None  # it may be -WorkingDirectory
+        if not powershell_switch(word) or powershell_starts_script(word):
+            return cwd
+        if powershell_parameter(word, (("workingdirectory", "wo"), ("wd", "wd"))):
+            value = arguments[index + 1] if index + 1 < len(arguments) else None
+            if value is None:
+                return None
+            path = Path(platform_support.from_shell_path(value))
+            return path if path.is_absolute() else None if cwd is None else cwd / path
+        index += 2 if powershell_takes_value(word) else 1
+    return cwd
 
 
 def powershell_takes_value(word: str) -> bool:
@@ -1890,6 +1988,15 @@ def follow(
         reading.cannot_read(f"could not read the command passed to {name}")
         return
     read(" ".join(word for word in script if word is not None), cwd, reading, depth + 1, variables)
+
+
+def follow_powershell(
+    program: str, arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading, depth: int
+) -> None:
+    """Reads the script a pwsh or Windows PowerShell started in cwd runs, where -WorkingDirectory starts it."""
+    arguments = powershell_arguments(program, arguments)
+    script: list[Word] | None = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
+    follow(program, script, powershell_directory(arguments, cwd), variables, reading, depth, read_powershell)
 
 
 def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int, variables: Variables) -> None:
@@ -2001,6 +2108,8 @@ class Region:
     kind: str
     name: str
     children: list[Region | dict[str, Any]] = field(default_factory=list)
+    # A child pwsh's words as the reader reports them, its name first, from which where it starts is read.
+    words: list[Any] = field(default_factory=list)
 
 
 def event_tree(events: list[dict[str, Any]]) -> list[Region | dict[str, Any]]:
@@ -2009,7 +2118,7 @@ def event_tree(events: list[dict[str, Any]]) -> list[Region | dict[str, Any]]:
     for event in events:
         kind = event.get("kind")
         if kind == "open":
-            region = Region(str(event.get("region")), str(event.get("name") or ""))
+            region = Region(str(event.get("region")), str(event.get("name") or ""), words=event.get("words") or [])
             stack[-1].children.append(region)
             stack.append(region)
         elif kind == "close":
@@ -2109,7 +2218,9 @@ class PowerShellReader:
             session.functions[region.name.lower()] = region.children
             return session
         if region.kind == "child":
-            self.run(region.children, session.copy())
+            child = session.copy()
+            child.cwd = powershell_directory([session.word(word) for word in region.words[1:]], session.cwd)
+            self.run(region.children, child)
             return session
         if region.kind == "branch":
             return join_sessions(session, self.run(region.children, session.copy()))
@@ -2182,8 +2293,12 @@ class PowerShellReader:
             self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
         elif name in POWERSHELL_NAMES:
             # The reader follows a pwsh the session starts with an inline script; one it reads from its standard
-            # input, the text does not hold.
-            if powershell_reads_input(arguments):
+            # input, the text does not hold. Windows PowerShell runs a leading word that names no parameter as
+            # -Command, which the reader does not see, so that script is followed here.
+            started = powershell_arguments(name, arguments)
+            if started is not arguments:
+                follow_powershell(name, arguments, session.cwd, session.variables, self.reading, self.depth)
+            elif powershell_reads_input(arguments):
                 self.reading.cannot_read(f"could not read the command passed to {name}")
         else:
             self.environment_change(name, parameters, session, reported)
@@ -2200,8 +2315,7 @@ class PowerShellReader:
             script = bash_script(arguments, [], Shell(None, {}, set()))
             follow(name, script, cwd, variables, self.reading, self.depth, read_bash)
         elif name in POWERSHELL_NAMES:
-            script = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
-            follow(name, script, cwd, variables, self.reading, self.depth, read_powershell)
+            follow_powershell(name, arguments, cwd, variables, self.reading, self.depth)
         elif name in ENV_NAMES or name in PREFIX_PROGRAMS:
             command = started_command(name, arguments, cwd, variables, self.reading)
             if command is not None:
@@ -2348,8 +2462,14 @@ SHELL_READERS: dict[str, ShellReader] = {"Bash": read_bash, "Monitor": read_bash
 def read_command(tool: str, command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
     """Every git call a shell tool's command makes, with where each acts, and what could not be read."""
     reading = start_reading(command, cwd, environment)
-    SHELL_READERS[tool](command, cwd, reading, 0, inherited_variables(environment))
+    read_into(reading, tool, cwd, environment)
     return reading
+
+
+def read_into(reading: Reading, tool: str, cwd: Path, environment: Mapping[str, str]) -> None:
+    """Reads the reading's command with the tool's shell reader, its hub lookups held to the reading time."""
+    with lookups_within(reading.deadline):
+        SHELL_READERS[tool](reading.text, cwd, reading, 0, inherited_variables(environment))
 
 
 def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
@@ -2357,16 +2477,21 @@ def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Re
     deadline = reading_clock() + READING_SECONDS
     guarded_hub_at.cache_clear()
     guarded_hub_of_repository.cache_clear()
+    # The hubs in view decide whether a command the guard cannot read in time is refused, so their lookups keep
+    # GUARD_GIT_TIMEOUT_SECONDS for each git call rather than end with the reading time; the session's own directories
+    # bound them, never the command.
     return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), deadline=deadline)
 
 
 def reached_hubs(reading: Reading) -> set[Path]:
-    """The guarded hubs a reading's settled places name."""
+    """The guarded hubs a reading's settled places name, each looked up within the reading time."""
     found: set[Path] = set()
-    for call in reading.calls:
-        hub, _ = reached_hub(call.place)
-        if hub is not None:
-            found.add(hub)
+    with lookups_within(reading.deadline):
+        for call in reading.calls:
+            reading.time_left()
+            hub, _ = reached_hub(call.place)
+            if hub is not None:
+                found.add(hub)
     return found
 
 
@@ -2396,7 +2521,7 @@ def guard(stream: str) -> int:
             reading = start_reading(tool_input["command"], cwd, os.environ)
             hubs = set(reading.context_hubs)
             in_view = (reading.text, hubs)
-            SHELL_READERS[tool](reading.text, cwd, reading, 0, inherited_variables(os.environ))
+            read_into(reading, tool, cwd, os.environ)
             hubs |= reached_hubs(reading)
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
