@@ -12,7 +12,6 @@ from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-from git_client import output_lines
 from review_config import default_config_path, load_config, validate_repository_identity
 from review_guard import RUN_PREFIX
 from review_io import atomic_write_text
@@ -88,7 +87,7 @@ def _default_branch_tip(checkout: Path, services: Services) -> tuple[str, str]:
         reason = result.stderr.strip() or "git ls-remote failed"
         raise PipelineError(f"Cannot read origin's default branch: {reason}")
     branch, tip = "", ""
-    for line in output_lines(result.stdout):
+    for line in result.stdout.splitlines():
         value, _, ref = line.partition("\t")
         if ref != "HEAD":
             continue

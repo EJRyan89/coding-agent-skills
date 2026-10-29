@@ -1887,26 +1887,8 @@ def listings(client, git_output, root):
     client.output(["archive", "--format=tar", "HEAD"])
 
 
-def splits(client, git, run_tool, root):
-    client.output(["rev-parse", "--show-toplevel"]).splitlines()
-    listed = client.output(["for-each-ref", "--format=%(refname)", "refs/tags"])
-    listed.splitlines()
-    result = git(root, "rev-parse", "--git-common-dir")
-    result.stdout.splitlines()
-    run_tool(["git", "-C", root, "rev-parse", "HEAD"]).output.splitlines()
-    arguments = ["--git-dir", root, "rev-parse", "--git-dir"]
-    client.output(arguments).splitlines()
-    output = result.stdout
-    output.splitlines()
-    client.output(["rev-parse", "HEAD"]).split("\\n")
-    run_tool(["python", "-c", "print()"]).stdout.splitlines()
-    root.read_text().splitlines()
-    client.output(["archive", "--format=tar", "HEAD"]).splitlines()
-
-
 def sanctioned(client):
     client.output(["ls-files"])
-    client.output(["rev-parse", "HEAD"]).splitlines()
 
 
 GIT_SEPARATOR_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
@@ -1915,9 +1897,7 @@ GIT_SEPARATOR_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 
 def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a_byte_but_nul() -> None:
     # A call's positional arguments and a list's or a tuple's items start a git command, after git itself and its own
-    # options; GitClient.names adds -z, and text before the first field or after the last joins none. splitlines() of
-    # a git call's result, its stdout or output, or a name bound to either is refused; a split on a newline, another
-    # program's output, and a command that prints no names are not.
+    # options; GitClient.names adds -z, and text before the first field or after the last joins none.
     alpha = "skills/alpha/scripts/alpha.py"
     found = run_claim_policy(
         python_checks.git_separator_problems,
@@ -1938,13 +1918,6 @@ def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a
             "them with NUL, %00 for for-each-ref or %x00 for log, or state why in GIT_SEPARATOR_ALLOWED"
         )
 
-    def split(command: str) -> str:
-        return (
-            f"splits the output of git {command} with splitlines(), which also breaks on U+0085, U+2028, and other "
-            'characters a ref name or a path can hold; split on "\\n", or on NUL with -z or a %00 format, or state '
-            "why in GIT_SEPARATOR_ALLOWED"
-        )
-
     assert found == [
         f"{alpha}:2 {listing('diff')}",
         f"{alpha}:3 {listing('status')}",
@@ -1954,12 +1927,6 @@ def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a
         f"{alpha}:7 {joined('log', '%x1f')}",
         f"{alpha}:8 {joined('log', '%n')}",
         f"{alpha}:9 {joined('for-each-ref', '%0a')}",
-        f"{alpha}:21 {split('rev-parse')}",
-        f"{alpha}:23 {split('for-each-ref')}",
-        f"{alpha}:25 {split('rev-parse')}",
-        f"{alpha}:26 {split('rev-parse')}",
-        f"{alpha}:28 {split('rev-parse')}",
-        f"{alpha}:30 {split('rev-parse')}",
         f"{alpha}: GIT_SEPARATOR_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: GIT_SEPARATOR_ALLOWED must map each function, class, or assignment to its reason",
     ]

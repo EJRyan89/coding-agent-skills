@@ -119,7 +119,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import whole_number
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError, output_lines
+from git_client import GitClient, GitError
 from git_worktrees import Worktree, list_worktrees
 from github_client import GitHubClient, GitHubError
 from github_remote import github_repository
@@ -777,7 +777,7 @@ def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | Non
             f"from {BASE}'s; fetch {REMOTE} in the hub"
         )
     listing = git.output(["rev-list", "--parents", "--ignore-missing", *heads, "--not", base], directory=top)
-    return {commit: parents for commit, *parents in (line.split() for line in output_lines(listing) if line)}
+    return {commit: parents for commit, *parents in (line.split() for line in listing.splitlines() if line)}
 
 
 def local_branches(git: GitClient, top: Path) -> dict[str, str]:

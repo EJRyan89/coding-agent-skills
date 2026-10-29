@@ -247,7 +247,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from bounded_process import without_repository_variables
 from console import run_main
-from git_client import GitClient, GitError, output_lines
+from git_client import GitClient, GitError
 from seconds_option import positive_seconds
 
 from deployer import fsops, platform_support
@@ -375,7 +375,7 @@ def origin_branches_holding_head(git: GitClient, directory: Path) -> list[str]:
     held = git.output(
         ["for-each-ref", "--contains", "HEAD", "--format=%(refname)", "refs/remotes/origin"], directory=directory
     )
-    return output_lines(held)
+    return held.splitlines()
 
 
 def foreign_checkout(git: GitClient, directory: Path) -> str | None:
