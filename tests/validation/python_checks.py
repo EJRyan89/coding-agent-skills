@@ -1333,9 +1333,31 @@ def _returns_git_result(function: ast.FunctionDef | ast.AsyncFunctionDef, resolv
     )
 
 
+def _reaches(called: str, producer: str) -> bool:
+    """Whether a call's qualified name reaches a producer's: the same name, or either one the other's dotted tail, as a
+    module imported by its bare name reaches one keyed by its path from the repository root."""
+    return "." in called and (called == producer or producer.endswith(f".{called}") or called.endswith(f".{producer}"))
+
+
+def _module_bindings(tree: ast.Module, resolver: CallableResolver) -> list[tuple[str, str]]:
+    """Each name a module's top level binds to another, with what it resolves to: an import, or a simple assignment of
+    a name or an attribute."""
+    bindings: list[tuple[str, str]] = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            bindings += [(alias.asname or alias.name, f"{node.module}.{alias.name}") for alias in node.names]
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name | ast.Attribute):
+            bindings += [
+                (target.id, resolver.name(node.value)) for target in node.targets if isinstance(target, ast.Name)
+            ]
+    return bindings
+
+
 def git_result_producers(trees: list[tuple[str, ast.Module]]) -> set[str]:
-    """Each function, by the qualified name a caller reaches it by, that is annotated to return a GitResult."""
+    """Each function, by the qualified name a caller reaches it by, that is annotated to return a GitResult, and each
+    name a module's top level binds to one, as a re-export does, followed through every module that binds it again."""
     producers: set[str] = set()
+    bindings: list[tuple[str, str]] = []
     for name, tree in trees:
         resolver = CallableResolver(tree)
         producers |= {
@@ -1343,12 +1365,19 @@ def git_result_producers(trees: list[tuple[str, ast.Module]]) -> set[str]:
             for node in tree.body
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _returns_git_result(node, resolver)
         }
+        bindings += [(f"{_module_key(name)}.{bound}", target) for bound, target in _module_bindings(tree, resolver)]
+    while found := {
+        bound
+        for bound, target in bindings
+        if bound not in producers and any(_reaches(target, producer) for producer in producers)
+    }:
+        producers |= found
     return producers
 
 
 class _GitResults:
-    """What a module holds as a git result: a call that returns one, and each name bound to such a call or annotated
-    as a GitResult."""
+    """What a module holds as a git result: a call that returns one, and each name a scope binds to such a call, by an
+    assignment or an assignment expression, or annotates as a GitResult, held for that scope alone."""
 
     def __init__(self, tree: ast.Module, resolver: CallableResolver, producers: set[str]) -> None:
         self.resolver = resolver
@@ -1359,15 +1388,31 @@ class _GitResults:
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _returns_git_result(node, resolver)
         }
         self.producers = producers
-        self.names: set[str] = set()
+        # Each name by the scope that binds it, so a name another function binds to a result is not one here.
+        self.names: set[tuple[int, str]] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and self.is_result(node.value):
-                self.names |= {target.id for target in node.targets if isinstance(target, ast.Name)}
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self._bind(target, target.id)
+            elif isinstance(node, ast.NamedExpr) and self.is_result(node.value):
+                # The scope reader visits a walrus but not its target, and binds the name where the walrus sits.
+                self._bind(node, node.target.id)
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 if self.annotated(node.annotation) or self.is_result(node.value):
-                    self.names.add(node.target.id)
+                    self._bind(node.target, node.target.id)
             elif isinstance(node, ast.arg) and node.annotation is not None and self.annotated(node.annotation):
-                self.names.add(node.arg)
+                self._bind(node, node.arg)
+
+    def _key(self, node: ast.AST, name: str) -> tuple[int, str] | None:
+        """The scope that binds a name where the node reads or binds it, with the name, or None when none does."""
+        scope = self.resolver.scopes.get(id(node))
+        owner = scope.owner(name) if scope is not None else None
+        return (id(owner), name) if owner is not None else None
+
+    def _bind(self, node: ast.AST, name: str) -> None:
+        if (key := self._key(node, name)) is not None:
+            self.names.add(key)
 
     def annotated(self, annotation: ast.expr) -> bool:
         return any(
@@ -1383,10 +1428,27 @@ class _GitResults:
         if isinstance(function, ast.Attribute) and function.attr == "run" and self.clients.holds(function.value):
             return True
         called = self.resolver.name(function)
-        return bool(called) and (called in self.local or any(resolves_to(called, name) for name in self.producers))
+        return bool(called) and (called in self.local or any(_reaches(called, name) for name in self.producers))
 
     def holds(self, node: ast.expr) -> bool:
-        return (isinstance(node, ast.Name) and node.id in self.names) or self.is_result(node)
+        if isinstance(node, ast.NamedExpr):
+            return self.holds(node.value)
+        if isinstance(node, ast.Name):
+            return self._key(node, node.id) in self.names
+        return self.is_result(node)
+
+    def status_read(self, node: ast.expr) -> bool:
+        """Whether a node reads a held result's returncode, as an attribute or through getattr."""
+        if isinstance(node, ast.Attribute):
+            return node.attr == "returncode" and isinstance(node.ctx, ast.Load) and self.holds(node.value)
+        return (
+            isinstance(node, ast.Call)
+            and self.resolver.name(node.func) == "getattr"
+            and len(node.args) >= 2
+            and isinstance(attribute := node.args[1], ast.Constant)
+            and attribute.value == "returncode"
+            and self.holds(node.args[0])
+        )
 
 
 def git_status_problems(root: Path, files: list[Path]) -> list[str]:
@@ -1406,10 +1468,7 @@ def git_status_problems(root: Path, files: list[Path]) -> list[str]:
                 f"quiet_output, commit_of, file_at, or rev_parse_paths, or state why in {GIT_STATUS_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Attribute)
-            and node.attr == "returncode"
-            and isinstance(node.ctx, ast.Load)
-            and results.holds(node.value)
+            if isinstance(node, ast.expr) and results.status_read(node)
         ]
         problems += sanctioned_problems(name, tree, GIT_STATUS_ALLOWANCE, found)
     return problems

@@ -1832,6 +1832,77 @@ def test_git_status_policy_refuses_an_exit_status_read_outside_the_client() -> N
     ]
 
 
+# Modules a git result can reach a caller through: tools/helper.py's producer, re-exported by a validation module the
+# others import by its bare name, and re-exported again by another.
+STATUS_REEXPORTS = {
+    "tools/helper.py": STATUS_HELPER,
+    "tests/validation/support.py": "from tools.helper import git as git\n",
+    "tests/validation/again.py": "from support import git as git\n",
+}
+STATUS_IMPORTS = "from git_client import GitClient\nfrom support import git\nfrom again import git as twice\n\n\n"
+
+
+# Each form of a read of a git result's exit status, from the policy's paragraph in "Validation" in
+# docs/adding-a-skill.md ("what a function annotated to return GitResult returns, in any module validation reads"):
+# the line marked `# read` is refused.
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("def f():\n    return git('.').returncode  # read\n", id="a producer re-exported"),
+        pytest.param("def f():\n    return twice('.').returncode  # read\n", id="a producer re-exported twice"),
+        pytest.param("run = git\n\n\ndef f():\n    return run('.').returncode  # read\n", id="a re-export aliased"),
+        pytest.param(
+            "def f(client: GitClient):\n    if (r := client.run(['status'])).returncode:  # read\n        return r\n",
+            id="a walrus",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    if r := client.run(['status']):\n        return r.returncode  # read\n",
+            id="a name a walrus binds",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    r = client.run(['status'])\n    return getattr(r, 'returncode')  # read\n",
+            id="getattr of a name",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    return getattr(client.run(['status']), 'returncode')  # read\n",
+            id="getattr of the call",
+        ),
+    ],
+)
+def test_git_status_policy_refuses_every_form_its_paragraph_names(body: str) -> None:
+    source = STATUS_IMPORTS + body
+    line = next(number for number, text in enumerate(source.splitlines(), 1) if text.endswith("# read"))
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {**STATUS_REEXPORTS, "skills/alpha/scripts/alpha.py": source})
+        found = python_checks.git_status_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{line}"]
+
+
+# Forms that read no git result's exit status, each with why.
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A name is a result only in the scope that binds it to one: `r` in g is g's parameter, whatever f binds.
+        pytest.param(
+            "def f(client: GitClient):\n    r = client.run(['status'])\n    return r.stdout\n\n\n"
+            "def g(r):\n    return r.returncode\n",
+            id="a name another function binds",
+        ),
+        # getattr of another attribute reads no status.
+        pytest.param(
+            "def f(client: GitClient):\n    r = client.run(['status'])\n    return getattr(r, 'stdout')\n",
+            id="getattr of another attribute",
+        ),
+    ],
+)
+def test_git_status_policy_passes_what_reads_no_git_status(body: str) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {**STATUS_REEXPORTS, "skills/alpha/scripts/alpha.py": STATUS_IMPORTS + body})
+        assert python_checks.git_status_problems(root, sorted(root.rglob("*.py"))) == []
+
+
 LIMIT_SOURCE = """\
 def listings(client, count):
     client.json(["pr", "list", "--limit", "5"])

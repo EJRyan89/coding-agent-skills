@@ -14,10 +14,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from git_client import GitError
 from markdown_sections import HTML_COMMENT
-from validation_support import REPOSITORY_ROOT, PullRequestChecks, git
+from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
-from tools.release_notes import RELEASE_BRANCH, SQUASH_TITLE_NUMBER, ReleaseNotesError
+from tools.release_notes import CLIENT, RELEASE_BRANCH, SQUASH_TITLE_NUMBER, ReleaseNotesError, git_output
 
 # How far before the merge base the walk of main's first-parent line reaches, in commits. In continuous integration
 # the checkout is the merge of the pull request into main, so its merge base is main's tip and this window is all the
@@ -64,10 +65,7 @@ class Revert:
 
 def _git(root: Path, *arguments: str) -> str:
     """git's output, or ReleaseNotesError, as `git` raises when git cannot run, naming the command when it fails."""
-    completed = git(root, "--literal-pathspecs", *arguments)
-    if completed.returncode != 0:
-        raise ReleaseNotesError(f"git {' '.join(arguments[:2])} failed: {completed.stderr.strip()}")
-    return completed.stdout
+    return git_output(root, "--literal-pathspecs", *arguments)
 
 
 def _batches(paths: list[str]) -> Iterable[list[str]]:
@@ -180,12 +178,14 @@ def silent_revert_problems(root: Path, body: str | None = None) -> list[str]:
     message, and otherwise from the messages of the branch's commits since its merge base, so a local run reads them.
     """
     try:
-        if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
+        # Only git's answer that it names no commit means the branch is missing; any other failure names git's reason.
+        if CLIENT.commit_of(RELEASE_BRANCH, directory=root) is None:
             return [
                 f"{RELEASE_BRANCH} is missing, so the silent-revert check cannot compare the change with main's "
                 "history; fetch it with `git fetch origin main`"
             ]
-        if git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+        # git_output raises on a failure, so a clone git cannot read is named, never taken for one that is not shallow.
+        if git_output(root, "rev-parse", "--is-shallow-repository").strip() == "true":
             return [
                 "this clone is shallow, so the silent-revert check cannot read main's history; fetch it with "
                 "`git fetch --unshallow`"
@@ -196,7 +196,7 @@ def silent_revert_problems(root: Path, body: str | None = None) -> list[str]:
         if body is None:
             merge_base = _git(root, "merge-base", "HEAD", RELEASE_BRANCH).strip()
             body = _git(root, "log", "--format=%B", f"{merge_base}..HEAD")
-    except ReleaseNotesError as error:
+    except (GitError, ReleaseNotesError) as error:
         return [f"the silent-revert check cannot read the history: {error}"]
     declared = declarations(body)
     return [revert.report() for revert in reverts if not is_declared(revert, declared)]
