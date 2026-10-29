@@ -411,6 +411,11 @@ def pull_of(item: Any) -> Pull:
     if len(paths) != len(listed_paths):
         raise malformed("a pull request file without its path")
     what = "a pull request"
+    # Admission and arming read a false GitHub reported, never one an absent or null member defaults to.
+    cross_repository = member(item, "isCrossRepository", bool, what)
+    draft = member(item, "isDraft", bool, what)
+    if cross_repository is None or draft is None:
+        raise malformed("a pull request without its isCrossRepository or isDraft")
     return Pull(
         number,
         branch,
@@ -419,8 +424,8 @@ def pull_of(item: Any) -> Pull:
         member(item, "autoMergeRequest", dict, what) is not None,
         required_check(item.get("statusCheckRollup")),
         paths,
-        bool(member(item, "isCrossRepository", bool, what)),
-        bool(member(item, "isDraft", bool, what)),
+        cross_repository,
+        draft,
         hold_of(member(item, "body", str, what)),
     )
 
@@ -715,7 +720,8 @@ def update(
 ) -> None:
     """Merge main into the one armed pull request that is behind, green or pending, and furthest along in Validation,
     the oldest among equals, while no armed one that is current, green or pending, and not blocked merges first.
-    `places` holds the numbers of the pull requests behind main and of those blocked: out of step or in conflict."""
+    `pulls` are the admitted pull requests alone, so one the shepherd does not admit holds no update. `places` holds
+    the numbers of the pull requests behind main and of those blocked: out of step or in conflict."""
     behind, blocked = places
     ready = [pull for pull in pulls if pull.check.state in UPDATABLE and armed(pull, outcomes[pull.number])]
     merging = any(pull.number not in behind and pull.number not in blocked for pull in ready)
@@ -948,7 +954,7 @@ def shepherd_pulls(
     blocked = set(stale) | {pull.number for pull in pulls if pull.merge_state == CONFLICTED}
     for pull in pulls:
         act(client, place.repository, pull, outcomes[pull.number], stale.get(pull.number), dry_run)
-    update(client, place.repository, pulls, (behind, blocked), holds, outcomes, dry_run)
+    update(client, place.repository, admitted, (behind, blocked), holds, outcomes, dry_run)
     for pull in pulls:
         emit(pull_line(pull, outcomes[pull.number]))
         for line in outcomes[pull.number].lines:
