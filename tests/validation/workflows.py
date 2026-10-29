@@ -367,7 +367,11 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
         {"actions/checkout", "actions/setup-python", "actions/setup-node", "actions/upload-artifact"},
         ("23 6 * * 2",),
     ),
-    "mutation.yml": (["pull_request"], {"actions/checkout", "actions/setup-python"}, ()),
+    "mutation.yml": (
+        ["pull_request"],
+        {"actions/checkout", "actions/setup-python", "actions/upload-artifact", "actions/download-artifact"},
+        (),
+    ),
     "runtime-command-lines.yml": (
         ["workflow_dispatch", "schedule"],
         {"actions/checkout", "actions/setup-python", "actions/setup-node"},
@@ -1187,51 +1191,129 @@ def uninstall_check_problems(workflow: str) -> list[str]:
     return problems
 
 
-# What mutation.yml's one job runs: its lock, which holds the development dependencies and the mutation tools, with
-# hash checking and wheels only, then the gate, whose own cap (DEFAULT_MINUTES in tools/mutation_gate.py) sits well
-# inside the job's time limit.
+# What mutation.yml's jobs run. mutmut refuses Windows, so the select job, on Linux, installs the lock, which holds the
+# development dependencies and the mutation tools, with hash checking and wheels only, makes the mutants, and hands
+# them on as an artifact, with step outputs naming the legs that have mutants to run. Each leg installs the same lock,
+# the Windows leg ShellCheck too, which the Linux image ships, runs its platform's leg of the mutants, never mutmut,
+# within its own cap (DEFAULT_MINUTES in tools/mutation_gate.py), which sits well inside the job's time limit, and
+# hands on its outcomes. The join, named as the gate and never as the required check, runs whatever the legs did, reads
+# the files and the standard library alone, and fails an unfinished run.
 MUTATION_INSTALL = "python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt"
-MUTATION_RUN = "python -B tools/mutation_gate.py"
-MUTATION_TIMEOUT_MINUTES = "60"
+MUTATION_GATE = "python -B tools/mutation_gate.py"
+MUTATION_SHELLCHECK = "choco install shellcheck --yes --no-progress"
+MUTATION_LOCKED_PYTHON = {
+    "python-version": "3.11",
+    "cache": "pip",
+    "cache-dependency-path": "requirements-mutation.txt",
+}
+MUTATION_MUTANTS = {"name": "mutation-mutants", "path": "mutation"}
+MUTATION_OUTPUTS = {leg: f"${{{{ steps.select.outputs.{leg} }}}}" for leg in ("linux", "windows")}
+
+
+def _mutation_leg(platform: str, runner: str, install: list[str]) -> dict[str, object]:
+    """The job of one leg: after the select job, only when it named the leg, on the platform's runner."""
+    leg = platform.casefold()
+    return {
+        "name": f"Mutation gate on {platform}",
+        "needs": "select",
+        "if": f"needs.select.outputs.{leg} == 'true'",
+        "runs-on": runner,
+        "timeout-minutes": "60",
+        "checkout": {},
+        "python": MUTATION_LOCKED_PYTHON,
+        "scripts": [install, [f"{MUTATION_GATE} leg mutation"]],
+        "artifacts": [
+            ["download-artifact", MUTATION_MUTANTS],
+            [
+                "upload-artifact",
+                {"name": f"mutation-{leg}", "path": f"mutation/outcomes-{leg}.json", "if-no-files-found": "error"},
+            ],
+        ],
+    }
+
+
+# Each job of mutation.yml, in order, with what mutation_job_problems holds it to.
+MUTATION_JOBS: dict[str, dict[str, object]] = {
+    "select": {
+        "name": "Mutation gate mutants",
+        "needs": None,
+        "if": None,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "15",
+        "checkout": {"fetch-depth": "0"},
+        "python": MUTATION_LOCKED_PYTHON,
+        "scripts": [[MUTATION_INSTALL], [f"{MUTATION_GATE} select mutation"]],
+        "artifacts": [
+            [
+                "upload-artifact",
+                {"name": "mutation-mutants", "path": "mutation/mutants.json", "if-no-files-found": "error"},
+            ]
+        ],
+    },
+    "linux": _mutation_leg("Linux", "ubuntu-latest", [MUTATION_INSTALL]),
+    "windows": _mutation_leg("Windows", "windows-latest", [MUTATION_SHELLCHECK, MUTATION_INSTALL]),
+    "mutation": {
+        "name": "Mutation gate",
+        "needs": ["select", "linux", "windows"],
+        "if": "${{ !cancelled() }}",
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "15",
+        "checkout": {},
+        "python": {"python-version": "3.11"},
+        "scripts": [[f"{MUTATION_GATE} join mutation"]],
+        "artifacts": [["download-artifact", {"pattern": "mutation-*", "path": "mutation", "merge-multiple": "true"}]],
+    },
+}
+
+
+def _uses(step: dict[str, Node], action: str) -> bool:
+    return str(step.get("uses", "")).startswith(f"actions/{action}@")
+
+
+def _mutation_job_shape(job: dict[str, Node]) -> dict[str, object]:
+    """A job of mutation.yml read into the fields MUTATION_JOBS gives each: its checkout's and Python's inputs, its
+    scripts, and each artifact step with its inputs."""
+    steps = _steps(job)
+    checkouts: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "checkout")]
+    pythons: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "setup-python")]
+    artifacts: list[object] = [
+        [action, _mapping(step, "with")]
+        for step in steps
+        for action in ("upload-artifact", "download-artifact")
+        if _uses(step, action)
+    ]
+    return {
+        **{key: job.get(key) for key in ("name", "needs", "if", "runs-on", "timeout-minutes")},
+        "checkout": checkouts[0] if len(checkouts) == 1 else checkouts,
+        "python": pythons[0] if len(pythons) == 1 else pythons,
+        "scripts": [_script_lines(step) for step in steps if "run" in step],
+        "artifacts": artifacts,
+    }
 
 
 def mutation_job_problems(workflow: str) -> list[str]:
-    """Report how mutation.yml departs from the mutation gate: one job, not the required check's name, on
-    ubuntu-latest, run on a pull request's opening, pushes, and reopening but not an edit of its text, with the whole
-    history to diff against the base, Python at the floor with pip's cache keyed on the mutation lock, the locked
-    tools installed with hash checking, and the gate run once."""
+    """Report how mutation.yml departs from the mutation gate: run on a pull request's opening, pushes, and reopening
+    but not an edit of its text, as the jobs MUTATION_JOBS gives, in its order, each with its name, none the required
+    check's, its dependencies and condition, runner, time limit, checkout, Python, scripts, and artifact steps, and the
+    select job's outputs naming the legs."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     types = _mapping(tree, "on", "pull_request").get("types")
     if types != ["opened", "synchronize", "reopened"]:
         problems.append(f"the gate runs on pull request events {types}, not opened, synchronize, and reopened")
     jobs = _mapping(tree, "jobs")
-    if list(jobs) != ["mutation"]:
-        return [*problems, f"the workflow's jobs are {list(jobs)}, not the one mutation job"]
-    job = _mapping(jobs, "mutation")
-    if job.get("name") in ("Validation", None):
-        problems.append(f"the mutation job is named {job.get('name')!r}; it must not be the required check")
-    if job.get("runs-on") != "ubuntu-latest":
-        problems.append(f"the mutation job runs on {job.get('runs-on')}, not ubuntu-latest, where mutmut runs")
-    if job.get("timeout-minutes") != MUTATION_TIMEOUT_MINUTES:
-        problems.append(
-            f"the mutation job's time limit is {job.get('timeout-minutes')}, not {MUTATION_TIMEOUT_MINUTES}"
-        )
-    steps = _steps(job)
-    checkouts = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
-    if checkouts != [{"fetch-depth": "0"}]:
-        problems.append(f"the mutation job checks out {checkouts}, not the whole history with fetch-depth 0")
-    python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
-    expected = {
-        "python-version": "3.11",
-        "cache": "pip",
-        "cache-dependency-path": "requirements-mutation.txt",
-    }
-    if python != [expected]:
-        problems.append(f"the mutation job sets up Python as {python}, not 3.11 with pip's cache on the mutation lock")
-    scripts = [_script_lines(step) for step in steps if "run" in step]
-    if scripts != [[MUTATION_INSTALL], [MUTATION_RUN]]:
-        problems.append(f"the mutation job runs {scripts}, not {MUTATION_INSTALL!r} and then {MUTATION_RUN!r}")
+    if list(jobs) != list(MUTATION_JOBS):
+        return [*problems, f"the workflow's jobs are {list(jobs)}, not {list(MUTATION_JOBS)}"]
+    for name, expected in MUTATION_JOBS.items():
+        found = _mutation_job_shape(_mapping(jobs, name))
+        problems += [
+            f"the {name} job's {key} is {found[key]!r}, not {value!r}"
+            for key, value in expected.items()
+            if found[key] != value
+        ]
+    outputs = _mapping(jobs, "select").get("outputs")
+    if outputs != MUTATION_OUTPUTS:
+        problems.append(f"the select job's outputs are {outputs}, not {MUTATION_OUTPUTS}")
     return problems
 
 

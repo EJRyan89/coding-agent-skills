@@ -1,7 +1,8 @@
-# The mutation gate's tools, installed only by .github/workflows/mutation.yml on Linux, from requirements-mutation.txt,
-# which is compiled from this file with the development dependencies at the versions requirements-dev.txt locks: mutmut
-# refuses to run on Windows, and the libcst it parses with needs a PyYAML wheel that not every Python a contributor
-# runs validation on has, so they stay out of requirements-dev.txt. coverage.py measures which suites reach each changed
+# The mutation gate's tools, installed only by .github/workflows/mutation.yml, from requirements-mutation.txt, which is
+# compiled from this file with the development dependencies at the versions requirements-dev.txt locks: mutmut makes
+# the mutants on Linux, since it refuses to run on Windows, where the gate's Windows leg installs the lock for
+# coverage.py and never runs mutmut, and the libcst it parses with needs a PyYAML wheel that not every Python a
+# contributor runs validation on has, so they stay out of requirements-dev.txt. coverage.py measures which suites reach each changed
 # line, through subprocesses too, which needs its `patch = subprocess` setting.
 # docs/dependency-updates.md owns these pins and says how to compile the lock; Dependabot reviews them weekly.
 -r requirements-dev.in

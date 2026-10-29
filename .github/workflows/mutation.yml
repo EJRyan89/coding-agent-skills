@@ -4,6 +4,11 @@ name: Mutation
 # reach them, with the survivors, each module's kill ratio, and each changed module with nothing to mutate in the step
 # summary. It is not a required check; the summary is the record, which the author reads. A run its cap cuts short
 # fails the job, since it is no verdict. A body or title edit does not rerun it, since it reads neither.
+#
+# mutmut refuses Windows, so one Linux job makes the mutants and hands them on as an artifact. The Linux leg runs every
+# module's mutants, and the Windows leg, which never runs mutmut, those of the modules whose behavior differs on Windows,
+# as tools/mutation_gate.py's rule selects them. The `Mutation gate` job joins the legs' outcomes: a mutant either leg
+# killed is killed, and the summary names the legs that ran each module.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -17,12 +22,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  mutation:
-    name: Mutation gate
+  select:
+    name: Mutation gate mutants
     runs-on: ubuntu-latest
-    # tools/mutation_gate.py stops starting mutants at its own 40-minute cap; this leaves room for the setup and for the
-    # suites still running when the cap is reached.
-    timeout-minutes: 60
+    timeout-minutes: 15
+    outputs:
+      linux: ${{ steps.select.outputs.linux }}
+      windows: ${{ steps.select.outputs.windows }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,5 +48,120 @@ jobs:
           python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
 
       # It calls no model and reads no secret; GITHUB_BASE_REF names the base it diffs against.
-      - name: Run the mutation gate
-        run: python -B tools/mutation_gate.py
+      - name: Make the mutants
+        id: select
+        run: python -B tools/mutation_gate.py select mutation
+
+      - name: Upload the mutants
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-mutants
+          path: mutation/mutants.json
+          if-no-files-found: error
+
+  linux:
+    name: Mutation gate on Linux
+    needs: select
+    if: needs.select.outputs.linux == 'true'
+    runs-on: ubuntu-latest
+    # tools/mutation_gate.py stops starting mutants at its own 40-minute cap; this leaves room for the setup and for the
+    # suites still running when the cap is reached.
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-mutation.txt
+
+      - name: Install the mutation tools
+        run: |
+          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
+
+      - name: Download the mutants
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mutation-mutants
+          path: mutation
+
+      - name: Run the mutants
+        run: python -B tools/mutation_gate.py leg mutation
+
+      - name: Upload the outcomes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-linux
+          path: mutation/outcomes-linux.json
+          if-no-files-found: error
+
+  windows:
+    name: Mutation gate on Windows
+    needs: select
+    if: needs.select.outputs.windows == 'true'
+    runs-on: windows-latest
+    # The same room around the gate's cap as the Linux leg.
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-mutation.txt
+
+      # The deployer's suites validate rendered Bash with ShellCheck, which the Linux image ships and this one does not.
+      # The lock installs mutmut too, which this leg never runs: it runs the mutants the Linux job made.
+      - name: Install the mutation tools
+        run: |
+          choco install shellcheck --yes --no-progress
+          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
+
+      - name: Download the mutants
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mutation-mutants
+          path: mutation
+
+      - name: Run the mutants
+        run: python -B tools/mutation_gate.py leg mutation
+
+      - name: Upload the outcomes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-windows
+          path: mutation/outcomes-windows.json
+          if-no-files-found: error
+
+  mutation:
+    name: Mutation gate
+    needs: [select, linux, windows]
+    # It runs whatever the legs did, so a leg that failed or was skipped is named in its outcome rather than hidden.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+
+      - name: Download the mutants and the outcomes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: mutation-*
+          path: mutation
+          merge-multiple: true
+
+      # The join reads only the files and the standard library, so it installs nothing.
+      - name: Join the legs
+        run: python -B tools/mutation_gate.py join mutation

@@ -1390,19 +1390,51 @@ def test_yaml_outside_the_subset_is_refused(text: str, reason: str) -> None:
         read_workflow(text)
 
 
-MUTATION = (
-    "on:\n  pull_request:\n    types: [opened, synchronize, reopened]\n"
-    "jobs:\n  mutation:\n    name: Mutation gate\n    runs-on: ubuntu-latest\n    timeout-minutes: 60\n    steps:\n"
-    "      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
+MUTATION_SETUP = (
     "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n          cache: pip\n"
     "          cache-dependency-path: requirements-mutation.txt\n"
-    "      - name: Install\n        run: |\n"
+)
+MUTATION_INSTALL_STEP = (
     "          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt\n"
-    "      - name: Gate\n        run: python -B tools/mutation_gate.py\n"
 )
 
 
-def test_the_mutation_job_runs_the_gate_on_linux_outside_the_required_check() -> None:
+def mutation_leg(leg: str, runner: str, shellcheck: str = "") -> str:
+    return (
+        f"  {leg.casefold()}:\n    name: Mutation gate on {leg}\n    needs: select\n"
+        f"    if: needs.select.outputs.{leg.casefold()} == 'true'\n    runs-on: {runner}\n    timeout-minutes: 60\n"
+        "    steps:\n      - uses: actions/checkout@abc\n"
+        f"{MUTATION_SETUP}      - name: Install\n        run: |\n{shellcheck}{MUTATION_INSTALL_STEP}"
+        "      - uses: actions/download-artifact@abc\n        with:\n          name: mutation-mutants\n"
+        "          path: mutation\n"
+        "      - name: Leg\n        run: python -B tools/mutation_gate.py leg mutation\n"
+        f"      - uses: actions/upload-artifact@abc\n        with:\n          name: mutation-{leg.casefold()}\n"
+        f"          path: mutation/outcomes-{leg.casefold()}.json\n          if-no-files-found: error\n"
+    )
+
+
+MUTATION = (
+    "on:\n  pull_request:\n    types: [opened, synchronize, reopened]\n"
+    "jobs:\n  select:\n    name: Mutation gate mutants\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n"
+    "    outputs:\n      linux: ${{ steps.select.outputs.linux }}\n"
+    "      windows: ${{ steps.select.outputs.windows }}\n    steps:\n"
+    "      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
+    f"{MUTATION_SETUP}      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
+    "      - name: Select\n        id: select\n        run: python -B tools/mutation_gate.py select mutation\n"
+    "      - uses: actions/upload-artifact@abc\n        with:\n          name: mutation-mutants\n"
+    "          path: mutation/mutants.json\n          if-no-files-found: error\n"
+    + mutation_leg("Linux", "ubuntu-latest")
+    + mutation_leg("Windows", "windows-latest", "          choco install shellcheck --yes --no-progress\n")
+    + "  mutation:\n    name: Mutation gate\n    needs: [select, linux, windows]\n    if: ${{ !cancelled() }}\n"
+    "    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@abc\n"
+    "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n"
+    "      - uses: actions/download-artifact@abc\n        with:\n          pattern: mutation-*\n"
+    "          path: mutation\n          merge-multiple: true\n"
+    "      - name: Join\n        run: python -B tools/mutation_gate.py join mutation\n"
+)
+
+
+def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them_outside_the_required_check() -> None:
     assert mutation_job_problems(MUTATION) == []
 
 
@@ -1411,29 +1443,69 @@ def test_the_mutation_job_runs_the_gate_on_linux_outside_the_required_check() ->
     [
         pytest.param(MUTATION.replace(", reopened]", ", reopened, edited]"), "pull request events", id="on an edit"),
         pytest.param(
-            MUTATION.replace("    name: Mutation gate\n", "    name: Validation\n"), "required", id="required"
+            MUTATION.replace("    name: Mutation gate\n", "    name: Validation\n"),
+            "mutation job's name",
+            id="required",
         ),
-        pytest.param(MUTATION.replace("    name: Mutation gate\n", ""), "required check", id="unnamed"),
-        pytest.param(MUTATION.replace("ubuntu-latest", "windows-latest"), "not ubuntu-latest", id="on Windows"),
-        pytest.param(MUTATION.replace("timeout-minutes: 60", "timeout-minutes: 600"), "time limit", id="a long limit"),
-        pytest.param(MUTATION.replace("fetch-depth: 0", "fetch-depth: 1"), "whole history", id="a shallow checkout"),
+        pytest.param(MUTATION.replace("    name: Mutation gate\n", ""), "mutation job's name", id="unnamed"),
         pytest.param(
-            MUTATION.replace("path: requirements-mutation.txt", "path: requirements-dev.txt"),
-            "sets up Python",
+            MUTATION.replace(
+                "    runs-on: ubuntu-latest\n    timeout-minutes: 15\n",
+                "    runs-on: windows-latest\n    timeout-minutes: 15\n",
+                1,
+            ),
+            "select job's runs-on",
+            id="mutants made on Windows",
+        ),
+        pytest.param(MUTATION.replace("windows-latest", "ubuntu-latest"), "windows job's runs-on", id="no Windows leg"),
+        pytest.param(MUTATION.replace("timeout-minutes: 60", "timeout-minutes: 600", 1), "timeout", id="a long limit"),
+        pytest.param(MUTATION.replace("fetch-depth: 0", "fetch-depth: 1"), "select job's checkout", id="shallow"),
+        pytest.param(
+            MUTATION.replace("path: requirements-mutation.txt", "path: requirements-dev.txt", 1),
+            "select job's python",
             id="the cache keyed on another file",
         ),
         pytest.param(
-            MUTATION.replace("-r requirements-mutation.txt", "-r requirements-dev.txt"), "runs", id="no mutation tools"
+            MUTATION.replace("-r requirements-mutation.txt", "-r requirements-dev.txt"),
+            "scripts",
+            id="no mutation tools",
         ),
-        pytest.param(MUTATION.replace(" --require-hashes", ""), "runs", id="no hash checking"),
-        pytest.param(MUTATION.replace(" --only-binary :all:", ""), "runs", id="source distributions allowed"),
+        pytest.param(MUTATION.replace(" --require-hashes", "", 1), "select job's scripts", id="no hash checking"),
+        pytest.param(MUTATION.replace(" --only-binary :all:", ""), "scripts", id="source distributions allowed"),
         pytest.param(
-            MUTATION.replace("python -B tools/mutation_gate.py", "python -B tools/mutation_gate.py || true"),
-            "runs",
-            id="a swallowed failure",
+            MUTATION.replace("join mutation", "join mutation || true"), "mutation job's scripts", id="swallowed failure"
         ),
-        pytest.param(MUTATION.replace("  mutation:\n", "  gate:\n"), "the one mutation job", id="renamed job"),
-        pytest.param(MUTATION + "  extra:\n    runs-on: ubuntu-latest\n", "the one mutation job", id="a second job"),
+        pytest.param(
+            MUTATION.replace("          choco install shellcheck --yes --no-progress\n", ""),
+            "windows job's scripts",
+            id="no ShellCheck on Windows",
+        ),
+        pytest.param(
+            MUTATION.replace("    needs: [select, linux, windows]\n", "    needs: [select, linux]\n"),
+            "mutation job's needs",
+            id="a join that waits for no Windows leg",
+        ),
+        pytest.param(
+            MUTATION.replace("    if: ${{ !cancelled() }}\n", ""), "mutation job's if", id="a join skipped by a leg"
+        ),
+        pytest.param(
+            MUTATION.replace("outputs.windows == 'true'", "outputs.linux == 'true'"),
+            "windows job's if",
+            id="a leg on the other leg's output",
+        ),
+        pytest.param(
+            MUTATION.replace("name: mutation-windows\n", "name: mutation-linux\n"),
+            "windows job's artifacts",
+            id="an outcome artifact named for the other leg",
+        ),
+        pytest.param(
+            MUTATION.replace("          merge-multiple: true\n", ""), "mutation job's artifacts", id="artifacts apart"
+        ),
+        pytest.param(
+            MUTATION.replace("      windows: ${{ steps.select.outputs.windows }}\n", ""), "outputs", id="no output"
+        ),
+        pytest.param(MUTATION.replace("  mutation:\n", "  gate:\n"), "the workflow's jobs", id="renamed job"),
+        pytest.param(MUTATION + "  extra:\n    runs-on: ubuntu-latest\n", "the workflow's jobs", id="a fifth job"),
     ],
 )
 def test_a_mutation_job_off_its_shape_fails(drifted: str, problem: str) -> None:
