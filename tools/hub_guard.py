@@ -39,7 +39,7 @@ import whole_number
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
-from git_client import GitError, GitResult
+from git_client import GitError, GitResult, output_lines
 from job_tree import process_tree
 
 from deployer import platform_support
@@ -282,7 +282,7 @@ def guarded_hub_of_repository(path: Path) -> Path | None:
         if exc.kind == "not_repository":
             return None
         raise
-    lines = output.splitlines()
+    lines = output_lines(output)
     if len(lines) != 2:
         raise GitError(f"git rev-parse answered {len(lines)} lines for the git directory {path}, not two")
     if not same_path(Path(lines[0]), Path(lines[1])):

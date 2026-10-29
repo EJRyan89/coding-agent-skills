@@ -213,6 +213,21 @@ class ClientTests(unittest.TestCase):
             client.rev_parse_paths(options, directory="d")
         self.assertIn("for --show-toplevel --git-common-dir in d, not one path for each", str(context.exception))
 
+    def test_output_lines_splits_on_a_newline_alone(self) -> None:
+        self.assertEqual([], git_client.output_lines(""))
+        self.assertEqual([""], git_client.output_lines("\n"))
+        self.assertEqual(["a", "b"], git_client.output_lines("a\nb\n"))
+        self.assertEqual(["a", "b"], git_client.output_lines("a\nb"))
+        self.assertEqual(["a", "", "b"], git_client.output_lines("a\n\nb\n"))
+        # Each other character str.splitlines() breaks on stays inside its line.
+        breaks = [chr(code) for code in (0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x85, 0x2028, 0x2029)]
+        self.assertEqual(
+            [f"a{character}b" for character in breaks],
+            git_client.output_lines("".join(f"a{character}b\n" for character in breaks)),
+        )
+        # The same text splitlines() breaks at each of them.
+        self.assertEqual(len(breaks) + 1, len("".join(f"a{character}b" for character in breaks).splitlines()))
+
     def test_quiet_output_is_none_only_for_exit_1_with_nothing_on_stderr(self) -> None:
         runner, calls = scripted(
             GitResult(0, "found\n", ""),
@@ -712,6 +727,16 @@ class ThreeAnswerTests(unittest.TestCase):
         plain.mkdir()
         with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}):
             self.assertIsNone(self.client.rev_parse_path("--show-toplevel", directory=plain))
+
+    def test_a_path_holding_a_character_splitlines_breaks_on_is_one_path(self) -> None:
+        for character in (chr(0x2028), chr(0x85)):
+            checkout = self.root / f"a{character}checkout"
+            self.client.output(["init", "--quiet", str(checkout)])
+            with self.subTest(character=hex(ord(character))):
+                paths = self.client.rev_parse_paths(["--show-toplevel", "--git-common-dir"], directory=checkout)
+                self.assertEqual(
+                    [checkout.resolve(), (checkout / ".git").resolve()], [path.resolve() for path in paths or []]
+                )
 
     def test_a_broken_ref_is_named_not_taken_for_absent(self) -> None:
         (self.repository / ".git" / "refs" / "heads" / "broken").write_text("nonsense\n", encoding="utf-8")

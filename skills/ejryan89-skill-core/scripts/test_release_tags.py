@@ -76,6 +76,12 @@ class LastReleaseTests(unittest.TestCase):
         self.assertIsNone(last_release(GitClient(), self.root, untagged))
         self.assertEqual((0, "NO_RELEASE\n"), self.run_main(str(self.root), untagged))
 
+    def test_a_tag_whose_name_holds_a_character_splitlines_breaks_on_is_one_name(self) -> None:
+        # U+2028 and U+0085 end a line to str.splitlines(), but git ends each ref it lists with a newline alone.
+        self.commit("first", "v0.1.0", f"note{chr(0x2028)}v9.0.0", f"note{chr(0x85)}v8.0.0")
+        self.assertEqual("v0.1.0", last_release(GitClient(), self.root, "HEAD"))
+        self.assertEqual((0, "RELEASE v0.1.0\n"), self.run_main(str(self.root), "HEAD"))
+
     def test_a_commit_the_repository_lacks_is_a_failed_line(self) -> None:
         self.commit("first", "v0.1.0")
         code, output = self.run_main(str(self.root), "0" * 40)
