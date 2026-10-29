@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 from unittest import mock
 
 import pytest
@@ -40,7 +40,12 @@ from python_checks import (
     blind_except_noqa,
     ceiling_noqa,
     comments,
+    ctypes_declaration_problems,
+    discarded_result_problems,
+    gh_limit_problems,
+    git_separator_problems,
     issue_numbers_in_comments,
+    link_test_problems,
     mypy_path_problems,
     mypy_type_check,
     noqa_without_reason,
@@ -49,6 +54,7 @@ from python_checks import (
     ruff_format_check,
     ruff_lint_check,
     strict_area_problems,
+    time_option_problems,
     type_check_skill_roots,
     type_check_skipped_problems,
     type_ignore_without_reason,
@@ -784,6 +790,220 @@ def test_the_type_check_refuses_a_misspelled_member_of_each_closed_vocabulary() 
     # mypy names a program given with -c as <string>, and ends its lines with CRLF on Windows.
     errors = re.findall(r"(?m)^(.*?):(\d+): error: .*?\r?$", str(raised.value))
     assert [("<string>", line) for line in misspelled] == [(path, int(line)) for path, line in errors]
+
+
+# Each form a policy's documentation names, as a minimal file that must be refused, and each form it deliberately
+# leaves out, as one that must pass, with the reason beside it. The documentation is the policy's paragraph in
+# "Validation" in docs/adding-a-skill.md or "Python checks" in CONTRIBUTING.md; a new policy, or a change to what a
+# paragraph names, adds or changes its rows in the same pull request.
+FormsPolicy = Callable[[Path, list[Path]], list[str]]
+SCRIPT = "skills/alpha/scripts/alpha.py"
+
+
+def _form(policy: FormsPolicy, text: str, path: str = SCRIPT, *, refused: bool = True) -> tuple[Any, ...]:
+    return (policy, path, text, refused)
+
+
+DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
+    # CONTRIBUTING.md: a finding that must stay is suppressed on its line by a noqa naming its codes and its reason.
+    "noqa alone": _form(noqa_without_reason, "x = 1  # noqa\n"),
+    "noqa with codes and no reason": _form(noqa_without_reason, "x = 1  # noqa: E501\n"),
+    "noqa with codes and a reason": _form(noqa_without_reason, "x = 1  # noqa: E501 - a reason\n", refused=False),
+    # "Function complexity (C901) and length in statements (PLR0915) ... take no `noqa`".
+    "noqa of complexity": _form(ceiling_noqa, "def f():  # noqa: C901 - a reason\n    pass\n"),
+    "noqa of length": _form(ceiling_noqa, "def f():  # noqa: PLR0915 - a reason\n    pass\n"),
+    "noqa of another code": _form(ceiling_noqa, "def f():  # noqa: E501 - a reason\n    pass\n", refused=False),
+    # "a comment that turns a check off beyond one finding on its line", each spelling the paragraph names.
+    **{
+        f"turned off by {comment}": _form(python_suppression_problems, f"{comment}\nx = 1\n")
+        for comment in (
+            "# ruff: noqa",
+            "# flake8: noqa",
+            "# ruff: disable[E501]",
+            "# isort: skip_file",
+            "# isort: off",
+            "# fmt: off",
+            "# fmt: skip",
+            "# yapf: disable",
+            "# mypy: ignore-errors",
+        )
+    },
+    # "a `ruff.toml`, `.ruff.toml`, or `pyproject.toml` anywhere but the repository root".
+    **{
+        f"ruff configured by skills/alpha/{name}": _form(python_suppression_problems, "", f"skills/alpha/{name}")
+        for name in ("ruff.toml", ".ruff.toml", "pyproject.toml")
+    },
+    "ruff configured by the root's pyproject.toml": _form(
+        python_suppression_problems, "[tool.ruff]\n", "pyproject.toml", refused=False
+    ),
+    # "a `type: ignore` without its codes and reason".
+    "type ignore alone": _form(type_ignore_without_reason, "x: int = ''  # type: ignore\n"),
+    "type ignore with codes and no reason": _form(
+        type_ignore_without_reason, "x: int = ''  # type: ignore[assignment]\n"
+    ),
+    "type ignore with codes and a reason": _form(
+        type_ignore_without_reason, "x: int = ''  # type: ignore[assignment]  # a reason\n", refused=False
+    ),
+    # "never as an issue number such as `#12`, `(#12)`, `#12's`, or `issue 12`", in a comment or a docstring.
+    **{
+        f"an issue number as {form}": _form(issue_numbers_in_comments, f"x = 1  # see {form}\n")
+        for form in ("#12", "(#12)", "#12's", "issue 12")
+    },
+    "an issue number in a docstring": _form(issue_numbers_in_comments, '"""Fixes #12."""\n'),
+    # "string literals ... are outside the rule".
+    "an issue number in a string literal": _form(issue_numbers_in_comments, 'x = "Closes #12"\n', refused=False),
+    # A hash sign after a slash is a fixture's owner/repo selector, not a citation.
+    "an owner/repo selector": _form(issue_numbers_in_comments, "x = 1  # owner/repo#12\n", refused=False),
+    # "an `is_symlink`, `islink`, `is_junction`, or `isjunction`, or a read of `st_file_attributes`".
+    **{
+        f"a link test by {test}": _form(link_test_problems, f"import os\n\n\ndef f(p):\n    return {call}\n")
+        for test, call in (
+            ("is_symlink", "p.is_symlink()"),
+            ("islink", "os.path.islink(p)"),
+            ("is_junction", "p.is_junction()"),
+            ("isjunction", "os.path.isjunction(p)"),
+            ("st_file_attributes", "os.stat(p).st_file_attributes"),
+            ("getattr", "getattr(p, 'is_symlink')()"),
+        )
+    },
+    # "A call of `deployer/platform_support.py`'s `is_junction`, which delegates to it, is none."
+    "platform_support.is_junction": _form(
+        link_test_problems,
+        "from deployer import platform_support\n\n\ndef f(p):\n    return platform_support.is_junction(p)\n",
+        refused=False,
+    ),
+    # "a foreign function, through a library the module loads with `ctypes.WinDLL`, `ctypes.CDLL`, `ctypes.windll`, or
+    # `ctypes.cdll`, whose `argtypes` and `restype` the module does not both assign".
+    **{
+        f"an undeclared function of {library}": _form(
+            ctypes_declaration_problems, f"import ctypes\n\n\ndef f():\n    return {library}.Probe(1)\n"
+        )
+        for library in ("ctypes.WinDLL('k')", "ctypes.CDLL('k')", "ctypes.windll.kernel32", "ctypes.cdll.k")
+    },
+    "a function declared both ways": _form(
+        ctypes_declaration_problems,
+        "import ctypes\n\nLIB = ctypes.CDLL('k')\nLIB.Probe.argtypes = [ctypes.c_int]\n"
+        "LIB.Probe.restype = ctypes.c_int\n"
+        "\n\ndef f():\n    return LIB.Probe(1)\n",
+        refused=False,
+    ),
+    # "a function every call gives no arguments needs no `argtypes`".
+    "a function given no arguments with its restype": _form(
+        ctypes_declaration_problems,
+        "import ctypes\n\nLIB = ctypes.CDLL('k')\nLIB.Probe.restype = ctypes.c_int\n\n\n"
+        "def f():\n    return LIB.Probe()\n",
+        refused=False,
+    ),
+    # "an expression statement that discards the result of ... `run_bounded`, ... `run_tool`, or `GitClient.run`, on a
+    # `GitClient` the module constructs or binds by assignment or annotation".
+    **{
+        f"a discarded {runner}": _form(discarded_result_problems, f"{imports}\n\n\ndef f(client):\n    {call}\n")
+        for runner, imports, call in (
+            ("run_bounded", "from bounded_process import run_bounded", "run_bounded(['x'], 60)"),
+            ("run_tool", "from deployer import platform_support", "platform_support.run_tool(['x'])"),
+            (
+                "GitClient.run on a constructed client",
+                "from git_client import GitClient",
+                "GitClient().run(['status'])",
+            ),
+        )
+    },
+    "a discarded GitClient.run on an annotated client": _form(
+        discarded_result_problems,
+        "from git_client import GitClient\n\n\ndef f(client: GitClient):\n    client.run(['status'])\n",
+    ),
+    # "`GitClient.output` and the `GitHubClient` methods raise on a failure, so they are not runners here".
+    "a discarded GitClient.output": _form(
+        discarded_result_problems,
+        "from git_client import GitClient\n\n\ndef f(client: GitClient):\n    client.output(['status'])\n",
+        refused=False,
+    ),
+    "a discarded GitHubClient.run": _form(
+        discarded_result_problems,
+        "from github_client import GitHubClient\n\n\ndef f():\n    GitHubClient().run(['pr', 'list'])\n",
+        refused=False,
+    ),
+    # "gh's limit option, `--limit` or `-L`", alone, after =, or with digits attached.
+    **{
+        f"gh given {option}": _form(
+            gh_limit_problems, f"def f(client, n):\n    return client.json(['pr', 'list', {option}])\n"
+        )
+        for option in ("'--limit', '5'", "'--limit=5'", "'-L', '5'", "'-L5'", "f'-L{n}'")
+    },
+    # "the arguments of a git name listing ... that hold no `-z`".
+    **{
+        f"a git listing by {' '.join(listing)}": _form(
+            git_separator_problems, f"def f(run):\n    return run({['git', *listing]!r})\n"
+        )
+        for listing in (
+            ("ls-files",),
+            ("ls-tree", "HEAD"),
+            ("diff", "--name-only"),
+            ("diff", "--name-status"),
+            ("status", "--porcelain"),
+            ("status", "--short"),
+        )
+    },
+    "a git listing given -z": _form(
+        git_separator_problems, "def f(run):\n    return run(['git', 'ls-files', '-z'])\n", refused=False
+    ),
+    # "`GitClient.names` adds `-z`, and a call of it is not read."
+    "a listing through GitClient.names": _form(
+        git_separator_problems,
+        "from git_client import GitClient\n\n\n"
+        "def f(client: GitClient):\n    return client.names(['ls-files'], directory='.')\n",
+        refused=False,
+    ),
+    # "a `for-each-ref` or `log` format, after `--format` or `--pretty`, whose fields anything but NUL joins".
+    **{
+        f"a {command} format joined by a space": _form(
+            git_separator_problems, f"def f(run):\n    return run(['git', '{command}', '{option}'])\n"
+        )
+        for command, option in (
+            ("for-each-ref", "--format=%(refname) %(objectname)"),
+            ("log", "--pretty=format:%H %s"),
+        )
+    },
+    "a for-each-ref format joined by NUL": _form(
+        git_separator_problems,
+        "def f(run):\n    return run(['git', 'for-each-ref', '--format=%(refname)%00%(objectname)'])\n",
+        refused=False,
+    ),
+    # "an `add_argument` whose `type` is `float` and whose option string, `dest`, or `metavar` names a time".
+    **{
+        f"a float time by its {where}": _form(
+            time_option_problems,
+            f"import argparse\n\nparser = argparse.ArgumentParser()\nparser.add_argument({arguments}, type=float)\n",
+        )
+        for where, arguments in (
+            ("option string", "'--timeout'"),
+            ("dest", "'--wait', dest='timeout'"),
+            ("metavar", "'--wait', metavar='SECONDS'"),
+        )
+    },
+    "a float that names no time": _form(
+        time_option_problems,
+        "import argparse\n\nparser = argparse.ArgumentParser()\nparser.add_argument('--ratio', type=float)\n",
+        refused=False,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("policy", "path", "text", "refused"), list(DOCUMENTED_FORMS.values()), ids=list(DOCUMENTED_FORMS)
+)
+def test_each_policy_refuses_every_form_its_documentation_names(
+    policy: FormsPolicy, path: str, text: str, refused: bool
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {path: text})
+        found = policy(root, sorted(file for file in root.rglob("*") if file.is_file()))
+    if refused:
+        assert found, f"{policy.__name__} passed {path}"
+        assert all(problem.startswith(path) for problem in found), found
+    else:
+        assert found == []
 
 
 def run_claim_policy(
