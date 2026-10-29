@@ -226,6 +226,15 @@ class NamedPathTests(unittest.TestCase):
             "\\\\example.invalid\\share\\x.csproj": "network share",
             "//example.invalid/share/x.csproj": "network share",
             "\\\\?\\C:\\x\\x.csproj": "device",
+            "CON": "reserved device as a segment",
+            # Windows makes this one `\\.\NUL` as it makes the path absolute, refused as a device form; elsewhere the
+            # segment is refused.
+            "sub\\NUL": "device",
+            "nul.csproj": "reserved device as a segment",
+            "aux .txt\\x.csproj": "reserved device as a segment",
+            "..\\Lpt1\\x.csproj": "reserved device as a segment",
+            "console\\Console.csproj": None,
+            "Com10.csproj": None,
         }
         with mock.patch.object(Path, "stat", side_effect=AssertionError("reached the file system")):
             for text, reason in written.items():

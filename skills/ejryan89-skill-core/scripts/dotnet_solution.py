@@ -20,6 +20,7 @@ import re
 import stat
 from pathlib import Path
 
+from device_names import is_reserved_device_name
 from folder_walk import SKIPPED_FOLDERS
 from path_containment import within
 from path_keys import path_key
@@ -105,8 +106,12 @@ def project_path(project_dir: Path, include: str) -> Path:
 def refusal(path: Path, tree: Path) -> str | None:
     """Why a skill does not read `path`, a path a file names, made absolute by `project_path`, or None when it lies
     inside `tree`, the tree the skill examines. The test is lexical, so it decides before anything touches the path:
-    a device or network form, or any other path outside the tree, is refused unopened."""
+    a device or network form, a segment below the tree that `device_names` finds Windows opens as a device, on every
+    platform, or any other path outside the tree, is refused unopened."""
     if within(path, tree):
+        below = path.parts[len(lexical_absolute(tree).parts) :]
+        if any(is_reserved_device_name(part) for part in below):
+            return "the path names a reserved device as a segment, which the reader does not open"
         return None
     written = str(path).replace("\\", "/")
     if written.startswith(DEVICE_PREFIXES):

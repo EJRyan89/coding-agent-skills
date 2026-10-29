@@ -301,7 +301,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, or
   `startswith(f"{` with a trailing `/` outside `path_containment.py`, which the guard refuses unless a
   `CONTAINMENT_ALLOWED` entry states why.
-- **Examples:** #1780, #1782, #1818, #1905
+- **Examples:** #1780, #1782, #1818, #1905, #2050
 
 ### Every check comes before the first write
 
