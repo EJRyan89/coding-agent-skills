@@ -2030,6 +2030,31 @@ class ContractTests(GuardTestCase):
         self.assertEqual(self.tree, hub_guard.powershell_directory(["-c", "x", "-wd", str(self.hub)], self.tree))
         self.assertIsNone(hub_guard.powershell_directory([None, "-c", "x"], self.tree))
 
+    def test_each_nested_start_option_is_read_by_its_own_spelling(self) -> None:
+        shell = hub_guard.Shell(None, {}, set())
+        # A long option holding a c is no -c, so its operand is a script file.
+        self.assertIsNone(hub_guard.bash_script(["--norc", "script.sh"], [], shell))
+        self.assertIsNone(hub_guard.bash_script(["--rcfile", "x", "script.sh"], [], shell))
+        # Each spelling of a script file or an encoded command ends the parameters, so no -Command is put before the
+        # word after it and no -WorkingDirectory after it is read.
+        for word in ("-e", "-EncodedCommand", "-ec", "-f", "-File"):
+            with self.subTest(word=word):
+                self.assertEqual([word, "x"], hub_guard.powershell_arguments("powershell", [word, "x"]))
+                self.assertEqual(self.tree, hub_guard.powershell_directory([word, "x", "-wd", "y"], self.tree))
+        self.assertEqual(["-NoProfile"], hub_guard.powershell_arguments("powershell", ["-NoProfile"]))
+        # A value is skipped whole, and -WorkingDirectory needs one.
+        started: list[hub_guard.Word] = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-wd", "inner"]
+        self.assertEqual(self.tree / "inner", hub_guard.powershell_directory(started, self.tree))
+        self.assertEqual(self.tree / "inner", hub_guard.powershell_directory(["-wd", "inner"], self.tree))
+        self.assertIsNone(hub_guard.powershell_directory(["-wd"], self.tree))
+        self.assertEqual(self.tree, hub_guard.powershell_directory(["-NoProfile"], self.tree))
+        # An absolute directory needs no parent's; a relative one does.
+        self.assertEqual(self.hub, hub_guard.powershell_directory(["-wd", str(self.hub)], None))
+        self.assertIsNone(hub_guard.powershell_directory(["-wd", "inner"], None))
+        # A child pwsh with no -WorkingDirectory starts where its parent stands.
+        self.assertIsNone(self.powershell("pwsh -c 'git commit -m x'", self.tree))
+        self.assertEqual("deny", self.powershell("pwsh -c 'git commit -m x'", self.hub))
+
     def test_windows_powershell_runs_a_leading_positional_word_as_its_command(self) -> None:
         for tool in ("Bash", "PowerShell"):
             for command in (
