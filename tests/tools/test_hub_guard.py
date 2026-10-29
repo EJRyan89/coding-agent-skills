@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -158,9 +160,30 @@ class PowerShellReaderStartTests(unittest.TestCase):
         self.assertFalse(handed & {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}, handed)
         self.assertEqual("elsewhere", environment["GIT_WORK_TREE"], "the hook's own environment is left as it was")
         [call] = bounded.call_args_list
-        self.assertEqual(20, call.args[1])
+        self.assertEqual(15, call.args[1])
         self.assertIsNotNone(call.kwargs["tree"])
         self.assertEqual(4 * 1024 * 1024, call.kwargs["output_limit"])
+
+    def test_pwsh_gets_what_is_left_of_the_reading_time(self) -> None:
+        reading = hub_guard.Reading(isolated_environment(), text="git commit -m x")
+        reading.deadline = hub_guard.reading_clock() + 5
+        with (
+            mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+            mock.patch.object(hub_guard, "run_bounded", return_value=Finished(0, b'{"events": []}', b"")) as bounded,
+        ):
+            hub_guard.powershell_events("git commit -m x", reading, 0)
+        [call] = bounded.call_args_list
+        self.assertGreater(call.args[1], 0)
+        self.assertLessEqual(call.args[1], 5)
+
+    def test_pwsh_that_does_not_read_in_the_time_left_leaves_a_command_the_guard_cannot_read(self) -> None:
+        reading = hub_guard.Reading(isolated_environment(), text="git commit -m x")
+        with (
+            mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+            mock.patch.object(hub_guard, "run_bounded", side_effect=subprocess.TimeoutExpired("pwsh", 15)),
+        ):
+            self.assertIsNone(hub_guard.powershell_events("git commit -m x", reading, 0))
+        self.assertEqual(["pwsh did not read the command in what was left of the guard's 15 seconds"], reading.unread)
 
     def test_output_that_is_not_utf8_is_read_with_replacement_characters_and_a_repeated_key_is_not(self) -> None:
         # A console code page can reach the reader's output; a byte it cannot decode costs only that character.
@@ -407,6 +430,163 @@ class ReaderFailureTests(GuardTestCase):
                     self.assertIn("hub guard skipped: RuntimeError: the judge broke", self.stderr)
                     self.assertIsNone(self.shell(tool, "git commit -m x", self.outside()))
                     self.assertIn("hub guard skipped: RuntimeError: the judge broke", self.stderr)
+
+
+def nested_loops(tool: str, body: str, depth: int) -> str:
+    """body inside depth loops, each of which the guard reads twice."""
+    if tool == "Bash":
+        return "while true; do " * depth + body + "; done" * depth
+    return "while ($true) { " * depth + body + " }" * depth
+
+
+class ReadingBoundTests(GuardTestCase):
+    """The guard reads loops to a stated depth and reads each command within a stated time, both well inside the hook's
+    own timeout, past which Claude Code would let the command run. What it cannot read in time is refused when it names
+    git while a guarded hub is in view."""
+
+    def shell(self, tool: str, command: str, cwd: Path) -> str | None:
+        return self.bash(command, cwd) if tool == "Bash" else self.powershell(command, cwd)
+
+    def test_loops_nested_past_the_limit_are_refused_quickly_when_they_name_git(self) -> None:
+        # Each level doubles the reading, so without the limit these would outlast the hook's timeout many times over.
+        for tool in ("Bash", "PowerShell"):
+            for body, cwd in (("git commit -m x", self.hub), (f'git -C "{self.hub}" switch main', self.tree)):
+                with self.subTest(tool=tool, body=body):
+                    started = time.monotonic()
+                    self.assertEqual("deny", self.shell(tool, nested_loops(tool, body, 30), cwd))
+                    self.assertLess(time.monotonic() - started, 10)
+                    self.assertIn("nest more than 8 deep", self.reason)
+
+    def test_loops_are_read_to_the_limit_and_refused_one_level_past_it(self) -> None:
+        # A computed word after git starts pwsh, which a plain git status never waits for.
+        for tool, status in (("Bash", "git status"), ("PowerShell", "git status $y")):
+            with self.subTest(tool=tool):
+                self.assertIsNone(self.shell(tool, nested_loops(tool, status, 8), self.hub))
+                self.assertEqual("deny", self.shell(tool, nested_loops(tool, "git commit -m x", 8), self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+                self.assertEqual("deny", self.shell(tool, nested_loops(tool, status, 9), self.hub))
+                self.assertIn("nest more than 8 deep", self.reason)
+
+    def test_loops_that_name_no_git_or_follow_one_another_are_allowed(self) -> None:
+        for tool, status in (("Bash", "git status"), ("PowerShell", "git status $y")):
+            with self.subTest(tool=tool):
+                self.assertIsNone(self.shell(tool, nested_loops(tool, "echo done", 30), self.hub))
+                # Loops one after another nest no deeper than one.
+                self.assertIsNone(self.shell(tool, "; ".join([nested_loops(tool, status, 1)] * 12), self.hub))
+
+    def test_after_loops_nested_past_the_limit_neither_the_directory_nor_a_variable_is_settled(self) -> None:
+        loops = nested_loops("Bash", "echo done", 9)
+        reading = hub_guard.read_command(
+            "Bash",
+            f'x="{self.tree}"; cd "{self.tree}"; {loops}; git status; git -C "$x" status',
+            self.hub,
+            self.environment,
+        )
+        self.assertEqual(
+            [(None, "status"), (None, "status")], [(call.directory, call.subcommand) for call in reading.calls]
+        )
+        loops = nested_loops("PowerShell", "echo done", 9)
+        reading = hub_guard.read_command(
+            "PowerShell",
+            f"$env:X = '{self.tree}'; Set-Location '{self.tree}'; {loops}; git status $y; git -C $env:X status $y",
+            self.hub,
+            self.environment,
+        )
+        self.assertEqual(
+            [(None, "status"), (None, "status")], [(call.directory, call.subcommand) for call in reading.calls]
+        )
+
+    def test_a_command_not_read_within_the_reading_time_is_refused_when_it_names_git(self) -> None:
+        with mock.patch.object(hub_guard, "READING_SECONDS", 0):
+            self.assertEqual("deny", self.decision(json.dumps(self.event("git status", self.hub))))
+            self.assertEqual(
+                "The guard failed reading this command (ReadingTimeout: the guard did not finish reading it within 0 "
+                "seconds), and it names git, so it is refused while a hub is guarded. Rewrite it so each git command "
+                f"is written out. {hub_guard.DENY_REASON}",
+                self.reason,
+            )
+            self.assertIsNone(self.decision(json.dumps(self.event("echo done", self.hub))))
+            outside = self.root / "not-a-repository"
+            outside.mkdir()
+            self.assertIsNone(self.decision(json.dumps(self.event("git status", outside))))
+            self.assertIn("hub guard skipped: ReadingTimeout: the guard did not finish reading it", self.stderr)
+
+    def event(self, command: str, cwd: Path, tool: str = "Bash") -> dict[str, object]:
+        return {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}
+
+    def test_a_slow_reading_is_refused_once_it_passes_the_reading_time(self) -> None:
+        # Each look at the clock is a second later, so a command read in more than READING_SECONDS looks is too slow.
+        for tool, step, last in (("Bash", "true; ", "git status"), ("PowerShell", "echo a; ", "git status $y")):
+            for repeats, expected in ((2, None), (20, "deny")):
+                with (
+                    self.subTest(tool=tool, repeats=repeats),
+                    mock.patch.object(hub_guard, "reading_clock", side_effect=itertools.count()),
+                ):
+                    self.assertEqual(
+                        expected, self.decision(json.dumps(self.event(step * repeats + last, self.hub, tool)))
+                    )
+                    if expected is not None:
+                        self.assertIn("within 15 seconds", self.reason)
+
+    def test_an_alias_expansion_is_read_within_the_same_reading_time(self) -> None:
+        self.git(self.hub, "config", "alias.look", "!git status")
+        reading = hub_guard.read_command("Bash", "git look", self.tree, self.environment)
+        self.assertEqual(["look"], [call.subcommand for call in reading.calls])
+        # The judge's first look at the clock is in time; the next, inside the alias's expansion, is not.
+        looks = iter([reading.deadline - 1])
+        with (
+            mock.patch.object(hub_guard, "reading_clock", side_effect=lambda: next(looks, reading.deadline + 1)),
+            self.assertRaises(hub_guard.ReadingTimeout),
+        ):
+            hub_guard.denied(reading, {self.hub})
+
+    def test_an_alias_of_an_alias_is_read_within_the_same_reading_time(self) -> None:
+        self.git(self.hub, "config", "alias.look", "peek")
+        self.git(self.hub, "config", "alias.peek", "!git status")
+        reading = hub_guard.read_command("Bash", "git look", self.tree, self.environment)
+        # Both judges' looks at the clock are in time; the next, inside the second alias's expansion, is not.
+        looks = iter([reading.deadline - 1, reading.deadline - 1])
+        with (
+            mock.patch.object(hub_guard, "reading_clock", side_effect=lambda: next(looks, reading.deadline + 1)),
+            self.assertRaises(hub_guard.ReadingTimeout),
+        ):
+            hub_guard.denied(reading, {self.hub})
+
+    def test_the_reading_time_ends_at_the_deadline_and_not_a_moment_before(self) -> None:
+        reading = hub_guard.Reading({}, deadline=100.0)
+        for now, left in ((99.0, 1.0), (99.5, 0.5), (99.875, 0.125)):
+            with self.subTest(now=now), mock.patch.object(hub_guard, "reading_clock", return_value=now):
+                self.assertEqual(left, reading.time_left())
+        for now in (100.0, 100.5):
+            with (
+                self.subTest(now=now),
+                mock.patch.object(hub_guard, "reading_clock", return_value=now),
+                self.assertRaises(hub_guard.ReadingTimeout),
+            ):
+                reading.time_left()
+
+
+class NestedAliasTests(GuardTestCase):
+    """An alias's expansion is judged by a judge of its own, which inherits the guarded hubs, the environment, the
+    reading time, and the depth of the one that found it, and keeps its notes to itself."""
+
+    def test_an_alias_chain_is_followed_through_each_judge_to_the_call_it_runs(self) -> None:
+        # Three aliases deep stays inside the nesting limit only when each judge goes one level deeper.
+        self.git(self.hub, "config", "alias.one", "two")
+        self.git(self.hub, "config", "alias.two", "three")
+        self.git(self.hub, "config", "alias.three", f'!git -C "{self.hub}" commit -m x')
+        reading = hub_guard.read_command("Bash", "git one", self.tree, self.environment)
+        reason = hub_guard.denied(reading, {self.hub})
+        assert reason is not None
+        self.assertIn(WRITES.format("commit"), reason)
+        self.assertEqual(3, reason.count("is an alias for"))
+        self.assertNotIn("nests more than", reason)
+
+    def test_a_note_inside_an_alias_with_no_guarded_hub_in_view_is_kept_by_its_own_judge(self) -> None:
+        self.git(self.hub, "config", "alias.save", '!git -C "$UNSET_HERE" commit -m x')
+        reading = hub_guard.read_command("Bash", "git save", self.tree, self.environment)
+        self.assertIsNone(hub_guard.denied(reading, set()))
+        self.assertEqual([], reading.notes)
 
 
 class HookCommandTests(GuardTestCase):
@@ -1806,21 +1986,23 @@ class ContractTests(GuardTestCase):
         self.assertEqual("deny", self.powershell(f"pwsh -cwa '{script}'", self.tree))
         self.assertIsNone(self.bash("pwsh -CommandWithArgs 'git status $args' one", self.hub))
 
-    def test_the_nesting_limit_and_the_powershell_timeout_are_pinned(self) -> None:
+    def test_the_nesting_limits_and_the_reading_time_are_pinned(self) -> None:
         settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         [hook] = settings["hooks"]["PreToolUse"][0]["hooks"]
         self.assertEqual(
-            (4, 20, 10.0, 30),
+            (4, 8, 15, 10.0, 30),
             (
                 hub_guard.NESTING_LIMIT,
-                hub_guard.POWERSHELL_TIMEOUT_SECONDS,
+                hub_guard.LOOP_NESTING_LIMIT,
+                hub_guard.READING_SECONDS,
                 worktrees.GUARD_GIT_TIMEOUT_SECONDS,
                 hook["timeout"],
             ),
         )
         document = (REPOSITORY_ROOT / "docs" / "parallel-sessions.md").read_text(encoding="utf-8")
         self.assertIn("more than four deep", document)
-        self.assertIn("within 20 seconds", document)
+        self.assertIn("more than eight deep", document)
+        self.assertIn("within 15 seconds", document)
         # The PowerShell reader follows Invoke-Expression to the limit worktrees.py hands it.
         self.assertEqual("deny", self.powershell(self.nested("git commit -m x", 3), self.hub))
         self.assertIn(WRITES.format("commit"), self.reason)

@@ -18,11 +18,13 @@ import base64
 import fnmatch
 import functools
 import json
+import math
 import os
 import re
 import shlex
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -191,10 +193,14 @@ BASH_OPTIONS_WITH_VALUE = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 # How deep bash -c, pwsh -Command, eval, a function call, and Invoke-Expression are followed; the PowerShell reader is
 # handed what is left of it. Deeper nesting is a command the guard cannot read.
 NESTING_LIMIT = 4
+# How deep loops and PowerShell script blocks are followed, counted across nested shells and function calls. Each is
+# read twice, so the innermost is read twice per level; deeper is a command the guard cannot read.
+LOOP_NESTING_LIMIT = 8
 POWERSHELL_READER = Path(__file__).with_name("hub_guard-powershell.ps1")
-# Bounds only a pwsh that hangs: reading is linear in the command. Generous, since a command pwsh does not read in time
-# is refused while a hub is guarded, and well inside the hook's own 30-second timeout in .claude/settings.json.
-POWERSHELL_TIMEOUT_SECONDS = 20
+# How long the guard reads and judges one command, pwsh included, before it is a command the guard cannot read in
+# time. The hook's own 30-second timeout in .claude/settings.json lets a command it cuts short run, so this leaves room
+# for starting Python and for one git call still running at the end, GUARD_GIT_TIMEOUT_SECONDS.
+READING_SECONDS = 15
 # How much of the reader's output is kept: far more than the events of any command a tool call carries, and a reading
 # cut short is not JSON, so it is a command the guard cannot read rather than one read in part.
 POWERSHELL_OUTPUT_LIMIT = 1 << 22
@@ -379,10 +385,29 @@ class Reading:
     unread: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     context_hubs: set[Path] = field(default_factory=set)
+    # When the guard's reading time ends, by reading_clock, and how many loops enclose the part being read.
+    deadline: float = math.inf
+    loops: int = 0
 
     def cannot_read(self, what: str) -> None:
         """Text that may start git and that the guard cannot read: refused when the command names git at all."""
         (self.unread if mentions(MENTIONS_GIT, self.text) else self.notes).append(what)
+
+    def time_left(self) -> float:
+        """The seconds left of the reading time; past it, raises ReadingTimeout, which the hook refuses as a failure
+        of the guard's own when the command names git while a guarded hub is in view."""
+        left = self.deadline - reading_clock()
+        if left <= 0:
+            raise ReadingTimeout(f"the guard did not finish reading it within {READING_SECONDS} seconds")
+        return left
+
+
+class ReadingTimeout(Exception):
+    """The guard's reading time ended before the command was read and judged."""
+
+
+def reading_clock() -> float:
+    return time.monotonic()
 
 
 def mentions(pattern: re.Pattern[str], text: str) -> bool:
@@ -750,6 +775,7 @@ class Judge:
     hubs: set[Path]
     environment: Mapping[str, str]
     notes: list[str]
+    deadline: float
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
         if reading.unread:
@@ -760,6 +786,7 @@ class Judge:
                 )
             self.notes.extend(reading.unread)
         for call in reading.calls:
+            reading.time_left()
             reason = self.judge(call, depth)
             if reason is not None:
                 return reason
@@ -830,7 +857,7 @@ class Judge:
         """Why what an alias expands to would write a hub; a shell alias runs at top, the top of the work tree."""
         if depth >= NESTING_LIMIT:
             return self.unreadable(call, f"it nests more than {NESTING_LIMIT} deep")
-        reading = Reading(self.environment, expansion)
+        reading = Reading(self.environment, expansion, deadline=self.deadline)
         if expansion.startswith("!"):
             # git runs a shell alias at the top of the work tree, with the call's arguments after it.
             script = " ".join([expansion[1:], *map(shlex.quote, call.arguments)])
@@ -843,7 +870,7 @@ class Judge:
                 return self.unreadable(call, str(exc))
             options = call.options.copy() if call.options is not None else GitOptions.initial(None, {}, opaque=True)
             record_git_call([*words, *call.arguments], options, reading)
-        reason = Judge(self.hubs, self.environment, []).denied(reading, depth + 1)
+        reason = Judge(self.hubs, self.environment, [], self.deadline).denied(reading, depth + 1)
         if reason is not None:
             return f"`git {call.subcommand}` is an alias for `{expansion}`: {reason}"
         if reading.notes or reading.unread:
@@ -880,7 +907,7 @@ def alias_lookups(place: Place) -> list[AliasLookup]:
 
 def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str | None:
     """Why a reading's calls would write a guarded hub, or None; notes on what was passed over join the reading's."""
-    judge = Judge(set(hubs), reading.environment, reading.notes)
+    judge = Judge(set(hubs), reading.environment, reading.notes, reading.deadline)
     return judge.denied(reading, depth)
 
 
@@ -1117,6 +1144,7 @@ class BashReader:
         return Outcome(outcome.fail, outcome.ok) if node.negated else outcome
 
     def run_command(self, node: bash_syntax.Command, shell: Shell) -> Outcome:
+        self.reading.time_left()
         if isinstance(node, bash_syntax.Simple):
             return self.run_simple(node, shell)
         if isinstance(node, bash_syntax.FunctionDefinition):
@@ -1151,6 +1179,18 @@ class BashReader:
         end, reach every state the guard tells apart."""
         if node.words is not None:
             self.read_substitutions(node.words, [], shell)
+        if self.reading.loops >= LOOP_NESTING_LIMIT:
+            self.reading.cannot_read(f"loops nest more than {LOOP_NESTING_LIMIT} deep")
+            lost = shell.copy()
+            lost.cwd, lost.opaque = None, True
+            return certain(lost)
+        self.reading.loops += 1
+        try:
+            return self.run_passes(node, shell)
+        finally:
+            self.reading.loops -= 1
+
+    def run_passes(self, node: bash_syntax.Loop, shell: Shell) -> Outcome:
         seen = [shell]
         state = shell.copy()
         for _ in range(2):
@@ -1888,14 +1928,14 @@ def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[s
         # every process pwsh starts once it has finished or been killed.
         result = run_bounded(
             [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", powershell_reader()],
-            POWERSHELL_TIMEOUT_SECONDS,
+            min(reading.time_left(), READING_SECONDS),
             input_bytes=base64.b64encode(payload.encode("utf-8")),
             env=reading.environment,
             output_limit=POWERSHELL_OUTPUT_LIMIT,
             tree=process_tree(hidden_window=True),
         )
     except subprocess.TimeoutExpired:
-        reading.cannot_read(f"pwsh did not read the command within {POWERSHELL_TIMEOUT_SECONDS} seconds")
+        reading.cannot_read(f"pwsh did not read the command in what was left of the guard's {READING_SECONDS} seconds")
         return None
     except OSError as exc:
         reading.cannot_read(f"could not start pwsh ({exc})")
@@ -2060,6 +2100,7 @@ class PowerShellReader:
 
     def run(self, nodes: list[Region | dict[str, Any]], session: Session) -> Session:
         for node in nodes:
+            self.reading.time_left()
             session = self.region(node, session) if isinstance(node, Region) else self.event(node, session)
         return session
 
@@ -2070,10 +2111,19 @@ class PowerShellReader:
         if region.kind == "child":
             self.run(region.children, session.copy())
             return session
-        first = self.run(region.children, session.copy())
         if region.kind == "branch":
-            return join_sessions(session, first)
-        second = self.run(region.children, join_sessions(session, first))
+            return join_sessions(session, self.run(region.children, session.copy()))
+        if self.reading.loops >= LOOP_NESTING_LIMIT:
+            self.reading.cannot_read(f"loops and script blocks nest more than {LOOP_NESTING_LIMIT} deep")
+            lost = session.copy()
+            lost.cwd, lost.opaque = None, True
+            return lost
+        self.reading.loops += 1
+        try:
+            first = self.run(region.children, session.copy())
+            second = self.run(region.children, join_sessions(session, first))
+        finally:
+            self.reading.loops -= 1
         return join_sessions(join_sessions(session, first), second)
 
     def event(self, event: dict[str, Any], session: Session) -> Session:
@@ -2300,9 +2350,10 @@ def read_command(tool: str, command: str, cwd: Path, environment: Mapping[str, s
 
 def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
     """A reading of one command, with the guarded hubs in view of the session, before any of it is read."""
+    deadline = reading_clock() + READING_SECONDS
     guarded_hub_at.cache_clear()
     guarded_hub_of_repository.cache_clear()
-    return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment))
+    return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), deadline=deadline)
 
 
 def reached_hubs(reading: Reading) -> set[Path]:
