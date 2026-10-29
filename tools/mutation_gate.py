@@ -1472,7 +1472,8 @@ def read_leg(path: Path, selected: Selected, leg: str) -> LegRun:
     failed = READ.json_object(record["failed_suites"], f"{path.name}.failed_suites")
     return LegRun(
         name,
-        READ.integer(record["minutes"], f"{path.name}.minutes", minimum=0),
+        # The cap, which --minutes holds to at least 1; a leg with nothing to run writes no worker.
+        READ.integer(record["minutes"], f"{path.name}.minutes", minimum=1),
         READ.number(record["seconds"], f"{path.name}.seconds"),
         READ.integer(record["workers"], f"{path.name}.workers", minimum=0),
         read_outcomes(path, record["outcomes"], mutants, leg),
