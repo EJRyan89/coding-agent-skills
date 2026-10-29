@@ -237,6 +237,102 @@ class PwshDifferentialTests(unittest.TestCase):
         self.assertEqual(expected, followed)
 
 
+class FunctionCallDifferentialTests(unittest.TestCase):
+    """The guard reads a function's body wherever pwsh runs it, whatever words the call passes."""
+
+    def test_the_guard_reads_each_function_body_pwsh_runs(self) -> None:
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if pwsh is None:
+            raise AssertionError("pwsh was not found on PATH; pwsh checks the guard's reading of a function call")
+        # Each definition, with BODY standing for its body, and the call after it.
+        forms = (
+            ("function f { BODY }", "f"),
+            ("function f { BODY }", "f extra"),
+            ("function f { BODY }", "f -Name extra"),
+            ("function f($a) { BODY }", "f one two"),
+            ("function f { param($a) BODY }", "f -b one"),
+            ("function f { [CmdletBinding()] param() BODY }", "f"),
+            ("function f { [CmdletBinding()] param() BODY }", "f extra"),
+            ("function f { param([Parameter()] $a) BODY }", "f one two"),
+        )
+        for definition, call in forms:
+            ran_script = f"{definition.replace('BODY', 'Write-Output BODY-RAN')}; {call}"
+            result = run_bounded(
+                [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-c", ran_script], 120, env=os.environ
+            )
+            ran = "BODY-RAN" in result.stdout.decode("utf-8", "replace")
+            text = f"{definition.replace('BODY', 'git status')}; {call}"
+            reading = hub_guard.Reading(dict(os.environ), text)
+            hub_guard.read_powershell(text, None, reading, 0, {})
+            with self.subTest(definition=definition, call=call, ran=ran):
+                self.assertEqual([], reading.unread)
+                if ran:
+                    self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
+
+class StartDifferentialTests(unittest.TestCase):
+    """The guard reads a nested shell as it starts: the operand Bash runs as its -c script, the directory pwsh's
+    -WorkingDirectory starts it in, and the script Windows PowerShell runs from a leading word that names no
+    parameter."""
+
+    def test_the_guard_reads_the_operand_bash_runs_as_its_c_script(self) -> None:
+        bash = platform_support.find_bash()
+        if bash is None:
+            raise AssertionError(f"{platform_support.BASH_MISSING} Bash checks the guard's reading of bash -c")
+        forms = (
+            ("-c", "echo first"),
+            ("-c", "-e", "echo first"),
+            ("-c", "--", "echo first"),
+            ("-ec", "-o", "pipefail", "echo first"),
+            ("-c", "-u", "--", "echo first", "echo second"),
+            ("-lc", "echo first", "echo second"),
+        )
+        for words in forms:
+            ran = platform_support.run_tool([bash, "--norc", "--noprofile", *words]).output
+            script = hub_guard.bash_script(list(words), [], hub_guard.Shell(None, {}, set()))
+            with self.subTest(words=words, ran=ran):
+                self.assertIsNotNone(script)
+                [text] = script or [None]
+                self.assertIsNotNone(text)
+                self.assertEqual(
+                    ran, platform_support.run_tool([bash, "--norc", "--noprofile", "-c", str(text)]).output
+                )
+
+    def test_the_guard_starts_a_nested_pwsh_where_working_directory_names(self) -> None:
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if pwsh is None:
+            raise AssertionError("pwsh was not found on PATH; pwsh checks the guard's reading of -WorkingDirectory")
+        with tempfile.TemporaryDirectory() as folder:
+            start = Path(folder).resolve()
+            (start / "inner").mkdir()
+            script = "Write-Output (Get-Location).ProviderPath"
+            forms = (
+                ("-c", script),
+                ("-wd", "inner", "-c", script),
+                ("-WorkingDirectory", str(start / "inner"), "-Command", script),
+                ("-NoProfile", "-wo", "inner", "-c", script),
+            )
+            for words in forms:
+                result = run_bounded([pwsh, "-NoLogo", "-NonInteractive", *words], 120, cwd=start, env=os.environ)
+                ran = Path(result.stdout.decode("utf-8", "replace").strip())
+                with self.subTest(words=words, ran=ran):
+                    self.assertEqual(ran.resolve(), hub_guard.powershell_directory(list(words), start))
+
+    if platform_support.WINDOWS:
+
+        def test_the_guard_reads_a_leading_word_as_windows_powershell_runs_it(self) -> None:
+            powershell = platform_support.find_executable("powershell")
+            if powershell is None:
+                raise AssertionError("powershell was not found on PATH; it checks the guard's reading of its words")
+            for words in ((INLINE,), ("-NoProfile", INLINE), ("-ExecutionPolicy", "Bypass", INLINE)):
+                result = run_bounded([powershell, "-NoLogo", "-NonInteractive", *words], 120, env=os.environ)
+                lines = {line.strip() for line in result.stdout.decode("utf-8", "replace").splitlines()}
+                arguments = hub_guard.powershell_arguments("powershell", list(words))
+                with self.subTest(words=words):
+                    self.assertIn("INLINE-RAN", lines)
+                    self.assertEqual([INLINE], hub_guard.powershell_script(arguments))
+
+
 class BashDifferentialTests(unittest.TestCase):
     """After each builtin that may set GIT_DIR, the guard reads the value Bash gives it, or leaves it unsettled."""
 

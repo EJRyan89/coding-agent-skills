@@ -334,7 +334,8 @@ function Add-CommandEvent([CommandAst] $Node, [int] $Depth, [int] $Limit, [Colle
             $Events.Add([ordered]@{ kind = 'unread'; text = "could not read the command passed to $leaf" })
             return
         }
-        $Events.Add([ordered]@{ kind = 'open'; region = 'child'; name = $leaf })
+        # Its words go with it, so hub_guard.py reads where -WorkingDirectory starts it.
+        $Events.Add([ordered]@{ kind = 'open'; region = 'child'; name = $leaf; words = $words.ToArray() })
         $null = Read-CommandEvent $child ($Depth + 1) $Limit $Events
         $Events.Add([ordered]@{ kind = 'close' })
     }

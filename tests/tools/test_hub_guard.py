@@ -244,12 +244,47 @@ class FileGuardTests(GuardTestCase):
             self.assertEqual("deny", self.edit(str(self.hub / "README.md")))
             self.assertIsNone(self.edit(f"/c{self.hub / 'README.md'}"))
 
+    def test_a_guarded_hub_whose_path_holds_a_character_splitlines_breaks_on_is_protected(self) -> None:
+        # git ends each path rev-parse prints with a newline alone; U+2028 and U+0085 also end a line to splitlines().
+        for character in (chr(0x2028), chr(0x85)):
+            hub = self.root / f"a{character}hub"
+            hub.mkdir()
+            self.git(hub, "init", "-q")
+            (hub / "tracked.txt").write_text("x\n", encoding="utf-8")
+            self.git(hub, "add", "tracked.txt")
+            self.git(hub, "config", "coding-agent-skills.hubGuard", "true")
+            with self.subTest(character=hex(ord(character))):
+                self.assertEqual("deny", self.edit(hub / "tracked.txt"))
+                self.assertEqual("deny", self.edit(hub / ".git" / "config"))
+
     def test_guard_is_inert_unless_this_clone_opts_in(self) -> None:
         for value in (None, "false"):
             with self.subTest(value=value):
                 self.enable(value)
                 self.assertIsNone(self.edit(self.hub / "README.md"))
                 self.assertIsNone(self.bash("git switch feat/demo", self.hub))
+
+
+class UnreadableCheckoutFileTests(GuardTestCase):
+    """A file event in a checkout git answers with an error for, as one whose ownership it doubts, is judged as a git
+    directory git cannot read is: it may be a guarded hub's, so the edit is refused."""
+
+    def test_an_edit_in_a_checkout_git_answers_with_an_error_for_is_refused(self) -> None:
+        failure = git_client.GitError("git could not read the checkout", returncode=128)
+        for tool in ("Edit", "Write", "NotebookEdit"):
+            with self.subTest(tool=tool), mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
+                self.assertEqual("deny", self.edit(self.tree / "README.md", tool=tool))
+                self.assertEqual(hub_guard.DENY_REASON, self.reason)
+        with mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
+            self.assertTrue(hub_guard.hub_protected(self.root / "elsewhere.txt"))
+
+    def test_an_edit_where_git_did_not_run_is_allowed_with_a_note(self) -> None:
+        kinds: tuple[git_client.GitErrorKind, ...] = ("prerequisite", "execution", "timeout")
+        for kind in kinds:
+            failure = git_client.GitError(f"git failed as {kind}", kind=kind)
+            with self.subTest(kind=kind), mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
+                self.assertIsNone(self.edit(self.hub / "README.md"))
+                self.assertIn(f"hub guard skipped: GitError: git failed as {kind}", self.stderr)
 
 
 class EndToEndTests(GuardTestCase):
@@ -543,6 +578,12 @@ class ReadingBoundTests(GuardTestCase):
             self.assertRaises(hub_guard.ReadingTimeout),
         ):
             hub_guard.denied(reading, {self.hub})
+
+    def test_an_alias_is_named_by_everything_after_alias_dot_even_when_it_holds_a_dot(self) -> None:
+        self.git(self.hub, "config", "alias.a.b", "!git commit")
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertTrue(hub_guard.mentions_alias("git a.b", [self.hub]))
+            self.assertFalse(hub_guard.mentions_alias("git x.b", [self.hub]))
 
     def test_an_alias_of_an_alias_is_read_within_the_same_reading_time(self) -> None:
         self.git(self.hub, "config", "alias.look", "peek")
@@ -2062,6 +2103,119 @@ class ContractTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f"pwsh -CommandWithArgs '{script}' one two", self.tree))
         self.assertEqual("deny", self.powershell(f"pwsh -cwa '{script}'", self.tree))
         self.assertIsNone(self.bash("pwsh -CommandWithArgs 'git status $args' one", self.hub))
+
+    def test_a_function_called_with_words_it_declares_no_parameter_for_is_read(self) -> None:
+        # A simple function takes the words the binder cannot bind into $args and runs its body.
+        for command in (
+            "function f { git commit -m x }; f extra",
+            "function f { git commit -m x }; f -Force extra more",
+            "function f($a) { git commit -m x }; f one two",
+            "function f { git commit -m x }; f",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.powershell("function f { git status }; f extra", self.hub))
+        # An advanced function refuses such a call and runs nothing; either way, a directory its body would change is
+        # one only some paths change.
+        tree = f"'{self.tree}'"
+        for definition in (
+            f"function f {{ Set-Location {tree} }}",
+            f"function f {{ [CmdletBinding()] param() Set-Location {tree} }}",
+        ):
+            with self.subTest(definition=definition):
+                self.assertEqual("deny", self.powershell(f"{definition}; f extra; git commit -m x", self.hub))
+        self.assertIsNone(self.powershell(f"function f {{ Set-Location {tree} }}; f; git commit -m x", self.hub))
+
+    def test_bash_runs_its_first_operand_after_every_option_as_the_c_script(self) -> None:
+        for command in (
+            "bash -c 'git commit -m x'",
+            "bash -c -e 'git commit -m x'",
+            "bash -c -- 'git commit -m x'",
+            "bash -ec -o pipefail 'git commit -m x'",
+            "bash -c -x -- 'git commit -m x' name",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.bash("bash -c -e 'git status'", self.hub))
+        self.assertEqual("deny", self.bash('bash -c -e "git $(cat verb)"', self.hub))
+        self.assertEqual(
+            ["git commit"],
+            hub_guard.bash_script(["-c", "-e", "--", "git commit", "name"], [], hub_guard.Shell(None, {}, set())),
+        )
+
+    def test_a_nested_pwsh_starts_where_working_directory_names(self) -> None:
+        hub = self.hub.as_posix()
+        for tool in ("Bash", "PowerShell"):
+            for command in (
+                f"pwsh -wd '{hub}' -c 'git commit -m x'",
+                f"pwsh -WorkingDirectory '{hub}' -Command 'git commit -m x'",
+                f"pwsh -NoProfile -wo '{hub}' -c 'git commit -m x'",
+                f"env pwsh -wd '{hub}' -c 'git commit -m x'",
+            ):
+                with self.subTest(tool=tool, command=command):
+                    self.assertEqual("deny", self.decision(self.event(command, self.tree, tool)))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+            with self.subTest(tool=tool):
+                self.assertIsNone(
+                    self.decision(self.event(f"pwsh -wd '{self.tree.as_posix()}' -c 'git commit'", self.hub, tool))
+                )
+                # A directory read from where the parent stands, and one the text does not settle.
+                relative = f"pwsh -wd '{os.path.relpath(self.hub, self.tree)}' -c 'git commit -m x'"
+                self.assertEqual("deny", self.decision(self.event(relative, self.tree, tool)))
+                self.assertEqual(
+                    "deny", self.decision(self.event("pwsh -wd $place -c 'git commit -m x'", self.tree, tool))
+                )
+        self.assertEqual(self.hub, hub_guard.powershell_directory(["-wd", str(self.hub), "-c", "x"], self.tree))
+        self.assertEqual(self.tree, hub_guard.powershell_directory(["-c", "x", "-wd", str(self.hub)], self.tree))
+        self.assertIsNone(hub_guard.powershell_directory([None, "-c", "x"], self.tree))
+
+    def test_each_nested_start_option_is_read_by_its_own_spelling(self) -> None:
+        shell = hub_guard.Shell(None, {}, set())
+        # A long option holding a c is no -c, so its operand is a script file.
+        self.assertIsNone(hub_guard.bash_script(["--norc", "script.sh"], [], shell))
+        self.assertIsNone(hub_guard.bash_script(["--rcfile", "x", "script.sh"], [], shell))
+        # Each spelling of a script file or an encoded command ends the parameters, so no -Command is put before the
+        # word after it and no -WorkingDirectory after it is read.
+        for word in ("-e", "-EncodedCommand", "-ec", "-f", "-File"):
+            with self.subTest(word=word):
+                self.assertEqual([word, "x"], hub_guard.powershell_arguments("powershell", [word, "x"]))
+                self.assertEqual(self.tree, hub_guard.powershell_directory([word, "x", "-wd", "y"], self.tree))
+        self.assertEqual(["-NoProfile"], hub_guard.powershell_arguments("powershell", ["-NoProfile"]))
+        # A value is skipped whole, and -WorkingDirectory needs one.
+        started: list[hub_guard.Word] = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-wd", "inner"]
+        self.assertEqual(self.tree / "inner", hub_guard.powershell_directory(started, self.tree))
+        self.assertEqual(self.tree / "inner", hub_guard.powershell_directory(["-wd", "inner"], self.tree))
+        self.assertIsNone(hub_guard.powershell_directory(["-wd"], self.tree))
+        self.assertEqual(self.tree, hub_guard.powershell_directory(["-NoProfile"], self.tree))
+        # An absolute directory needs no parent's; a relative one does.
+        self.assertEqual(self.hub, hub_guard.powershell_directory(["-wd", str(self.hub)], None))
+        self.assertIsNone(hub_guard.powershell_directory(["-wd", "inner"], None))
+        # A child pwsh with no -WorkingDirectory starts where its parent stands.
+        self.assertIsNone(self.powershell("pwsh -c 'git commit -m x'", self.tree))
+        self.assertEqual("deny", self.powershell("pwsh -c 'git commit -m x'", self.hub))
+
+    def test_windows_powershell_runs_a_leading_positional_word_as_its_command(self) -> None:
+        for tool in ("Bash", "PowerShell"):
+            for command in (
+                "powershell 'git commit -m x'",
+                "powershell -NoProfile -ExecutionPolicy Bypass 'git commit -m x'",
+            ):
+                with self.subTest(tool=tool, command=command):
+                    self.assertEqual("deny", self.decision(self.event(command, self.hub, tool)))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+            with self.subTest(tool=tool):
+                self.assertIsNone(self.decision(self.event("powershell 'git status'", self.hub, tool)))
+        self.assertEqual(
+            ["-NoProfile", "-Command", "git commit"],
+            hub_guard.powershell_arguments("powershell", ["-NoProfile", "git commit"]),
+        )
+        # pwsh 7 runs such a word as a script file, which the guard does not read.
+        self.assertEqual(["script.ps1"], hub_guard.powershell_arguments("pwsh", ["script.ps1"]))
+
+    def event(self, command: str, cwd: Path, tool: str = "Bash") -> dict[str, object]:
+        return {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}
 
     def test_the_nesting_limits_and_the_reading_time_are_pinned(self) -> None:
         settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))

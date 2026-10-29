@@ -109,10 +109,17 @@ DASHBOARD_AI_REVIEW_STATES = (
 )
 
 
+def dashboard_status_heading(status: str) -> str:
+    """The tracker's section heading for a status override: its words one space apart, each word's first letter
+    capitalized and the rest as written."""
+    return " ".join(word[:1].upper() + word[1:] for word in status.split())
+
+
 def dashboard_status_key(status: str) -> str:
-    """A status override's identity: its words, one space apart, ignoring case. The tracker's section heading shows the
-    words one space apart and capitalized, so two spellings the heading cannot tell apart are one status."""
-    return " ".join(status.split()).casefold()
+    """A status override's identity: its heading, `dashboard_status_heading`, ignoring case. Built from the heading,
+    so two statuses are one exactly when their headings are the same ignoring case, even where capitalizing a word's
+    first letter makes two letters one, as it makes the dotless i (U+0131) and i both I."""
+    return dashboard_status_heading(status).casefold()
 
 
 # The values a status override may not take, compared by `dashboard_status_key`: each computed section, the AI review

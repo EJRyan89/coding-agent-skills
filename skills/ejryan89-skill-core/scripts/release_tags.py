@@ -30,7 +30,7 @@ from pathlib import Path
 import versions
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, output_lines
 
 TAGS = "refs/tags/"
 RELEASE_PREFIX = "v"
@@ -60,7 +60,7 @@ def last_release(client: GitClient, repository: str | Path, commit: str) -> str 
     Raises GitError when git cannot read the tags reaching it.
     """
     listed = client.output(["for-each-ref", f"--merged={commit}", "--format=%(refname)", TAGS], directory=repository)
-    return highest_release(line.removeprefix(TAGS) for line in listed.splitlines())
+    return highest_release(line.removeprefix(TAGS) for line in output_lines(listed))
 
 
 def main(argv: list[str]) -> int:

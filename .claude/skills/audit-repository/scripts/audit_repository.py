@@ -116,7 +116,7 @@ import whole_number
 from atomic_file import UnfinishedCopyError
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, output_lines
 from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
@@ -495,9 +495,9 @@ def released_tag(git: GitClient, repository: Path, head: str) -> str | None:
 def checkout_top(git: GitClient, repository: Path) -> tuple[Path, bool]:
     """The top of the checkout, and whether it is the main checkout: the one whose `.git` is the common directory
     every worktree of the repository shares, rather than a linked worktree."""
-    output = git_output(
-        git, repository, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]
-    ).splitlines()
+    output = output_lines(
+        git_output(git, repository, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"])
+    )
     if len(output) != 2:
         raise AuditError(f"git rev-parse printed {len(output)} lines where it prints the top and the common directory")
     top, common = Path(output[0]), Path(output[1])

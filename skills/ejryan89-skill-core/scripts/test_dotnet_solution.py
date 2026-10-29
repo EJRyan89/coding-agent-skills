@@ -226,6 +226,15 @@ class NamedPathTests(unittest.TestCase):
             "\\\\example.invalid\\share\\x.csproj": "network share",
             "//example.invalid/share/x.csproj": "network share",
             "\\\\?\\C:\\x\\x.csproj": "device",
+            "CON": "reserved device as a segment",
+            # Windows makes this one `\\.\NUL` as it makes the path absolute, refused as a device form; elsewhere the
+            # segment is refused.
+            "sub\\NUL": "device",
+            "nul.csproj": "reserved device as a segment",
+            "aux .txt\\x.csproj": "reserved device as a segment",
+            "..\\Lpt1\\x.csproj": "reserved device as a segment",
+            "console\\Console.csproj": None,
+            "Com10.csproj": None,
         }
         with mock.patch.object(Path, "stat", side_effect=AssertionError("reached the file system")):
             for text, reason in written.items():
@@ -235,6 +244,12 @@ class NamedPathTests(unittest.TestCase):
                         self.assertIsNone(refused)
                     else:
                         self.assertIn(reason, refused or "")
+            for text in ("CON", "nul.csproj", "..\\Lpt1\\x.csproj"):
+                with self.subTest(exact=text):
+                    self.assertEqual(
+                        "the path names a reserved device as a segment, which the reader does not open",
+                        refusal(project_path(project_dir, text), tree),
+                    )
             # A local device form is refused on every platform: as a device where it names one, else as a share.
             self.assertIsNotNone(refusal(project_path(project_dir, "\\\\.\\pipe\\x.csproj"), tree))
         self.assertEqual(tree / "Lib" / "Lib.csproj", project_path(project_dir, "..\\Lib\\Lib.csproj"))
