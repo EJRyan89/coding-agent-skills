@@ -244,6 +244,12 @@ class NamedPathTests(unittest.TestCase):
                         self.assertIsNone(refused)
                     else:
                         self.assertIn(reason, refused or "")
+            for text in ("CON", "nul.csproj", "..\\Lpt1\\x.csproj"):
+                with self.subTest(exact=text):
+                    self.assertEqual(
+                        "the path names a reserved device as a segment, which the reader does not open",
+                        refusal(project_path(project_dir, text), tree),
+                    )
             # A local device form is refused on every platform: as a device where it names one, else as a share.
             self.assertIsNotNone(refusal(project_path(project_dir, "\\\\.\\pipe\\x.csproj"), tree))
         self.assertEqual(tree / "Lib" / "Lib.csproj", project_path(project_dir, "..\\Lib\\Lib.csproj"))
