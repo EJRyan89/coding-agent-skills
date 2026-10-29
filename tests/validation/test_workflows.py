@@ -33,6 +33,7 @@ from workflows import (
     linux_job_problems,
     linux_verify_log_problems,
     mutation_job_problems,
+    mutation_pin_problems,
     mypy_cache_problems,
     pinned_tool_problems,
     read_workflow,
@@ -1399,12 +1400,39 @@ MUTATION_INSTALL_STEP = (
 )
 
 
-def mutation_leg(leg: str, runner: str, shellcheck: str = "") -> str:
+MUTATION_LINUX_SHELLCHECK = (
+    "      - name: Install ShellCheck\n        shell: bash\n        run: |\n"
+    '          shellcheck="$RUNNER_TEMP/shellcheck"\n'
+    '          release="https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION"\n'
+    '          archive="$RUNNER_TEMP/shellcheck.tar.xz"\n'
+    '          curl --fail --silent --show-error --location --retry 3 --output "$archive" '
+    '"$release/shellcheck-v$SHELLCHECK_VERSION.linux.x86_64.tar.xz"\n'
+    '          echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict\n'
+    '          mkdir -p "$shellcheck"\n'
+    '          tar --extract --xz --file "$archive" --directory "$shellcheck" --strip-components 1 '
+    '"shellcheck-v$SHELLCHECK_VERSION/shellcheck"\n'
+    '          echo "$shellcheck" >> "$GITHUB_PATH"\n'
+)
+MUTATION_WINDOWS_SHELLCHECK = (
+    "      - name: Install ShellCheck\n        shell: pwsh\n        run: |\n"
+    "          choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress\n"
+    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+)
+MUTATION_SHELLCHECK_VERIFY = (
+    "      - name: Verify ShellCheck\n        shell: pwsh\n        run: |\n"
+    "          $shellcheck = [string]((shellcheck --version) -match '^version: ' -replace '^version: ')\n"
+    """          if ($shellcheck -ne $env:SHELLCHECK_VERSION) { throw "ShellCheck is '$shellcheck', not the pin """
+    '$env:SHELLCHECK_VERSION" }\n'
+)
+
+
+def mutation_leg(leg: str, runner: str, shellcheck: str) -> str:
     return (
         f"  {leg.casefold()}:\n    name: Mutation gate on {leg}\n    needs: select\n"
         f"    if: needs.select.outputs.{leg.casefold()} == 'true'\n    runs-on: {runner}\n    timeout-minutes: 60\n"
         "    steps:\n      - uses: actions/checkout@abc\n"
-        f"{MUTATION_SETUP}      - name: Install\n        run: |\n{shellcheck}{MUTATION_INSTALL_STEP}"
+        f"{MUTATION_SETUP}{shellcheck}{MUTATION_SHELLCHECK_VERIFY}"
+        f"      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
         "      - uses: actions/download-artifact@abc\n        with:\n          name: mutation-mutants\n"
         "          path: mutation\n"
         "      - name: Leg\n        run: python -B tools/mutation_gate.py leg mutation\n"
@@ -1423,8 +1451,8 @@ MUTATION = (
     "      - name: Select\n        id: select\n        run: python -B tools/mutation_gate.py select mutation\n"
     "      - uses: actions/upload-artifact@abc\n        with:\n          name: mutation-mutants\n"
     "          path: mutation/mutants.json\n          if-no-files-found: error\n"
-    + mutation_leg("Linux", "ubuntu-latest")
-    + mutation_leg("Windows", "windows-latest", "          choco install shellcheck --yes --no-progress\n")
+    + mutation_leg("Linux", "ubuntu-latest", MUTATION_LINUX_SHELLCHECK)
+    + mutation_leg("Windows", "windows-latest", MUTATION_WINDOWS_SHELLCHECK)
     + "  mutation:\n    name: Mutation gate\n    needs: [select, linux, windows]\n    if: ${{ !cancelled() }}\n"
     "    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@abc\n"
     "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n"
@@ -1476,9 +1504,30 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
             MUTATION.replace("join mutation", "join mutation || true"), "mutation job's scripts", id="swallowed failure"
         ),
         pytest.param(
-            MUTATION.replace("          choco install shellcheck --yes --no-progress\n", ""),
+            MUTATION.replace(MUTATION_WINDOWS_SHELLCHECK, ""), "windows job's scripts", id="no ShellCheck on Windows"
+        ),
+        pytest.param(
+            MUTATION.replace(MUTATION_LINUX_SHELLCHECK, ""), "linux job's scripts", id="the image's ShellCheck"
+        ),
+        pytest.param(
+            MUTATION.replace(" --version $env:SHELLCHECK_VERSION", ""),
             "windows job's scripts",
-            id="no ShellCheck on Windows",
+            id="Chocolatey's latest ShellCheck",
+        ),
+        pytest.param(
+            MUTATION.replace('          echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict\n', ""),
+            "linux job's scripts",
+            id="an archive no digest checks",
+        ),
+        pytest.param(
+            MUTATION.replace(MUTATION_SHELLCHECK_VERIFY, "", 1), "linux job's scripts", id="an unverified version"
+        ),
+        pytest.param(
+            MUTATION.replace(
+                "        shell: pwsh\n        run: |\n          $shellcheck", "        run: |\n          $shellcheck"
+            ),
+            "shells",
+            id="a verify step in the default shell",
         ),
         pytest.param(
             MUTATION.replace("    needs: [select, linux, windows]\n", "    needs: [select, linux]\n"),
@@ -1510,4 +1559,35 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
 )
 def test_a_mutation_job_off_its_shape_fails(drifted: str, problem: str) -> None:
     problems = mutation_job_problems(drifted)
+    assert any(problem in found for found in problems), problems
+
+
+PINS = "env:\n  SHELLCHECK_VERSION: '0.9.0'\n  SHELLCHECK_LINUX_SHA256: 'abc'\n"
+VALIDATE_PINS = (
+    "env:\n  SHELLCHECK_VERSION: '0.9.0'\n  PSSCRIPTANALYZER_VERSION: '1.25.0'\n  SHELLCHECK_LINUX_SHA256: 'abc'\n"
+)
+
+
+def test_the_mutation_legs_read_validates_shellcheck_pins() -> None:
+    assert mutation_pin_problems(PINS + MUTATION, VALIDATE_PINS) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "validate", "problem"),
+    [
+        pytest.param("", VALIDATE_PINS, "the workflow's env is []", id="no pins"),
+        pytest.param(PINS.replace("'0.9.0'", "'0.10.0'"), VALIDATE_PINS, "SHELLCHECK_VERSION is '0.10.0'", id="ahead"),
+        pytest.param(PINS, VALIDATE_PINS.replace("'0.9.0'", "'0.10.0'"), "not validate.yml's '0.10.0'", id="behind"),
+        pytest.param(PINS, VALIDATE_PINS.replace("'abc'", "'def'"), "SHELLCHECK_LINUX_SHA256", id="another digest"),
+        pytest.param(
+            PINS.replace("  SHELLCHECK_LINUX_SHA256: 'abc'\n", ""),
+            VALIDATE_PINS,
+            "the workflow's env is",
+            id="no digest",
+        ),
+        pytest.param(PINS + "  EXTRA: 'x'\n", VALIDATE_PINS, "the workflow's env is", id="another pin"),
+    ],
+)
+def test_a_mutation_pin_off_validates_fails(mutation: str, validate: str, problem: str) -> None:
+    problems = mutation_pin_problems(mutation + MUTATION, validate)
     assert any(problem in found for found in problems), problems

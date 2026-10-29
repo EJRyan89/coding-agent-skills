@@ -16,6 +16,13 @@ on:
 permissions:
   contents: read
 
+# The legs run the deployer's suites, which validate rendered Bash with ShellCheck, so each installs the release
+# validate.yml pins, and the Linux leg checks its archive against the same digest. A workflow cannot read another's env,
+# so these are validate.yml's own values, which tests/validation/workflows.py holds equal to it.
+env:
+  SHELLCHECK_VERSION: '0.9.0'
+  SHELLCHECK_LINUX_SHA256: '700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f'
+
 # A newer push to a pull request cancels its older run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -78,6 +85,27 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-mutation.txt
 
+      # The pinned release's own Linux build, checked against its pinned digest and kept in its own folder ahead of the
+      # image's ShellCheck on PATH.
+      - name: Install ShellCheck
+        shell: bash
+        run: |
+          shellcheck="$RUNNER_TEMP/shellcheck"
+          release="https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION"
+          archive="$RUNNER_TEMP/shellcheck.tar.xz"
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" "$release/shellcheck-v$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict
+          mkdir -p "$shellcheck"
+          tar --extract --xz --file "$archive" --directory "$shellcheck" --strip-components 1 "shellcheck-v$SHELLCHECK_VERSION/shellcheck"
+          echo "$shellcheck" >> "$GITHUB_PATH"
+
+      # The suites run the first ShellCheck on PATH, so it must be the pin.
+      - name: Verify ShellCheck
+        shell: pwsh
+        run: |
+          $shellcheck = [string]((shellcheck --version) -match '^version: ' -replace '^version: ')
+          if ($shellcheck -ne $env:SHELLCHECK_VERSION) { throw "ShellCheck is '$shellcheck', not the pin $env:SHELLCHECK_VERSION" }
+
       - name: Install the mutation tools
         run: |
           python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
@@ -116,11 +144,23 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-mutation.txt
 
-      # The deployer's suites validate rendered Bash with ShellCheck, which the Linux image ships and this one does not.
+      # The image ships no ShellCheck, so Chocolatey installs the pinned release.
+      - name: Install ShellCheck
+        shell: pwsh
+        run: |
+          choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The suites run the first ShellCheck on PATH, so it must be the pin.
+      - name: Verify ShellCheck
+        shell: pwsh
+        run: |
+          $shellcheck = [string]((shellcheck --version) -match '^version: ' -replace '^version: ')
+          if ($shellcheck -ne $env:SHELLCHECK_VERSION) { throw "ShellCheck is '$shellcheck', not the pin $env:SHELLCHECK_VERSION" }
+
       # The lock installs mutmut too, which this leg never runs: it runs the mutants the Linux job made.
       - name: Install the mutation tools
         run: |
-          choco install shellcheck --yes --no-progress
           python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
 
       - name: Download the mutants
