@@ -418,15 +418,57 @@ EARLY_EXIT_LONG_OPTIONS = frozenset({"--quiet", "--silent", "--max-count"})
 # grep's options whose argument, the rest of a short option's word or the next word, is never an option of its own.
 GREP_ARGUMENT_LETTERS = frozenset("ABCDdef")
 GREP_ARGUMENT_LONG_OPTIONS = frozenset({"--regexp", "--file", "--after-context", "--before-context", "--context"})
+# head exits once it has printed its count of lines or bytes, ten lines when given none; a negative count, all but the
+# last, reads to the end.
+HEAD = "head"
+HEAD_COUNT_LETTERS = frozenset("nc")
+HEAD_COUNT_LONG_OPTIONS = frozenset({"--lines", "--bytes"})
+
+
+def _early_exit_reader(words: list[str]) -> str:
+    """A command that may exit before what writes into it has written everything, as its program and the option that
+    makes it, such as `grep -q` or `head -n`, or an empty string for a command that reads to the end."""
+    while words and (ASSIGNMENT.match(words[0]) or words[0] == "command"):
+        words = words[1:]
+    if words and words[0] in GREP_PROGRAMS:
+        return _early_exit_grep(words)
+    if words and words[0] == HEAD:
+        return _early_exit_head(words)
+    return ""
+
+
+def _early_exit_head(words: list[str]) -> str:
+    """head with the option that sets its count, or alone for its default ten lines: it exits once it has its count,
+    unless the count is negative, all but the last lines or bytes, which reads to the end."""
+    shown = HEAD
+    count_next = False
+    for word in words[1:]:
+        if count_next:
+            if word.startswith("-"):
+                return ""
+            count_next = False
+        elif word == "--" or not word.startswith("-") or word == "-":
+            break
+        elif word.startswith("--"):
+            option, equals, value = word.partition("=")
+            if option in HEAD_COUNT_LONG_OPTIONS:
+                if value.startswith("-"):
+                    return ""
+                count_next = not equals
+                shown = f"{HEAD} {option}"
+        elif word[1] in HEAD_COUNT_LETTERS:
+            if word[2:].startswith("-"):
+                return ""
+            count_next = len(word) == 2
+            shown = f"{HEAD} {word[:2]}"
+        elif word[1:].isdigit():
+            shown = f"{HEAD} {word}"
+    return shown
 
 
 def _early_exit_grep(words: list[str]) -> str:
     """A grep command's program and the option that ends it at its first match, as in `grep -q`, or an empty string
-    for a command that is not grep or reads to the end."""
-    while words and (ASSIGNMENT.match(words[0]) or words[0] == "command"):
-        words = words[1:]
-    if not words or words[0] not in GREP_PROGRAMS:
-        return ""
+    for a grep that reads to the end."""
     argument_next = False
     for word in words[1:]:
         if argument_next:
@@ -493,11 +535,44 @@ def _bash_commands(script: str) -> list[tuple[str, int, list[str]]]:
     return commands
 
 
-def pipe_race_problems(root: Path) -> list[str]:
-    """Report each pipe into a grep that ends at its first match, in a Bash regression suite that sets pipefail.
+def _substitutions(word: str) -> list[str]:
+    """The text of each command substitution `$(...)` a word holds, outermost first, as a double-quoted word keeps it
+    whole; a substitution left open holds nothing."""
+    found: list[str] = []
+    start = word.find("$(")
+    while start != -1:
+        depth, index = 1, start + 2
+        while index < len(word) and depth:
+            depth += {"(": 1, ")": -1}.get(word[index], 0)
+            index += 1
+        if depth:
+            break
+        found.append(word[start + 2 : index - 1])
+        start = word.find("$(", index)
+    return found
 
-    grep -q or -m can exit before the command writing into it has written everything; the writer then dies of SIGPIPE,
-    and pipefail fails the pipeline though the pattern matched, so the check fails at random.
+
+def _substituted_commands(commands: list[tuple[str, int, list[str]]]) -> list[tuple[str, int, list[str]]]:
+    """The commands each quoted command substitution in `commands` runs, at the line of the command holding it, and the
+    commands of the substitutions they hold in turn; one shlex cannot read runs nothing this reader can see."""
+    found: list[tuple[str, int, list[str]]] = []
+    pending = [(line, text) for _, line, words in commands for word in words for text in _substitutions(word)]
+    while pending:
+        line, text = pending.pop()
+        try:
+            inner = _bash_commands(text)
+        except ValueError:
+            continue
+        found += [(before, line + inner_line - 1, words) for before, inner_line, words in inner]
+        pending += [(line, nested) for _, _, words in inner for word in words for nested in _substitutions(word)]
+    return found
+
+
+def pipe_race_problems(root: Path) -> list[str]:
+    """Report each pipe into a reader that may end early, in a Bash regression suite that sets pipefail.
+
+    grep -q or -m, and head, can exit before the command writing into them has written everything; the writer then
+    dies of SIGPIPE, and pipefail fails the pipeline though the check held, so it fails at random.
     """
     problems: list[str] = []
     for suite in regression_suites(root):
@@ -507,15 +582,17 @@ def pipe_race_problems(root: Path) -> list[str]:
         try:
             commands = _bash_commands(suite.read_text(encoding="utf-8"))
         except ValueError as error:
-            problems.append(f"{name} cannot be read as Bash to find a pipe into grep -q: {error}")
+            problems.append(f"{name} cannot be read as Bash to find a pipe into a reader that ends early: {error}")
             continue
         if not any(words[0] == "set" and "pipefail" in words for _, _, words in commands):
             continue
+        commands += _substituted_commands(commands)
         problems += [
-            f"{name}:{line} pipes into {grep} under pipefail, which fails the check when the writer dies "
-            "of SIGPIPE after the match; give grep its text in a here-string or a file"
+            f"{name}:{line} pipes into {reader} under pipefail, which fails the check when the writer dies "
+            "of SIGPIPE after the reader ends; give it its text in a here-string or a file, or take a line by "
+            "parameter expansion"
             for before, line, words in commands
-            if before in PIPES and (grep := _early_exit_grep(words))
+            if before in PIPES and (reader := _early_exit_reader(words))
         ]
     return problems
 
@@ -1112,7 +1189,7 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
         self.assertNotIn("tests/deployer/harness.py", suites)
         self.assertNotIn("conftest.py", suites)
 
-    def test_no_bash_suite_pipes_into_a_grep_that_ends_at_its_match(self) -> None:
+    def test_no_bash_suite_pipes_into_a_reader_that_ends_early(self) -> None:
         self.assertEqual([], pipe_race_problems(REPOSITORY_ROOT))
 
     def test_python_suites_define_tests_and_run_only_through_pytest(self) -> None:
