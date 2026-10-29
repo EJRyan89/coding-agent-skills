@@ -10,8 +10,9 @@ new takes as the kind a pull request title type, which the title check then hold
 for an investigation, and refuses any other kind with the list of those it takes, exiting 1.
 
 The hub guard, the Claude Code PreToolUse hook .claude/settings.json runs, is tools/hub_guard.py. It imports from here
-only what both share: MAIN, same_path, checkout_of, and git with its client. This module imports nothing from it, and
-its guard subcommand only runs it as a program.
+only what both share: MAIN, same_path, Checkout, checkout_of, and git with its client, and it wraps checkout_of and git
+so that each git call keeps to its reading time. This module imports nothing from it, and its guard subcommand only
+runs it as a program.
 """
 
 from __future__ import annotations

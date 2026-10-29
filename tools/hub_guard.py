@@ -39,12 +39,12 @@ import whole_number
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
-from git_client import GitError
+from git_client import GitError, GitResult
 from job_tree import process_tree
 
 from deployer import platform_support
-from tools import bash_syntax
-from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, checkout_of, git, same_path
+from tools import bash_syntax, worktrees
+from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, Checkout, same_path
 
 GUARD_SETTING = "coding-agent-skills.hubGuard"
 FILE_TOOLS = {"Edit", "NotebookEdit", "Write"}
@@ -249,7 +249,7 @@ def guard_enabled(hub: Path) -> bool:
     configuration, which GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT carry and which would otherwise outrank it. git
     exits 1 for a setting that is not there; any other failure, such as a value that is no boolean, is a hub it cannot
     look up, allowed with a note rather than read as unguarded unseen."""
-    result = git(hub, "config", "--local", "--type=bool", "--get", GUARD_SETTING, timeout=lookup_timeout())
+    result = git(hub, "config", "--local", "--type=bool", "--get", GUARD_SETTING)
     if result.returncode not in (0, 1):
         said = " ".join(result.stderr.split()) or f"git config exited with {result.returncode}"
         print(f"hub guard skipped: the opt-in of {hub} could not be read: {said}", file=sys.stderr)
@@ -259,7 +259,7 @@ def guard_enabled(hub: Path) -> bool:
 @functools.cache
 def guarded_hub_at(path: Path) -> Path | None:
     """The guarded hub whose checkout holds path; None when it is a worktree, another repository, or none."""
-    checkout = checkout_of(path, lookup_timeout())
+    checkout = checkout_of(path)
     if checkout is None or not checkout.is_hub or not guard_enabled(checkout.hub):
         return None
     return checkout.hub
@@ -302,7 +302,7 @@ def resolve(value: str, cwd: Path) -> Path:
 @functools.cache
 def git_builtins() -> frozenset[str]:
     """The subcommands git runs itself, which no alias can stand for; empty when git cannot list them."""
-    result = git(Path(__file__).resolve().parent, "--list-cmds=builtins", timeout=lookup_timeout())
+    result = git(Path(__file__).resolve().parent, "--list-cmds=builtins")
     return frozenset(result.stdout.split()) if result.returncode == 0 else frozenset()
 
 
@@ -320,7 +320,7 @@ def hub_protected(path: Path) -> bool:
     hub = guarded_hub_at(normalized)
     if hub is None:
         return False
-    return git(hub, "check-ignore", "-q", "--no-index", str(normalized), timeout=lookup_timeout()).returncode != 0
+    return git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode != 0
 
 
 def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
@@ -333,7 +333,7 @@ def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
     found: set[Path] = set()
     for directory in directories:
         try:
-            checkout = checkout_of(directory, lookup_timeout())
+            checkout = checkout_of(directory)
         except GitError as exc:
             print(f"hub guard could not look up the hub of {directory}: {exc}", file=sys.stderr)
             continue
@@ -442,6 +442,16 @@ def lookups_within(deadline: float) -> Iterator[None]:
         yield
     finally:
         LOOKUPS.deadline = outer
+
+
+def git(cwd: Path, *arguments: str) -> GitResult:
+    """Every git call the guard makes, run as tools/worktrees.py runs one, within what lookup_timeout leaves it."""
+    return worktrees.git(cwd, *arguments, timeout=lookup_timeout())
+
+
+def checkout_of(path: Path) -> Checkout | None:
+    """The checkout holding path, as tools/worktrees.py finds it, its git call within what lookup_timeout leaves it."""
+    return worktrees.checkout_of(path, lookup_timeout())
 
 
 def mentions(pattern: re.Pattern[str], text: str) -> bool:
@@ -877,9 +887,7 @@ class Judge:
             return self.expansion_refusal(call, expansion, depth, call.place.tree)
         for lookup in lookups:
             repository = () if lookup.repository is None else ("--git-dir", str(lookup.repository))
-            result = git(
-                lookup.directory, *repository, "config", "--get", f"alias.{subcommand}", timeout=lookup_timeout()
-            )
+            result = git(lookup.directory, *repository, "config", "--get", f"alias.{subcommand}")
             if result.returncode == 1:
                 continue
             if result.returncode != 0:
@@ -936,9 +944,7 @@ def alias_lookups(place: Place) -> list[AliasLookup]:
     directory = place.start or place.tree
     if directory is None or not directory.is_dir():
         return []
-    checkout = (
-        checkout_of(place.tree, lookup_timeout()) if place.tree is not None and place.tree == place.start else None
-    )
+    checkout = checkout_of(place.tree) if place.tree is not None and place.tree == place.start else None
     top = checkout.toplevel if checkout is not None else place.tree
     return [AliasLookup(directory, place.repository if place.repository_named else None, top)]
 
@@ -1999,7 +2005,7 @@ def mentions_alias(command: str, directories: Iterable[Path]) -> bool:
 
     git lists them in the environment the hook was given, which is the one the command runs in."""
     for directory in directories:
-        result = git(directory, "config", "--name-only", "--get-regexp", r"^alias\.", timeout=lookup_timeout())
+        result = git(directory, "config", "--name-only", "--get-regexp", r"^alias\.")
         if result.returncode == 1:
             continue
         if result.returncode != 0:
@@ -2025,7 +2031,7 @@ def may_refuse(command: str, cwd: Path | None, reading: Reading) -> bool:
     if cwd is None:
         return True
     try:
-        if checkout_of(cwd, lookup_timeout()) is None:
+        if checkout_of(cwd) is None:
             return True
     except GitError:
         return True  # A checkout git cannot read lists no aliases either.

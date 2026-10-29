@@ -576,17 +576,18 @@ class ReadingBoundTests(GuardTestCase):
             places.append(place)
         command = "".join(f'git -C "{place.as_posix()}" status; ' for place in places) + "git commit -m x"
         clock = [0.0]
-        looked_up: list[tuple[float, ...]] = []
+        looked_up: list[tuple[float, float]] = []
+        find = worktrees.checkout_of
 
-        def slow_checkout_of(path: Path, *timeout: float) -> object:
-            looked_up.append((clock[0], *timeout, worktrees.GUARD_GIT_TIMEOUT_SECONDS)[:2])
-            found = worktrees.checkout_of(path, *timeout)
+        def slow_checkout_of(path: Path, timeout: float = worktrees.GUARD_GIT_TIMEOUT_SECONDS) -> object:
+            looked_up.append((clock[0], timeout))
+            found = find(path, timeout)
             clock[0] += 1
             return found
 
         with (
             mock.patch.object(hub_guard, "reading_clock", side_effect=lambda: clock[0]),
-            mock.patch.object(hub_guard, "checkout_of", side_effect=slow_checkout_of),
+            mock.patch.object(worktrees, "checkout_of", side_effect=slow_checkout_of),
         ):
             self.assertEqual("deny", self.decision(self.event(command, self.tree)))
         self.assertIn("within 15 seconds", self.reason)
@@ -600,14 +601,35 @@ class ReadingBoundTests(GuardTestCase):
             self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
             with hub_guard.lookups_within(103.0):
                 self.assertEqual(3.0, hub_guard.lookup_timeout())
-                with mock.patch.object(hub_guard, "git", wraps=worktrees.git) as git:
-                    hub_guard.guard_enabled(self.hub)
-                self.assertEqual(3.0, git.call_args.kwargs["timeout"])
+                with (
+                    mock.patch.object(worktrees, "git", wraps=worktrees.git) as git,
+                    mock.patch.object(worktrees.CLIENT, "output", wraps=worktrees.CLIENT.output) as output,
+                ):
+                    hub_guard.guarded_hub_at.cache_clear()
+                    hub_guard.guarded_hub_of_repository.cache_clear()
+                    with mock.patch.dict(os.environ, self.environment, clear=True):
+                        self.assertEqual(self.hub, hub_guard.guarded_hub_at(self.hub / "README.md"))
+                        self.assertEqual(self.hub, hub_guard.guarded_hub_of_repository(self.hub / ".git"))
+                    hub_guard.guarded_hub_at.cache_clear()
+                    hub_guard.guarded_hub_of_repository.cache_clear()
+                # The checkout's lookup, the opt-in's, and the git directory's are each given what is left.
+                self.assertTrue(git.call_args_list)
+                self.assertEqual({3.0}, {call.kwargs["timeout"] for call in git.call_args_list})
+                self.assertEqual({3.0}, {call.kwargs["timeout"] for call in output.call_args_list})
             with hub_guard.lookups_within(120.0):
                 self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
             with hub_guard.lookups_within(100.0), self.assertRaises(hub_guard.ReadingTimeout):
                 hub_guard.guard_enabled(self.hub)
             self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
+
+    def test_the_hubs_a_command_names_are_the_guarded_hubs_its_settled_places_reach(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            command = f'git -C "{self.hub.as_posix()}" status; git -C "{self.tree.as_posix()}" status; git status'
+            reading = hub_guard.read_command("Bash", command, outside, self.environment)
+            self.assertEqual({self.hub}, hub_guard.reached_hubs(reading))
+            self.assertEqual(set(), hub_guard.reached_hubs(hub_guard.read_command("Bash", "git status", outside, {})))
 
     def test_the_hubs_in_view_are_found_whatever_the_reading_time(self) -> None:
         # Which hubs are in view decides whether a command not read in time is refused, so finding them never ends
