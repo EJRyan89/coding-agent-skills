@@ -165,16 +165,20 @@ class PowerShellReaderStartTests(unittest.TestCase):
         self.assertEqual(4 * 1024 * 1024, call.kwargs["output_limit"])
 
     def test_pwsh_gets_what_is_left_of_the_reading_time(self) -> None:
-        reading = hub_guard.Reading(isolated_environment(), text="git commit -m x")
-        reading.deadline = hub_guard.reading_clock() + 5
-        with (
-            mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
-            mock.patch.object(hub_guard, "run_bounded", return_value=Finished(0, b'{"events": []}', b"")) as bounded,
-        ):
-            hub_guard.powershell_events("git commit -m x", reading, 0)
-        [call] = bounded.call_args_list
-        self.assertGreater(call.args[1], 0)
-        self.assertLessEqual(call.args[1], 5)
+        # The clock is pinned, so the time handed to pwsh is exactly what is left, with no rounding between two looks.
+        for now, left in ((100.0, 5.0), (103.0, 2.0)):
+            reading = hub_guard.Reading(isolated_environment(), text="git commit -m x", deadline=105.0)
+            with (
+                self.subTest(now=now),
+                mock.patch.object(hub_guard, "reading_clock", return_value=now),
+                mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+                mock.patch.object(
+                    hub_guard, "run_bounded", return_value=Finished(0, b'{"events": []}', b"")
+                ) as bounded,
+            ):
+                hub_guard.powershell_events("git commit -m x", reading, 0)
+                [call] = bounded.call_args_list
+                self.assertEqual(left, call.args[1])
 
     def test_pwsh_that_does_not_read_in_the_time_left_leaves_a_command_the_guard_cannot_read(self) -> None:
         reading = hub_guard.Reading(isolated_environment(), text="git commit -m x")
