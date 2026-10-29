@@ -2118,6 +2118,9 @@ class ContractTests(GuardTestCase):
             self.stderr.splitlines(),
         )
         self.assertIsNone(self.powershell("Copy-Item a.txt b.txt; git status", self.hub))
+        # The refusal names the cmdlet that defined the alias, by the name the command calls it.
+        self.assertEqual("deny", self.powershell("sal g git; g switch feat/demo", self.hub))
+        self.assertIn("could not read part of this command (an alias the command defines (sal))", self.reason)
 
     def test_each_cmdlet_that_defines_a_powershell_alias_is_known_by_each_of_its_names(self) -> None:
         for name in ("set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"):
