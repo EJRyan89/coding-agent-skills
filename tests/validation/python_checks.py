@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from bounded_process import REPOSITORY_VARIABLES
 from git_client import GLOBAL_VALUE_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from path_containment import posix_within, within
@@ -526,16 +527,53 @@ def _clears(value: ast.expr | None, resolver: CallableResolver) -> bool:
     return isinstance(value, ast.Call) and resolves_to(resolver.name(value.func), CLEARED_ENVIRONMENT)
 
 
+def _clear_key(key: ast.expr | None) -> bool:
+    """Whether a key is a constant that names none of git's repository-selecting variables, in any case."""
+    return (
+        isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value.upper() not in REPOSITORY_VARIABLES
+    )
+
+
+def _clear_mapping(value: ast.expr) -> bool:
+    """Whether an expression is a dict literal whose every key is clear, so adding it to an environment adds none of
+    git's repository-selecting variables; a `**` unpacking in it adds keys no one can read."""
+    return isinstance(value, ast.Dict) and all(_clear_key(key) for key in value.keys)
+
+
+def _updated_name(node: ast.AST) -> tuple[ast.Name, bool] | None:
+    """The name a statement or call changes in place, with whether the change is proven to add no repository variable:
+    an `update` of clear dict literals and clear keywords, a `setdefault` or a subscript assignment of a clear key, or
+    `|=` a clear dict literal. None for a node that changes no name in place."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+        if node.func.attr == "update":
+            proven = all(_clear_mapping(argument) for argument in node.args) and all(
+                keyword.arg is not None and keyword.arg.upper() not in REPOSITORY_VARIABLES for keyword in node.keywords
+            )
+            return node.func.value, proven
+        if node.func.attr == "setdefault":
+            return node.func.value, bool(node.args) and _clear_key(node.args[0])
+    if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and isinstance(node.value, ast.Name):
+        return node.value, _clear_key(node.slice)
+    if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+        return node.target, isinstance(node.op, ast.BitOr) and _clear_mapping(node.value)
+    return None
+
+
 def _cleared_names(tree: ast.Module, holders: dict[int, ast.AST], resolver: CallableResolver) -> dict[int, set[str]]:
-    """The names each function, by its id, binds only to an environment without_repository_variables builds. A
-    parameter is bound by the caller, so it is none; an update in place, such as `env.update(...)` or `env |= ...`,
-    keeps the name bound to that environment."""
+    """The names each function, by its id, binds only to an environment without_repository_variables builds and
+    changes in place, if at all, only by keys that name none of git's repository-selecting variables. A parameter is
+    bound by the caller, so it is none. An update in place, such as `env.update(...)`, `env[key] = ...`, or
+    `env |= ...`, keeps the name cleared only when every key it can add is such a constant, as
+    `env.update({"LC_ALL": "C"})`; one that adds keys from elsewhere, such as `env.update(os.environ)`, does not."""
     assigned: dict[int, ast.expr] = {}
+    augmented: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             assigned |= {id(target): node.value for target in node.targets if isinstance(target, ast.Name)}
         elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
             assigned[id(node.target)] = node.value
+        elif isinstance(node, ast.AugAssign):
+            augmented.add(id(node.target))
     bound: dict[int, dict[str, list[bool]]] = {}
     for node in ast.walk(tree):
         if isinstance(node, FUNCTIONS):
@@ -543,7 +581,12 @@ def _cleared_names(tree: ast.Module, holders: dict[int, ast.AST], resolver: Call
             for parameter in [*parameters, node.args.vararg, node.args.kwarg]:
                 if parameter is not None:
                     bound.setdefault(id(node), {}).setdefault(parameter.arg, []).append(False)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        elif (updated := _updated_name(node)) is not None:
+            # A proven update leaves the name as its bindings make it; an unproven one makes it not cleared.
+            name, proven = updated
+            if not proven:
+                bound.setdefault(id(holders[id(node)]), {}).setdefault(name.id, []).append(False)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and id(node) not in augmented:
             cleared = _clears(assigned.get(id(node)), resolver)
             bound.setdefault(id(holders[id(node)]), {}).setdefault(node.id, []).append(cleared)
     return {holder: {name for name, values in names.items() if all(values)} for holder, names in bound.items()}
