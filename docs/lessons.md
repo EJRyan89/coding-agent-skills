@@ -56,7 +56,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
-  `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`
+  `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
+  `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
@@ -242,8 +243,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A reader of another program's language or output reads it as that program does, held by a differential
   test against the program itself or by output captured from it with its provenance.
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
-- **Use:** `tools.hub_guard:powershell_reads_input`
+- **Use:** `tools.hub_guard:powershell_reads_input`, `tools.hub_guard:powershell_arguments`, and
+  `tools.hub_guard:powershell_directory`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `tests/tools/test_hub_guard_shells.py::StartDifferentialTests`,
   `tests/tools/test_hub_guard.py::test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call`,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_hub_guard.py::ContractTests::test_an_alias_or_a_script_block_built_from_a_string_is_refused_while_a_hub_is_guarded`,
@@ -251,8 +254,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; a `re.compile(` in
   `tools/runtime_*.py` or `deployer/discovery.py` with no sample under `tests/fixtures/captured-output/`; each
   interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
-  forms the guard names; a test whose sample output was typed rather than captured.
-- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865
+  forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
+  guard follows, such as a working directory, read only as taking a value and never for what it changes.
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032
 
 ### A recursive parser of input has a depth bound
 
@@ -346,10 +350,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   is not there.
 - **Use:** `git_client:GitClient.names`, which runs a name listing with -z and splits it on NUL;
   `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
-  joined by %x00.
+  joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
+  a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z and a for-each-ref or log format whose fields a byte but NUL joins
   unless its module states why,
+  `skills/ejryan89-skill-core/scripts/test_release_tags.py::LastReleaseTests::test_a_tag_whose_name_holds_a_character_splitlines_breaks_on_is_one_name`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests::test_a_path_holding_a_character_splitlines_breaks_on_is_one_path`,
+  `tests/tools/test_worktrees.py::CheckoutTests::test_a_checkout_whose_path_holds_a_character_splitlines_breaks_on_is_found`,
+  `tests/tools/test_hub_guard.py::FileGuardTests::test_a_guarded_hub_whose_path_holds_a_character_splitlines_breaks_on_is_protected`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::NamesTests::test_names_reads_a_name_holding_a_non_ascii_character_or_a_newline_exactly`,
   `tests/tools/test_mutation_gate.py::test_the_gate_reads_a_changed_module_whose_path_holds_a_non_ascii_character_or_a_newline`,
   `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
@@ -358,7 +367,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output.
-- **Examples:** #1816, #1848, #1862, #1908
+- **Examples:** #1816, #1848, #1862, #1908, #2034
 
 ### Two spellings are compared as their consumer compares them
 

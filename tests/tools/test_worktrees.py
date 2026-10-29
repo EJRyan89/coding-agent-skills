@@ -245,6 +245,15 @@ class CheckoutTests(WorktreesTestCase):
             worktrees.checkout_of(self.tree)
         self.assertIn(f"git could not read the checkout at {self.tree}", str(raised.exception))
 
+    def test_a_checkout_whose_path_holds_a_character_splitlines_breaks_on_is_found(self) -> None:
+        # git ends each path rev-parse prints with a newline alone; U+2028 and U+0085 also end a line to splitlines().
+        for character in (chr(0x2028), chr(0x85)):
+            checkout = self.root / f"a{character}checkout"
+            checkout.mkdir()
+            self.git(checkout, "init", "-q")
+            with self.subTest(character=hex(ord(character))), mock.patch.dict(os.environ, self.environment, clear=True):
+                self.assertEqual(worktrees.Checkout(checkout, checkout), worktrees.checkout_of(checkout))
+
 
 class CheckoutFailureTests(unittest.TestCase):
     def test_a_checkout_git_fails_on_names_git_s_message_or_its_exit_code(self) -> None:
