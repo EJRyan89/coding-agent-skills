@@ -33,6 +33,7 @@ from review_config import (
     DASHBOARD_SECTION_MINE,
     DASHBOARD_SECTION_TO_REVIEW,
     ConfigurationError,
+    dashboard_status_heading,
     dashboard_status_key,
     normalize_author_names,
     validate_repository_identity,
@@ -623,8 +624,8 @@ def render(
     config_path: str | None = None,
 ) -> str:
     """Render the owned section: collapsible sections, rows grouped by requestor, AI verdict and findings. Pinned rows
-    share a section when their statuses have one `dashboard_status_key`, headed as the first of them in row order
-    spells it."""
+    share a section when their statuses have one `dashboard_status_key`, that is when their headings are the same
+    ignoring case, headed as `dashboard_status_heading` writes the first of them in row order."""
     home = {repository.lower() for repository in (home_repositories or set())}
     lines = [start_marker, ""]
     if rows:
@@ -644,7 +645,7 @@ def render(
         "<code>dashboard_pipeline.py override</code>; do not edit the file by hand."
     )
     pinned = [
-        (" ".join(word[:1].upper() + word[1:] for word in members[0].section.split()), members, pinned_summary)
+        (dashboard_status_heading(members[0].section), members, pinned_summary)
         for _, members in sorted(pinned_groups.items())
     ]
     for heading, members, summary in [
