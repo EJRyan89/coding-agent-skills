@@ -353,8 +353,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
   a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
-  which refuses a git name listing without -z and a for-each-ref or log format whose fields a byte but NUL joins
-  unless its module states why,
+  which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
+  split of git's output with splitlines() unless its module states why,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::LastReleaseTests::test_a_tag_whose_name_holds_a_character_splitlines_breaks_on_is_one_name`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests::test_a_path_holding_a_character_splitlines_breaks_on_is_one_path`,
   `tests/tools/test_worktrees.py::CheckoutTests::test_a_checkout_whose_path_holds_a_character_splitlines_breaks_on_is_found`,
@@ -366,7 +366,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_every_name_reads_back_as_resolve_writes_it`
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
-  `splitlines()` on another program's output.
+  `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
+  output passed into a function that splits it.
 - **Examples:** #1816, #1848, #1862, #1908, #2034
 
 ### Two spellings are compared as their consumer compares them
