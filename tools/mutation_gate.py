@@ -149,6 +149,10 @@ MINIMUM_SUITE_SECONDS = 60.0
 OUTPUT_LIMIT = 4096
 # How much of a failed coverage step's output its reason quotes: the end of it, where coverage.py names its error.
 STEP_OUTPUT_CHARACTERS = 300
+# What `coverage json` prints, exiting 1, when the combined data holds no line of a file its include list names: the
+# suite ran, measured, and executed no line of the changed modules. `coverage combine`'s "No data to combine" instead
+# means no measured process started, so the measurement itself failed, and stays a failed step.
+NO_DATA_TO_REPORT = "No data to report."
 
 KILLED = "killed"
 TIMED_OUT = "timed out"
@@ -833,6 +837,8 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 return f"timed out in {code(step)}"
             if done.returncode != 0:
                 output = flat_text((done.stderr + done.stdout).decode("utf-8", "replace"))[-STEP_OUTPUT_CHARACTERS:]
+                if command[0] == "json" and done.returncode == 1 and output == NO_DATA_TO_REPORT:
+                    return Reach(seconds, executed_lines({"files": {}}, tree, modules))
                 return f"failed in {code(step)} with exit code {done.returncode}" + (
                     f": {code(output)}" if output else ""
                 )
