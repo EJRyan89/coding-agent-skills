@@ -1194,13 +1194,34 @@ def uninstall_check_problems(workflow: str) -> list[str]:
 # What mutation.yml's jobs run. mutmut refuses Windows, so the select job, on Linux, installs the lock, which holds the
 # development dependencies and the mutation tools, with hash checking and wheels only, makes the mutants, and hands
 # them on as an artifact, with step outputs naming the legs that have mutants to run. Each leg installs the same lock,
-# the Windows leg ShellCheck too, which the Linux image ships, runs its platform's leg of the mutants, never mutmut,
-# within its own cap (DEFAULT_MINUTES in tools/mutation_gate.py), which sits well inside the job's time limit, and
-# hands on its outcomes. The join, named as the gate and never as the required check, runs whatever the legs did, reads
-# the files and the standard library alone, and fails an unfinished run.
+# and ShellCheck at validate.yml's pin, which the deployer's suites run: the Linux leg from the release's archive
+# checked against its pinned digest, the Windows leg through Chocolatey, each refusing another version on PATH. Each
+# runs its platform's leg of the mutants, never mutmut, within its own cap (DEFAULT_MINUTES in tools/mutation_gate.py),
+# which sits well inside the job's time limit, and hands on its outcomes. The join, named as the gate and never as the
+# required check, runs whatever the legs did, reads the files and the standard library alone, and fails an unfinished
+# run.
 MUTATION_INSTALL = "python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt"
 MUTATION_GATE = "python -B tools/mutation_gate.py"
-MUTATION_SHELLCHECK = "choco install shellcheck --yes --no-progress"
+# The pins mutation.yml's env repeats from validate.yml's, since a workflow cannot read another's.
+MUTATION_PINS = ("SHELLCHECK_VERSION", "SHELLCHECK_LINUX_SHA256")
+MUTATION_LINUX_SHELLCHECK = [
+    'shellcheck="$RUNNER_TEMP/shellcheck"',
+    'release="https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION"',
+    'archive="$RUNNER_TEMP/shellcheck.tar.xz"',
+    'curl --fail --silent --show-error --location --retry 3 --output "$archive" '
+    '"$release/shellcheck-v$SHELLCHECK_VERSION.linux.x86_64.tar.xz"',
+    LINUX_SHELLCHECK_DIGEST_CHECK,
+    'mkdir -p "$shellcheck"',
+    'tar --extract --xz --file "$archive" --directory "$shellcheck" --strip-components 1 '
+    '"shellcheck-v$SHELLCHECK_VERSION/shellcheck"',
+    'echo "$shellcheck" >> "$GITHUB_PATH"',
+]
+MUTATION_WINDOWS_SHELLCHECK = [
+    "choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress",
+    "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+]
+# The verify step's ShellCheck lines, which the validation legs' verify step runs too.
+MUTATION_SHELLCHECK_VERIFY = list(PINNED_TOOL_LINES[:2])
 MUTATION_LOCKED_PYTHON = {
     "python-version": "3.11",
     "cache": "pip",
@@ -1210,9 +1231,11 @@ MUTATION_MUTANTS = {"name": "mutation-mutants", "path": "mutation"}
 MUTATION_OUTPUTS = {leg: f"${{{{ steps.select.outputs.{leg} }}}}" for leg in ("linux", "windows")}
 
 
-def _mutation_leg(platform: str, runner: str, install: list[str]) -> dict[str, object]:
-    """The job of one leg: after the select job, only when it named the leg, on the platform's runner."""
+def _mutation_leg(platform: str, runner: str, shellcheck: tuple[str, list[str]]) -> dict[str, object]:
+    """The job of one leg: after the select job, only when it named the leg, on the platform's runner, installing
+    ShellCheck in the shell `shellcheck` names and verifying it in pwsh before the lock."""
     leg = platform.casefold()
+    shell, install = shellcheck
     return {
         "name": f"Mutation gate on {platform}",
         "needs": "select",
@@ -1221,7 +1244,8 @@ def _mutation_leg(platform: str, runner: str, install: list[str]) -> dict[str, o
         "timeout-minutes": "60",
         "checkout": {},
         "python": MUTATION_LOCKED_PYTHON,
-        "scripts": [install, [f"{MUTATION_GATE} leg mutation"]],
+        "scripts": [install, MUTATION_SHELLCHECK_VERIFY, [MUTATION_INSTALL], [f"{MUTATION_GATE} leg mutation"]],
+        "shells": [shell, "pwsh", None, None],
         "artifacts": [
             ["download-artifact", MUTATION_MUTANTS],
             [
@@ -1243,6 +1267,7 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "checkout": {"fetch-depth": "0"},
         "python": MUTATION_LOCKED_PYTHON,
         "scripts": [[MUTATION_INSTALL], [f"{MUTATION_GATE} select mutation"]],
+        "shells": [None, None],
         "artifacts": [
             [
                 "upload-artifact",
@@ -1250,8 +1275,8 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
             ]
         ],
     },
-    "linux": _mutation_leg("Linux", "ubuntu-latest", [MUTATION_INSTALL]),
-    "windows": _mutation_leg("Windows", "windows-latest", [MUTATION_SHELLCHECK, MUTATION_INSTALL]),
+    "linux": _mutation_leg("Linux", "ubuntu-latest", ("bash", MUTATION_LINUX_SHELLCHECK)),
+    "windows": _mutation_leg("Windows", "windows-latest", ("pwsh", MUTATION_WINDOWS_SHELLCHECK)),
     "mutation": {
         "name": "Mutation gate",
         "needs": ["select", "linux", "windows"],
@@ -1261,6 +1286,7 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "checkout": {},
         "python": {"python-version": "3.11"},
         "scripts": [[f"{MUTATION_GATE} join mutation"]],
+        "shells": [None],
         "artifacts": [["download-artifact", {"pattern": "mutation-*", "path": "mutation", "merge-multiple": "true"}]],
     },
 }
@@ -1272,7 +1298,7 @@ def _uses(step: dict[str, Node], action: str) -> bool:
 
 def _mutation_job_shape(job: dict[str, Node]) -> dict[str, object]:
     """A job of mutation.yml read into the fields MUTATION_JOBS gives each: its checkout's and Python's inputs, its
-    scripts, and each artifact step with its inputs."""
+    scripts and the shell each names, and each artifact step with its inputs."""
     steps = _steps(job)
     checkouts: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "checkout")]
     pythons: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "setup-python")]
@@ -1287,6 +1313,7 @@ def _mutation_job_shape(job: dict[str, Node]) -> dict[str, object]:
         "checkout": checkouts[0] if len(checkouts) == 1 else checkouts,
         "python": pythons[0] if len(pythons) == 1 else pythons,
         "scripts": [_script_lines(step) for step in steps if "run" in step],
+        "shells": [step.get("shell") for step in steps if "run" in step],
         "artifacts": artifacts,
     }
 
@@ -1314,6 +1341,24 @@ def mutation_job_problems(workflow: str) -> list[str]:
     outputs = _mapping(jobs, "select").get("outputs")
     if outputs != MUTATION_OUTPUTS:
         problems.append(f"the select job's outputs are {outputs}, not {MUTATION_OUTPUTS}")
+    return problems
+
+
+def mutation_pin_problems(workflow: str, validate: str) -> list[str]:
+    """Report how mutation.yml's env departs from holding exactly MUTATION_PINS, each at validate.yml's value, so the
+    legs install and verify the ShellCheck the validation legs do."""
+    pins = _mapping(read_workflow(workflow), "env")
+    reviewed = _mapping(read_workflow(validate), "env")
+    problems = (
+        [f"the workflow's env is {sorted(pins)}, not {sorted(MUTATION_PINS)}"]
+        if set(pins) != set(MUTATION_PINS)
+        else []
+    )
+    problems += [
+        f"the workflow's {name} is {pins.get(name)!r}, not validate.yml's {reviewed.get(name)!r}"
+        for name in MUTATION_PINS
+        if name in pins and pins.get(name) != reviewed.get(name)
+    ]
     return problems
 
 
@@ -1384,6 +1429,8 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_mutation_workflow_runs_the_gate_on_pull_requests_outside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "mutation.yml").read_text(encoding="utf-8")
         self.assertEqual([], mutation_job_problems(workflow))
+        validate = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "validate.yml").read_text(encoding="utf-8")
+        self.assertEqual([], mutation_pin_problems(workflow, validate))
 
     def test_validate_workflow_reads_the_pull_requests_body_and_title_from_the_event_payload(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
