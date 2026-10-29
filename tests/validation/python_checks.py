@@ -628,10 +628,10 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-# ejryan89-skill-core's json_reader is the one parse of JSON, refusing a repeated key, a bare NaN or Infinity, and
-# nesting past the recursion limit, where the json module's own readers keep a repeated key's last value and read NaN
-# as a float. Any other parse states why in a module-level JSON_PARSE_ALLOWED = {scope: reason}, as where a function
-# parses the text it just serialized.
+# ejryan89-skill-core's json_reader is the one parse of JSON, refusing a repeated key, a bare NaN or Infinity, a number
+# too large for a float, and nesting past the recursion limit, where the json module's own readers keep a repeated
+# key's last value and read NaN as a float. Any other parse states why in a module-level
+# JSON_PARSE_ALLOWED = {scope: reason}, as where a function parses the text it just serialized.
 JSON_PARSERS = frozenset({"json.loads", "json.load", "json.JSONDecoder", "json.decoder.JSONDecoder"})
 JSON_READER = "skills/ejryan89-skill-core/scripts/json_reader.py"
 JSON_PARSE_ALLOWANCE = "JSON_PARSE_ALLOWED"
