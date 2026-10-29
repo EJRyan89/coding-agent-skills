@@ -250,6 +250,22 @@ class SilentRevertFixture(unittest.TestCase):
                 self.assertTrue(problem.startswith("the silent-revert check cannot read the history: "), problem)
                 self.assertIn(reason, problem)
 
+    def test_a_shallow_probe_git_cannot_answer_is_a_problem_line_never_a_full_clone(self) -> None:
+        # git failing the probe prints nothing, which read as an answer would take the clone for a full one.
+        self.history()
+        self.commit("fix: unrelated, with a stale a.txt", {"a.txt": "one\n"})
+        real = release_notes.git
+
+        def failing_probe(root: Path, *arguments: str) -> GitResult:
+            if "--is-shallow-repository" in arguments:
+                return GitResult(128, "", "fatal: cannot probe\n")
+            return real(root, *arguments)
+
+        with mock.patch.object(release_notes, "git", failing_probe):
+            [problem] = silent_revert_problems(self.root, "")
+        self.assertTrue(problem.startswith("the silent-revert check cannot read the history: "), problem)
+        self.assertIn("fatal: cannot probe", problem)
+
     def test_without_origin_main_the_check_says_how_to_fetch_it(self) -> None:
         self.commit("start (#1)", {"a.txt": "one\n"})
         problems = silent_revert_problems(self.root, "")
