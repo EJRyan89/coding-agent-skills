@@ -39,11 +39,13 @@ root, one written as a network share or a device, and one a symbolic link or jun
 `REFUSED <entry> <reason>` and is never read, checked, or fixed, and `config` fails when no entry is left. `config`
 evaluates a project the solution lists only when the entry lies inside the repository root, judged from its text before
 anything touches it; an entry outside the root, or written as a network share or a device, prints `REFUSED <entry>
-<reason>` and is left unread. A --solution that lies outside the root, judged as a FILE_LIST entry is, fails as
-`FAILED the solution <solution> is refused: <reason>` before the solution is read. Neither writes a file that is a
-symbolic link or a Windows junction, or that lies below one inside the repository, since the write would land wherever
-the link points: `check --fix` prints `REFUSED <file> <reason>` and leaves the file unfixed, and `config --apply`
-prints `REFUSED <.editorconfig> <reason>`, adds nothing there, and exits 1, a setting still missing.
+<reason>` and is left unread. A --solution that is absolute or lies outside the root, judged as a FILE_LIST entry
+is, fails as `FAILED the solution <solution> is refused: <reason>` before the solution is read. Neither writes a file
+that is a symbolic link or a Windows junction, or that lies below one inside the repository, since the write would land
+wherever the link points: `check --fix` prints `REFUSED <file> <reason>` and leaves the file unfixed, and `config
+--apply` prints `REFUSED <.editorconfig> <reason>`, adds nothing there, and exits 1, a setting still missing. Each
+replaces a file it writes whole, keeping its encoding, byte order mark, and permissions, so a write that fails part way
+leaves the file as it was.
 
 A failure, such as a listed file that does not exist or a file it cannot read or write, prints `FAILED <reason>`
 as the last line and exits 1. A usage error exits 2.
@@ -55,6 +57,7 @@ import argparse
 import functools
 import os
 import re
+import stat
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -66,6 +69,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import json_reader
 import nesting_depth
 import whole_number
+from atomic_file import replace_bytes
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
@@ -82,6 +86,8 @@ PACKAGE = "Roslynator.Formatting.Analyzers"
 PACKAGE_ITEMS = (("PackageReference", "Identity"), ("Analyzer", "Filename"))
 MSBUILD_TIMEOUT_SECONDS = 120
 GLOBAL_CONFIG = ".globalconfig"
+# The permissions of a file the script adds: its owner writes it and everyone reads it, as an editor's new file.
+NEW_FILE_MODE = 0o644
 # The global_level the compiler gives a global analyzer config that sets none: 100 for a file named .globalconfig.
 NAMED_GLOBAL_LEVEL = 100
 # The layout rules the analyzers enforce; the dotnet-format section of docs/skills.md says which rule each covers.
@@ -514,7 +520,14 @@ def read_source(path: Path) -> Source:
 
 
 def write_source(path: Path, source: Source, text: str) -> None:
-    path.write_bytes(source.bom + text.encode(source.encoding, errors="surrogatepass"))
+    """Replace `path` with `text` in the encoding and byte order mark it was read in, through ejryan89-skill-core's
+    `atomic_file`, so a write that fails part way leaves the file as it was. The file keeps its permissions, and a new
+    one, such as an .editorconfig the script adds, takes `NEW_FILE_MODE`."""
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = NEW_FILE_MODE
+    replace_bytes(path, source.bom + text.encode(source.encoding, errors="surrogatepass"), mode=mode)
 
 
 def link_refusal(root: Path, path: Path) -> str | None:
