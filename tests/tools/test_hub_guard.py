@@ -252,6 +252,28 @@ class FileGuardTests(GuardTestCase):
                 self.assertIsNone(self.bash("git switch feat/demo", self.hub))
 
 
+class UnreadableCheckoutFileTests(GuardTestCase):
+    """A file event in a checkout git answers with an error for, as one whose ownership it doubts, is judged as a git
+    directory git cannot read is: it may be a guarded hub's, so the edit is refused."""
+
+    def test_an_edit_in_a_checkout_git_answers_with_an_error_for_is_refused(self) -> None:
+        failure = git_client.GitError("git could not read the checkout", returncode=128)
+        for tool in ("Edit", "Write", "NotebookEdit"):
+            with self.subTest(tool=tool), mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
+                self.assertEqual("deny", self.edit(self.tree / "README.md", tool=tool))
+                self.assertEqual(hub_guard.DENY_REASON, self.reason)
+        with mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
+            self.assertTrue(hub_guard.hub_protected(self.root / "elsewhere.txt"))
+
+    def test_an_edit_where_git_did_not_run_is_allowed_with_a_note(self) -> None:
+        kinds: tuple[git_client.GitErrorKind, ...] = ("prerequisite", "execution", "timeout")
+        for kind in kinds:
+            failure = git_client.GitError(f"git failed as {kind}", kind=kind)
+            with self.subTest(kind=kind), mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
+                self.assertIsNone(self.edit(self.hub / "README.md"))
+                self.assertIn(f"hub guard skipped: GitError: git failed as {kind}", self.stderr)
+
+
 class EndToEndTests(GuardTestCase):
     """tools/hub_guard.py started as its own process, as the hook starts it, decides each kind of event as the
     in-process call the other tests make does, with the same reason and the same notes."""
