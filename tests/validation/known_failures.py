@@ -5,18 +5,21 @@ format, and a reader that fails a case today is listed in tests/malformed_input/
 that fixes it, never marked as an expected failure. The suite fails a listed case that now passes, so the fix removes
 its entry, and an unlisted case that fails, so the list never grows in silence. This module holds the list itself: each
 entry names its reader, its case, and its issue, once, in order. A pull request that closes an issue an entry still
-names is refused, since the issue would close while its case still fails; the pull request that fixes the reader
-removes the entry with it.
+names is refused, in every form GitHub closes it by, since the issue would close while its case still fails; the pull
+request that fixes the reader removes the entry with it. A pull request check also asks GitHub, through gh, that each
+issue an entry names is open, and asks nothing while the list is empty; a gh that cannot answer fails the check.
 """
 
 from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import json_reader
 from closing_references import closing_references
+from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_remote import github_repository
 from markdown_sections import HTML_COMMENT
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
@@ -25,6 +28,8 @@ from tools.release_notes import ReleaseNotesError, git_output
 
 KNOWN_FAILURES = Path("tests") / "malformed_input" / "known_failures.json"
 ENTRY_KEYS = ("reader", "case", "issue")
+# The state gh reports for an open issue.
+OPEN = "OPEN"
 
 
 @dataclass(frozen=True, order=True)
@@ -121,6 +126,42 @@ def closed_known_failure_problems(root: Path, body: str | None) -> list[str]:
     ]
 
 
+def open_issue_problems(root: Path, body: str | None, client: GitHubClient | None = None) -> list[str]:
+    """Each issue a known failure names that GitHub does not say is open, in a pull request check; none while the
+    list is empty, which asks GitHub nothing. A gh that cannot answer, or a checkout whose origin names no GitHub
+    repository, is a problem, never an open issue."""
+    if body is None:
+        return []
+    try:
+        entries = read_known_failures(root / KNOWN_FAILURES)
+    except KnownFailuresUnreadable:
+        # known_failure_problems names the unreadable list; this check has nothing to ask about.
+        return []
+    if not entries:
+        return []
+    repository = checkout_repository(root)
+    if repository is None:
+        return [
+            f"{KNOWN_FAILURES.as_posix()} names issues, but the checkout's origin names no GitHub repository, so the "
+            "known-failure check cannot ask whether they are open"
+        ]
+    client = client or GitHubClient(runner=partial(subprocess_runner, cwd=root))
+    problems: list[str] = []
+    for issue in sorted({entry.issue for entry in entries}):
+        try:
+            answer = client.json(["issue", "view", str(issue), "--repo", repository, "--json", "state"])
+        except GitHubError as error:
+            problems.append(f"the known-failure check cannot ask GitHub whether #{issue} is open: {error}")
+            continue
+        state = answer.get("state") if isinstance(answer, dict) else None
+        if state != OPEN:
+            problems.append(
+                f"{KNOWN_FAILURES.as_posix()} names #{issue}, which GitHub reports as {state}, not {OPEN}; a known "
+                "failure names the open issue that fixes it"
+            )
+    return problems
+
+
 class KnownFailurePolicies(unittest.TestCase):
     def test_the_known_failure_list_names_each_case_once_in_order_with_its_issue(self) -> None:
         self.assertEqual([], known_failure_problems(REPOSITORY_ROOT))
@@ -129,3 +170,6 @@ class KnownFailurePolicies(unittest.TestCase):
 class KnownFailurePullRequestPolicies(PullRequestChecks):
     def test_the_pull_request_closes_no_issue_a_known_failure_still_names(self) -> None:
         self.assertEqual([], closed_known_failure_problems(REPOSITORY_ROOT, self.pull_request.body_text()))
+
+    def test_each_issue_a_known_failure_names_is_open(self) -> None:
+        self.assertEqual([], open_issue_problems(REPOSITORY_ROOT, self.pull_request.body_text()))

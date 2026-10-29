@@ -214,6 +214,12 @@ EXPRESSION_TOKEN = re.compile(
 )
 # What a job may grant its token: nothing beyond reading.
 READ_ONLY_SCOPES = frozenset({"read", "none"})
+# The one form in which a sanctioned step is given the token, for gh, and the permissions of a job that holds one:
+# reading the checkout and the issues, so the known-failure check can ask whether each entry's issue is open. A pinned
+# contract value of the 2026-10-29 decision in docs/design.md on what validation may reach.
+CREDENTIAL_VARIABLE = "GH_TOKEN"
+CREDENTIAL_VALUE = "${{ github.token }}"
+TOKEN_JOB_PERMISSIONS = {"contents": "read", "issues": "read"}
 
 
 def _expression_tokens(expression: str) -> list[tuple[str, bool]] | None:
@@ -270,12 +276,19 @@ def _crons(on: Node) -> list[str]:
     return [str(item.get("cron")) if isinstance(item, dict) else str(item) for item in schedule]
 
 
-def _job_permission_problems(jobs: Node) -> list[str]:
+def _job_permission_problems(jobs: Node, token_jobs: Collection[str] = ()) -> list[str]:
     if not isinstance(jobs, dict) or not jobs:
         return ["the workflow has no jobs"]
     problems: list[str] = []
     for name, job in jobs.items():
         permissions = job.get("permissions") if isinstance(job, dict) else None
+        if name in token_jobs:
+            if permissions != TOKEN_JOB_PERMISSIONS:
+                problems.append(
+                    f"job {name} hands a step the token, so its permissions are exactly {TOKEN_JOB_PERMISSIONS}, "
+                    f"not {permissions}"
+                )
+            continue
         read_only = (
             permissions is None
             or permissions == "read-all"
@@ -295,11 +308,30 @@ def _expressions(path: str, text: str, is_key: bool) -> list[str]:
     return wrapped
 
 
-def _string_problems(tree: Node) -> list[str]:
+def _token_paths(tree: Node, token_steps: Collection[tuple[str, str]]) -> tuple[set[str], list[str]]:
+    """The path of the one GH_TOKEN env entry each sanctioned (job, step name) holds, and a problem for each such step
+    the workflow lacks or that gives the token as anything but CREDENTIAL_VALUE."""
+    paths: set[str] = set()
+    problems: list[str] = []
+    for job, step_name in sorted(token_steps):
+        steps = _steps(_mapping(tree, "jobs", job))
+        index = next((index for index, step in enumerate(steps) if step.get("name") == step_name), None)
+        env = _mapping(steps[index], "env") if index is not None else {}
+        if index is None or env.get(CREDENTIAL_VARIABLE) != CREDENTIAL_VALUE:
+            problems.append(f"job {job}'s step {step_name!r} does not give {CREDENTIAL_VARIABLE}: {CREDENTIAL_VALUE}")
+            continue
+        paths.add(f"jobs.{job}.steps[{index}].env.{CREDENTIAL_VARIABLE}")
+    return paths, problems
+
+
+def _string_problems(tree: Node, token_paths: Collection[str] = ()) -> list[str]:
     """Secrets, the token, and author-written event data, in any expression anywhere, any key, and any value, run
-    blocks included, and any expression the policy cannot read."""
+    blocks included, and any expression the policy cannot read; the token is allowed only at `token_paths`, each a
+    sanctioned step's GH_TOKEN entry holding exactly CREDENTIAL_VALUE."""
     problems: list[str] = []
     for path, text, is_key in _strings(tree):
+        if not is_key and path in token_paths and text == CREDENTIAL_VALUE:
+            continue
         if is_key and text == "secrets":
             problems.append(f"{path} passes the workflow's secrets on")
         for expression in _expressions(path, text, is_key):
@@ -314,13 +346,19 @@ def _string_problems(tree: Node) -> list[str]:
 
 
 def workflow_guard_problems(
-    workflow: str, triggers: list[str], actions: set[str], crons: tuple[str, ...] = ()
+    workflow: str,
+    triggers: list[str],
+    actions: set[str],
+    crons: tuple[str, ...] = (),
+    token_steps: Collection[tuple[str, str]] = (),
 ) -> list[str]:
     """Report how a workflow departs from its expected triggers, crons, and actions, a read-only token, and no secrets.
 
     The workflow is parsed, so every trigger, every job's permissions, and every `${{ }}` expression, key, and value
     are checked wherever they sit. Every action is pinned to a full commit SHA with its version in a comment, which
-    docs/dependency-updates.md states and Dependabot reviews.
+    docs/dependency-updates.md states and Dependabot reviews. The token reaches a step only as one of `token_steps`
+    names, a (job, step name), whose env gives GH_TOKEN exactly CREDENTIAL_VALUE, in a job whose permissions are exactly
+    TOKEN_JOB_PERMISSIONS.
     """
     try:
         tree = read_workflow(workflow)
@@ -337,8 +375,10 @@ def workflow_guard_problems(
         problems.append(f"the schedule's crons are {scheduled}, expected {list(crons)}")
     if tree.get("permissions") != {"contents": "read"}:
         problems.append(f"the top-level permissions are {tree.get('permissions')}, not exactly `contents: read`")
-    problems += _job_permission_problems(tree.get("jobs"))
-    problems += _string_problems(tree)
+    token_paths, token_problems = _token_paths(tree, token_steps)
+    problems += token_problems
+    problems += _job_permission_problems(tree.get("jobs"), {job for job, _ in token_steps})
+    problems += _string_problems(tree, token_paths)
     pins = action_pins(workflow)
     for action, reference, rest in pins:
         if not re.fullmatch(r"[0-9a-f]{40}", reference) or not re.fullmatch(r"\s+# v\d+(?:\.\d+)*", rest):
@@ -387,6 +427,13 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
         {"actions/checkout", "actions/setup-python", "actions/cache"},
         ("23 6 * * 1",),
     ),
+}
+
+
+# Each step, by its job and its name, that is given the token: validate.yml's steps that run the pull request checks,
+# whose known-failure check asks GitHub whether each entry's issue is open. No other step of any workflow is.
+TOKEN_STEPS: dict[str, frozenset[tuple[str, str]]] = {
+    "validate.yml": frozenset({("suite", "Run repository validation"), ("linux", "Run repository validation")}),
 }
 
 
@@ -1350,7 +1397,8 @@ class WorkflowsPolicies(unittest.TestCase):
         for name, (triggers, actions, crons) in WORKFLOW_GUARDS.items():
             with self.subTest(workflow=name):
                 workflow = (workflows / name).read_text(encoding="utf-8")
-                self.assertEqual([], workflow_guard_problems(workflow, triggers, actions, crons))
+                tokens = TOKEN_STEPS.get(name, frozenset())
+                self.assertEqual([], workflow_guard_problems(workflow, triggers, actions, crons, tokens))
 
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY

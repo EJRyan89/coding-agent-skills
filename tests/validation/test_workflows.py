@@ -1511,3 +1511,70 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
 def test_a_mutation_job_off_its_shape_fails(drifted: str, problem: str) -> None:
     problems = mutation_job_problems(drifted)
     assert any(problem in found for found in problems), problems
+
+
+CREDENTIAL_WORKFLOW = (
+    "name: Example\n\non:\n  push:\n\npermissions:\n  contents: read\n\njobs:\n"
+    "  run:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      issues: read\n    steps:\n"
+    "      - name: Check\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: python check.py\n"
+    "      - name: Other\n        run: python other.py\n"
+    "  other:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Check\n        run: python check.py\n"
+)
+TOKEN_STEP = frozenset({("run", "Check")})
+
+
+def test_the_token_reaches_exactly_the_sanctioned_step_in_a_job_reading_issues() -> None:
+    assert workflow_guard_problems(CREDENTIAL_WORKFLOW, ["push"], set(), (), TOKEN_STEP) == []
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        # Unsanctioned, the token anywhere is refused, as it always was.
+        pytest.param(CREDENTIAL_WORKFLOW, "github context", id="no step sanctioned"),
+        # The token in the sanctioned job's other step, or in another job's step of the same name.
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace(
+                "        run: python other.py\n",
+                "        env:\n          GH_TOKEN: ${{ github.token }}\n        run: python other.py\n",
+            ),
+            "github context",
+            id="another step of the job",
+        ),
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace(
+                "      - name: Check\n        run: python check.py\n",
+                "      - name: Check\n        env:\n"
+                "          GH_TOKEN: ${{ github.token }}\n        run: python check.py\n",
+            ),
+            "github context",
+            id="a step of the same name in another job",
+        ),
+        # The sanctioned step's token in any other form, under another name, or not given at all.
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace("${{ github.token }}", "${{ secrets.GITHUB_TOKEN }}"), "secret", id="a secret"
+        ),
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace("GH_TOKEN:", "GITHUB_TOKEN:"), "does not give GH_TOKEN", id="another name"
+        ),
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace("        env:\n          GH_TOKEN: ${{ github.token }}\n", ""),
+            "does not give GH_TOKEN",
+            id="no token",
+        ),
+        # The job's permissions beyond the pinned two, or short of them.
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace("      issues: read\n", "      issues: write\n"), "exactly", id="write"
+        ),
+        pytest.param(CREDENTIAL_WORKFLOW.replace("      issues: read\n", ""), "exactly", id="no issues scope"),
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace("      issues: read\n", "      issues: read\n      pull-requests: read\n"),
+            "exactly",
+            id="another scope",
+        ),
+    ],
+)
+def test_the_token_anywhere_else_or_in_any_other_form_fails(drifted: str, problem: str) -> None:
+    sanctioned = frozenset() if drifted is CREDENTIAL_WORKFLOW else TOKEN_STEP
+    problems = workflow_guard_problems(drifted, ["push"], set(), (), sanctioned)
+    assert any(problem in found for found in problems), problems

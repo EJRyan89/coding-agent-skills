@@ -9,11 +9,13 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from github_client import CommandResult, GitHubClient
 from known_failures import (
     KNOWN_FAILURES,
     KnownFailure,
@@ -22,6 +24,7 @@ from known_failures import (
     closed_issues,
     closed_known_failure_problems,
     known_failure_problems,
+    open_issue_problems,
     read_known_failures,
 )
 from validation_support import REPOSITORY_ROOT, git
@@ -169,6 +172,63 @@ class ClosingTests(KnownFailureFixture):
         (checkout / KNOWN_FAILURES).write_text(json.dumps([ENTRY]), encoding="utf-8")
         self.assertEqual([], closed_known_failure_problems(checkout, "Closes other/repository#4242\n"))
         self.assertEqual(1, len(closed_known_failure_problems(checkout, f"Closes {REPOSITORY}#4242\n")))
+
+
+class OpenIssueTests(KnownFailureFixture):
+    """Each issue an entry names is open, as GitHub answers through gh; an empty list asks GitHub nothing."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        git(self.root, "init", "--quiet")
+        git(self.root, "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git")
+        self.calls: list[list[str]] = []
+        self.answer = CommandResult(0, '{"state": "OPEN"}', "")
+
+    def run_gh(self, arguments: Sequence[str]) -> CommandResult:
+        self.calls.append(list(arguments))
+        return self.answer
+
+    def problems(self, body: str | None = "Closes #1\n") -> list[str]:
+        return open_issue_problems(self.root, body, GitHubClient(runner=self.run_gh, sleeper=lambda _: None))
+
+    def test_an_empty_list_or_no_pull_request_asks_github_nothing(self) -> None:
+        self.write([])
+        self.assertEqual([], self.problems())
+        self.write([ENTRY])
+        self.assertEqual([], self.problems(None))
+        self.assertEqual([], self.calls)
+
+    def test_an_open_issue_passes_after_asking_this_repository(self) -> None:
+        self.write([ENTRY, {**ENTRY, "case": "long_integer"}])
+        self.assertEqual([], self.problems())
+        # One question per issue, of the repository the checkout's origin names.
+        self.assertEqual([["gh", "issue", "view", "4242", "--repo", REPOSITORY, "--json", "state"]], self.calls)
+
+    def test_a_closed_issue_fails(self) -> None:
+        self.write([ENTRY])
+        self.answer = CommandResult(0, '{"state": "CLOSED"}', "")
+        [problem] = self.problems()
+        self.assertIn("#4242, which GitHub reports as CLOSED, not OPEN", problem)
+
+    def test_a_gh_that_cannot_answer_fails_never_reads_as_open(self) -> None:
+        self.write([ENTRY])
+        for answer in (
+            CommandResult(1, "", "HTTP 401: Bad credentials\n"),
+            CommandResult(1, "", "GraphQL: Could not resolve to an issue or pull request with the number of 4242.\n"),
+            CommandResult(0, "not json", ""),
+            CommandResult(0, '{"title": "no state"}', ""),
+        ):
+            with self.subTest(answer=answer):
+                self.answer = answer
+                [problem] = self.problems()
+                self.assertIn("#4242", problem)
+
+    def test_a_checkout_naming_no_github_repository_fails(self) -> None:
+        self.write([ENTRY])
+        git(self.root, "remote", "set-url", "origin", "https://example.com/other.git")
+        [problem] = self.problems()
+        self.assertIn("names no GitHub repository", problem)
+        self.assertEqual([], self.calls)
 
 
 class RepositoryTests(unittest.TestCase):
