@@ -1986,6 +1986,29 @@ class ContractTests(GuardTestCase):
         self.assertEqual("deny", self.powershell(f"pwsh -cwa '{script}'", self.tree))
         self.assertIsNone(self.bash("pwsh -CommandWithArgs 'git status $args' one", self.hub))
 
+    def test_a_function_called_with_words_it_declares_no_parameter_for_is_read(self) -> None:
+        # A simple function takes the words the binder cannot bind into $args and runs its body.
+        for command in (
+            "function f { git commit -m x }; f extra",
+            "function f { git commit -m x }; f -Force extra more",
+            "function f($a) { git commit -m x }; f one two",
+            "function f { git commit -m x }; f",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.powershell("function f { git status }; f extra", self.hub))
+        # An advanced function refuses such a call and runs nothing; either way, a directory its body would change is
+        # one only some paths change.
+        tree = f"'{self.tree}'"
+        for definition in (
+            f"function f {{ Set-Location {tree} }}",
+            f"function f {{ [CmdletBinding()] param() Set-Location {tree} }}",
+        ):
+            with self.subTest(definition=definition):
+                self.assertEqual("deny", self.powershell(f"{definition}; f extra; git commit -m x", self.hub))
+        self.assertIsNone(self.powershell(f"function f {{ Set-Location {tree} }}; f; git commit -m x", self.hub))
+
     def test_the_nesting_limits_and_the_reading_time_are_pinned(self) -> None:
         settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         [hook] = settings["hooks"]["PreToolUse"][0]["hooks"]

@@ -237,6 +237,39 @@ class PwshDifferentialTests(unittest.TestCase):
         self.assertEqual(expected, followed)
 
 
+class FunctionCallDifferentialTests(unittest.TestCase):
+    """The guard reads a function's body wherever pwsh runs it, whatever words the call passes."""
+
+    def test_the_guard_reads_each_function_body_pwsh_runs(self) -> None:
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if pwsh is None:
+            raise AssertionError("pwsh was not found on PATH; pwsh checks the guard's reading of a function call")
+        # Each definition, with BODY standing for its body, and the call after it.
+        forms = (
+            ("function f { BODY }", "f"),
+            ("function f { BODY }", "f extra"),
+            ("function f { BODY }", "f -Name extra"),
+            ("function f($a) { BODY }", "f one two"),
+            ("function f { param($a) BODY }", "f -b one"),
+            ("function f { [CmdletBinding()] param() BODY }", "f"),
+            ("function f { [CmdletBinding()] param() BODY }", "f extra"),
+            ("function f { param([Parameter()] $a) BODY }", "f one two"),
+        )
+        for definition, call in forms:
+            ran_script = f"{definition.replace('BODY', 'Write-Output BODY-RAN')}; {call}"
+            result = run_bounded(
+                [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-c", ran_script], 120, env=os.environ
+            )
+            ran = "BODY-RAN" in result.stdout.decode("utf-8", "replace")
+            text = f"{definition.replace('BODY', 'git status')}; {call}"
+            reading = hub_guard.Reading(dict(os.environ), text)
+            hub_guard.read_powershell(text, None, reading, 0, {})
+            with self.subTest(definition=definition, call=call, ran=ran):
+                self.assertEqual([], reading.unread)
+                if ran:
+                    self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
+
 class BashDifferentialTests(unittest.TestCase):
     """After each builtin that may set GIT_DIR, the guard reads the value Bash gives it, or leaves it unsettled."""
 
