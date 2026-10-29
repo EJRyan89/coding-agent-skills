@@ -354,9 +354,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
   read in either shell, by every spelling pwsh takes for a parameter: a leading `-`, en dash, em dash, or
   horizontal bar, that dash doubled, as in `--command`, white space around the word, and a leading `/`, as in
   `/Command`, on every platform. `tests/tools/test_hub_guard_shells.py` runs pwsh on these spellings and Bash on
-  the builtins above that set a variable, and holds the guard to what each shell does. Each nested shell is read as
-  a process of its own that starts with the variables its parent exported; its directory and what it exports do not
-  outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
+  the builtins above that set a variable, and holds the guard to what each shell does. `bash` runs as its `-c`
+  script the first word after all of its options and a `--`, as in `bash -c -e '<script>'`, and Windows PowerShell
+  runs a leading word that names no parameter as `-Command`, as in `powershell '<script>'`, where `pwsh` runs it as a
+  script file. Each nested shell is read as a process of its own that starts with the variables its parent exported,
+  in its parent's directory or the one `pwsh -WorkingDirectory` (`-wd`) names, read from there; its directory and
+  what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
   the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the

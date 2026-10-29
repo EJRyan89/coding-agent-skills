@@ -1344,8 +1344,7 @@ class BashReader:
             script = bash_script(arguments, redirects, shell)
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read_bash)
         elif program in POWERSHELL_NAMES:
-            script = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
-            follow(program, script, shell.cwd, variables, self.reading, self.depth, read_powershell)
+            follow_powershell(program, arguments, shell.cwd, variables, self.reading, self.depth)
         elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
             command = started_command(program, arguments, shell.cwd, variables, self.reading)
             if command is not None:
@@ -1790,21 +1789,23 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
 
 
 def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], shell: Shell) -> list[Word] | None:
-    """The one word bash runs from -c, alone or in a bundle such as -lc, or, with no script file or with -s, the
-    here-string or here-document it reads; [None], a script the text does not hold, for one it reads from a pipe or
-    the standard input the command inherits; None for a script file, which the guard does not read."""
+    """The one word bash runs from -c, alone or in a bundle such as -lc: its first operand, after every option and a
+    `--`, as in `bash -c -e '<script>'`; or, with no script file or with -s, the here-string or here-document it reads;
+    [None], a script the text does not hold, for one it reads from a pipe or the standard input the command inherits;
+    None for a script file, which the guard does not read."""
     index = 0
-    from_input = False
+    from_input = command_mode = False
     while index < len(arguments):
         word = arguments[index]
         if word is None or not word.startswith(("-", "+")) or word == "--":
             index += word == "--"
             break
-        if not word.startswith("--") and "c" in word[1:]:
-            return arguments[index + 1 : index + 2]
+        command_mode = command_mode or (not word.startswith("--") and "c" in word[1:])
         # -s reads the script from standard input and takes every operand as a positional parameter.
         from_input = from_input or (word.startswith("-") and not word.startswith("--") and "s" in word[1:])
         index += 2 if word in BASH_OPTIONS_WITH_VALUE else 1
+    if command_mode:
+        return arguments[index : index + 1]
     if index < len(arguments) and not from_input:
         return None  # a script file, which the guard does not read
     script: list[Word] | None = [None]
@@ -1870,6 +1871,53 @@ def powershell_reads_input(arguments: list[Word]) -> bool:
             return following == "-"
         index += 2 if powershell_takes_value(word) else 1
     return True
+
+
+def powershell_arguments(program: str, arguments: list[Word]) -> list[Word]:
+    """The arguments as the shell reads them: Windows PowerShell runs a leading word that names no parameter as
+    -Command does, every word from it on, where pwsh runs it as a script file, so for Windows PowerShell -Command goes
+    before that word. A word the text does not settle, an inline command, a script file, or an encoded command before
+    it leaves the arguments as they are."""
+    if program != "powershell":
+        return arguments
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None or powershell_starts_script(word):
+            return arguments
+        name = powershell_switch(word)
+        if name is None:
+            return [*arguments[:index], "-Command", *arguments[index:]]
+        if not name:
+            return arguments
+        index += 2 if powershell_takes_value(word) else 1
+    return arguments
+
+
+def powershell_starts_script(word: str) -> bool:
+    """Whether a pwsh argument names the script it runs: an inline command, a script file, or an encoded command."""
+    script = (("encodedcommand", "e"), ("ec", "ec"), ("file", "f"))
+    return powershell_inline(word) is not None or powershell_parameter(word, script)
+
+
+def powershell_directory(arguments: list[Word], cwd: Path | None) -> Path | None:
+    """Where a pwsh started with these arguments in cwd starts: the directory -WorkingDirectory (-wd) names before its
+    script, read from cwd, or else cwd; None when the text does not settle it."""
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None:
+            return None  # it may be -WorkingDirectory
+        if not powershell_switch(word) or powershell_starts_script(word):
+            return cwd
+        if powershell_parameter(word, (("workingdirectory", "wo"), ("wd", "wd"))):
+            value = arguments[index + 1] if index + 1 < len(arguments) else None
+            if value is None:
+                return None
+            path = Path(platform_support.from_shell_path(value))
+            return path if path.is_absolute() else None if cwd is None else cwd / path
+        index += 2 if powershell_takes_value(word) else 1
+    return cwd
 
 
 def powershell_takes_value(word: str) -> bool:
@@ -1940,6 +1988,15 @@ def follow(
         reading.cannot_read(f"could not read the command passed to {name}")
         return
     read(" ".join(word for word in script if word is not None), cwd, reading, depth + 1, variables)
+
+
+def follow_powershell(
+    program: str, arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading, depth: int
+) -> None:
+    """Reads the script a pwsh or Windows PowerShell started in cwd runs, where -WorkingDirectory starts it."""
+    arguments = powershell_arguments(program, arguments)
+    script: list[Word] | None = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
+    follow(program, script, powershell_directory(arguments, cwd), variables, reading, depth, read_powershell)
 
 
 def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int, variables: Variables) -> None:
@@ -2051,6 +2108,8 @@ class Region:
     kind: str
     name: str
     children: list[Region | dict[str, Any]] = field(default_factory=list)
+    # A child pwsh's words as the reader reports them, its name first, from which where it starts is read.
+    words: list[Any] = field(default_factory=list)
 
 
 def event_tree(events: list[dict[str, Any]]) -> list[Region | dict[str, Any]]:
@@ -2059,7 +2118,7 @@ def event_tree(events: list[dict[str, Any]]) -> list[Region | dict[str, Any]]:
     for event in events:
         kind = event.get("kind")
         if kind == "open":
-            region = Region(str(event.get("region")), str(event.get("name") or ""))
+            region = Region(str(event.get("region")), str(event.get("name") or ""), words=event.get("words") or [])
             stack[-1].children.append(region)
             stack.append(region)
         elif kind == "close":
@@ -2159,7 +2218,9 @@ class PowerShellReader:
             session.functions[region.name.lower()] = region.children
             return session
         if region.kind == "child":
-            self.run(region.children, session.copy())
+            child = session.copy()
+            child.cwd = powershell_directory([session.word(word) for word in region.words[1:]], session.cwd)
+            self.run(region.children, child)
             return session
         if region.kind == "branch":
             return join_sessions(session, self.run(region.children, session.copy()))
@@ -2228,8 +2289,12 @@ class PowerShellReader:
             self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
         elif name in POWERSHELL_NAMES:
             # The reader follows a pwsh the session starts with an inline script; one it reads from its standard
-            # input, the text does not hold.
-            if powershell_reads_input(arguments):
+            # input, the text does not hold. Windows PowerShell runs a leading word that names no parameter as
+            # -Command, which the reader does not see, so that script is followed here.
+            started = powershell_arguments(name, arguments)
+            if started is not arguments:
+                follow_powershell(name, arguments, session.cwd, session.variables, self.reading, self.depth)
+            elif powershell_reads_input(arguments):
                 self.reading.cannot_read(f"could not read the command passed to {name}")
         else:
             self.environment_change(name, parameters, session, reported)
@@ -2246,8 +2311,7 @@ class PowerShellReader:
             script = bash_script(arguments, [], Shell(None, {}, set()))
             follow(name, script, cwd, variables, self.reading, self.depth, read_bash)
         elif name in POWERSHELL_NAMES:
-            script = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
-            follow(name, script, cwd, variables, self.reading, self.depth, read_powershell)
+            follow_powershell(name, arguments, cwd, variables, self.reading, self.depth)
         elif name in ENV_NAMES or name in PREFIX_PROGRAMS:
             command = started_command(name, arguments, cwd, variables, self.reading)
             if command is not None:
