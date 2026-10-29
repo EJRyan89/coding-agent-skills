@@ -83,10 +83,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import contextlib
 import itertools
 import os
 import re
+import stat
 import string
 import sys
 import tempfile
@@ -100,6 +100,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_reader
 import json_writer
+from atomic_file import replace_text
 from console import run_main
 from executable_locator import environment_path
 from file_presence import is_present
@@ -112,6 +113,8 @@ from path_keys import path_key
 from skill_roots import skills_directory_holding
 
 INDEX_NAME = "MEMORY.md"
+# The permissions of an index the rebuild creates: its owner writes it and everyone reads it, as Claude Code's files.
+NEW_INDEX_MODE = 0o644
 # The deployer's ownership manifest beside the skills it deploys, and where a source checkout keeps a skill.
 MANIFEST_NAME = ".deploy-manifest.json"
 SETTINGS_NOTE = (
@@ -676,15 +679,14 @@ def reindex(memory_dir: Path) -> dict[str, Any]:
 
 
 def write_index(path: Path, content: str) -> None:
-    """Replace MEMORY.md atomically; nothing else in the directory is touched, even when the write fails."""
-    temporary = path.with_name(f".{path.name}.tmp")
+    """Replace MEMORY.md atomically, keeping its permissions, through ejryan89-skill-core's `atomic_file`, which stages
+    the new index in a file it creates under a fresh name; nothing else in the directory is touched or left behind,
+    even when the write fails."""
     try:
-        temporary.write_bytes(content.encode("utf-8"))
-        temporary.replace(path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            temporary.unlink(missing_ok=True)
-        raise
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = NEW_INDEX_MODE
+    replace_text(path, content, mode=mode)
 
 
 def bare_name(name: str) -> bool:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -15,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import csharp_layout as layout
 import dotnet_solution
 import whole_number
@@ -283,7 +286,7 @@ class FileTests(unittest.TestCase):
 
     def file_list(self, *names: str) -> Path:
         path = self.root / "files.txt"
-        path.write_text("".join(f"{name}\n" for name in names), encoding="utf-8")
+        path.write_text("".join(f"{name}\0" for name in names), encoding="utf-8")
         return path
 
     def test_check_and_fix_preserve_bom_crlf_and_legacy_encoding(self) -> None:
@@ -296,7 +299,7 @@ class FileTests(unittest.TestCase):
         clean = self.root / "Clean.cs"
         clean.write_bytes(b"class D { }\n")
         file_list = self.root / "files.txt"
-        file_list.write_text("Src/With Space.cs\nLegacy.cs\nClean.cs\n", encoding="utf-8")
+        file_list.write_text("Src/With Space.cs\0Legacy.cs\0Clean.cs\0", encoding="utf-8")
 
         status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list))
         self.assertEqual(1, status, "violations are findings")
@@ -356,7 +359,7 @@ class FileTests(unittest.TestCase):
         original = b"class C\n{\n    #region A\n\n    void M()\n    {\n    #endregion\n    }\n}\n"
         path.write_bytes(original)
         file_list = self.root / "files.txt"
-        file_list.write_text("Scope.cs\n", encoding="utf-8")
+        file_list.write_text("Scope.cs\0", encoding="utf-8")
         status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
         self.assertEqual(1, status, "a violation --fix cannot fix remains")
         self.assertEqual(["VIOLATION", "Scope.cs", "7", "error", "region-scope"], lines[0][:5])
@@ -436,7 +439,7 @@ class FileTests(unittest.TestCase):
         self.assertIn("absent.txt", lines[0][0])
 
         undecodable = self.root / "files.txt"
-        undecodable.write_bytes(b"caf\xe9.cs\n")
+        undecodable.write_bytes(b"caf\xe9.cs\0")
         for command in (("check",), ("config", "--solution", "App.sln")):
             with self.subTest(command=command[0]):
                 status, lines = self.main(*command, "--repo-root", str(self.root), "--file-list", str(undecodable))
@@ -444,19 +447,51 @@ class FileTests(unittest.TestCase):
 
     def test_an_empty_file_list_fails_as_the_formatter_does(self) -> None:
         empty = self.root / "files.txt"
-        empty.write_text(" \n\n", encoding="utf-8")
+        empty.write_text("", encoding="utf-8")
         for command in (("check",), ("config", "--solution", "App.sln")):
             with self.subTest(command=command[0]):
                 status, lines = self.main(*command, "--repo-root", str(self.root), "--file-list", str(empty))
                 self.assertEqual((1, [[f"FAILED {empty} lists no files"]]), (status, lines))
 
-    def test_an_unwritable_source_file_fails(self) -> None:
-        (self.root / "Fixable.cs").write_bytes(b"#region A\n\n#endregion A\n")
+    def test_a_fix_whose_write_fails_part_way_leaves_the_file_as_it_was(self) -> None:
+        fixable = self.root / "Fixable.cs"
+        original = b"\xef\xbb\xbf#region A\n\n#endregion A\n"
+        fixable.write_bytes(original)
         file_list = self.file_list("Fixable.cs")
-        denied = PermissionError(13, "Permission denied", "Fixable.cs")
-        with mock.patch.object(Path, "write_bytes", side_effect=denied):
+        write = os.write
+        full = OSError(28, "No space left on device")
+
+        def part_way(descriptor: int, data: bytes | memoryview) -> int:
+            write(descriptor, bytes(data[:4]))
+            raise full
+
+        with mock.patch.object(os, "write", side_effect=part_way):
             status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
-        self.assertEqual((1, [["FAILED [Errno 13] Permission denied: 'Fixable.cs'"]]), (status, lines))
+        self.assertEqual((1, [["FAILED [Errno 28] No space left on device"]]), (status, lines))
+        self.assertEqual(original, fixable.read_bytes())
+        self.assertEqual(["Fixable.cs", "files.txt"], sorted(path.name for path in self.root.iterdir()))
+
+    def test_a_fix_keeps_a_lone_surrogate_a_file_with_a_byte_order_mark_holds(self) -> None:
+        # The bytes ED A0 80 encode U+D800, which only surrogatepass reads and writes back.
+        fixable = self.root / "Fixable.cs"
+        fixable.write_bytes(b"\xef\xbb\xbf// \xed\xa0\x80\n#region A\n\n#endregion A\n")
+        status, lines = self.main(
+            "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Fixable.cs")), "--fix"
+        )
+        self.assertEqual((0, "FIXED"), (status, lines[0][0]))
+        self.assertEqual(b"\xef\xbb\xbf// \xed\xa0\x80\n#region A\n\n#endregion\n", fixable.read_bytes())
+
+    def test_a_fix_keeps_the_file_permissions(self) -> None:
+        fixable = self.root / "Fixable.cs"
+        fixable.write_bytes(b"#region A\n\n#endregion A\n")
+        fixable.chmod(0o640)
+        before = stat.S_IMODE(fixable.stat().st_mode)
+        status, lines = self.main(
+            "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Fixable.cs")), "--fix"
+        )
+        self.assertEqual((0, "FIXED"), (status, lines[0][0]))
+        self.assertEqual(b"#region A\n\n#endregion\n", fixable.read_bytes())
+        self.assertEqual(before, stat.S_IMODE(fixable.stat().st_mode))
 
     def test_fix_never_writes_a_file_that_is_or_lies_below_a_link(self) -> None:
         original = b"#region A\n\n#endregion A\n"
@@ -611,7 +646,7 @@ class ConfigTests(unittest.TestCase):
         self.services = Services(run=self.msbuild, which=lambda name: name)
 
     def changed(self, *names: str) -> None:
-        self.file_list.write_text("".join(f"{name}\n" for name in names), encoding="utf-8")
+        self.file_list.write_text("".join(f"{name}\0" for name in names), encoding="utf-8")
 
     def run_config(self, *extra: str, solution: str = "App.sln") -> tuple[int, dict[str, list[list[str]]]]:
         output, errors = io.StringIO(), io.StringIO()
@@ -678,12 +713,20 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual([], self.msbuild.calls)
                 self.assertFalse((self.root / ".editorconfig").exists())
 
+    def test_an_editorconfig_the_apply_adds_is_readable_by_everyone_and_writable_by_its_owner(self) -> None:
+        with mock.patch("csharp_layout.replace_bytes", wraps=atomic_file.replace_bytes) as replace:
+            status, grouped = self.run_config("--apply")
+        self.assertEqual(0, status, grouped)
+        self.assertEqual([0o644], [call.kwargs["mode"] for call in replace.call_args_list])
+        self.assertTrue((self.root / ".editorconfig").is_file())
+
     def test_an_unwritable_editorconfig_fails_after_reporting(self) -> None:
         denied = PermissionError(13, "Permission denied", ".editorconfig")
-        with mock.patch.object(Path, "write_bytes", side_effect=denied):
+        with mock.patch.object(tempfile, "mkstemp", side_effect=denied):
             status, grouped = self.run_config("--apply")
         self.assertEqual(1, status)
         self.assertEqual("FAILED [Errno 13] Permission denied: '.editorconfig'", list(grouped)[-1])
+        self.assertFalse((self.root / ".editorconfig").exists())
         self.assertEqual(7, len(grouped["SETTING"]))
         self.assertNotIn("ADDED", grouped)
 

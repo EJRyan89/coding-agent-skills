@@ -56,7 +56,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
-  `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`
+  `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
+  `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
@@ -169,8 +170,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
   `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
-  has `\d+` rather than `\d{1,N}`; `.isdigit()` before an `int(`, which admits digits `int` reads past any bound;
-  `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
+  has `\d+` or `[0-9]+` rather than a bounded count; `.isdigit()` before an `int(`, which admits digits `int` reads
+  past any bound; `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
   `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
   bounds no length; a refusal worded "more than N digits" for a `\d` group,
   which also admits digits that are not ASCII.
@@ -269,6 +270,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `untested_functions:parse_python`, which reads the Python parser's overflow as the syntax error its callers handle.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_scalar_is_no_level_so_one_at_the_limit_reads_as_an_empty_container_does`,
   `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
   `skills/dotnet-format/scripts/test_csharp_layout.py::test_braces_nested_past_the_shared_depth_limit_fail_by_name`,
   `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::ConditionTests::test_negations_and_parentheses_nested_past_the_shared_depth_limit_are_not_settled`,
@@ -327,15 +329,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `json_writer:dumps` for JSON text and `json_writer:write` for a JSON file, which refuse a non-finite
   number, a lone surrogate, and what `json_reader:loads` refuses on the read-back, by name, at the write;
   `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`, and
-  `json_reader:loads`, which refuses a number too large for a float before it becomes an infinity the writer refuses.
+  `json_reader:loads`, which refuses a number too large for a float before it becomes an infinity the writer refuses,
+  and a lone surrogate the writer cannot encode.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_number_that_overflows_to_an_infinity_is_refused_whatever_its_sign_or_nesting`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::AcceptanceTests::test_what_the_reader_accepts_the_writer_writes`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_writer_is_the_one_writer_of_json`,
   `tests/validation/test_python_checks.py::test_json_write_policy_refuses_a_json_write_outside_json_writer`,
   `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
 - **Search for:** `rg -n "json\.dumps?\(" | rg -v allow_nan=False`; `write_text(json.dumps(`; input written back
   without the later reader's pass.
-- **Examples:** #1552, #1634, #1874, #1906, #2006
+- **Examples:** #1552, #1634, #1874, #1906, #2006, #2039
 
 ### A record separator is one the data cannot hold
 
@@ -353,7 +357,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_mutation_gate.py::test_the_gate_reads_a_changed_module_whose_path_holds_a_non_ascii_character_or_a_newline`,
   `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
   `tests/tools/test_release_notes.py::RangeEntriesTests::test_a_message_holding_any_byte_but_nul_is_read_whole`,
-  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_a_line_holding_a_nul_is_refused_naming_it`
+  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_every_name_reads_back_as_resolve_writes_it`
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output.
@@ -434,6 +438,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   above zero and finite.
 - **Examples:** #1756, #1837, #1883, #1899
 
+### A deadline holds every step its promise names
+
+- **Rule:** A deadline a document promises holds every step the promise names, each process a step starts given no
+  more than the time left, never only the steps that check the clock themselves.
+- **Why:** A step that keeps its own fixed timeout, or that runs between two looks at the clock, can outlast the
+  deadline by as much as the input asks of it, and the promise past it, such as the hook's own timeout, is broken
+  unseen.
+- **Use:** `tools.hub_guard:lookups_within`, which holds every hub lookup made inside it to the reading deadline, and
+  `tools.hub_guard:lookup_timeout`, the timeout each of their git calls takes.
+- **Guard:** `tests/tools/test_hub_guard.py::ReadingBoundTests::test_the_hub_lookups_after_reading_end_with_the_reading_time`,
+  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookups_git_call_gets_what_is_left_of_the_reading_time`
+- **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
+  as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
+  each item's work starts processes; a deadline set after work it promises to bound has begun.
+- **Examples:** #2031
+
 ### A check reaches its whole rule
 
 - **Rule:** A policy, an audit brief, or a gate reaches every place its rule covers, in every language the fact is
@@ -475,9 +495,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   changelog entries that touch a term the code uses are exercised or read against its latest release on a schedule.
 - **Why:** A release that drops a flag or changes a behavior otherwise breaks every run, or leaves a document wrong,
   until someone happens to probe it.
-- **Use:** `check_provenance:load`, `guidance_record:canonical_url`; a policy that each runtime statement in the
+- **Use:** `check_provenance:load`, `guidance_record:canonical_url`, and `tools.runtime_changelogs:watch`, which
+  the Runtime Changelogs workflow runs weekly as an advisory watch that refuses nothing: it lists the
+  changelog entries and moved guidance pages for a reader to act on; a policy that each runtime statement in the
   support pages links a page the guidance record lists is the mechanism in #1912.
-- **Guard:** `.github/workflows/runtime-command-lines.yml`, `.github/workflows/runtime-changelogs.yml`,
+- **Guard:** `.github/workflows/runtime-command-lines.yml`,
   `tests/tools/test_runtime_command_lines.py::CapturedTests::test_each_runtimes_real_refusal_of_a_flag_is_read_as_one`,
   `tests/tools/test_captured_samples.py::test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not`
 - **Search for:** a sentence about a runtime's behavior in `docs/*-support.md` or `docs/installation.md` with no
@@ -509,12 +531,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 ### A pipe's reader never ends before its writer under `pipefail`
 
-- **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, never through a pipe into a
-  reader that exits at its first match.
-- **Why:** `grep -q` exits at its match, the writer then fails with `SIGPIPE`, and `pipefail` makes that an
-  intermittent failure.
-- **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_grep_that_ends_at_its_match`
-- **Search for:** `| grep -q` or `| head -n` in a `.sh` file that runs `set -o pipefail` or `set -euo pipefail`.
+- **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, and a first line by parameter
+  expansion, never through a pipe into a reader that exits early: `grep -q` or `-m`, or `head`.
+- **Why:** `grep -q` exits at its match and `head` at its count, the writer then fails with `SIGPIPE`, and `pipefail`
+  makes that an intermittent failure.
+- **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_reader_that_ends_early`
+- **Search for:** `| grep -q`, `| grep -m`, or `| head` in any form, `-n`, `-c`, `-1`, or alone, in a `.sh` file
+  that runs `set -o pipefail` or `set -euo pipefail`.
 - **Examples:** #1557, #1602
 
 ### A program whose status is the verdict starts with no shell above it

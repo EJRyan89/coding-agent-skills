@@ -1030,11 +1030,13 @@ class AnsweringGit:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
+        self.timeouts: list[float] = []
         self.answers: dict[tuple[str, ...], list[GitResult | GitError]] = {}
 
     def __call__(self, command: Sequence[str], timeout: float) -> GitResult:
         key = tuple(command)
         self.calls.append(key)
+        self.timeouts.append(timeout)
         answers = self.answers.get(key[3:])
         if answers:
             answer = answers.pop(0)
@@ -1133,6 +1135,15 @@ class PrepareGitRunnerTests(unittest.TestCase):
                 first = runner(in_checkout(*arguments), 30)
                 self.assertIs(first, runner(in_checkout(*arguments), 60), "the first answer, whatever the time limit")
                 self.assertEqual([in_checkout(*arguments)], git.calls)
+
+    def test_every_command_it_runs_keeps_its_callers_time_limit(self) -> None:
+        # A query it reuses, one it asks each time, and one that may write each run within the caller's limit.
+        commands = [in_checkout(*self.COMMIT), in_checkout(*self.ASKED_EACH_TIME[0]), self.NOT_READS[0]]
+        for command in commands:
+            with self.subTest(command=command):
+                git = AnsweringGit()
+                PrepareGitRunner(git)(command, 17)
+                self.assertEqual([17], git.timeouts)
 
     def test_another_checkout_or_another_object_is_asked_again(self) -> None:
         git = AnsweringGit()
