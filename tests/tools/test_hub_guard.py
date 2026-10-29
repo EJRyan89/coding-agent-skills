@@ -1979,6 +1979,31 @@ class ContractTests(GuardTestCase):
         self.assertIsNone(self.bash(f'TREE="{self.tree}"; cd "$TREE" && git commit -m x', self.hub))
         self.assertIsNone(self.bash('cd "$PWD" && git commit -m x', self.tree))
 
+    def test_an_alias_or_a_script_block_built_from_a_string_is_refused_while_a_hub_is_guarded(self) -> None:
+        for tool, command in (
+            ("Bash", "alias g=git\ng switch feat/demo"),
+            ("Bash", "alias g='git switch'; g feat/demo"),
+            ("Bash", "builtin alias g=git\ng switch feat/demo"),
+            ("PowerShell", "[scriptblock]::Create('git switch feat/demo').Invoke()"),
+            ("PowerShell", "& ([ScriptBlock]::Create('git switch feat/demo'))"),
+            ("PowerShell", "$ExecutionContext.InvokeCommand.NewScriptBlock('git switch feat/demo').Invoke()"),
+            ("PowerShell", "$ExecutionContext.InvokeCommand.InvokeScript('git switch feat/demo')"),
+            ("PowerShell", "Set-Alias g git; g switch feat/demo"),
+            ("PowerShell", "New-Alias -Name g -Value git; g switch feat/demo"),
+            ("PowerShell", "Set-Item alias:g git; g switch feat/demo"),
+        ):
+            event = {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(self.hub)}
+            with self.subTest(tool=tool, command=command):
+                self.assertEqual("deny", self.decision(event))
+                self.assertIn("The guard could not read part of this command", self.reason)
+        # Listing aliases defines none, and with no guarded hub in view the same command is allowed with a note.
+        self.assertIsNone(self.bash("alias; alias -p; git status", self.hub))
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.assertIsNone(self.bash("alias g=git\ng switch feat/demo", outside))
+        self.assertIn("an alias the command defines (alias)", self.stderr)
+        self.assertIsNone(self.powershell("Copy-Item a.txt b.txt; git status", self.hub))
+
     def test_pwsh_command_with_args_is_read_as_its_script(self) -> None:
         script = f'git -C "{self.hub}" switch feat/demo'
         self.assertEqual("deny", self.bash(f"pwsh -cwa '{script}'", self.tree))

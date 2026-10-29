@@ -246,6 +246,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `tests/tools/test_hub_guard.py::test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call`,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
+  `tests/tools/test_hub_guard.py::ContractTests::test_an_alias_or_a_script_block_built_from_a_string_is_refused_while_a_hub_is_guarded`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; a `re.compile(` in
   `tools/runtime_*.py` or `deployer/discovery.py` with no sample under `tests/fixtures/captured-output/`; each
