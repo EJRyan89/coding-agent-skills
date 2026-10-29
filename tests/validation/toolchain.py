@@ -461,7 +461,7 @@ class ToolchainPolicies(unittest.TestCase):
         mutation_lock = (REPOSITORY_ROOT / MUTATION_LOCK).read_text(encoding="utf-8")
         self.assertEqual([], lock_problems(mutation_lock, development + mutation, locked))
         # Every workflow is read, and one that installs no lock may run no pip install.
-        expected = {"validate.yml": (("requirements-dev.txt",), 2), "mutation.yml": (("requirements-mutation.txt",), 1)}
+        expected = {"validate.yml": (("requirements-dev.txt",), 2), "mutation.yml": (("requirements-mutation.txt",), 3)}
         workflows = sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.y*ml"))
         self.assertLessEqual(set(expected), {workflow.name for workflow in workflows})
         for workflow in workflows:

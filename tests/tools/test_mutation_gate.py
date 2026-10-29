@@ -30,21 +30,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from git_client import GitClient
 
+from deployer import platform_support
 from tools import mutation_gate
 from tools.mutation_gate import (
     KILLED,
+    LINUX_LEG,
     NOT_REACHED,
     NOT_RUN,
     PASSED,
     SURVIVED,
     TIMED_OUT,
+    WINDOWS_LEG,
     Gate,
+    LegRun,
     ModuleReport,
     Mutant,
     Outcome,
     Reach,
     ReachRunner,
     Report,
+    Selected,
+    SelectedModule,
     SuiteRunner,
     Workers,
     changed_lines,
@@ -59,20 +65,29 @@ from tools.mutation_gate import (
     executed_tests,
     generator_problem,
     is_gate_module,
+    joined,
     kill_ratio,
+    leg_modules,
+    leg_record,
     module_mutants,
     named_in,
+    needed_legs,
     no_module_line,
     policy_tables,
     queue_order,
+    read_leg,
+    read_selection,
     run_suite,
+    runs_on_windows,
     sanction_table,
+    selection_record,
     suite_plan,
     suite_selection,
     summary,
     try_mutant,
     try_mutants,
     unfinished_line,
+    verdict,
 )
 
 
@@ -1201,18 +1216,23 @@ def test_the_queue_takes_one_mutant_from_each_module_in_turn() -> None:
     assert [first[0], second[0], first[1], first[2]] == queue_order([first, [], second])
 
 
+def linux_module(module: str, outcomes: list[Outcome], lines: int) -> ModuleReport:
+    """A module the Linux leg alone ran, or, with no outcomes, one no leg ran."""
+    return ModuleReport(module, lines, (), {LINUX_LEG: outcomes} if outcomes else {})
+
+
 class SummaryFixtures(unittest.TestCase):
-    def report(self, outcomes: list[Outcome], cut_short: bool = False, lines: int = 12) -> Report:
-        return Report(
-            "origin/main",
+    def report(self, outcomes: list[Outcome], lines: int = 12) -> Report:
+        leg = LegRun(
+            LINUX_LEG,
             40,
             600.0,
             4,
-            "3.8.0",
-            [ModuleReport("tools/calc.py", outcomes, cut_short, lines)],
+            {"tools/calc.py": outcomes},
             {"tests/broken.py": "failed unmutated with exit code 1"},
             ["tests/late.py"],
         )
+        return Report("origin/main", "3.8.0", [linux_module("tools/calc.py", outcomes, lines)], [leg])
 
     def test_the_kill_ratio_counts_timeouts_as_killed_and_leaves_out_what_was_not_tested(self) -> None:
         found = {KILLED: 6, TIMED_OUT: 1, SURVIVED: 3, NOT_REACHED: 4, NOT_RUN: 2}
@@ -1223,14 +1243,19 @@ class SummaryFixtures(unittest.TestCase):
         survivor = Outcome(mutant(4), SURVIVED, ("tests/fast.py", "tests/slow.py"))
         outcomes = [Outcome(mutant(1), KILLED, ("tests/fast.py",)), survivor, Outcome(mutant(9), NOT_REACHED)]
         text = summary(self.report(outcomes))
-        self.assertIn("| `tools/calc.py` | 12 | 3 | 1 | 0 | 1 | 1 | 0 | 50% (1 of 2) |", text)
+        self.assertIn("| `tools/calc.py` | Linux | 12 | 3 | 1 | 0 | 1 | 1 | 0 | 50% (1 of 2) |", text)
         self.assertIn("### `tools/calc.py`: 1 surviving mutant\n", text)
-        self.assertIn("- Line 4: `line 4` became `mutated 4`; passed `tests/fast.py`, `tests/slow.py`", text)
+        self.assertIn("- Line 4: `line 4` became `mutated 4`; passed `tests/fast.py`, `tests/slow.py` on Linux\n", text)
         self.assertIn("mutants made by mutmut 3.8.0 on the lines the pull request changed", text)
         self.assertNotIn("mutmut made no mutant", text)
-        self.assertIn("4 workers ran for 10 of the 40 minutes", text)
-        self.assertIn("`tests/broken.py` failed unmutated with exit code 1, so no mutant ran against it.", text)
-        self.assertIn("left these suites' reach unmeasured, so no mutant ran against them: `tests/late.py`.", text)
+        self.assertIn("- On Linux, 4 workers ran for 10 of its 40 minutes; a mutant ran", text)
+        self.assertIn(
+            "`tests/broken.py` failed unmutated with exit code 1 on Linux, so no mutant ran against it there.", text
+        )
+        self.assertIn(
+            "left these suites' reach unmeasured on Linux, so no mutant ran against them there: `tests/late.py`.", text
+        )
+        self.assertNotIn("killed on one leg alone", text)
         self.assertNotIn("cut", text.split("Kill ratio")[1].split("###")[0].replace("unmutated", ""))
 
     def test_the_summary_names_each_mutant_not_reached_by_line_and_mutation_under_its_module(self) -> None:
@@ -1241,14 +1266,12 @@ class SummaryFixtures(unittest.TestCase):
             Outcome(mutant(9), NOT_REACHED),
         ]
         report = self.report(outcomes)
-        report.modules.append(
-            ModuleReport("tools/other.py", [Outcome(mutant(2, "tools/other.py"), NOT_REACHED)], False, 1)
-        )
+        report.modules.append(linux_module("tools/other.py", [Outcome(mutant(2, "tools/other.py"), NOT_REACHED)], 1))
         text = summary(report)
         self.assertTrue(
             text.endswith(
                 "### `tools/calc.py`: 1 surviving mutant\n\n"
-                "- Line 3: `line 3` became `mutated 3`; passed `t`\n\n"
+                "- Line 3: `line 3` became `mutated 3`; passed `t` on Linux\n\n"
                 "### `tools/calc.py`: 2 mutants not reached\n\n"
                 "- Line 5: `` `a` `` became `b`; no suite executed its statement\n"
                 "- Line 9: `line 9` became `mutated 9`; no suite executed its statement\n\n"
@@ -1264,7 +1287,7 @@ class SummaryFixtures(unittest.TestCase):
         text = summary(self.report([survivor]))
         self.assertIn(
             "- Line 4: `line 4` became `mutated 4`; passed `tests/fast.py` (3 tests that ran the line), "
-            "`tests/slow.py`, `tests/one.py` (1 test that ran the line)",
+            "`tests/slow.py`, `tests/one.py` (1 test that ran the line) on Linux",
             text,
         )
 
@@ -1278,12 +1301,12 @@ class SummaryFixtures(unittest.TestCase):
         self.assertEqual({KILLED: 2, TIMED_OUT: 0, SURVIVED: 2, NOT_REACHED: 0, NOT_RUN: 0}, counts(outcomes))
         text = summary(self.report(outcomes))
         self.assertIn("### `tools/calc.py`: 2 surviving mutants", text)
-        self.assertIn("- Line 3: `line 3` became `mutated 3`; passed `t`", text)
-        self.assertIn("- Line 5: `line 5` became `mutated 5`; passed `t`", text)
+        self.assertIn("- Line 3: `line 3` became `mutated 3`; passed `t` on Linux", text)
+        self.assertIn("- Line 5: `line 5` became `mutated 5`; passed `t` on Linux", text)
 
     def test_a_changed_module_with_no_mutant_is_named_and_never_left_silent(self) -> None:
         text = summary(self.report([], lines=3))
-        self.assertIn("| `tools/calc.py` | 3 | 0 | 0 | 0 | 0 | 0 | 0 | none tested |", text)
+        self.assertIn("| `tools/calc.py` | none | 3 | 0 | 0 | 0 | 0 | 0 | 0 | none tested |", text)
         self.assertIn(
             "\n`tools/calc.py`: mutmut made no mutant on the 3 lines this pull request changed, so none ran.\n", text
         )
@@ -1311,40 +1334,40 @@ class SummaryFixtures(unittest.TestCase):
         )
         self.assertNotIn("mutmut made no mutant", text)
         # A module report built without tables holds an empty tuple of them, never None.
-        self.assertEqual((), ModuleReport("tools/calc.py", [], False, 0).tables)
+        self.assertEqual((), ModuleReport("tools/calc.py", 0).tables)
 
     def test_the_summary_says_when_the_cap_cut_a_module_short(self) -> None:
-        text = summary(self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN)], cut_short=True))
-        self.assertIn("The 40-minute cap cut `tools/calc.py` short: 1 mutants did not run.", text)
+        text = summary(self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN)]))
+        self.assertIn("The cap cut `tools/calc.py` short on Linux: 1 mutants did not run.", text)
 
     def test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts(self) -> None:
         table = Mutant("tools/calc.py", 3, "a", "b", "c", True)
         outcomes = [Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN), Outcome(table, NOT_RUN)]
-        report = self.report(outcomes, cut_short=True)
-        report.modules.append(ModuleReport("tools/other.py", [Outcome(mutant(4, "tools/other.py"), NOT_RUN)], True, 1))
+        report = self.report(outcomes)
+        report.modules.append(linux_module("tools/other.py", [Outcome(mutant(4, "tools/other.py"), NOT_RUN)], 1))
         first = summary(report).splitlines()[0]
         self.assertEqual(
-            "**Unfinished, so not a verdict:** the 40-minute cap cut the run short: 2 of the 3 mutants of "
-            "`tools/calc.py` did not run (1 on lines that run at import); 1 of the 1 mutants of `tools/other.py` did "
-            "not run; the reach of 1 suite was not measured. Split the pull request, or move its module-level tables "
-            "into the functions that use them, until it finishes.",
+            "**Unfinished, so not a verdict:** a leg's cap cut the run short: 2 of the 3 mutants of `tools/calc.py` "
+            "did not run on Linux (1 on lines that run at import); 1 of the 1 mutants of `tools/other.py` did not run "
+            "on Linux; the reach of 1 suite was not measured on Linux. Split the pull request, or move its "
+            "module-level tables into the functions that use them, until it finishes.",
             first,
         )
         self.assertEqual(["", "## Mutation gate"], summary(report).splitlines()[1:3])
 
     def test_a_reach_the_cap_left_unmeasured_alone_leaves_the_run_unfinished(self) -> None:
         report = self.report([Outcome(mutant(1), KILLED, ("t",))])
-        report.unmeasured_suites.append("tests/later.py")
+        report.legs[0].unmeasured_suites.append("tests/later.py")
         self.assertEqual(
-            "**Unfinished, so not a verdict:** the 40-minute cap cut the run short: the reach of 2 suites was not "
-            "measured. Split the pull request, or move its module-level tables into the functions that use them, "
+            "**Unfinished, so not a verdict:** a leg's cap cut the run short: the reach of 2 suites was not measured "
+            "on Linux. Split the pull request, or move its module-level tables into the functions that use them, "
             "until it finishes.",
             unfinished_line(report),
         )
 
     def test_a_finished_run_opens_on_its_heading_with_no_unfinished_line(self) -> None:
         report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_REACHED)])
-        report.unmeasured_suites.clear()
+        report.legs[0].unmeasured_suites.clear()
         self.assertIsNone(unfinished_line(report))
         self.assertEqual("## Mutation gate", summary(report).splitlines()[0])
 
@@ -1359,7 +1382,171 @@ class SummaryFixtures(unittest.TestCase):
         self.assertTrue(line.endswith("since `origin/main`, so no mutant ran.\n"))
 
 
+PATH_MODULE = "tools/paths.py"
+# A mutant like those only Windows tells apart: a path compared by its text, where Windows' own parsing drops a name's
+# trailing dots and spaces.
+TEXTUAL = Mutant(PATH_MODULE, 4, "path_key(name, textual=True)", "path_key(name, textual=False)", "source")
+
+
+def two_legs(linux: list[Outcome], windows: list[Outcome], lines: int = 5) -> Report:
+    """A run of one module both legs ran, the Windows leg handed in first, as the join may read it."""
+    selected = Selected(
+        "origin/main", "3.8.0", (SelectedModule(PATH_MODULE, lines, tuple(o.mutant for o in linux), (), True),)
+    )
+    legs = [
+        LegRun(WINDOWS_LEG, 40, 60.0, 4, {PATH_MODULE: windows}, {}, []),
+        LegRun(LINUX_LEG, 40, 120.0, 4, {PATH_MODULE: linux}, {}, []),
+    ]
+    return joined(selected, legs)
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        ((SURVIVED, KILLED), KILLED),
+        ((NOT_REACHED, TIMED_OUT), TIMED_OUT),
+        ((TIMED_OUT, KILLED), KILLED),
+        ((SURVIVED, NOT_RUN), NOT_RUN),
+        ((KILLED, NOT_RUN), KILLED),
+        ((NOT_REACHED, SURVIVED), SURVIVED),
+        ((NOT_REACHED, NOT_REACHED), NOT_REACHED),
+        ((SURVIVED,), SURVIVED),
+    ],
+)
+def test_a_mutant_is_killed_when_any_leg_killed_it_and_not_run_when_a_leg_that_might_have_did_not(
+    statuses: tuple[str, ...], expected: str
+) -> None:
+    assert verdict([Outcome(TEXTUAL, status) for status in statuses]).status == expected
+
+
+@pytest.mark.parametrize(
+    ("module", "source", "windows"),
+    [
+        ("deployer/platform_support.py", "x = 1\n", True),
+        ("skills/ejryan89-skill-core/scripts/path_keys.py", "x = 1\n", True),
+        ("tools/runner.py", 'PLATFORM_ALLOWED = {"win32": "why"}\n', True),
+        ("deployer/plan.py", "from . import platform_support\n", True),
+        ("deployer/fsops.py", "from .platform_support import WINDOWS\n", True),
+        ("tools/gate.py", "from deployer import platform_support\n", True),
+        ("tools/report.py", "from path_keys import path_key\n", True),
+        ("tools/report.py", "def probe():\n    import link_probe\n", True),
+        ("tools/report.py", 'import importlib\nimportlib.import_module("device_names")\n', True),
+        ("tools/report.py", "import os.path\nFSOPS_ALLOWED = {}\n", False),
+        ("tools/report.py", '# path_keys\nNAME = "link_probe"\n', False),
+        ("tools/path_keys_report.py", "x = 1\n", False),
+    ],
+)
+def test_the_windows_leg_runs_the_platform_seam_and_each_module_that_imports_it_or_holds_its_table(
+    module: str, source: str, windows: bool
+) -> None:
+    assert runs_on_windows(module, source) is windows
+
+
+class LegFixtures(unittest.TestCase):
+    def test_a_mutant_that_survives_on_linux_and_is_killed_on_windows_reads_as_killed_with_its_leg_named(self) -> None:
+        report = two_legs(
+            [Outcome(TEXTUAL, SURVIVED, ("tests/test_paths.py",))],
+            [Outcome(TEXTUAL, KILLED, ("tests/test_paths.py",))],
+        )
+        text = summary(report)
+        self.assertIsNone(unfinished_line(report))
+        self.assertIn("| `tools/paths.py` | Linux, Windows | 5 | 1 | 1 | 0 | 0 | 0 | 0 | 100% (1 of 1) |", text)
+        self.assertIn(
+            "### `tools/paths.py`: 1 mutant killed on one leg alone, which counts as killed\n\n"
+            "- Line 4: `path_key(name, textual=True)` became `path_key(name, textual=False)`; killed on Windows by "
+            "`tests/test_paths.py`, survived on Linux\n",
+            text,
+        )
+        self.assertNotIn("surviving", text)
+        self.assertIn(
+            "- On Linux, 4 workers ran for 2 of its 40 minutes; on Windows, 4 workers ran for 1 of its 40 minutes;",
+            text,
+        )
+
+    def test_a_mutant_no_linux_suite_reached_that_windows_kills_reads_as_killed(self) -> None:
+        folded = Mutant(PATH_MODULE, 7, "name_key(name, folder)", "name_key(name, None)", "source")
+        text = summary(
+            two_legs([Outcome(folded, NOT_REACHED)], [Outcome(folded, TIMED_OUT, ("tests/a.py", "tests/b.py"))])
+        )
+        self.assertIn("| 1 | 0 | 1 | 0 | 0 | 0 | 100% (1 of 1) |", text)
+        self.assertIn("timed out on Windows by `tests/b.py`, not reached on Linux\n", text)
+        self.assertNotIn("mutant not reached", text)
+
+    def test_a_survivor_of_both_legs_names_each_legs_suites_and_a_mutant_both_killed_is_not_listed(self) -> None:
+        both = Mutant(PATH_MODULE, 2, "a", "b", "source")
+        text = summary(
+            two_legs(
+                [Outcome(both, SURVIVED, ("tests/a.py",), (2,)), Outcome(TEXTUAL, KILLED, ("tests/a.py",))],
+                [Outcome(both, SURVIVED, ("tests/w.py",)), Outcome(TEXTUAL, KILLED, ("tests/w.py",))],
+            )
+        )
+        self.assertIn(
+            "- Line 2: `a` became `b`; passed `tests/a.py` (2 tests that ran the line) on Linux; `tests/w.py` on "
+            "Windows\n",
+            text,
+        )
+        self.assertNotIn("killed on one leg alone", text)
+
+    def test_a_linux_survivor_the_windows_leg_left_not_run_leaves_the_run_unfinished_naming_windows(self) -> None:
+        report = two_legs([Outcome(TEXTUAL, SURVIVED, ("t",))], [Outcome(TEXTUAL, NOT_RUN)])
+        self.assertEqual(
+            "**Unfinished, so not a verdict:** a leg's cap cut the run short: 1 of the 1 mutants of `tools/paths.py` "
+            "did not run on Windows. Split the pull request, or move its module-level tables into the functions that "
+            "use them, until it finishes.",
+            unfinished_line(report),
+        )
+        self.assertIn("The cap cut `tools/paths.py` short on Windows: 1 mutants did not run.", summary(report))
+        # A mutant the Linux leg killed has its verdict, whatever the Windows leg left.
+        self.assertIsNone(unfinished_line(two_legs([Outcome(TEXTUAL, KILLED, ("t",))], [Outcome(TEXTUAL, NOT_RUN)])))
+
+    def test_the_windows_leg_runs_only_the_modules_its_rule_selects_and_a_leg_with_none_is_not_needed(self) -> None:
+        platform = SelectedModule("tools/paths.py", 1, (TEXTUAL,), (), True)
+        plain = SelectedModule("tools/calc.py", 1, (mutant(1),), (), False)
+        empty = SelectedModule("tools/empty.py", 1, (), (), True)
+        selected = Selected("origin/main", "3.8.0", (platform, plain, empty))
+        self.assertEqual([platform, plain], leg_modules(LINUX_LEG, selected))
+        self.assertEqual([platform], leg_modules(WINDOWS_LEG, selected))
+        self.assertEqual([LINUX_LEG, WINDOWS_LEG], needed_legs(selected))
+        self.assertEqual([LINUX_LEG], needed_legs(Selected("origin/main", "3.8.0", (plain, empty))))
+        self.assertEqual([], needed_legs(Selected("origin/main", "3.8.0", (empty,))))
+        # A module no leg ran is named with no leg.
+        report = joined(
+            selected, [LegRun(LINUX_LEG, 40, 1.0, 1, {"tools/calc.py": [Outcome(mutant(1), KILLED)]}, {}, [])]
+        )
+        self.assertEqual(
+            [{}, {LINUX_LEG: [Outcome(mutant(1), KILLED)]}, {}], [module.legs for module in report.modules]
+        )
+
+    def test_a_selection_and_a_legs_run_read_back_as_they_were_written(self) -> None:
+        table = Mutant(PATH_MODULE, 9, "T = 1", "T = 2", "T = 2\n", True, frozenset({12, 14}))
+        chosen = SelectedModule(PATH_MODULE, 3, (TEXTUAL, table), (("X_ALLOWED", "tests/validation/x.py"),), True)
+        selected = Selected("origin/main", "3.8.0", (chosen, SelectedModule("tools/none.py", 0, ())))
+        leg = LegRun(
+            WINDOWS_LEG,
+            40,
+            12.5,
+            4,
+            {PATH_MODULE: [Outcome(TEXTUAL, KILLED, ("tests/a.py",), (2,)), Outcome(table, NOT_REACHED)]},
+            {"tests/b.py": "failed unmutated with exit code 1"},
+            ["tests/c.py"],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            mutants, outcomes = Path(temporary) / "mutants.json", Path(temporary) / "outcomes.json"
+            mutants.write_text(json.dumps(selection_record(selected)), encoding="utf-8")
+            outcomes.write_text(json.dumps(leg_record(leg)), encoding="utf-8")
+            self.assertEqual(selected, read_selection(mutants))
+            self.assertEqual(leg, read_leg(outcomes, selected))
+            # A leg's outcomes that do not match the selection's mutants one for one stop the join.
+            record = leg_record(leg)
+            record["outcomes"][PATH_MODULE].pop()
+            outcomes.write_text(json.dumps(record), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "holds 1 outcomes of tools/paths.py, not one for each"):
+                read_leg(outcomes, selected)
+
+
 CALC = "def add(a, b):\n    return a + b\n\n\ndef double(a):\n    return a * 2\n"
+# The leg every whole run in one process names: this platform's.
+HOST = platform_support.PLATFORM_NAME
 SUITE = """import sys
 import unittest
 from pathlib import Path
@@ -1444,7 +1631,7 @@ class WholeRunFixtures(unittest.TestCase):
         self.assertEqual("## Mutation gate", text.splitlines()[0])
         self.assertNotIn("Unfinished", text)
         self.assertNotIn("cap cut", text)
-        self.assertIn("| `tools/calc.py` | 6 | 2 | 1 | 0 | 1 | 0 | 0 | 50% (1 of 2) |", text)
+        self.assertIn(f"| `tools/calc.py` | {HOST} | 6 | 2 | 1 | 0 | 1 | 0 | 0 | 50% (1 of 2) |", text)
         self.assertIn(
             "- Line 6: `return a * 2` became `return a * 3`; passed `tests/tools/test_calc.py`",
             text,
@@ -1462,9 +1649,7 @@ class WholeRunFixtures(unittest.TestCase):
                 root, "main", 5, 2, GitClient(), stub_generator, stub_reach, clock=lambda: next(times), measure=measured
             ).report()
         self.assertFalse(result.finished)
-        self.assertTrue(
-            result.text.startswith("**Unfinished, so not a verdict:** the 5-minute cap cut the run short: 2")
-        )
+        self.assertTrue(result.text.startswith("**Unfinished, so not a verdict:** a leg's cap cut the run short: 2"))
 
     def test_a_changed_sanction_table_is_named_with_its_policy_and_its_modules_other_lines_still_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1484,7 +1669,7 @@ class WholeRunFixtures(unittest.TestCase):
                 return [source.replace("a * 2 + 0", "a * 3 + 0"), source.replace('"a + b"', '"a - b"')]
 
             text = Gate(root, "feature", 5, 2, GitClient(), generate, stub_reach, measure=measured).report().text
-        self.assertIn("| `tools/calc.py` | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
+        self.assertIn(f"| `tools/calc.py` | {HOST} | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
         self.assertIn("- Line 6: `return a * 2 + 0` became `return a * 3 + 0`", text)
         self.assertIn("its sanction tables made no mutant", text)
         self.assertIn("`FSOPS_ALLOWED` (`tests/validation/policy.py`)", text)
@@ -1507,7 +1692,7 @@ class WholeRunFixtures(unittest.TestCase):
             text = Gate(root, "feature", 5, 2, GitClient(), generate, stub_reach, measure=measured).report().text
         self.assertEqual({"tools/calc.py": frozenset({6})}, asked)
         # The suite kills line 2's mutant, so it would count as killed had it run: only line 6's ran, and survived.
-        self.assertIn("| `tools/calc.py` | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
+        self.assertIn(f"| `tools/calc.py` | {HOST} | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0% (0 of 1) |", text)
         self.assertIn("- Line 6: `return a * 2 + 0` became `return a * 3 + 0`", text)
         self.assertNotIn("Line 2", text)
 
@@ -1533,7 +1718,7 @@ class WholeRunFixtures(unittest.TestCase):
 
             text = Gate(root, "feature", 5, 2, GitClient(), generate, recorded_reach, measure=measured).report().text
         # Line 8 is a continuation of the call on line 6, the line coverage.py recorded, so the suite ran and killed it.
-        self.assertIn("| `tools/calc.py` | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 100% (1 of 1) |", text)
+        self.assertIn(f"| `tools/calc.py` | {HOST} | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 100% (1 of 1) |", text)
 
     def test_a_mutant_runs_the_tests_that_ran_its_line_or_whose_call_started_the_process_that_did(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1576,7 +1761,7 @@ class WholeRunFixtures(unittest.TestCase):
             ],
             calls,
         )
-        self.assertIn("| `tools/calc.py` | 2 | 2 | 2 | 0 | 0 | 0 | 0 | 100% (2 of 2) |", text)
+        self.assertIn(f"| `tools/calc.py` | {HOST} | 2 | 2 | 2 | 0 | 0 | 0 | 0 | 100% (2 of 2) |", text)
 
     def test_a_changed_module_with_no_mutant_is_named_and_no_suite_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1585,7 +1770,7 @@ class WholeRunFixtures(unittest.TestCase):
             git(root, "switch", "--quiet", "-c", "comment", "feature")
             change_calc(root, CALC + "# A comment, which mutmut does not mutate.\n")
             text = Gate(root, "feature", 5, 2, GitClient(), stub_generator, refuse_reach).report().text
-        self.assertIn("| `tools/calc.py` | 1 | 0 | 0 | 0 | 0 | 0 | 0 | none tested |", text)
+        self.assertIn("| `tools/calc.py` | none | 1 | 0 | 0 | 0 | 0 | 0 | 0 | none tested |", text)
         self.assertIn(
             "`tools/calc.py`: mutmut made no mutant on the 1 line this pull request changed, so none ran.", text
         )
@@ -1669,6 +1854,109 @@ class WholeRunFixtures(unittest.TestCase):
             self.assertEqual(1, git(root, "worktree", "list", "--porcelain").count("worktree "))
         # The canary checks the run's own reach runner, which measures no suite once it fails.
         self.assertEqual([refuse_reach], checked)
+
+
+class SplitRunFixtures(unittest.TestCase):
+    """A run split across jobs as the workflow splits it: the select step, a Linux leg and a Windows leg each in its
+    own run of the gate, and the join, over a fixture repository whose module imports a platform module."""
+
+    def legs(self, root: Path, folder: Path, windows: SuiteRunner) -> None:
+        """Run each leg as its own job would: the Linux leg with the real suite runner, the Windows leg with
+        `windows`."""
+        for leg, run in ((LINUX_LEG, run_suite), (WINDOWS_LEG, windows)):
+            gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach, run, measure=measured)
+            with mock.patch.object(mutation_gate.platform_support, "PLATFORM_NAME", leg):
+                found = gate.leg(read_selection(folder / "mutants.json"))
+            (folder / f"outcomes-{leg.casefold()}.json").write_text(json.dumps(leg_record(found)), encoding="utf-8")
+
+    def test_a_mutant_that_survives_the_linux_leg_and_the_windows_leg_kills_reads_as_killed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            change_calc(root, CALC + "\n\ndef probe():\n    import device_names\n")
+            folder = Path(temporary) / "handed on"
+            outputs = Path(temporary) / "outputs.txt"
+            gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
+            mutation_gate.select_step(gate, folder, {"GITHUB_OUTPUT": str(outputs)})
+            asked: list[str] = []
+
+            def windows(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+                asked.append(suite)
+                return KILLED
+
+            self.legs(root, folder, windows)
+            result = mutation_gate.join(folder)
+            step_outputs = outputs.read_text(encoding="utf-8")
+        self.assertEqual("linux=true\nwindows=true\n", step_outputs)
+        self.assertTrue(result.finished)
+        self.assertIn("| `tools/calc.py` | Linux, Windows | 10 | 2 | 2 | 0 | 0 | 0 | 0 | 100% (2 of 2) |", result.text)
+        self.assertIn(
+            "- Line 6: `return a * 2` became `return a * 3`; killed on Windows by `tests/tools/test_calc.py`, "
+            "survived on Linux\n",
+            result.text,
+        )
+        self.assertNotIn("surviving", result.text)
+        self.assertEqual(["tests/tools/test_calc.py"] * 2, asked)
+
+    def test_a_module_off_the_windows_rule_runs_on_linux_alone_and_needs_no_windows_outcomes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            folder = Path(temporary) / "handed on"
+            outputs = Path(temporary) / "outputs.txt"
+            gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
+            mutation_gate.select_step(gate, folder, {"GITHUB_OUTPUT": str(outputs)})
+            linux = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach, measure=measured)
+            with mock.patch.object(mutation_gate.platform_support, "PLATFORM_NAME", LINUX_LEG):
+                found = linux.leg(read_selection(folder / "mutants.json"))
+            with mock.patch.object(mutation_gate.platform_support, "PLATFORM_NAME", WINDOWS_LEG):
+                nothing = linux.leg(read_selection(folder / "mutants.json"))
+            (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(found)), encoding="utf-8")
+            text = mutation_gate.join(folder).text
+            step_outputs = outputs.read_text(encoding="utf-8")
+        self.assertEqual("linux=true\nwindows=false\n", step_outputs)
+        self.assertEqual(LegRun(WINDOWS_LEG, 5, 0.0, 0, {}, {}, []), nothing)
+        self.assertIn("| `tools/calc.py` | Linux | 6 | 2 | 1 | 0 | 1 | 0 | 0 | 50% (1 of 2) |", text)
+
+    def test_a_missing_selection_or_a_needed_legs_missing_outcomes_stops_the_join(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            with self.assertRaisesRegex(RuntimeError, "the select job wrote no mutants.json"):
+                mutation_gate.join(folder)
+            platform = SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True)
+            (folder / "mutants.json").write_text(
+                json.dumps(selection_record(Selected("origin/main", "3.8.0", (platform,)))), encoding="utf-8"
+            )
+            linux = LegRun(LINUX_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))]}, {}, [])
+            (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(linux)), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "the Windows leg wrote no outcomes-windows.json"):
+                mutation_gate.join(folder)
+            (folder / "mutants.json").write_text(
+                json.dumps(selection_record(Selected("origin/main", "3.8.0", ()))), encoding="utf-8"
+            )
+            self.assertEqual(no_module_line("origin/main"), mutation_gate.join(folder).text)
+
+    def test_the_steps_write_their_files_and_the_join_fails_an_unfinished_run(self) -> None:
+        platform = SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True)
+        selected = Selected("origin/main", "3.8.0", (platform,))
+        unfinished = LegRun(WINDOWS_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, NOT_RUN)]}, {}, [])
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "folder"
+            with mock.patch.object(Gate, "selection", return_value=selected):
+                self.assertEqual(0, mutation_gate.main(["select", str(folder)], {}))
+            self.assertEqual(selected, read_selection(folder / "mutants.json"))
+            with mock.patch.object(Gate, "leg", return_value=unfinished), mock.patch("sys.stdout", io.StringIO()):
+                self.assertEqual(0, mutation_gate.main(["leg", str(folder)], {}))
+            self.assertEqual(unfinished, read_leg(folder / "outcomes-windows.json", selected))
+            linux = LegRun(LINUX_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))]}, {}, [])
+            (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(linux)), encoding="utf-8")
+            summary_file = Path(temporary) / "summary.md"
+            with mock.patch("sys.stdout", io.StringIO()) as printed:
+                code = mutation_gate.main(["join", str(folder)], {"GITHUB_STEP_SUMMARY": str(summary_file)})
+            written = summary_file.read_text(encoding="utf-8")
+        self.assertEqual(1, code)
+        self.assertTrue(written.startswith("**Unfinished, so not a verdict:**"))
+        self.assertIn("::error title=Mutation gate unfinished::", printed.getvalue())
 
 
 class QueueFixtures(unittest.TestCase):

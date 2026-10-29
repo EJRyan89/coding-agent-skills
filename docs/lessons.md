@@ -587,6 +587,24 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `*_ALLOWANCE` constant naming it in a policy.
 - **Examples:** #1933, #1938
 
+### A gate runs where the behavior it judges differs
+
+- **Rule:** A gate that judges code whose behavior differs by platform runs that code on each platform where it
+  differs, chosen by a rule that reads the code, never a list a contributor keeps, and counts a fault caught on any of
+  them as caught.
+- **Why:** A mutant whose effect shows only on Windows, such as a path compared by its text, a name NTFS folds, an
+  8.3 name, or a junction, survives a Linux-only gate however well it is tested, and each pull request then rules it
+  equivalent by hand where the gate's record cannot show it.
+- **Use:** `tools.mutation_gate:runs_on_windows`, the rule that sends a module's mutants to the Windows leg, and
+  `tools.mutation_gate:verdict`, which counts a mutant either leg killed as killed.
+- **Guard:** `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_the_platform_seam_and_each_module_that_imports_it_or_holds_its_table`,
+  `tests/tools/test_mutation_gate.py::SplitRunFixtures::test_a_mutant_that_survives_the_linux_leg_and_the_windows_leg_kills_reads_as_killed`,
+  `tests/validation/test_workflows.py::test_a_mutation_job_off_its_shape_fails`
+- **Search for:** a survivor named "Linux-invisible" or "Windows-only" in a pull request's "Mutation survivors"
+  comment; a gate or canary job with one `runs-on` that judges a module importing `platform_support`, `path_keys`,
+  `link_probe`, or `device_names`; a hand-kept list of modules or suites a platform leg runs.
+- **Examples:** #1932, #1948, #1960
+
 ### A fixture derives what it copies from the source
 
 - **Rule:** A suite that builds a throwaway copy of ejryan89-skill-core's modules copies a module with every module it

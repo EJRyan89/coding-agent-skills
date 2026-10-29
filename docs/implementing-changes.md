@@ -150,8 +150,14 @@ a verdict, whatever its table shows. Split the pull request, or move the module-
 the functions that use them, until its gate finishes. The summary of a finished run is the record: read it, and for a
 surviving mutant on a line the pull request changed that alters behavior a caller relies on, such as a refusal or a line
 a document or test treats as a contract, add the test that kills it, or name it in the pull request with why it is
-equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere. It
-runs on Linux only, because mutmut refuses Windows; the gate's docstring in `tools/mutation_gate.py` gives the details.
+equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere.
+mutmut refuses Windows, so the mutants are made on Linux and run on a Linux leg for every module and on a Windows leg,
+which never runs mutmut, for each module whose behavior differs on Windows: `deployer/platform_support.py`,
+`path_keys`, `link_probe`, and `device_names`, each module that imports one, and each that holds a `PLATFORM_ALLOWED`
+table. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
+lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its
+own cap, and either leg's cut leaves the run unfinished. The gate's docstring in `tools/mutation_gate.py` gives the
+details.
 
 ## Contract files
 
