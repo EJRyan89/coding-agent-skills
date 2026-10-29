@@ -11,7 +11,8 @@ Output, one fact per line, tab separated:
     FILE            <file>                        a changed C# file to format
     OUTSIDE_SOLUTION <file>                       a FILE no project of SOLUTION owns; the formatter skips it
     SKIPPED_ASPNET  <file> <owning .csproj>       a FILE of an ASP.NET project, which the global tool is not run on
-    FILE_LIST       <temporary file>              the FILE paths, one per line, for --include-file / --file-list
+    FILE_LIST       <temporary file>              the FILE paths in UTF-8, each ended by a NUL, for --include-file
+                                                  and --file-list
     SOLUTION        <solution> <score>            the solution to format and how many FILEs its projects own
     STOP            <reason>                      nothing to format; report the reason and stop
 
@@ -27,13 +28,16 @@ and for a .sln whose C# and Visual Basic projects are all SDK-style, since the g
 current SDKs give such projects; it is the global tool for any other .sln, such as one holding a .NET Framework project
 in the older format, on which the SDK's command can fail. The global tool is not run on an ASP.NET project's files,
 which SKIPPED_ASPNET names: the SDK's command formats them, so the skip holds only for the global tool. A FILE that
-SKIPPED_ASPNET or OUTSIDE_SOLUTION names still goes into FILE_LIST, for the layout checker.
+SKIPPED_ASPNET or OUTSIDE_SOLUTION names still goes into FILE_LIST, for the layout checker. FILE_LIST ends each name
+with a NUL, the one character no path holds, so every name git lists reads back as written, a leading space or a line
+separator inside it included.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
 
 Exits 0 with its lines, ending in SOLUTION or STOP. When the directory is not in a Git repository, git is missing,
-a git command fails or does not finish in time, no base ref exists, or a file cannot be read or written, it prints
+a git command fails or does not finish in time, no base ref exists, a changed file's name is not UTF-8, which
+FILE_LIST cannot hold, or a file cannot be read or written, it prints
 `FAILED <reason>` as the last line and exits 1. A usage error exits 2.
 """
 
@@ -123,37 +127,64 @@ class Failed(Exception):
     """The targets could not be resolved; the message says why."""
 
 
-def read_file_list(path: Path) -> list[str]:
-    """The paths a FILE_LIST names, one per line, without blank lines or a byte order mark.
+def write_file_list(names: list[str]) -> str:
+    """Write `names` to a new temporary FILE_LIST, each in UTF-8 and ended by a NUL, and return its path.
 
-    Raises OSError when it cannot be read, and ValueError when it is not UTF-8, names no file, or holds a NUL on a
-    line, which no path holds, naming that line: resolve writes a FILE_LIST only when it found files to format, so an
-    empty one did not come from it.
+    Raises Failed, before anything is written, for no names, which resolve stops on before it writes a list, and for
+    a name that is not UTF-8, which git lists only on a file system that holds such names; every other name
+    `read_file_list` returns as written."""
+    if not names:
+        raise Failed("there is no changed file to list")
+    encoded: list[bytes] = []
+    for name in names:
+        try:
+            encoded.append(name.encode("utf-8") + b"\0")
+        except UnicodeEncodeError:
+            raise Failed(
+                f"the changed file {name!r} has a name that is not UTF-8, which FILE_LIST cannot hold"
+            ) from None
+    data = b"".join(encoded)
+    descriptor, list_path = tempfile.mkstemp(prefix="dotnet-format-files-", suffix=".txt")
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(data)
+    return list_path
+
+
+def read_file_list(path: Path) -> list[str]:
+    """The paths a FILE_LIST names, as `write_file_list` wrote them: UTF-8, each ended by a NUL.
+
+    Raises OSError when it cannot be read, and ValueError when it is not UTF-8, names no file, holds an empty name,
+    or does not end in a NUL, as a list of lines does: resolve writes a FILE_LIST only when it found files to format,
+    so an empty one did not come from it.
     """
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         raise ValueError(f"{path} is not UTF-8 text") from None
-    for number, line in enumerate(text.splitlines(), start=1):
-        if "\0" in line:
-            raise ValueError(f"{path} line {number} holds a NUL, which no path holds")
-    files = [name for name in (line.strip() for line in text.splitlines()) if name]
-    if not files:
+    if not text:
         raise ValueError(f"{path} lists no files")
+    if not text.endswith("\0"):
+        raise ValueError(f"{path} does not end each name with a NUL, as resolve writes a FILE_LIST")
+    files = text[:-1].split("\0")
+    if "" in files:
+        raise ValueError(f"{path} name {files.index('') + 1} is empty, which no path is")
     return files
 
 
 def listed_refusal(root: Path, name: str) -> str | None:
     """Why a script does not read or write the file a FILE_LIST entry names, or None when it lies inside `root`.
 
-    ejryan89-skill-core's `refusal` judges the entry first as written, before anything touches it, so an absolute
-    entry, one whose `..` segments leave the root, and a network-share or device form are refused unopened; then as
-    resolved, so an entry inside the root that a symbolic link or junction leads out of it is refused too."""
+    The entry is judged first as written, before anything touches it, so an absolute entry, even one naming a file
+    inside the root, is refused unopened, and so, through ejryan89-skill-core's `refusal`, are one whose `..`
+    segments leave the root and a network-share or device form; then as resolved, so an entry inside the root that a
+    symbolic link or junction leads out of it is refused too."""
     base = lexical_absolute(root)
     path = project_path(base, name)
     refused = refusal(path, base)
     if refused:
         return refused
+    if Path(name.replace("\\", "/")).anchor:
+        return "the entry is an absolute path, and an entry names a file relative to the repository root"
     try:
         leaves = refusal(path.resolve(), base.resolve()) is not None
     except OSError as error:
@@ -446,10 +477,7 @@ def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
             emit(f"SKIPPED_ASPNET\t{name}\t{relative(skipped[name], root)}")
     if formatter == SDK_FORMATTER and not services.which("dotnet"):
         raise Stop(f"{relative(solution, root)} {SDK_SOLUTION}; install the .NET SDK 9.0.200 or newer")
-    descriptor, list_path = tempfile.mkstemp(prefix="dotnet-format-files-", suffix=".txt")
-    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write("".join(f"{name}\n" for name in kept))
-    emit(f"FILE_LIST\t{list_path}")
+    emit(f"FILE_LIST\t{write_file_list(kept)}")
     emit(f"SOLUTION\t{relative(solution, root)}\t{score}")
 
 

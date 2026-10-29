@@ -20,12 +20,12 @@ one layout, and both exit 2 from a check that finds changes. The global tool is 
 which `resolve` reports as SKIPPED_ASPNET; when it leaves no file to format, nothing runs and no LOG line is printed. An
 entry is passed only when it lies inside the repository root, judged from its text before anything touches it and then
 as resolved: an absolute entry, one whose `..` segments leave the root, one written as a network share or a device, and
-one a symbolic link or junction leads out of the root is REFUSED. A --solution judged the same way to lie outside
-the root fails as `FAILED the solution <solution> is refused: <reason>` before anything reads it. FILE paths are
-relative to the repository root when they are inside it. A changed file whose name starts with `@` or `-` is passed to
-the formatter as `./<name>`, since either formatter would read the bare name as a response file or an option. Files
-too many for one command line, which Windows limits to 32,767 characters, are formatted in several runs within the one
-time limit, and the log holds every run's output in order.
+one a symbolic link or junction leads out of the root is REFUSED. A --solution judged the same way to be absolute or
+lie outside the root fails as `FAILED the solution <solution> is refused: <reason>` before anything reads it. FILE
+paths are relative to the repository root when they are inside it. A changed file whose name starts with `@` or `-` is
+passed to the formatter as `./<name>`, since either formatter would read the bare name as a response file or an option.
+Files too many for one command line, which Windows limits to 32,767 characters, are formatted in several runs within
+the one time limit, and the log holds every run's output in order.
 
 `check` exits 1 when it prints a DIAGNOSTIC or a REFUSED line (findings) and 0 when it prints neither. `fix` exits 1
 when it prints a REFUSED line, and otherwise 0 once the formatter succeeds: its DIAGNOSTIC lines are what it found to
