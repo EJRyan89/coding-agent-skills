@@ -324,7 +324,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
   parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
-  refuses, or one given `-WhatIf`, runs nothing. `tools/hub_guard-powershell.ps1` only reports what the parser and
+  refuses, or one given `-WhatIf`, runs nothing, except a call to a function the command defines: a simple function
+  takes the words it declares no parameter for into `$args` and runs, so its body is read as a path that may run.
+  `tools/hub_guard-powershell.ps1` only reports what the parser and
   binder found, in the order PowerShell would run it, and `tools/hub_guard.py` makes every decision. The guard
   follows `cd`, `chdir`, `sl`, and `Set-Location` (bare goes home, a leading `~` means home, `cd -` and `cd +` leave
   the location unknown, and one on a provider other than the file system leaves it unknown),
