@@ -242,16 +242,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A reader of another program's language or output reads it as that program does, held by a differential
   test against the program itself or by output captured from it with its provenance.
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
-- **Use:** `tools.hub_guard:powershell_reads_input`
+- **Use:** `tools.hub_guard:powershell_reads_input`, `tools.hub_guard:powershell_arguments`, and
+  `tools.hub_guard:powershell_directory`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `tests/tools/test_hub_guard_shells.py::StartDifferentialTests`,
   `tests/tools/test_hub_guard.py::test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call`,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; a `re.compile(` in
   `tools/runtime_*.py` or `deployer/discovery.py` with no sample under `tests/fixtures/captured-output/`; each
   interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
-  forms the guard names; a test whose sample output was typed rather than captured.
-- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865
+  forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
+  guard follows, such as a working directory, read only as taking a value and never for what it changes.
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032
 
 ### A recursive parser of input has a depth bound
 
