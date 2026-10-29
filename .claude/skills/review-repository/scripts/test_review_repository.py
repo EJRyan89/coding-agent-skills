@@ -530,6 +530,7 @@ class DocumentationDriftTests(unittest.TestCase):
             {
                 f"{SKILL}/scripts/conditions.py",
                 f"{SKILL_CORE}/console.py",
+                f"{SKILL_CORE}/device_names.py",
                 f"{SKILL_CORE}/diff_paths.py",
                 f"{SKILL_CORE}/flat_text.py",
                 f"{SKILL_CORE}/json_reader.py",
