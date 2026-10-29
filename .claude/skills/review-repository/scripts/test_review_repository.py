@@ -52,6 +52,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{PIPELINE_SCRIPTS}/review_guard.py",
     f"{PIPELINE_SCRIPTS}/review_hosts.py",
     f"{PIPELINE_SCRIPTS}/review_io.py",
+    f"{PIPELINE_SCRIPTS}/review_operation.py",
     f"{PIPELINE_SCRIPTS}/review_pipeline.py",
     f"{PIPELINE_SCRIPTS}/review_process.py",
     f"{PIPELINE_SCRIPTS}/review_records.py",
@@ -99,7 +100,6 @@ OUTSIDE_THE_BOUNDARY = {
     f"{PIPELINE_SCRIPTS}/review_archive.py": "allocates paths in the review archive, which the threat model trusts",
     f"{PIPELINE_SCRIPTS}/review_config.py": "reads the code-review configuration, which the threat model trusts",
     f"{PIPELINE_SCRIPTS}/review_flags.py": "keeps the user's flag store, which no author's content reaches",
-    f"{PIPELINE_SCRIPTS}/review_operation.py": "parses the user's pull request selectors for the producer's workflow",
     f"{PIPELINE_SCRIPTS}/review_state.py": "keeps the per-repository review state, which the threat model trusts",
     f"{SKILL_CORE}/atomic_file.py": "replaces a file with bytes review_io has already serialized and checked",
     f"{SKILL_CORE}/console.py": "sets each entry point's output encoding; its FAILED line flattens through flat_text",
@@ -361,6 +361,27 @@ class ManifestTests(unittest.TestCase):
         )
         self.assertEqual([], [path for path in OUTSIDE_THE_BOUNDARY if path not in imported or path in routed])
 
+    def test_no_module_named_outside_the_boundary_handles_a_pull_request_s_author_fields(self) -> None:
+        # review_operation.py was once named outside for parsing selectors while it checked the author's title and
+        # branch and carried them, with the comments, into the record. A reason is prose, so this holds it to what
+        # the module reads: a key naming one of those fields. `body` is left out, since the user's flags have one.
+        author_fields = {"title", "headRefName", "head_ref", "github_comments"}
+        handled = {
+            path: sorted(
+                {
+                    node.value
+                    for node in ast.walk(ast.parse((REPOSITORY / path).read_text(encoding="utf-8")))
+                    if isinstance(node, ast.Constant) and node.value in author_fields
+                }
+            )
+            for path in OUTSIDE_THE_BOUNDARY
+        }
+        self.assertEqual({}, {path: fields for path, fields in handled.items() if fields})
+        self.assertIn(
+            "trust-boundary",
+            reached([f"{PIPELINE_SCRIPTS}/review_operation.py"])[f"{PIPELINE_SCRIPTS}/review_operation.py"],
+        )
+
     def test_every_script_the_threat_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
         # The threat model states the boundary row by row, so a script a row names, such as review-document's, is
         # one the trust-boundary reviewer holds to its row, unless another route holds it for the reason given.
@@ -530,6 +551,7 @@ class DocumentationDriftTests(unittest.TestCase):
             {
                 f"{SKILL}/scripts/conditions.py",
                 f"{SKILL_CORE}/console.py",
+                f"{SKILL_CORE}/device_names.py",
                 f"{SKILL_CORE}/diff_paths.py",
                 f"{SKILL_CORE}/flat_text.py",
                 f"{SKILL_CORE}/json_reader.py",
@@ -873,6 +895,36 @@ class UntestedChangesTests(unittest.TestCase):
             code, out, written = run_condition(reviewer / UNTESTED, source, diff, scratch)
         self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
         self.assertTrue(written.startswith("UNTESTED tools/sweep.py:1 function days, added lines 2, "), written)
+
+    def test_a_converted_call_site_a_test_names_but_does_not_pin_opens_the_untested_route(self) -> None:
+        # The profile's converted-call check lives only on this route, so the route must open for it.
+        self.assertIn("untested-changes", route(MANIFEST, ["tools/report.py"], lambda name: True))
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            reviewer, source = scratch / "reviewer", scratch / "source"
+            for path in declared_reviewer_files(MANIFEST):
+                (reviewer / path).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(REPOSITORY / path, reviewer / path)
+            (source / "tools").mkdir(parents=True)
+            (source / "tests").mkdir()
+            (source / "tools" / "report.py").write_bytes(
+                b"import json_writer\n\n\ndef save(path, data):\n    json_writer.write(path, data)\n"
+            )
+            (source / "tests" / "test_report.py").write_bytes(
+                b"import report\n\n\ndef test_save(tmp_path):\n    assert report.save(tmp_path / 'x', {}) is None\n"
+            )
+            diff = "diff --git a/tools/report.py b/tools/report.py\n--- a/tools/report.py\n+++ b/tools/report.py\n"
+            diff += "@@ -1,5 +1,5 @@\n-import json\n+import json_writer\n \n \n def save(path, data):\n"
+            diff += "-    path.write_text(json.dumps(data, indent=2))\n+    json_writer.write(path, data)\n"
+            code, out, written = run_condition(reviewer / UNTESTED, source, diff, scratch)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(
+            written.startswith(
+                "CONVERTED tools/report.py:4 function save, a test names it, converted calls json_writer.write at "
+                "line 5, hunk @@ -1,5 +1,5 @@, tests of its file tests/test_report.py\n"
+            ),
+            written,
+        )
 
 
 class RealDiffTests(unittest.TestCase):

@@ -10,8 +10,9 @@ process, as one leg on this platform. The workflow splits the run across jobs, e
 naming the legs that have mutants to run; `leg`, on Linux and on Windows, runs that platform's leg of them, never
 running mutmut, and writes its outcomes to outcomes-<platform>.json; and `join` reports them. The Linux leg runs every
 module's mutants, and the Windows leg those of each module whose behavior differs on Windows by design, as
-runs_on_windows selects it: one of PLATFORM_MODULES, one holding a PLATFORM_ALLOWED table, or one importing one of
-PLATFORM_MODULES. A mutant either leg killed counts as killed, and the summary names the legs that ran each module and
+runs_on_windows selects it: one of PLATFORM_MODULES, one holding a PLATFORM_ALLOWED table, one importing one of
+PLATFORM_MODULES, or one whose code compares a platform name the platform policy catalogues, such as sys.platform. A
+mutant either leg killed counts as killed, and the summary names the legs that ran each module and
 each mutant one leg alone killed, so a mutant whose effect shows only on Windows is judged where it shows. It mutates
 the lines the pull
 request's commits add or change since the base (`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base names
@@ -84,8 +85,9 @@ count of its tests that ran when not all of them did, and each mutant not reache
 stdout and to the step summary GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line
 saying so. A run, or its join, exits 0 once the gate has run to its end, whatever survived, and 1 when the run was
 unfinished, on any leg, after its summary and an error annotation repeating its first line; `select` and `leg` exit 0
-once they wrote their file. Any step exits 1 when it cannot run: the join finds no selection, or no outcomes from a leg
-that had mutants to run, mutmut no longer makes the mutant its
+once they wrote their file. Any step exits 1 when it cannot run: the join finds no selection, no outcomes from a leg
+that had mutants to run, or a record that is not as its step writes it, such as a leg's naming another leg or leaving
+out a module that leg had mutants for, mutmut no longer makes the mutant its
 canary expects on the canary's line alone, the reach run no longer measures its canary suite's own process and the
 process the suite's test starts, each line named with that test, which a missing coverage.py .pth file would cause, a
 changed sanction table is one no policy reads, or a git command fails.
@@ -128,12 +130,14 @@ from bounded_process import run_bounded
 from console import run_main
 from duplication import SANCTION_SUFFIX
 from flat_text import flat_text
-from fsops_platform import PLATFORM_ALLOWANCE
+from fsops_platform import PLATFORM_ALLOWANCE, PLATFORM_TOKENS
 from git_client import GitClient
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, reached_suites
 from suite_discovery import pytest_command
 from suite_names import is_suite_name
+from typed_fields import FieldError, FieldReader
+from validation_support import import_aliases, qualified_name
 
 from deployer import platform_support
 
@@ -213,6 +217,18 @@ PLATFORM_MODULES = frozenset({"platform_support", "path_keys", "link_probe", "de
 # The files the steps of a run split across jobs hand on, in the folder each step is given.
 MUTANTS_FILE = "mutants.json"
 OUTCOMES_FILE = "outcomes-{leg}.json"
+STATUSES = (KILLED, TIMED_OUT, SURVIVED, NOT_REACHED, NOT_RUN)
+
+
+class RecordError(RuntimeError):
+    """A selection or a leg's run the join cannot read as the step that wrote it writes it, which stops the join."""
+
+
+class RecordFieldError(FieldError, RecordError):
+    """A record's field of a kind its step does not write."""
+
+
+READ = FieldReader(RecordFieldError)
 
 
 @dataclass(frozen=True)
@@ -354,16 +370,34 @@ def is_gate_module(path: str) -> bool:
     )
 
 
+def branches_on_platform(tree: ast.Module) -> bool:
+    """Whether a module's code compares a name the platform policy's PLATFORM_TOKENS holds as qualified, such as
+    `sys.platform == "win32"`, `os.name != "nt"`, or `platform.system() == "Windows"`, each name read through the
+    module's imports. A test that only asks whether a name exists, as `hasattr(os, "fork")` does, is not read."""
+    aliases = import_aliases(tree)
+
+    def platform_name(node: ast.expr) -> bool:
+        named = qualified_name(node.func if isinstance(node, ast.Call) else node, aliases)
+        return named in PLATFORM_TOKENS["qualified"] or named.startswith(PLATFORM_TOKENS["qualified_prefix"])
+
+    return any(
+        isinstance(node, ast.Compare) and any(platform_name(operand) for operand in (node.left, *node.comparators))
+        for node in ast.walk(tree)
+    )
+
+
 def runs_on_windows(module: str, source: str) -> bool:
     """Whether the Windows leg runs a module's mutants as well as the Linux leg: the module is one of PLATFORM_MODULES,
-    holds a PLATFORM_ALLOWED table, or imports one of PLATFORM_MODULES. Its behavior then differs on Windows by design,
-    as a path compared by its text, a name NTFS folds, an 8.3 name, or a junction, so a mutant whose effect shows only
-    there survives Linux however well it is tested."""
+    holds a PLATFORM_ALLOWED table, imports one of PLATFORM_MODULES, or its own code branches on the platform, as
+    branches_on_platform reads it. Its behavior then differs on Windows by design, as a path compared by its text, a
+    name NTFS folds, an 8.3 name, a junction, or a process tree, so a mutant whose effect shows only there survives
+    Linux however well it is tested."""
     tree = ast.parse(source)
     return (
         PurePosixPath(module).stem in PLATFORM_MODULES
         or any(sanction_table(statement) == PLATFORM_ALLOWANCE for statement in tree.body)
         or bool(imported_names(tree) & PLATFORM_MODULES)
+        or branches_on_platform(tree)
     )
 
 
@@ -1218,8 +1252,8 @@ def summary(report: Report) -> str:
         "the lines the pull request changed.",
         ran,
         "- The Linux leg runs every module's mutants, and the Windows leg those of each module that is or imports "
-        "`deployer/platform_support.py`, `path_keys`, `link_probe`, or `device_names`, or holds a `PLATFORM_ALLOWED` "
-        "table; a mutant either leg killed counts as killed.",
+        "`deployer/platform_support.py`, `path_keys`, `link_probe`, or `device_names`, holds a `PLATFORM_ALLOWED` "
+        "table, or compares a platform name such as `sys.platform`; a mutant either leg killed counts as killed.",
         "",
         "| Module | Legs | Changed lines | Mutants | Killed | Timed out | Survived | Not reached | Not run "
         "| Kill ratio |",
@@ -1335,27 +1369,62 @@ def selection_record(selected: Selected) -> dict[str, Any]:
     }
 
 
+def read_record(path: Path, fields: Sequence[str]) -> dict[str, Any]:
+    """The object a step wrote to `path`, holding exactly `fields`; a file that cannot be read as one stops the join."""
+    try:
+        record = json_reader.read_file(path)
+    except (OSError, ValueError) as error:
+        raise RecordError(f"{path.name} cannot be read: {error}") from error
+    return READ.json_object(record, path.name, required=fields)
+
+
+def at_least(minimum: int) -> Callable[[object, str], int]:
+    """A reader of an integer of at least `minimum`, for an array's items."""
+    return lambda value, where: READ.integer(value, where, minimum=minimum)
+
+
+def read_mutant(module: str, value: object, where: str) -> Mutant:
+    found = READ.json_object(value, where, required=("line", "before", "after", "source", "at_import", "readers"))
+    readers = READ.optional(READ.array, found["readers"], f"{where}.readers", at_least(1))
+    return Mutant(
+        module,
+        READ.integer(found["line"], f"{where}.line", minimum=1),
+        READ.string(found["before"], f"{where}.before", empty=True),
+        READ.string(found["after"], f"{where}.after", empty=True),
+        READ.string(found["source"], f"{where}.source", empty=True),
+        READ.boolean(found["at_import"], f"{where}.at_import"),
+        None if readers is None else frozenset(readers),
+    )
+
+
+def read_table(value: object, where: str) -> tuple[str, str]:
+    """A sanction table's name and the policy that reads it."""
+    pair = READ.array(value, where, READ.string)
+    if len(pair) != 2:
+        raise READ.fail(where, "an array of a table's name and its policy", f"an array of {len(pair)} items")
+    return pair[0], pair[1]
+
+
+def read_selected_module(value: object, where: str) -> SelectedModule:
+    entry = READ.json_object(value, where, required=("module", "lines", "tables", "windows", "mutants"))
+    module = READ.string(entry["module"], f"{where}.module")
+    return SelectedModule(
+        module,
+        READ.integer(entry["lines"], f"{where}.lines", minimum=0),
+        tuple(READ.array(entry["mutants"], f"{where}.mutants", functools.partial(read_mutant, module))),
+        tuple(READ.array(entry["tables"], f"{where}.tables", read_table)),
+        READ.boolean(entry["windows"], f"{where}.windows"),
+    )
+
+
 def read_selection(path: Path) -> Selected:
-    """The selection the select step wrote."""
-    record = json_reader.read_file(path)
-    modules = []
-    for entry in record["modules"]:
-        module = entry["module"]
-        mutants = tuple(
-            Mutant(
-                module,
-                found["line"],
-                found["before"],
-                found["after"],
-                found["source"],
-                found["at_import"],
-                None if found["readers"] is None else frozenset(found["readers"]),
-            )
-            for found in entry["mutants"]
-        )
-        tables = tuple((name, policy) for name, policy in entry["tables"])
-        modules.append(SelectedModule(module, entry["lines"], mutants, tables, entry["windows"]))
-    return Selected(record["base"], record["mutmut"], tuple(modules))
+    """The selection the select step wrote; a field of a kind the step does not write stops the join."""
+    record = read_record(path, ("base", "mutmut", "modules"))
+    return Selected(
+        READ.string(record["base"], f"{path.name}.base"),
+        READ.string(record["mutmut"], f"{path.name}.mutmut"),
+        tuple(READ.array(record["modules"], f"{path.name}.modules", read_selected_module)),
+    )
 
 
 def leg_record(leg: LegRun) -> dict[str, Any]:
@@ -1377,27 +1446,59 @@ def leg_record(leg: LegRun) -> dict[str, Any]:
     }
 
 
-def read_leg(path: Path, selected: Selected) -> LegRun:
-    """The run a leg step wrote, each outcome given the mutant at its place in the selection; a module the selection
-    does not hold, or a count of outcomes that is not its count of mutants, stops the join."""
-    record = json_reader.read_file(path)
-    mutants = {chosen.module: chosen.mutants for chosen in selected.modules}
+def read_outcome(mutant: Mutant, value: object, where: str) -> Outcome:
+    entry = READ.json_object(value, where, required=("status", "suites", "tests"))
+    return Outcome(
+        mutant,
+        READ.one_of(entry["status"], f"{where}.status", STATUSES),
+        tuple(READ.array(entry["suites"], f"{where}.suites", READ.string)),
+        tuple(READ.array(entry["tests"], f"{where}.tests", at_least(0))),
+    )
+
+
+def read_outcomes(
+    path: Path, value: object, mutants: Mapping[str, Sequence[Mutant]], leg: str
+) -> dict[str, list[Outcome]]:
+    """Each module's outcomes, given the mutants at their places; a record that leaves out a module the leg runs,
+    holds one it does not, or holds a count of outcomes that is not the module's count of mutants stops the join."""
+    found = READ.json_object(value, f"{path.name}.outcomes")
+    missing = [module for module in mutants if module not in found]
+    if missing:
+        raise RecordError(f"{path.name} holds no outcomes of {', '.join(missing)}, so its mutants have no verdict")
     outcomes: dict[str, list[Outcome]] = {}
-    for module, found in record["outcomes"].items():
-        if len(found) != len(mutants.get(module, ())):
-            raise RuntimeError(f"{path.name} holds {len(found)} outcomes of {module}, not one for each of its mutants")
+    for module, entries in found.items():
+        if module not in mutants:
+            raise RecordError(f"{path.name} holds outcomes of {module}, whose mutants the {leg} leg does not run")
+        where = f"{path.name}.outcomes.{module}"
+        listed = READ.array(entries, where)
+        if len(listed) != len(mutants[module]):
+            raise RecordError(f"{path.name} holds {len(listed)} outcomes of {module}, not one for each of its mutants")
         outcomes[module] = [
-            Outcome(mutant, entry["status"], tuple(entry["suites"]), tuple(entry["tests"]))
-            for mutant, entry in zip(mutants[module], found, strict=True)
+            read_outcome(mutant, entry, f"{where}[{index}]")
+            for index, (mutant, entry) in enumerate(zip(mutants[module], listed, strict=True))
         ]
+    return outcomes
+
+
+def read_leg(path: Path, selected: Selected, leg: str) -> LegRun:
+    """The run the leg step of `leg` wrote, each outcome given the mutant at its place in the selection; a record that
+    names another leg, or whose outcomes are not one for each mutant of each module the leg runs, stops the join."""
+    fields = ("leg", "minutes", "seconds", "workers", "failed_suites", "unmeasured_suites", "outcomes")
+    record = read_record(path, fields)
+    name = READ.one_of(record["leg"], f"{path.name}.leg", LEGS)
+    if name != leg:
+        raise RecordError(f"{path.name} holds the {name} leg's run, not the {leg} leg's")
+    mutants = {chosen.module: chosen.mutants for chosen in leg_modules(leg, selected)}
+    failed = READ.json_object(record["failed_suites"], f"{path.name}.failed_suites")
     return LegRun(
-        record["leg"],
-        record["minutes"],
-        record["seconds"],
-        record["workers"],
-        outcomes,
-        record["failed_suites"],
-        record["unmeasured_suites"],
+        name,
+        # The cap, which --minutes holds to at least 1; a leg with nothing to run writes no worker.
+        READ.integer(record["minutes"], f"{path.name}.minutes", minimum=1),
+        READ.number(record["seconds"], f"{path.name}.seconds"),
+        READ.integer(record["workers"], f"{path.name}.workers", minimum=0),
+        read_outcomes(path, record["outcomes"], mutants, leg),
+        {suite: READ.string(reason, f"{path.name}.failed_suites.{suite}") for suite, reason in failed.items()},
+        READ.array(record["unmeasured_suites"], f"{path.name}.unmeasured_suites", READ.string),
     )
 
 
@@ -1537,7 +1638,8 @@ class Gate:
 def join(folder: Path) -> Result:
     """The join step: the summary of the select step's mutants and each leg's outcomes in `folder`, and whether the
     run finished. A missing file, the selection's or a leg's that had mutants to run, stops it, since that leg's
-    mutants then have no verdict."""
+    mutants then have no verdict, and so does a leg's file that read_leg refuses, such as one naming another leg or
+    leaving out a module."""
     mutants = folder / MUTANTS_FILE
     if not mutants.is_file():
         raise RuntimeError(f"the select job wrote no {MUTANTS_FILE}, so no leg ran: read that job's log")
@@ -1549,7 +1651,7 @@ def join(folder: Path) -> Result:
         path = folder / outcomes_name(name)
         if not path.is_file():
             raise RuntimeError(f"the {name} leg wrote no {path.name}, so its mutants have no verdict: read its log")
-        legs.append(read_leg(path, selected))
+        legs.append(read_leg(path, selected, name))
     report = joined(selected, legs)
     return Result(summary(report), unfinished_line(report) is None)
 
