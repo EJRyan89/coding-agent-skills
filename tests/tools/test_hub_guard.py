@@ -565,6 +565,57 @@ class ReadingBoundTests(GuardTestCase):
             ):
                 reading.time_left()
 
+    def test_the_hub_lookups_after_reading_end_with_the_reading_time(self) -> None:
+        # Each place the command names is looked up after reading; each lookup here costs a simulated second, and the
+        # clock moves only then, so a command naming more places than the reading time has seconds is refused at the
+        # deadline, after no more lookups than that.
+        places = []
+        for index in range(40):
+            place = self.root / f"place-{index}"
+            place.mkdir()
+            places.append(place)
+        command = "".join(f'git -C "{place.as_posix()}" status; ' for place in places) + "git commit -m x"
+        clock = [0.0]
+        looked_up: list[tuple[float, ...]] = []
+
+        def slow_checkout_of(path: Path, *timeout: float) -> object:
+            looked_up.append((clock[0], *timeout, worktrees.GUARD_GIT_TIMEOUT_SECONDS)[:2])
+            found = worktrees.checkout_of(path, *timeout)
+            clock[0] += 1
+            return found
+
+        with (
+            mock.patch.object(hub_guard, "reading_clock", side_effect=lambda: clock[0]),
+            mock.patch.object(hub_guard, "checkout_of", side_effect=slow_checkout_of),
+        ):
+            self.assertEqual("deny", self.decision(self.event(command, self.tree)))
+        self.assertIn("within 15 seconds", self.reason)
+        self.assertLessEqual(clock[0], hub_guard.READING_SECONDS)
+        self.assertLessEqual(len(looked_up), hub_guard.READING_SECONDS)
+        for started, timeout in looked_up:
+            self.assertLessEqual(timeout, hub_guard.READING_SECONDS - started)
+
+    def test_a_lookups_git_call_gets_what_is_left_of_the_reading_time(self) -> None:
+        with mock.patch.object(hub_guard, "reading_clock", return_value=100.0):
+            self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
+            with hub_guard.lookups_within(103.0):
+                self.assertEqual(3.0, hub_guard.lookup_timeout())
+                with mock.patch.object(hub_guard, "git", wraps=worktrees.git) as git:
+                    hub_guard.guard_enabled(self.hub)
+                self.assertEqual(3.0, git.call_args.kwargs["timeout"])
+            with hub_guard.lookups_within(120.0):
+                self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
+            with hub_guard.lookups_within(100.0), self.assertRaises(hub_guard.ReadingTimeout):
+                hub_guard.guard_enabled(self.hub)
+            self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
+
+    def test_the_hubs_in_view_are_found_whatever_the_reading_time(self) -> None:
+        # Which hubs are in view decides whether a command not read in time is refused, so finding them never ends
+        # with the reading time.
+        with mock.patch.object(hub_guard, "READING_SECONDS", 0):
+            reading = hub_guard.start_reading("git status", self.tree, self.environment)
+        self.assertEqual({self.hub}, {Path(os.path.realpath(hub)) for hub in reading.context_hubs})
+
 
 class NestedAliasTests(GuardTestCase):
     """An alias's expansion is judged by a judge of its own, which inherits the guarded hubs, the environment, the

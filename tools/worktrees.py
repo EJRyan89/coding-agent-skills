@@ -108,8 +108,9 @@ class Checkout:
         return same_path(self.toplevel, self.hub)
 
 
-def checkout_of(path: Path) -> Checkout | None:
-    """The worktree containing path, and the hub that owns it; None outside a non-bare repository.
+def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Checkout | None:
+    """The worktree containing path, and the hub that owns it; None outside a non-bare repository. git answers within
+    timeout seconds, which the hub guard lowers to what is left of its reading time.
 
     Raises GitError when git answers nonzero for a directory below a checkout, one that a `.git` beside it or above
     it marks, outside any git directory: a checkout git cannot read, as one it refuses to trust, is not one outside
@@ -119,7 +120,9 @@ def checkout_of(path: Path) -> Checkout | None:
         if directory.parent == directory:
             return None
         directory = directory.parent
-    result = git(directory, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
+    result = git(
+        directory, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", timeout=timeout
+    )
     lines = result.stdout.splitlines()
     if result.returncode != 0 and below_a_checkout(directory):
         said = " ".join(result.stderr.split()) or f"git rev-parse exited with {result.returncode}"

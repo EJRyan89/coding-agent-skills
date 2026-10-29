@@ -15,6 +15,7 @@ the hub and its worktrees. It is inert unless `git config coding-agent-skills.hu
 from __future__ import annotations
 
 import base64
+import contextlib
 import fnmatch
 import functools
 import json
@@ -25,7 +26,7 @@ import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -199,7 +200,8 @@ LOOP_NESTING_LIMIT = 8
 POWERSHELL_READER = Path(__file__).with_name("hub_guard-powershell.ps1")
 # How long the guard reads and judges one command, pwsh included, before it is a command the guard cannot read in
 # time. The hook's own 30-second timeout in .claude/settings.json lets a command it cuts short run, so this leaves room
-# for starting Python and for one git call still running at the end, GUARD_GIT_TIMEOUT_SECONDS.
+# for starting Python and writing the decision; the hub lookups before and after reading, and each git call they
+# start, are held to it too (lookups_within).
 READING_SECONDS = 15
 # How much of the reader's output is kept: far more than the events of any command a tool call carries, and a reading
 # cut short is not JSON, so it is a command the guard cannot read rather than one read in part.
@@ -247,7 +249,7 @@ def guard_enabled(hub: Path) -> bool:
     configuration, which GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT carry and which would otherwise outrank it. git
     exits 1 for a setting that is not there; any other failure, such as a value that is no boolean, is a hub it cannot
     look up, allowed with a note rather than read as unguarded unseen."""
-    result = git(hub, "config", "--local", "--type=bool", "--get", GUARD_SETTING)
+    result = git(hub, "config", "--local", "--type=bool", "--get", GUARD_SETTING, timeout=lookup_timeout())
     if result.returncode not in (0, 1):
         said = " ".join(result.stderr.split()) or f"git config exited with {result.returncode}"
         print(f"hub guard skipped: the opt-in of {hub} could not be read: {said}", file=sys.stderr)
@@ -257,7 +259,7 @@ def guard_enabled(hub: Path) -> bool:
 @functools.cache
 def guarded_hub_at(path: Path) -> Path | None:
     """The guarded hub whose checkout holds path; None when it is a worktree, another repository, or none."""
-    checkout = checkout_of(path)
+    checkout = checkout_of(path, lookup_timeout())
     if checkout is None or not checkout.is_hub or not guard_enabled(checkout.hub):
         return None
     return checkout.hub
@@ -275,7 +277,7 @@ def guarded_hub_of_repository(path: Path) -> Path | None:
         return None
     arguments = ["--git-dir", str(path), "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]
     try:
-        output = CLIENT.output(arguments, directory=directory, timeout=GUARD_GIT_TIMEOUT_SECONDS)
+        output = CLIENT.output(arguments, directory=directory, timeout=lookup_timeout())
     except GitError as exc:
         if exc.kind == "not_repository":
             return None
@@ -300,7 +302,7 @@ def resolve(value: str, cwd: Path) -> Path:
 @functools.cache
 def git_builtins() -> frozenset[str]:
     """The subcommands git runs itself, which no alias can stand for; empty when git cannot list them."""
-    result = git(Path(__file__).resolve().parent, "--list-cmds=builtins")
+    result = git(Path(__file__).resolve().parent, "--list-cmds=builtins", timeout=lookup_timeout())
     return frozenset(result.stdout.split()) if result.returncode == 0 else frozenset()
 
 
@@ -318,7 +320,7 @@ def hub_protected(path: Path) -> bool:
     hub = guarded_hub_at(normalized)
     if hub is None:
         return False
-    return git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode != 0
+    return git(hub, "check-ignore", "-q", "--no-index", str(normalized), timeout=lookup_timeout()).returncode != 0
 
 
 def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
@@ -331,7 +333,7 @@ def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
     found: set[Path] = set()
     for directory in directories:
         try:
-            checkout = checkout_of(directory)
+            checkout = checkout_of(directory, lookup_timeout())
         except GitError as exc:
             print(f"hub guard could not look up the hub of {directory}: {exc}", file=sys.stderr)
             continue
@@ -396,10 +398,7 @@ class Reading:
     def time_left(self) -> float:
         """The seconds left of the reading time; past it, raises ReadingTimeout, which the hook refuses as a failure
         of the guard's own when the command names git while a guarded hub is in view."""
-        left = self.deadline - reading_clock()
-        if left <= 0:
-            raise ReadingTimeout(f"the guard did not finish reading it within {READING_SECONDS} seconds")
-        return left
+        return time_left(self.deadline)
 
 
 class ReadingTimeout(Exception):
@@ -408,6 +407,41 @@ class ReadingTimeout(Exception):
 
 def reading_clock() -> float:
     return time.monotonic()
+
+
+def time_left(deadline: float) -> float:
+    """The seconds until deadline, by reading_clock; past it, raises ReadingTimeout."""
+    left = deadline - reading_clock()
+    if left <= 0:
+        raise ReadingTimeout(f"the guard did not finish reading it within {READING_SECONDS} seconds")
+    return left
+
+
+@dataclass
+class LookupBound:
+    """When the hub lookups must end, by reading_clock: the reading deadline of the command being read and judged,
+    while it is, and no bound otherwise, as for a file event, whose git calls each keep GUARD_GIT_TIMEOUT_SECONDS."""
+
+    deadline: float = math.inf
+
+
+LOOKUPS = LookupBound()
+
+
+def lookup_timeout() -> float:
+    """How long one git call of a hub lookup may take: GUARD_GIT_TIMEOUT_SECONDS, or the reading time left when that
+    is less; past the reading time, raises ReadingTimeout, so a lookup starts no git call the deadline has passed."""
+    return min(time_left(LOOKUPS.deadline), GUARD_GIT_TIMEOUT_SECONDS)
+
+
+@contextlib.contextmanager
+def lookups_within(deadline: float) -> Iterator[None]:
+    """Holds every hub lookup made inside the block, and each git call it starts, to deadline."""
+    outer, LOOKUPS.deadline = LOOKUPS.deadline, deadline
+    try:
+        yield
+    finally:
+        LOOKUPS.deadline = outer
 
 
 def mentions(pattern: re.Pattern[str], text: str) -> bool:
@@ -843,7 +877,9 @@ class Judge:
             return self.expansion_refusal(call, expansion, depth, call.place.tree)
         for lookup in lookups:
             repository = () if lookup.repository is None else ("--git-dir", str(lookup.repository))
-            result = git(lookup.directory, *repository, "config", "--get", f"alias.{subcommand}")
+            result = git(
+                lookup.directory, *repository, "config", "--get", f"alias.{subcommand}", timeout=lookup_timeout()
+            )
             if result.returncode == 1:
                 continue
             if result.returncode != 0:
@@ -900,7 +936,9 @@ def alias_lookups(place: Place) -> list[AliasLookup]:
     directory = place.start or place.tree
     if directory is None or not directory.is_dir():
         return []
-    checkout = checkout_of(place.tree) if place.tree is not None and place.tree == place.start else None
+    checkout = (
+        checkout_of(place.tree, lookup_timeout()) if place.tree is not None and place.tree == place.start else None
+    )
     top = checkout.toplevel if checkout is not None else place.tree
     return [AliasLookup(directory, place.repository if place.repository_named else None, top)]
 
@@ -908,7 +946,8 @@ def alias_lookups(place: Place) -> list[AliasLookup]:
 def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str | None:
     """Why a reading's calls would write a guarded hub, or None; notes on what was passed over join the reading's."""
     judge = Judge(set(hubs), reading.environment, reading.notes, reading.deadline)
-    return judge.denied(reading, depth)
+    with lookups_within(reading.deadline):
+        return judge.denied(reading, depth)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1960,7 +1999,7 @@ def mentions_alias(command: str, directories: Iterable[Path]) -> bool:
 
     git lists them in the environment the hook was given, which is the one the command runs in."""
     for directory in directories:
-        result = git(directory, "config", "--name-only", "--get-regexp", r"^alias\.")
+        result = git(directory, "config", "--name-only", "--get-regexp", r"^alias\.", timeout=lookup_timeout())
         if result.returncode == 1:
             continue
         if result.returncode != 0:
@@ -1986,7 +2025,7 @@ def may_refuse(command: str, cwd: Path | None, reading: Reading) -> bool:
     if cwd is None:
         return True
     try:
-        if checkout_of(cwd) is None:
+        if checkout_of(cwd, lookup_timeout()) is None:
             return True
     except GitError:
         return True  # A checkout git cannot read lists no aliases either.
@@ -2344,8 +2383,14 @@ SHELL_READERS: dict[str, ShellReader] = {"Bash": read_bash, "Monitor": read_bash
 def read_command(tool: str, command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
     """Every git call a shell tool's command makes, with where each acts, and what could not be read."""
     reading = start_reading(command, cwd, environment)
-    SHELL_READERS[tool](command, cwd, reading, 0, inherited_variables(environment))
+    read_into(reading, tool, cwd, environment)
     return reading
+
+
+def read_into(reading: Reading, tool: str, cwd: Path, environment: Mapping[str, str]) -> None:
+    """Reads the reading's command with the tool's shell reader, its hub lookups held to the reading time."""
+    with lookups_within(reading.deadline):
+        SHELL_READERS[tool](reading.text, cwd, reading, 0, inherited_variables(environment))
 
 
 def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
@@ -2353,16 +2398,21 @@ def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Re
     deadline = reading_clock() + READING_SECONDS
     guarded_hub_at.cache_clear()
     guarded_hub_of_repository.cache_clear()
+    # The hubs in view decide whether a command the guard cannot read in time is refused, so their lookups keep
+    # GUARD_GIT_TIMEOUT_SECONDS for each git call rather than end with the reading time; the session's own directories
+    # bound them, never the command.
     return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), deadline=deadline)
 
 
 def reached_hubs(reading: Reading) -> set[Path]:
-    """The guarded hubs a reading's settled places name."""
+    """The guarded hubs a reading's settled places name, each looked up within the reading time."""
     found: set[Path] = set()
-    for call in reading.calls:
-        hub, _ = reached_hub(call.place)
-        if hub is not None:
-            found.add(hub)
+    with lookups_within(reading.deadline):
+        for call in reading.calls:
+            reading.time_left()
+            hub, _ = reached_hub(call.place)
+            if hub is not None:
+                found.add(hub)
     return found
 
 
@@ -2392,7 +2442,7 @@ def guard(stream: str) -> int:
             reading = start_reading(tool_input["command"], cwd, os.environ)
             hubs = set(reading.context_hubs)
             in_view = (reading.text, hubs)
-            SHELL_READERS[tool](reading.text, cwd, reading, 0, inherited_variables(os.environ))
+            read_into(reading, tool, cwd, os.environ)
             hubs |= reached_hubs(reading)
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"

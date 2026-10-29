@@ -431,6 +431,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   above zero and finite.
 - **Examples:** #1756, #1837, #1883, #1899
 
+### A deadline holds every step its promise names
+
+- **Rule:** A deadline a document promises holds every step the promise names, each process a step starts given no
+  more than the time left, never only the steps that check the clock themselves.
+- **Why:** A step that keeps its own fixed timeout, or that runs between two looks at the clock, can outlast the
+  deadline by as much as the input asks of it, and the promise past it, such as the hook's own timeout, is broken
+  unseen.
+- **Use:** `tools.hub_guard:lookups_within`, which holds every hub lookup made inside it to the reading deadline, and
+  `tools.hub_guard:lookup_timeout`, the timeout each of their git calls takes.
+- **Guard:** `tests/tools/test_hub_guard.py::ReadingBoundTests::test_the_hub_lookups_after_reading_end_with_the_reading_time`,
+  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookups_git_call_gets_what_is_left_of_the_reading_time`
+- **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
+  as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
+  each item's work starts processes; a deadline set after work it promises to bound has begun.
+- **Examples:** #2031
+
 ### A check reaches its whole rule
 
 - **Rule:** A policy, an audit brief, or a gate reaches every place its rule covers, in every language the fact is
