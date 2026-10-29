@@ -1150,7 +1150,7 @@ def test_the_untested_profile_reads_the_condition_file_and_the_body_and_anchors_
     ],
 )
 def test_the_untested_profile_reports_a_converted_call_site_whose_output_no_test_pins(phrase: str) -> None:
-    # Whether a test pins a site's output is a judgment, so this reviewer is the rule's only guard (#1961).
+    # Whether a test pins a site's output is a judgment, so this reviewer is the rule's only guard.
     profile = " ".join((REPOSITORY / SKILL / "references" / "untested-changes.md").read_text("utf-8").split())
     assert phrase in profile
 
