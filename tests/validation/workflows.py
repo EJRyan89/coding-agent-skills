@@ -495,11 +495,12 @@ LINUX_SHELLCHECK_DIGEST_CHECK = 'echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha
 def linux_job_problems(workflow: str, legs: int) -> list[str]:
     """Report how validate.yml's `linux` job departs from one validation run on ubuntu-latest dealt across `legs` legs
     named as Linux legs, each running its own shard, every leg reporting rather than the first failure cancelling the
-    rest: the checkout's whole history, the matrix's one Python, the floor, which its name reads and setup-python
-    installs, with pip's cache keyed on requirements-dev.txt, ShellCheck
-    from the pinned release's archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, and
-    the Windows legs' validation step. `required_check_problems` holds it inside the required check,
-    `tool_cache_problems` its tool caches, and `pinned_tool_problems` its verify step."""
+    rest: the checkout's whole history, the matrix's Pythons as LINUX_PYTHON gives them, the floor and, on the weekly
+    schedule, the latest stable release beside it, each leg's own read by its name and installed by setup-python,
+    with pip's cache keyed on requirements-dev.txt, ShellCheck from the pinned release's archive checked against its
+    pinned digest, PSScriptAnalyzer at the workflow's pin, and the Windows legs' validation step.
+    `required_check_problems` holds it inside the required check, `tool_cache_problems` its tool caches, and
+    `pinned_tool_problems` its verify step."""
     tree = read_workflow(workflow)
     linux = _mapping(tree, "jobs", "linux")
     if not linux:
