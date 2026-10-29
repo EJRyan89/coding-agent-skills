@@ -605,3 +605,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a tuple or list of `"<module>.py"` names in a suite next to `write_bytes`, `write_text`, or
   `copyfile` under a path naming `ejryan89-skill-core`; `with_name(module)` in a loop over such names.
 - **Examples:** #1939
+
+### Pin a site's output before routing it through a shared helper
+
+- **Rule:** A change that routes existing call sites through a shared helper first pins each site's current output
+  against a literal, the bytes it writes, the key it compares, or the line it prints, then converts the site and keeps
+  the pin, saying beside that site's test when the conversion changes its output on purpose.
+- **Why:** Without a pin from before the conversion, a converted site whose output changed passes, and each site's
+  arguments survive the mutation gate in bulk.
+- **No guard:** Whether a test pins a site's output is a judgment reading the code cannot settle, so no validation
+  policy refuses it. `review-repository`'s `untested-changes` reviewer reports a converted call site whose output no
+  test pins, and "Shared code" in [implementing-changes.md](implementing-changes.md#shared-code) states the rule.
+- **Search for:** a pull request that replaces `json.dump(`, `json.dumps(`, `.write_text(`, or a `normcase(` or
+  `casefold()` comparison with a call to `json_writer` or `path_key` across many sites; a `textual=`, `indent=`,
+  `ensure_ascii=`, `sort_keys=`, or `mode=` argument at a converted site that the `Mutation gate` step summary lists
+  as a survivor.
+- **Examples:** #1948, #1949, #1953, #1957, #1961
