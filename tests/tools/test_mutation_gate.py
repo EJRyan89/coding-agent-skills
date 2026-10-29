@@ -1377,7 +1377,7 @@ class SummaryFixtures(unittest.TestCase):
         )
         text = summary(report)
         # The table's line is added after the module table, never in place of the summary.
-        self.assertIn("\n## Mutation gate\n", text)
+        self.assertTrue(text.startswith("## Mutation gate\n"), text)
         self.assertIn(
             "|\n\n`tools/calc.py`: the changed lines of its sanction tables made no mutant, since the validation "
             "policy that reads each holds it, not the module's suites: `FSOPS_ALLOWED` "
@@ -1403,21 +1403,69 @@ class SummaryFixtures(unittest.TestCase):
         self.assertEqual(
             "**Unfinished, so not a verdict:** a leg's cap cut the run short: 2 of the 3 mutants of `tools/calc.py` "
             "did not run on Linux (1 on lines that run at import); 1 of the 1 mutants of `tools/other.py` did not run "
-            "on Linux; the reach of 1 suite was not measured on Linux. Split the pull request, or move its "
-            "module-level tables into the functions that use them, until it finishes.",
-            first,
-        )
-        self.assertEqual(["", "## Mutation gate"], summary(report).splitlines()[1:3])
-
-    def test_a_reach_the_cap_left_unmeasured_alone_leaves_the_run_unfinished(self) -> None:
-        report = self.report([Outcome(mutant(1), KILLED, ("t",))])
-        report.legs[0].unmeasured_suites.append("tests/later.py")
-        self.assertEqual(
-            "**Unfinished, so not a verdict:** a leg's cap cut the run short: the reach of 2 suites was not measured "
             "on Linux. Split the pull request, or move its module-level tables into the functions that use them, "
             "until it finishes.",
-            unfinished_line(report),
+            first,
         )
+        # The suite whose reach was not measured leaves no verdict open beside a mutant killed or not run.
+        self.assertIn("`tests/late.py`. No mutant it ran survived or went unreached", summary(report))
+        self.assertEqual(["", "## Mutation gate"], summary(report).splitlines()[1:3])
+
+    def test_a_reach_the_cap_left_unmeasured_leaves_the_run_unfinished_while_a_mutant_it_ran_is_open(self) -> None:
+        for status in (SURVIVED, NOT_REACHED):
+            with self.subTest(status=status):
+                report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), status)])
+                report.legs[0].unmeasured_suites.append("tests/later.py")
+                self.assertEqual(
+                    "**Unfinished, so not a verdict:** a leg's cap cut the run short: the reach of 2 suites was not "
+                    "measured on Linux, which leaves 1 mutant that survived or no suite reached open there. Split the "
+                    "pull request, or move its module-level tables into the functions that use them, until it "
+                    "finishes.",
+                    unfinished_line(report),
+                )
+                self.assertNotIn("leave no verdict open", summary(report))
+
+    def test_a_reach_the_cap_left_unmeasured_beside_only_killed_mutants_leaves_the_run_finished(self) -> None:
+        report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), TIMED_OUT, ("t",))])
+        report.legs[0].unmeasured_suites.append("tests/later.py")
+        self.assertIsNone(unfinished_line(report))
+        text = summary(report)
+        self.assertEqual("## Mutation gate", text.splitlines()[0])
+        self.assertIn(
+            "\n\nThe cap left these suites' reach unmeasured on Linux, so no mutant ran against them there: "
+            "`tests/late.py`, `tests/later.py`. No mutant it ran survived or went unreached, so they leave no verdict "
+            "open.\n",
+            text,
+        )
+
+    def test_a_widely_imported_modules_windows_reach_cut_short_after_both_legs_killed_it_is_a_verdict(self) -> None:
+        # Every mutant killed on both legs, while the Windows leg's cap left most suites' reach unmeasured.
+        report = two_legs([Outcome(TEXTUAL, KILLED, ("t",))], [Outcome(TEXTUAL, KILLED, ("t",))])
+        report.legs[1].unmeasured_suites.extend(["tests/a.py", "tests/b.py"])
+        self.assertIsNone(unfinished_line(report))
+        # A mutant Windows killed, which survived on Linux, is a verdict too; one that survived both legs is open.
+        killed = two_legs([Outcome(TEXTUAL, SURVIVED, ("t",))], [Outcome(TEXTUAL, KILLED, ("t",))])
+        killed.legs[0].unmeasured_suites.append("tests/a.py")
+        self.assertIsNone(unfinished_line(killed))
+        survived = two_legs([Outcome(TEXTUAL, SURVIVED, ("t",))], [Outcome(TEXTUAL, SURVIVED, ("t",))])
+        survived.legs[1].unmeasured_suites.append("tests/a.py")
+        self.assertIn(
+            "the reach of 1 suite was not measured on Windows, which leaves 1 mutant that survived or no suite "
+            "reached open there",
+            str(unfinished_line(survived)),
+        )
+        unreached = Outcome(mutant(5, PATH_MODULE), NOT_REACHED)
+        two = two_legs([Outcome(TEXTUAL, SURVIVED, ("t",)), unreached], [Outcome(TEXTUAL, SURVIVED, ("t",)), unreached])
+        two.legs[1].unmeasured_suites.append("tests/a.py")
+        self.assertIn(
+            "on Windows, which leaves 2 mutants that survived or no suite reached open there",
+            str(unfinished_line(two)),
+        )
+        # A leg's unmeasured suites leave open only the mutants of modules that leg ran.
+        other = two_legs([Outcome(TEXTUAL, KILLED, ("t",))], [Outcome(TEXTUAL, KILLED, ("t",))])
+        other.modules.append(linux_module("tools/calc.py", [Outcome(mutant(1), SURVIVED, ("t",))], 1))
+        other.legs[1].unmeasured_suites.append("tests/a.py")
+        self.assertIsNone(unfinished_line(other))
 
     def test_a_finished_run_opens_on_its_heading_with_no_unfinished_line(self) -> None:
         report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_REACHED)])
@@ -1978,7 +2026,9 @@ class WholeRunFixtures(unittest.TestCase):
             ).report()
         self.assertFalse(result.finished)
         self.assertTrue(result.text.startswith("**Unfinished, so not a verdict:** a leg's cap cut the run short: 2"))
-        self.assertIn(f"the reach of 1 suite was not measured on {HOST}", result.text.splitlines()[0])
+        # Every mutant was left not run, so the unmeasured suite opens none beyond them, and is named apart.
+        self.assertNotIn("was not measured", result.text.splitlines()[0])
+        self.assertIn(f"The cap left these suites' reach unmeasured on {HOST}", result.text)
 
     def test_a_changed_sanction_table_is_named_with_its_policy_and_its_modules_other_lines_still_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
