@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
+from call_tables import TEXT_OPENERS
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
     COMPUTED_NAME,
@@ -514,8 +515,9 @@ WRITE_MODE_CHARACTERS = "wax+"
 # Path.copy and Path.move, whose names a dict's or a list's copy() and a module's own move function share, so
 # _path_copies tells them apart by their target argument and their receiver instead.
 PATH_COPIES = frozenset({"copy", "move"})
-# The functions that open a file by name with its mode second; a Path's open() takes the mode first.
-OPEN_FUNCTIONS = frozenset({"open", "builtins.open", "io.open", "codecs.open"})
+# The functions that open a file by name with its mode second, as call_tables' TEXT_OPENERS names them; a Path's open()
+# takes the mode first.
+OPEN_FUNCTIONS = frozenset(name for name, opener in TEXT_OPENERS.items() if opener.plain_file)
 
 
 def _mode_writes(mode: str) -> bool:

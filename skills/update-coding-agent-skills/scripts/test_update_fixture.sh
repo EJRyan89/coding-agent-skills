@@ -255,10 +255,10 @@ run_subject() {
   set -e
 }
 
-# A check hands grep its text in a here-string, never through a pipe: grep -q exits at its first match, and under
-# pipefail the writer it leaves can die of SIGPIPE and fail a check whose pattern matched.
+# A check hands grep its text in a here-string, and takes a first line by expansion, never through a pipe: grep -q and
+# head exit early, and under pipefail the writer they leave can die of SIGPIPE and fail a check that held.
 expect_status() { [ "$status" -eq "$1" ] || fail "$2: expected exit $1, got $status: $OUTPUT $(cat "$FIXTURE/stderr")"; }
-expect_first_line() { [ "$(printf '%s\n' "$OUTPUT" | head -n 1)" = "$1" ] || fail "$2: expected '$1', got: $OUTPUT"; }
+expect_first_line() { [ "${OUTPUT%%$'\n'*}" = "$1" ] || fail "$2: expected '$1', got: $OUTPUT"; }
 expect_no_stderr() { [ ! -s "$FIXTURE/stderr" ] || fail "$1: wrote to stderr: $(cat "$FIXTURE/stderr")"; }
 # A named failure: exit 1, one stdout line starting with the given FAILED text, nothing on stderr.
 expect_failed() {

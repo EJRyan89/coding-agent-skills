@@ -341,14 +341,15 @@ def test_a_manifest_value_no_json_file_can_hold_is_the_plugins_build_refusal(sou
 
 
 def test_a_hook_value_no_json_file_can_hold_is_the_plugins_build_refusal(source: Source) -> None:
-    # A double-quoted frontmatter value reads JSON's escapes, a lone surrogate's among them.
+    # A double-quoted frontmatter value reads JSON's escapes through json_reader, which refuses a lone surrogate's, so
+    # the agent is refused at its read, before the hooks file it would go into is written.
     source.agent("guarded", extra=GUARD_HOOK.replace('matcher: "Read|Bash"', 'matcher: "Read\\ud800"'))
     source.skill("beta", agent_deps=["guarded"])
     with pytest.raises(plugin_build.BuildError) as raised:
         assembled(source)
-    assert str(raised.value) == (
-        "plugin fixture-skills: hooks/hooks.json cannot be written: the value holds a lone surrogate U+D800, which "
-        "UTF-8 cannot encode"
+    assert (
+        str(raised.value)
+        == "agent guarded: hooks: matcher: a double-quoted value uses an escape this reader does not support"
     )
 
 

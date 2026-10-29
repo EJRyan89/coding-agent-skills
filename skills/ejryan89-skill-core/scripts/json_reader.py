@@ -7,10 +7,12 @@ that is too large for a float and which Python's reader turns into an infinity. 
 `JsonRefused`, a `ValueError`, so a reader that already turns a `ValueError` from its parse into its own refusal
 refuses these alike. Nesting past `nesting_depth`'s `DEPTH_LIMIT` is refused the same way, whether `json.loads`
 raises it as a `RecursionError` that such a reader lets escape or reads a value deeper than a Python walk over it can
-recurse, and so is an integer of more digits than `whole_number`'s
-`DIGIT_LIMIT`, the one cap on a number read from text, whatever limit the interpreter is configured with. It bounds
-nothing else: whatever else `json.loads` raises, such as its `JSONDecodeError`, it raises. `CONTENT_ERRORS` is
-every error it raises on bad content, the family a caller's handler names whole.
+recurse, each array or object one level and a scalar none, and so is an integer of more digits than `whole_number`'s
+`DIGIT_LIMIT`, the one cap on a number read from text, whatever limit the interpreter is configured with. A string or
+key holding a lone surrogate, which a `\\ud800` escape gives and UTF-8 cannot encode, is refused too, so the reader
+takes nothing `json_writer` refuses to write. It bounds nothing else: whatever else `json.loads` raises, such as its
+`JSONDecodeError`, it raises. `CONTENT_ERRORS` is every error it raises on bad content, the family a caller's handler
+names whole.
 """
 
 from __future__ import annotations
@@ -69,24 +71,56 @@ def _items(value: Any) -> Any:
     return value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
 
 
-def _bounded(value: Any) -> Any:
-    """`value`, or `JsonRefused` when it nests past `DEPTH_LIMIT`."""
-    if nesting_depth.nests_past(value, _items):
+def _containers(value: Any) -> list[Any]:
+    """The arrays and objects `value` holds directly, each one level below it; a scalar is no level."""
+    return [item for item in _items(value) if isinstance(item, (dict, list))]
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string and key `value` holds, at any depth, gathered without recursing."""
+    found: list[str] = []
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            found.append(node)
+        elif isinstance(node, dict):
+            found.extend(node)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return found
+
+
+def _bounded(value: Any, *, surrogates: bool = False) -> Any:
+    """`value`, or `JsonRefused` when it nests past `DEPTH_LIMIT` or, unless `surrogates` keeps them, a string or key
+    holds a lone surrogate."""
+    if nesting_depth.nests_past(value, _containers):
         raise JsonRefused(NESTED)
+    for text in () if surrogates else _strings(value):
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError as error:
+            character = ord(text[error.start])
+            raise JsonRefused(f"the JSON holds a lone surrogate U+{character:04X}, which UTF-8 cannot encode") from (
+                error
+            )
     return value
 
 
-def loads(text: str | bytes) -> Any:
+def loads(text: str | bytes, *, surrogates: bool = False) -> Any:
     """The value `text` holds, as `json.loads` reads it, or `JsonRefused` when an object repeats a key, a number is
-    `NaN`, `Infinity`, `-Infinity`, or too large for a float, an integer has more digits than `DIGIT_LIMIT`, or the
-    value nests past `DEPTH_LIMIT`."""
+    `NaN`, `Infinity`, `-Infinity`, or too large for a float, an integer has more digits than `DIGIT_LIMIT`, the
+    value nests past `DEPTH_LIMIT`, or a string or key holds a lone surrogate. With `surrogates`, a lone surrogate is
+    kept, for a record whose own writer keeps one, such as a name another program gave as bytes that are not UTF-8,
+    held as its surrogate escapes; a module that writes such a record states why in its `JSON_WRITE_ALLOWED`."""
     try:
         value = json.loads(
             text, object_pairs_hook=_object, parse_constant=_constant, parse_float=_float, parse_int=_integer
         )
     except RecursionError as error:
         raise JsonRefused(NESTED) from error
-    return _bounded(value)
+    return _bounded(value, surrogates=surrogates)
 
 
 def raw_decode(text: str, index: int = 0) -> tuple[Any, int]:
