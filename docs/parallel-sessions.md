@@ -346,7 +346,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   any number of times in a loop or script block, is read as running, and afterwards the guard keeps only what every
   path agrees on: a directory or variable one path changes is unknown after it. A directory change whose target is
   not a directory fails and leaves the shell where it was, so it is unknown after it too, except along `&&`, which
-  goes on only when it succeeded.
+  goes on only when it succeeded. The guard reads a loop's or script block's body twice, so it follows loops and
+  script blocks, counted together across nested shells and function calls, to eight deep; deeper is a command the
+  guard cannot read, and the directory and every variable are unknown after it.
 - **Nested shells.** `bash -c` (alone or in a bundle such as `-lc`), `bash <<< '<script>'`, a here-document handed
   to `bash`, and `pwsh -c` (or `powershell -Command`) or `pwsh -CommandWithArgs` (`-cwa`) with a fixed script are
   read in either shell, by every spelling pwsh takes for a parameter: a leading `-`, en dash, em dash, or
@@ -376,15 +378,17 @@ command names. While one is, the guard refuses:
 - a git call whose subcommand the text does not settle, or that comes after an option of git's own the guard does
   not read;
 - a command with a part it cannot read that may start git, when the command names git: Bash its grammar cannot read
-  (the lines before a syntax error do run, unlike PowerShell's), Bash nested deeper than its reader follows, a
-  script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression` that the text does not settle or that nests more
-  than four deep, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
+  (the lines before a syntax error do run, unlike PowerShell's), Bash nested deeper than its reader follows, loops
+  and script blocks nested more than eight deep, a script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression`
+  that the text does not settle or that nests more than four deep, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
   inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
   lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline
   command, script file, or encoded command at all), a callback `mapfile -C` runs, every `env -S`, whatever follows
   it, an option of `env` or of a prefix program above that the guard does not read, a PowerShell command when `pwsh`
-  cannot be started or does not finish reading it within 20 seconds, and a command either shell's reader fails on
-  with an error of its own;
+  cannot be started or does not finish reading it in the time the guard has left, a command the guard does not
+  finish reading and judging within 15 seconds, `pwsh` included, which keeps it inside the hook's own 30-second
+  timeout, past which Claude Code lets the command run, and a command either shell's reader fails on with an error
+  of its own;
 - an alias that cannot be read, as above.
 
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
