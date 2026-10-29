@@ -413,15 +413,11 @@ READERS = [
     Reader(
         "dotnet_format_targets.read_file_list",
         "text",
-        b"src/Example.cs\nsrc/Other.cs\n",
+        b"src/Example.cs\0src/Other.cs\0",
         dotnet_format_targets.read_file_list,
         (ValueError, OSError),
         filename="files.txt",
-        accepts={
-            "bom": "the list is read without a byte-order mark",
-            "truncated": "each non-blank line is a path the list names",
-            "long_line": "each non-blank line is a path the list names",
-        },
+        accepts={"bom": "a byte-order mark begins the first name, as it may begin a name git lists"},
     ),
     Reader(
         "github_activity_report.read_history",

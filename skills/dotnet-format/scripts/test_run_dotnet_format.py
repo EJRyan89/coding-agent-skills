@@ -324,7 +324,7 @@ class LocatedFormatterTests(unittest.TestCase):
 
     def test_a_missing_formatter_is_refused_before_anything_runs(self) -> None:
         file_list = self.path_folder.parent / "files.txt"
-        file_list.write_text("a.cs\n", encoding="utf-8")
+        file_list.write_text("a.cs\0", encoding="utf-8")
         arguments = ["check", "--repo-root", str(Path.cwd()), "--solution", "App.sln", "--include-file", str(file_list)]
         output = io.StringIO()
         with mock.patch.object(formatter, "run_bounded") as run, contextlib.redirect_stdout(output):
@@ -340,7 +340,7 @@ class MainTests(unittest.TestCase):
         self.root = Path(directory.name).resolve()
         self.files = ["src/App/Program.cs", "src/App/My Folder/Util.cs"]
         self.file_list = self.root / "files.txt"
-        self.file_list.write_text("".join(f"{name}\n" for name in self.files), encoding="utf-8")
+        self.file_list.write_text("".join(f"{name}\0" for name in self.files), encoding="utf-8")
 
     def run_formatter(
         self,
@@ -444,7 +444,7 @@ class MainTests(unittest.TestCase):
             (outside / "Outside.cs").as_posix(): "the path is outside the examined tree",
             "Linked/Outside.cs": "a symbolic link or junction leads it outside the repository root",
         }
-        self.file_list.write_text("".join(f"{name}\n" for name in [*entries, *self.files]), encoding="utf-8")
+        self.file_list.write_text("".join(f"{name}\0" for name in [*entries, *self.files]), encoding="utf-8")
         for mode in ("check", "fix"):
             with self.subTest(mode=mode):
                 runner = FakeRunner(0, "  Format complete in 10ms.\n")
@@ -486,7 +486,7 @@ class MainTests(unittest.TestCase):
                     self.assertEqual([], runner.calls)
 
     def test_a_list_every_entry_of_which_is_refused_runs_nothing(self) -> None:
-        self.file_list.write_text("../Outside.cs\n", encoding="utf-8")
+        self.file_list.write_text("../Outside.cs\0", encoding="utf-8")
         runner = FakeRunner(0, "")
         status, lines, _ = self.run_formatter("check", runner)
         self.assertEqual(1, status)
@@ -616,7 +616,7 @@ class MainTests(unittest.TestCase):
     def many_files(self) -> list[str]:
         """2,000 changed files, about 82,000 characters of command line: three runs' worth."""
         files = [f"src/Project {number // 100}/Generated File {number:04}.cs" for number in range(2000)]
-        self.file_list.write_text("".join(f"{name}\n" for name in files), encoding="utf-8")
+        self.file_list.write_text("".join(f"{name}\0" for name in files), encoding="utf-8")
         return files
 
     def test_a_long_file_list_runs_in_batches_that_each_fit_the_command_line(self) -> None:
@@ -816,7 +816,7 @@ class MainTests(unittest.TestCase):
 
     def test_the_global_tool_skips_an_aspnet_projects_files_and_the_sdks_command_formats_them(self) -> None:
         self.files = ["src/App/Program.cs", "src/Web/Startup.cs", "src/Web/Pages/Index.cs"]
-        self.file_list.write_text("".join(f"{name}\n" for name in self.files), encoding="utf-8")
+        self.file_list.write_text("".join(f"{name}\0" for name in self.files), encoding="utf-8")
         self.write_solution(("src\\App\\App.csproj", LEGACY_PROJECT), ("src\\Web\\Web.csproj", WEB_PROJECT))
         runner = FakeRunner(0, "")
         self.assertEqual(0, self.run_formatter("check", runner)[0])
@@ -832,7 +832,7 @@ class MainTests(unittest.TestCase):
 
     def test_nothing_runs_when_the_global_tool_skips_every_file(self) -> None:
         self.files = ["src/Web/Startup.cs"]
-        self.file_list.write_text("src/Web/Startup.cs\n", encoding="utf-8")
+        self.file_list.write_text("src/Web/Startup.cs\0", encoding="utf-8")
         self.write_solution(("src\\Web\\Web.csproj", WEB_PROJECT), ("old\\Old.csproj", LEGACY_PROJECT))
         runner = FakeRunner(1, "")
         for mode in ("check", "fix"):
@@ -866,8 +866,8 @@ class MainTests(unittest.TestCase):
 
     def test_an_unusable_file_list_fails_without_running(self) -> None:
         cases = (
-            (b"\n  \n", f"{self.file_list} lists no files"),
-            (b"caf\xe9.cs\n", f"{self.file_list} is not UTF-8 text"),
+            (b"", f"{self.file_list} lists no files"),
+            (b"caf\xe9.cs\0", f"{self.file_list} is not UTF-8 text"),
         )
         for content, reason in cases:
             with self.subTest(reason=reason):
@@ -908,7 +908,7 @@ class ConsoleTests(unittest.TestCase):
                 (tools / name).write_text("exit 1\n", encoding="utf-8")
                 (tools / name).chmod(0o755)
             file_list = Path(temporary) / "files → ✓.txt"
-            file_list.write_text("\n", encoding="utf-8")
+            file_list.write_text("", encoding="utf-8")
             result = subprocess.run(
                 [
                     sys.executable,

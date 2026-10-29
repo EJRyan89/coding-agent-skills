@@ -386,7 +386,8 @@ command names. While one is, the guard refuses:
   command, script file, or encoded command at all), a callback `mapfile -C` runs, every `env -S`, whatever follows
   it, an option of `env` or of a prefix program above that the guard does not read, a PowerShell command when `pwsh`
   cannot be started or does not finish reading it in the time the guard has left, a command the guard does not
-  finish reading and judging within 15 seconds, `pwsh` included, which keeps it inside the hook's own 30-second
+  finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the hubs the places it names
+  reach, each git call of theirs given no more than the time left, which keeps it inside the hook's own 30-second
   timeout, past which Claude Code lets the command run, and a command either shell's reader fails on with an error
   of its own;
 - an alias that cannot be read, as above.
@@ -398,7 +399,9 @@ says nothing about where the call acts; a defect before that, such as an event i
 no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
 stderr, so that it cannot block every tool and is never passed unseen. A directory below a checkout, which a `.git`
 in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
-a place outside every repository, and the other hubs in view still count. The hook command reads the project's own
+a place outside every repository, and the other hubs in view still count. A file an edit names in such a checkout, or
+in a git directory git answers with an error for, may lie in a guarded hub, so the edit is refused; one where git did
+not run or finish is allowed with a note. The hook command reads the project's own
 opt-in before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
 
 #### What it does not see

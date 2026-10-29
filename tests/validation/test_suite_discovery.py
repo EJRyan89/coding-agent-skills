@@ -98,7 +98,7 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                 suite_shape_problems(root),
             )
 
-    def test_pipe_race_policy_refuses_a_pipe_into_a_grep_that_ends_at_its_match(self) -> None:
+    def test_pipe_race_policy_refuses_a_pipe_into_a_reader_that_ends_early(self) -> None:
         pipefail = "#!/usr/bin/env bash\nset -Eeuo pipefail\n"
         racing = "printf x | grep -q x\n"
         with tempfile.TemporaryDirectory() as temporary:
@@ -116,6 +116,14 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                         "printf x | LC_ALL=C grep -Eq x # a comment\n"
                         # An ANSI-C string's escaped quote does not end it, and a string's lines count.
                         "LINE=$'it\\'s'\nTEXT='one\ntwo'\nprintf x |& egrep --max-count=1 x\n"
+                        # The lesson's Search for names head in every form that sets a count, and alone.
+                        "seq 1 1000000 | head -n 1 >/dev/null\n"
+                        "seq 1 1000000 | head -n1\n"
+                        "seq 1 1000000 | head -1\n"
+                        "seq 1 1000000 | head -c 5\n"
+                        "seq 1 1000000 | head --lines=1\n"
+                        "seq 1 1000000 | head\n"
+                        'first="$(printf \'%s\\n\' "$OUTPUT" | head -n 1)"\n'
                     ),
                     "tests/test_beta.sh": (
                         f"{pipefail}"
@@ -129,6 +137,12 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                         "printf x | cat # a comment\ngrep -q x file\n"
                         "true || grep -q x file\n"
                         "echo 'printf x | grep -q x'\n"
+                        # A negative count, all but the last, reads to the end; an expansion takes a line unpiped.
+                        "seq 1 9 | head -n -1\n"
+                        "seq 1 9 | head -n-1\n"
+                        "seq 1 9 | head --lines=-2\n"
+                        "seq 1 9 | head -c -3\n"
+                        "first=\"${OUTPUT%%$'\\n'*}\"\n"
                         f"# {racing}"
                     ),
                     # Without pipefail the pipeline's status is grep's own.
@@ -140,18 +154,27 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                 },
             )
             race = (
-                "under pipefail, which fails the check when the writer dies of SIGPIPE after the match; give grep its "
-                "text in a here-string or a file"
+                "under pipefail, which fails the check when the writer dies of SIGPIPE after the reader ends; give it "
+                "its text in a here-string or a file, or take a line by parameter expansion"
             )
+            alpha = "skills/alpha/scripts/test_alpha.sh"
             self.assertEqual(
                 [
-                    f"skills/alpha/scripts/test_alpha.sh:3 pipes into grep -q {race}",
-                    f"skills/alpha/scripts/test_alpha.sh:4 pipes into grep -q {race}",
-                    f"skills/alpha/scripts/test_alpha.sh:6 pipes into grep --quiet {race}",
-                    f"skills/alpha/scripts/test_alpha.sh:8 pipes into grep -m {race}",
-                    f"skills/alpha/scripts/test_alpha.sh:9 pipes into grep -q {race}",
-                    f"skills/alpha/scripts/test_alpha.sh:13 pipes into egrep --max-count {race}",
-                    "tests/test_unread.sh cannot be read as Bash to find a pipe into grep -q: No closing quotation",
+                    f"{alpha}:3 pipes into grep -q {race}",
+                    f"{alpha}:4 pipes into grep -q {race}",
+                    f"{alpha}:6 pipes into grep --quiet {race}",
+                    f"{alpha}:8 pipes into grep -m {race}",
+                    f"{alpha}:9 pipes into grep -q {race}",
+                    f"{alpha}:13 pipes into egrep --max-count {race}",
+                    f"{alpha}:14 pipes into head -n {race}",
+                    f"{alpha}:15 pipes into head -n {race}",
+                    f"{alpha}:16 pipes into head -1 {race}",
+                    f"{alpha}:17 pipes into head -c {race}",
+                    f"{alpha}:18 pipes into head --lines {race}",
+                    f"{alpha}:19 pipes into head {race}",
+                    f"{alpha}:20 pipes into head -n {race}",
+                    "tests/test_unread.sh cannot be read as Bash to find a pipe into a reader that ends early: No "
+                    "closing quotation",
                 ],
                 pipe_race_problems(root),
             )

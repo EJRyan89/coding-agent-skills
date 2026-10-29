@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import json_reader
+import json_writer
 import nesting_depth
 import whole_number
 from json_reader import CONTENT_ERRORS, JsonRefused, loads, raw_decode, read_file
@@ -62,6 +63,53 @@ class RefusalTests(unittest.TestCase):
         for _ in range(limit - 1):
             value = value["a"]
         self.assertEqual({}, value)
+
+    def test_a_scalar_is_no_level_so_one_at_the_limit_reads_as_an_empty_container_does(self) -> None:
+        limit = nesting_depth.DEPTH_LIMIT
+        for inner in ("1", '"text"', "null", "true", "1.5"):
+            with self.subTest(inner=inner):
+                value = loads("[" * limit + inner + "]" * limit)
+                for _ in range(limit - 1):
+                    value = value[0]
+                self.assertEqual([json.loads(inner)], value)
+                past = limit + 1
+                self.assertEqual(
+                    "the JSON nests deeper than the parser can read", self.refusal("[" * past + inner + "]" * past)
+                )
+        value = loads('{"a": ' * limit + "1" + "}" * limit)
+        for _ in range(limit):
+            value = value["a"]
+        self.assertEqual(1, value)
+
+    def test_a_lone_surrogate_is_refused_in_a_string_or_a_key_at_any_depth(self) -> None:
+        for text, code in (
+            ('"\\ud800"', "D800"),
+            ('"\\udfff"', "DFFF"),
+            ('{"\\udc00": 1}', "DC00"),
+            ('[{"a": ["x", "\\ud83d"]}]', "D83D"),
+            ('"\\ude00\\ud83d"', "DE00"),
+            ('"\ud800"', "D800"),
+        ):
+            with self.subTest(text=ascii(text)):
+                self.assertEqual(
+                    f"the JSON holds a lone surrogate U+{code}, which UTF-8 cannot encode", self.refusal(text)
+                )
+
+    def test_a_lone_surrogate_is_kept_only_when_the_caller_asks_and_every_other_refusal_still_holds(self) -> None:
+        kept = loads('{"branch": "caf\\udce9", "\\ud800": ["\\udfff"]}', surrogates=True)
+        self.assertEqual({"branch": "caf\udce9", "\ud800": ["\udfff"]}, kept)
+        for text, refusal in (
+            ('{"k": "\\ud800", "k": 2}', "the JSON repeats the key 'k' in one object"),
+            ("[" * 101 + '"\\ud800"' + "]" * 101, "the JSON nests deeper than the parser can read"),
+        ):
+            with self.subTest(text=text[:12]):
+                with self.assertRaises(JsonRefused) as raised:
+                    loads(text, surrogates=True)
+                self.assertEqual(refusal, str(raised.exception))
+
+    def test_a_surrogate_pair_reads_as_the_character_it_spells(self) -> None:
+        self.assertEqual(["\U0001f600"], loads('["\\ud83d\\ude00"]'))
+        self.assertEqual({"\U0001f600": 1}, loads('{"\\ud83d\\ude00": 1}'))
 
     def test_a_refusal_is_a_value_error(self) -> None:
         self.assertTrue(issubclass(JsonRefused, ValueError))
@@ -129,6 +177,7 @@ class RawDecodeTests(unittest.TestCase):
             ('{"value": -1e400} rest', OVERFLOW),
             ("[" * 100_000 + "]" * 100_000, "the JSON nests deeper than the parser can read"),
             ("[" * 101 + "]" * 101 + " rest", "the JSON nests deeper than the parser can read"),
+            ('["\\ud800"] rest', "the JSON holds a lone surrogate U+D800, which UTF-8 cannot encode"),
         ):
             with self.subTest(text=text[:12]):
                 with self.assertRaises(JsonRefused) as raised:
@@ -182,6 +231,26 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_keys_keep_their_order(self) -> None:
         self.assertEqual(["b", "a"], list(loads('{"b": 1, "a": 2}')))
+
+    def test_what_the_reader_accepts_the_writer_writes(self) -> None:
+        limit = nesting_depth.DEPTH_LIMIT
+        for text in (
+            '"\\ud800"',
+            '{"\\udfff": 1}',
+            '["\\ud83d\\ude00", "\\u0000", "\\uffff"]',
+            "[" * limit + "1" + "]" * limit,
+            "[" * limit + "]" * limit,
+            '{"a": ' * limit + '"x"' + "}" * limit,
+            "9" * whole_number.DIGIT_LIMIT,
+            "1.7976931348623157e308",
+            "-0.0",
+        ):
+            with self.subTest(text=ascii(text[:24])):
+                try:
+                    value = loads(text)
+                except CONTENT_ERRORS:
+                    continue
+                json_writer.dumps(value)
 
 
 class ContentErrorsTests(unittest.TestCase):

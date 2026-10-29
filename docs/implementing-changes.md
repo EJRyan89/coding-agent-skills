@@ -153,8 +153,9 @@ a document or test treats as a contract, add the test that kills it, or name it 
 equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere.
 mutmut refuses Windows, so the mutants are made on Linux and run on a Linux leg for every module and on a Windows leg,
 which never runs mutmut, for each module whose behavior differs on Windows: `deployer/platform_support.py`,
-`path_keys`, `link_probe`, and `device_names`, each module that imports one, and each that holds a `PLATFORM_ALLOWED`
-table. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
+`path_keys`, `link_probe`, and `device_names`, each module that imports one, each that holds a `PLATFORM_ALLOWED`
+table, and each whose own code compares a platform name the platform policy's `PLATFORM_TOKENS` catalogues, such as
+`sys.platform` or `os.name`. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
 lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its
 own cap, and either leg's cut leaves the run unfinished. The gate's docstring in `tools/mutation_gate.py` gives the
 details.
@@ -265,10 +266,14 @@ request in continuous integration.
 
 A pull request that closes an issue a known failure of the malformed-input suite still names, in
 `tests/malformed_input/known_failures.json`, is refused by the known-failure closing check, in
-`tests/validation/known_failures.py`: the issue would close while its case still fails. It reads every closing keyword
-GitHub reads (`close`, `fix`, or `resolve`, in any of their forms, before `#<number>`) outside an HTML comment, from
+`tests/validation/known_failures.py`: the issue would close while its case still fails. It reads every closing reference
+GitHub reads, through ejryan89-skill-core's `closing_references`: `close`, `fix`, or `resolve`, in any of their forms,
+before `#<number>`, `<owner>/<repo>#<number>` naming this repository, or the issue's URL, outside an HTML comment, from
 `--pr-body <file>` locally and the pull request in continuous integration, and passes when no body is given. The pull
-request that fixes the reader removes the entry, which the suite then requires, and closes the issue.
+request that fixes the reader removes the entry, which the suite then requires, and closes the issue. Given a body, the
+same check asks GitHub, through gh, whether each issue an entry names is open, and fails one that is not or that gh
+cannot answer about; it asks nothing while the list is empty, so a local `--pr-body` run needs gh signed in only while
+an entry exists, and continuous integration gives its validation steps the run's own read-only token for it.
 
 Before `gh pr create`, run `git fetch origin main` and `git rebase origin/main`: onto `origin/main`, not the local
 `main`, which is only as fresh as the hub's last pull. The branch is unpublished, so the rebase rewrites nothing anyone

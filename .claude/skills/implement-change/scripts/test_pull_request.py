@@ -504,3 +504,12 @@ def test_a_closing_line_must_name_one_issue_with_closes(line: str) -> None:
     body = FILLED.replace("Closes #34", line)
     assert [f"CLOSES_LINE 2 {line}"] == pull_request.body_problems(body, TEMPLATE)
     assert pull_request.closed_issues(body) == [12]
+
+
+# GitHub closes an issue by its repository's name or its URL too, so neither form passes for `Closes #<n>`.
+@pytest.mark.parametrize(
+    "line", ["Closes o/r#12", "Fixes https://github.com/o/r/issues/12", "resolves: https://github.com/o/r/issues/12"]
+)
+def test_a_closing_line_by_repository_or_url_must_be_written_closes_number(line: str) -> None:
+    body = FILLED.replace("Closes #34", line)
+    assert [f"CLOSES_LINE 2 {line}"] == pull_request.body_problems(body, TEMPLATE)
