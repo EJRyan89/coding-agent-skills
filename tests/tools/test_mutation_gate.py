@@ -750,10 +750,45 @@ class CoverageReachFixtures(unittest.TestCase):
                 {"combine": "fail 3 Can't combine: the data file is damaged"},
                 "failed in `coverage combine` with exit code 3: `Can't combine: the data file is damaged`",
             ),
-            ({"json": "fail 1 No data to report."}, "failed in `coverage json` with exit code 1: `No data to report.`"),
             ({"combine": "sleep"}, "timed out in `coverage combine`"),
             ({"json": "sleep"}, "timed out in `coverage json`"),
             ({"json": "write nothing"}, "failed in `coverage json`, which wrote no report"),
+        ):
+            with self.subTest(actions=actions):
+                self.assertEqual(expected, self.reach(actions))
+
+    def test_a_suite_that_ran_no_line_of_the_modules_is_measured_and_reached_nothing(self) -> None:
+        # coverage.py 7.16.2 prints this on stdout and exits 1 when nothing in the include list ran.
+        result = self.reach({"json": "fail 1 No data to report."})
+        if not isinstance(result, Reach):
+            self.fail(f"the reach was not measured: {result}")
+        self.assertEqual({"tools/calc.py": frozenset()}, dict(result.lines))
+        self.assertEqual({}, dict(result.tests))
+        self.assertGreater(result.seconds, 0.0)
+
+    def test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone(
+        self,
+    ) -> None:
+        for actions, expected in (
+            # No measured process started, so the measurement failed rather than the suite reaching nothing.
+            (
+                {"combine": "fail 1 No data to combine"},
+                "failed in `coverage combine` with exit code 1: `No data to combine`",
+            ),
+            (
+                {"combine": "fail 1 No data to report."},
+                "failed in `coverage combine` with exit code 1: `No data to report.`",
+            ),
+            ({"json": "fail 2 No data to report."}, "failed in `coverage json` with exit code 2: `No data to report.`"),
+            (
+                {"json": "fail 1 Couldn't read data: No data to report."},
+                "failed in `coverage json` with exit code 1: `Couldn't read data: No data to report.`",
+            ),
+            (
+                {"json": "fail 1 No data to report. Traceback follows"},
+                "failed in `coverage json` with exit code 1: `No data to report. Traceback follows`",
+            ),
+            ({"json": "fail 1 No data to report"}, "failed in `coverage json` with exit code 1: `No data to report`"),
         ):
             with self.subTest(actions=actions):
                 self.assertEqual(expected, self.reach(actions))
