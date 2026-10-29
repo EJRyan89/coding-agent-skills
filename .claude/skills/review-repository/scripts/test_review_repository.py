@@ -362,7 +362,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual([], [path for path in OUTSIDE_THE_BOUNDARY if path not in imported or path in routed])
 
     def test_no_module_named_outside_the_boundary_handles_a_pull_request_s_author_fields(self) -> None:
-        # #2047: review_operation.py was named outside for parsing selectors while it checked the author's title and
+        # review_operation.py was once named outside for parsing selectors while it checked the author's title and
         # branch and carried them, with the comments, into the record. A reason is prose, so this holds it to what
         # the module reads: a key naming one of those fields. `body` is left out, since the user's flags have one.
         author_fields = {"title", "headRefName", "head_ref", "github_comments"}
