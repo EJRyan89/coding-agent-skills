@@ -56,7 +56,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
-  `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`
+  `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
+  `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
@@ -242,16 +243,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A reader of another program's language or output reads it as that program does, held by a differential
   test against the program itself or by output captured from it with its provenance.
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
-- **Use:** `tools.hub_guard:powershell_reads_input`
+- **Use:** `tools.hub_guard:powershell_reads_input`, `tools.hub_guard:powershell_arguments`, and
+  `tools.hub_guard:powershell_directory`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `tests/tools/test_hub_guard_shells.py::StartDifferentialTests`,
   `tests/tools/test_hub_guard.py::test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call`,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; a `re.compile(` in
   `tools/runtime_*.py` or `deployer/discovery.py` with no sample under `tests/fixtures/captured-output/`; each
   interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
-  forms the guard names; a test whose sample output was typed rather than captured.
-- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865
+  forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
+  guard follows, such as a working directory, read only as taking a value and never for what it changes.
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032
 
 ### A recursive parser of input has a depth bound
 
@@ -496,9 +500,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   changelog entries that touch a term the code uses are exercised or read against its latest release on a schedule.
 - **Why:** A release that drops a flag or changes a behavior otherwise breaks every run, or leaves a document wrong,
   until someone happens to probe it.
-- **Use:** `check_provenance:load`, `guidance_record:canonical_url`; a policy that each runtime statement in the
+- **Use:** `check_provenance:load`, `guidance_record:canonical_url`, and `tools.runtime_changelogs:watch`, which
+  the Runtime Changelogs workflow runs weekly as an advisory watch that refuses nothing: it lists the
+  changelog entries and moved guidance pages for a reader to act on; a policy that each runtime statement in the
   support pages links a page the guidance record lists is the mechanism in #1912.
-- **Guard:** `.github/workflows/runtime-command-lines.yml`, `.github/workflows/runtime-changelogs.yml`,
+- **Guard:** `.github/workflows/runtime-command-lines.yml`,
   `tests/tools/test_runtime_command_lines.py::CapturedTests::test_each_runtimes_real_refusal_of_a_flag_is_read_as_one`,
   `tests/tools/test_captured_samples.py::test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not`
 - **Search for:** a sentence about a runtime's behavior in `docs/*-support.md` or `docs/installation.md` with no
@@ -530,12 +536,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 ### A pipe's reader never ends before its writer under `pipefail`
 
-- **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, never through a pipe into a
-  reader that exits at its first match.
-- **Why:** `grep -q` exits at its match, the writer then fails with `SIGPIPE`, and `pipefail` makes that an
-  intermittent failure.
-- **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_grep_that_ends_at_its_match`
-- **Search for:** `| grep -q` or `| head -n` in a `.sh` file that runs `set -o pipefail` or `set -euo pipefail`.
+- **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, and a first line by parameter
+  expansion, never through a pipe into a reader that exits early: `grep -q` or `-m`, or `head`.
+- **Why:** `grep -q` exits at its match and `head` at its count, the writer then fails with `SIGPIPE`, and `pipefail`
+  makes that an intermittent failure.
+- **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_reader_that_ends_early`
+- **Search for:** `| grep -q`, `| grep -m`, or `| head` in any form, `-n`, `-c`, `-1`, or alone, in a `.sh` file
+  that runs `set -o pipefail` or `set -euo pipefail`.
 - **Examples:** #1557, #1602
 
 ### A program whose status is the verdict starts with no shell above it

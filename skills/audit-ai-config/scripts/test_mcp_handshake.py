@@ -129,6 +129,29 @@ for line in sys.stdin.buffer:
 """
 
 
+class _Running:
+    """A started server's stdin, as Session writes to it."""
+
+    def __init__(self) -> None:
+        self.stdin = io.BytesIO()
+
+
+def test_a_message_json_cannot_carry_fails_the_server_never_the_audit() -> None:
+    # A request is built from the server's own values, such as a tools/list cursor; json_writer refuses what JSON
+    # cannot carry, and the refusal is the server's failure, a RuntimeError its caller reports, with nothing written.
+    running = _Running()
+    session = mcp_handshake.Session(running)  # type: ignore[arg-type]  # a stdin is all send reads
+    with pytest.raises(RuntimeError, match=r"cannot send the server's value back: .*lone surrogate"):
+        session.send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"cursor": "\ud800"}})
+    assert running.stdin.getvalue() == b""
+    message = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    session.send(message)
+    written = running.stdin.getvalue()
+    assert written.endswith(b"\n")
+    assert written.count(b"\n") == 1
+    assert json.loads(written) == message
+
+
 class HandshakeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()

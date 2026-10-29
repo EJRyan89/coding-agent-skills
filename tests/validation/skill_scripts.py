@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import git_client
 import json_reader
 import whole_number
+from call_tables import EVENT_LOOP, PROCESS_STARTS
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from path_containment import posix_within
@@ -286,64 +287,16 @@ def _fences(markdown: str, *contexts: str) -> list[str]:
     ]
 
 
-# The calls that start a command, as the module's imports resolve them, and the position and keyword of the argument
-# that names it: a list or tuple whose first item is the program, or a string whose first word is. The exec and spawn
-# calls of os take the program itself, by path or by name, ahead of its arguments. An event loop's runner methods are
-# named under EVENT_LOOP and count on any receiver, since the reader cannot tell which object is an event loop.
-EVENT_LOOP = "<event loop>"
-COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
-    **{f"subprocess.{name}": (0, "args") for name in ("run", "Popen", "call", "check_call", "check_output")},
-    "subprocess.getoutput": (0, "cmd"),
-    "subprocess.getstatusoutput": (0, "cmd"),
-    "os.system": (0, "command"),
-    "os.popen": (0, "cmd"),
-    "os.execv": (0, "path"),
-    "os.execve": (0, "path"),
-    **{f"os.{name}": (0, "file") for name in ("execl", "execle", "execlp", "execlpe", "execvp", "execvpe")},
-    **{
-        f"os.{name}": (1, "file")
-        for name in ("spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe")
-    },
-    "os.posix_spawn": (0, "path"),
-    "os.posix_spawnp": (0, "path"),
-    "os.startfile": (0, "path"),
-    "pty.spawn": (0, "argv"),
-    **{f"{module}.create_subprocess_exec": (0, "program") for module in ("asyncio", "asyncio.subprocess")},
-    **{f"{module}.create_subprocess_shell": (0, "cmd") for module in ("asyncio", "asyncio.subprocess")},
-    f"{EVENT_LOOP}.subprocess_exec": (1, "program"),
-    f"{EVENT_LOOP}.subprocess_shell": (1, "cmd"),
-    # ejryan89-skill-core's runner, which bounds a command with a time limit and gives it no stdin.
-    "bounded_process.run_bounded": (0, "command"),
-    "bounded_process.streaming": (0, "command"),
-}
+# The calls that start a command, as call_tables' PROCESS_STARTS names them, and the position and keyword of the
+# argument that names it. An event loop's runner methods are named under EVENT_LOOP and count on any receiver.
+COMMAND_RUNNERS: dict[str, tuple[int, str]] = {name: start.command for name, start in PROCESS_STARTS.items()}
 # The name each runner has in its module, which a runner taken from a module looked up by a computed name may have.
 RUNNER_ATTRIBUTES = frozenset(runner.rpartition(".")[2] for runner in COMMAND_RUNNERS)
 # The runners that run their command through a shell, whose every program the Bash reader reads; a runner that hands its
 # keywords to subprocess.Popen does too when given shell= anything but False.
-SHELL_RUNNERS = frozenset(
-    {
-        "os.system",
-        "os.popen",
-        "subprocess.getoutput",
-        "subprocess.getstatusoutput",
-        "asyncio.create_subprocess_shell",
-        "asyncio.subprocess.create_subprocess_shell",
-        f"{EVENT_LOOP}.subprocess_shell",
-    }
-)
+SHELL_RUNNERS = frozenset(name for name, start in PROCESS_STARTS.items() if start.through_shell)
 # The runners that hand their keywords to subprocess.Popen, whose executable= replaces the program the command names.
-EXECUTABLE_RUNNERS = frozenset(
-    {
-        *(f"subprocess.{name}" for name in ("run", "Popen", "call", "check_call", "check_output")),
-        *(
-            f"{module}.create_subprocess_{kind}"
-            for module in ("asyncio", "asyncio.subprocess")
-            for kind in ("exec", "shell")
-        ),
-        f"{EVENT_LOOP}.subprocess_exec",
-        f"{EVENT_LOOP}.subprocess_shell",
-    }
-)
+EXECUTABLE_RUNNERS = frozenset(name for name, start in PROCESS_STARTS.items() if start.popen_keywords)
 # ejryan89-skill-core's clients: each runs its one command for every call a script makes through it.
 CLIENT_CLASSES = {"git_client.GitClient": "git", "github_client.GitHubClient": "gh"}
 # shutil.which finds the program a script then runs. A script that takes it as an injected service calls it by its
