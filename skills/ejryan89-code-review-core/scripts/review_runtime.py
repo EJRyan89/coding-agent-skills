@@ -754,7 +754,7 @@ class PrepareGitRunner:
         kept = self._answers.get(key)
         if kept is not None:
             return kept
-        result = self.runner(command, timeout)
+        result: GitResult = self.runner(command, timeout)
         if result.returncode == 0:
             self._answers[key] = result
         return result
