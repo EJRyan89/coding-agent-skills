@@ -579,6 +579,12 @@ class ReadingBoundTests(GuardTestCase):
         ):
             hub_guard.denied(reading, {self.hub})
 
+    def test_an_alias_is_named_by_everything_after_alias_dot_even_when_it_holds_a_dot(self) -> None:
+        self.git(self.hub, "config", "alias.a.b", "!git commit")
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertTrue(hub_guard.mentions_alias("git a.b", [self.hub]))
+            self.assertFalse(hub_guard.mentions_alias("git x.b", [self.hub]))
+
     def test_an_alias_of_an_alias_is_read_within_the_same_reading_time(self) -> None:
         self.git(self.hub, "config", "alias.look", "peek")
         self.git(self.hub, "config", "alias.peek", "!git status")

@@ -2081,7 +2081,7 @@ def mentions_alias(command: str, directories: Iterable[Path]) -> bool:
             continue
         if result.returncode != 0:
             return True
-        names = (line.partition(".")[2] for line in result.stdout.splitlines())
+        names = (line.partition(".")[2] for line in output_lines(result.stdout))
         for name in filter(None, names):
             if mentions(re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])", re.IGNORECASE), command):
                 return True

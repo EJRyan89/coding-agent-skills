@@ -1510,7 +1510,9 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # path, or a message can hold joins a format's fields, so a reader that splits on lines or on that byte misreads the
 # name. NUL is the one byte git refuses in them. The arguments that start a name listing, a call's positional ones or
 # a list's or tuple's items, pass -z or go to GitClient.names, which adds it, and a for-each-ref or log format joins
-# its fields with NUL. A listing or a format that must stay states why in a module-level
+# its fields with NUL. str.splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path can
+# hold, so git's output, a call's result, its stdout, or a name a scope binds to either, is split on "\n" or on NUL,
+# never with splitlines(). A listing, a format, or a split that must stay states why in a module-level
 # GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
@@ -1530,6 +1532,33 @@ GIT_FORMAT_PREFIXES = ("format:", "tformat:")
 # log (%x00) write it, and the escapes that print a byte, which join fields as literal text does.
 GIT_FORMAT_TOKEN = re.compile(r"%%|%x00|%00|%x[0-9a-fA-F]{2}|%n|%\([^)]*\)|%[a-zA-Z][a-zA-Z?]?")
 GIT_FORMAT_NUL = frozenset({"%00", "%x00"})
+# The git subcommands whose output names a ref, a path, or a commit, which a split of that output reads.
+GIT_OUTPUT_COMMANDS = frozenset(
+    {
+        "branch",
+        "cat-file",
+        "config",
+        "describe",
+        "diff",
+        "for-each-ref",
+        "grep",
+        "log",
+        "ls-files",
+        "ls-remote",
+        "ls-tree",
+        "merge-base",
+        "name-rev",
+        "remote",
+        "rev-list",
+        "rev-parse",
+        "show",
+        "show-ref",
+        "status",
+        "symbolic-ref",
+        "tag",
+        "worktree",
+    }
+)
 GIT_FORMAT_ESCAPES = re.compile(r"%%|%x[0-9a-fA-F]{2}|%n")
 
 
@@ -1602,9 +1631,67 @@ def _separator_refusal(elements: Sequence[ast.expr]) -> str | None:
     return None
 
 
+def _git_output_command(
+    node: ast.expr, lists: Mapping[str, Sequence[ast.expr]], outputs: Mapping[str, str]
+) -> str | None:
+    """The git subcommand whose output an expression holds, or None: a call whose arguments start it, a list or tuple
+    among them, or a name its scope binds to one, read in place; that call's stdout, or output as the deployer's
+    run_tool gives it; or a name its scope binds to either."""
+    if isinstance(node, ast.Attribute) and node.attr in ("stdout", "output"):
+        node = node.value
+    if isinstance(node, ast.Name):
+        return outputs.get(node.id)
+    if not isinstance(node, ast.Call):
+        return None
+    elements: list[ast.expr] = []
+    for argument in node.args:
+        if isinstance(argument, ast.List | ast.Tuple):
+            elements += argument.elts
+        elif isinstance(argument, ast.Name) and argument.id in lists:
+            elements += lists[argument.id]
+        else:
+            elements.append(argument)
+    started = _git_command(elements)
+    return started[0] if started is not None and started[0] in GIT_OUTPUT_COMMANDS else None
+
+
+def _git_output_splits(tree: ast.Module) -> list[tuple[int, str, str]]:
+    """Each splitlines() of git's output, by its line, its scope, and its refusal."""
+    lists: dict[str, dict[str, Sequence[ast.expr]]] = {}
+    outputs: dict[str, dict[str, str]] = {}
+    found: list[tuple[int, str, str]] = []
+    for node, scope in scoped_nodes(tree.body):
+        known_lists, known_outputs = lists.setdefault(scope, {}), outputs.setdefault(scope, {})
+        if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+                continue
+            if isinstance(node.value, ast.List | ast.Tuple):
+                known_lists[targets[0].id] = node.value.elts
+            command = _git_output_command(node.value, known_lists, known_outputs)
+            if command is not None:
+                known_outputs[targets[0].id] = command
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "splitlines"
+            and (command := _git_output_command(node.func.value, known_lists, known_outputs)) is not None
+        ):
+            found.append(
+                (
+                    node.lineno,
+                    scope,
+                    f"splits the output of git {command} with splitlines(), which also breaks on U+0085, U+2028, and "
+                    'other characters a ref name or a path can hold; split on "\\n", or on NUL with -z or a %00 '
+                    f"format, or state why in {GIT_SEPARATOR_ALLOWANCE}",
+                )
+            )
+    return found
+
+
 def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
-    """Each name listing without -z and each git format whose fields a byte other than NUL joins, outside
-    git_client.py, that no GIT_SEPARATOR_ALLOWED entry sanctions."""
+    """Each name listing without -z, each git format whose fields a byte other than NUL joins, and each splitlines()
+    of git's output, outside git_client.py, that no GIT_SEPARATOR_ALLOWED entry sanctions."""
     problems: list[str] = []
     for _, name, tree in python_trees(claim_files(root, files), root, problems):
         if name == GIT_SEPARATOR_OWNER:
@@ -1623,7 +1710,8 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
             and id(node) not in named
             and (refusal := _separator_refusal(node.args if isinstance(node, ast.Call) else node.elts)) is not None
         ]
-        problems += sanctioned_problems(name, tree, GIT_SEPARATOR_ALLOWANCE, found)
+        found += _git_output_splits(tree)
+        problems += sanctioned_problems(name, tree, GIT_SEPARATOR_ALLOWANCE, sorted(found))
     return problems
 
 
