@@ -31,6 +31,13 @@ of its file <tests>`, the tests that import its module or name its file, where a
 it through a caller, followed by that hunk, cut at MAX_HUNK_CHARACTERS; at most MAX_ENTRIES of them, with an
 `OMITTED <n>` line for the rest; and `UNPARSED <file>: <reason>` for a changed Python file `ast` cannot read.
 
+A changed Python definition a test names is still written when its change converts a call site: an added line that
+directly replaces removed lines and calls, through a name the module's imports bind, something those lines did not
+call, as a write routed through `json_writer` does. It gets a `CONVERTED <file>:<line> <kind> <name>, a test names
+it, converted calls <call> at line <n>, ..., hunk <header>, tests of its file <tests>` entry followed by the hunk of
+its first converted call, which opens the route for the reviewer to check that a test pins the site's output. A call
+is found by its text, so a call inside a string counts too; the reviewer judges each one.
+
 It reads the diff through conditions.read_files, so a changed file whose path could name a file outside the snapshot
 is neither read nor listed, and gets a `REFUSED <path>: ...` line on stdout instead.
 
@@ -43,8 +50,9 @@ A snapshot it cannot read its evidence from, one that is not a directory, whose 
 a changed script the diff leaves at the head with no exclusion recorded for it, ends it with `FAILED MissingEvidence:
 <what is missing>`, so an absent snapshot never reads as every changed definition tested.
 
-Prints `UNTESTED <found> given=<n>`. Exit status 0 means it wrote entries, which opens the route; 1 that every
-changed definition is named by a test, or none changed, which closes it; 2 a usage error or a last line
+Prints `UNTESTED <found> given=<n>`, counting every entry. Exit status 0 means it wrote entries, which opens the
+route; 1 that every changed definition is named by a test and converts no call site, or none changed, which closes
+it; 2 a usage error or a last line
 FAILED <reason>, which fails the review.
 """
 
@@ -114,6 +122,8 @@ PYTHON_HEADER = re.compile(r"^\s*(?:async\s+def|def|class)\s+[A-Za-z_]")
 POWERSHELL_HEADER = re.compile(r"^\s*function\s+(?:(?:global|script|local|private):)?([A-Za-z_][\w-]*)", re.IGNORECASE)
 BASH_HEADER = re.compile(r"^\s*(?:function\s+([A-Za-z_][\w-]*)(?:\s*\(\s*\))?|([A-Za-z_][\w-]*)\s*\(\s*\))\s*(?:\{|$)")
 COMMENT_LINE = re.compile(r"^\s*#")
+# A call: a dotted name, not itself an attribute of something else, followed by its opening parenthesis.
+CALL = re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\(")
 POWERSHELL_BLOCK_COMMENT = re.compile(r"<#.*?#>", re.DOTALL)
 
 
@@ -139,6 +149,8 @@ class FileChange:
     hunks: list[Hunk] = field(default_factory=list)  # in diff order
     added: dict[int, Hunk] = field(default_factory=dict)  # each non-blank added head line, and its hunk
     removals: list[Removal] = field(default_factory=list)
+    # each added head line in the run that directly follows a removed block, and the lines that block removed
+    replaced: dict[int, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -192,6 +204,7 @@ def _read_hunk(change: FileChange, line_number: int, lines: list[str]) -> None:
     hunk = Hunk(lines[0].split(" @@", 1)[0] + " @@", "\n".join(lines).rstrip("\n"))
     change.hunks.append(hunk)
     removed: list[str] = []
+    replacing: tuple[str, ...] = ()
     for line in lines[1:]:
         marker, body = line[:1], line[1:]
         if marker == "-":
@@ -201,9 +214,13 @@ def _read_hunk(change: FileChange, line_number: int, lines: list[str]) -> None:
             continue  # "\ No newline at end of file", or the blank line that ends the diff
         if removed:
             change.removals.append(Removal(line_number, tuple(removed), hunk))
-            removed = []
-        if marker == "+" and body.strip():
+            replacing, removed = tuple(removed), []
+        if marker == " ":
+            replacing = ()
+        elif body.strip():
             change.added[line_number] = hunk
+            if replacing:
+                change.replaced[line_number] = replacing
         line_number += 1
     if removed:
         change.removals.append(Removal(line_number, tuple(removed), hunk))
@@ -503,6 +520,47 @@ def suites(root: Path) -> dict[str, str]:
     return dict(sorted(found.items()))
 
 
+def imported_names(module: ast.Module) -> set[str]:
+    """The names a Python module's imports bind, anywhere in it: `import a.b` binds `a`, and `from a import b`
+    binds `b`."""
+    names: set[str] = set()
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            names.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in node.names)
+    return names
+
+
+def converted_calls(
+    change: FileChange, lines: list[str], added: list[int], imported: set[str]
+) -> list[tuple[int, str]]:
+    """Each call one of `added` makes, by its line, through a name an import binds, that the lines it replaces did
+    not make: a call site routed through a shared helper, such as a write through `json_writer`."""
+    found: list[tuple[int, str]] = []
+    for line in added:
+        if line not in change.replaced:
+            continue
+        before = set(CALL.findall("\n".join(change.replaced[line])))
+        calls = sorted(set(CALL.findall(lines[line - 1])) - before)
+        found.extend((line, callee) for callee in calls if callee.split(".", 1)[0] in imported)
+    return found
+
+
+def converted_entry(
+    change: FileChange, definition: Definition, calls: list[tuple[int, str]], related: list[str]
+) -> str:
+    """The block for a changed definition a test names whose change converts a call site, which the reviewer checks
+    a test pins."""
+    sites = ", ".join(f"{callee} at line {line}" for line, callee in calls)
+    hunk = change.added[calls[0][0]]
+    return (
+        f"CONVERTED {change.path}:{definition.line} {definition.kind} "
+        f"{f'{definition.owner}.' if definition.owner else ''}{definition.name}, a test names it, converted calls "
+        f"{sites}, hunk {hunk.header}, tests of its file {', '.join(related) or 'none'}\n{_excerpt(hunk.text)}\n"
+    )
+
+
 def _definitions(path: str, text: str) -> list[Definition]:
     return python_definitions(path, text) if path.endswith(".py") else shell_definitions(path, text)
 
@@ -560,8 +618,13 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
             blocks.append(f"UNPARSED {change.path}: {failed_line(error).removeprefix('FAILED ')}\n")
             continue
         changed = changed_definitions(change, definitions)
+        lines = text.split("\n")
+        imported = imported_names(parse_python(text)) if change.path.endswith(".py") else set()
         for definition in sorted(changed, key=lambda item: item.line):
             if tests.names(definition):
+                calls = converted_calls(change, lines, changed[definition].added, imported)
+                if calls:
+                    blocks.append(converted_entry(change, definition, calls, tests.of_file(definition)))
                 continue
             found, related = changed[definition], tests.of_file(definition)
             blocks.append(

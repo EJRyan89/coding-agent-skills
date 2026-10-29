@@ -386,7 +386,8 @@ command names. While one is, the guard refuses:
   command, script file, or encoded command at all), a callback `mapfile -C` runs, every `env -S`, whatever follows
   it, an option of `env` or of a prefix program above that the guard does not read, a PowerShell command when `pwsh`
   cannot be started or does not finish reading it in the time the guard has left, a command the guard does not
-  finish reading and judging within 15 seconds, `pwsh` included, which keeps it inside the hook's own 30-second
+  finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the hubs the places it names
+  reach, each git call of theirs given no more than the time left, which keeps it inside the hook's own 30-second
   timeout, past which Claude Code lets the command run, and a command either shell's reader fails on with an error
   of its own;
 - an alias that cannot be read, as above.
