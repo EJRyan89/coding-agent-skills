@@ -169,8 +169,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
   `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
-  has `\d+` rather than `\d{1,N}`; `.isdigit()` before an `int(`, which admits digits `int` reads past any bound;
-  `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
+  has `\d+` or `[0-9]+` rather than a bounded count; `.isdigit()` before an `int(`, which admits digits `int` reads
+  past any bound; `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
   `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
   bounds no length; a refusal worded "more than N digits" for a `\d` group,
   which also admits digits that are not ASCII.
@@ -266,6 +266,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `untested_functions:parse_python`, which reads the Python parser's overflow as the syntax error its callers handle.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_scalar_is_no_level_so_one_at_the_limit_reads_as_an_empty_container_does`,
   `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
   `skills/dotnet-format/scripts/test_csharp_layout.py::test_braces_nested_past_the_shared_depth_limit_fail_by_name`,
   `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::ConditionTests::test_negations_and_parentheses_nested_past_the_shared_depth_limit_are_not_settled`,
@@ -324,15 +325,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `json_writer:dumps` for JSON text and `json_writer:write` for a JSON file, which refuse a non-finite
   number, a lone surrogate, and what `json_reader:loads` refuses on the read-back, by name, at the write;
   `review_io:atomic_write_json`, which writes through them, `review_io:read_json`, `typed_fields:FieldReader`, and
-  `json_reader:loads`, which refuses a number too large for a float before it becomes an infinity the writer refuses.
+  `json_reader:loads`, which refuses a number too large for a float before it becomes an infinity the writer refuses,
+  and a lone surrogate the writer cannot encode.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_number_that_overflows_to_an_infinity_is_refused_whatever_its_sign_or_nesting`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::AcceptanceTests::test_what_the_reader_accepts_the_writer_writes`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_writer_is_the_one_writer_of_json`,
   `tests/validation/test_python_checks.py::test_json_write_policy_refuses_a_json_write_outside_json_writer`,
   `skills/ejryan89-code-review-core/scripts/test_review_io.py::ReadJsonTests::test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error`
 - **Search for:** `rg -n "json\.dumps?\(" | rg -v allow_nan=False`; `write_text(json.dumps(`; input written back
   without the later reader's pass.
-- **Examples:** #1552, #1634, #1874, #1906, #2006
+- **Examples:** #1552, #1634, #1874, #1906, #2006, #2039
 
 ### A record separator is one the data cannot hold
 
