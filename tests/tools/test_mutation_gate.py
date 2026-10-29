@@ -1437,7 +1437,7 @@ class SummaryFixtures(unittest.TestCase):
         )
 
     def test_a_widely_imported_modules_windows_reach_cut_short_after_both_legs_killed_it_is_a_verdict(self) -> None:
-        # #2051: every mutant killed on both legs, while the Windows leg's cap left most suites' reach unmeasured.
+        # Every mutant killed on both legs, while the Windows leg's cap left most suites' reach unmeasured.
         report = two_legs([Outcome(TEXTUAL, KILLED, ("t",))], [Outcome(TEXTUAL, KILLED, ("t",))])
         report.legs[1].unmeasured_suites.extend(["tests/a.py", "tests/b.py"])
         self.assertIsNone(unfinished_line(report))
@@ -1451,6 +1451,13 @@ class SummaryFixtures(unittest.TestCase):
             "the reach of 1 suite was not measured on Windows, which leaves 1 mutant that survived or no suite "
             "reached open there",
             str(unfinished_line(survived)),
+        )
+        unreached = Outcome(mutant(5, PATH_MODULE), NOT_REACHED)
+        two = two_legs([Outcome(TEXTUAL, SURVIVED, ("t",)), unreached], [Outcome(TEXTUAL, SURVIVED, ("t",)), unreached])
+        two.legs[1].unmeasured_suites.append("tests/a.py")
+        self.assertIn(
+            "on Windows, which leaves 2 mutants that survived or no suite reached open there",
+            str(unfinished_line(two)),
         )
         # A leg's unmeasured suites leave open only the mutants of modules that leg ran.
         other = two_legs([Outcome(TEXTUAL, KILLED, ("t",))], [Outcome(TEXTUAL, KILLED, ("t",))])
