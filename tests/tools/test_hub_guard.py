@@ -2078,7 +2078,10 @@ class ContractTests(GuardTestCase):
         outside = self.root / "outside"
         outside.mkdir()
         self.assertIsNone(self.bash("alias g=git\ng switch feat/demo", outside))
-        self.assertIn("an alias the command defines (alias)", self.stderr)
+        self.assertIn(
+            "hub guard could not judge part of the command: an alias the command defines (alias)",
+            self.stderr.splitlines(),
+        )
         self.assertIsNone(self.powershell("Copy-Item a.txt b.txt; git status", self.hub))
 
     def test_each_cmdlet_that_defines_a_powershell_alias_is_known_by_each_of_its_names(self) -> None:
