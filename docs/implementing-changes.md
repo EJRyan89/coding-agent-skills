@@ -320,3 +320,10 @@ specified mechanical edit whose test already exists.
 Shared code has one home. A module that more than one of the skills, the deployer, and `tools/` need lives in
 `skills/ejryan89-skill-core/scripts`, and each imports it from there; never copy it. [Validation](adding-a-skill.md#validation)
 in the skill contract states how each part reaches it and what validation holds.
+
+A change that routes existing call sites through a shared helper first pins each site's current output against a
+literal: the bytes it writes, the key it compares, or the line it prints. It then converts the site, and the pin stays.
+A conversion that changes a site's output on purpose says so beside that site's test. Without the pin, nothing holds
+what the site produced before, so a conversion that changed it passes, and each site's arguments survive the mutation
+gate. Whether a test pins a site's output is a judgment, so no validation policy holds this: `review-repository`'s
+`untested-changes` reviewer does, and the [lessons catalogue](lessons.md) records it as a pattern.
