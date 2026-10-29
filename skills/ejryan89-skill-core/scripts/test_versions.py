@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -43,6 +44,20 @@ class FindTests(unittest.TestCase):
         longest = "1" + "0" * (whole_number.DIGIT_LIMIT - 1)
         self.assertEqual((10 ** (whole_number.DIGIT_LIMIT - 1), 0), versions.find(f"{longest}.0"))
         self.assertIsNone(versions.find(f"{longest}0.0"))
+
+    def test_a_long_run_of_digits_is_searched_in_linear_time(self) -> None:
+        # A search from each digit of the run once backtracked over the rest of it: about ten seconds at 30,000.
+        run = "1" * 100_000
+        started = time.perf_counter()
+        self.assertIsNone(versions.find(f"x{run}y"))
+        self.assertEqual((1, 2, 3), versions.find(f"x{run}y 1.2.3"))
+        self.assertIsNone(versions.find(f"1.{run}y", least=3))
+        self.assertLess(time.perf_counter() - started, 1.0)
+
+    def test_a_version_after_digits_and_letters_is_read_from_the_start_of_its_run(self) -> None:
+        self.assertEqual((12, 3), versions.find("abc12.3"))
+        self.assertEqual((45, 6), versions.find("123x45.6"))
+        self.assertEqual((7, 8), versions.find("1.x7.8"))
 
 
 class ReadTests(unittest.TestCase):
