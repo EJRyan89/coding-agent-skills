@@ -112,6 +112,24 @@ class WrittenRefusalTests(unittest.TestCase):
             with self.subTest(entry=entry):
                 self.assertEqual(reason, written_refusal(entry))
 
+    def test_a_reserved_device_name_in_any_segment_is_refused_on_every_platform(self) -> None:
+        for entry in ("NUL", "sub/NUL", "CON", "docs\\con.txt", "aux .md", "a/Com1.tar.gz/b.md", "LPT¹", "conin$"):
+            with self.subTest(entry=entry):
+                self.assertEqual(
+                    "the entry names a reserved device as a segment, which Windows opens instead of a file",
+                    written_refusal(entry),
+                )
+
+    def test_a_name_that_only_starts_like_a_device_is_accepted(self) -> None:
+        for entry in ("console.md", "nul-check/a.md", "com10.txt", "docs/auxiliary"):
+            with self.subTest(entry=entry):
+                self.assertIsNone(written_refusal(entry))
+
+    def test_a_nul_character_is_refused_wherever_it_sits(self) -> None:
+        for entry in ("a\0b", "\0", "docs/a.md\0"):
+            with self.subTest(entry=entry):
+                self.assertEqual("the entry holds a NUL character, which no file name holds", written_refusal(entry))
+
     def test_a_name_holding_a_colon_past_its_start_is_no_drive(self) -> None:
         self.assertIsNone(written_refusal("docs/ab:c.md"))
         self.assertIsNone(written_refusal("1:a.md"))
@@ -150,6 +168,18 @@ class RefusalTests(unittest.TestCase):
                 "the entry is absolute, not a path relative to the tree",
                 refusal((self.outside / "a.md").as_posix().removeprefix(self.outside.drive), self.tree),
             )
+
+    def test_a_device_name_and_a_nul_character_get_a_reason_never_an_exception(self) -> None:
+        device = "the entry names a reserved device as a segment, which Windows opens instead of a file"
+        cases = {
+            "NUL": device,
+            "sub/NUL": device,
+            "CON": device,
+            "a\0b": "the entry holds a NUL character, which no file name holds",
+        }
+        for entry, reason in cases.items():
+            with self.subTest(entry=entry):
+                self.assertEqual(reason, refusal(entry, self.tree))
 
     def test_a_link_that_leads_outside_is_refused_as_resolved(self) -> None:
         link_folder(self.outside, self.tree / "linked")
