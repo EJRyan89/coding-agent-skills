@@ -201,9 +201,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor in deployer/tools.py.
-        python-version: ['3.11']
-        # One run's jobs dealt across two runners. The count is the second number of each entry.
+        # The floor in deployer/tools.py on every run, and the latest stable release on the weekly schedule only, as on
+        # the Windows legs, so the Linux-only branches meet a new interpreter without it blocking a pull request.
+        python-version: ${{ github.event_name == 'schedule' && fromJSON('["3.11", "3.x"]') || fromJSON('["3.11"]') }}
+        # One run's jobs dealt across two runners; each interpreter runs every leg. The count is the second number of
+        # each entry.
         shard: ['1/2', '2/2']
     steps:
       - name: Check out source

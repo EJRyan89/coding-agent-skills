@@ -467,8 +467,10 @@ def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
 # The Linux legs' name, shaped as the Windows legs' is, from which tools/record_job_seconds.py reads each Linux leg's
 # shard index and count. Its Python is the matrix's, which setup-python installs, so the name says what runs.
 LINUX_LEG_NAME = "Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}"
-# The one Python the Linux legs run: the floor in deployer/tools.py.
-LINUX_PYTHON = ["3.11"]
+# The Linux legs' Python, as the Windows legs': the floor in deployer/tools.py on every run, and the latest stable
+# release beside it on the weekly schedule only, so the Linux-only branches meet a new interpreter without it blocking
+# a pull request through the required check.
+LINUX_PYTHON = "${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') || fromJSON('[\"3.11\"]') }}"
 # What each Linux leg's validation step runs, as the Windows legs' step does: its own shard, every suite outside a pull
 # request, and a pull request's body and title as files written from the event payload.
 LINUX_VALIDATION_LINES = (
@@ -643,6 +645,10 @@ PINNED_TOOL_LINES = (
     "if ($analyzer -ne $env:PSSCRIPTANALYZER_VERSION) { throw \"PSScriptAnalyzer is '$analyzer', not the pin "
     '$env:PSSCRIPTANALYZER_VERSION" }',
 )
+# The verify step's loop over the tools, which starts at Python and prints the version each resolves to, so a leg whose
+# matrix names `3.x` logs the release it ran.
+RESOLVED_PYTHON_LOOP = "foreach ($command in @('python', "
+RESOLVED_VERSION_LINE = "& $resolved.Source --version"
 # The informational lookup of the gallery's latest PSScriptAnalyzer, which only the weekly run waits on.
 GALLERY_LOOKUP = "Find-Module PSScriptAnalyzer"
 SCHEDULE_ONLY = "github.event_name == 'schedule'"
@@ -656,8 +662,8 @@ def _validation_index(steps: list[dict[str, Node]]) -> int:
 
 def pinned_tool_problems(workflow: str, job: str) -> list[str]:
     """Report how validate.yml's `job` departs from verifying, in a pwsh step before validation runs, that its
-    ShellCheck and newest PSScriptAnalyzer are the workflow's pins, and from querying the gallery for the latest
-    PSScriptAnalyzer anywhere but in a step the weekly schedule alone runs."""
+    ShellCheck and newest PSScriptAnalyzer are the workflow's pins and printing the Python it resolves, and from
+    querying the gallery for the latest PSScriptAnalyzer anywhere but in a step the weekly schedule alone runs."""
     steps = _steps(_mapping(read_workflow(workflow), "jobs", job))
     before = steps[: _validation_index(steps)]
     verifies = [
@@ -669,6 +675,10 @@ def pinned_tool_problems(workflow: str, job: str) -> list[str]:
     problems: list[str] = []
     if not verifies:
         problems.append(f"no pwsh step of the {job} job verifies the pinned tools before validation runs")
+    for step in verifies:
+        lines = [raw.strip() for raw in str(step.get("run", "")).splitlines()]
+        if not any(line.startswith(RESOLVED_PYTHON_LOOP) for line in lines) or RESOLVED_VERSION_LINE not in lines:
+            problems.append(f"the step {step.get('name')} of the {job} job does not print the Python it resolves")
     problems.extend(
         f"the step {step.get('name')} of the {job} job queries the gallery on every event, not on the schedule only"
         for step in steps

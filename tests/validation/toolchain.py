@@ -544,11 +544,14 @@ class ToolchainPolicies(unittest.TestCase):
             "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Scope CurrentUser -Force",
             workflow,
         )
-        # The floor runs on every event; the latest release only on the schedule, where it cannot block a pull request.
-        self.assertIn(
-            "python-version: ${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') "
-            "|| fromJSON('[\"3.11\"]') }}",
-            workflow,
+        # The floor runs on every event; the latest release only on the schedule, where it cannot block a pull request,
+        # on the Windows legs and on the Linux legs.
+        self.assertEqual(
+            2,
+            workflow.count(
+                "python-version: ${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') "
+                "|| fromJSON('[\"3.11\"]') }}"
+            ),
         )
         self.assertIn("if: github.event_name == 'schedule' && matrix.python-version == '3.x'", workflow)
         # Both matrix entries install the pinned development dependencies, so ruff, mypy, and pytest run at their
