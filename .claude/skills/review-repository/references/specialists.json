@@ -10,6 +10,7 @@
     "docs/adding-a-skill.md",
     ".claude/skills/review-repository/scripts/conditions.py",
     "skills/ejryan89-skill-core/scripts/console.py",
+    "skills/ejryan89-skill-core/scripts/device_names.py",
     "skills/ejryan89-skill-core/scripts/diff_paths.py",
     "skills/ejryan89-skill-core/scripts/flat_text.py",
     "skills/ejryan89-skill-core/scripts/json_reader.py",

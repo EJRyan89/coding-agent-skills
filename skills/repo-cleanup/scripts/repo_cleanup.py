@@ -886,7 +886,7 @@ def load_plan(path: str | Path) -> dict[str, Any]:
     build_plan writes it, so no command reads a missing or malformed field."""
     data = read_sealed(path, "plan")
     try:
-        plan = json_reader.loads(data.decode("utf-8"))
+        plan = json_reader.loads(data.decode("utf-8"), surrogates=True)
     except ValueError as exc:
         raise CleanupError(f"cannot read plan {path}: {exc}") from exc
     try:

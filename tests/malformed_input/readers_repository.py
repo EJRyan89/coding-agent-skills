@@ -27,6 +27,7 @@ from runtime_support import RUNTIMES
 from deployer.errors import DeployError
 from tools import (
     deployable_report,
+    mutation_gate,
     plugin_build,
     plugin_release,
     runtime_canary,
@@ -74,6 +75,41 @@ TRIGGER_RECORD = json.dumps(
         "models": [MODELS[TRIGGER_MODEL]],
     }
 ).encode()
+
+
+# A selection of one module that both legs run, and the Windows leg's run of its mutant.
+MUTATION_MUTANT = {"line": 4, "before": "a", "after": "b", "source": "b\n", "at_import": False, "readers": [5]}
+MUTATION_SELECTION = {
+    "base": "origin/main",
+    "mutmut": "3.8.0",
+    "modules": [
+        {
+            "module": "tools/paths.py",
+            "lines": 1,
+            "tables": [["X_ALLOWED", "tests/validation/x.py"]],
+            "windows": True,
+            "mutants": [MUTATION_MUTANT],
+        }
+    ],
+}
+MUTATION_LEG = {
+    "leg": mutation_gate.WINDOWS_LEG,
+    "minutes": 40,
+    "seconds": 1.5,
+    "workers": 2,
+    "failed_suites": {"tests/a.py": "failed unmutated with exit code 1"},
+    "unmeasured_suites": ["tests/b.py"],
+    "outcomes": {"tools/paths.py": [{"status": mutation_gate.KILLED, "suites": ["tests/c.py"], "tests": [1]}]},
+}
+
+
+def _mutation_leg(path: Path) -> object:
+    selected = mutation_gate.read_selection(path.with_name(mutation_gate.MUTANTS_FILE))
+    return mutation_gate.read_leg(path, selected, mutation_gate.WINDOWS_LEG)
+
+
+def _mutation_selection(path: Path) -> None:
+    path.with_name(mutation_gate.MUTANTS_FILE).write_text(json.dumps(MUTATION_SELECTION), encoding="utf-8")
 
 
 def _catalogue(path: Path) -> object:
@@ -390,6 +426,23 @@ READERS = [
         deployable_report._read_results,
         (DeployError,),
         accepts={"top_level_list": "an empty array is the results file of no passes"},
+    ),
+    Reader(
+        "tools.mutation_gate.read_leg",
+        "json",
+        json.dumps(MUTATION_LEG).encode(),
+        _mutation_leg,
+        (mutation_gate.RecordError,),
+        filename="outcomes-windows.json",
+        prepare=_mutation_selection,
+    ),
+    Reader(
+        "tools.mutation_gate.read_selection",
+        "json",
+        json.dumps(MUTATION_SELECTION).encode(),
+        mutation_gate.read_selection,
+        (mutation_gate.RecordError,),
+        filename=mutation_gate.MUTANTS_FILE,
     ),
     Reader(
         "tools.plugin_build.load_catalogue",

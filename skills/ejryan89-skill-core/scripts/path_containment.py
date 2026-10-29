@@ -9,10 +9,11 @@ repository path git lists, by text, case and all.
 
 `refusal` judges an entry taken from input, such as a repository path a record or a list names, inside the tree it
 must stay in, before anything opens it. It runs three tests in turn and names the first that fails, or gives None:
-the entry as written, which must be a relative path with no empty or `..` segment and no absolute, drive, rooted,
-network-share, or device form; the entry as resolved, which must still lie in the resolved tree, so no link leads it
-out; and ejryan89-skill-core's `link_probe`, which must find no symbolic link or junction on its way from the tree,
-so the entry is never reached through a link even one that stays inside.
+the entry as written, which must be a relative path with no NUL character, no empty or `..` segment, no segment
+Windows opens as a device, and no absolute, drive, rooted, network-share, or device form; the entry as resolved,
+which must still lie in the resolved tree, so no link leads it out; and ejryan89-skill-core's `link_probe`, which must
+find no symbolic link or junction on its way from the tree, so the entry is never reached through a link even one that
+stays inside.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import os
 import re
 from pathlib import Path
 
+from device_names import is_reserved_device_name
 from link_probe import is_link_or_junction
 from path_keys import path_key
 
@@ -47,10 +49,14 @@ def posix_within(name: str, folder: str, *, strict: bool = False) -> bool:
 
 
 def written_refusal(entry: str) -> str | None:
-    """Why `entry`, as written, is no relative path inside a tree, or None: an empty entry, a network-share, device,
-    rooted, or drive form, or an empty or `..` segment. Both separators count, since Windows reads either."""
+    """Why `entry`, as written, is no relative path inside a tree, or None: an empty entry, a NUL character, a
+    network-share, device, rooted, or drive form, an empty or `..` segment, or a segment `device_names` finds Windows
+    opens as a device. Both separators count, since Windows reads either, and a device name counts on every platform,
+    so an entry refused on one is refused on each."""
     if not entry:
         return "the entry is empty, so it names no path inside the tree"
+    if "\0" in entry:
+        return "the entry holds a NUL character, which no file name holds"
     forward = entry.replace("\\", "/")
     if forward.startswith(("//?/", "//./")):
         return "the entry names a device, which is never opened"
@@ -65,6 +71,8 @@ def written_refusal(entry: str) -> str | None:
         return "the entry climbs out of its folder with a `..` segment"
     if "" in segments:
         return "the entry holds an empty segment"
+    if any(is_reserved_device_name(segment) for segment in segments):
+        return "the entry names a reserved device as a segment, which Windows opens instead of a file"
     return None
 
 
