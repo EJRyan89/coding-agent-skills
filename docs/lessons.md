@@ -491,9 +491,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   changelog entries that touch a term the code uses are exercised or read against its latest release on a schedule.
 - **Why:** A release that drops a flag or changes a behavior otherwise breaks every run, or leaves a document wrong,
   until someone happens to probe it.
-- **Use:** `check_provenance:load`, `guidance_record:canonical_url`; a policy that each runtime statement in the
+- **Use:** `check_provenance:load`, `guidance_record:canonical_url`, and `tools.runtime_changelogs:watch`, which
+  the Runtime Changelogs workflow runs weekly as an advisory watch that refuses nothing: it lists the
+  changelog entries and moved guidance pages for a reader to act on; a policy that each runtime statement in the
   support pages links a page the guidance record lists is the mechanism in #1912.
-- **Guard:** `.github/workflows/runtime-command-lines.yml`, `.github/workflows/runtime-changelogs.yml`,
+- **Guard:** `.github/workflows/runtime-command-lines.yml`,
   `tests/tools/test_runtime_command_lines.py::CapturedTests::test_each_runtimes_real_refusal_of_a_flag_is_read_as_one`,
   `tests/tools/test_captured_samples.py::test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not`
 - **Search for:** a sentence about a runtime's behavior in `docs/*-support.md` or `docs/installation.md` with no
@@ -525,12 +527,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 ### A pipe's reader never ends before its writer under `pipefail`
 
-- **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, never through a pipe into a
-  reader that exits at its first match.
-- **Why:** `grep -q` exits at its match, the writer then fails with `SIGPIPE`, and `pipefail` makes that an
-  intermittent failure.
-- **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_grep_that_ends_at_its_match`
-- **Search for:** `| grep -q` or `| head -n` in a `.sh` file that runs `set -o pipefail` or `set -euo pipefail`.
+- **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, and a first line by parameter
+  expansion, never through a pipe into a reader that exits early: `grep -q` or `-m`, or `head`.
+- **Why:** `grep -q` exits at its match and `head` at its count, the writer then fails with `SIGPIPE`, and `pipefail`
+  makes that an intermittent failure.
+- **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_reader_that_ends_early`
+- **Search for:** `| grep -q`, `| grep -m`, or `| head` in any form, `-n`, `-c`, `-1`, or alone, in a `.sh` file
+  that runs `set -o pipefail` or `set -euo pipefail`.
 - **Examples:** #1557, #1602
 
 ### A program whose status is the verdict starts with no shell above it
