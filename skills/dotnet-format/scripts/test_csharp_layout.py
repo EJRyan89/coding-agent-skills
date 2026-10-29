@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import csharp_layout as layout
 import dotnet_solution
 import whole_number
@@ -470,6 +471,16 @@ class FileTests(unittest.TestCase):
         self.assertEqual(original, fixable.read_bytes())
         self.assertEqual(["Fixable.cs", "files.txt"], sorted(path.name for path in self.root.iterdir()))
 
+    def test_a_fix_keeps_a_lone_surrogate_a_file_with_a_byte_order_mark_holds(self) -> None:
+        # The bytes ED A0 80 encode U+D800, which only surrogatepass reads and writes back.
+        fixable = self.root / "Fixable.cs"
+        fixable.write_bytes(b"\xef\xbb\xbf// \xed\xa0\x80\n#region A\n\n#endregion A\n")
+        status, lines = self.main(
+            "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Fixable.cs")), "--fix"
+        )
+        self.assertEqual((0, "FIXED"), (status, lines[0][0]))
+        self.assertEqual(b"\xef\xbb\xbf// \xed\xa0\x80\n#region A\n\n#endregion\n", fixable.read_bytes())
+
     def test_a_fix_keeps_the_file_permissions(self) -> None:
         fixable = self.root / "Fixable.cs"
         fixable.write_bytes(b"#region A\n\n#endregion A\n")
@@ -701,6 +712,13 @@ class ConfigTests(unittest.TestCase):
                 self.assertTrue(line.startswith(f"FAILED the solution {solution} is refused: {expected}"), line)
                 self.assertEqual([], self.msbuild.calls)
                 self.assertFalse((self.root / ".editorconfig").exists())
+
+    def test_an_editorconfig_the_apply_adds_is_readable_by_everyone_and_writable_by_its_owner(self) -> None:
+        with mock.patch("csharp_layout.replace_bytes", wraps=atomic_file.replace_bytes) as replace:
+            status, grouped = self.run_config("--apply")
+        self.assertEqual(0, status, grouped)
+        self.assertEqual([0o644], [call.kwargs["mode"] for call in replace.call_args_list])
+        self.assertTrue((self.root / ".editorconfig").is_file())
 
     def test_an_unwritable_editorconfig_fails_after_reporting(self) -> None:
         denied = PermissionError(13, "Permission denied", ".editorconfig")

@@ -920,7 +920,8 @@ class ListedRefusalTests(unittest.TestCase):
         outside = self.root.parent / "outside.cs"
         absolute = "the entry is an absolute path, and an entry names a file relative to the repository root"
         with mock.patch.object(Path, "resolve") as resolve:
-            for entry in (str(inside), inside.as_posix()):
+            # The form with backslashes is absolute on Linux too once they read as separators.
+            for entry in (str(inside), inside.as_posix(), inside.as_posix().replace("/", "\\")):
                 with self.subTest(entry=entry):
                     self.assertEqual(absolute, targets.listed_refusal(self.root, entry))
                     self.assertEqual(
@@ -978,8 +979,15 @@ class FileListTests(unittest.TestCase):
         ]
         written = Path(targets.write_file_list(names))
         self.addCleanup(written.unlink)
+        self.assertTrue(written.name.startswith("dotnet-format-files-") and written.name.endswith(".txt"), written)
         self.assertEqual("".join(f"{name}\0" for name in names).encode("utf-8"), written.read_bytes())
         self.assertEqual(names, targets.read_file_list(written))
+
+    def test_no_names_are_refused_before_a_list_is_written(self) -> None:
+        with mock.patch.object(tempfile, "mkstemp") as mkstemp, self.assertRaises(targets.Failed) as context:
+            targets.write_file_list([])
+        self.assertEqual("there is no changed file to list", str(context.exception))
+        mkstemp.assert_not_called()
 
     def test_a_name_that_is_not_utf_8_is_refused_before_a_list_is_written(self) -> None:
         with mock.patch.object(tempfile, "mkstemp") as mkstemp, self.assertRaises(targets.Failed) as context:
