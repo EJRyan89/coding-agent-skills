@@ -24,8 +24,10 @@ import executable_locator
 import pull_request_title
 from git_client import GitError, GitResult
 from pull_request_title import head_branch, title_problems, title_types_problems
+from validation_support import PullRequest
 
 from tools import release_notes
+from tools.release_notes import ReleaseNotesError
 from tools.worktrees import TITLE_TYPES
 
 
@@ -155,17 +157,32 @@ class HeadBranch(unittest.TestCase):
         git(self.repository, "checkout", "--detach")
         self.assertIsNone(head_branch())
 
-    def test_a_git_failure_names_no_branch(self) -> None:
-        # Outside any repository git fails; so does any git command the patched runner says failed.
+    def test_a_git_failure_is_raised_never_read_as_no_branch(self) -> None:
+        # Outside any repository git fails; so does any git command the patched runner says failed. Read as no branch,
+        # either would leave the title's type unconstrained.
         self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository / "missing"))
-        self.assertIsNone(head_branch())
+        with self.assertRaisesRegex(ReleaseNotesError, "branch --show-current failed"):
+            head_branch()
         failed = GitResult(128, "feat/local-branch\n", "fatal: failed\n")
-        with mock.patch.object(pull_request_title, "git", return_value=failed) as run:
-            self.assertIsNone(head_branch())
+        with (
+            mock.patch.object(release_notes, "git", return_value=failed) as run,
+            self.assertRaisesRegex(ReleaseNotesError, "fatal: failed"),
+        ):
+            head_branch()
         self.assertEqual(1, run.call_count)
         # Nor does a git that cannot run at all: the real helper's git missing, or not finishing in its time limit.
         self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository))
         self.assertEqual("feat/local-branch", head_branch())
         for failing in (git_not_on_path(), mock.patch.object(release_notes.CLIENT, "runner", timed_out)):
-            with self.subTest(failing=failing), failing:
-                self.assertIsNone(head_branch())
+            with self.subTest(failing=failing), failing, self.assertRaises(ReleaseNotesError):
+                head_branch()
+
+    def test_the_title_check_fails_when_git_cannot_read_the_branch(self) -> None:
+        self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository / "missing"))
+        title = self.repository.parent / "title.txt"
+        title.write_text("fix: anything\n", encoding="utf-8")
+        check = pull_request_title.PullRequestTitlePolicies(
+            "test_the_pull_request_title_opens_with_a_known_type", PullRequest(title=title)
+        )
+        with self.assertRaisesRegex(AssertionError, "cannot read the checkout's branch"):
+            check.test_the_pull_request_title_opens_with_a_known_type()
