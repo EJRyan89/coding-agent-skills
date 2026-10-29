@@ -117,6 +117,43 @@ class ConditionTests(unittest.TestCase):
         before = {"app/service.py": SERVICE, "tests/test_service.py": test}
         self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition(before, after))
 
+    def test_a_converted_call_site_in_a_function_a_test_names_opens_the_route(self) -> None:
+        # #2042: a conversion inside a named function must still reach the reviewer who checks its output is pinned.
+        report = "import json\nimport json_writer\n\n\ndef save(path, data):\n"
+        report += "    path.write_text(json.dumps(data, indent=2))\n    return path\n"
+        converted = report.replace("path.write_text(json.dumps(data, indent=2))", "json_writer.write(path, data)")
+        # The test names save but asserts nothing about the bytes it writes.
+        test = {"tests/test_report.py": "import report\n\n\ndef test_save(path):\n    assert report.save(path, {})\n"}
+        code, out, written = self.run_condition(
+            {"tools/report.py": report, **test}, {"tools/report.py": converted, **test}
+        )
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertEqual(
+            "CONVERTED tools/report.py:5 function save, a test names it, converted calls json_writer.write at line 6, "
+            "hunk @@ -3,5 +3,5 @@, tests of its file tests/test_report.py\n"
+            "@@ -3,5 +3,5 @@\n \n \n def save(path, data):\n-    path.write_text(json.dumps(data, indent=2))\n"
+            "+    json_writer.write(path, data)\n     return path\n",
+            written,
+        )
+
+    def test_a_named_function_s_change_that_converts_no_call_site_still_closes_the_route(self) -> None:
+        test = {"tests/test_report.py": "import report\n\nassert report.save\n"}
+        source = "import json_writer\n\n\ndef save(path, data):\n    json_writer.write(path, data)\n    return path\n"
+        cases = {
+            # The replaced line already made the call.
+            "same call": source.replace("(path, data)\n    return", "(path, data, indent=4)\n    return"),
+            # A call through a name no import binds is the module's own.
+            "own call": source.replace("json_writer.write(path, data)", "helper(path, data)"),
+            # An added line that replaces nothing is new code, not a converted site.
+            "inserted": source.replace("    return path", "    json_writer.flush(path)\n    return path"),
+        }
+        for name, after in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    (1, "UNTESTED 0 given=0\n", ""),
+                    self.run_condition({"tools/report.py": source, **test}, {"tools/report.py": after, **test}),
+                )
+
     def test_a_removed_function_needs_no_test_and_lines_removed_inside_one_change_it(self) -> None:
         before = {"app/service.py": SERVICE}
         removed = SERVICE.replace("\n\ndef run(command):\n    return subprocess.run(command, check=False)\n", "\n")
