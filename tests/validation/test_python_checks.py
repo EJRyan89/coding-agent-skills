@@ -870,6 +870,63 @@ def test_process_environment_policy_refuses_a_start_that_may_keep_the_repository
     ]
 
 
+CLEARED_PREFIX = """\
+import os
+import subprocess
+
+from bounded_process import without_repository_variables
+
+
+def start():
+    env = without_repository_variables(os.environ)
+"""
+
+
+# Each change in place of a cleared environment the design row's "whose environment may keep them" covers: one that
+# can add a key from elsewhere, or adds a repository variable, is refused.
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("env.update(os.environ)", id="an update from inherited input"),
+        pytest.param("env.update(GIT_DIR='x')", id="an update naming a repository variable"),
+        pytest.param("env.update({'git_dir': 'x'})", id="a dict naming a repository variable in another case"),
+        pytest.param("env.update({**os.environ})", id="a dict that unpacks another"),
+        pytest.param("env.update(os.environ, LC_ALL='C')", id="an update of a mapping and a clear keyword"),
+        pytest.param("env['GIT_DIR'] = os.environ.get('GIT_DIR', '')", id="a subscript assignment of one"),
+        pytest.param("env[name] = 'x'", id="a subscript assignment of a key no one can read"),
+        pytest.param("env.setdefault('GIT_DIR', 'x')", id="a setdefault of one"),
+        pytest.param("env |= os.environ", id="an augmented union from inherited input"),
+    ],
+)
+def test_process_environment_policy_refuses_a_cleared_env_changed_from_an_unproven_source(change: str) -> None:
+    source = f"{CLEARED_PREFIX}    name = 'x'\n    {change}\n    return subprocess.run(['x'], env=env, check=False)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.process_environment_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == ["skills/alpha/scripts/alpha.py:11"]
+
+
+# Changes in place proven to add no repository variable: every key they can add is a constant naming none.
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("env.update({'LC_ALL': 'C'})", id="an update of a constant dict"),
+        pytest.param("env.update(LC_ALL=os.environ.get('LANG', 'C'))", id="a clear keyword whatever its value"),
+        pytest.param("env['LC_ALL'] = os.environ.get('LANG', 'C')", id="a subscript assignment of a clear key"),
+        pytest.param("env.setdefault('LC_ALL', 'C')", id="a setdefault of a clear key"),
+        pytest.param("env |= {'LC_ALL': 'C'}", id="an augmented union of a constant dict"),
+        pytest.param("env.pop('LC_ALL', None)", id="a removal, which adds nothing"),
+    ],
+)
+def test_process_environment_policy_passes_a_cleared_env_changed_only_by_clear_keys(change: str) -> None:
+    source = f"{CLEARED_PREFIX}    {change}\n    return subprocess.run(['x'], env=env, check=False)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        assert python_checks.process_environment_problems(root, sorted(root.rglob("*.py"))) == []
+
+
 LINK_SOURCE = """\
 import os
 from os.path import islink
@@ -1773,6 +1830,77 @@ def test_git_status_policy_refuses_an_exit_status_read_outside_the_client() -> N
         f"{alpha}: GIT_STATUS_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: GIT_STATUS_ALLOWED must map each function, class, or assignment to its reason",
     ]
+
+
+# Modules a git result can reach a caller through: tools/helper.py's producer, re-exported by a validation module the
+# others import by its bare name, and re-exported again by another.
+STATUS_REEXPORTS = {
+    "tools/helper.py": STATUS_HELPER,
+    "tests/validation/support.py": "from tools.helper import git as git\n",
+    "tests/validation/again.py": "from support import git as git\n",
+}
+STATUS_IMPORTS = "from git_client import GitClient\nfrom support import git\nfrom again import git as twice\n\n\n"
+
+
+# Each form of a read of a git result's exit status, from the policy's paragraph in "Validation" in
+# docs/adding-a-skill.md ("what a function annotated to return GitResult returns, in any module validation reads"):
+# the line marked `# read` is refused.
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("def f():\n    return git('.').returncode  # read\n", id="a producer re-exported"),
+        pytest.param("def f():\n    return twice('.').returncode  # read\n", id="a producer re-exported twice"),
+        pytest.param("run = git\n\n\ndef f():\n    return run('.').returncode  # read\n", id="a re-export aliased"),
+        pytest.param(
+            "def f(client: GitClient):\n    if (r := client.run(['status'])).returncode:  # read\n        return r\n",
+            id="a walrus",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    if r := client.run(['status']):\n        return r.returncode  # read\n",
+            id="a name a walrus binds",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    r = client.run(['status'])\n    return getattr(r, 'returncode')  # read\n",
+            id="getattr of a name",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    return getattr(client.run(['status']), 'returncode')  # read\n",
+            id="getattr of the call",
+        ),
+    ],
+)
+def test_git_status_policy_refuses_every_form_its_paragraph_names(body: str) -> None:
+    source = STATUS_IMPORTS + body
+    line = next(number for number, text in enumerate(source.splitlines(), 1) if text.endswith("# read"))
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {**STATUS_REEXPORTS, "skills/alpha/scripts/alpha.py": source})
+        found = python_checks.git_status_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{line}"]
+
+
+# Forms that read no git result's exit status, each with why.
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A name is a result only in the scope that binds it to one: `r` in g is g's parameter, whatever f binds.
+        pytest.param(
+            "def f(client: GitClient):\n    r = client.run(['status'])\n    return r.stdout\n\n\n"
+            "def g(r):\n    return r.returncode\n",
+            id="a name another function binds",
+        ),
+        # getattr of another attribute reads no status.
+        pytest.param(
+            "def f(client: GitClient):\n    r = client.run(['status'])\n    return getattr(r, 'stdout')\n",
+            id="getattr of another attribute",
+        ),
+    ],
+)
+def test_git_status_policy_passes_what_reads_no_git_status(body: str) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {**STATUS_REEXPORTS, "skills/alpha/scripts/alpha.py": STATUS_IMPORTS + body})
+        assert python_checks.git_status_problems(root, sorted(root.rglob("*.py"))) == []
 
 
 LIMIT_SOURCE = """\
