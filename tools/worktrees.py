@@ -10,8 +10,9 @@ new takes as the kind a pull request title type, which the title check then hold
 for an investigation, and refuses any other kind with the list of those it takes, exiting 1.
 
 The hub guard, the Claude Code PreToolUse hook .claude/settings.json runs, is tools/hub_guard.py. It imports from here
-only what both share: MAIN, same_path, checkout_of, and git with its client. This module imports nothing from it, and
-its guard subcommand only runs it as a program.
+only what both share: MAIN, same_path, Checkout, checkout_of, and git with its client, and it wraps checkout_of and git
+so that each git call keeps to its reading time. This module imports nothing from it, and its guard subcommand only
+runs it as a program.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import git_worktrees
 from console import run_main
-from git_client import GitClient, GitError, GitResult
+from git_client import GitClient, GitError, GitResult, output_lines
 
 from deployer import platform_support
 
@@ -108,8 +109,9 @@ class Checkout:
         return same_path(self.toplevel, self.hub)
 
 
-def checkout_of(path: Path) -> Checkout | None:
-    """The worktree containing path, and the hub that owns it; None outside a non-bare repository.
+def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Checkout | None:
+    """The worktree containing path, and the hub that owns it; None outside a non-bare repository. git answers within
+    timeout seconds, which the hub guard lowers to what is left of its reading time.
 
     Raises GitError when git answers nonzero for a directory below a checkout, one that a `.git` beside it or above
     it marks, outside any git directory: a checkout git cannot read, as one it refuses to trust, is not one outside
@@ -119,8 +121,10 @@ def checkout_of(path: Path) -> Checkout | None:
         if directory.parent == directory:
             return None
         directory = directory.parent
-    result = git(directory, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir")
-    lines = result.stdout.splitlines()
+    result = git(
+        directory, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", timeout=timeout
+    )
+    lines = output_lines(result.stdout)
     if result.returncode != 0 and below_a_checkout(directory):
         said = " ".join(result.stderr.split()) or f"git rev-parse exited with {result.returncode}"
         raise GitError(f"git could not read the checkout at {directory}: {said}", returncode=result.returncode)

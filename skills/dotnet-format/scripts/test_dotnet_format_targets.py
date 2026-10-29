@@ -263,7 +263,7 @@ class ResolveTests(unittest.TestCase):
         ]
         self.assertEqual([[name] for name in expected], self.values(lines, "FILE"))
         (file_list,) = self.values(lines, "FILE_LIST")
-        self.assertEqual("".join(f"{name}\n" for name in expected), Path(file_list[0]).read_text(encoding="utf-8"))
+        self.assertEqual("".join(f"{name}\0" for name in expected), Path(file_list[0]).read_text(encoding="utf-8"))
         self.assertEqual(expected, targets.read_file_list(Path(file_list[0])))
         self.assertEqual([["App.sln", "7"]], self.values(lines, "SOLUTION"))
         self.assertEqual([["Loose/Untracked.cs"]], self.values(lines, "OUTSIDE_SOLUTION"))
@@ -915,6 +915,22 @@ class ListedRefusalTests(unittest.TestCase):
                     self.assertTrue(refused and refused.startswith(reason), refused)
         self.assertEqual(2, len(resolved), "a refused form is never resolved")
 
+    def test_an_absolute_entry_or_solution_is_refused_unresolved_inside_the_root_or_outside_it(self) -> None:
+        inside = self.root / "inside.cs"
+        outside = self.root.parent / "outside.cs"
+        absolute = "the entry is an absolute path, and an entry names a file relative to the repository root"
+        with mock.patch.object(Path, "resolve") as resolve:
+            # The form with backslashes is absolute on Linux too once they read as separators.
+            for entry in (str(inside), inside.as_posix(), inside.as_posix().replace("/", "\\")):
+                with self.subTest(entry=entry):
+                    self.assertEqual(absolute, targets.listed_refusal(self.root, entry))
+                    self.assertEqual(
+                        f"the solution {entry} is refused: {absolute}", targets.solution_refusal(self.root, entry)
+                    )
+            refused = targets.listed_refusal(self.root, str(outside))
+            self.assertTrue(refused and refused.startswith("the path is outside the examined tree"), refused)
+        resolve.assert_not_called()
+
     def test_an_entry_that_cannot_be_resolved_is_refused(self) -> None:
         denied = PermissionError(13, "Permission denied")
         with mock.patch.object(Path, "resolve", side_effect=denied):
@@ -951,27 +967,50 @@ class FileListTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "file list.txt"
 
-    def test_file_lists_skip_blank_lines_and_a_byte_order_mark(self) -> None:
-        self.path.write_bytes(b"\xef\xbb\xbf  src/A.cs  \r\n\r\nsrc/My Folder/B.cs\n\n")
-        self.assertEqual(["src/A.cs", "src/My Folder/B.cs"], targets.read_file_list(self.path))
+    def test_every_name_reads_back_as_resolve_writes_it(self) -> None:
+        # A leading space, a byte order mark, and the line separators a line reader splits at belong to the name.
+        names = [
+            " Leading.cs",
+            "file\u2028part.cs",
+            "x\u0085y.cs",
+            "a\r\nb.cs",
+            "\ufeffMarked.cs",
+            "src/My Folder/B.cs",
+        ]
+        written = Path(targets.write_file_list(names))
+        self.addCleanup(written.unlink)
+        self.assertTrue(written.name.startswith("dotnet-format-files-") and written.name.endswith(".txt"), written)
+        self.assertEqual("".join(f"{name}\0" for name in names).encode("utf-8"), written.read_bytes())
+        self.assertEqual(names, targets.read_file_list(written))
 
-    def test_an_empty_or_undecodable_list_is_refused(self) -> None:
+    def test_no_names_are_refused_before_a_list_is_written(self) -> None:
+        with mock.patch.object(tempfile, "mkstemp") as mkstemp, self.assertRaises(targets.Failed) as context:
+            targets.write_file_list([])
+        self.assertEqual("there is no changed file to list", str(context.exception))
+        mkstemp.assert_not_called()
+
+    def test_a_name_that_is_not_utf_8_is_refused_before_a_list_is_written(self) -> None:
+        with mock.patch.object(tempfile, "mkstemp") as mkstemp, self.assertRaises(targets.Failed) as context:
+            targets.write_file_list(["A.cs", "caf\udce9.cs"])
+        self.assertEqual(
+            "the changed file 'caf\\udce9.cs' has a name that is not UTF-8, which FILE_LIST cannot hold",
+            str(context.exception),
+        )
+        mkstemp.assert_not_called()
+
+    def test_an_empty_undecodable_or_line_separated_list_is_refused(self) -> None:
         for content, message in (
             (b"", "lists no files"),
-            (b" \n\n", "lists no files"),
-            (b"caf\xe9.cs\n", "is not UTF-8 text"),
+            (b"caf\xe9.cs\0", "is not UTF-8 text"),
+            (b"src/A.cs\nsrc/B.cs\n", "does not end each name with a NUL, as resolve writes a FILE_LIST"),
+            (b"src/A.cs\0src/B.cs", "does not end each name with a NUL, as resolve writes a FILE_LIST"),
+            (b"src/A.cs\0\0", "name 2 is empty, which no path is"),
+            (b"\0", "name 1 is empty, which no path is"),
         ):
             self.path.write_bytes(content)
             with self.subTest(content=content), self.assertRaises(ValueError) as context:
                 targets.read_file_list(self.path)
             self.assertEqual(f"{self.path} {message}", str(context.exception))
-
-    def test_a_line_holding_a_nul_is_refused_naming_it(self) -> None:
-        for content, number in ((b"src/A.cs\nsrc/B.cs\0\0\n", 2), (b"\0src/A.cs\n", 1)):
-            self.path.write_bytes(content)
-            with self.subTest(content=content), self.assertRaises(ValueError) as context:
-                targets.read_file_list(self.path)
-            self.assertEqual(f"{self.path} line {number} holds a NUL, which no path holds", str(context.exception))
 
     def test_a_missing_list_is_an_os_error(self) -> None:
         with self.assertRaises(FileNotFoundError):

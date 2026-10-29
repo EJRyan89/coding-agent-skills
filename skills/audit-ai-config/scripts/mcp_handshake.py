@@ -157,8 +157,14 @@ class Session:
         self.running = running
 
     def send(self, message: dict[str, Any]) -> None:
+        try:
+            text = json_writer.dumps(message)
+        except json_writer.CONTENT_ERRORS as error:
+            # A tools/list cursor is the server's own value, which can hold what JSON cannot carry back, such as a
+            # lone surrogate it escaped; that is the server's failure, reported for it alone.
+            raise RuntimeError(f"cannot send the server's value back: {error}") from error
         # Stdin is binary, so each message ends with exactly the newline the stdio transport frames it with.
-        self.running.stdin.write(json_writer.dumps(message).encode("utf-8") + b"\n")
+        self.running.stdin.write(text.encode("utf-8") + b"\n")
         self.running.stdin.flush()
 
     def response(self, request_id: int) -> dict[str, Any]:
