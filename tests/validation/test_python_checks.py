@@ -870,6 +870,63 @@ def test_process_environment_policy_refuses_a_start_that_may_keep_the_repository
     ]
 
 
+CLEARED_PREFIX = """\
+import os
+import subprocess
+
+from bounded_process import without_repository_variables
+
+
+def start():
+    env = without_repository_variables(os.environ)
+"""
+
+
+# Each change in place of a cleared environment the design row's "whose environment may keep them" covers: one that
+# can add a key from elsewhere, or adds a repository variable, is refused.
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("env.update(os.environ)", id="an update from inherited input"),
+        pytest.param("env.update(GIT_DIR='x')", id="an update naming a repository variable"),
+        pytest.param("env.update({'git_dir': 'x'})", id="a dict naming a repository variable in another case"),
+        pytest.param("env.update({**os.environ})", id="a dict that unpacks another"),
+        pytest.param("env.update(os.environ, LC_ALL='C')", id="an update of a mapping and a clear keyword"),
+        pytest.param("env['GIT_DIR'] = os.environ.get('GIT_DIR', '')", id="a subscript assignment of one"),
+        pytest.param("env[name] = 'x'", id="a subscript assignment of a key no one can read"),
+        pytest.param("env.setdefault('GIT_DIR', 'x')", id="a setdefault of one"),
+        pytest.param("env |= os.environ", id="an augmented union from inherited input"),
+    ],
+)
+def test_process_environment_policy_refuses_a_cleared_env_changed_from_an_unproven_source(change: str) -> None:
+    source = f"{CLEARED_PREFIX}    name = 'x'\n    {change}\n    return subprocess.run(['x'], env=env, check=False)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.process_environment_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == ["skills/alpha/scripts/alpha.py:11"]
+
+
+# Changes in place proven to add no repository variable: every key they can add is a constant naming none.
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("env.update({'LC_ALL': 'C'})", id="an update of a constant dict"),
+        pytest.param("env.update(LC_ALL=os.environ.get('LANG', 'C'))", id="a clear keyword whatever its value"),
+        pytest.param("env['LC_ALL'] = os.environ.get('LANG', 'C')", id="a subscript assignment of a clear key"),
+        pytest.param("env.setdefault('LC_ALL', 'C')", id="a setdefault of a clear key"),
+        pytest.param("env |= {'LC_ALL': 'C'}", id="an augmented union of a constant dict"),
+        pytest.param("env.pop('LC_ALL', None)", id="a removal, which adds nothing"),
+    ],
+)
+def test_process_environment_policy_passes_a_cleared_env_changed_only_by_clear_keys(change: str) -> None:
+    source = f"{CLEARED_PREFIX}    {change}\n    return subprocess.run(['x'], env=env, check=False)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        assert python_checks.process_environment_problems(root, sorted(root.rglob("*.py"))) == []
+
+
 LINK_SOURCE = """\
 import os
 from os.path import islink
