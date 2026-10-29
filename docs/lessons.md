@@ -71,15 +71,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   pass.
 - **Why:** A step that never ran, a listing that failed, or an empty input otherwise reads as everything checked and
   nothing found.
-- **Use:** `conditions:MissingEvidence`, `deployer.discovery:ListingError`
+- **Use:** `conditions:MissingEvidence`, `deployer.discovery:ListingError`, `tools.hub_guard:Reading.time_left`, the
+  hub guard's own reading time, below the hook timeout that would let a command it cut short run
 - **Guard:** `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::test_finalize_refuses_a_result_the_guard_never_claimed_with_nothing_recorded`,
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run`,
   `tests/tools/test_hub_guard.py::test_an_event_that_names_no_command_or_file_is_allowed_with_a_note_never_unseen`,
+  `tests/tools/test_hub_guard.py::ReadingBoundTests`,
   `.claude/skills/evaluate-skill/SKILL.md#5-read-the-sampled-transcript`
 - **Search for:** `rg -n "os\.walk\(" | rg -v onerror`, a walk that skips what it cannot read; `if not <input>:`
   followed by `return True` or `return 0`; a count, verdict, or summary computed over a list that is empty because its
-  step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`.
-- **Examples:** #1443, #1462, #1603, #1821, #1824, #1854
+  step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`; `"timeout"` in a hook
+  of `.claude/settings.json` whose program has no bound of its own below it, or reads a part of its input more than
+  once per level of nesting, as `for _ in range(2)` over a child does.
+- **Examples:** #1443, #1462, #1603, #1805, #1821, #1824, #1854
 
 ### Evidence a store records leaving out is withheld, not missing
 
