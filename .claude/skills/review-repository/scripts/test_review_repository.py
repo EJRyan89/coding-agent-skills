@@ -875,7 +875,7 @@ class UntestedChangesTests(unittest.TestCase):
         self.assertTrue(written.startswith("UNTESTED tools/sweep.py:1 function days, added lines 2, "), written)
 
     def test_a_converted_call_site_a_test_names_but_does_not_pin_opens_the_untested_route(self) -> None:
-        # #2042: the profile's converted-call check lives only on this route, so the route must open for it.
+        # The profile's converted-call check lives only on this route, so the route must open for it.
         self.assertIn("untested-changes", route(MANIFEST, ["tools/report.py"], lambda name: True))
         with tempfile.TemporaryDirectory() as temporary:
             scratch = Path(temporary)

@@ -118,7 +118,7 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition(before, after))
 
     def test_a_converted_call_site_in_a_function_a_test_names_opens_the_route(self) -> None:
-        # #2042: a conversion inside a named function must still reach the reviewer who checks its output is pinned.
+        # A conversion inside a named function must still reach the reviewer who checks its output is pinned.
         report = "import json\nimport json_writer\n\n\ndef save(path, data):\n"
         report += "    path.write_text(json.dumps(data, indent=2))\n    return path\n"
         converted = report.replace("path.write_text(json.dumps(data, indent=2))", "json_writer.write(path, data)")
