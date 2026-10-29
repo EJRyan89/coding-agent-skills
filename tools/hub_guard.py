@@ -2279,6 +2279,10 @@ class PowerShellReader:
         # The words the reader reports for each parameter, from which a path the text does not settle is judged.
         reported = {name.lower(): values for name, values in (event.get("parameters") or {}).items()}
         name, arguments = command_name(words[0]), words[1:]
+        if event.get("failed") and name is not None and name in session.functions:
+            # A simple function takes the words the binder cannot bind into $args and runs, where an advanced one
+            # runs nothing, so its body is read as a path that may run.
+            return join_sessions(session, self.call_function(name, session.copy()))
         if event.get("failed") or event.get("whatIf"):
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
         if name is not None and name in session.functions:
