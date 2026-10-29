@@ -1436,7 +1436,7 @@ def test_a_mutant_is_killed_when_any_leg_killed_it_and_not_run_when_a_leg_that_m
 
 
 def test_a_mutant_no_leg_ran_has_no_verdict() -> None:
-    with pytest.raises(ValueError, match="no leg ran the mutant"):
+    with pytest.raises(ValueError, match=r"^no leg ran the mutant$"):
         verdict([])
 
 
@@ -2022,20 +2022,22 @@ class SplitRunFixtures(unittest.TestCase):
 
     def test_the_steps_write_their_files_and_the_join_fails_an_unfinished_run(self) -> None:
         platform = SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True)
+        plain = SelectedModule("tools/calc.py", 1, (mutant(1),), (), False)
         empty = SelectedModule("tools/none.py", 1, (), (), False)
-        selected = Selected("origin/main", "3.8.0", (platform, empty))
+        selected = Selected("origin/main", "3.8.0", (platform, plain, empty))
         unfinished = LegRun(WINDOWS_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, NOT_RUN)]}, {}, [])
+        log = FlushRecorder()
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary) / "folder"
-            with (
-                mock.patch.object(Gate, "selection", return_value=selected),
-                mock.patch("sys.stdout", io.StringIO()) as log,
-            ):
+            with mock.patch.object(Gate, "selection", return_value=selected), mock.patch("sys.stdout", log):
                 self.assertEqual(0, mutation_gate.main(["select", str(folder)], {}))
-            self.assertEqual(
-                "tools/paths.py: 1 mutants, run on Linux, Windows\ntools/none.py: 0 mutants, run on no leg\n",
-                log.getvalue(),
-            )
+            # Each module's line names only the legs that run it, and reaches the log as it is written.
+            lines = [
+                "tools/paths.py: 1 mutants, run on Linux, Windows\n",
+                "tools/calc.py: 1 mutants, run on Linux\n",
+                "tools/none.py: 0 mutants, run on no leg\n",
+            ]
+            self.assertEqual(["".join(lines[: index + 1]) for index in range(len(lines))], log.flushed)
             self.assertEqual(selected, read_selection(folder / "mutants.json"))
             with (
                 mock.patch.object(Gate, "leg", return_value=unfinished) as leg,
