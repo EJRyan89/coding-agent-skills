@@ -349,10 +349,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   is not there.
 - **Use:** `git_client:GitClient.names`, which runs a name listing with -z and splits it on NUL;
   `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
-  joined by %x00.
+  joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
+  a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z and a for-each-ref or log format whose fields a byte but NUL joins
   unless its module states why,
+  `skills/ejryan89-skill-core/scripts/test_release_tags.py::LastReleaseTests::test_a_tag_whose_name_holds_a_character_splitlines_breaks_on_is_one_name`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests::test_a_path_holding_a_character_splitlines_breaks_on_is_one_path`,
+  `tests/tools/test_worktrees.py::CheckoutTests::test_a_checkout_whose_path_holds_a_character_splitlines_breaks_on_is_found`,
+  `tests/tools/test_hub_guard.py::FileGuardTests::test_a_guarded_hub_whose_path_holds_a_character_splitlines_breaks_on_is_protected`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::NamesTests::test_names_reads_a_name_holding_a_non_ascii_character_or_a_newline_exactly`,
   `tests/tools/test_mutation_gate.py::test_the_gate_reads_a_changed_module_whose_path_holds_a_non_ascii_character_or_a_newline`,
   `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
@@ -361,7 +366,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output.
-- **Examples:** #1816, #1848, #1862, #1908
+- **Examples:** #1816, #1848, #1862, #1908, #2034
 
 ### Two spellings are compared as their consumer compares them
 
