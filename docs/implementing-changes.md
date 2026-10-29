@@ -216,11 +216,12 @@ hit, fixed here, filed as #N, or not a sibling and why. A fix that reaches one i
 author, with the code in hand, is the one placed to look. It is the author's judgment, never an automated result, and
 no check reads it: `review-repository`'s `sibling-search` reviewer holds the search against a change to a script.
 
-Before merge, `review-prs` reviews each pull request with `review-repository`, once the machine's code-review
-configuration names it, as "Configure" in that repository skill says. The shepherd runs the review once per head on
-every admitted pull request, so every one that reaches a trust-boundary route is reviewed
-([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)). An author may run
-`review-prs --pull` first; its record then covers that head. The result is the review record `review-prs` writes in
+`review-prs` reviews each pull request with `review-repository`, once the machine's code-review configuration names
+it, as "Configure" in that repository skill says. The shepherd runs the review once per head on every admitted pull
+request, so every one that reaches a trust-boundary route is reviewed
+([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)). It arms auto-merge first, and
+auto-merge waits only for the required check, so the review may land after the pull request merged. An author who
+wants the report before the merge runs `review-prs --pull` first; its record then covers that head. The result is the review record `review-prs` writes in
 the configured archive, which `review-insights` and `update-pr-dashboard` read. It is reported to the orchestrating
 session and the pull request's owner, never posted on the pull request by the shepherd: text posted on a public pull
 request first passes a scan for private terms that no skill here can run, so the orchestrating session relays the
@@ -242,7 +243,8 @@ addressed findings over both. These rules move a kind:
   maintainer judges one of its flagged findings a false positive that blocked a merge.
 - Each promotion and each demotion is the maintainer's approval, in a pull request of its own that cites the report
   and changes the blocking kinds below. The first promotion also makes the shepherd hold a pull request whose latest
-  review leaves a MUST FIX of a blocking kind open.
+  review leaves a MUST FIX of a blocking kind open, and leave each head unarmed until a review covers it, since a hold
+  cannot undo a merge that already landed.
 - SHOULD FIX findings never block, and suggestions never block. A new kind of finding starts as an experiment: its
   reviewer's profile asks for it as a SUGGESTION until a report shows how often it is accepted.
 
