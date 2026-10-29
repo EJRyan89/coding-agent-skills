@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import json
@@ -672,6 +673,23 @@ class GraphTests(Fixture):
                 code, rows = self.run_main("graph", "--root", str(root))
             self.assertEqual((1, "FAILED [Errno 28] No space left on device"), (code, rows[-1][0]))
             self.assertEqual([], list(temporary.iterdir()))
+
+    def test_a_graph_write_that_fails_part_way_leaves_the_output_file_as_it_was(self) -> None:
+        root = self.mixed_solution()
+        target = self.root / "out" / "graph.mmd"
+        target.parent.mkdir()
+        target.write_bytes(b"graph LR\n  kept\n")
+        write = os.write
+
+        def part_way(descriptor: int, data: bytes | memoryview) -> int:
+            write(descriptor, bytes(data[:5]))
+            raise OSError(28, "No space left on device")
+
+        with mock.patch.object(os, "write", side_effect=part_way):
+            code, rows = self.run_main("graph", "--output", str(target), "--root", str(root))
+        self.assertEqual((1, "FAILED [Errno 28] No space left on device"), (code, rows[-1][0]))
+        self.assertEqual(b"graph LR\n  kept\n", target.read_bytes())
+        self.assertEqual(["graph.mmd"], [path.name for path in target.parent.iterdir()])
 
     def test_more_chains_than_the_limit_are_truncated(self) -> None:
         root = self.mixed_solution()
@@ -1977,6 +1995,25 @@ class EntryPointTests(Fixture):
         result = self.run_script("why", "Lantern.Json", "--root", str(self.root / "missing"))
         self.assertEqual(1, result.returncode)
         self.assertTrue(result.stdout.rstrip().endswith(b"is neither a solution file nor a directory"), result.stdout)
+
+
+class SkillContractTests(unittest.TestCase):
+    def test_skill_md_names_every_line_the_script_prints(self) -> None:
+        # Each label is the first argument of an `out.line` call, a literal; SKILL.md names it in a code span.
+        tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+        labels = {
+            call.args[0].value
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "line"
+            and call.args
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        }
+        self.assertLessEqual({"PATH", "TRUNCATED", "REACHES", "WHERE", "WROTE", "SUMMARY"}, labels)
+        skill = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual([], sorted(label for label in labels if f"`{label}" not in skill))
 
 
 class UnreadableSolutionTests(Fixture):
