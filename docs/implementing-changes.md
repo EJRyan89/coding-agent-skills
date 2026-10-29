@@ -153,8 +153,9 @@ a document or test treats as a contract, add the test that kills it, or name it 
 equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere.
 mutmut refuses Windows, so the mutants are made on Linux and run on a Linux leg for every module and on a Windows leg,
 which never runs mutmut, for each module whose behavior differs on Windows: `deployer/platform_support.py`,
-`path_keys`, `link_probe`, and `device_names`, each module that imports one, and each that holds a `PLATFORM_ALLOWED`
-table. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
+`path_keys`, `link_probe`, and `device_names`, each module that imports one, each that holds a `PLATFORM_ALLOWED`
+table, and each whose own code compares a platform name the platform policy's `PLATFORM_TOKENS` catalogues, such as
+`sys.platform` or `os.name`. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
 lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its
 own cap, and either leg's cut leaves the run unfinished. The gate's docstring in `tools/mutation_gate.py` gives the
 details.
@@ -215,11 +216,12 @@ hit, fixed here, filed as #N, or not a sibling and why. A fix that reaches one i
 author, with the code in hand, is the one placed to look. It is the author's judgment, never an automated result, and
 no check reads it: `review-repository`'s `sibling-search` reviewer holds the search against a change to a script.
 
-Before merge, `review-prs` reviews each pull request with `review-repository`, once the machine's code-review
-configuration names it, as "Configure" in that repository skill says. The shepherd runs the review once per head on
-every admitted pull request, so every one that reaches a trust-boundary route is reviewed
-([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)). An author may run
-`review-prs --pull` first; its record then covers that head. The result is the review record `review-prs` writes in
+`review-prs` reviews each pull request with `review-repository`, once the machine's code-review configuration names
+it, as "Configure" in that repository skill says. The shepherd runs the review once per head on every admitted pull
+request, so every one that reaches a trust-boundary route is reviewed
+([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)). It arms auto-merge first, and
+auto-merge waits only for the required check, so the review may land after the pull request merged. An author who
+wants the report before the merge runs `review-prs --pull` first; its record then covers that head. The result is the review record `review-prs` writes in
 the configured archive, which `review-insights` and `update-pr-dashboard` read. It is reported to the orchestrating
 session and the pull request's owner, never posted on the pull request by the shepherd: text posted on a public pull
 request first passes a scan for private terms that no skill here can run, so the orchestrating session relays the
@@ -241,7 +243,8 @@ addressed findings over both. These rules move a kind:
   maintainer judges one of its flagged findings a false positive that blocked a merge.
 - Each promotion and each demotion is the maintainer's approval, in a pull request of its own that cites the report
   and changes the blocking kinds below. The first promotion also makes the shepherd hold a pull request whose latest
-  review leaves a MUST FIX of a blocking kind open.
+  review leaves a MUST FIX of a blocking kind open, and leave each head unarmed until a review covers it, since a hold
+  cannot undo a merge that already landed.
 - SHOULD FIX findings never block, and suggestions never block. A new kind of finding starts as an experiment: its
   reviewer's profile asks for it as a SUGGESTION until a report shows how often it is accepted.
 
