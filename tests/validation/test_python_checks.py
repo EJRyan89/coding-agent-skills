@@ -2080,3 +2080,150 @@ def test_time_option_policy_refuses_a_float_time_option() -> None:
         f"{alpha}: TIME_OPTION_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: TIME_OPTION_ALLOWED must map each function, class, or assignment to its reason",
     ]
+
+
+# Each claim policy's forms its paragraph in "Validation" in docs/adding-a-skill.md names, beyond the plain one: a
+# module in a skill's scripts beside ejryan89-skill-core's fixture reader, whose line marked `# read` is refused.
+CLAIM_FORMS: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
+    # "directly or through a repository function that lets the reader's errors escape"
+    (
+        "a reader bound to a module-level name",
+        python_checks.content_error_problems,
+        "import reader\n\nREAD = reader.read\n\n\ndef f(text):\n    try:  # read\n        return READ(text)\n"
+        "    except OSError:\n        return None\n",
+    ),
+    (
+        "a reader called through a module-level lambda",
+        python_checks.content_error_problems,
+        "import reader\n\nREAD = lambda text: reader.read(text)\n\n\ndef f(text):\n    try:  # read\n"
+        "        return READ(text)\n    except OSError:\n        return None\n",
+    ),
+    (
+        "a reader called through a method of a class in the module",
+        python_checks.content_error_problems,
+        "import reader\n\n\nclass Loader:\n    def load(self, text):\n        return reader.read(text)\n\n\n"
+        "def f(text):\n    try:  # read\n        return Loader().load(text)\n"
+        "    except OSError:\n        return None\n",
+    ),
+    # "every process the repository starts runs without git's repository-selecting variables"
+    *(
+        (f"a start through {start}", python_checks.process_environment_problems, f"import os\n\n\n{call}  # read\n")
+        for start, call in (
+            ("os.execve", "os.execve('x', ['x'], dict(os.environ))"),
+            ("os.execle", "os.execle('x', 'x', dict(os.environ))"),
+            ("os.spawnve", "os.spawnve(os.P_WAIT, 'x', ['x'], dict(os.environ))"),
+            ("os.posix_spawn", "os.posix_spawn('x', ['x'], dict(os.environ))"),
+            ("os.system", "os.system('x')"),
+            ("an event loop's subprocess_exec", "loop.subprocess_exec(object, 'x', env=dict(os.environ))"),
+        )
+    ),
+    # "a call that opens, reads, or writes text without an encoding="
+    *(
+        (f"text through {opener}", python_checks.encoding_problems, f"{imports}\n\n\n{call}  # read\n")
+        for opener, imports, call in (
+            ("codecs.open", "import codecs", "codecs.open('p').read()"),
+            ("builtins.open", "import builtins", "builtins.open('p').read()"),
+            ("os.popen", "import os", "os.popen('git status').read()"),
+            ("subprocess.getoutput", "import subprocess", "subprocess.getoutput('git status')"),
+        )
+    ),
+    # a write that takes json.dumps text "through a name its function binds to it"
+    (
+        "a print to a stream",
+        python_checks.json_write_problems,
+        "import json\n\n\ndef f(d, fh):\n    print(json.dumps(d), file=fh)  # read\n",
+    ),
+    (
+        "text an augmented assignment adds to",
+        python_checks.json_write_problems,
+        "import json\n\n\ndef f(d, p):\n    text = ''\n    text += json.dumps(d)\n"
+        "    p.write_text(text, encoding='utf-8')  # read\n",
+    ),
+    # "a use of json.loads"
+    (
+        "json.loads through getattr",
+        python_checks.json_parse_problems,
+        "import json\n\ngetattr(json, 'loads')('1')  # read\n",
+    ),
+    # a one-argument int() "that converts a regular-expression group"
+    (
+        "a stripped group",
+        python_checks.int_parse_problems,
+        "import re\n\n\ndef f(text):\n    m = re.match('(.*)', text)\n    return int(m.group(1).strip())  # read\n",
+    ),
+    (
+        "groups mapped through int",
+        python_checks.int_parse_problems,
+        "import re\n\n\ndef f(text):\n    m = re.match('(.*)', text)\n    return list(map(int, m.groups()))  # read\n",
+    ),
+]
+
+
+def run_claim_form(policy: Callable[[Path, list[Path]], list[str]], source: str) -> list[str]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/alpha/scripts/alpha.py": source,
+            },
+        )
+        return policy(root, sorted(root.rglob("*.py")))
+
+
+@pytest.mark.parametrize(("policy", "source"), [pytest.param(*form[1:], id=form[0]) for form in CLAIM_FORMS])
+def test_each_claim_policy_refuses_every_form_its_paragraph_names(
+    policy: Callable[[Path, list[Path]], list[str]], source: str
+) -> None:
+    line = next(number for number, text in enumerate(source.splitlines(), 1) if text.endswith("# read"))
+    found = run_claim_form(policy, source)
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{line}"], found
+
+
+# Forms the same policies pass, each with why.
+CLAIM_PASSES: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
+    # A start given a cleared environment, at its own position, passes like subprocess.run's env=.
+    (
+        "os.execve given a cleared environment",
+        python_checks.process_environment_problems,
+        "import os\n\nfrom bounded_process import without_repository_variables\n\n\n"
+        "os.execve('x', ['x'], without_repository_variables(os.environ))\n",
+    ),
+    # bounded_process clears the variables from whatever environment it is given.
+    (
+        "ejryan89-skill-core's runner",
+        python_checks.process_environment_problems,
+        "import os\n\nfrom bounded_process import run_bounded\n\n\nrun_bounded(['x'], 60, env=dict(os.environ))\n",
+    ),
+    # subprocess.getoutput and codecs.open each take an encoding.
+    (
+        "subprocess.getoutput with an encoding",
+        python_checks.encoding_problems,
+        "import subprocess\n\n\nsubprocess.getoutput('x', encoding='utf-8')\n",
+    ),
+    (
+        "codecs.open with an encoding",
+        python_checks.encoding_problems,
+        "import codecs\n\n\ncodecs.open('p', encoding='utf-8').read()\n",
+    ),
+    # A print with no file= writes to standard output, the script's report, which is no file or stream it names.
+    (
+        "a print to standard output",
+        python_checks.json_write_problems,
+        "import json\n\n\ndef f(d):\n    print(json.dumps(d))\n",
+    ),
+    # getattr of another attribute reads no parser.
+    (
+        "getattr of json.dumps",
+        python_checks.json_parse_problems,
+        "import json\n\ngetattr(json, 'dumps')(1)\n",
+    ),
+]
+
+
+@pytest.mark.parametrize(("policy", "source"), [pytest.param(*form[1:], id=form[0]) for form in CLAIM_PASSES])
+def test_each_claim_policy_passes_the_forms_its_paragraph_leaves_out(
+    policy: Callable[[Path, list[Path]], list[str]], source: str
+) -> None:
+    assert run_claim_form(policy, source) == []
