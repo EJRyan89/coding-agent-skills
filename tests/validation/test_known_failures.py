@@ -18,16 +18,18 @@ from known_failures import (
     KNOWN_FAILURES,
     KnownFailure,
     KnownFailuresUnreadable,
+    checkout_repository,
     closed_issues,
     closed_known_failure_problems,
     known_failure_problems,
     read_known_failures,
 )
-from validation_support import REPOSITORY_ROOT
+from validation_support import REPOSITORY_ROOT, git
 
 from tests import run_validation
 
 ENTRY = {"reader": "module.reader", "case": "deep_nesting", "issue": 4242}
+REPOSITORY = "EJRyan89/coding-agent-skills"
 
 
 class KnownFailureFixture(unittest.TestCase):
@@ -127,10 +129,46 @@ class ClosingTests(KnownFailureFixture):
         self.assertEqual([], closed_known_failure_problems(self.root, None))
 
     def test_closed_issues_reads_every_closing_line(self) -> None:
-        self.assertEqual({1, 22, 333}, closed_issues("Closes #1\nfixes #22 and resolves: #333\nSee #4\n"))
+        self.assertEqual({1, 22, 333}, closed_issues("Closes #1\nfixes #22 and resolves: #333\nSee #4\n", REPOSITORY))
 
     def test_a_closing_number_past_the_digit_limit_or_in_other_digits_names_no_issue(self) -> None:
-        self.assertEqual({7}, closed_issues(f"Closes #7\nCloses #1{'0' * 5000}\nFixes #{chr(0x0667)}\n"))
+        body = f"Closes #7\nCloses #1{'0' * 5000}\nFixes #{chr(0x0667)}\n"
+        self.assertEqual({7}, closed_issues(body, REPOSITORY))
+
+    def test_every_form_github_closes_an_issue_by_is_read(self) -> None:
+        # "Validation" in docs/adding-a-skill.md: a pull request "that closes an issue an entry still names" is
+        # refused, in every form GitHub honours, each in any case of the repository's name.
+        self.write([ENTRY])
+        for body in (
+            "Closes #4242\n",
+            f"Closes {REPOSITORY}#4242\n",
+            "closes ejryan89/CODING-AGENT-SKILLS#4242\n",
+            f"Fixes https://github.com/{REPOSITORY}/issues/4242\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual({4242}, closed_issues(body, REPOSITORY))
+                self.assertEqual(1, len(closed_known_failure_problems(self.root, body)))
+
+    def test_a_reference_to_another_repository_closes_none_of_this_ones(self) -> None:
+        for body in ("Closes other/repository#4242\n", "Fixes https://github.com/other/repository/issues/4242\n"):
+            with self.subTest(body=body):
+                self.assertEqual(set(), closed_issues(body, REPOSITORY))
+                # Where the checkout names no repository, every reference counts, so none is missed.
+                self.assertEqual({4242}, closed_issues(body, None))
+
+    def test_the_checkouts_repository_is_read_from_its_origin(self) -> None:
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        self.assertIsNone(checkout_repository(checkout))
+        git(checkout, "init", "--quiet")
+        self.assertIsNone(checkout_repository(checkout))
+        git(checkout, "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git")
+        self.assertEqual(REPOSITORY, checkout_repository(checkout))
+        self.write([ENTRY])
+        (checkout / KNOWN_FAILURES).parent.mkdir(parents=True)
+        (checkout / KNOWN_FAILURES).write_text(json.dumps([ENTRY]), encoding="utf-8")
+        self.assertEqual([], closed_known_failure_problems(checkout, "Closes other/repository#4242\n"))
+        self.assertEqual(1, len(closed_known_failure_problems(checkout, f"Closes {REPOSITORY}#4242\n")))
 
 
 class RepositoryTests(unittest.TestCase):

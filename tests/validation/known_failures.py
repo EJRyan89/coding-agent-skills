@@ -11,21 +11,20 @@ removes the entry with it.
 
 from __future__ import annotations
 
-import re
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
 import json_reader
-import whole_number
+from closing_references import closing_references
+from github_remote import github_repository
 from markdown_sections import HTML_COMMENT
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
+from tools.release_notes import ReleaseNotesError, git_output
+
 KNOWN_FAILURES = Path("tests") / "malformed_input" / "known_failures.json"
 ENTRY_KEYS = ("reader", "case", "issue")
-# A line GitHub reads as closing an issue when the pull request merges: a closing keyword, an optional colon, and the
-# issue by its number, anywhere in the body outside an HTML comment.
-CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+#(\d+)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True, order=True)
@@ -83,11 +82,23 @@ def known_failure_problems(root: Path) -> list[str]:
     return problems
 
 
-def closed_issues(body: str) -> set[int]:
-    """The issues a pull request body closes when it merges; a number past the digit limit, or in digits other than
-    ASCII, names no issue."""
-    numbers = (whole_number.parse(number) for number in CLOSING.findall(HTML_COMMENT.sub("", body)))
-    return {number for number in numbers if number is not None}
+def closed_issues(body: str, repository: str | None) -> set[int]:
+    """The issues of `repository`, `owner/name`, a pull request body closes when it merges, in every form GitHub
+    reads, outside an HTML comment; with no repository known, every reference counts, so none is missed. A number
+    past the digit limit, or in digits other than ASCII, names no issue."""
+    return {
+        reference.number
+        for reference in closing_references(HTML_COMMENT.sub("", body))
+        if repository is None or reference.in_repository(repository)
+    }
+
+
+def checkout_repository(root: Path) -> str | None:
+    """The GitHub repository the checkout's origin names, or None when git cannot say or it names none."""
+    try:
+        return github_repository(git_output(root, "remote", "get-url", "origin"))
+    except ReleaseNotesError:
+        return None
 
 
 def closed_known_failure_problems(root: Path, body: str | None) -> list[str]:
@@ -99,7 +110,9 @@ def closed_known_failure_problems(root: Path, body: str | None) -> list[str]:
     except KnownFailuresUnreadable:
         # known_failure_problems names the unreadable list; this check has nothing to compare.
         return []
-    closing = closed_issues(body)
+    if not entries:
+        return []
+    closing = closed_issues(body, checkout_repository(root))
     return [
         f"the pull request closes #{entry.issue}, but {KNOWN_FAILURES.as_posix()} still lists {entry.reader} failing "
         f"case {entry.case} under it; fix the reader and remove the entry, or do not close the issue"

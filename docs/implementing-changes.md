@@ -266,8 +266,9 @@ request in continuous integration.
 
 A pull request that closes an issue a known failure of the malformed-input suite still names, in
 `tests/malformed_input/known_failures.json`, is refused by the known-failure closing check, in
-`tests/validation/known_failures.py`: the issue would close while its case still fails. It reads every closing keyword
-GitHub reads (`close`, `fix`, or `resolve`, in any of their forms, before `#<number>`) outside an HTML comment, from
+`tests/validation/known_failures.py`: the issue would close while its case still fails. It reads every closing reference
+GitHub reads, through ejryan89-skill-core's `closing_references`: `close`, `fix`, or `resolve`, in any of their forms,
+before `#<number>`, `<owner>/<repo>#<number>` naming this repository, or the issue's URL, outside an HTML comment, from
 `--pr-body <file>` locally and the pull request in continuous integration, and passes when no body is given. The pull
 request that fixes the reader removes the entry, which the suite then requires, and closes the issue.
 
