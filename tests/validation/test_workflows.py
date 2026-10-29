@@ -375,11 +375,13 @@ def test_a_mypy_cache_off_its_key_folder_or_order_fails(drifted: str, problem: s
     assert any(problem in found for found in problems), problems
 
 
+# The Linux legs' Python: the floor on every event, and the latest stable release beside it on the schedule only.
+SCHEDULED_LATEST = "${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') || fromJSON('[\"3.11\"]') }}"
 LINUX = (
     "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n    runs-on: windows-latest\n"
     "  linux:\n    name: Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n"
     "    runs-on: ubuntu-latest\n    strategy:\n      fail-fast: false\n      matrix:\n"
-    "        python-version: ['3.11']\n        shard: ['1/2', '2/2']\n    steps:\n"
+    f"        python-version: {SCHEDULED_LATEST}\n        shard: ['1/2', '2/2']\n    steps:\n"
     "      - uses: actions/checkout@SHA # v1\n        with:\n          fetch-depth: 0\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n"
     "          python-version: ${{ matrix.python-version }}\n"
@@ -466,10 +468,26 @@ class LinuxJobFixtures(unittest.TestCase):
             "the whole history",
             id="a shallow checkout",
         ),
-        pytest.param(LINUX.replace("['3.11']", "['3.x']"), "matrix's Python", id="another Python"),
-        pytest.param(LINUX.replace("['3.11']", "['3.11', '3.x']"), "matrix's Python", id="a second Python"),
+        # The latest stable release dropped from the weekly run, so the Linux-only branches never meet it.
+        pytest.param(LINUX.replace(SCHEDULED_LATEST, "['3.11']"), "matrix's Python", id="the floor alone"),
+        pytest.param(LINUX.replace(', "3.x"]', "]"), "matrix's Python", id="the floor alone on the schedule"),
+        # The latest stable release on every pull request, where a new interpreter would block the required check.
+        pytest.param(LINUX.replace(SCHEDULED_LATEST, "['3.11', '3.x']"), "matrix's Python", id="latest on every event"),
         pytest.param(
-            LINUX.replace("        python-version: ['3.11']\n", ""), "matrix's Python", id="no Python in the matrix"
+            LINUX.replace("|| fromJSON('[\"3.11\"]')", '|| fromJSON(\'["3.11", "3.x"]\')'),
+            "matrix's Python",
+            id="latest on every pull request",
+        ),
+        pytest.param(
+            LINUX.replace("github.event_name == 'schedule'", "github.event_name != 'pull_request'"),
+            "matrix's Python",
+            id="latest on every push",
+        ),
+        pytest.param(LINUX.replace(SCHEDULED_LATEST, "['3.x']"), "matrix's Python", id="another Python"),
+        pytest.param(
+            LINUX.replace(f"        python-version: {SCHEDULED_LATEST}\n", ""),
+            "matrix's Python",
+            id="no Python in the matrix",
         ),
         # The name reads the matrix, so setup-python must install what it says.
         pytest.param(
@@ -547,7 +565,9 @@ def _job(name: str, *steps: str) -> str:
     return f"jobs:\n  {name}:\n    steps:\n" + "".join(steps)
 
 
-PINNED = _job("suite", _pwsh_step("Verify", PINNED_TOOL_LINES), _pwsh_step(*GALLERY_STEP), VALIDATION_STEP)
+RESOLVED_PYTHON_LINES = ("foreach ($command in @('python', 'bash')) {", "& $resolved.Source --version", "}")
+VERIFY_LINES = RESOLVED_PYTHON_LINES + PINNED_TOOL_LINES
+PINNED = _job("suite", _pwsh_step("Verify", VERIFY_LINES), _pwsh_step(*GALLERY_STEP), VALIDATION_STEP)
 
 
 class PinnedToolFixtures(unittest.TestCase):
@@ -559,17 +579,17 @@ class PinnedToolFixtures(unittest.TestCase):
     ("drifted", "problem"),
     [
         pytest.param(
-            _job("suite", VALIDATION_STEP, _pwsh_step("Verify", PINNED_TOOL_LINES)),
+            _job("suite", VALIDATION_STEP, _pwsh_step("Verify", VERIFY_LINES)),
             "verifies the pinned tools before validation runs",
             id="verified after validation",
         ),
         pytest.param(
-            _job("suite", _pwsh_step("Verify", PINNED_TOOL_LINES[1:]), VALIDATION_STEP),
+            _job("suite", _pwsh_step("Verify", RESOLVED_PYTHON_LINES + PINNED_TOOL_LINES[1:]), VALIDATION_STEP),
             "verifies the pinned tools",
             id="ShellCheck's version unread",
         ),
         pytest.param(
-            _job("suite", _pwsh_step("Verify", PINNED_TOOL_LINES[:3]), VALIDATION_STEP),
+            _job("suite", _pwsh_step("Verify", RESOLVED_PYTHON_LINES + PINNED_TOOL_LINES[:3]), VALIDATION_STEP),
             "verifies the pinned tools",
             id="PSScriptAnalyzer unchecked",
         ),
@@ -589,9 +609,25 @@ class PinnedToolFixtures(unittest.TestCase):
             id="gallery queried off the schedule",
         ),
         pytest.param(
-            _job("linux", _pwsh_step("Verify", PINNED_TOOL_LINES), VALIDATION_STEP),
+            _job("linux", _pwsh_step("Verify", VERIFY_LINES), VALIDATION_STEP),
             "no pwsh step of the suite job",
             id="verified in another job",
+        ),
+        # The weekly legs' matrix names `3.x`, so only the log says which release ran.
+        pytest.param(
+            _job("suite", _pwsh_step("Verify", PINNED_TOOL_LINES), VALIDATION_STEP),
+            "does not print the Python it resolves",
+            id="no tool loop",
+        ),
+        pytest.param(
+            PINNED.replace("@('python', 'bash')", "@('bash', 'python')"),
+            "does not print the Python it resolves",
+            id="Python not first",
+        ),
+        pytest.param(
+            PINNED.replace("          & $resolved.Source --version\n", ""),
+            "does not print the Python it resolves",
+            id="versions unprinted",
         ),
     ],
 )
