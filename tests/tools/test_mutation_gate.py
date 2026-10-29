@@ -1865,7 +1865,7 @@ class SplitRunFixtures(unittest.TestCase):
         `windows`."""
         for leg, run in ((LINUX_LEG, run_suite), (WINDOWS_LEG, windows)):
             gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach, run, measure=measured)
-            with mock.patch.object(mutation_gate.platform_support, "PLATFORM_NAME", leg):
+            with mock.patch.object(platform_support, "PLATFORM_NAME", leg):
                 found = gate.leg(read_selection(folder / "mutants.json"))
             (folder / f"outcomes-{leg.casefold()}.json").write_text(json.dumps(leg_record(found)), encoding="utf-8")
 
@@ -1907,9 +1907,9 @@ class SplitRunFixtures(unittest.TestCase):
             gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
             mutation_gate.select_step(gate, folder, {"GITHUB_OUTPUT": str(outputs)})
             linux = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach, measure=measured)
-            with mock.patch.object(mutation_gate.platform_support, "PLATFORM_NAME", LINUX_LEG):
+            with mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG):
                 found = linux.leg(read_selection(folder / "mutants.json"))
-            with mock.patch.object(mutation_gate.platform_support, "PLATFORM_NAME", WINDOWS_LEG):
+            with mock.patch.object(platform_support, "PLATFORM_NAME", WINDOWS_LEG):
                 nothing = linux.leg(read_selection(folder / "mutants.json"))
             (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(found)), encoding="utf-8")
             text = mutation_gate.join(folder).text
