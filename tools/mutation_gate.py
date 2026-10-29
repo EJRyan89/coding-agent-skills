@@ -10,8 +10,9 @@ process, as one leg on this platform. The workflow splits the run across jobs, e
 naming the legs that have mutants to run; `leg`, on Linux and on Windows, runs that platform's leg of them, never
 running mutmut, and writes its outcomes to outcomes-<platform>.json; and `join` reports them. The Linux leg runs every
 module's mutants, and the Windows leg those of each module whose behavior differs on Windows by design, as
-runs_on_windows selects it: one of PLATFORM_MODULES, one holding a PLATFORM_ALLOWED table, or one importing one of
-PLATFORM_MODULES. A mutant either leg killed counts as killed, and the summary names the legs that ran each module and
+runs_on_windows selects it: one of PLATFORM_MODULES, one holding a PLATFORM_ALLOWED table, one importing one of
+PLATFORM_MODULES, or one whose code compares a platform name the platform policy catalogues, such as sys.platform. A
+mutant either leg killed counts as killed, and the summary names the legs that ran each module and
 each mutant one leg alone killed, so a mutant whose effect shows only on Windows is judged where it shows. It mutates
 the lines the pull
 request's commits add or change since the base (`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base names
@@ -129,13 +130,14 @@ from bounded_process import run_bounded
 from console import run_main
 from duplication import SANCTION_SUFFIX
 from flat_text import flat_text
-from fsops_platform import PLATFORM_ALLOWANCE
+from fsops_platform import PLATFORM_ALLOWANCE, PLATFORM_TOKENS
 from git_client import GitClient
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, reached_suites
 from suite_discovery import pytest_command
 from suite_names import is_suite_name
 from typed_fields import FieldError, FieldReader
+from validation_support import import_aliases, qualified_name
 
 from deployer import platform_support
 
@@ -368,16 +370,34 @@ def is_gate_module(path: str) -> bool:
     )
 
 
+def branches_on_platform(tree: ast.Module) -> bool:
+    """Whether a module's code compares a name the platform policy's PLATFORM_TOKENS holds as qualified, such as
+    `sys.platform == "win32"`, `os.name != "nt"`, or `platform.system() == "Windows"`, each name read through the
+    module's imports. A test that only asks whether a name exists, as `hasattr(os, "fork")` does, is not read."""
+    aliases = import_aliases(tree)
+
+    def platform_name(node: ast.expr) -> bool:
+        named = qualified_name(node.func if isinstance(node, ast.Call) else node, aliases)
+        return named in PLATFORM_TOKENS["qualified"] or named.startswith(PLATFORM_TOKENS["qualified_prefix"])
+
+    return any(
+        isinstance(node, ast.Compare) and any(platform_name(operand) for operand in (node.left, *node.comparators))
+        for node in ast.walk(tree)
+    )
+
+
 def runs_on_windows(module: str, source: str) -> bool:
     """Whether the Windows leg runs a module's mutants as well as the Linux leg: the module is one of PLATFORM_MODULES,
-    holds a PLATFORM_ALLOWED table, or imports one of PLATFORM_MODULES. Its behavior then differs on Windows by design,
-    as a path compared by its text, a name NTFS folds, an 8.3 name, or a junction, so a mutant whose effect shows only
-    there survives Linux however well it is tested."""
+    holds a PLATFORM_ALLOWED table, imports one of PLATFORM_MODULES, or its own code branches on the platform, as
+    branches_on_platform reads it. Its behavior then differs on Windows by design, as a path compared by its text, a
+    name NTFS folds, an 8.3 name, a junction, or a process tree, so a mutant whose effect shows only there survives
+    Linux however well it is tested."""
     tree = ast.parse(source)
     return (
         PurePosixPath(module).stem in PLATFORM_MODULES
         or any(sanction_table(statement) == PLATFORM_ALLOWANCE for statement in tree.body)
         or bool(imported_names(tree) & PLATFORM_MODULES)
+        or branches_on_platform(tree)
     )
 
 
@@ -1232,8 +1252,8 @@ def summary(report: Report) -> str:
         "the lines the pull request changed.",
         ran,
         "- The Linux leg runs every module's mutants, and the Windows leg those of each module that is or imports "
-        "`deployer/platform_support.py`, `path_keys`, `link_probe`, or `device_names`, or holds a `PLATFORM_ALLOWED` "
-        "table; a mutant either leg killed counts as killed.",
+        "`deployer/platform_support.py`, `path_keys`, `link_probe`, or `device_names`, holds a `PLATFORM_ALLOWED` "
+        "table, or compares a platform name such as `sys.platform`; a mutant either leg killed counts as killed.",
         "",
         "| Module | Legs | Changed lines | Mutants | Killed | Timed out | Survived | Not reached | Not run "
         "| Kill ratio |",

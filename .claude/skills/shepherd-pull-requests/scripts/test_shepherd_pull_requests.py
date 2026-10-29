@@ -681,6 +681,16 @@ class AdmissionTest(FixtureTestCase):
         self.assertTrue(self.line(lines, "PR #30 ").endswith(" none"))
         self.assertTrue(self.line(lines, "PR #31 ").endswith(" would-arm,would-update"))
 
+    def test_an_armed_green_pull_request_from_another_repository_holds_no_update(self) -> None:
+        # Armed by hand, or by a shepherd from before admission; behind main or current, it merges nothing here.
+        for merge in ("BEHIND", "CLEAN"):
+            with self.subTest(merge=merge):
+                gh = StubGh([pull(5, cross=True, merge=merge), pull(7, merge="BEHIND")])
+                _, lines = self.tick(gh)
+                self.assertEqual([["pr", "update-branch", "7", "--repo", REPOSITORY]], gh.writes())
+                self.assertTrue(self.line(lines, "PR #7 ").endswith(" updated"))
+                self.assertTrue(self.line(lines, "PR #5 ").endswith(" none"))
+
 
 class ConflictTest(FixtureTestCase):
     def test_a_pull_request_in_conflict_with_main_is_named_for_its_owner_and_not_updated(self) -> None:
@@ -1014,6 +1024,18 @@ class ShapeTest(unittest.TestCase):
         for key, (value, reason) in cases.items():
             with self.subTest(member=key, value=value):
                 self.malformed(reason, shepherd.pull_of, {**listed, key.strip(): value})
+
+    def test_a_pull_request_without_its_admission_or_draft_member_is_malformed(self) -> None:
+        reason = "a pull request without its isCrossRepository or isDraft"
+        for key in ("isCrossRepository", "isDraft"):
+            with self.subTest(member=key, value=None):
+                self.malformed(reason, shepherd.pull_of, {**pull(20), key: None})
+            with self.subTest(member=key, value="absent"):
+                listed = pull(20)
+                del listed[key]
+                self.malformed(reason, shepherd.pull_of, listed)
+        found = shepherd.pull_of(pull(20, cross=True, draft=True))
+        self.assertEqual((True, True), (found.cross_repository, found.draft))
 
     def test_a_pull_request_without_auto_merge_status_checks_or_body_still_reads(self) -> None:
         found = shepherd.pull_of({**pull(20, armed=False), "statusCheckRollup": None, "body": None})

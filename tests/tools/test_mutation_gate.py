@@ -1291,8 +1291,9 @@ class SummaryFixtures(unittest.TestCase):
             "\n- On Linux, 4 workers ran for 10 of its 40 minutes; a mutant ran against the suites that executed its "
             "statement unmutated, fastest first, until one failed.\n"
             "- The Linux leg runs every module's mutants, and the Windows leg those of each module that is or imports "
-            "`deployer/platform_support.py`, `path_keys`, `link_probe`, or `device_names`, or holds a "
-            "`PLATFORM_ALLOWED` table; a mutant either leg killed counts as killed.\n\n"
+            "`deployer/platform_support.py`, `path_keys`, `link_probe`, or `device_names`, holds a "
+            "`PLATFORM_ALLOWED` table, or compares a platform name such as `sys.platform`; a mutant either leg killed "
+            "counts as killed.\n\n"
             "| Module | Legs | Changed lines | Mutants | Killed | Timed out | Survived | Not reached | Not run "
             "| Kill ratio |\n|---|---|---|---|---|---|---|---|---|---|\n",
             text,
@@ -1492,12 +1493,54 @@ def test_a_mutant_no_leg_ran_has_no_verdict() -> None:
         ("tools/report.py", "import os.path\nFSOPS_ALLOWED = {}\n", False),
         ("tools/report.py", '# path_keys\nNAME = "link_probe"\n', False),
         ("tools/path_keys_report.py", "x = 1\n", False),
+        # A module whose own code compares a platform name, with no seam import and no table.
+        ("tools/report.py", 'import sys\nif sys.platform == "win32":\n    x = 1\n', True),
+        ("skills/x/scripts/x.py", 'import sys as s\nX = "a" if "win32" != s.platform else "b"\n', True),
+        (
+            "tools/report.py",
+            'from sys import platform\nWINDOWS = platform.startswith("win") or platform == "cygwin"\n',
+            True,
+        ),
+        ("tools/report.py", 'import os\ndef nt():\n    return os.name in ("nt",)\n', True),
+        ("tools/report.py", 'import platform\nif platform.system() == "Windows":\n    pass\n', True),
+        ("tools/report.py", "import sys\nprint(sys.platform)\n", False),
+        ("tools/report.py", 'import os\nif hasattr(os, "fork"):\n    pass\n', False),
+        ("tools/report.py", 'import tool\nif tool.platform == "win32":\n    pass\n', False),
+        ("tools/report.py", '# if sys.platform == "win32"\nx = 1\n', False),
     ],
 )
-def test_the_windows_leg_runs_the_platform_seam_and_each_module_that_imports_it_or_holds_its_table(
+def test_the_windows_leg_runs_the_platform_seam_each_module_that_imports_it_or_holds_its_table_and_each_that_branches(
     module: str, source: str, windows: bool
 ) -> None:
     assert runs_on_windows(module, source) is windows
+
+
+def claude_md_seam_modules() -> list[str]:
+    """The ejryan89-skill-core modules CLAUDE.md names as the platform seam's exceptions, in the paragraph that opens
+    by keeping operating-system-specific behavior in deployer/platform_support.py."""
+    text = (mutation_gate.REPOSITORY_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    paragraph = next(block for block in text.split("\n\n") if "Keep every operating-system-specific behavior" in block)
+    return sorted(set(re.findall(r"`([a-z_]+\.py)`", paragraph.split("The exceptions are", 1)[1])))
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        *(f"skills/ejryan89-skill-core/scripts/{name}" for name in claude_md_seam_modules()),
+        "skills/ejryan89-code-review-core/scripts/review_config.py",
+        "skills/ejryan89-code-review-core/scripts/review_io.py",
+        "skills/ejryan89-code-review-core/scripts/review_process.py",
+    ],
+)
+def test_the_windows_leg_runs_each_seam_module_claude_md_names_and_each_module_that_branches_on_the_platform(
+    module: str,
+) -> None:
+    source = (mutation_gate.REPOSITORY_ROOT / module).read_text(encoding="utf-8")
+    assert runs_on_windows(module, source)
+
+
+def test_claude_md_names_the_seam_modules_the_windows_leg_is_held_to() -> None:
+    assert {"job_tree.py", "process_identity.py", "pdf_tool.py", "path_keys.py"} <= set(claude_md_seam_modules())
 
 
 class LegFixtures(unittest.TestCase):
