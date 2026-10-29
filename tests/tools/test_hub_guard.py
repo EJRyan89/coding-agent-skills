@@ -2004,6 +2004,19 @@ class ContractTests(GuardTestCase):
         self.assertIn("an alias the command defines (alias)", self.stderr)
         self.assertIsNone(self.powershell("Copy-Item a.txt b.txt; git status", self.hub))
 
+    def test_each_cmdlet_that_defines_a_powershell_alias_is_known_by_each_of_its_names(self) -> None:
+        for name in ("set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"):
+            with self.subTest(name=name):
+                self.assertTrue(hub_guard.defines_powershell_alias(name, ["g", "git"]))
+        writers = ("set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi", "rename-item", "ren", "rni")
+        for name in writers:
+            with self.subTest(name=name):
+                self.assertTrue(hub_guard.defines_powershell_alias(name, ["Alias:g", "git"]))
+                self.assertFalse(hub_guard.defines_powershell_alias(name, ["a.txt", None]))
+        self.assertFalse(hub_guard.defines_powershell_alias("get-alias", ["g"]))
+        self.assertFalse(hub_guard.defines_powershell_alias("remove-item", ["alias:g"]))
+        self.assertFalse(hub_guard.defines_powershell_alias(None, ["alias:g"]))
+
     def test_pwsh_command_with_args_is_read_as_its_script(self) -> None:
         script = f'git -C "{self.hub}" switch feat/demo'
         self.assertEqual("deny", self.bash(f"pwsh -cwa '{script}'", self.tree))
