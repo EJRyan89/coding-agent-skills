@@ -74,9 +74,12 @@ When no changed line yields a mutant, no suite runs. Otherwise each leg is bound
 reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
 one queue that takes one mutant from each module in turn, each module's in line order, so a module late in the list
 starts as soon as the first. A mutant the cap leaves untested is counted as not run, and a suite whose reach the cap
-left unmeasured is named. Either leaves the run unfinished, which is no verdict: the summary's first line says so,
-naming each module's mutants not run and how many of them lie on lines that run at import, and the count of unmeasured
-suites. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
+left unmeasured is named. A mutant not run leaves the run unfinished, which is no verdict, and so do a leg's unmeasured
+suites while a mutant that leg ran survived or went unreached, since one of them might have killed it; a mutant killed
+on either leg keeps its verdict, so unmeasured suites beside only such mutants leave the run finished, and the summary
+says so beside their names. An unfinished run's summary says so on its first line, naming each module's mutants not
+run and how many of them lie on lines that run at import, and each such leg's count of unmeasured suites and of the
+mutants they leave open. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
 
 While the mutants run, the log gets a line for each one a suite ran against and each one no suite reached, with its
 outcome, module, line, and mutation. The report, each module's changed lines, counts, and kill ratio, each changed
@@ -85,8 +88,9 @@ count of its tests that ran when not all of them did, and each mutant not reache
 stdout and to the step summary GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line
 saying so. A run, or its join, exits 0 once the gate has run to its end, whatever survived, and 1 when the run was
 unfinished, on any leg, after its summary and an error annotation repeating its first line; `select` and `leg` exit 0
-once they wrote their file. Any step exits 1 when it cannot run: the join finds no selection, or no outcomes from a leg
-that had mutants to run, mutmut no longer makes the mutant its
+once they wrote their file. Any step exits 1 when it cannot run: the join finds no selection, no outcomes from a leg
+that had mutants to run, or a record that is not as its step writes it, such as a leg's naming another leg or leaving
+out a module that leg had mutants for, mutmut no longer makes the mutant its
 canary expects on the canary's line alone, the reach run no longer measures its canary suite's own process and the
 process the suite's test starts, each line named with that test, which a missing coverage.py .pth file would cause, a
 changed sanction table is one no policy reads, or a git command fails.
@@ -135,6 +139,7 @@ from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, reached_suites
 from suite_discovery import pytest_command
 from suite_names import is_suite_name
+from typed_fields import FieldError, FieldReader
 from validation_support import import_aliases, qualified_name
 
 from deployer import platform_support
@@ -215,6 +220,18 @@ PLATFORM_MODULES = frozenset({"platform_support", "path_keys", "link_probe", "de
 # The files the steps of a run split across jobs hand on, in the folder each step is given.
 MUTANTS_FILE = "mutants.json"
 OUTCOMES_FILE = "outcomes-{leg}.json"
+STATUSES = (KILLED, TIMED_OUT, SURVIVED, NOT_REACHED, NOT_RUN)
+
+
+class RecordError(RuntimeError):
+    """A selection or a leg's run the join cannot read as the step that wrote it writes it, which stops the join."""
+
+
+class RecordFieldError(FieldError, RecordError):
+    """A record's field of a kind its step does not write."""
+
+
+READ = FieldReader(RecordFieldError)
 
 
 @dataclass(frozen=True)
@@ -1186,7 +1203,8 @@ def table_line(module: ModuleReport) -> str:
 
 def unfinished_line(report: Report) -> str | None:
     """The line that leads the summary of a run the cap cut short, naming each module's mutants not run, how many of
-    them run at import, and the suites whose reach was not measured; None for a finished run."""
+    them run at import, and each leg's count of suites whose reach was not measured where they leave a mutant open, as
+    left_open counts them; None for a finished run."""
     parts = []
     for module in report.modules:
         left = [index for index, outcome in enumerate(module.outcomes) if outcome.status == NOT_RUN]
@@ -1198,14 +1216,29 @@ def unfinished_line(report: Report) -> str | None:
                 + (f" ({at_import} on lines that run at import)" if at_import else "")
             )
     for leg in report.legs:
-        if leg.unmeasured_suites:
-            count = len(leg.unmeasured_suites)
-            parts.append(f"the reach of {count} {'suite' if count == 1 else 'suites'} was not measured on {leg.name}")
+        count, opened = len(leg.unmeasured_suites), left_open(report, leg)
+        if count and opened:
+            parts.append(
+                f"the reach of {count} {'suite' if count == 1 else 'suites'} was not measured on {leg.name}, which "
+                f"leaves {opened} {'mutant' if opened == 1 else 'mutants'} that survived or no suite reached open there"
+            )
     if not parts:
         return None
     return (
         f"**Unfinished, so not a verdict:** a leg's cap cut the run short: {'; '.join(parts)}. "
         "Split the pull request, or move its module-level tables into the functions that use them, until it finishes."
+    )
+
+
+def left_open(report: Report, leg: LegRun) -> int:
+    """How many mutants a leg ran whose verdict a suite whose reach it left unmeasured could still change: each that
+    survived or that no suite reached, over every leg. A mutant killed or timed out on any leg keeps that verdict
+    whatever another suite would do, and one not run is counted as such."""
+    return sum(
+        outcome.status in (SURVIVED, NOT_REACHED)
+        for module in report.modules
+        if leg.name in module.legs
+        for outcome in module.outcomes
     )
 
 
@@ -1263,10 +1296,15 @@ def summary(report: Report) -> str:
     for leg in report.legs:
         if leg.unmeasured_suites:
             names = ", ".join(f"`{suite}`" for suite in leg.unmeasured_suites)
+            closed = (
+                ""
+                if left_open(report, leg)
+                else " No mutant it ran survived or went unreached, so they leave no verdict open."
+            )
             lines += [
                 "",
                 f"The cap left these suites' reach unmeasured on {leg.name}, so no mutant ran against them there: "
-                f"{names}.",
+                f"{names}.{closed}",
             ]
         for suite, reason in leg.failed_suites.items():
             lines += ["", f"`{suite}` {reason} on {leg.name}, so no mutant ran against it there."]
@@ -1355,27 +1393,62 @@ def selection_record(selected: Selected) -> dict[str, Any]:
     }
 
 
+def read_record(path: Path, fields: Sequence[str]) -> dict[str, Any]:
+    """The object a step wrote to `path`, holding exactly `fields`; a file that cannot be read as one stops the join."""
+    try:
+        record = json_reader.read_file(path)
+    except (OSError, ValueError) as error:
+        raise RecordError(f"{path.name} cannot be read: {error}") from error
+    return READ.json_object(record, path.name, required=fields)
+
+
+def at_least(minimum: int) -> Callable[[object, str], int]:
+    """A reader of an integer of at least `minimum`, for an array's items."""
+    return lambda value, where: READ.integer(value, where, minimum=minimum)
+
+
+def read_mutant(module: str, value: object, where: str) -> Mutant:
+    found = READ.json_object(value, where, required=("line", "before", "after", "source", "at_import", "readers"))
+    readers = READ.optional(READ.array, found["readers"], f"{where}.readers", at_least(1))
+    return Mutant(
+        module,
+        READ.integer(found["line"], f"{where}.line", minimum=1),
+        READ.string(found["before"], f"{where}.before", empty=True),
+        READ.string(found["after"], f"{where}.after", empty=True),
+        READ.string(found["source"], f"{where}.source", empty=True),
+        READ.boolean(found["at_import"], f"{where}.at_import"),
+        None if readers is None else frozenset(readers),
+    )
+
+
+def read_table(value: object, where: str) -> tuple[str, str]:
+    """A sanction table's name and the policy that reads it."""
+    pair = READ.array(value, where, READ.string)
+    if len(pair) != 2:
+        raise READ.fail(where, "an array of a table's name and its policy", f"an array of {len(pair)} items")
+    return pair[0], pair[1]
+
+
+def read_selected_module(value: object, where: str) -> SelectedModule:
+    entry = READ.json_object(value, where, required=("module", "lines", "tables", "windows", "mutants"))
+    module = READ.string(entry["module"], f"{where}.module")
+    return SelectedModule(
+        module,
+        READ.integer(entry["lines"], f"{where}.lines", minimum=0),
+        tuple(READ.array(entry["mutants"], f"{where}.mutants", functools.partial(read_mutant, module))),
+        tuple(READ.array(entry["tables"], f"{where}.tables", read_table)),
+        READ.boolean(entry["windows"], f"{where}.windows"),
+    )
+
+
 def read_selection(path: Path) -> Selected:
-    """The selection the select step wrote."""
-    record = json_reader.read_file(path)
-    modules = []
-    for entry in record["modules"]:
-        module = entry["module"]
-        mutants = tuple(
-            Mutant(
-                module,
-                found["line"],
-                found["before"],
-                found["after"],
-                found["source"],
-                found["at_import"],
-                None if found["readers"] is None else frozenset(found["readers"]),
-            )
-            for found in entry["mutants"]
-        )
-        tables = tuple((name, policy) for name, policy in entry["tables"])
-        modules.append(SelectedModule(module, entry["lines"], mutants, tables, entry["windows"]))
-    return Selected(record["base"], record["mutmut"], tuple(modules))
+    """The selection the select step wrote; a field of a kind the step does not write stops the join."""
+    record = read_record(path, ("base", "mutmut", "modules"))
+    return Selected(
+        READ.string(record["base"], f"{path.name}.base"),
+        READ.string(record["mutmut"], f"{path.name}.mutmut"),
+        tuple(READ.array(record["modules"], f"{path.name}.modules", read_selected_module)),
+    )
 
 
 def leg_record(leg: LegRun) -> dict[str, Any]:
@@ -1397,27 +1470,59 @@ def leg_record(leg: LegRun) -> dict[str, Any]:
     }
 
 
-def read_leg(path: Path, selected: Selected) -> LegRun:
-    """The run a leg step wrote, each outcome given the mutant at its place in the selection; a module the selection
-    does not hold, or a count of outcomes that is not its count of mutants, stops the join."""
-    record = json_reader.read_file(path)
-    mutants = {chosen.module: chosen.mutants for chosen in selected.modules}
+def read_outcome(mutant: Mutant, value: object, where: str) -> Outcome:
+    entry = READ.json_object(value, where, required=("status", "suites", "tests"))
+    return Outcome(
+        mutant,
+        READ.one_of(entry["status"], f"{where}.status", STATUSES),
+        tuple(READ.array(entry["suites"], f"{where}.suites", READ.string)),
+        tuple(READ.array(entry["tests"], f"{where}.tests", at_least(0))),
+    )
+
+
+def read_outcomes(
+    path: Path, value: object, mutants: Mapping[str, Sequence[Mutant]], leg: str
+) -> dict[str, list[Outcome]]:
+    """Each module's outcomes, given the mutants at their places; a record that leaves out a module the leg runs,
+    holds one it does not, or holds a count of outcomes that is not the module's count of mutants stops the join."""
+    found = READ.json_object(value, f"{path.name}.outcomes")
+    missing = [module for module in mutants if module not in found]
+    if missing:
+        raise RecordError(f"{path.name} holds no outcomes of {', '.join(missing)}, so its mutants have no verdict")
     outcomes: dict[str, list[Outcome]] = {}
-    for module, found in record["outcomes"].items():
-        if len(found) != len(mutants.get(module, ())):
-            raise RuntimeError(f"{path.name} holds {len(found)} outcomes of {module}, not one for each of its mutants")
+    for module, entries in found.items():
+        if module not in mutants:
+            raise RecordError(f"{path.name} holds outcomes of {module}, whose mutants the {leg} leg does not run")
+        where = f"{path.name}.outcomes.{module}"
+        listed = READ.array(entries, where)
+        if len(listed) != len(mutants[module]):
+            raise RecordError(f"{path.name} holds {len(listed)} outcomes of {module}, not one for each of its mutants")
         outcomes[module] = [
-            Outcome(mutant, entry["status"], tuple(entry["suites"]), tuple(entry["tests"]))
-            for mutant, entry in zip(mutants[module], found, strict=True)
+            read_outcome(mutant, entry, f"{where}[{index}]")
+            for index, (mutant, entry) in enumerate(zip(mutants[module], listed, strict=True))
         ]
+    return outcomes
+
+
+def read_leg(path: Path, selected: Selected, leg: str) -> LegRun:
+    """The run the leg step of `leg` wrote, each outcome given the mutant at its place in the selection; a record that
+    names another leg, or whose outcomes are not one for each mutant of each module the leg runs, stops the join."""
+    fields = ("leg", "minutes", "seconds", "workers", "failed_suites", "unmeasured_suites", "outcomes")
+    record = read_record(path, fields)
+    name = READ.one_of(record["leg"], f"{path.name}.leg", LEGS)
+    if name != leg:
+        raise RecordError(f"{path.name} holds the {name} leg's run, not the {leg} leg's")
+    mutants = {chosen.module: chosen.mutants for chosen in leg_modules(leg, selected)}
+    failed = READ.json_object(record["failed_suites"], f"{path.name}.failed_suites")
     return LegRun(
-        record["leg"],
-        record["minutes"],
-        record["seconds"],
-        record["workers"],
-        outcomes,
-        record["failed_suites"],
-        record["unmeasured_suites"],
+        name,
+        # The cap, which --minutes holds to at least 1; a leg with nothing to run writes no worker.
+        READ.integer(record["minutes"], f"{path.name}.minutes", minimum=1),
+        READ.number(record["seconds"], f"{path.name}.seconds"),
+        READ.integer(record["workers"], f"{path.name}.workers", minimum=0),
+        read_outcomes(path, record["outcomes"], mutants, leg),
+        {suite: READ.string(reason, f"{path.name}.failed_suites.{suite}") for suite, reason in failed.items()},
+        READ.array(record["unmeasured_suites"], f"{path.name}.unmeasured_suites", READ.string),
     )
 
 
@@ -1557,7 +1662,8 @@ class Gate:
 def join(folder: Path) -> Result:
     """The join step: the summary of the select step's mutants and each leg's outcomes in `folder`, and whether the
     run finished. A missing file, the selection's or a leg's that had mutants to run, stops it, since that leg's
-    mutants then have no verdict."""
+    mutants then have no verdict, and so does a leg's file that read_leg refuses, such as one naming another leg or
+    leaving out a module."""
     mutants = folder / MUTANTS_FILE
     if not mutants.is_file():
         raise RuntimeError(f"the select job wrote no {MUTANTS_FILE}, so no leg ran: read that job's log")
@@ -1569,7 +1675,7 @@ def join(folder: Path) -> Result:
         path = folder / outcomes_name(name)
         if not path.is_file():
             raise RuntimeError(f"the {name} leg wrote no {path.name}, so its mutants have no verdict: read its log")
-        legs.append(read_leg(path, selected))
+        legs.append(read_leg(path, selected, name))
     report = joined(selected, legs)
     return Result(summary(report), unfinished_line(report) is None)
 

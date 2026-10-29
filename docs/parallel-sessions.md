@@ -324,7 +324,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
   parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
-  refuses, or one given `-WhatIf`, runs nothing. `tools/hub_guard-powershell.ps1` only reports what the parser and
+  refuses, or one given `-WhatIf`, runs nothing, except a call to a function the command defines: a simple function
+  takes the words it declares no parameter for into `$args` and runs, so its body is read as a path that may run.
+  `tools/hub_guard-powershell.ps1` only reports what the parser and
   binder found, in the order PowerShell would run it, and `tools/hub_guard.py` makes every decision. The guard
   follows `cd`, `chdir`, `sl`, and `Set-Location` (bare goes home, a leading `~` means home, `cd -` and `cd +` leave
   the location unknown, and one on a provider other than the file system leaves it unknown),
@@ -354,9 +356,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
   read in either shell, by every spelling pwsh takes for a parameter: a leading `-`, en dash, em dash, or
   horizontal bar, that dash doubled, as in `--command`, white space around the word, and a leading `/`, as in
   `/Command`, on every platform. `tests/tools/test_hub_guard_shells.py` runs pwsh on these spellings and Bash on
-  the builtins above that set a variable, and holds the guard to what each shell does. Each nested shell is read as
-  a process of its own that starts with the variables its parent exported; its directory and what it exports do not
-  outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
+  the builtins above that set a variable, and holds the guard to what each shell does. `bash` runs as its `-c`
+  script the first word after all of its options and a `--`, as in `bash -c -e '<script>'`, and Windows PowerShell
+  runs a leading word that names no parameter as `-Command`, as in `powershell '<script>'`, where `pwsh` runs it as a
+  script file. Each nested shell is read as a process of its own that starts with the variables its parent exported,
+  in its parent's directory or the one `pwsh -WorkingDirectory` (`-wd`) names, read from there; its directory and
+  what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
   the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the
@@ -386,7 +391,8 @@ command names. While one is, the guard refuses:
   command, script file, or encoded command at all), a callback `mapfile -C` runs, every `env -S`, whatever follows
   it, an option of `env` or of a prefix program above that the guard does not read, a PowerShell command when `pwsh`
   cannot be started or does not finish reading it in the time the guard has left, a command the guard does not
-  finish reading and judging within 15 seconds, `pwsh` included, which keeps it inside the hook's own 30-second
+  finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the hubs the places it names
+  reach, each git call of theirs given no more than the time left, which keeps it inside the hook's own 30-second
   timeout, past which Claude Code lets the command run, and a command either shell's reader fails on with an error
   of its own;
 - an alias that cannot be read, as above.
@@ -398,7 +404,9 @@ says nothing about where the call acts; a defect before that, such as an event i
 no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
 stderr, so that it cannot block every tool and is never passed unseen. A directory below a checkout, which a `.git`
 in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
-a place outside every repository, and the other hubs in view still count. The hook command reads the project's own
+a place outside every repository, and the other hubs in view still count. A file an edit names in such a checkout, or
+in a git directory git answers with an error for, may lie in a guarded hub, so the edit is refused; one where git did
+not run or finish is allowed with a note. The hook command reads the project's own
 opt-in before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
 
 #### What it does not see

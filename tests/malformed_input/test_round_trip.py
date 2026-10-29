@@ -29,10 +29,12 @@ sys.path.insert(0, str(REPOSITORY / "tests" / "deployer"))
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
+sys.path.insert(0, str(sibling_scripts("dotnet-format")))
 sys.path.insert(0, str(sibling_scripts("github-activity-report")))
 sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
 
 import dashboard_pipeline
+import dotnet_format_targets
 import github_activity_report
 import review_flags
 import review_records
@@ -321,6 +323,25 @@ def test_the_dashboard_tracker_record_reads_back_as_the_update_wrote_it(tmp_path
         assert not record.exists(), "the update refused its input after writing the record"
         return
     assert dashboard_pipeline.read_tracker_record(record) == json.loads(record.read_text(encoding="utf-8"))
+
+
+# Names git lists that a line reader alters: a leading space, a byte order mark, and the line separators it splits at.
+FILE_NAMES = (*PATHS, " Leading.cs", "file\u2028part.cs", "x\u0085y.cs", "two\nlines.cs", "\ufeffMarked.cs")
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_the_dotnet_format_file_list_reads_back_every_name_resolve_writes(size: int) -> None:
+    # None, about a third, and every edge name, so the largest list holds them all.
+    names = sized(FILE_NAMES, len(FILE_NAMES) * size // 3)
+    try:
+        written = Path(dotnet_format_targets.write_file_list(names))
+    except dotnet_format_targets.Failed:
+        assert not names, "the writer refuses only an empty list of these names, all UTF-8"
+        return
+    try:
+        assert dotnet_format_targets.read_file_list(written) == names
+    finally:
+        written.unlink()
 
 
 class ConfigurationRoundTripTests(DeployerTestCase):

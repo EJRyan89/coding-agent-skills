@@ -18,7 +18,7 @@ import tempfile
 import threading
 import types
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -48,6 +48,8 @@ from tools.mutation_gate import (
     Outcome,
     Reach,
     ReachRunner,
+    RecordError,
+    RecordFieldError,
     Report,
     Selected,
     SelectedModule,
@@ -1375,7 +1377,7 @@ class SummaryFixtures(unittest.TestCase):
         )
         text = summary(report)
         # The table's line is added after the module table, never in place of the summary.
-        self.assertIn("\n## Mutation gate\n", text)
+        self.assertTrue(text.startswith("## Mutation gate\n"), text)
         self.assertIn(
             "|\n\n`tools/calc.py`: the changed lines of its sanction tables made no mutant, since the validation "
             "policy that reads each holds it, not the module's suites: `FSOPS_ALLOWED` "
@@ -1401,21 +1403,69 @@ class SummaryFixtures(unittest.TestCase):
         self.assertEqual(
             "**Unfinished, so not a verdict:** a leg's cap cut the run short: 2 of the 3 mutants of `tools/calc.py` "
             "did not run on Linux (1 on lines that run at import); 1 of the 1 mutants of `tools/other.py` did not run "
-            "on Linux; the reach of 1 suite was not measured on Linux. Split the pull request, or move its "
-            "module-level tables into the functions that use them, until it finishes.",
-            first,
-        )
-        self.assertEqual(["", "## Mutation gate"], summary(report).splitlines()[1:3])
-
-    def test_a_reach_the_cap_left_unmeasured_alone_leaves_the_run_unfinished(self) -> None:
-        report = self.report([Outcome(mutant(1), KILLED, ("t",))])
-        report.legs[0].unmeasured_suites.append("tests/later.py")
-        self.assertEqual(
-            "**Unfinished, so not a verdict:** a leg's cap cut the run short: the reach of 2 suites was not measured "
             "on Linux. Split the pull request, or move its module-level tables into the functions that use them, "
             "until it finishes.",
-            unfinished_line(report),
+            first,
         )
+        # The suite whose reach was not measured leaves no verdict open beside a mutant killed or not run.
+        self.assertIn("`tests/late.py`. No mutant it ran survived or went unreached", summary(report))
+        self.assertEqual(["", "## Mutation gate"], summary(report).splitlines()[1:3])
+
+    def test_a_reach_the_cap_left_unmeasured_leaves_the_run_unfinished_while_a_mutant_it_ran_is_open(self) -> None:
+        for status in (SURVIVED, NOT_REACHED):
+            with self.subTest(status=status):
+                report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), status)])
+                report.legs[0].unmeasured_suites.append("tests/later.py")
+                self.assertEqual(
+                    "**Unfinished, so not a verdict:** a leg's cap cut the run short: the reach of 2 suites was not "
+                    "measured on Linux, which leaves 1 mutant that survived or no suite reached open there. Split the "
+                    "pull request, or move its module-level tables into the functions that use them, until it "
+                    "finishes.",
+                    unfinished_line(report),
+                )
+                self.assertNotIn("leave no verdict open", summary(report))
+
+    def test_a_reach_the_cap_left_unmeasured_beside_only_killed_mutants_leaves_the_run_finished(self) -> None:
+        report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), TIMED_OUT, ("t",))])
+        report.legs[0].unmeasured_suites.append("tests/later.py")
+        self.assertIsNone(unfinished_line(report))
+        text = summary(report)
+        self.assertEqual("## Mutation gate", text.splitlines()[0])
+        self.assertIn(
+            "\n\nThe cap left these suites' reach unmeasured on Linux, so no mutant ran against them there: "
+            "`tests/late.py`, `tests/later.py`. No mutant it ran survived or went unreached, so they leave no verdict "
+            "open.\n",
+            text,
+        )
+
+    def test_a_widely_imported_modules_windows_reach_cut_short_after_both_legs_killed_it_is_a_verdict(self) -> None:
+        # Every mutant killed on both legs, while the Windows leg's cap left most suites' reach unmeasured.
+        report = two_legs([Outcome(TEXTUAL, KILLED, ("t",))], [Outcome(TEXTUAL, KILLED, ("t",))])
+        report.legs[1].unmeasured_suites.extend(["tests/a.py", "tests/b.py"])
+        self.assertIsNone(unfinished_line(report))
+        # A mutant Windows killed, which survived on Linux, is a verdict too; one that survived both legs is open.
+        killed = two_legs([Outcome(TEXTUAL, SURVIVED, ("t",))], [Outcome(TEXTUAL, KILLED, ("t",))])
+        killed.legs[0].unmeasured_suites.append("tests/a.py")
+        self.assertIsNone(unfinished_line(killed))
+        survived = two_legs([Outcome(TEXTUAL, SURVIVED, ("t",))], [Outcome(TEXTUAL, SURVIVED, ("t",))])
+        survived.legs[1].unmeasured_suites.append("tests/a.py")
+        self.assertIn(
+            "the reach of 1 suite was not measured on Windows, which leaves 1 mutant that survived or no suite "
+            "reached open there",
+            str(unfinished_line(survived)),
+        )
+        unreached = Outcome(mutant(5, PATH_MODULE), NOT_REACHED)
+        two = two_legs([Outcome(TEXTUAL, SURVIVED, ("t",)), unreached], [Outcome(TEXTUAL, SURVIVED, ("t",)), unreached])
+        two.legs[1].unmeasured_suites.append("tests/a.py")
+        self.assertIn(
+            "on Windows, which leaves 2 mutants that survived or no suite reached open there",
+            str(unfinished_line(two)),
+        )
+        # A leg's unmeasured suites leave open only the mutants of modules that leg ran.
+        other = two_legs([Outcome(TEXTUAL, KILLED, ("t",))], [Outcome(TEXTUAL, KILLED, ("t",))])
+        other.modules.append(linux_module("tools/calc.py", [Outcome(mutant(1), SURVIVED, ("t",))], 1))
+        other.legs[1].unmeasured_suites.append("tests/a.py")
+        self.assertIsNone(unfinished_line(other))
 
     def test_a_finished_run_opens_on_its_heading_with_no_unfinished_line(self) -> None:
         report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_REACHED)])
@@ -1668,13 +1718,205 @@ class LegFixtures(unittest.TestCase):
             mutants.write_text(json.dumps(selection_record(selected)), encoding="utf-8")
             outcomes.write_text(json.dumps(leg_record(leg)), encoding="utf-8")
             self.assertEqual(selected, read_selection(mutants))
-            self.assertEqual(leg, read_leg(outcomes, selected))
+            self.assertEqual(leg, read_leg(outcomes, selected, WINDOWS_LEG))
             # A leg's outcomes that do not match the selection's mutants one for one stop the join.
             record = leg_record(leg)
             record["outcomes"][PATH_MODULE].pop()
             outcomes.write_text(json.dumps(record), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "holds 1 outcomes of tools/paths.py, not one for each"):
-                read_leg(outcomes, selected)
+            with self.assertRaisesRegex(RecordError, "holds 1 outcomes of tools/paths.py, not one for each"):
+                read_leg(outcomes, selected, WINDOWS_LEG)
+
+    def test_a_leg_record_that_names_another_leg_or_leaves_out_or_adds_a_module_stops_the_join(self) -> None:
+        platform = SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True)
+        plain = SelectedModule("tools/calc.py", 1, (mutant(1),), (), False)
+        selected = Selected("origin/main", "3.8.0", (platform, plain))
+        both = {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))], "tools/calc.py": [Outcome(mutant(1), KILLED)]}
+        windows = {PATH_MODULE: [Outcome(TEXTUAL, KILLED, ("t",))]}
+        records = [
+            (LINUX_LEG, LegRun(LINUX_LEG, 40, 1.0, 1, {}, {}, []), "holds no outcomes of tools/paths.py, tools/calc"),
+            (WINDOWS_LEG, LegRun(WINDOWS_LEG, 40, 1.0, 1, {}, {}, []), "holds no outcomes of tools/paths.py, so"),
+            (WINDOWS_LEG, LegRun(LINUX_LEG, 40, 1.0, 1, windows, {}, []), "holds the Linux leg's run, not the Windows"),
+            (WINDOWS_LEG, LegRun(WINDOWS_LEG, 40, 1.0, 1, both, {}, []), "tools/calc.py, whose mutants the Windows"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "mutants.json").write_text(json.dumps(selection_record(selected)), encoding="utf-8")
+            linux = LegRun(LINUX_LEG, 40, 1.0, 1, both, {}, [])
+            good = LegRun(WINDOWS_LEG, 40, 1.0, 1, windows, {}, [])
+            for leg, record, message in records:
+                with self.subTest(leg=leg, message=message):
+                    written = {LINUX_LEG: linux, WINDOWS_LEG: good, leg: record}
+                    for name, run in written.items():
+                        path = folder / f"outcomes-{name.casefold()}.json"
+                        path.write_text(json.dumps(leg_record(run)), encoding="utf-8")
+                    with self.assertRaisesRegex(RecordError, message):
+                        mutation_gate.join(folder)
+            # Both legs' own records join.
+            for name, run in ((LINUX_LEG, linux), (WINDOWS_LEG, good)):
+                (folder / f"outcomes-{name.casefold()}.json").write_text(json.dumps(leg_record(run)), encoding="utf-8")
+            self.assertTrue(mutation_gate.join(folder).finished)
+
+    def test_a_record_field_of_another_kind_stops_the_join_by_name(self) -> None:
+        selected = Selected("origin/main", "3.8.0", (SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True),))
+        leg = LegRun(WINDOWS_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, KILLED, ("t",), (1,))]}, {}, [])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "record.json"
+            selection_changes: list[tuple[str, Callable[[dict[str, Any]], object]]] = [
+                ("record.json must be an object with field modules", lambda record: record.pop("modules")),
+                (
+                    r"record.json.modules\[0\].tables\[0\] must be an array of a table's name",
+                    lambda record: record["modules"][0].update(tables=[["X_ALLOWED"]]),
+                ),
+                (
+                    r"record.json.modules\[0\].mutants\[0\].line must be an integer of at least 1",
+                    lambda record: record["modules"][0]["mutants"][0].update(line="4"),
+                ),
+            ]
+            for message, change in selection_changes:
+                with self.subTest(message=message):
+                    record = selection_record(selected)
+                    change(record)
+                    path.write_text(json.dumps(record), encoding="utf-8")
+                    with self.assertRaisesRegex(RecordFieldError, message):
+                        read_selection(path)
+            leg_changes: list[tuple[str, Callable[[dict[str, Any]], object]]] = [
+                (
+                    r"record.json.outcomes.tools/paths.py\[0\].status must be one of",
+                    lambda record: record["outcomes"][PATH_MODULE][0].update(status="won"),
+                ),
+                (
+                    "record.json.failed_suites.t must be a non-empty string",
+                    lambda record: record["failed_suites"].update(t=1),
+                ),
+            ]
+            for message, change in leg_changes:
+                with self.subTest(message=message):
+                    record = leg_record(leg)
+                    change(record)
+                    path.write_text(json.dumps(record), encoding="utf-8")
+                    with self.assertRaisesRegex(RecordFieldError, message):
+                        read_leg(path, selected, WINDOWS_LEG)
+            path.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(RecordError, "record.json cannot be read"):
+                read_selection(path)
+
+
+# A selection of one module with one mutant that both legs run, and the Windows leg's run of it, as the steps write.
+READ_MUTANT = Mutant(PATH_MODULE, 4, "a", "b", "b\n", False, frozenset({5}))
+READ_SELECTED = Selected(
+    "origin/main", "3.8.0", (SelectedModule(PATH_MODULE, 1, (READ_MUTANT,), (("X_ALLOWED", "tests/x.py"),), True),)
+)
+READ_LEG = LegRun(WINDOWS_LEG, 40, 1.5, 2, {PATH_MODULE: [Outcome(READ_MUTANT, KILLED, ("t",), (1,))]}, {"u": "v"}, [])
+
+
+def set_field(record: dict[str, Any], path: Sequence[str | int], value: object) -> dict[str, Any]:
+    """The record with the field at `path`, a key or an index at each step, set to `value`."""
+    node: Any = record
+    for step in path[:-1]:
+        node = node[step]
+    node[path[-1]] = value
+    return record
+
+
+MUTANT_AT = ("modules", 0, "mutants", 0)
+OUTCOME_AT = ("outcomes", PATH_MODULE, 0)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("base",), 1, "record.json.base must be a non-empty string, found integer 1"),
+        (("mutmut",), 1, "record.json.mutmut must be a non-empty string, found integer 1"),
+        (("modules", 0), 1, "record.json.modules[0] must be an object, found integer 1"),
+        (("modules", 0, "module"), 1, "record.json.modules[0].module must be a non-empty string, found integer 1"),
+        (
+            ("modules", 0, "lines"),
+            -1,
+            "record.json.modules[0].lines must be an integer of at least 0, found integer -1",
+        ),
+        (("modules", 0, "windows"), 1, "record.json.modules[0].windows must be a boolean, found integer 1"),
+        (("modules", 0, "tables", 0), 1, "record.json.modules[0].tables[0] must be an array, found integer 1"),
+        (
+            ("modules", 0, "tables", 0),
+            ["X_ALLOWED"],
+            "record.json.modules[0].tables[0] must be an array of a table's name and its policy, found an array of 1 "
+            "items",
+        ),
+        (MUTANT_AT, 1, "record.json.modules[0].mutants[0] must be an object, found integer 1"),
+        (
+            (*MUTANT_AT, "readers"),
+            1,
+            "record.json.modules[0].mutants[0].readers must be an array or null, found integer 1",
+        ),
+        (
+            (*MUTANT_AT, "readers"),
+            [0],
+            "record.json.modules[0].mutants[0].readers[0] must be an integer of at least 1, found integer 0",
+        ),
+        ((*MUTANT_AT, "before"), 1, "record.json.modules[0].mutants[0].before must be a string, found integer 1"),
+        ((*MUTANT_AT, "after"), 1, "record.json.modules[0].mutants[0].after must be a string, found integer 1"),
+        ((*MUTANT_AT, "source"), 1, "record.json.modules[0].mutants[0].source must be a string, found integer 1"),
+        (
+            (*MUTANT_AT, "at_import"),
+            1,
+            "record.json.modules[0].mutants[0].at_import must be a boolean, found integer 1",
+        ),
+    ],
+)
+def test_a_selection_field_of_another_kind_is_refused_by_its_path(
+    path: Sequence[str | int], value: object, message: str
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        record = Path(temporary) / "record.json"
+        record.write_text(json.dumps(set_field(selection_record(READ_SELECTED), path, value)), encoding="utf-8")
+        with pytest.raises(RecordFieldError) as refused:
+            read_selection(record)
+    assert str(refused.value) == message
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("leg",), "Mac", 'record.json.leg must be one of "Linux", "Windows", found string "Mac"'),
+        (("minutes",), 0, "record.json.minutes must be an integer of at least 1, found integer 0"),
+        (("seconds",), "1", 'record.json.seconds must be a finite number, found string "1"'),
+        (("workers",), -1, "record.json.workers must be an integer of at least 0, found integer -1"),
+        (("failed_suites",), 1, "record.json.failed_suites must be an object, found integer 1"),
+        (("unmeasured_suites",), 1, "record.json.unmeasured_suites must be an array, found integer 1"),
+        (("outcomes",), 1, "record.json.outcomes must be an object, found integer 1"),
+        (("outcomes", PATH_MODULE), 1, "record.json.outcomes.tools/paths.py must be an array, found integer 1"),
+        (OUTCOME_AT, 1, "record.json.outcomes.tools/paths.py[0] must be an object, found integer 1"),
+        ((*OUTCOME_AT, "suites"), 1, "record.json.outcomes.tools/paths.py[0].suites must be an array, found integer 1"),
+        (
+            (*OUTCOME_AT, "tests"),
+            [-1],
+            "record.json.outcomes.tools/paths.py[0].tests[0] must be an integer of at least 0, found integer -1",
+        ),
+    ],
+)
+def test_a_leg_field_of_another_kind_is_refused_by_its_path(
+    path: Sequence[str | int], value: object, message: str
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        record = Path(temporary) / "record.json"
+        record.write_text(json.dumps(set_field(leg_record(READ_LEG), path, value)), encoding="utf-8")
+        with pytest.raises(RecordFieldError) as refused:
+            read_leg(record, READ_SELECTED, WINDOWS_LEG)
+    assert str(refused.value) == message
+
+
+def test_each_records_least_values_read_back() -> None:
+    # An empty mutation text, a module of no changed line, a first reader line, a leg with no worker under a one-minute
+    # cap, and a suite of which no test is counted are each a value the steps can write.
+    mutant = Mutant(PATH_MODULE, 1, "", "", "", True, frozenset({1}))
+    selected = Selected("origin/main", "3.8.0", (SelectedModule(PATH_MODULE, 0, (mutant,), (), True),))
+    leg = LegRun(WINDOWS_LEG, 1, 0.0, 0, {PATH_MODULE: [Outcome(mutant, KILLED, ("t",), (0,))]}, {}, [])
+    with tempfile.TemporaryDirectory() as temporary:
+        mutants, outcomes = Path(temporary) / "mutants.json", Path(temporary) / "outcomes.json"
+        mutants.write_text(json.dumps(selection_record(selected)), encoding="utf-8")
+        outcomes.write_text(json.dumps(leg_record(leg)), encoding="utf-8")
+        assert read_selection(mutants) == selected
+        assert read_leg(outcomes, selected, WINDOWS_LEG) == leg
 
 
 CALC = "def add(a, b):\n    return a + b\n\n\ndef double(a):\n    return a * 2\n"
@@ -1784,7 +2026,9 @@ class WholeRunFixtures(unittest.TestCase):
             ).report()
         self.assertFalse(result.finished)
         self.assertTrue(result.text.startswith("**Unfinished, so not a verdict:** a leg's cap cut the run short: 2"))
-        self.assertIn(f"the reach of 1 suite was not measured on {HOST}", result.text.splitlines()[0])
+        # Every mutant was left not run, so the unmeasured suite opens none beyond them, and is named apart.
+        self.assertNotIn("was not measured", result.text.splitlines()[0])
+        self.assertIn(f"The cap left these suites' reach unmeasured on {HOST}", result.text)
 
     def test_a_changed_sanction_table_is_named_with_its_policy_and_its_modules_other_lines_still_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2123,8 +2367,12 @@ class SplitRunFixtures(unittest.TestCase):
             ):
                 self.assertEqual(0, mutation_gate.main(["leg", str(folder)], {}))
             leg.assert_called_once_with(selected)
-            self.assertEqual(unfinished, read_leg(folder / "outcomes-windows.json", selected))
-            linux = LegRun(LINUX_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))]}, {}, [])
+            self.assertEqual(unfinished, read_leg(folder / "outcomes-windows.json", selected, WINDOWS_LEG))
+            linux_outcomes = {
+                PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))],
+                "tools/calc.py": [Outcome(mutant(1), KILLED)],
+            }
+            linux = LegRun(LINUX_LEG, 40, 1.0, 1, linux_outcomes, {}, [])
             (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(linux)), encoding="utf-8")
             summary_file = Path(temporary) / "summary.md"
             with mock.patch("sys.stdout", io.StringIO()) as printed:

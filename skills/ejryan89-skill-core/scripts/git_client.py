@@ -223,6 +223,13 @@ def subcommand(arguments: Sequence[str]) -> str | None:
     return None if index is None else arguments[index]
 
 
+def output_lines(output: str) -> list[str]:
+    """The lines git wrote, split on "\\n" alone, the one byte that ends a line of its output: never on the other
+    characters str.splitlines() breaks on, such as U+0085 and U+2028, which a ref name or a path can hold. A last
+    "\\n" ends the last line rather than starting an empty one."""
+    return output.removesuffix("\n").split("\n") if output else []
+
+
 def transient_failure(result: GitResult) -> bool:
     """Whether a git command's result is a transport failure that may clear on its own.
 
@@ -419,7 +426,7 @@ class GitClient:
             if exc.kind == "not_repository":
                 return None
             raise
-        paths = output.splitlines()
+        paths = output_lines(output)
         if len(paths) != len(options) or not all(paths):
             raise GitError(
                 f"git rev-parse answered {flat_text(output)!r} for {' '.join(options)} in {directory}, "

@@ -21,9 +21,11 @@ SEPARATOR = "."
 
 
 def _pattern(least: int, most: int | None) -> str:
-    """A version of `least` to `most` numbers, or at least `least` when `most` is None, as a regular expression."""
+    """A version of `least` to `most` numbers, or at least `least` when `most` is None, as a regular expression. It
+    starts only where a run of digits starts, so a search tries each run once, in time linear in the text, rather than
+    from each of its digits; any match from inside a run starts at the run's start too, so none is lost."""
     upper = "" if most is None else str(most - 1)
-    return rf"[0-9]+(?:{re.escape(SEPARATOR)}[0-9]+){{{least - 1},{upper}}}"
+    return rf"(?<![0-9])[0-9]+(?:{re.escape(SEPARATOR)}[0-9]+){{{least - 1},{upper}}}"
 
 
 def _numbers(text: str) -> Version | None:
