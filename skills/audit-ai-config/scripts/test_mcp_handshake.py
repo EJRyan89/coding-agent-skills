@@ -79,6 +79,7 @@ TOOLS = {
     "badtool": {"tools": [{"name": "search"}]},
     "nonobject": {"tools": ["search"]},
     "loop": {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "again"},
+    "surrogate": {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "\\ud800"},
 }
 for line in sys.stdin.buffer:
     if mode == "record":
@@ -209,6 +210,12 @@ class HandshakeTests(unittest.TestCase):
             ("badtool", "tools/list returned a tool without a name and object inputSchema"),
             ("nonobject", "tools/list returned a tool without a name and object inputSchema"),
             ("loop", "tools/list returned an invalid or repeated nextCursor"),
+            # A cursor JSON cannot carry back fails this server alone, never the whole audit.
+            (
+                "surrogate",
+                "cannot send the server's value back: the value holds a lone surrogate U+D800, which UTF-8 cannot "
+                "encode",
+            ),
         ):
             with self.subTest(mode=mode):
                 self._write(".mcp.json", "mcpServers", {"bad": self._stdio(mode)})
