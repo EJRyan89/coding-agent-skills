@@ -156,5 +156,5 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | Skill | Scenario | Model | Run | Date | Transcript |
 | --- | --- | --- | --- | --- | --- |
 | review-document | committed-edit | haiku | 1 | 2026-10-25 | agrees |
-| review-repository | build-grant | opus | 1 | 2026-10-29 | agrees |
+| review-repository | drifted-guide | haiku | 1 | 2026-10-29 | agrees |
 <!-- skill-evals-samples:end -->
