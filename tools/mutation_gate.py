@@ -838,7 +838,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
             if done.returncode != 0:
                 output = flat_text((done.stderr + done.stdout).decode("utf-8", "replace"))[-STEP_OUTPUT_CHARACTERS:]
                 if command[0] == "json" and done.returncode == 1 and output == NO_DATA_TO_REPORT:
-                    return Reach(seconds, executed_lines({"files": {}}, tree, modules))
+                    return Reach(seconds, {module: frozenset[int]() for module in modules})
                 return f"failed in {code(step)} with exit code {done.returncode}" + (
                     f": {code(output)}" if output else ""
                 )
