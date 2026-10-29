@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import dependency_graph
 import dotnet_solution
 import msbuild_reader
@@ -673,6 +675,17 @@ class GraphTests(Fixture):
                 code, rows = self.run_main("graph", "--root", str(root))
             self.assertEqual((1, "FAILED [Errno 28] No space left on device"), (code, rows[-1][0]))
             self.assertEqual([], list(temporary.iterdir()))
+
+    def test_a_graph_file_keeps_its_permissions_and_a_new_one_is_readable_by_everyone(self) -> None:
+        root = self.mixed_solution()
+        target = self.root / "out" / "graph.mmd"
+        with mock.patch("dependency_graph.replace_text", wraps=atomic_file.replace_text) as replace:
+            self.assertEqual(0, self.run_main("graph", "--output", str(target), "--root", str(root))[0])
+            target.chmod(0o640)
+            kept = stat.S_IMODE(target.stat().st_mode)
+            self.assertEqual(0, self.run_main("graph", "--output", str(target), "--root", str(root))[0])
+        self.assertEqual([0o644, kept], [call.kwargs["mode"] for call in replace.call_args_list])
+        self.assertTrue(target.read_text(encoding="utf-8").startswith("graph LR\n"))
 
     def test_a_graph_write_that_fails_part_way_leaves_the_output_file_as_it_was(self) -> None:
         root = self.mixed_solution()
