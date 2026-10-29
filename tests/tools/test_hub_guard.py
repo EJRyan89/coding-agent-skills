@@ -176,6 +176,15 @@ class PowerShellReaderStartTests(unittest.TestCase):
         self.assertGreater(call.args[1], 0)
         self.assertLessEqual(call.args[1], 5)
 
+    def test_pwsh_that_does_not_read_in_the_time_left_leaves_a_command_the_guard_cannot_read(self) -> None:
+        reading = hub_guard.Reading(isolated_environment(), text="git commit -m x")
+        with (
+            mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+            mock.patch.object(hub_guard, "run_bounded", side_effect=subprocess.TimeoutExpired("pwsh", 15)),
+        ):
+            self.assertIsNone(hub_guard.powershell_events("git commit -m x", reading, 0))
+        self.assertEqual(["pwsh did not read the command in what was left of the guard's 15 seconds"], reading.unread)
+
     def test_output_that_is_not_utf8_is_read_with_replacement_characters_and_a_repeated_key_is_not(self) -> None:
         # A console code page can reach the reader's output; a byte it cannot decode costs only that character.
         cases: tuple[tuple[bytes, list[dict[str, Any]] | None, list[str]], ...] = (
@@ -530,6 +539,54 @@ class ReadingBoundTests(GuardTestCase):
             self.assertRaises(hub_guard.ReadingTimeout),
         ):
             hub_guard.denied(reading, {self.hub})
+
+    def test_an_alias_of_an_alias_is_read_within_the_same_reading_time(self) -> None:
+        self.git(self.hub, "config", "alias.look", "peek")
+        self.git(self.hub, "config", "alias.peek", "!git status")
+        reading = hub_guard.read_command("Bash", "git look", self.tree, self.environment)
+        # Both judges' looks at the clock are in time; the next, inside the second alias's expansion, is not.
+        looks = iter([reading.deadline - 1, reading.deadline - 1])
+        with (
+            mock.patch.object(hub_guard, "reading_clock", side_effect=lambda: next(looks, reading.deadline + 1)),
+            self.assertRaises(hub_guard.ReadingTimeout),
+        ):
+            hub_guard.denied(reading, {self.hub})
+
+    def test_the_reading_time_ends_at_the_deadline_and_not_a_moment_before(self) -> None:
+        reading = hub_guard.Reading({}, deadline=100.0)
+        for now, left in ((99.0, 1.0), (99.5, 0.5), (99.875, 0.125)):
+            with self.subTest(now=now), mock.patch.object(hub_guard, "reading_clock", return_value=now):
+                self.assertEqual(left, reading.time_left())
+        for now in (100.0, 100.5):
+            with (
+                self.subTest(now=now),
+                mock.patch.object(hub_guard, "reading_clock", return_value=now),
+                self.assertRaises(hub_guard.ReadingTimeout),
+            ):
+                reading.time_left()
+
+
+class NestedAliasTests(GuardTestCase):
+    """An alias's expansion is judged by a judge of its own, which inherits the guarded hubs, the environment, the
+    reading time, and the depth of the one that found it, and keeps its notes to itself."""
+
+    def test_an_alias_chain_is_followed_through_each_judge_to_the_call_it_runs(self) -> None:
+        # Three aliases deep stays inside the nesting limit only when each judge goes one level deeper.
+        self.git(self.hub, "config", "alias.one", "two")
+        self.git(self.hub, "config", "alias.two", "three")
+        self.git(self.hub, "config", "alias.three", f'!git -C "{self.hub}" commit -m x')
+        reading = hub_guard.read_command("Bash", "git one", self.tree, self.environment)
+        reason = hub_guard.denied(reading, {self.hub})
+        assert reason is not None
+        self.assertIn(WRITES.format("commit"), reason)
+        self.assertEqual(3, reason.count("is an alias for"))
+        self.assertNotIn("nests more than", reason)
+
+    def test_a_note_inside_an_alias_with_no_guarded_hub_in_view_is_kept_by_its_own_judge(self) -> None:
+        self.git(self.hub, "config", "alias.save", '!git -C "$UNSET_HERE" commit -m x')
+        reading = hub_guard.read_command("Bash", "git save", self.tree, self.environment)
+        self.assertIsNone(hub_guard.denied(reading, set()))
+        self.assertEqual([], reading.notes)
 
 
 class HookCommandTests(GuardTestCase):

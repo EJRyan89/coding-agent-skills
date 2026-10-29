@@ -775,7 +775,7 @@ class Judge:
     hubs: set[Path]
     environment: Mapping[str, str]
     notes: list[str]
-    deadline: float = math.inf
+    deadline: float
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
         if reading.unread:
