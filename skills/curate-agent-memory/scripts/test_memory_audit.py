@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import atomic_file
 import memory_audit
 import skill_roots
 from file_presence import NotAFile
@@ -652,6 +654,59 @@ class ReindexTests(unittest.TestCase):
         self.assertEqual(b"", self.index.read_bytes())
         self.reindex("--write")
         self.assertEqual("- [one](one.md) — one description\n", self.index.read_text(encoding="utf-8"))
+        self.assertEqual(["MEMORY.md", "one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
+
+    def test_an_entry_at_the_old_staging_name_and_the_file_it_links_to_are_left_untouched(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        outside = write(Path(self._temporary.name) / "outside.txt", "outside\n")
+        for staged in ("hard link", "file"):
+            with self.subTest(staged=staged):
+                self.index.write_bytes(b"")
+                staging = self.memory_dir / ".MEMORY.md.tmp"
+                staging.unlink(missing_ok=True)
+                if staged == "hard link":
+                    os.link(outside, staging)
+                else:
+                    write(staging, "kept by the user\n")
+                before = staging.read_bytes()
+                self.assertEqual(
+                    (0, ["INDEX_LINE one.md", "ADDED one.md", f"WROTE {self.index.as_posix()}"]),
+                    memory_audit.reindex_lines(self.memory_dir, True),
+                )
+                self.assertEqual(b"outside\n", outside.read_bytes())
+                self.assertEqual(before, staging.read_bytes())
+                self.assertFalse(self.index.samefile(outside))
+                self.assertEqual("- [one](one.md) — one description\n", self.index.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    [".MEMORY.md.tmp", "MEMORY.md", "one.md"], sorted(path.name for path in self.memory_dir.iterdir())
+                )
+
+    def test_the_rebuilt_index_keeps_its_permissions_and_a_new_one_is_readable_by_everyone(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        self.index.chmod(0o640)
+        kept = stat.S_IMODE(self.index.stat().st_mode)
+        with mock.patch("memory_audit.replace_text", wraps=atomic_file.replace_text) as replace:
+            self.assertEqual(0, memory_audit.reindex_lines(self.memory_dir, True)[0])
+            self.index.unlink()
+            self.assertEqual(0, memory_audit.reindex_lines(self.memory_dir, True)[0])
+        self.assertEqual([kept, 0o644], [call.kwargs["mode"] for call in replace.call_args_list])
+        self.assertEqual("- [one](one.md) — one description\n", self.index.read_text(encoding="utf-8"))
+
+    def test_a_write_that_fails_part_way_leaves_the_index_as_it_was(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        self.index.write_bytes(b"# Kept index\n")
+        write_part = os.write
+
+        def part_way(descriptor: int, data: bytes | memoryview) -> int:
+            write_part(descriptor, bytes(data[:3]))
+            raise OSError(28, "No space left on device")
+
+        with mock.patch.object(os, "write", side_effect=part_way):
+            code, lines = memory_audit.reindex_lines(self.memory_dir, True)
+        self.assertEqual(
+            (1, f"FAILED cannot write {self.index.as_posix()}: No space left on device"), (code, lines[-1])
+        )
+        self.assertEqual(b"# Kept index\n", self.index.read_bytes())
         self.assertEqual(["MEMORY.md", "one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
 
     def outside_memory(self) -> Path:

@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 import re
 
-from validation_support import REPOSITORY_ROOT, PullRequestChecks, git, listed, markdown_section
+from validation_support import REPOSITORY_ROOT, PullRequestChecks, listed, markdown_section
 
-from tools.release_notes import ReleaseNotesError
+from tools.release_notes import ReleaseNotesError, git_output
 
 # The squash commit takes the pull request's title, so main's history reads by these types, which tools/worktrees.py
 # also takes as a worktree's kind. A breaking-change `!` is refused: the Level in the body's `## Upgrade note` is the
@@ -68,16 +68,11 @@ def title_types_problems(document: str, text: str) -> list[str]:
 
 
 def head_branch() -> str | None:
-    """The pull request's branch in CI, otherwise the checkout's current branch, or None when neither is known."""
+    """The pull request's branch in CI, otherwise the checkout's current branch, or None on a detached HEAD, which
+    names none. Raises ReleaseNotesError when git cannot answer, so a failure never reads as no branch."""
     if os.environ.get("GITHUB_HEAD_REF"):
         return os.environ["GITHUB_HEAD_REF"]
-    try:
-        completed = git(REPOSITORY_ROOT, "branch", "--show-current")
-    except ReleaseNotesError:
-        return None
-    if completed.returncode != 0:
-        return None
-    return completed.stdout.strip() or None
+    return git_output(REPOSITORY_ROOT, "branch", "--show-current").strip() or None
 
 
 class PullRequestTitlePolicies(PullRequestChecks):
@@ -87,7 +82,11 @@ class PullRequestTitlePolicies(PullRequestChecks):
         title = self.pull_request.title_text()
         if title is None:
             return
-        self.assertEqual([], title_problems(title, head_branch()))
+        try:
+            branch = head_branch()
+        except ReleaseNotesError as error:
+            self.fail(f"the title check cannot read the checkout's branch: {error}")
+        self.assertEqual([], title_problems(title, branch))
 
     def test_the_guides_name_every_title_type(self) -> None:
         problems = []
