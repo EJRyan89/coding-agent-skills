@@ -1551,7 +1551,23 @@ def test_a_mutant_no_leg_ran_has_no_verdict() -> None:
         ),
         ("tools/report.py", 'import os\ndef nt():\n    return os.name in ("nt",)\n', True),
         ("tools/report.py", 'import platform\nif platform.system() == "Windows":\n    pass\n', True),
-        ("tools/report.py", "import sys\nprint(sys.platform)\n", False),
+        # A platform name read in any expression, not only a comparison.
+        ("tools/report.py", 'import sys\nif sys.platform.startswith("win"):\n    pass\n', True),
+        ("tools/report.py", 'import sys\nmatch sys.platform:\n    case "win32":\n        pass\n', True),
+        ("tools/report.py", 'import platform\nWINDOWS = platform.system().lower() == "windows"\n', True),
+        ("tools/report.py", 'import os\nNT = os.name.casefold() == "nt"\n', True),
+        ("tools/report.py", 'import sys\ncurrent = sys.platform\nif current == "win32":\n    pass\n', True),
+        ("tools/report.py", 'import sys\nSEP = {"win32": ";", "linux": ":"}[sys.platform]\n', True),
+        ("tools/report.py", "import pathlib\ndef native(p):\n    return isinstance(p, pathlib.WindowsPath)\n", True),
+        (
+            "tools/report.py",
+            "from pathlib import WindowsPath as W\ndef native(p):\n    return isinstance(p, W)\n",
+            True,
+        ),
+        ("tools/report.py", "import sys\nprint(sys.platform)\n", True),
+        ("tools/report.py", "import os\ndef stop(pid):\n    os.killpg(pid, 9)\n", True),
+        ("tools/report.py", "import subprocess\nFLAGS = subprocess.CREATE_NO_WINDOW\n", True),
+        ("tools/report.py", "import platform\nprint(platform.python_version())\n", False),
         ("tools/report.py", 'import os\nif hasattr(os, "fork"):\n    pass\n', False),
         ("tools/report.py", 'import tool\nif tool.platform == "win32":\n    pass\n', False),
         ("tools/report.py", '# if sys.platform == "win32"\nx = 1\n', False),
@@ -1730,7 +1746,10 @@ class LegFixtures(unittest.TestCase):
         platform = SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True)
         plain = SelectedModule("tools/calc.py", 1, (mutant(1),), (), False)
         selected = Selected("origin/main", "3.8.0", (platform, plain))
-        both = {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))], "tools/calc.py": [Outcome(mutant(1), KILLED)]}
+        both = {
+            PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))],
+            "tools/calc.py": [Outcome(mutant(1), KILLED, ("t",))],
+        }
         windows = {PATH_MODULE: [Outcome(TEXTUAL, KILLED, ("t",))]}
         records = [
             (LINUX_LEG, LegRun(LINUX_LEG, 40, 1.0, 1, {}, {}, []), "holds no outcomes of tools/paths.py, tools/calc"),
@@ -1917,6 +1936,105 @@ def test_each_records_least_values_read_back() -> None:
         outcomes.write_text(json.dumps(leg_record(leg)), encoding="utf-8")
         assert read_selection(mutants) == selected
         assert read_leg(outcomes, selected, WINDOWS_LEG) == leg
+
+
+@pytest.mark.parametrize(
+    ("status", "suites", "tests", "message"),
+    [
+        (KILLED, [], [], "suites must be the suites a killed mutant ran, at least one, found an empty array"),
+        (TIMED_OUT, [], [], "suites must be the suites a timed out mutant ran, at least one, found an empty array"),
+        (SURVIVED, [], [], "suites must be the suites a survived mutant ran, at least one, found an empty array"),
+        (NOT_REACHED, ["t"], [1], "suites must be empty for a mutant no suite reached, found an array of 1 items"),
+        (KILLED, ["t"], [1, 2], "tests must be an array of at most 1 items, one for each suite, found 2 items"),
+        (NOT_RUN, [], [1], "tests must be an array of at most 0 items, one for each suite, found 1 items"),
+    ],
+)
+def test_an_outcome_whose_suites_do_not_fit_its_status_is_refused_by_its_path(
+    status: str, suites: list[str], tests: list[int], message: str
+) -> None:
+    record = leg_record(READ_LEG)
+    record["outcomes"][PATH_MODULE][0] = {"status": status, "suites": suites, "tests": tests}
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "record.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(RecordFieldError) as refused:
+            read_leg(path, READ_SELECTED, WINDOWS_LEG)
+    assert str(refused.value) == f"record.json.outcomes.tools/paths.py[0].{message}"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        Outcome(READ_MUTANT, NOT_REACHED),
+        Outcome(READ_MUTANT, NOT_RUN),
+        Outcome(READ_MUTANT, NOT_RUN, ("t",), (1,)),
+        Outcome(READ_MUTANT, TIMED_OUT, ("t",), (1,)),
+        Outcome(READ_MUTANT, SURVIVED, ("t", "u"), (1, 0)),
+        Outcome(READ_MUTANT, KILLED, ("t", "u")),
+    ],
+)
+def test_each_outcome_shape_a_leg_writes_reads_back(outcome: Outcome) -> None:
+    leg = LegRun(WINDOWS_LEG, 40, 1.5, 2, {PATH_MODULE: [outcome]}, {}, [])
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "record.json"
+        path.write_text(json.dumps(leg_record(leg)), encoding="utf-8")
+        assert read_leg(path, READ_SELECTED, WINDOWS_LEG) == leg
+
+
+def write_join(folder: Path, selection: dict[str, Any], legs: dict[str, dict[str, Any]]) -> None:
+    """The selection and each leg's record as the steps hand them to the join."""
+    (folder / "mutants.json").write_text(json.dumps(selection), encoding="utf-8")
+    for name, record in legs.items():
+        (folder / f"outcomes-{name.casefold()}.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_the_join_refuses_a_kill_no_suite_made_on_both_legs_or_beside_a_survivor() -> None:
+    selected = Selected("origin/main", "3.8.0", (SelectedModule(PATH_MODULE, 1, (READ_MUTANT,), (), True),))
+    suiteless = {"status": KILLED, "suites": [], "tests": []}
+    survivor = LegRun(LINUX_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(READ_MUTANT, SURVIVED, ("t",), (1,))]}, {}, [])
+    killed = LegRun(WINDOWS_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(READ_MUTANT, KILLED, ("t",), (1,))]}, {}, [])
+    # Both legs claim a kill no suite made, or Windows does beside a Linux survivor, whose summary names the killer.
+    for emptied in ((LINUX_LEG, WINDOWS_LEG), (WINDOWS_LEG,)):
+        records = {LINUX_LEG: leg_record(survivor), WINDOWS_LEG: leg_record(killed)}
+        for leg in emptied:
+            records[leg]["outcomes"][PATH_MODULE][0] = dict(suiteless)
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            write_join(folder, selection_record(selected), records)
+            with pytest.raises(RecordError, match=r"^outcomes-\w+\.json\.outcomes\.tools/paths\.py\[0\]\.suites must"):
+                mutation_gate.join(folder)
+    # The same legs with each kill naming its suite join.
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_join(
+            folder, selection_record(selected), {LINUX_LEG: leg_record(survivor), WINDOWS_LEG: leg_record(killed)}
+        )
+        assert mutation_gate.join(folder).finished
+
+
+def test_the_join_refuses_a_selection_that_lists_a_module_twice() -> None:
+    first, second = mutant(1), mutant(2)
+    twice = Selected(
+        "origin/main",
+        "3.8.0",
+        (
+            SelectedModule("tools/calc.py", 1, (first,), (), False),
+            SelectedModule("tools/calc.py", 1, (second,), (), False),
+        ),
+    )
+    linux = LegRun(LINUX_LEG, 40, 1.0, 1, {"tools/calc.py": [Outcome(second, KILLED, ("t",), (1,))]}, {}, [])
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_join(folder, selection_record(twice), {LINUX_LEG: leg_record(linux)})
+        with pytest.raises(RecordFieldError) as refused:
+            mutation_gate.join(folder)
+        assert str(refused.value) == (
+            "mutants.json.modules[1].module must be a module no earlier entry names, found tools/calc.py"
+        )
+        # Each module once joins.
+        once = Selected("origin/main", "3.8.0", (SelectedModule("tools/calc.py", 1, (second,), (), False),))
+        write_join(folder, selection_record(once), {LINUX_LEG: leg_record(linux)})
+        assert mutation_gate.join(folder).finished
 
 
 CALC = "def add(a, b):\n    return a + b\n\n\ndef double(a):\n    return a * 2\n"
@@ -2370,7 +2488,7 @@ class SplitRunFixtures(unittest.TestCase):
             self.assertEqual(unfinished, read_leg(folder / "outcomes-windows.json", selected, WINDOWS_LEG))
             linux_outcomes = {
                 PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))],
-                "tools/calc.py": [Outcome(mutant(1), KILLED)],
+                "tools/calc.py": [Outcome(mutant(1), KILLED, ("t",))],
             }
             linux = LegRun(LINUX_LEG, 40, 1.0, 1, linux_outcomes, {}, [])
             (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(linux)), encoding="utf-8")

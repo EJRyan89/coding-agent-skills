@@ -40,6 +40,7 @@ SKILL_CORE = "skills/ejryan89-skill-core/scripts"
 SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
 PIPELINE_SCRIPTS = "skills/ejryan89-code-review-core/scripts"
+INSIGHTS_SCRIPTS = "skills/review-insights/scripts"
 # The scripts the trust-boundary route holds, written out here rather than read from the manifest or the brief,
 # which describes them by kind, so a script the route gains or loses is a choice this list records too.
 TRUST_BOUNDARY_SCRIPTS = (
@@ -67,6 +68,12 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{PIPELINE_SCRIPTS}/review_vocabularies.py",
     f"{PIPELINE_SCRIPTS}/test_adversarial_inputs.py",
     "skills/review-document/scripts/review_document.py",
+    # The review-insights synthesis: its prompt and run.json, and the finding text, guidance passages, and signals
+    # it carries into that prompt's input.
+    f"{INSIGHTS_SCRIPTS}/review_guidance.py",
+    f"{INSIGHTS_SCRIPTS}/review_insights.py",
+    f"{INSIGHTS_SCRIPTS}/review_signals.py",
+    f"{INSIGHTS_SCRIPTS}/review_synthesis.py",
     f"{SKILL_CORE}/bounded_process.py",
     f"{SKILL_CORE}/device_names.py",
     f"{SKILL_CORE}/diff_paths.py",
@@ -174,6 +181,22 @@ def reviewed_files() -> list[str]:
 def trust_boundary_modules() -> list[str]:
     """The trust-boundary route's scripts but the suite among them."""
     return [path for path in TRUST_BOUNDARY_SCRIPTS if not conditions.is_suite(path)]
+
+
+def stages_a_guarded_run(source: str) -> bool:
+    """Whether a module takes part in the reviewer guard's run contract: it imports review_guard, by an import
+    statement or by the module name as a string, as importlib does, or names a run's `run.json`, which only a
+    script that writes or reads a guarded run does."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import) and any(alias.name.split(".")[0] == "review_guard" for alias in node.names):
+            return True
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "review_guard":
+            return True
+        if isinstance(node, ast.Constant) and node.value in ("review_guard", "run.json"):
+            return True
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.endswith("/run.json"):
+            return True
+    return False
 
 
 def alternatives(pattern: str) -> list[str]:
@@ -381,6 +404,22 @@ class ManifestTests(unittest.TestCase):
             "trust-boundary",
             reached([f"{PIPELINE_SCRIPTS}/review_operation.py"])[f"{PIPELINE_SCRIPTS}/review_operation.py"],
         )
+
+    def test_every_script_that_stages_a_guarded_run_reaches_the_trust_boundary_reviewer(self) -> None:
+        # A script that imports the guard's run contract or writes a run.json writes what the guard holds a reviewer
+        # to, and the prompt that run names, which carries author text, as review_synthesis.py's does. Each is one the
+        # trust-boundary reviewer holds, wherever under skills/ it sits, not only the modules the route lists by name.
+        staging = [
+            path
+            for path in tracked_files()
+            if path.startswith("skills/")
+            and path.endswith(".py")
+            and not conditions.is_suite(path)
+            and stages_a_guarded_run((REPOSITORY / path).read_text(encoding="utf-8"))
+        ]
+        self.assertIn(f"{INSIGHTS_SCRIPTS}/review_synthesis.py", staging)
+        self.assertIn(f"{PIPELINE_SCRIPTS}/review_guard.py", staging)
+        self.assertEqual([], [path for path in staging if "trust-boundary" not in reached([path])[path]])
 
     def test_every_script_the_threat_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
         # The threat model states the boundary row by row, so a script a row names, such as review-document's, is
@@ -1234,3 +1273,22 @@ def test_the_briefs_the_installed_update_reaches_ask_about_the_previous_release_
 )
 def test_the_guidance_names_no_release(name: str) -> None:
     assert re.search(r"\bv\d+\.\d+\.\d+\b", (REPOSITORY / SKILL / name).read_text(encoding="utf-8")) is None
+
+
+@pytest.mark.parametrize(
+    ("source", "staging"),
+    [
+        ("from review_guard import RUN_FILE, RUN_PREFIX\n", True),
+        ("import review_guard\n", True),
+        ("import review_guard as guard\n", True),
+        ('import importlib\nguard = importlib.import_module("review_guard")\n', True),
+        ('RUN = "run.json"\n', True),
+        ('path = folder / "code-review-run-x" / "run.json"\n', True),
+        ('path = "runs/a/run.json"\n', True),
+        ("import review_guidance\n", False),
+        ('# writes run.json\nNAME = "runs.json"\n', False),
+        ('"""Reads the run.json a guarded run holds."""\n', False),
+    ],
+)
+def test_a_module_stages_a_guarded_run_when_it_imports_the_guard_or_names_run_json(source: str, staging: bool) -> None:
+    assert stages_a_guarded_run(source) is staging
