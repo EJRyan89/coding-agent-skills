@@ -9,13 +9,14 @@
 
 The template is `pull_request_template.md`, in any case, in `.github/`, the top folder, or `docs/`, as GitHub reads
 it. The body check refuses what the template leaves for the author: a comment copied from it, a closing line with no
-issue, and an empty list item; a closing line that is not `Closes #<n>` naming one issue; and a template heading the
-body dropped. A comment the author wrote is not read.
+issue, and an empty list item; every closing reference GitHub reads, through ejryan89-skill-core's closing_references,
+that is not a `Closes #<n>` line of its own, in prose, a list, a quote, or with a colon alike; and a template heading
+the body dropped. A comment the author wrote is not read.
 
 Every line is one fact:
 
     TEMPLATE "<file>"              draft: the template read, from the top of the repository
-    CLOSES <n>                     each issue a `Closes #<n>` line names
+    CLOSES <n>                     each issue the body closes, by any closing reference GitHub reads
     BODY "<file>"                  draft: the body written, for the author to fill
     TITLE "<file>"                 draft: where to write the title, one line; nothing is there yet
     TITLE <title>                  check, open: the title read
@@ -23,7 +24,7 @@ Every line is one fact:
     TITLE_EMPTY                    the title file holds no title
     TITLE_LINES <count>            the title file holds more than one line
     PLACEHOLDER <line> <what>      a placeholder the template left in the body, at its line
-    CLOSES_LINE <line> <text>      a closing line that is not `Closes #<n>` naming one issue
+    CLOSES_LINE <line> <text>      a line holding a closing reference that is not `Closes #<n>` alone
     HEADING_MISSING <heading>      a template heading the body does not keep
     BEHIND <base> <sha>            the branch does not hold the base's tip: bring it up to date
     NO_COMMITS <base>              the branch has no commit the base does not hold
@@ -51,7 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import whole_number
-from closing_references import CLOSING_KEYWORDS, REPOSITORY
+from closing_references import CLOSING_KEYWORDS, CLOSING_REFERENCE, REPOSITORY, closing_references
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -62,8 +63,8 @@ from typed_text import read_typed
 TEMPLATE_NAME = "pull_request_template.md"
 # The folders GitHub reads a pull request template from, relative to the top of the repository.
 TEMPLATE_FOLDERS = (".github", "", "docs")
-# A line GitHub reads as closing an issue: a closing keyword, then an issue reference in any of the forms
-# closing_references reads, `#`, `<owner>/<repo>#`, or the issue's URL.
+# A line that opens with a closing keyword and the start of an issue reference, `#`, `<owner>/<repo>#`, or a URL, which
+# is refused unless it is `Closes #<n>` even where what follows is no reference CLOSING_REFERENCE reads.
 CLOSING_LINE = re.compile(rf"(?i)\s*{CLOSING_KEYWORDS}\b:?\s+(?:(?:{REPOSITORY})?#|https://github\.com/)")
 BARE_CLOSING_LINE = re.compile(rf"(?i){CLOSING_KEYWORDS}\b:?\s+#")
 CLOSES_ONE = re.compile(r"Closes #([1-9][0-9]*)")
@@ -129,11 +130,17 @@ def draft_body(template: str, closes: Sequence[int]) -> str:
 
 
 def closed_issues(body: str) -> list[int]:
-    """The issue each `Closes #<n>` line of the body names, outside comments, or PullRequestError for a number too
-    long to read."""
-    found = (CLOSES_ONE.fullmatch(line.strip()) for line in blank_comments(body).splitlines())
-    refused = PullRequestError(f"a Closes line names an issue number of more than {whole_number.DIGIT_LIMIT} digits")
-    return [whole_number.read(match.group(1), refused) for match in found if match]
+    """Each issue the body closes outside comments, once, in order, by every closing reference GitHub reads, as
+    closing_references reads them, or PullRequestError for a number too long to read."""
+    text = blank_comments(body)
+    if any(
+        whole_number.parse(match["number"] or match["linked_number"]) is None
+        for match in CLOSING_REFERENCE.finditer(text)
+    ):
+        raise PullRequestError(
+            f"a closing reference names an issue number of more than {whole_number.DIGIT_LIMIT} digits"
+        )
+    return list(dict.fromkeys(reference.number for reference in closing_references(text)))
 
 
 def headings(text: str) -> list[str]:
@@ -158,7 +165,7 @@ def body_problems(body: str, template: str) -> list[str]:
         text = line.strip()
         if BARE_CLOSING_LINE.fullmatch(text):
             problems.append((number, f"PLACEHOLDER {number} a Closes line with no issue"))
-        elif CLOSING_LINE.match(line) and not CLOSES_ONE.fullmatch(text):
+        elif (CLOSING_REFERENCE.search(line) or CLOSING_LINE.match(line)) and not CLOSES_ONE.fullmatch(text):
             problems.append((number, f"CLOSES_LINE {number} {flat_text(text)}"))
         elif EMPTY_LIST_ITEM.fullmatch(line):
             problems.append((number, f"PLACEHOLDER {number} an empty list item"))
