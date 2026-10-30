@@ -136,6 +136,51 @@ class ConditionTests(unittest.TestCase):
             written,
         )
 
+    def test_a_conversion_beside_a_site_that_already_called_the_helper_opens_the_route(self) -> None:
+        # The replaced block already calls json_writer.write at one site, so a set of callee names sees nothing new;
+        # counted as call sites, the block's one call became two.
+        report = "import json\nimport json_writer\n\n\ndef save(path, data):\n"
+        report += (
+            "    path.write_text(json.dumps(data, indent=2))\n    json_writer.write(path.with_suffix('.b'), data)\n"
+        )
+        report += "    return path\n"
+        converted = report.replace("path.write_text(json.dumps(data, indent=2))", "json_writer.write(path, data)")
+        converted = converted.replace("'.b'), data)", "'.b'), data, indent=4)")
+        test = {"tests/test_report.py": "import report\n\n\ndef test_save(path):\n    assert report.save(path, {})\n"}
+        code, out, written = self.run_condition(
+            {"tools/report.py": report, **test}, {"tools/report.py": converted, **test}
+        )
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        # The diff does not pair the lines, so both sites of the grown callee are named.
+        self.assertTrue(
+            written.startswith(
+                "CONVERTED tools/report.py:5 function save, a test names it, converted calls json_writer.write at "
+                "line 6, json_writer.write at line 7, hunk @@ -3,6 +3,6 @@, tests of its file tests/test_report.py\n"
+            ),
+            written,
+        )
+        # Two sites on one line, where the replaced line made one, count as a conversion too.
+        one_line = "import json_writer\n\n\ndef save(path, data):\n    json_writer.write(path, data); path.touch()\n"
+        two_sites = one_line.replace("path.touch()", "json_writer.write(path, {})")
+        code, out, written = self.run_condition(
+            {"tools/report.py": one_line, **test}, {"tools/report.py": two_sites, **test}
+        )
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertIn("converted calls json_writer.write at line 5, hunk", written)
+
+    def test_reordering_or_rewriting_sites_that_already_called_the_helper_closes_the_route(self) -> None:
+        test = {"tests/test_report.py": "import report\n\nassert report.save\n"}
+        source = "import json_writer\n\n\ndef save(path, data):\n"
+        source += "    json_writer.write(path, data)\n    json_writer.write(path.parent, data)\n    return path\n"
+        swapped = source.replace(
+            "    json_writer.write(path, data)\n    json_writer.write(path.parent, data)\n",
+            "    json_writer.write(path.parent, data, indent=4)\n    json_writer.write(path, data, indent=4)\n",
+        )
+        self.assertEqual(
+            (1, "UNTESTED 0 given=0\n", ""),
+            self.run_condition({"tools/report.py": source, **test}, {"tools/report.py": swapped, **test}),
+        )
+
     def test_a_converted_method_names_each_call_its_class_and_every_test_of_its_file(self) -> None:
         store = (
             "from json_writer import write\nfrom records import Record\n\n\nclass Store:\n"

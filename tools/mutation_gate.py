@@ -374,19 +374,21 @@ def is_gate_module(path: str) -> bool:
 
 
 def branches_on_platform(tree: ast.Module) -> bool:
-    """Whether a module's code compares a name the platform policy's PLATFORM_TOKENS holds as qualified, such as
-    `sys.platform == "win32"`, `os.name != "nt"`, or `platform.system() == "Windows"`, each name read through the
-    module's imports. A test that only asks whether a name exists, as `hasattr(os, "fork")` does, is not read."""
+    """Whether a module's code reads a name the platform policy's PLATFORM_TOKENS holds as qualified, in any
+    expression, each name read through the module's imports: a comparison such as `sys.platform == "win32"`, a method
+    call on it such as `os.name.casefold()` or `platform.system().lower()`, a `match` subject, an assignment, a
+    subscript, an argument, or an `isinstance` against `pathlib.WindowsPath`. A value read from the platform may
+    decide what the module does anywhere it flows, so every read counts. A test that only asks whether a name exists,
+    as `hasattr(os, "fork")` does, names no token and is not read; nor is a token in a comment or a string."""
     aliases = import_aliases(tree)
 
-    def platform_name(node: ast.expr) -> bool:
-        named = qualified_name(node.func if isinstance(node, ast.Call) else node, aliases)
+    def platform_name(node: ast.AST) -> bool:
+        named = qualified_name(node, aliases)
         return named in PLATFORM_TOKENS["qualified"] or named.startswith(PLATFORM_TOKENS["qualified_prefix"])
 
-    return any(
-        isinstance(node, ast.Compare) and any(platform_name(operand) for operand in (node.left, *node.comparators))
-        for node in ast.walk(tree)
-    )
+    # ast.walk reaches every Name and Attribute, so `sys.platform` inside `sys.platform.startswith("win")` is read on
+    # its own, and so is `platform.system` inside `platform.system().lower()`, whose outer attribute names nothing.
+    return any(isinstance(node, (ast.Name, ast.Attribute)) and platform_name(node) for node in ast.walk(tree))
 
 
 def runs_on_windows(module: str, source: str) -> bool:
@@ -1444,10 +1446,15 @@ def read_selected_module(value: object, where: str) -> SelectedModule:
 def read_selection(path: Path) -> Selected:
     """The selection the select step wrote; a field of a kind the step does not write stops the join."""
     record = read_record(path, ("base", "mutmut", "modules"))
+    modules = tuple(READ.array(record["modules"], f"{path.name}.modules", read_selected_module))
+    seen: set[str] = set()
+    for index, chosen in enumerate(modules):
+        # A leg's outcomes are keyed by module, so a module listed twice would give both entries one list.
+        if chosen.module in seen:
+            raise READ.fail(f"{path.name}.modules[{index}].module", "a module no earlier entry names", chosen.module)
+        seen.add(chosen.module)
     return Selected(
-        READ.string(record["base"], f"{path.name}.base"),
-        READ.string(record["mutmut"], f"{path.name}.mutmut"),
-        tuple(READ.array(record["modules"], f"{path.name}.modules", read_selected_module)),
+        READ.string(record["base"], f"{path.name}.base"), READ.string(record["mutmut"], f"{path.name}.mutmut"), modules
     )
 
 
@@ -1471,13 +1478,23 @@ def leg_record(leg: LegRun) -> dict[str, Any]:
 
 
 def read_outcome(mutant: Mutant, value: object, where: str) -> Outcome:
+    """A mutant's outcome in a shape try_mutant writes: a mutant a suite killed, outlasted, or passed names the suites
+    it ran, at least one; one no suite reached names none; one the cap left names those it ran first; and no suite has
+    more than one count of tests. Any other shape stops the join, so no mutant reads as killed unless a suite killed
+    it."""
     entry = READ.json_object(value, where, required=("status", "suites", "tests"))
-    return Outcome(
-        mutant,
-        READ.one_of(entry["status"], f"{where}.status", STATUSES),
-        tuple(READ.array(entry["suites"], f"{where}.suites", READ.string)),
-        tuple(READ.array(entry["tests"], f"{where}.tests", at_least(0))),
-    )
+    status = READ.one_of(entry["status"], f"{where}.status", STATUSES)
+    suites = tuple(READ.array(entry["suites"], f"{where}.suites", READ.string))
+    tests = tuple(READ.array(entry["tests"], f"{where}.tests", at_least(0)))
+    if status in (KILLED, TIMED_OUT, SURVIVED) and not suites:
+        raise READ.fail(f"{where}.suites", f"the suites a {status} mutant ran, at least one", "an empty array")
+    if status == NOT_REACHED and suites:
+        raise READ.fail(f"{where}.suites", "empty for a mutant no suite reached", f"an array of {len(suites)} items")
+    if len(tests) > len(suites):
+        raise READ.fail(
+            f"{where}.tests", f"an array of at most {len(suites)} items, one for each suite", f"{len(tests)} items"
+        )
+    return Outcome(mutant, status, suites, tests)
 
 
 def read_outcomes(
