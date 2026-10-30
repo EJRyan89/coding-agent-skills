@@ -65,6 +65,8 @@ from validation_support import (
     skill_script_directories,
 )
 
+from deployer.platform_support import program_name
+
 CONFTEST = "conftest.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
 # suite further, at the cost of one more process start and suite import each, about half a second on CI's Windows
@@ -436,7 +438,7 @@ HEAD_LONG_OPTIONS = HEAD_COUNT_LONG_OPTIONS | {"--quiet", "--silent", "--verbose
 
 def _program(word: str) -> str:
     """The program a command word names, by its file name: `/usr/bin/head` and `head.exe` are head."""
-    return word.rpartition("/")[2].removesuffix(".exe")
+    return program_name(word.rpartition("/")[2])
 
 
 def _long_option(word: str, options: frozenset[str]) -> str | None:
