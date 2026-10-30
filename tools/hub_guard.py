@@ -189,8 +189,15 @@ PREFIX_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
         0,
     ),
 }
-# Bash options whose next word is their value, so it is not the script that -c runs.
-BASH_OPTIONS_WITH_VALUE = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
+# Bash's long options whose next word is their value, so it is not the script that -c runs; in a single-dash or
+# single-plus bundle each o and O takes the next word (bash_option_values).
+BASH_LONG_OPTIONS_WITH_VALUE = {"--rcfile", "--init-file"}
+# The variable whose elements are Bash's aliases, by name: assigning one defines an alias, as `alias` does.
+BASH_ALIASES = "BASH_ALIASES"
+# The environment variable by which Bash hands a function exported with export -f to a shell it starts, holding the
+# function's body after its name, and the start of the value Bash imports a function from.
+EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
+EXPORTED_FUNCTION_VALUE = "() {"
 # How deep bash -c, pwsh -Command, eval, a function call, and Invoke-Expression are followed; the PowerShell reader is
 # handed what is left of it. Deeper nesting is a command the guard cannot read.
 NESTING_LIMIT = 4
@@ -308,21 +315,26 @@ def git_builtins() -> frozenset[str]:
 
 def hub_protected(path: Path) -> bool:
     """Whether path lies in the tracked surface of a guarded hub or anywhere in its git directory; ignored files such
-    as local settings do not."""
+    as local settings do not.
+
+    A checkout or git directory git answers with an error for may be a guarded hub's, so it is protected; where git
+    did not run or finish, the GitError goes to the hook, which allows the edit with a note."""
     normalized = Path(os.path.normpath(path))
     for directory in (normalized, *normalized.parents):
         if os.path.normcase(directory.name) == ".git" and directory.is_dir():
             try:
                 return guarded_hub_of_repository(directory) is not None
-            except GitError:
-                return True  # a git directory git cannot read may be a guarded hub's
+            except GitError as exc:
+                if not exc.answered:
+                    raise
+                return True
 
     try:
         hub = guarded_hub_at(normalized)
     except GitError as exc:
-        if exc.returncode is None:
-            raise  # git did not run or finish, which says nothing of the checkout: allowed with a note
-        return True  # a checkout git answers with an error for may be a guarded hub's
+        if not exc.answered:
+            raise
+        return True
     if hub is None:
         return False
     return git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode != 0
@@ -973,7 +985,9 @@ class Shell:
     exported, those its commands see. opaque marks a shell in which a command the guard cannot read, such as a
     sourced file, may have set any variable. references holds each name reference declare -n, local -n, or
     typeset -n made, by its name: the variable it stands for, "" while it stands for none, so that its first
-    assignment names one, or None when the text does not settle which.
+    assignment names one, or None when the text does not settle which. exported_functions holds the functions
+    export -f exported, which a shell it starts defines. reading, when set, is told of each name that reaches
+    BASH_ALIASES, whose elements are aliases.
     """
 
     cwd: Path | None
@@ -984,6 +998,8 @@ class Shell:
     opaque: bool = False
     functions: dict[str, bash_syntax.Command] = field(default_factory=dict)
     references: dict[str, str | None] = field(default_factory=dict)
+    exported_functions: set[str] = field(default_factory=set)
+    reading: Reading | None = None
 
     def copy(self) -> Shell:
         return replace(
@@ -993,20 +1009,32 @@ class Shell:
             stack=list(self.stack),
             functions=dict(self.functions),
             references=dict(self.references),
+            exported_functions=set(self.exported_functions),
         )
 
     def target(self, name: str) -> str | None:
         """The variable a name reaches: itself, or the one its chain of name references ends at; None when a
         reference in the chain stands for no variable, for an element, or for one the text does not settle, or when
-        the chain is deeper than Bash follows, eight references."""
+        the chain is deeper than Bash follows, eight references.
+
+        A name that reaches BASH_ALIASES, by any spelling of an assignment, a declaration, or a builtin that sets a
+        variable, may define an alias, which the reading is told of."""
         for _ in range(8):
+            self.note_alias(name)
             if name not in self.references:
                 return name
             reached = self.references[name]
             if reached is None or not bash_syntax.NAME.fullmatch(reached):
+                self.note_alias(reached or "")
                 return None
             name = reached
+        self.note_alias(name)
         return None if name in self.references else name
+
+    def note_alias(self, name: str) -> None:
+        """Tells the reading of a name of BASH_ALIASES or one of its elements, which may define an alias."""
+        if name.partition("[")[0] == BASH_ALIASES and self.reading is not None:
+            self.reading.cannot_read(f"an alias the command defines ({BASH_ALIASES})")
 
     def lookup(self, name: str) -> Word:
         """A variable's value as the shell expands it, through any name reference; None when the text does not settle
@@ -1076,6 +1104,8 @@ def join(first: Shell, second: Shell) -> Shell:
         first.opaque or second.opaque,
         {**first.functions, **second.functions},
         references,
+        first.exported_functions | second.exported_functions,
+        first.reading,
     )
 
 
@@ -1280,6 +1310,10 @@ class BashReader:
         while index < len(words) and words[index].assignment is not None:
             index += 1
         assignments = [word.assignment for word in words[:index] if word.assignment is not None]
+        for word in words[index:]:
+            # A declaration builtin's assignment, whose value the text may not settle, still names its variable.
+            if word.assignment is not None:
+                shell.note_alias(word.assignment.name)
         if index == len(words):
             assigned = [(assignment.name, assigned_value(assignment, shell)) for assignment in assignments]
             for name, value in assigned:
@@ -1342,7 +1376,9 @@ class BashReader:
             read_git(arguments, shell.cwd, variables, self.reading, shell.opaque)
         elif program in BASH_NAMES:
             script = bash_script(arguments, redirects, shell)
-            follow(program, script, shell.cwd, variables, self.reading, self.depth, read_bash)
+            exported = {name: shell.functions[name] for name in shell.exported_functions if name in shell.functions}
+            read = functools.partial(read_bash, functions=exported)
+            follow(program, script, shell.cwd, variables, self.reading, self.depth, read)
         elif program in POWERSHELL_NAMES:
             follow_powershell(program, arguments, shell.cwd, variables, self.reading, self.depth)
         elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
@@ -1519,16 +1555,16 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
     through any name reference, and the name references declare, typeset, and local make with -n and undo with
     +n."""
     builtin = reader.current_builtin
+    if any(is_declare_option(word) and "f" in word[1:] for word in arguments if word is not None):
+        return certain(declare_functions(builtin, arguments, shell))
     exporting, unexporting = builtin == "export", False
     referencing: bool | None = None
     for word in arguments:
         if word is None:
             shell.opaque = True
             continue
-        if word.startswith(("-", "+")) and not ASSIGNMENT.match(word):
+        if is_declare_option(word):
             flags = word[1:]
-            if "f" in flags:
-                return certain(shell)  # Functions, not variables.
             if builtin == "export" and "n" in flags:
                 unexporting = True
                 continue
@@ -1548,6 +1584,32 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
         elif exporting or (shell.allexport and has_value):
             shell.exported.add(subject)
     return certain(shell)
+
+
+def is_declare_option(word: str) -> bool:
+    return word.startswith(("-", "+")) and not ASSIGNMENT.match(word)
+
+
+def declare_functions(builtin: str, arguments: list[Word], shell: Shell) -> Shell:
+    """export -f, and declare, typeset, local, or readonly with -f: the functions it exports to the shells this one
+    starts, with -x or as export, or stops exporting, with +x or export -n. A name the text does not settle may be
+    any function: every one the shell defines is exported, and none stops being exported."""
+    exporting, unexporting = builtin == "export", False
+    names: list[Word] = []
+    for word in arguments:
+        if word is None or not is_declare_option(word):
+            names.append(word)
+        elif builtin == "export":
+            unexporting = unexporting or "n" in word[1:]
+        elif "x" in word[1:]:
+            exporting, unexporting = word.startswith("-"), word.startswith("+")
+    for name in names:
+        if unexporting:
+            if name is not None:
+                shell.exported_functions.discard(name)
+        elif exporting:
+            shell.exported_functions |= set(shell.functions) if name is None else {name} & shell.functions.keys()
+    return shell
 
 
 def declared_name(shell: Shell, name: str, value: str | None, referencing: bool | None) -> str | None:
@@ -1703,20 +1765,17 @@ def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shel
 
 
 def bash_set(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """set -a, set -o allexport, and their + forms, which export every variable assigned while they hold."""
+    """set -a, set -o allexport, and their + forms, which export every variable assigned while they hold; each o in a
+    bundle, as in `set -eo allexport`, takes the next word as the option it sets."""
     index = 0
     while index < len(arguments):
         word = arguments[index]
-        if word in {"-o", "+o"}:
-            if arguments[index + 1 : index + 2] == ["allexport"]:
-                shell.allexport = word == "-o"
-            index += 2
-            continue
         if word is None or word == "--" or len(word) < 2 or word[0] not in "-+" or not word[1:].isalpha():
             break
-        if "a" in word[1:]:
+        values = bash_option_values(word)
+        if "a" in word[1:] or "allexport" in arguments[index + 1 : index + 1 + values]:
             shell.allexport = word[0] == "-"
-        index += 1
+        index += 1 + values
     return certain(shell)
 
 
@@ -1812,7 +1871,7 @@ def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], sh
         command_mode = command_mode or (not word.startswith("--") and "c" in word[1:])
         # -s reads the script from standard input and takes every operand as a positional parameter.
         from_input = from_input or (word.startswith("-") and not word.startswith("--") and "s" in word[1:])
-        index += 2 if word in BASH_OPTIONS_WITH_VALUE else 1
+        index += 1 + bash_option_values(word)
     if command_mode:
         return arguments[index : index + 1]
     if index < len(arguments) and not from_input:
@@ -1828,6 +1887,15 @@ def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], sh
         elif redirect.operator in {"<", "<>"}:
             script = None
     return script
+
+
+def bash_option_values(word: str) -> int:
+    """How many of the words after a bash or set option are its values: one for --rcfile and --init-file, and in a
+    single-dash or single-plus bundle one for each o and O, which Bash takes in order, as in `-euo pipefail` and
+    `-oc pipefail '<script>'`."""
+    if word.startswith("--"):
+        return int(word in BASH_LONG_OPTIONS_WITH_VALUE)
+    return sum(flag in "oO" for flag in word[1:])
 
 
 def powershell_script(arguments: list[Word]) -> list[Word] | None:
@@ -2008,14 +2076,30 @@ def follow_powershell(
     follow(program, script, powershell_directory(arguments, cwd), variables, reading, depth, read_powershell)
 
 
-def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int, variables: Variables) -> None:
-    """Reads a Bash command, started with these variables exported, as Bash runs it."""
+def read_bash(
+    command: str,
+    cwd: Path | None,
+    reading: Reading,
+    depth: int,
+    variables: Variables,
+    functions: Mapping[str, bash_syntax.Command] | None = None,
+) -> None:
+    """Reads a Bash command, started with these variables exported, as Bash runs it, with the functions the shell
+    that starts it exported, and those its environment hands it as BASH_FUNC_<name>%% variables, defined."""
     allexport = "allexport" in reading.environment.get("SHELLOPTS", "").split(":")
     # A shell inherits the environment the hook was given; the tracked variables are those its starter passes on.
     untracked = {name: value for name, value in reading.environment.items() if not is_tracked(name)}
     inherited: dict[str, Word] = {**untracked, **variables}
-    shell = Shell(cwd, dict(inherited), set(inherited), allexport=allexport)
-    BashReader(reading, depth).run_text(command, shell)
+    shell = Shell(cwd, dict(inherited), set(inherited), allexport=allexport, reading=reading)
+    shell.functions.update(functions or {})
+    reader = BashReader(reading, depth)
+    for name, value in inherited.items():
+        # A variable reaches here only with a value: env reads a word the text does not settle as its program.
+        function = EXPORTED_FUNCTION.match(name)
+        if function is not None and value is not None and value.startswith(EXPORTED_FUNCTION_VALUE):
+            shell = reader.run_text(f"{function.group(1)} {value}", shell).merged()
+    shell.exported_functions = set(shell.functions)
+    reader.run_text(command, shell)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -2528,6 +2612,9 @@ def guard(stream: str) -> int:
     # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
     # fails leaves a command the guard cannot read; None until then.
     in_view: tuple[str, set[Path]] | None = None
+    # Whether the hubs of the places the command names are being looked up: a lookup the reading time cuts short
+    # leaves places not looked up, any of which may be a guarded hub's.
+    looking_up = False
     try:
         event = json_reader.loads(stream)
         tool = event.get("tool_name", "")
@@ -2547,13 +2634,16 @@ def guard(stream: str) -> int:
             hubs = set(reading.context_hubs)
             in_view = (reading.text, hubs)
             read_into(reading, tool, cwd, os.environ)
+            looking_up = True
             hubs |= reached_hubs(reading)
+            looking_up = False
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
             for note in reading.notes:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses
-        if in_view is None or not (in_view[1] and mentions(MENTIONS_GIT, in_view[0])):
+        cut_short = looking_up and isinstance(exc, ReadingTimeout)
+        if in_view is None or not ((in_view[1] or cut_short) and mentions(MENTIONS_GIT, in_view[0])):
             print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 0
         # Where a guarded hub is in view, a command naming git that the guard failed to read or judge is one it cannot

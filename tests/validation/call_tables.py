@@ -115,5 +115,8 @@ TEXT_METHODS = {
     "write_text": TextOpener(None, "", 1),
     "open": TextOpener(0, "r", 2),
 }
+# The classes whose TEXT_METHODS a call may name unbound, as in `Path.read_text(path)`, where the path takes the first
+# argument slot and every other argument sits one slot later.
+PATH_CLASSES = frozenset({"pathlib.Path", "pathlib.PosixPath", "pathlib.WindowsPath", "zipfile.Path"})
 # The module functions named open that take no text encoding: a call through one is no path's open.
 OTHER_OPENS = frozenset({"os.open", "tarfile.open", "shelve.open", "dbm.open", "webbrowser.open", "wave.open"})

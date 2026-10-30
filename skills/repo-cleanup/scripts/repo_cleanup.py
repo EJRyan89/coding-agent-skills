@@ -80,8 +80,9 @@ PLAN_SCHEMA_VERSION = 1
 # directory mkdtemp makes, or one a sweep made and recorded, and save_plan refuses a path inside this folder.
 SEALS = Path(tempfile.gettempdir()) / "repo-cleanup-seals"
 JSON_WRITE_ALLOWED = {
-    "save_plan": "a plan holds a branch name git gave as bytes that are not UTF-8 as its surrogate escapes, which "
-    "json_writer refuses and the plan's reader restores, so the later commands name the branch git knows"
+    "save_plan": "a plan or a sweep record holds a branch name git gave as bytes that are not UTF-8 as its surrogate "
+    "escapes, which json_writer refuses and parse_saved, the one reader of both, restores, so the later commands name "
+    "the branch git knows"
 }
 # The fields a plan holds, as build_plan writes them, and those a plan built outside a sweep, or a command that never
 # stopped, leaves out: the sync a sweep adds, and the stopped marker of a command that failed partway.
@@ -881,12 +882,20 @@ def read_sealed(path: str | Path, what: str) -> bytes:
     return data
 
 
+def parse_saved(data: bytes) -> Any:
+    """The document in `data`, a plan's or a sweep record's bytes as `save_plan` wrote them, read back with the
+    surrogate escapes of a branch name git gave as bytes that are not UTF-8 restored. Every reader of what `save_plan`
+    writes parses it here, so none refuses what the writer keeps. Text that is not one JSON document raises
+    ValueError."""
+    return json_reader.loads(data.decode("utf-8"), surrogates=True)
+
+
 def load_plan(path: str | Path) -> dict[str, Any]:
     """The plan at `path`, as this script last saved it there, refused with the first field that is not as
     build_plan writes it, so no command reads a missing or malformed field."""
     data = read_sealed(path, "plan")
     try:
-        plan = json_reader.loads(data.decode("utf-8"), surrogates=True)
+        plan = parse_saved(data)
     except ValueError as exc:
         raise CleanupError(f"cannot read plan {path}: {exc}") from exc
     try:
@@ -2146,7 +2155,7 @@ def read_record(directory: Path) -> tuple[list[dict[str, Any]], list[str]]:
         raise CleanupError(f"{directory} holds no sweep record; name the directory a sweep printed as PLANS")
     data = read_sealed(path, "sweep record")
     try:
-        record = json_reader.loads(data.decode("utf-8"))
+        record = parse_saved(data)
     except ValueError as exc:
         raise CleanupError(f"cannot read the sweep record {path}: {exc}") from exc
     if (

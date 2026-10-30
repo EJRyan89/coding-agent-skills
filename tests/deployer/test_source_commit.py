@@ -257,3 +257,15 @@ class SourceCommitTests(DeployerTestCase):
         git(self.source, "tag", "v9.9.9")
         self.deploy_ok("--all")
         self.assertIn(f"\nDeployed commit: v9.9.9 ({head})\n", self.check().output)
+
+    def test_a_tag_name_holding_a_character_splitlines_breaks_on_is_described_whole(self) -> None:
+        # Git splits its output on "\n" alone; U+0085, U+2028, and U+2029 are valid in a ref name, at its ends too.
+        head = self.make_repository()
+        self.deploy_ok("--all")
+        for separator in (chr(0x85), chr(0x2028), chr(0x2029)):
+            for name in (f"note{separator}v9.0.0", f"{separator}v9.0.0{separator}"):
+                with self.subTest(name=name):
+                    git(self.source, "tag", name)
+                    self.assertEqual(f"{name} ({head})", source_commit.describe(self.source, head))
+                    self.assertIn(f"\nDeployed commit: {name} ({head})\n", self.check().output)
+                    git(self.source, "tag", "-d", name)

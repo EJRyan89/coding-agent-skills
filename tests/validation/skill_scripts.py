@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import git_client
 import json_reader
 import whole_number
-from call_tables import EVENT_LOOP, PROCESS_STARTS
+from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from path_containment import posix_within
@@ -143,40 +143,95 @@ def split_operators(token: str) -> list[str]:
     return parts
 
 
-def _substitutions(script: str) -> list[str]:
-    """The script of each command substitution a Bash script holds, `$(...)` or backticks, quoted or not, outside
-    single quotes, comments, and arithmetic `$((...))`."""
-    found: list[str] = []
+def _backtick_end(script: str, start: int) -> int:
+    """The index of the backtick that closes a substitution whose text begins at `start`, past each backslash-escaped
+    character, or the script's length for one left open."""
+    index = start
+    while index < len(script) and script[index] != "`":
+        index += 2 if script[index] == "\\" else 1
+    return min(index, len(script))
+
+
+def _single_quoted_end(script: str, index: int) -> int:
+    """The index just past a single-quoted string that starts at `index`, at its `'` or at the `$` of Bash's `$'...'`,
+    in which a backslash escapes a quote; the script's length for one left open."""
+    if script.startswith("$'", index):
+        index += 2
+        while index < len(script) and script[index] != "'":
+            index += 2 if script[index] == "\\" else 1
+        return min(index + 1, len(script))
+    return script.find("'", index + 1) + 1 or len(script)
+
+
+def _comment_starts(script: str, index: int) -> bool:
+    return script[index] == "#" and (index == 0 or script[index - 1] in " \t\n;&|(")
+
+
+def _substitution_end(script: str, start: int) -> int:
+    """The index of the `)` that closes a `$(` substitution whose text begins at `start`, or the script's length for one
+    left open. A parenthesis in a quoted string, an escaped one, one in a comment, and those of a nested substitution,
+    in double quotes or not, neither open nor close it."""
+    depth, index, quoted = 1, start, False
+    while index < len(script):
+        character = script[index]
+        if character == "\\":
+            index += 2
+        elif script.startswith("$(", index):
+            index = _substitution_end(script, index + 2) + 1
+        elif character == "`":
+            index = _backtick_end(script, index + 1) + 1
+        elif character == '"':
+            quoted, index = not quoted, index + 1
+        elif quoted:
+            index += 1
+        elif character == "'" or script.startswith("$'", index):
+            index = _single_quoted_end(script, index)
+        elif _comment_starts(script, index):
+            index = script.find("\n", index) + 1 or len(script)
+        else:
+            depth += {"(": 1, ")": -1}.get(character, 0)
+            if not depth:
+                return index
+            index += 1
+    return len(script)
+
+
+def substitution_spans(script: str) -> list[tuple[int, str]]:
+    """Each command substitution a Bash script holds, `$(...)` or backticks, quoted or not, outside single quotes,
+    comments, and arithmetic `$((...))`, as the offset its text begins at and the text; the substitutions it holds in
+    turn are its text's. One left open holds the rest of the script."""
+    found: list[tuple[int, str]] = []
     index, quoted = 0, False
     while index < len(script):
         character = script[index]
         if character == "\\":
             index += 2
             continue
-        if character == "'" and not quoted:
-            index = script.find("'", index + 1) + 1 or len(script)
+        if (character == "'" or script.startswith("$'", index)) and not quoted:
+            index = _single_quoted_end(script, index)
             continue
-        if character == "#" and not quoted and (index == 0 or script[index - 1] in " \t\n;&|("):
+        if not quoted and _comment_starts(script, index):
             index = script.find("\n", index) + 1 or len(script)
             continue
         if character == '"':
             quoted = not quoted
         if script.startswith("$(", index) and not script.startswith("$((", index):
-            depth, end = 1, index + 2
-            while end < len(script) and depth:
-                depth += {"(": 1, ")": -1}.get(script[end], 0)
-                end += 1
-            found.append(script[index + 2 : end - 1])
-            index = end
+            end = _substitution_end(script, index + 2)
+            found.append((index + 2, script[index + 2 : end]))
+            index = end + 1
             continue
         if character == "`":
-            end = script.find("`", index + 1)
-            end = len(script) if end < 0 else end
-            found.append(script[index + 1 : end])
+            end = _backtick_end(script, index + 1)
+            found.append((index + 1, script[index + 1 : end]))
             index = end + 1
             continue
         index += 1
     return found
+
+
+def _substitutions(script: str) -> list[str]:
+    """The script of each command substitution a Bash script holds, as substitution_spans reads them."""
+    return [text for _, text in substitution_spans(script)]
 
 
 def _program_word(word: str) -> set[str]:
@@ -205,18 +260,27 @@ def _wrapped_programs(words: list[str]) -> set[str]:
             for index in actions:
                 found |= _program_word(rest[index + 1]) | _wrapped_programs(rest[index + 1 :])
             return found
-        options = COMMAND_WRAPPERS.get(head)
-        if options is None or (head == "command" and LOOKUP_ONLY_OPTIONS & set(rest)):
+        wrapped = unwrapped(words)
+        if not wrapped:
             return found
-        index = 0
-        while index < len(rest) and (rest[index].startswith("-") or (head == "env" and ASSIGNMENT.match(rest[index]))):
-            index += 2 if rest[index] in options else 1
-        index += 1 if head == "timeout" else 0
-        if index >= len(rest):
-            return found
-        found |= _program_word(rest[index])
-        words = rest[index:]
+        found |= _program_word(wrapped[0])
+        words = wrapped
     return found
+
+
+def unwrapped(words: list[str]) -> list[str]:
+    """The words of the command a COMMAND_WRAPPERS command runs, from its program on: past the wrapper's options and
+    their values, the assignments env takes, and the duration timeout takes. Empty for a command that is no wrapper,
+    one that names no program, and `command -v` or `-V`, which only looks one up."""
+    head, rest = words[0], words[1:]
+    options = COMMAND_WRAPPERS.get(head)
+    if options is None or (head == "command" and LOOKUP_ONLY_OPTIONS & set(rest)):
+        return []
+    index = 0
+    while index < len(rest) and (rest[index].startswith("-") or (head == "env" and ASSIGNMENT.match(rest[index]))):
+        index += 2 if rest[index] in options else 1
+    index += 1 if head == "timeout" else 0
+    return rest[index:]
 
 
 def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[str]:
@@ -1379,9 +1443,10 @@ def console_entry_points(root: Path) -> list[Path]:
 STANDARD_STREAMS = frozenset(
     f"sys.{name}" for stream in ("stdin", "stdout", "stderr") for name in (stream, f"__{stream}__")
 )
-# Calls that build a text stream over a binary stream or a file descriptor, choosing its encoding, and the codecs
-# calls that return a class that does.
-STREAM_WRAPPERS = frozenset({"io.TextIOWrapper", "open", "builtins.open", "io.open", "os.fdopen"})
+# Calls that build a text stream over a binary stream or a file descriptor, choosing its encoding: every text opener
+# call_tables names, codecs.open among them, which given a standard stream or its descriptor sets the encoding of what
+# it builds over it; and the codecs calls that return a class that does.
+STREAM_WRAPPERS = frozenset(TEXT_OPENERS)
 CODEC_WRAPPERS = frozenset({"codecs.getwriter", "codecs.getreader"})
 
 

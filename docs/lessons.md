@@ -63,8 +63,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
   followed by a `return None`, `return []`, or `return False`, where `is_present` should probe; `if not result.stdout`
-  read as nothing found.
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888
+  read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
+  that catch the same `GitError` and read its kinds differently.
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091
 
 ### Evidence that was never produced is never a pass
 
@@ -251,13 +252,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_hub_guard.py::ContractTests::test_an_alias_or_a_script_block_built_from_a_string_is_refused_while_a_hub_is_guarded`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
-  `tests/tools/test_hub_guard_shells.py::FunctionCallDifferentialTests`
-- **Search for:** an option table in `tools/hub_guard.py` with no differential case; a `re.compile(` in
-  `tools/runtime_*.py` or `deployer/discovery.py` with no sample under `tests/fixtures/captured-output/`; each
-  interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
+  `tests/tools/test_hub_guard_shells.py::FunctionCallDifferentialTests`,
+  `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`
+- **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
+  only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later
+  word runs, an alias, a function, or one handed to a child in its environment, against the ways the guard reads;
+  a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample under
+  `tests/fixtures/captured-output/`; each interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
   forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
   guard follows, such as a working directory, read only as taking a value and never for what it changes.
-- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089
 
 ### A recursive parser of input has a depth bound
 
@@ -456,11 +460,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `tools.hub_guard:lookups_within`, which holds every hub lookup made inside it to the reading deadline, and
   `tools.hub_guard:lookup_timeout`, the timeout each of their git calls takes.
 - **Guard:** `tests/tools/test_hub_guard.py::ReadingBoundTests::test_the_hub_lookups_after_reading_end_with_the_reading_time`,
-  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookups_git_call_gets_what_is_left_of_the_reading_time`
+  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookups_git_call_gets_what_is_left_of_the_reading_time`,
+  and one test for each step the deadline holds, each failing with that step's bound removed:
+  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_reading_ends_with_the_reading_time`,
+  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_judging_ends_with_the_reading_time`, and
+  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`
 - **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
   as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
-  each item's work starts processes; a deadline set after work it promises to bound has begun.
-- **Examples:** #2031
+  each item's work starts processes; a deadline set after work it promises to bound has begun; a loop that gathers
+  what it finds into a local and returns it only at the end, while a step inside it can raise the deadline's error.
+- **Examples:** #2031, #2087, #2092
 
 ### A check reaches its whole rule
 
@@ -545,7 +554,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   makes that an intermittent failure.
 - **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_reader_that_ends_early`
 - **Search for:** `| grep -q`, `| grep -m`, or `| head` in any form, `-n`, `-c`, `-1`, or alone, in a `.sh` file
-  that runs `set -o pipefail` or `set -euo pipefail`.
+  that runs `set -o pipefail` or `set -euo pipefail`; the reader also in a `{ ...; }` or `( ... )` group after the pipe,
+  in a `$(...)` or backtick substitution, by a path such as `/usr/bin/head`, or behind `env`, `exec`, `timeout`, or
+  `command`, and `head` whose last count is positive, as in `head -n -1 -n 1`.
 - **Examples:** #1557, #1602
 
 ### A program whose status is the verdict starts with no shell above it

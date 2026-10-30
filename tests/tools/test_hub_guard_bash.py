@@ -358,3 +358,155 @@ class NameReferenceTests(unittest.TestCase):
     def test_an_exported_reference_gives_a_program_its_own_value(self) -> None:
         self.assertEqual(START / "other", git_dir_reaching_git("declare -n GIT_DIR=other"))
         self.assertEqual(START / "other", git_dir_reaching_git("unset GIT_DIR; declare -nx GIT_DIR=other"))
+
+
+def bash_reading(command: str, environment: dict[str, str] | None = None) -> hub_guard.Reading:
+    reading = hub_guard.Reading(environment or {}, command)
+    hub_guard.read_bash(command, START, reading, 0, {})
+    return reading
+
+
+ALIASES_DEFINED = f"an alias the command defines ({hub_guard.BASH_ALIASES})"
+
+
+class OptionBundleTests(unittest.TestCase):
+    """Each o or O in a bash or set option bundle takes the next word as its value, as Bash reads it."""
+
+    def test_bash_runs_the_word_after_every_option_value_as_its_c_script(self) -> None:
+        script = "git commit -m x"
+        for words in (
+            ["-c", "-o", "pipefail", script],
+            ["-c", "-euo", "pipefail", script],
+            ["-euxo", "pipefail", "-c", script],
+            ["-co", "pipefail", script],
+            ["-oc", "pipefail", script],
+            ["-oo", "pipefail", "errexit", "-c", script],
+            ["-Oc", "extglob", script],
+            ["+Oc", "extglob", script],
+            ["-c", "+eo", "pipefail", script],
+            ["--rcfile", "x", "-c", script],
+            ["--init-file", "x", "-c", script],
+        ):
+            with self.subTest(words=words):
+                self.assertEqual([script], hub_guard.bash_script(list(words), [], hub_guard.Shell(None, {}, set())))
+                quoted = " ".join(word if word != script else f"'{word}'" for word in words)
+                self.assertEqual(["commit"], [call.subcommand for call in bash_reading(f"bash {quoted}").calls])
+
+    def test_set_reads_allexport_wherever_a_bundle_names_it(self) -> None:
+        for command, expected in (
+            ("set -o allexport", START / "after"),
+            ("set -eo allexport", START / "after"),
+            ("set -oe allexport", START / "after"),
+            ("set -oo pipefail allexport", START / "after"),
+            ("set -ao pipefail", START / "after"),
+            ("set -o pipefail", UNSET),
+            ("set -eo pipefail", UNSET),
+            ("set -o allexport; set +eo allexport", UNSET),
+            # A word after the option's value is a positional parameter, and each option is read in turn.
+            ("set -o pipefail allexport", UNSET),
+            ("set -o allexport +e", START / "after"),
+            ("set -e -o allexport", START / "after"),
+            ("set -o pipefail -o allexport", START / "after"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(expected, git_dir_reaching_git(f"unset GIT_DIR; {command}; GIT_DIR=after"))
+
+
+class BashAliasesTests(unittest.TestCase):
+    """A name that reaches BASH_ALIASES, by any spelling Bash sets a variable by, defines an alias the command cannot
+    be read past."""
+
+    def test_each_spelling_that_sets_bash_aliases_is_an_alias_the_command_defines(self) -> None:
+        for definition in (
+            "BASH_ALIASES[g]=git",
+            "BASH_ALIASES=([g]=git)",
+            "BASH_ALIASES+=([g]=git)",
+            "declare -A BASH_ALIASES=([g]=git)",
+            "typeset -A BASH_ALIASES; BASH_ALIASES[g]=git",
+            "declare 'BASH_ALIASES[g]=git'",
+            "printf -v 'BASH_ALIASES[g]' git",
+            "read 'BASH_ALIASES[g]' <<< git",
+            "read -a BASH_ALIASES <<< git",
+            "mapfile BASH_ALIASES <<< git",
+            "declare -A BASH_ALIASES=([g]=$(command -v git))",
+            "declare -n ref=BASH_ALIASES; ref[g]=git",
+            "declare -n ref='BASH_ALIASES[g]'; ref=git",
+            # Eight references deep, as far as Bash follows a chain.
+            "declare -n r1=r2 r2=r3 r3=r4 r4=r5 r5=r6 r6=r7 r7=r8 r8=BASH_ALIASES; r1[g]=git",
+            'name=BASH_ALIASES; declare "$name[g]=git"',
+            "eval 'BASH_ALIASES[g]=git'",
+            "(BASH_ALIASES[g]=git; true)",
+            "f() { BASH_ALIASES[g]=git; }; f",
+        ):
+            command = f"shopt -s expand_aliases; {definition}\ng commit -m x"
+            with self.subTest(definition=definition):
+                self.assertIn(ALIASES_DEFINED, bash_reading(command).unread)
+
+    def test_text_that_only_names_bash_aliases_defines_no_alias(self) -> None:
+        for command in ("echo BASH_ALIASES; git status", "git status BASH_ALIASES", "unset other; git status"):
+            with self.subTest(command=command):
+                self.assertEqual([], bash_reading(command).unread)
+
+
+class ExportedFunctionTests(unittest.TestCase):
+    """A nested bash or sh defines the functions its parent exported and those its environment hands it."""
+
+    def subcommands(self, command: str, environment: dict[str, str] | None = None) -> list[str | None]:
+        return [call.subcommand for call in bash_reading(command, environment).calls]
+
+    def test_a_function_exported_by_each_spelling_runs_in_a_nested_shell(self) -> None:
+        for export, start in (
+            ("export -f f", "bash -c f"),
+            ("export -f f", "sh -c f"),
+            ("declare -fx f", "bash -c f"),
+            ("declare -f -x f", "bash -c f"),
+            ("typeset -xf f", "sh -c f"),
+            ("export -f f", "env bash -c f"),
+            ("export -f f", "nice bash -c f"),
+            ("export -f f", "bash -c 'bash -c f'"),
+            ('export -f "$name"', "bash -c f"),
+            # Exported on one path only, it may be exported.
+            ('[ -n "$x" ] || export -f f', "bash -c f"),
+            ("export -f f; unset -f g", "bash -euo pipefail -c f"),
+        ):
+            command = f"f() {{ git commit -m x; }}; {export}; {start}"
+            with self.subTest(command=command):
+                self.assertEqual(["commit"], self.subcommands(command))
+
+    def test_a_function_that_is_not_exported_does_not_run_in_a_nested_shell(self) -> None:
+        for command in (
+            "f() { git commit -m x; }; bash -c f",
+            "f() { git commit -m x; }; export -f f; export -fn f; bash -c f",
+            "f() { git commit -m x; }; export -f f; export -nf f; bash -c f",
+            "f() { git commit -m x; }; declare -fx f; declare +x -f f; bash -c f",
+            "f() { git commit -m x; }; export -f f; unset -f f; bash -c f",
+            "f() { git commit -m x; }; declare -f f; bash -c f",
+            "f() { git commit -m x; }; export -f g; bash -c f",
+            "f() { git commit -m x; }; (export -f f); bash -c f",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([], self.subcommands(command))
+
+    def test_each_export_adds_to_the_functions_already_exported(self) -> None:
+        command = "f() { git status; }; g() { git commit -m x; }; export -f g; export -f f; bash -c g"
+        self.assertEqual(["commit"], self.subcommands(command))
+
+    def test_a_shell_built_with_no_reading_or_exports_resolves_bash_aliases_without_reporting_it(self) -> None:
+        shell = hub_guard.Shell(None, {}, set())
+        self.assertEqual((set(), None), (shell.exported_functions, shell.reading))
+        self.assertEqual("BASH_ALIASES", shell.target("BASH_ALIASES"))
+        self.assertEqual(set(), shell.copy().exported_functions)
+
+    def test_the_last_definition_is_the_one_a_nested_shell_runs(self) -> None:
+        command = "f() { git status; }; export -f f; f() { git commit -m x; }; bash -c f"
+        self.assertEqual(["commit"], self.subcommands(command))
+
+    def test_a_function_the_environment_hands_bash_is_defined(self) -> None:
+        value = "() {  git commit -m x\n}"
+        self.assertEqual(["commit"], self.subcommands(f"env 'BASH_FUNC_f%%={value}' bash -c f"))
+        self.assertEqual(["commit"], self.subcommands("f", {"BASH_FUNC_f%%": value}))
+        self.assertEqual(["commit"], self.subcommands("bash -c f", {"BASH_FUNC_f%%": value}))
+        # Bash imports only a value that starts as a function's does, `() {`, from a name that ends in %%.
+        for environment in ({"BASH_FUNC_f%%": "(){ git commit -m x; }"}, {"BASH_FUNC_f": value}):
+            with self.subTest(environment=environment):
+                self.assertEqual([], self.subcommands("f", environment))

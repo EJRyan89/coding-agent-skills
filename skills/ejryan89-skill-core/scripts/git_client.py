@@ -130,6 +130,12 @@ class GitError(RuntimeError):
         self.kind: GitErrorKind = kind
         self.returncode = returncode  # git's exit code, when git ran and failed
 
+    @property
+    def answered(self) -> bool:
+        """Whether git ran and finished, so that the error is its answer about what it was asked, not that git is
+        missing, could not start, or did not finish in time, which says nothing of it."""
+        return self.kind not in {"prerequisite", "execution", "timeout"}
+
 
 @dataclass(frozen=True)
 class GitResult:

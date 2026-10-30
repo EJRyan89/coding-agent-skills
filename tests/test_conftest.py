@@ -48,6 +48,11 @@ INHERITED = {
     "GIT_TRACE": "1",
     "GIT_LITERAL_PATHSPECS": "1",
     "XDG_CONFIG_HOME": "config home",
+    # The token variables, so no test, nor a process it starts, holds a token from the shell that started pytest.
+    "GH_TOKEN": "token",
+    "GITHUB_TOKEN": "token",
+    "GH_ENTERPRISE_TOKEN": "token",
+    "GITHUB_ENTERPRISE_TOKEN": "token",
 }
 # Variables the fixtures set, against the values they give each, the home aside.
 SET = {
