@@ -113,7 +113,22 @@ class WrittenRefusalTests(unittest.TestCase):
                 self.assertEqual(reason, written_refusal(entry))
 
     def test_a_reserved_device_name_in_any_segment_is_refused_on_every_platform(self) -> None:
-        for entry in ("NUL", "sub/NUL", "CON", "docs\\con.txt", "aux .md", "a/Com1.tar.gz/b.md", "LPT¹", "conin$"):
+        for entry in (
+            "NUL",
+            "sub/NUL",
+            "CON",
+            "docs\\con.txt",
+            "aux .md",
+            "a/Com1.tar.gz/b.md",
+            "LPT¹",
+            "conin$",
+            "NUL:",
+            "sub/NUL:",
+            "CON:",
+            "COM1:",
+            "NUL:stream",
+            "docs\\con.txt:stream",
+        ):
             with self.subTest(entry=entry):
                 self.assertEqual(
                     "the entry names a reserved device as a segment, which Windows opens instead of a file",
