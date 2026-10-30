@@ -91,6 +91,38 @@ class DocumentationDecision(unittest.TestCase):
                 self.assertIn(reason, why)
 
 
+class KnownFailureIssuesOption(unittest.TestCase):
+    def test_it_runs_the_open_issue_check_alone_and_fails_on_each_problem(self) -> None:
+        for problems, status in (([], 0), (["#1 is CLOSED", "#2 cannot be asked"], 1)):
+            with self.subTest(problems=problems):
+                out = io.StringIO()
+                with (
+                    mock.patch.object(run_validation.known_failures, "open_issue_problems", return_value=problems),
+                    mock.patch.object(run_validation, "tool_versions") as versions,
+                    mock.patch.object(run_validation, "run_beside") as pool,
+                ):
+                    self.assertEqual(status, main(["--known-failure-issues"], out=out))
+                # No tool is probed and no policy check or suite starts: the token this run holds reaches only gh.
+                versions.assert_not_called()
+                pool.assert_not_called()
+                lines = out.getvalue().splitlines()
+                self.assertEqual([f"FAILED {problem}" for problem in problems], lines[:-1])
+                self.assertEqual(f"Known-failure issues: {len(problems)} not shown open.", lines[-1])
+
+    def test_it_is_a_usage_error_beside_any_other_argument(self) -> None:
+        for other in (["--full"], ["--changed"], ["-k", "x"], ["-v"], ["--shard", "1/2"], ["--pr-body", __file__]):
+            with self.subTest(other=other):
+                error = io.StringIO()
+                with (
+                    mock.patch.object(run_validation.known_failures, "open_issue_problems") as asked,
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    main(["--known-failure-issues", *other], errors=error)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn("--known-failure-issues: not allowed with another argument", error.getvalue())
+                asked.assert_not_called()
+
+
 class PullRequestBodyOption(unittest.TestCase):
     def test_a_body_that_is_not_a_file_is_a_usage_error_before_any_check_runs(self) -> None:
         missing = REPOSITORY_ROOT / "tests" / "no such body.md"

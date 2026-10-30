@@ -272,10 +272,11 @@ A pull request that closes an issue a known failure of the malformed-input suite
 GitHub reads, through ejryan89-skill-core's `closing_references`: `close`, `fix`, or `resolve`, in any of their forms,
 before `#<number>`, `<owner>/<repo>#<number>` naming this repository, or the issue's URL, outside an HTML comment, from
 `--pr-body <file>` locally and the pull request in continuous integration, and passes when no body is given. The pull
-request that fixes the reader removes the entry, which the suite then requires, and closes the issue. Given a body, the
-same check asks GitHub, through gh, whether each issue an entry names is open, and fails one that is not or that gh
-cannot answer about; it asks nothing while the list is empty, so a local `--pr-body` run needs gh signed in only while
-an entry exists, and continuous integration gives its validation steps the run's own read-only token for it.
+request that fixes the reader removes the entry, which the suite then requires, and closes the issue. A run of its own,
+`python -B tests/run_validation.py --known-failure-issues`, asks GitHub, through gh, whether each issue an entry names
+is open, and fails one that is not or that gh cannot answer about; it asks nothing while the list is empty. Continuous
+integration runs it in a job of its own on every run, the one job given the run's read-only token, so no suite holds
+the token; locally it needs gh signed in only while an entry exists.
 
 Before `gh pr create`, run `git fetch origin main` and `git rebase origin/main`: onto `origin/main`, not the local
 `main`, which is only as fresh as the hub's last pull. The branch is unpublished, so the rebase rewrites nothing anyone
