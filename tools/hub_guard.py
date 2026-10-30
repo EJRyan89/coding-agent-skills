@@ -206,6 +206,8 @@ READING_SECONDS = 15
 # How much of the reader's output is kept: far more than the events of any command a tool call carries, and a reading
 # cut short is not JSON, so it is a command the guard cannot read rather than one read in part.
 POWERSHELL_OUTPUT_LIMIT = 1 << 22
+# The GitError kinds of a git call that did not run or finish: git is missing, could not start, or ran out of time.
+UNFINISHED_GIT = frozenset({"prerequisite", "execution", "timeout"})
 MENTIONS_GIT = re.compile(r"git", re.IGNORECASE)
 MENTIONS_WRITING_SUBCOMMAND = re.compile(
     r"\b(?:" + "|".join(map(re.escape, sorted(WRITING_SUBCOMMANDS | {FETCH}))) + r")\b", re.IGNORECASE
@@ -306,23 +308,34 @@ def git_builtins() -> frozenset[str]:
     return frozenset(result.stdout.split()) if result.returncode == 0 else frozenset()
 
 
+def git_answered(exc: GitError) -> bool:
+    """Whether git ran and finished, so that its error is an answer about the place, not one that git is missing,
+    could not start, or did not finish in time, which says nothing of it."""
+    return exc.kind not in UNFINISHED_GIT
+
+
 def hub_protected(path: Path) -> bool:
     """Whether path lies in the tracked surface of a guarded hub or anywhere in its git directory; ignored files such
-    as local settings do not."""
+    as local settings do not.
+
+    A checkout or git directory git answers with an error for may be a guarded hub's, so it is protected; where git
+    did not run or finish, the GitError goes to the hook, which allows the edit with a note."""
     normalized = Path(os.path.normpath(path))
     for directory in (normalized, *normalized.parents):
         if os.path.normcase(directory.name) == ".git" and directory.is_dir():
             try:
                 return guarded_hub_of_repository(directory) is not None
-            except GitError:
-                return True  # a git directory git cannot read may be a guarded hub's
+            except GitError as exc:
+                if not git_answered(exc):
+                    raise
+                return True
 
     try:
         hub = guarded_hub_at(normalized)
     except GitError as exc:
-        if exc.returncode is None:
-            raise  # git did not run or finish, which says nothing of the checkout: allowed with a note
-        return True  # a checkout git answers with an error for may be a guarded hub's
+        if not git_answered(exc):
+            raise
+        return True
     if hub is None:
         return False
     return git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode != 0
@@ -2528,6 +2541,9 @@ def guard(stream: str) -> int:
     # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
     # fails leaves a command the guard cannot read; None until then.
     in_view: tuple[str, set[Path]] | None = None
+    # Whether the hubs of the places the command names are being looked up: a lookup the reading time cuts short
+    # leaves places not looked up, any of which may be a guarded hub's.
+    looking_up = False
     try:
         event = json_reader.loads(stream)
         tool = event.get("tool_name", "")
@@ -2547,13 +2563,16 @@ def guard(stream: str) -> int:
             hubs = set(reading.context_hubs)
             in_view = (reading.text, hubs)
             read_into(reading, tool, cwd, os.environ)
+            looking_up = True
             hubs |= reached_hubs(reading)
+            looking_up = False
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
             for note in reading.notes:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses
-        if in_view is None or not (in_view[1] and mentions(MENTIONS_GIT, in_view[0])):
+        cut_short = looking_up and isinstance(exc, ReadingTimeout)
+        if in_view is None or not ((in_view[1] or cut_short) and mentions(MENTIONS_GIT, in_view[0])):
             print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 0
         # Where a guarded hub is in view, a command naming git that the guard failed to read or judge is one it cannot
