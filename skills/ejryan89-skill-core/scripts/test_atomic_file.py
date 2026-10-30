@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import stat
 import sys
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from atomic_file import UnfinishedCopyError, replace_bytes, replace_text
+from atomic_file import ReadOnlyTargetError, UnfinishedCopyError, is_read_only, replace_bytes, replace_text
 
 
 def names_in(folder: str) -> list[str]:
@@ -198,3 +199,75 @@ class ReplaceTests(unittest.TestCase):
                 self.assertRegex(str(error.removal), re.escape("synthetic unlink"))
                 self.assertIs(failure, error.removal.__context__)
                 self.assertEqual(b"previous\n", path.read_bytes())
+
+
+class ReadOnlyTargetTests(unittest.TestCase):
+    """A read-only target is refused before a copy exists, the same way on every platform: Windows cannot replace
+    one, and Linux would replace it silently. TemporaryDirectory removes a read-only file it holds."""
+
+    def read_only_file(self, folder: str, name: str) -> Path:
+        path = Path(folder) / name
+        path.write_bytes(b"previous\n")
+        path.chmod(stat.S_IREAD)
+        return path
+
+    def test_a_read_only_target_is_refused_before_a_copy_exists_and_left_as_it_was(self) -> None:
+        for mode_of in ("its own mode", "the default mode"):
+            with self.subTest(mode=mode_of), tempfile.TemporaryDirectory() as temporary:
+                path = self.read_only_file(temporary, "Foo.cs")
+                mode = stat.S_IMODE(path.stat().st_mode) if mode_of == "its own mode" else 0o600
+                with (
+                    mock.patch.object(tempfile, "mkstemp", wraps=tempfile.mkstemp) as mkstemp,
+                    self.assertRaises(ReadOnlyTargetError) as raised,
+                ):
+                    replace_bytes(path, b"next\n", mode=mode)
+                mkstemp.assert_not_called()
+                self.assertIsInstance(raised.exception, PermissionError)
+                self.assertEqual(path, raised.exception.target)
+                self.assertEqual("the file is read-only; make it writable to replace it", raised.exception.strerror)
+                self.assertEqual(str(path), raised.exception.filename)
+                self.assertEqual(b"previous\n", path.read_bytes())
+                self.assertEqual(["Foo.cs"], names_in(temporary))
+                self.assertFalse(path.stat().st_mode & stat.S_IWUSR, "the target keeps its read-only mode")
+
+    def test_a_target_read_only_only_through_a_link_is_read_only(self) -> None:
+        writable = os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        read_only = os.stat_result((stat.S_IFREG | 0o444, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        for name, link, target, expected in (
+            ("writable link to a read-only file", writable, read_only, True),
+            ("writable link to a writable file", writable, writable, False),
+            ("read-only entry", read_only, writable, True),
+            ("link that leads nowhere", writable, FileNotFoundError(), False),
+        ):
+
+            def fake_stat(path: Any, *, follow_symlinks: bool = True, link: Any = link, target: Any = target) -> Any:
+                result = target if follow_symlinks else link
+                if isinstance(result, BaseException):
+                    raise result
+                return result
+
+            with self.subTest(case=name), mock.patch.object(Path, "stat", fake_stat):
+                self.assertIs(expected, is_read_only(Path("entry")))
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertFalse(is_read_only(Path(temporary) / "missing"))
+
+    def test_a_copy_given_a_read_only_mode_is_removed_when_the_replace_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            path.write_bytes(b"previous\n")
+            with (
+                mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace")),
+                self.assertRaisesRegex(OSError, "^synthetic replace$") as raised,
+            ):
+                replace_bytes(path, b"next\n", mode=0o444)
+            self.assertIs(OSError, type(raised.exception))
+            self.assertEqual(b"previous\n", path.read_bytes())
+            self.assertEqual(["state.json"], names_in(temporary), "the read-only copy is removed")
+
+    def test_a_new_file_may_be_given_a_read_only_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            replace_bytes(path, b"next\n", mode=0o444)
+            self.assertEqual(b"next\n", path.read_bytes())
+            self.assertFalse(path.stat().st_mode & stat.S_IWUSR)
+            self.assertEqual(["state.json"], names_in(temporary))
