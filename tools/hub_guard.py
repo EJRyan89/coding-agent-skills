@@ -2246,7 +2246,7 @@ def definition_drive(path: str) -> str | None:
 
 def defined(drive: str) -> str:
     """What a definition on the alias: or function: drive is, as a refusal names it."""
-    return "an alias the command defines" if drive == "alias" else "a function the command defines from text"
+    return {"alias": "an alias the command defines", "function": "a function the command defines from text"}[drive]
 
 
 def definition_provider(providers: list[Word] | None) -> bool:
