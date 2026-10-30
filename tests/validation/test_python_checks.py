@@ -2346,6 +2346,14 @@ CLAIM_FORMS: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
             ("builtins.open", "import builtins", "builtins.open('p').read()"),
             ("os.popen", "import os", "os.popen('git status').read()"),
             ("subprocess.getoutput", "import subprocess", "subprocess.getoutput('git status')"),
+            # "a path's read_text, write_text, or open in a text mode", named on the class with the path first, where
+            # the path's slot is no encoding.
+            ("Path.read_text unbound", "from pathlib import Path", "Path.read_text(p)"),
+            ("Path.read_text unbound given the path's slot", "from pathlib import Path", "Path.read_text(p, None)"),
+            ("pathlib.Path.write_text unbound", "import pathlib", "pathlib.Path.write_text(p, s)"),
+            ("Path.open unbound", "from pathlib import Path", "Path.open(p, 'w')"),
+            ("Path.open unbound in a text mode", "from pathlib import Path", "Path.open(p, 'r', -1)"),
+            ("zipfile.Path.read_text unbound", "import zipfile", "zipfile.Path.read_text(p)"),
         )
     ),
     # a write that takes json.dumps text "through a name its function binds to it"
@@ -2427,6 +2435,16 @@ CLAIM_PASSES: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
         "codecs.open with an encoding",
         python_checks.encoding_problems,
         "import codecs\n\n\ncodecs.open('p', encoding='utf-8').read()\n",
+    ),
+    # A path method named on its class takes its encoding one slot after the path, and a binary open needs none.
+    *(
+        (f"{call} unbound with its encoding", python_checks.encoding_problems, f"{imports}\n\n\n{call}\n")
+        for imports, call in (
+            ("from pathlib import Path", "Path.read_text(p, 'utf-8')"),
+            ("import pathlib", "pathlib.Path.write_text(p, s, 'utf-8')"),
+            ("from pathlib import Path", "Path.open(p, 'w', -1, 'utf-8')"),
+            ("from pathlib import Path", "Path.open(p, 'rb')"),
+        )
     ),
     # A print with no file= writes to standard output, the script's report, which is no file or stream it names.
     (
