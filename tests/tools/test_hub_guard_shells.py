@@ -368,7 +368,8 @@ class BashDefinitionDifferentialTests(unittest.TestCase):
             ("shopt -s expand_aliases; declare -n ref=BASH_ALIASES; ref[g]=PROGRAM\ng status", True),
             ("shopt -s expand_aliases; printf -v 'BASH_ALIASES[g]' PROGRAM\ng status", True),
             ("f() { PROGRAM status; }; export -f f; bash -c f", False),
-            ("f() { PROGRAM status; }; declare -fx f; sh -c f", False),
+            # sh is Bash under Git Bash and may be dash elsewhere, which imports no function, so only bash is run.
+            ("f() { PROGRAM status; }; declare -fx f; bash -c f", False),
             ("f() { PROGRAM status; }; typeset -xf f; bash -euo pipefail -c f", False),
             ("f() { PROGRAM status; }; export -f f; env bash -c f", False),
             ("f() { PROGRAM status; }; export -f f; bash -c 'bash -c f'", False),
