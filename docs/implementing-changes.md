@@ -219,10 +219,12 @@ author, with the code in hand, is the one placed to look. It is the author's jud
 no check reads it: `review-repository`'s `sibling-search` reviewer holds the search against a change to a script.
 
 `review-prs` reviews each pull request with `review-repository`, once the machine's code-review configuration names
-it, as "Configure" in that repository skill says. The shepherd runs the review once per head on every admitted pull
-request, so every one that reaches a trust-boundary route is reviewed
-([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)). It arms auto-merge first, and
-auto-merge waits only for the required check, so the review may land after the pull request merged. An author who
+it, as "Configure" in that repository skill says. On each tick the shepherd starts the review once for each admitted
+pull request whose head is in step, not in conflict, with a check neither red nor missing, and covered by no review
+([An orchestrator and a shepherd](parallel-sessions.md#an-orchestrator-and-a-shepherd)). That is not every head: one
+that turns green and merges between two ticks, every head while the archive cannot be read, and one whose review fails
+twice may never be reviewed, so a pull request that reaches a trust-boundary route is not sure to have a record. It
+arms auto-merge first, and auto-merge waits only for the required check, so the review may land after the pull request merged. An author who
 wants the report before the merge runs `review-prs --pull` first; its record then covers that head. The result is the review record `review-prs` writes in
 the configured archive, which `review-insights` and `update-pr-dashboard` read. It is reported to the orchestrating
 session and the pull request's owner, never posted on the pull request by the shepherd: text posted on a public pull
