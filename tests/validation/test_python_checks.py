@@ -970,6 +970,32 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "def f(run):\n    return run(['git', 'for-each-ref', '--format=%(refname)%00%(objectname)'])\n",
         refused=False,
     ),
+    # "no split of git's output with `splitlines()`, bound or unbound as `str.splitlines(out)`, and after a string
+    # method, a `str()`, or a slice that keeps the text, as `out.strip().splitlines()`".
+    **{
+        f"a split of git's output by {form}": _form(
+            git_separator_problems, f"def f(client):\n    out = client.output(['describe', 'HEAD'])\n    {split}\n"
+        )
+        for form, split in (
+            ("splitlines()", "return out.splitlines()"),
+            ("splitlines() of the call", "return client.output(['describe', 'HEAD']).splitlines()"),
+            ("str.splitlines(out)", "return str.splitlines(out)"),
+            ("strip().splitlines()", "return out.strip().splitlines()"),
+            ("rstrip().splitlines()", "return out.rstrip().splitlines()"),
+            ("str.strip(out).splitlines()", "return str.strip(out).splitlines()"),
+            ("str.splitlines(out.strip())", "return str.splitlines(out.strip())"),
+            ("a name bound to strip()", "text = out.strip()\n    return text.splitlines()"),
+            ("str(out).splitlines()", "return str(out).splitlines()"),
+            ("a slice's splitlines()", "return out[1:].splitlines()"),
+            ("decode().splitlines()", "return out.decode().splitlines()"),
+        )
+    },
+    "a split of git's output on a newline alone": _form(
+        git_separator_problems,
+        "from git_client import output_lines\n\n\n"
+        "def f(client):\n    return output_lines(client.output(['describe', 'HEAD']).strip())\n",
+        refused=False,
+    ),
     # "an `add_argument` whose `type` is `float` and whose option string, `dest`, or `metavar` names a time".
     **{
         f"a float time by its {where}": _form(
