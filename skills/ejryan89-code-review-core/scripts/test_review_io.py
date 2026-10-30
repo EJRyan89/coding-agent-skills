@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import review_io
 import skill_roots
-from atomic_file import UnfinishedCopyError
+from atomic_file import ReadOnlyTargetError, UnfinishedCopyError
 from review_io import CONTENT_ERRORS, PersistenceError, map_in_order, parse_json, read_json, working_path
 
 # JSON a reviewer, adapter, or earlier step might leave in a file the pipeline reads, each refused by json itself for
@@ -189,6 +190,25 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertIsInstance(raised.exception.__cause__, OSError)
             self.assertEqual(b"previous\n", path.read_bytes())
             self.assertEqual(["state.json"], sorted(item.name for item in Path(temporary).iterdir()))
+
+    def test_a_read_only_target_is_a_persistence_error_and_leaves_no_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "dashboard.md"
+            path.write_bytes(b"previous\n")
+            path.chmod(stat.S_IREAD)
+            try:
+                with self.assertRaises(PersistenceError) as raised:
+                    review_io.atomic_write_text(path, "next\n", mode=stat.S_IMODE(path.stat().st_mode))
+                self.assertEqual(
+                    f"Cannot atomically replace {path}: [Errno 13] the file is read-only; make it writable to replace"
+                    f" it: {str(path)!r}",
+                    str(raised.exception),
+                )
+                self.assertIsInstance(raised.exception.__cause__, ReadOnlyTargetError)
+                self.assertEqual(b"previous\n", path.read_bytes())
+                self.assertEqual(["dashboard.md"], sorted(item.name for item in Path(temporary).iterdir()))
+            finally:
+                path.chmod(stat.S_IREAD | stat.S_IWRITE)
 
     def test_bytes_that_are_not_utf8_replace_the_file_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
