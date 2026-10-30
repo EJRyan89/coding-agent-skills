@@ -251,13 +251,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_hub_guard.py::ContractTests::test_an_alias_or_a_script_block_built_from_a_string_is_refused_while_a_hub_is_guarded`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
-  `tests/tools/test_hub_guard_shells.py::FunctionCallDifferentialTests`
-- **Search for:** an option table in `tools/hub_guard.py` with no differential case; a `re.compile(` in
-  `tools/runtime_*.py` or `deployer/discovery.py` with no sample under `tests/fixtures/captured-output/`; each
-  interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
+  `tests/tools/test_hub_guard_shells.py::FunctionCallDifferentialTests`,
+  `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`
+- **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
+  only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later
+  word runs, an alias, a function, or one handed to a child in its environment, against the ways the guard reads;
+  a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample under
+  `tests/fixtures/captured-output/`; each interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
   forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
   guard follows, such as a working directory, read only as taking a value and never for what it changes.
-- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089
 
 ### A recursive parser of input has a depth bound
 

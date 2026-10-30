@@ -2102,6 +2102,8 @@ class ContractTests(GuardTestCase):
             ("Bash", "alias g=git\ng switch feat/demo"),
             ("Bash", "alias g='git switch'; g feat/demo"),
             ("Bash", "builtin alias g=git\ng switch feat/demo"),
+            ("Bash", "shopt -s expand_aliases; BASH_ALIASES[g]=git\ng switch feat/demo"),
+            ("Bash", "shopt -s expand_aliases; declare -A BASH_ALIASES=([g]=git)\ng switch feat/demo"),
             ("PowerShell", "[scriptblock]::Create('git switch feat/demo').Invoke()"),
             ("PowerShell", "& ([ScriptBlock]::Create('git switch feat/demo'))"),
             ("PowerShell", "$ExecutionContext.InvokeCommand.NewScriptBlock('git switch feat/demo').Invoke()"),
@@ -2127,6 +2129,24 @@ class ContractTests(GuardTestCase):
         # The refusal names the cmdlet that defined the alias, by the name the command calls it.
         self.assertEqual("deny", self.powershell("sal g git; g switch feat/demo", self.hub))
         self.assertIn("could not read part of this command (an alias the command defines (sal))", self.reason)
+
+    def test_a_nested_bash_is_read_past_option_bundles_and_with_the_functions_its_parent_exported(self) -> None:
+        for tool in ("Bash", "PowerShell"):
+            for command in (
+                "bash -c -euo pipefail 'git commit -m x'",
+                "bash -euxo pipefail -c 'git commit -m x'",
+                "bash -co pipefail 'git commit -m x'",
+                "bash -oc pipefail 'git commit -m x'",
+            ):
+                with self.subTest(tool=tool, command=command):
+                    self.assertEqual("deny", self.decision(self.shell_event(tool, command, self.hub)))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertEqual("deny", self.bash("f() { git commit -m x; }; export -f f; bash -c f", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.bash("f() { git commit -m x; }; bash -c f", self.hub))
+
+    def shell_event(self, tool: str, command: str, cwd: Path) -> dict[str, object]:
+        return {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}
 
     def test_each_cmdlet_that_defines_a_powershell_alias_is_known_by_each_of_its_names(self) -> None:
         for name in ("set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"):

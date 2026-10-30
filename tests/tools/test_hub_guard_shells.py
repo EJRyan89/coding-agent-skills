@@ -135,6 +135,14 @@ BASH_COMMANDS = (
     "declare -n ref=other; for ref in GIT_DIR; do ref=after; done",
     "declare -n GIT_DIR=other",
     "readonly -n ref=GIT_DIR; ref=after",
+    # set takes the option each o in a bundle names from the next word.
+    "unset GIT_DIR; set -o allexport; GIT_DIR=after",
+    "unset GIT_DIR; set -eo allexport; GIT_DIR=after",
+    "unset GIT_DIR; set -oe allexport; GIT_DIR=after",
+    "unset GIT_DIR; set -oo pipefail allexport; GIT_DIR=after",
+    "unset GIT_DIR; set -ao pipefail; GIT_DIR=after",
+    "unset GIT_DIR; set -eo pipefail; GIT_DIR=after",
+    "unset GIT_DIR; set -o allexport; set +eo allexport; GIT_DIR=after",
 )
 UNSET = "<unset>"
 
@@ -286,6 +294,16 @@ class StartDifferentialTests(unittest.TestCase):
             ("-ec", "-o", "pipefail", "echo first"),
             ("-c", "-u", "--", "echo first", "echo second"),
             ("-lc", "echo first", "echo second"),
+            # Each o or O in a bundle takes the next word, wherever it stands in the bundle and the bundle stands.
+            ("-c", "-euo", "pipefail", "echo first"),
+            ("-euo", "pipefail", "-c", "echo first"),
+            ("-co", "pipefail", "echo first"),
+            ("-oc", "pipefail", "echo first"),
+            ("-ceo", "pipefail", "echo first"),
+            ("-oo", "pipefail", "errexit", "-c", "echo first"),
+            ("-Oc", "extglob", "echo first"),
+            ("+Oc", "extglob", "echo first"),
+            ("-c", "+eo", "pipefail", "echo first", "echo second"),
         )
         for words in forms:
             ran = platform_support.run_tool([bash, "--norc", "--noprofile", *words]).output
@@ -331,6 +349,48 @@ class StartDifferentialTests(unittest.TestCase):
                 with self.subTest(words=words):
                     self.assertIn("INLINE-RAN", lines)
                     self.assertEqual([INLINE], hub_guard.powershell_script(arguments))
+
+
+class BashDefinitionDifferentialTests(unittest.TestCase):
+    """Each way Bash defines a name a later word runs, an alias in BASH_ALIASES or a function a nested shell is handed,
+    run by Bash with a marker for git, and read by the guard with git: refused as an alias, or followed into its body.
+    """
+
+    def test_the_guard_reads_each_definition_bash_runs_a_later_word_by(self) -> None:
+        bash = platform_support.find_bash()
+        if bash is None:
+            raise AssertionError(f"{platform_support.BASH_MISSING} Bash checks the guard's reading of definitions")
+        # Each command, with PROGRAM standing for git, and whether the guard refuses it as an alias it cannot read.
+        forms = (
+            ("shopt -s expand_aliases; BASH_ALIASES[g]=PROGRAM\ng status", True),
+            ("shopt -s expand_aliases; declare -A BASH_ALIASES=([g]=PROGRAM)\ng status", True),
+            ("shopt -s expand_aliases; BASH_ALIASES+=([g]=PROGRAM)\ng status", True),
+            ("shopt -s expand_aliases; declare -n ref=BASH_ALIASES; ref[g]=PROGRAM\ng status", True),
+            ("shopt -s expand_aliases; printf -v 'BASH_ALIASES[g]' PROGRAM\ng status", True),
+            ("f() { PROGRAM status; }; export -f f; bash -c f", False),
+            ("f() { PROGRAM status; }; declare -fx f; sh -c f", False),
+            ("f() { PROGRAM status; }; typeset -xf f; bash -euo pipefail -c f", False),
+            ("f() { PROGRAM status; }; export -f f; env bash -c f", False),
+            ("f() { PROGRAM status; }; export -f f; bash -c 'bash -c f'", False),
+            ("env 'BASH_FUNC_f%%=() { PROGRAM status; }' bash -c f", False),
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            for form, alias in forms:
+                path = Path(folder) / "form.sh"
+                # The marker is a function, so a nested shell finds it only where it is exported, as git is on PATH.
+                marker = "marker() { echo MARKER-RAN; }; export -f marker\n"
+                path.write_text(marker + form.replace("PROGRAM", "marker") + "\n", encoding="utf-8", newline="\n")
+                result = platform_support.run_tool([bash, "--norc", "--noprofile", platform_support.normalize(path)])
+                text = form.replace("PROGRAM", "git")
+                reading = hub_guard.Reading({}, text)
+                hub_guard.read_bash(text, Path(folder), reading, 0, {})
+                with self.subTest(form=form):
+                    self.assertIn("MARKER-RAN", result.output)
+                    if alias:
+                        self.assertIn(f"an alias the command defines ({hub_guard.BASH_ALIASES})", reading.unread)
+                    else:
+                        self.assertEqual([], reading.unread)
+                        self.assertEqual(["status"], [call.subcommand for call in reading.calls])
 
 
 class BashDifferentialTests(unittest.TestCase):

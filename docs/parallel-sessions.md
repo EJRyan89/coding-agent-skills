@@ -274,7 +274,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **Location variables.** `GIT_DIR`, `GIT_WORK_TREE`, and the two configuration variables reach a git call from
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
-  `typeset -x`, an assignment under `set -a` or to a variable already exported), and removed by `unset`,
+  `typeset -x`, an assignment under `set -a`, `set -o allexport` in a bundle as in `set -eo allexport`, or to a
+  variable already exported), and removed by `unset`,
   `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, `readarray`, and
   `wait -p` leave each variable they set unsettled, and every variable when a word the text does not settle is among
   their options or operands; a name reference that `declare -n`, `local -n`, or `typeset -n` makes stands for the variable it names,
@@ -357,10 +358,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
   horizontal bar, that dash doubled, as in `--command`, white space around the word, and a leading `/`, as in
   `/Command`, on every platform. `tests/tools/test_hub_guard_shells.py` runs pwsh on these spellings and Bash on
   the builtins above that set a variable, and holds the guard to what each shell does. `bash` runs as its `-c`
-  script the first word after all of its options and a `--`, as in `bash -c -e '<script>'`, and Windows PowerShell
+  script the first word after all of its options and a `--`, as in `bash -c -e '<script>'`, each `o` or `O` in a
+  bundle taking the next word as its value, as in `bash -euo pipefail -c '<script>'`, and Windows PowerShell
   runs a leading word that names no parameter as `-Command`, as in `powershell '<script>'`, where `pwsh` runs it as a
   script file. Each nested shell is read as a process of its own that starts with the variables its parent exported,
-  in its parent's directory or the one `pwsh -WorkingDirectory` (`-wd`) names, read from there; its directory and
+  a nested `bash` or `sh` also with the functions its parent exported (`export -f`, `declare -fx`) and those its
+  environment hands it as `BASH_FUNC_<name>%%`, in its parent's directory or the one `pwsh -WorkingDirectory` (`-wd`) names, read from there; its directory and
   what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
@@ -395,7 +398,8 @@ command names. While one is, the guard refuses:
   reach, each git call of theirs given no more than the time left, which keeps it inside the hook's own 30-second
   timeout, past which Claude Code lets the command run, and a command either shell's reader fails on with an error
   of its own;
-- a shell alias the command defines, by Bash's `alias` with a value, or by PowerShell's `Set-Alias`, `New-Alias`,
+- a shell alias the command defines, by Bash's `alias` with a value or a name that reaches `BASH_ALIASES` (an
+  element's assignment, `declare -A`, a builtin that sets a variable, or a name reference), or by PowerShell's `Set-Alias`, `New-Alias`,
   `Import-Alias`, or an item cmdlet writing the `alias:` drive at a path the text names, and a script block
   PowerShell builds from a string (`[scriptblock]::Create`, `NewScriptBlock`, `InvokeScript`), when the command names
   git: a later word may then run git under another name, or text the parser never read as a command;
@@ -420,6 +424,9 @@ The hook sees the command text. It does not see:
 - git run indirectly: from a script or program (`bash script.sh`, `bash < script.sh`, `xargs`, `find -exec`, `make`,
   a Python script), through `Start-Process`, `cmd /c`, `pwsh -File`, or `pwsh -EncodedCommand`, from a `trap`, or by
   a program whose name is computed at run time;
+- a script handed to a shell other than `bash`, `sh`, `pwsh`, and `powershell`, such as `zsh -c`, `dash -c`, or
+  `ksh -c`: the guard reads that shell as a program and never reads its script;
+- an alias `BASH_ALIASES` gains through a name the text does not settle;
 - an alias the `alias:` drive gains at a path the text does not settle, or one the shell's startup files define;
 - shell redirection or other programs writing files;
 - what the shell's own startup files set, or a variable the Bash tool's shell holds that the hook's environment does
