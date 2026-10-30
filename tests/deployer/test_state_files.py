@@ -12,7 +12,7 @@ import re
 
 from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line
 
-from deployer import discovery, platform_support, render, state_files
+from deployer import discovery, manifest, platform_support, render, state_files
 from deployer.errors import DeployError
 
 # An integer past the digit limit, which json.loads raises ValueError for, and lists nested past the recursion limit,
@@ -79,6 +79,53 @@ class StateFileTests(DeployerTestCase):
                 checked = self.run_cli("check")
                 self.assertIn("ERROR: Manifest is malformed: ", checked.output)
 
+    def test_a_manifest_an_earlier_release_wrote_with_a_lone_surrogate_is_refused_as_that_with_the_step_to_take(
+        self,
+    ) -> None:
+        # Up to v0.11.1 the deployer wrote its state through json.dumps, which escapes a lone surrogate.
+        self.deploy_ok("--all")
+        data = self.manifest()
+        source = data["sources"][SOURCE_ID]
+        source["source_dir"] = source["source_dir"] + "\udcff"
+        self.write(self.manifest_file, json.dumps(data, indent=2) + "\n")
+        refusal = (
+            f"ERROR: Manifest {platform_support.normalize(self.manifest_file)} holds a lone surrogate, which an"
+            " earlier release of the deployer could write and this one does not read."
+        )
+        for arguments in (("--all",), ("--all", "--dry-run")):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
+                self.assert_lines(result.output, *MANIFEST_REMEDY)
+                self.assertNotIn("Manifest is malformed", result.output)
+                self.assertNotIn("FAILED", result.output)
+        self.assertIn(refusal, self.run_cli("check").output)
+
+    def test_a_manifest_holding_text_beyond_ascii_reads_as_utf_8_whatever_the_locale(self) -> None:
+        # The deployer escapes what it writes to ASCII, but a copy put back by hand may hold UTF-8 itself, which a
+        # locale's code page, such as Windows' cp1252 outside UTF-8 mode, would read as other characters.
+        self.deploy_ok("--all")
+        data = self.manifest()
+        source_dir = data["sources"][SOURCE_ID]["source_dir"] + "/Zoë Ünal checkout"
+        data["sources"][SOURCE_ID]["source_dir"] = source_dir
+        self.manifest_file.write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        loaded = manifest.load(self.manifest_file)
+        self.assertEqual(source_dir, loaded.data["sources"][SOURCE_ID]["source_dir"])
+
+    def test_a_lone_surrogate_is_told_apart_from_json_that_is_malformed_otherwise(self) -> None:
+        cases = [
+            ("a lone surrogate", '{"source_dir": "/src\\udcff"}', True),
+            ("a lone high surrogate", '["\\ud800"]', True),
+            ("a surrogate pair", '["\\ud83d\\ude00"]', False),
+            ("plain", '{"a": 1}', False),
+            ("null", "null", False),
+            ("not json", '{"a": "\\udcff"', False),
+            ("a surrogate and a repeated key", '{"a": "\\udcff", "a": 1}', False),
+        ]
+        cases += [(name, text, False) for name, text in UNREADABLE.items()]
+        for case, text, expected in cases:
+            with self.subTest(case=case):
+                self.assertIs(expected, state_files.holds_lone_surrogate(text))
+
     def test_a_directory_in_place_of_the_manifest_is_refused_before_a_dry_run_promises_a_fresh_install(self) -> None:
         self.manifest_file.mkdir(parents=True)
         refusal = f"ERROR: The manifest at {shown(self.manifest_file)} is not a file."
@@ -116,6 +163,21 @@ class StateFileTests(DeployerTestCase):
                 self.assertTrue(journal.is_file())
                 dry = self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: Run {RUN_ID} cannot be recovered")
                 self.assertNotIn("FAILED", dry.output)
+
+    def test_a_journal_line_an_earlier_release_wrote_with_a_lone_surrogate_stops_recovery_and_keeps_the_run(
+        self,
+    ) -> None:
+        self.deploy_ok("--all")
+        entry = install_entry("alpha", ZERO_HASH)
+        entry["to"] += "\udcff"
+        journal = self.staging_run(RUN_ID) / "journal.jsonl"
+        self.write(journal, journal_line(entry))
+        result = self.deploy_fails("--all", pattern=f"Malformed journal entry in run {RUN_ID}")
+        self.assertIn("\\udcff", result.stderr, "the line is shown as the journal holds it")
+        self.assertNotIn("the next deployment retries it", result.output)
+        self.assertNotIn("FAILED", result.output)
+        self.assertTrue(journal.is_file())
+        self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: Run {RUN_ID} cannot be recovered")
 
     def test_a_directory_in_place_of_a_journal_stops_recovery_and_keeps_what_the_run_holds(self) -> None:
         self.deploy_ok("--all")
@@ -175,7 +237,9 @@ class StateFileTests(DeployerTestCase):
 
     def test_lock_metadata_the_deployer_cannot_read_is_refused_with_the_step_to_take(self) -> None:
         self.deploy_ok("--all")
-        for case, text in UNREADABLE.items():
+        # Up to v0.11.1 the lock's metadata was written through json.dumps, which escapes a lone surrogate.
+        earlier = {"a lone surrogate": json.dumps({"pid": 1, "token": "old-token\udcff"})}
+        for case, text in {**UNREADABLE, **earlier}.items():
             with self.subTest(case=case):
                 self.lock_dir.mkdir(parents=True, exist_ok=True)
                 self.write(self.lock_dir / "token", "old-token")

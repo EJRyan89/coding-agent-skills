@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_process
 import executable_locator
 import git_client
-from git_client import GitClient, GitError, GitResult, classify_failure
+from git_client import GitClient, GitError, GitErrorKind, GitResult, classify_failure
 from job_tree import GroupTree, JobTree, TreeNotEnded
 from process_identity import process_status
 
@@ -270,6 +270,19 @@ class ClientTests(unittest.TestCase):
             client.quiet_output(["rev-parse", "--verify", "--quiet", "side"])
         self.assertEqual("git rev-parse failed with exit code 2", str(context.exception))
         self.assertEqual(("git", 2), (context.exception.kind, context.exception.returncode))
+
+    def test_an_error_is_git_s_answer_unless_git_is_missing_could_not_start_or_ran_out_of_time(self) -> None:
+        kinds: tuple[tuple[GitErrorKind, bool], ...] = (
+            ("git", True),
+            ("not_repository", True),
+            ("prerequisite", False),
+            ("execution", False),
+            ("timeout", False),
+        )
+        for kind, answered in kinds:
+            with self.subTest(kind=kind):
+                self.assertEqual(answered, GitError("x", kind=kind).answered)
+        self.assertTrue(GitError("git rev-parse answered 3 lines, not two").answered)
 
     def test_a_blob_git_cannot_print_names_the_object_gits_reason_its_kind_and_exit_code(self) -> None:
         name = "c" * 40

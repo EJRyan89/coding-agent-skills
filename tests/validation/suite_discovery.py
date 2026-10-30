@@ -25,7 +25,14 @@ from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from module_closure import MODULE_LOADERS
 from path_containment import posix_within, within
 from shell_targets import run_bash_suite
-from skill_scripts import ASSIGNMENT, STANDARD_STREAMS, split_operators
+from skill_scripts import (
+    ASSIGNMENT,
+    COMMAND_WRAPPERS,
+    STANDARD_STREAMS,
+    split_operators,
+    substitution_spans,
+    unwrapped,
+)
 from toolchain import find_powershell
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
@@ -57,6 +64,8 @@ from validation_support import (
     repository_files,
     skill_script_directories,
 )
+
+from deployer.platform_support import program_name
 
 CONFTEST = "conftest.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
@@ -423,47 +432,68 @@ GREP_ARGUMENT_LONG_OPTIONS = frozenset({"--regexp", "--file", "--after-context",
 HEAD = "head"
 HEAD_COUNT_LETTERS = frozenset("nc")
 HEAD_COUNT_LONG_OPTIONS = frozenset({"--lines", "--bytes"})
+# Every long option GNU head takes, so a prefix is read as the one it names.
+HEAD_LONG_OPTIONS = HEAD_COUNT_LONG_OPTIONS | {"--quiet", "--silent", "--verbose", "--zero-terminated"}
+
+
+def _program(word: str) -> str:
+    """The program a command word names, by its file name: `/usr/bin/head` and `head.exe` are head."""
+    return program_name(word.rpartition("/")[2])
+
+
+def _long_option(word: str, options: frozenset[str]) -> str | None:
+    """The one of `options` a long option word names, in full or by a prefix, as getopt_long takes a unique one."""
+    option = word.partition("=")[0]
+    return next((full for full in sorted(options) if len(option) > 2 and full.startswith(option)), None)
 
 
 def _early_exit_reader(words: list[str]) -> str:
     """A command that may exit before what writes into it has written everything, as its program and the option that
-    makes it, such as `grep -q` or `head -n`, or an empty string for a command that reads to the end."""
-    while words and (ASSIGNMENT.match(words[0]) or words[0] == "command"):
-        words = words[1:]
-    if words and words[0] in GREP_PROGRAMS:
-        return _early_exit_grep(words)
-    if words and words[0] == HEAD:
+    makes it, such as `grep -q` or `head -n`, or an empty string for a command that reads to the end. It reads past
+    assignments and each wrapper skill_scripts.unwrapped reads, such as `env`, `exec`, `timeout`, or `command`, to the
+    program it runs, named by a path or not; xargs runs its command on no pipe, so it is the reader itself."""
+    while words:
+        if ASSIGNMENT.match(words[0]):
+            words = words[1:]
+        elif words[0] != "xargs" and words[0] in COMMAND_WRAPPERS:
+            words = unwrapped(words)
+        else:
+            break
+    program = _program(words[0]) if words else ""
+    if program in GREP_PROGRAMS:
+        return _early_exit_grep([program, *words[1:]])
+    if program == HEAD:
         return _early_exit_head(words)
     return ""
 
 
 def _early_exit_head(words: list[str]) -> str:
     """head with the option that sets its count, or alone for its default ten lines: it exits once it has its count,
-    unless the count is negative, all but the last lines or bytes, which reads to the end."""
-    shown = HEAD
+    unless the count is negative, all but the last lines or bytes, which reads to the end. head takes the last count it
+    is given, and an option after a file name as well, as GNU getopt reads one, until `--`."""
+    shown, negative = HEAD, False
     count_next = False
     for word in words[1:]:
         if count_next:
-            if word.startswith("-"):
-                return ""
-            count_next = False
-        elif word == "--" or not word.startswith("-") or word == "-":
+            negative, count_next = word.startswith("-"), False
+        elif word == "--":
             break
+        elif not word.startswith("-") or word == "-":
+            continue
         elif word.startswith("--"):
-            option, equals, value = word.partition("=")
+            option = _long_option(word, HEAD_LONG_OPTIONS)
             if option in HEAD_COUNT_LONG_OPTIONS:
-                if value.startswith("-"):
-                    return ""
-                count_next = not equals
-                shown = f"{HEAD} {option}"
-        elif word[1] in HEAD_COUNT_LETTERS:
-            if word[2:].startswith("-"):
-                return ""
-            count_next = len(word) == 2
-            shown = f"{HEAD} {word[:2]}"
+                _, equals, value = word.partition("=")
+                shown, negative, count_next = f"{HEAD} {option}", value.startswith("-"), not equals
         elif word[1:].isdigit():
-            shown = f"{HEAD} {word}"
-    return shown
+            shown, negative = f"{HEAD} {word}", False
+        else:
+            # A cluster of letters, as in -qn1: the first count letter takes the rest of the word, or the next word.
+            for end, letter in enumerate(word[1:], 2):
+                if letter in HEAD_COUNT_LETTERS:
+                    shown, negative, count_next = f"{HEAD} -{letter}", word[end:].startswith("-"), end == len(word)
+                    break
+    return "" if negative else shown
 
 
 def _early_exit_grep(words: list[str]) -> str:
@@ -476,10 +506,10 @@ def _early_exit_grep(words: list[str]) -> str:
         elif word == "--":
             return ""
         elif word.startswith("--"):
-            option = word.split("=", 1)[0]
-            if option in EARLY_EXIT_LONG_OPTIONS:
+            option = _long_option(word, EARLY_EXIT_LONG_OPTIONS)
+            if option:
                 return f"{words[0]} {option}"
-            argument_next = word in GREP_ARGUMENT_LONG_OPTIONS
+            argument_next = "=" not in word and _long_option(word, GREP_ARGUMENT_LONG_OPTIONS) is not None
         elif word.startswith("-") and len(word) > 1:
             for end, letter in enumerate(word[1:], 2):
                 if letter in EARLY_EXIT_LETTERS:
@@ -506,8 +536,9 @@ class _ShellText(io.StringIO):
 
 def _bash_commands(script: str) -> list[tuple[str, int, list[str]]]:
     """Each simple command a Bash script runs, outside quotes and comments, as (the break before it, its line, its
-    words); a pipe or a list operator at the end of a line carries over to the command on the next. Raises ValueError
-    for a script shlex cannot read."""
+    words); a pipe or a list operator at the end of a line carries over to the command on the next. Every command of a
+    brace or subshell group a pipe feeds, as in `| { head; }` or `| ( head )`, and of a group inside one, reads that
+    pipe, so its break is given as `|`. Raises ValueError for a script shlex cannot read."""
     # A line continuation becomes two spaces, and an ANSI-C string, whose \' shlex would read as its end, a word and a
     # plain single-quoted string of the same length and lines, so each offset still names its line as written.
     plain = ANSI_C_STRING.sub(lambda match: "x'" + re.sub(r"[^\n]", "x", match[0][2:-1]) + "'", script)
@@ -518,6 +549,13 @@ def _bash_commands(script: str) -> list[tuple[str, int, list[str]]]:
     commands: list[tuple[str, int, list[str]]] = []
     before, line = "\n", 0
     words: list[str] = []
+    # Whether a pipe feeds each group open here, innermost last. A parenthesis after a word, as in a function's `()` or
+    # an unquoted `$(`, opens one too, fed when the group around it is, so each closing one has its own to close.
+    fed: list[bool] = []
+
+    def emit() -> None:
+        commands.append(("|" if fed and fed[-1] else before, line, words))
+
     for token in lexer:
         for part in split_operators(token):
             if part not in COMMAND_BREAKS or (part == "&" and words[-1:] in (["<"], [">"])):
@@ -525,46 +563,37 @@ def _bash_commands(script: str) -> list[tuple[str, int, list[str]]]:
                     line = script.count("\n", 0, max(stream.tell() - 1, 0)) + 1
                 words.append(part)
                 continue
+            opens = part == "(" or (part == "{" and not words)
+            closes = bool(fed) and (part == ")" or (part == "}" and not words))
+            feeds = (not words and before in PIPES) or bool(fed and fed[-1])
             if words:
-                commands.append((before, line, words))
+                emit()
                 before, words = part, []
             elif part != "\n":
                 before = part
+            if opens:
+                fed.append(feeds)
+            elif closes:
+                fed.pop()
     if words:
-        commands.append((before, line, words))
+        emit()
     return commands
 
 
-def _substitutions(word: str) -> list[str]:
-    """The text of each command substitution `$(...)` a word holds, outermost first, as a double-quoted word keeps it
-    whole; a substitution left open holds nothing."""
-    found: list[str] = []
-    start = word.find("$(")
-    while start != -1:
-        depth, index = 1, start + 2
-        while index < len(word) and depth:
-            depth += {"(": 1, ")": -1}.get(word[index], 0)
-            index += 1
-        if depth:
-            break
-        found.append(word[start + 2 : index - 1])
-        start = word.find("$(", index)
-    return found
-
-
-def _substituted_commands(commands: list[tuple[str, int, list[str]]]) -> list[tuple[str, int, list[str]]]:
-    """The commands each quoted command substitution in `commands` runs, at the line of the command holding it, and the
-    commands of the substitutions they hold in turn; one shlex cannot read runs nothing this reader can see."""
+def _substituted_commands(script: str) -> list[tuple[str, int, list[str]]]:
+    """The commands each command substitution in a script runs, `$(...)` or backticks, quoted or not, as
+    skill_scripts.substitution_spans finds them, at their own lines, and the commands of the substitutions they hold
+    in turn; one shlex cannot read runs nothing this reader can see."""
     found: list[tuple[str, int, list[str]]] = []
-    pending = [(line, text) for _, line, words in commands for word in words for text in _substitutions(word)]
+    pending = [(script.count("\n", 0, offset), text) for offset, text in substitution_spans(script)]
     while pending:
-        line, text = pending.pop()
+        lines_before, text = pending.pop()
         try:
             inner = _bash_commands(text)
         except ValueError:
-            continue
-        found += [(before, line + inner_line - 1, words) for before, inner_line, words in inner]
-        pending += [(line, nested) for _, _, words in inner for word in words for nested in _substitutions(word)]
+            inner = []
+        found += [(before, lines_before + line, words) for before, line, words in inner]
+        pending += [(lines_before + text.count("\n", 0, offset), nested) for offset, nested in substitution_spans(text)]
     return found
 
 
@@ -572,7 +601,15 @@ def pipe_race_problems(root: Path) -> list[str]:
     """Report each pipe into a reader that may end early, in a Bash regression suite that sets pipefail.
 
     grep -q or -m, and head, can exit before the command writing into them has written everything; the writer then
-    dies of SIGPIPE, and pipefail fails the pipeline though the check held, so it fails at random.
+    dies of SIGPIPE, and pipefail fails the pipeline though the check held, so it fails at random. The reader is found
+    in any shape around it: right after the pipe, in a brace or subshell group the pipe feeds, in a `$(...)` or
+    backtick substitution, quoted or not, named by a path, or behind an assignment or a wrapper such as `env`, `exec`,
+    `timeout`, or `command`; head is judged by the last count it is given.
+
+    What it does not see: another reader that ends early, such as `read`, `sed q`, `awk` with `exit`, or a loop that
+    breaks; a reader in a process substitution such as `>(head)`; `head --help` or `--version`; and a group whose
+    parentheses a `case` pattern's `)` unbalances. A command in a fed group whose input is redirected from a file is
+    refused all the same.
     """
     problems: list[str] = []
     for suite in regression_suites(root):
@@ -580,19 +617,24 @@ def pipe_race_problems(root: Path) -> list[str]:
             continue
         name = suite.relative_to(root).as_posix()
         try:
-            commands = _bash_commands(suite.read_text(encoding="utf-8"))
+            text = suite.read_text(encoding="utf-8")
+            commands = _bash_commands(text)
         except ValueError as error:
             problems.append(f"{name} cannot be read as Bash to find a pipe into a reader that ends early: {error}")
             continue
         if not any(words[0] == "set" and "pipefail" in words for _, _, words in commands):
             continue
-        commands += _substituted_commands(commands)
+        # An unquoted substitution's commands are read in the script and in the substitution, so each is named once.
+        races = {
+            (line, reader)
+            for before, line, words in [*commands, *_substituted_commands(text)]
+            if before in PIPES and (reader := _early_exit_reader(words))
+        }
         problems += [
             f"{name}:{line} pipes into {reader} under pipefail, which fails the check when the writer dies "
             "of SIGPIPE after the reader ends; give it its text in a here-string or a file, or take a line by "
             "parameter expansion"
-            for before, line, words in commands
-            if before in PIPES and (reader := _early_exit_reader(words))
+            for line, reader in sorted(races)
         ]
     return problems
 

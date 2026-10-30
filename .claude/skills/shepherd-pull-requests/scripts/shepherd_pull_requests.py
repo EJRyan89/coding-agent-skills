@@ -135,9 +135,16 @@ RERUNS_PER_HEAD = 1
 # The paths whose change holds every other pull request's update while it is open: the validation policies, which
 # hold the job selection, and the runner that selects what a pull request runs.
 HOLDING_PATHS = ("tests/validation/", "tests/run_validation.py")
-# A leg's steps that run the validation itself; a failure in any other is the runner's setup: the checkout, the
-# interpreter, or a tool installed from a package gallery.
-VALIDATION_STEPS = frozenset({"Run repository validation", "Validate with the latest ShellCheck"})
+# A leg's steps that run the validation itself, the known-failure issues' query among them, whose failure is the list's
+# and never reads as the runner's; a failure in any other is the runner's setup: the checkout, the interpreter, or a
+# tool installed from a package gallery.
+VALIDATION_STEPS = frozenset(
+    {
+        "Run repository validation",
+        "Validate with the latest ShellCheck",
+        "Ask whether each known failure's issue is open",
+    }
+)
 OPEN_LISTED = 100
 MERGED_LISTED = 100
 PULL_FIELDS = (

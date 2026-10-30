@@ -376,7 +376,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
 #### What it refuses because it cannot settle it
 
 A guarded hub is in view when it is the hub of the session's own directory, of its project, or of a place the
-command names. While one is, the guard refuses:
+command names. A place whose lookup the reading time cuts short may be a guarded hub's, so the guard then refuses a
+command that names git as if one were in view. While one is, the guard refuses:
 
 - a git call that would write the checkout it runs in, where the text does not settle its repository or work tree:
   a directory or location variable named by a value the command computes or does not set, or set by a builtin that
@@ -412,9 +413,10 @@ says nothing about where the call acts; a defect before that, such as an event i
 no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
 stderr, so that it cannot block every tool and is never passed unseen. A directory below a checkout, which a `.git`
 in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
-a place outside every repository, and the other hubs in view still count. A file an edit names in such a checkout, or
-in a git directory git answers with an error for, may lie in a guarded hub, so the edit is refused; one where git did
-not run or finish is allowed with a note. The hook command reads the project's own
+a place outside every repository, and the other hubs in view still count. A successful answer that is not the lines
+the guard asked for is read as such an error. A file an edit names in such a checkout, or in a git directory git
+answers with an error for, may lie in a guarded hub, so the edit is refused; one where git did not run or finish is
+allowed with a note. The hook command reads the project's own
 opt-in before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
 
 #### What it does not see

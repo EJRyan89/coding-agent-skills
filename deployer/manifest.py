@@ -404,14 +404,21 @@ def _upgrade_dependencies(data: ManifestData) -> None:
 def load(path: Path) -> Manifest:
     if not state_files.is_present(path, "The manifest", *MANIFEST_REMEDY):
         return Manifest(path, {"manifest_version": MANIFEST_VERSION, "sources": {}})
-    raw: object
+    text: str | None
     try:
-        raw = state_files.parse_json(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
     except OSError as exc:
         # A file another process holds, or one this user may not read, is not malformed: say which it is.
         raise os_error(exc, "read the manifest") from exc
     except UnicodeError:
-        raw = None
+        text = None
+    raw = None if text is None else state_files.parse_json(text)
+    if raw is None and text is not None and state_files.holds_lone_surrogate(text):
+        raise DeployError(
+            f"ERROR: Manifest {platform_support.normalize(path)} holds a lone surrogate, which an earlier"
+            " release of the deployer could write and this one does not read.",
+            *MANIFEST_REMEDY,
+        )
     sources = raw.setdefault("sources", {}) if isinstance(raw, dict) else None
     if not isinstance(raw, dict) or not isinstance(sources, dict):
         raise DeployError(f"ERROR: Manifest is malformed: {platform_support.normalize(path)}", *MANIFEST_REMEDY)

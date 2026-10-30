@@ -687,6 +687,22 @@ class GraphTests(Fixture):
         self.assertEqual([0o644, kept], [call.kwargs["mode"] for call in replace.call_args_list])
         self.assertTrue(target.read_text(encoding="utf-8").startswith("graph LR\n"))
 
+    def test_a_read_only_graph_file_is_refused_and_left_as_it_was(self) -> None:
+        root = self.mixed_solution()
+        target = self.root / "out" / "graph.mmd"
+        target.parent.mkdir()
+        target.write_bytes(b"graph LR\n  kept\n")
+        target.chmod(stat.S_IREAD)
+        self.addCleanup(target.chmod, stat.S_IREAD | stat.S_IWRITE)
+        code, rows = self.run_main("graph", "--output", str(target), "--root", str(root))
+        self.assertEqual(
+            (1, f"FAILED [Errno 13] the file is read-only; make it writable to replace it: {str(target)!r}"),
+            (code, rows[-1][0]),
+        )
+        self.assertEqual(b"graph LR\n  kept\n", target.read_bytes())
+        self.assertFalse(target.stat().st_mode & stat.S_IWUSR)
+        self.assertEqual(["graph.mmd"], [path.name for path in target.parent.iterdir()])
+
     def test_a_graph_write_that_fails_part_way_leaves_the_output_file_as_it_was(self) -> None:
         root = self.mixed_solution()
         target = self.root / "out" / "graph.mmd"
