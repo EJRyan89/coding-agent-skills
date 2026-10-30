@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1045,6 +1046,29 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual([["gh", "api", "user"]], self.github.calls[calls:])
         self.assertEqual(before, self.dashboard.read_bytes())
         self.assertFalse(self.record.exists())
+
+    def test_a_read_only_dashboard_or_record_is_refused_before_github_is_asked(self) -> None:
+        self.collect()
+        self.assertEqual(0, self.run_main("update", "--input", str(self.input))[0])
+        self.assertTrue(self.record.is_file())
+        self.configure(login=None)
+        for name, target in (("dashboard", self.dashboard), ("record", self.record)):
+            with self.subTest(file=name):
+                before = target.read_bytes()
+                target.chmod(stat.S_IREAD)
+                try:
+                    calls = len(self.github.calls)
+                    code, out, err = self.run_main("update", "--input", str(self.input))
+                    self.assertEqual((1, ""), (code, err))
+                    self.assertEqual(
+                        [f"FAILED {target} is read-only; make it writable for the update to replace it"],
+                        out.splitlines(),
+                    )
+                    self.assertEqual([], self.github.calls[calls:])
+                    self.assertEqual(before, target.read_bytes())
+                    self.assertEqual([], [path.name for path in target.parent.iterdir() if path.suffix == ".tmp"])
+                finally:
+                    target.chmod(stat.S_IREAD | stat.S_IWRITE)
 
     def test_the_default_configuration_keeps_the_plain_tracker_record_name(self) -> None:
         # Independent literals: review_config names the default file config.json, and its record is tracker.json.

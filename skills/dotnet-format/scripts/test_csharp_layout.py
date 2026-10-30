@@ -471,6 +471,22 @@ class FileTests(unittest.TestCase):
         self.assertEqual(original, fixable.read_bytes())
         self.assertEqual(["Fixable.cs", "files.txt"], sorted(path.name for path in self.root.iterdir()))
 
+    def test_a_fix_of_a_read_only_file_fails_and_leaves_it_as_it_was(self) -> None:
+        fixable = self.root / "Fixable.cs"
+        original = b"#region A\n\n#endregion A\n"
+        fixable.write_bytes(original)
+        fixable.chmod(stat.S_IREAD)
+        self.addCleanup(fixable.chmod, stat.S_IREAD | stat.S_IWRITE)
+        file_list = self.file_list("Fixable.cs")
+        status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
+        self.assertEqual(
+            (1, [[f"FAILED [Errno 13] the file is read-only; make it writable to replace it: {str(fixable)!r}"]]),
+            (status, lines),
+        )
+        self.assertEqual(original, fixable.read_bytes())
+        self.assertFalse(fixable.stat().st_mode & stat.S_IWUSR)
+        self.assertEqual(["Fixable.cs", "files.txt"], sorted(path.name for path in self.root.iterdir()))
+
     def test_a_fix_keeps_a_lone_surrogate_a_file_with_a_byte_order_mark_holds(self) -> None:
         # The bytes ED A0 80 encode U+D800, which only surrogatepass reads and writes back.
         fixable = self.root / "Fixable.cs"

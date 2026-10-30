@@ -506,24 +506,15 @@ def resolves_to(qualified: str, name: str) -> bool:
 # Every process the repository starts runs without git's repository-selecting variables. ejryan89-skill-core's
 # bounded_process starts it so; a start anywhere else passes an environment that module's without_repository_variables
 # built, or states why in a module-level PROCESS_ENV_ALLOWED = {scope: reason}. The starts are call_tables'
-# PROCESS_STARTS: one that takes no environment inherits this process's, and one that clears it itself needs none.
+# PROCESS_STARTS: one that takes no environment inherits this process's, and one that clears it itself needs none. A
+# name holds a cleared environment only while every read of it in the module, a closure's included, leaves the
+# mapping with no key from elsewhere; a reach through globals() or vars() is not read.
 CLEARED_ENVIRONMENT = "bounded_process.without_repository_variables"
 PROCESS_RUNNER = "skills/ejryan89-skill-core/scripts/bounded_process.py"
 PROCESS_ENV_ALLOWANCE = "PROCESS_ENV_ALLOWED"
-FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-
-
-def _holders(tree: ast.Module) -> dict[int, ast.AST]:
-    """The innermost function or lambda holding each node, by the node's id, or the module for a node in none."""
-    holders: dict[int, ast.AST] = {}
-
-    def walk(node: ast.AST, holder: ast.AST) -> None:
-        for child in ast.iter_child_nodes(node):
-            holders[id(child)] = holder
-            walk(child, child if isinstance(child, FUNCTIONS) else holder)
-
-    walk(tree, tree)
-    return holders
+# The methods a cleared environment may be called by on its own name, which read it, copy it, or remove keys, and so
+# add none.
+ENVIRONMENT_READS = frozenset({"clear", "copy", "get", "items", "keys", "pop", "popitem", "values"})
 
 
 def _clears(value: ast.expr | None, resolver: CallableResolver) -> bool:
@@ -563,37 +554,77 @@ def _updated_name(node: ast.AST) -> tuple[ast.Name, bool] | None:
     return None
 
 
-def _cleared_names(tree: ast.Module, holders: dict[int, ast.AST], resolver: CallableResolver) -> dict[int, set[str]]:
-    """The names each function, by its id, binds only to an environment without_repository_variables builds and
-    changes in place, if at all, only by keys that name none of git's repository-selecting variables. A parameter is
-    bound by the caller, so it is none. An update in place, such as `env.update(...)`, `env[key] = ...`, or
-    `env |= ...`, keeps the name cleared only when every key it can add is such a constant, as
-    `env.update({"LC_ALL": "C"})`; one that adds keys from elsewhere, such as `env.update(os.environ)`, does not."""
+def _keeps_clear(node: ast.Name, parents: dict[int, ast.AST], given: set[int]) -> bool:
+    """Whether a read of a name leaves the mapping bound to it without a key it did not hold, or with only clear ones:
+    the environment a process start is given, a subscript that reads, deletes, or assigns a clear key, a membership
+    test, an ENVIRONMENT_READS method called on it, or an update or a setdefault proven clear. Any other read hands the
+    mapping on, to another name, a call, a container, or a stored or unbound method, which may change it unseen."""
+    if id(node) in given:
+        return True
+    parent = parents.get(id(node))
+    if isinstance(parent, ast.Subscript) and parent.value is node:
+        updated = _updated_name(parent)
+        return updated is None or updated[1]
+    if isinstance(parent, ast.Compare):
+        return any(
+            item is node and isinstance(operator, ast.In | ast.NotIn)
+            for operator, item in zip(parent.ops, parent.comparators, strict=True)
+        )
+    if not (isinstance(parent, ast.Attribute) and isinstance(call := parents.get(id(parent)), ast.Call)):
+        return False
+    if call.func is not parent:
+        return False
+    if parent.attr in ENVIRONMENT_READS:
+        return True
+    updated = _updated_name(call)
+    return updated is not None and updated[1]
+
+
+def _cleared_names(tree: ast.Module, resolver: CallableResolver, given: set[int]) -> set[tuple[int, str]]:
+    """Each name, by the scope that binds it, bound only to an environment without_repository_variables builds and
+    changed in place, if at all, only by keys that name none of git's repository-selecting variables, wherever in the
+    module the name is read, closures included. A parameter is bound by the caller, so it is none. An update in place,
+    such as `env.update(...)`, `env[key] = ...`, or `env |= ...`, keeps the name cleared only when every key it can add
+    is such a constant, as `env.update({"LC_ALL": "C"})`; one that adds keys from elsewhere, such as
+    `env.update(os.environ)`, does not, and neither does a read that hands the mapping on (_keeps_clear)."""
     assigned: dict[int, ast.expr] = {}
-    augmented: set[int] = set()
+    augmented: dict[int, ast.AugAssign] = {}
+    parents: dict[int, ast.AST] = {}
     for node in ast.walk(tree):
+        parents |= {id(child): node for child in ast.iter_child_nodes(node)}
         if isinstance(node, ast.Assign):
             assigned |= {id(target): node.value for target in node.targets if isinstance(target, ast.Name)}
         elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
             assigned[id(node.target)] = node.value
         elif isinstance(node, ast.AugAssign):
-            augmented.add(id(node.target))
-    bound: dict[int, dict[str, list[bool]]] = {}
+            augmented[id(node.target)] = node
+    bound: dict[tuple[int, str], list[bool]] = {}
     for node in ast.walk(tree):
-        if isinstance(node, FUNCTIONS):
-            parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-            for parameter in [*parameters, node.args.vararg, node.args.kwarg]:
-                if parameter is not None:
-                    bound.setdefault(id(node), {}).setdefault(parameter.arg, []).append(False)
-        elif (updated := _updated_name(node)) is not None:
-            # A proven update leaves the name as its bindings make it; an unproven one makes it not cleared.
-            name, proven = updated
-            if not proven:
-                bound.setdefault(id(holders[id(node)]), {}).setdefault(name.id, []).append(False)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and id(node) not in augmented:
-            cleared = _clears(assigned.get(id(node)), resolver)
-            bound.setdefault(id(holders[id(node)]), {}).setdefault(node.id, []).append(cleared)
-    return {holder: {name for name, values in names.items() if all(values)} for holder, names in bound.items()}
+        if isinstance(node, ast.arg):
+            name, cleared = node.arg, False
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            # A proven augmented union leaves the name as its bindings make it; an unproven one makes it not cleared.
+            change = _updated_name(augmented[id(node)]) if id(node) in augmented else None
+            name = node.id
+            cleared = change[1] if change is not None else _clears(assigned.get(id(node)), resolver)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            name, cleared = node.id, _keeps_clear(node, parents, given)
+        else:
+            continue
+        scope = resolver.scopes.get(id(node))
+        if scope is not None and (owner := scope.owner(name)) is not None:
+            bound.setdefault((id(owner), name), []).append(cleared)
+    return {key for key, values in bound.items() if all(values)}
+
+
+def _cleared_here(env: ast.expr | None, resolver: CallableResolver, cleared: set[tuple[int, str]]) -> bool:
+    """Whether a start's environment is a name cleared by the scope the start runs in, a comprehension's enclosing
+    one for a start inside a comprehension, rather than by an enclosing function or the module."""
+    if not isinstance(env, ast.Name) or (scope := resolver.scopes.get(id(env))) is None:
+        return False
+    while scope.is_comprehension and scope.parent is not None:
+        scope = scope.parent
+    return scope.owner(env.id) is scope and (id(scope), env.id) in cleared
 
 
 def _process_start(call: ast.Call, resolver: CallableResolver) -> tuple[str, ProcessStart] | None:
@@ -627,17 +658,15 @@ def process_environment_problems(root: Path, files: list[Path]) -> list[str]:
     paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != PROCESS_RUNNER]
     for _, name, tree in python_trees(paths, root, problems):
         resolver = CallableResolver(tree)
-        holders = _holders(tree)
-        cleared = _cleared_names(tree, holders, resolver)
+        starts = [
+            (node, scope, named, _environment_argument(node, named[1]))
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call) and (named := _process_start(node, resolver)) is not None
+        ]
+        cleared = _cleared_names(tree, resolver, {id(env) for *_, env in starts if isinstance(env, ast.Name)})
         found: list[tuple[int, str, str]] = []
-        for node, scope in scoped_nodes(tree.body):
-            if not isinstance(node, ast.Call) or (named := _process_start(node, resolver)) is None or named[1].clears:
-                continue
-            start, table = named
-            env = _environment_argument(node, table)
-            if _clears(env, resolver) or (
-                isinstance(env, ast.Name) and env.id in cleared.get(id(holders[id(node)]), set())
-            ):
+        for node, scope, (start, table), env in starts:
+            if table.clears or _clears(env, resolver) or _cleared_here(env, resolver, cleared):
                 continue
             given = "no env, so it keeps" if env is None else "an env that may keep"
             found.append(
@@ -745,9 +774,10 @@ def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
 # ejryan89-skill-core's whole_number is the one reader of a whole number from text, taking ASCII digits alone up to a
 # cap and raising its caller's named error, where int() reads every Unicode digit, a sign, spaces, and underscores, and
 # past the interpreter's digit limit raises a ValueError that names no input. So int() never converts a
-# regular-expression group, or a value an isdigit(), isdecimal(), or isnumeric() test admitted, which passes a digit
-# such as a superscript two that int() then refuses. Any other conversion states why in a module-level
-# INT_PARSE_ALLOWED = {scope: reason}, as where the pattern itself bounds the digits.
+# regular-expression group, an item of a findall() list or of one of its tuples among them, or a value an isdigit(),
+# isdecimal(), or isnumeric() test admitted, which passes a digit such as a superscript two that int() then refuses.
+# Any other conversion states why in a module-level INT_PARSE_ALLOWED = {scope: reason}, as where the pattern itself
+# bounds the digits.
 WHOLE_NUMBER_READER = "skills/ejryan89-skill-core/scripts/whole_number.py"
 INT_PARSE_ALLOWANCE = "INT_PARSE_ALLOWED"
 
@@ -809,8 +839,9 @@ class _ScopeNumbers:
         self.tested: dict[str, str] = {}
 
     def is_group(self, node: ast.expr) -> bool:
-        """Whether an expression is a group of a match: a group() call, an index of groups() or groupdict() or of a
-        match, or a name bound to one, or a conditional expression or a boolean operation one of whose values is."""
+        """Whether an expression is a group of a match: a group() call, an index of groups(), groupdict(), or
+        findall() or of a match, an index of a group, as of a findall tuple, or a name bound to one, or a conditional
+        expression or a boolean operation one of whose values is."""
         return any(self._group(branch) for branch in _branches(node))
 
     def _group(self, node: ast.expr) -> bool:
@@ -818,8 +849,10 @@ class _ScopeNumbers:
             return True
         if isinstance(node, ast.Subscript):
             value = node.value
-            return _method_call(value, "groups", "groupdict") is not None or (
-                isinstance(value, ast.Name) and value.id in self.matches
+            return (
+                _method_call(value, "groups", "groupdict", "findall") is not None
+                or (isinstance(value, ast.Name) and value.id in self.matches)
+                or self.is_group(_unstripped(value))
             )
         return isinstance(node, ast.Name) and node.id in self.groups
 
@@ -1321,8 +1354,9 @@ def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
 # A git command's exit status read outside ejryan89-skill-core's git_client.py is where a failure turns into absence:
 # a nonzero exit taken for "not there". The client's forms give the three answers, found, absent as git reports it,
 # and could not tell, so a module reads them instead. A git result is what GitClient.run returns on a client the
-# module holds, what a function annotated to return git_client.GitResult returns, in any module the repository's
-# Python reads, and a name annotated as one. A read that must stay, such as a status reported with git's reason or
+# module holds, what a function annotated to return git_client.GitResult returns, awaited or not, in any module the
+# repository's Python reads, what a method so annotated returns on an instance of its class in the module defining it,
+# and a name annotated as one. A read that must stay, such as a status reported with git's reason or
 # one whose failure is refused, states why in a module-level GIT_STATUS_ALLOWED = {scope: reason}.
 GIT_STATUS_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_RESULT = "git_client.GitResult"
@@ -1335,12 +1369,59 @@ def _module_key(name: str) -> str:
     return path.name if "scripts" in path.parts else ".".join(path.parts)
 
 
-def _returns_git_result(function: ast.FunctionDef | ast.AsyncFunctionDef, resolver: CallableResolver) -> bool:
-    returns = function.returns
-    return returns is not None and any(
-        isinstance(part, ast.Name | ast.Attribute) and resolves_to(resolver.name(part), GIT_RESULT)
-        for part in ast.walk(returns)
+def _annotation_names(annotation: ast.expr, resolver: CallableResolver) -> Iterator[str]:
+    """The qualified name of each name and attribute an annotation holds, a quoted one's read from its text."""
+    for part in ast.walk(annotation):
+        if isinstance(part, ast.Name | ast.Attribute):
+            yield resolver.name(part)
+        elif isinstance(part, ast.Constant) and isinstance(part.value, str):
+            try:
+                quoted = ast.parse(part.value.strip(), mode="eval")
+            except SyntaxError:
+                continue
+            aliases = resolver.aliases(part)
+            yield from (
+                qualified_name(name, aliases) for name in ast.walk(quoted) if isinstance(name, ast.Name | ast.Attribute)
+            )
+
+
+def _annotated_git_result(annotation: ast.expr | None, resolver: CallableResolver) -> bool:
+    return annotation is not None and any(
+        resolves_to(name, GIT_RESULT) for name in _annotation_names(annotation, resolver)
     )
+
+
+def _returns_git_result(function: ast.FunctionDef | ast.AsyncFunctionDef, resolver: CallableResolver) -> bool:
+    return _annotated_git_result(function.returns, resolver)
+
+
+def _top_level(body: Sequence[ast.stmt]) -> Iterator[ast.stmt]:
+    """Each statement a module's top level runs, through the blocks of an if, a try, a with, and a loop, whose bindings
+    are the module's as an unindented statement's are; never into a function or a class."""
+    for node in body:
+        yield node
+        if isinstance(node, ast.If | ast.For | ast.AsyncFor | ast.While):
+            yield from _top_level([*node.body, *node.orelse])
+        elif isinstance(node, ast.Try | ast.TryStar):
+            handlers = [statement for handler in node.handlers for statement in handler.body]
+            yield from _top_level([*node.body, *handlers, *node.orelse, *node.finalbody])
+        elif isinstance(node, ast.With | ast.AsyncWith):
+            yield from _top_level(node.body)
+
+
+def _assigned(target: ast.expr, value: ast.expr) -> Iterator[tuple[ast.Name, ast.expr]]:
+    """Each name an assignment target binds with the value it binds it to, pairing a tuple or a list target with a
+    literal tuple or list of as many values, as `r, _ = client.run(...), 1` does."""
+    if isinstance(target, ast.Name):
+        yield target, value
+    elif (
+        isinstance(target, ast.Tuple | ast.List)
+        and isinstance(value, ast.Tuple | ast.List)
+        and len(target.elts) == len(value.elts)
+        and not any(isinstance(element, ast.Starred) for element in (*target.elts, *value.elts))
+    ):
+        for element, item in zip(target.elts, value.elts, strict=True):
+            yield from _assigned(element, item)
 
 
 def _reaches(called: str, producer: str) -> bool:
@@ -1351,9 +1432,9 @@ def _reaches(called: str, producer: str) -> bool:
 
 def _module_bindings(tree: ast.Module, resolver: CallableResolver) -> list[tuple[str, str]]:
     """Each name a module's top level binds to another, with what it resolves to: an import, or a simple assignment of
-    a name or an attribute."""
+    a name or an attribute, unindented or under an if, a try, a with, or a loop."""
     bindings: list[tuple[str, str]] = []
-    for node in tree.body:
+    for node in _top_level(tree.body):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             bindings += [(alias.asname or alias.name, f"{node.module}.{alias.name}") for alias in node.names]
         elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name | ast.Attribute):
@@ -1372,7 +1453,7 @@ def git_result_producers(trees: list[tuple[str, ast.Module]]) -> set[str]:
         resolver = CallableResolver(tree)
         producers |= {
             f"{_module_key(name)}.{node.name}"
-            for node in tree.body
+            for node in _top_level(tree.body)
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _returns_git_result(node, resolver)
         }
         bindings += [(f"{_module_key(name)}.{bound}", target) for bound, target in _module_bindings(tree, resolver)]
@@ -1386,8 +1467,11 @@ def git_result_producers(trees: list[tuple[str, ast.Module]]) -> set[str]:
 
 
 class _GitResults:
-    """What a module holds as a git result: a call that returns one, and each name a scope binds to such a call, by an
-    assignment or an assignment expression, or annotates as a GitResult, held for that scope alone."""
+    """What a module holds as a git result: a call that returns one, awaited or not, and each name a scope binds to such
+    a call, by an assignment or an assignment expression, or annotates as a GitResult, held for that scope alone. A
+    call returns one when it reaches a producer, or calls a method that a class of the module annotates to return one
+    on that class's instance: `self` or `cls` in its methods, a call of the class, or a name annotated as or bound to
+    one."""
 
     def __init__(self, tree: ast.Module, resolver: CallableResolver, producers: set[str]) -> None:
         self.resolver = resolver
@@ -1398,13 +1482,19 @@ class _GitResults:
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _returns_git_result(node, resolver)
         }
         self.producers = producers
+        # Each class of the module, by the name the resolver gives it, with its methods annotated to return a result.
+        self.methods: dict[str, set[str]] = {}
+        # Each name bound to an instance of one of those classes, by the scope that binds it, with the class.
+        self.instances: dict[tuple[int, str], str] = {}
+        self._read_classes(tree)
         # Each name by the scope that binds it, so a name another function binds to a result is not one here.
         self.names: set[tuple[int, str]] = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and self.is_result(node.value):
+            if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        self._bind(target, target.id)
+                    for name, value in _assigned(target, node.value):
+                        if self.is_result(value):
+                            self._bind(name, name.id)
             elif isinstance(node, ast.NamedExpr) and self.is_result(node.value):
                 # The scope reader visits a walrus but not its target, and binds the name where the walrus sits.
                 self._bind(node, node.target.id)
@@ -1424,19 +1514,66 @@ class _GitResults:
         if (key := self._key(node, name)) is not None:
             self.names.add(key)
 
+    def _read_classes(self, tree: ast.Module) -> None:
+        """Record each class whose methods return a result, and each name bound to an instance of one."""
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            functions = [item for item in node.body if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)]
+            returning = {function.name for function in functions if _returns_git_result(function, self.resolver)}
+            if not returning:
+                continue
+            # The resolver names a class the module defines, bound once, as <local>.<name>.
+            owner = f"<local>.{node.name}"
+            self.methods[owner] = returning
+            for function in functions:
+                given = function.args.posonlyargs + function.args.args
+                static = any(self.resolver.name(decorator) == "staticmethod" for decorator in function.decorator_list)
+                if given and not static and (key := self._key(given[0], given[0].arg)) is not None:
+                    self.instances[key] = owner
+        for node in ast.walk(tree):
+            bound: ast.arg | ast.Name | None = node if isinstance(node, ast.arg) else None
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                bound = node.target
+            annotation = getattr(node, "annotation", None)
+            if bound is not None and annotation is not None:
+                classes = set(_annotation_names(annotation, self.resolver)) & set(self.methods)
+                label = bound.arg if isinstance(bound, ast.arg) else bound.id
+                if classes and (key := self._key(bound, label)) is not None:
+                    self.instances[key] = min(classes)
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    for assigned, value in _assigned(target, node.value):
+                        constructed = self._constructed(value)
+                        if constructed and (key := self._key(assigned, assigned.id)) is not None:
+                            self.instances[key] = constructed
+
+    def _constructed(self, node: ast.expr | None) -> str | None:
+        """The class of the module a call constructs, when its methods return a result, or None."""
+        if isinstance(node, ast.Call) and (called := self.resolver.name(node.func)) in self.methods:
+            return called
+        return None
+
+    def _instance_of(self, node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name):
+            key = self._key(node, node.id)
+            return self.instances.get(key) if key is not None else None
+        return self._constructed(node)
+
     def annotated(self, annotation: ast.expr) -> bool:
-        return any(
-            isinstance(part, ast.Name | ast.Attribute) and resolves_to(self.resolver.name(part), GIT_RESULT)
-            for part in ast.walk(annotation)
-        )
+        return _annotated_git_result(annotation, self.resolver)
 
     def is_result(self, node: ast.expr | None) -> bool:
-        """Whether an expression is a call that returns a git result."""
+        """Whether an expression is a call that returns a git result, awaited or not."""
+        if isinstance(node, ast.Await):
+            node = node.value
         if not isinstance(node, ast.Call):
             return False
         function = node.func
         if isinstance(function, ast.Attribute) and function.attr == "run" and self.clients.holds(function.value):
             return True
+        if isinstance(function, ast.Attribute) and (owner := self._instance_of(function.value)) is not None:
+            return function.attr in self.methods[owner]
         called = self.resolver.name(function)
         return bool(called) and (called in self.local or any(_reaches(called, name) for name in self.producers))
 
@@ -1448,15 +1585,15 @@ class _GitResults:
         return self.is_result(node)
 
     def status_read(self, node: ast.expr) -> bool:
-        """Whether a node reads a held result's returncode, as an attribute or through getattr."""
+        """Whether a node reads a held result's returncode, as an attribute or through getattr, by any spelling, given
+        any name but a constant that names another attribute."""
         if isinstance(node, ast.Attribute):
             return node.attr == "returncode" and isinstance(node.ctx, ast.Load) and self.holds(node.value)
         return (
             isinstance(node, ast.Call)
-            and self.resolver.name(node.func) == "getattr"
+            and self.resolver.name(node.func) in ("getattr", "builtins.getattr")
             and len(node.args) >= 2
-            and isinstance(attribute := node.args[1], ast.Constant)
-            and attribute.value == "returncode"
+            and not (isinstance(attribute := node.args[1], ast.Constant) and attribute.value != "returncode")
             and self.holds(node.args[0])
         )
 
@@ -1522,8 +1659,9 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # a list's or tuple's items, pass -z or go to GitClient.names, which adds it, and a for-each-ref or log format joins
 # its fields with NUL. str.splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path can
 # hold, so git's output, a call's result, its stdout, or a name a scope binds to either, is split on "\n" or on NUL,
-# never with splitlines(). A listing, a format, or a split that must stay states why in a module-level
-# GIT_SEPARATOR_ALLOWED = {scope: reason}.
+# never with splitlines(), bound or unbound as str.splitlines(out), nor after a string method, a str(), or a slice
+# that keeps its text, as out.strip().splitlines(). A listing, a format, or a split that must stay states why in a
+# module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
 # Each subcommand that lists names, with the options that make it list them; none means it always does. An option
@@ -1542,6 +1680,22 @@ GIT_FORMAT_PREFIXES = ("format:", "tformat:")
 # log (%x00) write it, and the escapes that print a byte, which join fields as literal text does.
 GIT_FORMAT_TOKEN = re.compile(r"%%|%x00|%00|%x[0-9a-fA-F]{2}|%n|%\([^)]*\)|%[a-zA-Z][a-zA-Z?]?")
 GIT_FORMAT_NUL = frozenset({"%00", "%x00"})
+# The str and bytes methods whose result still holds the text they are given, so a split of it splits git's output.
+TEXT_KEEPING_METHODS = frozenset(
+    {
+        "casefold",
+        "decode",
+        "expandtabs",
+        "lower",
+        "lstrip",
+        "removeprefix",
+        "removesuffix",
+        "replace",
+        "rstrip",
+        "strip",
+        "upper",
+    }
+)
 # The git subcommands whose output names a ref, a path, or a commit, which a split of that output reads.
 GIT_OUTPUT_COMMANDS = frozenset(
     {
@@ -1641,14 +1795,37 @@ def _separator_refusal(elements: Sequence[ast.expr]) -> str | None:
     return None
 
 
+def _text_beneath(node: ast.expr) -> ast.expr:
+    """The expression whose text a string method's result, a str() of it, or a slice of it still holds, through each
+    one in turn, bound as `out.strip()` or unbound as `str.strip(out)`; the expression itself when it is none."""
+    while True:
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+            node = node.value
+            continue
+        if not isinstance(node, ast.Call):
+            return node
+        method = node.func
+        if isinstance(method, ast.Name) and method.id == "str" and len(node.args) == 1:
+            node = node.args[0]
+        elif not isinstance(method, ast.Attribute) or method.attr not in TEXT_KEEPING_METHODS:
+            return node
+        elif not (isinstance(method.value, ast.Name) and method.value.id in ("str", "bytes")):
+            node = method.value
+        elif node.args:
+            node = node.args[0]
+        else:
+            return node
+
+
 def _git_output_command(
     node: ast.expr, lists: Mapping[str, Sequence[ast.expr]], outputs: Mapping[str, str]
 ) -> str | None:
     """The git subcommand whose output an expression holds, or None: a call whose arguments start it, a list or tuple
     among them, or a name its scope binds to one, read in place; that call's stdout, or output as the deployer's
-    run_tool gives it; or a name its scope binds to either."""
+    run_tool gives it; or a name its scope binds to either; through a string method, a str(), or a slice of any."""
+    node = _text_beneath(node)
     if isinstance(node, ast.Attribute) and node.attr in ("stdout", "output"):
-        node = node.value
+        node = _text_beneath(node.value)
     if isinstance(node, ast.Name):
         return outputs.get(node.id)
     if not isinstance(node, ast.Call):
@@ -1663,6 +1840,12 @@ def _git_output_command(
             elements.append(argument)
     started = _git_command(elements)
     return started[0] if started is not None and started[0] in GIT_OUTPUT_COMMANDS else None
+
+
+def _split_text(method: ast.Attribute, arguments: Sequence[ast.expr]) -> ast.expr:
+    """The text a splitlines() call splits: its receiver, or its first argument when unbound, as str.splitlines(out)."""
+    unbound = isinstance(method.value, ast.Name) and method.value.id in ("str", "bytes") and arguments
+    return arguments[0] if unbound else method.value
 
 
 def _git_output_splits(tree: ast.Module) -> list[tuple[int, str, str]]:
@@ -1685,7 +1868,8 @@ def _git_output_splits(tree: ast.Module) -> list[tuple[int, str, str]]:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "splitlines"
-            and (command := _git_output_command(node.func.value, known_lists, known_outputs)) is not None
+            and (command := _git_output_command(_split_text(node.func, node.args), known_lists, known_outputs))
+            is not None
         ):
             found.append(
                 (
