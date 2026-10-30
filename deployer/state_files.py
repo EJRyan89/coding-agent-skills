@@ -30,6 +30,26 @@ def parse_json(text: str) -> object | None:
     return value
 
 
+def holds_lone_surrogate(text: str) -> bool:
+    """Whether `text` is JSON that `parse_json` refuses only for a lone surrogate, a character no UTF-8 file holds.
+
+    The deployer up to v0.11.1 wrote its state through `json.dumps`, which escapes one, so a file it left can hold one;
+    its writers now refuse one, so a reader that names this case can tell the user the file is an earlier release's,
+    not damaged, and the same remedy applies.
+    """
+    try:
+        json_reader.loads(text)
+    except (ValueError, RecursionError):
+        pass
+    else:
+        return False
+    try:
+        json_reader.loads(text, surrogates=True)
+    except (ValueError, RecursionError):
+        return False
+    return True
+
+
 def is_present(path: Path, what: str, *remedy: str) -> bool:
     """Whether a file is at path: False when nothing is, and a refusal naming it when something else is.
 
