@@ -270,6 +270,23 @@ class CheckoutFailureTests(unittest.TestCase):
                 self.assertEqual(f"git could not read the checkout at {checkout}: {said}", str(raised.exception))
                 self.assertEqual(128, raised.exception.returncode)
 
+    def test_a_successful_answer_that_is_not_two_lines_raises_and_is_never_read_as_no_checkout(self) -> None:
+        # On Linux a path holding a newline makes rev-parse print more lines than the two it was asked for.
+        with tempfile.TemporaryDirectory() as folder:
+            for stdout, count in (("", 0), ("/a\n", 1), ("/a\n/b\n/c\n", 3), ("/a\nb\n/c\nd/.git\n", 4)):
+                with (
+                    self.subTest(count=count),
+                    mock.patch.object(worktrees, "git", return_value=git_client.GitResult(0, stdout, "")),
+                    self.assertRaises(git_client.GitError) as raised,
+                ):
+                    worktrees.checkout_of(Path(folder))
+                self.assertEqual(
+                    f"git rev-parse answered {count} lines for the checkout at {Path(folder)}, not two",
+                    str(raised.exception),
+                )
+            with mock.patch.object(worktrees, "git", return_value=git_client.GitResult(0, "/a\n/a/.git\n", "")):
+                self.assertEqual(worktrees.Checkout(Path("/a"), Path("/a")), worktrees.checkout_of(Path(folder)))
+
     def counted_row(self, head: str, answer: git_client.GitResult) -> tuple[worktrees.Row, list[object]]:
         """The row list shows for a worktree whose count git answers with answer, and each git call it made."""
         with tempfile.TemporaryDirectory() as folder:
