@@ -251,16 +251,28 @@ class ReadOnlyTargetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             self.assertFalse(is_read_only(Path(temporary) / "missing"))
 
-    def test_a_copy_given_a_read_only_mode_is_removed_when_the_replace_fails(self) -> None:
+    def test_a_copy_given_a_read_only_mode_is_made_writable_and_removed_when_the_replace_fails(self) -> None:
+        # Linux removes a read-only file as readily as any other and Windows refuses to, so the mode the copy has as
+        # it is removed is read on every platform rather than left to Windows alone to show.
+        modes: list[int] = []
+        real_unlink = Path.unlink
+
+        def unlink(self: Path, missing_ok: bool = False) -> None:
+            modes.append(stat.S_IMODE(self.stat().st_mode))
+            real_unlink(self, missing_ok=missing_ok)
+
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "state.json"
             path.write_bytes(b"previous\n")
             with (
                 mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace")),
+                mock.patch.object(Path, "unlink", unlink),
                 self.assertRaisesRegex(OSError, "^synthetic replace$") as raised,
             ):
                 replace_bytes(path, b"next\n", mode=0o444)
             self.assertIs(OSError, type(raised.exception))
+            self.assertEqual(1, len(modes))
+            self.assertTrue(modes[0] & stat.S_IWUSR, f"the copy is writable as it is removed: {modes[0]:o}")
             self.assertEqual(b"previous\n", path.read_bytes())
             self.assertEqual(["state.json"], names_in(temporary), "the read-only copy is removed")
 
