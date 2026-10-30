@@ -534,6 +534,76 @@ def test_a_name_no_pattern_matches_is_no_suite(name: str) -> None:
     assert not is_test_script(Path(name))
 
 
+def races_in(tmp_path: Path, script: str) -> list[str]:
+    """What the pipe-race policy reports for a suite that sets pipefail and runs `script`, each as `<line> <reader>`."""
+    write_fixture_tree(tmp_path, {"tests/test_race.sh": f"#!/usr/bin/env bash\nset -euo pipefail\n{script}\n"})
+    return [
+        problem.split(" under pipefail")[0].removeprefix("tests/test_race.sh:")
+        for problem in pipe_race_problems(tmp_path)
+    ]
+
+
+# The shapes around a reader that ends early, and the spellings of its program and options: each fails at random under
+# pipefail, as `printf '%s\n' a b | { head -n 1; }` and the backtick form exited 141 in every Git Bash run.
+@pytest.mark.parametrize(
+    ("script", "race"),
+    [
+        pytest.param("printf '%s\\n' a b | { head -n 1; }", "3 pipes into head -n", id="brace group"),
+        pytest.param("printf '%s\\n' a b | ( head -n 1 )", "3 pipes into head -n", id="subshell group"),
+        pytest.param("printf a | { cat >/dev/null; head; }", "3 pipes into head", id="later command of a group"),
+        pytest.param("printf a | { ( head -c 1 ); }", "3 pipes into head -c", id="group inside a fed group"),
+        pytest.param('x="`printf a | head -n 1`"', "3 pipes into head -n", id="quoted backticks"),
+        pytest.param("x=`printf a | head -n 1`", "3 pipes into head -n", id="unquoted backticks"),
+        pytest.param("x=\"$(printf ')' | head -n 1)\"", "3 pipes into head -n", id="a quoted ) in a substitution"),
+        pytest.param('x="$(printf "(" | head -n 1)"', "3 pipes into head -n", id="a double-quoted ( in a substitution"),
+        pytest.param('x="$(echo "$(printf a | head -n 1)")"', "3 pipes into head -n", id="nested substitution"),
+        pytest.param("x=$'it\\'s'; y=\"$(printf a | head)\"", "3 pipes into head", id="after an ANSI-C string"),
+        pytest.param('x="$(true\n)"\ny="$(printf a |\n  head -n 1)"', "6 pipes into head -n", id="its own line"),
+        pytest.param("printf a | /usr/bin/head -n 1", "3 pipes into head -n", id="a path"),
+        pytest.param("printf a | head.exe -n 1", "3 pipes into head -n", id="the Windows name"),
+        pytest.param("printf a | env head -n 1", "3 pipes into head -n", id="env"),
+        pytest.param("printf a | env -i LC_ALL=C head -n 1", "3 pipes into head -n", id="env with options"),
+        pytest.param("printf a | exec head -n 1", "3 pipes into head -n", id="exec"),
+        pytest.param("printf a | timeout 5 head -n 1", "3 pipes into head -n", id="timeout"),
+        pytest.param("printf a | timeout -s KILL 5 head -n 1", "3 pipes into head -n", id="timeout with a signal"),
+        pytest.param("printf a | command head -n 1", "3 pipes into head -n", id="command"),
+        pytest.param("printf a | nice -n 5 stdbuf -o0 head", "3 pipes into head", id="wrappers in a row"),
+        pytest.param("printf a | LC_ALL=C env grep -q a", "3 pipes into grep -q", id="grep through env"),
+        pytest.param("printf a | /bin/grep -q a", "3 pipes into grep -q", id="grep by a path"),
+        pytest.param("printf a | grep --qui a", "3 pipes into grep --quiet", id="grep's abbreviated option"),
+        pytest.param("printf a | head -n -1 -n 1", "3 pipes into head -n", id="a later positive count"),
+        pytest.param("printf a | head --lines=-1 -c 2", "3 pipes into head -c", id="a later count of bytes"),
+        pytest.param("printf a | head -qn1", "3 pipes into head -n", id="a count in a cluster"),
+        pytest.param("printf a | head --li 1", "3 pipes into head --lines", id="an abbreviated long option"),
+        pytest.param("printf a | head - -n 1", "3 pipes into head -n", id="an option after an operand"),
+        # After --, -n is a file head reads instead of the pipe, which it leaves unread.
+        pytest.param("printf a | head -- -n -1", "3 pipes into head", id="a count after --"),
+    ],
+)
+def test_the_pipe_race_policy_finds_the_reader_in_every_shape_and_spelling(
+    tmp_path: Path, script: str, race: str
+) -> None:
+    assert races_in(tmp_path, script) == [race]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param("printf a | head -n 1 -n -1", id="a later negative count"),
+        pytest.param("printf a | head -n 1 --bytes=-2", id="a later negative count of bytes"),
+        pytest.param("printf a | head -qn-1", id="a negative count in a cluster"),
+        pytest.param("printf a | { cat; } && head -n 1 file", id="a command after the group"),
+        pytest.param("f() { printf a | cat; }\nhead -n 1 file", id="a command after a function"),
+        pytest.param("echo '$(printf a | head)'", id="a substitution in single quotes"),
+        pytest.param("echo hi # $(printf a | head)", id="a substitution in a comment"),
+        pytest.param("printf a | command -v head", id="a lookup"),
+        pytest.param("printf a | xargs head -n 1", id="xargs, which reads to the end"),
+    ],
+)
+def test_the_pipe_race_policy_passes_a_reader_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
+    assert races_in(tmp_path, script) == []
+
+
 class SkillSuiteFixtures(unittest.TestCase):
     FILES: ClassVar[dict[str, str]] = {
         "tests/test_top.py": "",

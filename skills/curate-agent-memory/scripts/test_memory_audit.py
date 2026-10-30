@@ -692,6 +692,19 @@ class ReindexTests(unittest.TestCase):
         self.assertEqual([kept, 0o644], [call.kwargs["mode"] for call in replace.call_args_list])
         self.assertEqual("- [one](one.md) — one description\n", self.index.read_text(encoding="utf-8"))
 
+    def test_a_read_only_index_is_refused_and_left_as_it_was(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        self.index.write_bytes(b"# Kept index\n")
+        self.index.chmod(stat.S_IREAD)
+        code, lines = memory_audit.reindex_lines(self.memory_dir, True)
+        self.assertEqual(
+            (1, f"FAILED cannot write {self.index.as_posix()}: the file is read-only; make it writable to replace it"),
+            (code, lines[-1]),
+        )
+        self.assertEqual(b"# Kept index\n", self.index.read_bytes())
+        self.assertFalse(self.index.stat().st_mode & stat.S_IWUSR)
+        self.assertEqual(["MEMORY.md", "one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
+
     def test_a_write_that_fails_part_way_leaves_the_index_as_it_was(self) -> None:
         write(self.memory_dir / "one.md", memory("one", "Body."))
         self.index.write_bytes(b"# Kept index\n")

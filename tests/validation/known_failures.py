@@ -6,8 +6,9 @@ that fixes it, never marked as an expected failure. The suite fails a listed cas
 its entry, and an unlisted case that fails, so the list never grows in silence. This module holds the list itself: each
 entry names its reader, its case, and its issue, once, in order. A pull request that closes an issue an entry still
 names is refused, in every form GitHub closes it by, since the issue would close while its case still fails; the pull
-request that fixes the reader removes the entry with it. A pull request check also asks GitHub, through gh, that each
-issue an entry names is open, and asks nothing while the list is empty; a gh that cannot answer fails the check.
+request that fixes the reader removes the entry with it. `tests/run_validation.py --known-failure-issues`, a run of
+its own that runs no suite, also asks GitHub, through gh, that each issue an entry names is open, and asks nothing while
+the list is empty; a gh that cannot answer fails it.
 """
 
 from __future__ import annotations
@@ -126,12 +127,11 @@ def closed_known_failure_problems(root: Path, body: str | None) -> list[str]:
     ]
 
 
-def open_issue_problems(root: Path, body: str | None, client: GitHubClient | None = None) -> list[str]:
-    """Each issue a known failure names that GitHub does not say is open, in a pull request check; none while the
-    list is empty, which asks GitHub nothing. A gh that cannot answer, or a checkout whose origin names no GitHub
-    repository, is a problem, never an open issue."""
-    if body is None:
-        return []
+def open_issue_problems(root: Path, client: GitHubClient | None = None) -> list[str]:
+    """Each issue a known failure names that GitHub does not say is open; none while the list is empty, which asks
+    GitHub nothing. A gh that cannot answer, or a checkout whose origin names no GitHub repository, is a problem, never
+    an open issue. Only `tests/run_validation.py --known-failure-issues` runs it, so the token gh reads reaches no
+    suite."""
     try:
         entries = read_known_failures(root / KNOWN_FAILURES)
     except KnownFailuresUnreadable:
@@ -170,6 +170,3 @@ class KnownFailurePolicies(unittest.TestCase):
 class KnownFailurePullRequestPolicies(PullRequestChecks):
     def test_the_pull_request_closes_no_issue_a_known_failure_still_names(self) -> None:
         self.assertEqual([], closed_known_failure_problems(REPOSITORY_ROOT, self.pull_request.body_text()))
-
-    def test_each_issue_a_known_failure_names_is_open(self) -> None:
-        self.assertEqual([], open_issue_problems(REPOSITORY_ROOT, self.pull_request.body_text()))

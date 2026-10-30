@@ -188,14 +188,12 @@ class OpenIssueTests(KnownFailureFixture):
         self.calls.append(list(arguments))
         return self.answer
 
-    def problems(self, body: str | None = "Closes #1\n") -> list[str]:
-        return open_issue_problems(self.root, body, GitHubClient(runner=self.run_gh, sleeper=lambda _: None))
+    def problems(self) -> list[str]:
+        return open_issue_problems(self.root, GitHubClient(runner=self.run_gh, sleeper=lambda _: None))
 
-    def test_an_empty_list_or_no_pull_request_asks_github_nothing(self) -> None:
+    def test_an_empty_list_asks_github_nothing(self) -> None:
         self.write([])
         self.assertEqual([], self.problems())
-        self.write([ENTRY])
-        self.assertEqual([], self.problems(None))
         self.assertEqual([], self.calls)
 
     def test_an_open_issue_passes_after_asking_this_repository(self) -> None:

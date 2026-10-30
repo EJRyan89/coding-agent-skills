@@ -22,7 +22,10 @@ those `unittest.addModuleCleanup` and `unittest.enterModuleContext` register, so
 - every other variable named `GIT_*` is removed, except `GIT_EXEC_PATH`, which picks the git installation, and
   `GIT_BASH`, this repository's own name for Git Bash; so is `XDG_CONFIG_HOME`, under which git finds its attributes
   and ignore files. The repository-selecting ones, `bounded_process.REPOSITORY_VARIABLES`, are removed whatever is
-  kept, as every command a skill starts runs without them.
+  kept, as every command a skill starts runs without them;
+- the token variables `credentials.CREDENTIAL_VARIABLES` names are removed, in any case, so no test, and no process a
+  test starts, holds a token from the shell that started pytest; tests/run_validation.py's pool removes them before
+  pytest starts as well.
 
 Variables git reads that stay as the shell gave them, and why: `EDITOR` and `VISUAL`, which `GIT_EDITOR` outranks;
 `PAGER`, since git pages only to a terminal and a suite captures its output; `EMAIL`, since `user.email` is set;
@@ -57,6 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "ejryan89-sk
 sys.path.append(str(Path(__file__).resolve().parent / "tests" / "validation"))
 
 from bounded_process import REPOSITORY_VARIABLES
+from credentials import is_credential
 from dealing import deal, shard_of
 from seconds_option import positive_seconds
 
@@ -135,6 +139,7 @@ def _removed(name: str) -> bool:
         name.upper() in REPOSITORY_VARIABLES
         or (name.startswith("GIT_") and name not in KEPT_GIT_VARIABLES)
         or name in REMOVED_VARIABLES
+        or is_credential(name)
     )
 
 
