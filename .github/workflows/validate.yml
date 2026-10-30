@@ -342,8 +342,8 @@ jobs:
           python @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  # The one check that reads GitHub, run alone: it asks gh whether each issue the malformed-input known failures name
-  # is open. It is the only job given the run's token, and its one step that runs anything starts no suite, so the
+  # The one check that reads GitHub, run alone: it asks gh whether each issue the malformed-input known failures and
+  # pending readers name is open. It is the only job given the run's token, and its one step that runs anything starts no suite, so the
   # token reaches that query and nothing else.
   known-failures:
     name: Known-failure issues
