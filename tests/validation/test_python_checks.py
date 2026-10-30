@@ -44,6 +44,7 @@ from python_checks import (
     discarded_result_problems,
     gh_limit_problems,
     git_separator_problems,
+    int_parse_problems,
     issue_numbers_in_comments,
     link_test_problems,
     mypy_path_problems,
@@ -970,6 +971,67 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "def f(run):\n    return run(['git', 'for-each-ref', '--format=%(refname)%00%(objectname)'])\n",
         refused=False,
     ),
+    # "no split of git's output with `splitlines()`, bound or unbound as `str.splitlines(out)`, and after a string
+    # method, a `str()`, or a slice that keeps the text, as `out.strip().splitlines()`".
+    **{
+        f"a split of git's output by {form}": _form(
+            git_separator_problems, f"def f(client):\n    out = client.output(['describe', 'HEAD'])\n    {split}\n"
+        )
+        for form, split in (
+            ("splitlines()", "return out.splitlines()"),
+            ("splitlines() of the call", "return client.output(['describe', 'HEAD']).splitlines()"),
+            ("str.splitlines(out)", "return str.splitlines(out)"),
+            ("strip().splitlines()", "return out.strip().splitlines()"),
+            ("rstrip().splitlines()", "return out.rstrip().splitlines()"),
+            ("str.strip(out).splitlines()", "return str.strip(out).splitlines()"),
+            ("str.splitlines(out.strip())", "return str.splitlines(out.strip())"),
+            ("a name bound to strip()", "text = out.strip()\n    return text.splitlines()"),
+            ("str(out).splitlines()", "return str(out).splitlines()"),
+            ("a slice's splitlines()", "return out[1:].splitlines()"),
+            ("decode().splitlines()", "return out.decode().splitlines()"),
+        )
+    },
+    "a split of git's output on a newline alone": _form(
+        git_separator_problems,
+        "from git_client import output_lines\n\n\n"
+        "def f(client):\n    return output_lines(client.output(['describe', 'HEAD']).strip())\n",
+        refused=False,
+    ),
+    # "a one-argument `int()` ... that converts a regular-expression group, a stripped one and a `findall` result's
+    # included": an item of the list findall returns, reached by an index, through a name bound to the list, by a loop
+    # or a comprehension over it, or by an index into one of its tuples.
+    **{
+        f"int() of findall's {form}": _form(int_parse_problems, f"import re\n\n\ndef f(t):\n    {body}\n")
+        for form, body in (
+            ("first item", "return int(re.findall('[0-9]+', t)[0])"),
+            ("last item, stripped", "return int(re.findall('[0-9 ]+', t)[-1].strip())"),
+            ("item through a bound name", "values = re.findall('[0-9]+', t)\n    return int(values[0])"),
+            (
+                "item through an annotated name",
+                "values: list[str] = re.findall('[0-9]+', t)\n    return int(values[0])",
+            ),
+            (
+                "item through a compiled pattern",
+                "pattern = re.compile('[0-9]+')\n    values = pattern.findall(t)\n    return int(values[0])",
+            ),
+            ("tuple element in a comprehension", "return [int(p[0]) for p in re.findall('([0-9]+)-([0-9]+)', t)]"),
+            ("tuple element by index", "return int(re.findall('([0-9]+)-([0-9]+)', t)[0][1])"),
+            ("tuple unpacked", "a, b = re.findall('([0-9]+)-([0-9]+)', t)[0]\n    return int(b)"),
+            ("item in a loop", "for v in re.findall('[0-9]+', t):\n        return int(v)"),
+            ("item in a comprehension", "return [int(v) for v in re.findall('[0-9]+', t)]"),
+            ("items mapped through int", "return list(map(int, re.findall('[0-9]+', t)))"),
+        )
+    },
+    # A call such as next() or pop() hands back an item the policy does not follow; the paragraph names this limit.
+    "int() of findall's item through next()": _form(
+        int_parse_problems,
+        "import re\n\n\ndef f(t):\n    return int(next(iter(re.findall('[0-9]+', t))))\n",
+        refused=False,
+    ),
+    # A count of the list findall returns is no group.
+    "int() of findall's count": _form(
+        int_parse_problems, "import re\n\n\ndef f(t):\n    return int(len(re.findall('[0-9]+', t)))\n", refused=False
+    ),
     # "an `add_argument` whose `type` is `float` and whose option string, `dest`, or `metavar` names a time".
     **{
         f"a float time by its {where}": _form(
@@ -1142,6 +1204,118 @@ def test_process_environment_policy_refuses_a_cleared_env_changed_from_an_unprov
 )
 def test_process_environment_policy_passes_a_cleared_env_changed_only_by_clear_keys(change: str) -> None:
     source = f"{CLEARED_PREFIX}    {change}\n    return subprocess.run(['x'], env=env, check=False)\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        assert python_checks.process_environment_problems(root, sorted(root.rglob("*.py"))) == []
+
+
+# The paragraph's "a name its function binds only to one and changes in place, by an update, a setdefault, a subscript
+# assignment, or |=, only with constant keys": the mapping reached any other way, through another name, a call it is
+# passed to, a closure, an unbound or stored method, or a function changing a module-level name, is refused.
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("e = env\n    e['GIT_DIR'] = 'x'", id="an alias"),
+        pytest.param("e, _ = env, 1\n    e.update(os.environ)", id="an alias by a tuple assignment"),
+        pytest.param("holder = [env]\n    holder[0].update(os.environ)", id="a container holding it"),
+        pytest.param("dict.update(env, os.environ)", id="dict.update"),
+        pytest.param("u = env.update\n    u(os.environ)", id="a stored bound method"),
+        pytest.param("operator.setitem(env, 'GIT_DIR', 'x')", id="operator.setitem"),
+        pytest.param("env.__setitem__('GIT_DIR', 'x')", id="a dunder setitem"),
+        pytest.param("env.__ior__(os.environ)", id="a dunder union"),
+        pytest.param("getattr(env, 'update')(os.environ)", id="getattr of a method"),
+        pytest.param("change(env)", id="a helper given it"),
+        pytest.param("change(environment=env)", id="a helper given it by keyword"),
+        pytest.param("def g():\n        env.update(os.environ)\n\n    g()", id="a closure that updates it"),
+        pytest.param("def g():\n        env['GIT_DIR'] = 'x'\n\n    g()", id="a closure that assigns a key"),
+        pytest.param("(lambda: env.update(os.environ))()", id="a lambda that updates it"),
+        pytest.param("env.update(os.environ) if name else None", id="an update in an expression"),
+    ],
+)
+def test_process_environment_policy_refuses_a_cleared_env_reached_another_way(change: str) -> None:
+    source = (
+        "import operator\n"
+        + CLEARED_PREFIX
+        + f"    name = 'x'\n    {change}\n    return subprocess.run(['x'], env=env, check=False)  # read\n\n\n"
+        "def change(environment=None):\n    return environment\n"
+    )
+    line = next(number for number, text in enumerate(source.splitlines(), 1) if text.endswith("# read"))
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.process_environment_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{line}"]
+
+
+MODULE_CLEARED = """\
+import os
+import subprocess
+
+from bounded_process import without_repository_variables
+
+ENV = without_repository_variables(os.environ)
+"""
+
+
+# A name the module's top level binds is no function's, so a start in a function given it is refused as before; one at
+# the top level passes only while nothing anywhere in the module changes the name but the paragraph's constant keys.
+@pytest.mark.parametrize(
+    ("body", "refused"),
+    [
+        pytest.param("subprocess.run(['x'], env=ENV, check=False)  # read\n", False, id="a start beside it"),
+        pytest.param(
+            "\n\ndef change():\n    ENV.update(os.environ)\n\n\nsubprocess.run(['x'], env=ENV, check=False)  # read\n",
+            True,
+            id="a function that updates it",
+        ),
+        pytest.param(
+            "\n\ndef change():\n    ENV['LC_ALL'] = 'C'\n\n\nsubprocess.run(['x'], env=ENV, check=False)  # read\n",
+            False,
+            id="a function that sets a clear key",
+        ),
+        pytest.param(
+            "\n\ndef read():\n    return ENV.get('PATH')\n\n\nsubprocess.run(['x'], env=ENV, check=False)  # read\n",
+            False,
+            id="a function that reads it",
+        ),
+        pytest.param(
+            "\n\ndef start():\n    return subprocess.run(['x'], env=ENV, check=False)  # read\n",
+            True,
+            id="a start in a function",
+        ),
+    ],
+)
+def test_process_environment_policy_reads_a_module_level_cleared_env_across_the_module(
+    body: str, refused: bool
+) -> None:
+    source = MODULE_CLEARED + body
+    line = next(number for number, text in enumerate(source.splitlines(), 1) if text.endswith("# read"))
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.process_environment_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == ([f"skills/alpha/scripts/alpha.py:{line}"] * refused)
+
+
+# Reads, removals, and the start itself leave the mapping as its bindings make it.
+@pytest.mark.parametrize(
+    "use",
+    [
+        pytest.param("path = env.get('PATH')", id="a get"),
+        pytest.param("path = env['PATH']", id="a subscript read"),
+        pytest.param("known = 'PATH' in env", id="a membership test"),
+        pytest.param("pairs = list(env.items())", id="an items view"),
+        pytest.param("copied = env.copy()\n    copied.update(os.environ)", id="a copy changed apart"),
+        pytest.param("del env['LC_ALL']", id="a deleted key"),
+        pytest.param("def g():\n        return env.get('PATH')\n\n    g()", id="a closure that reads it"),
+        pytest.param("subprocess.run(['y'], env=env, check=False)", id="another start given it"),
+        # The paragraph's named limit: a reach through globals() or vars() is not read.
+        pytest.param("vars()['env'].update(os.environ)", id="a reach through vars(), a named limit"),
+    ],
+)
+def test_process_environment_policy_passes_a_cleared_env_only_read(use: str) -> None:
+    source = f"{CLEARED_PREFIX}    {use}\n    return subprocess.run(['x'], env=env, check=False)\n"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
@@ -2061,6 +2235,10 @@ STATUS_REEXPORTS = {
     "tests/validation/again.py": "from support import git as git\n",
 }
 STATUS_IMPORTS = "from git_client import GitClient\nfrom support import git\nfrom again import git as twice\n\n\n"
+STATUS_CLASS = (
+    "from git_client import GitResult\n\n\nclass Repo:\n    def produce(self) -> GitResult:\n"
+    "        return GitResult(0, '', '')\n"
+)
 
 
 # Each form of a read of a git result's exit status, from the policy's paragraph in "Validation" in
@@ -2088,6 +2266,70 @@ STATUS_IMPORTS = "from git_client import GitClient\nfrom support import git\nfro
             "def f(client: GitClient):\n    return getattr(client.run(['status']), 'returncode')  # read\n",
             id="getattr of the call",
         ),
+        # "by an assignment": a tuple assignment binds each name to its own value.
+        pytest.param(
+            "def f(client: GitClient):\n    r, _ = client.run(['status']), 1\n    return r.returncode  # read\n",
+            id="a tuple assignment",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    [_, r] = 1, client.run(['status'])\n    return r.returncode  # read\n",
+            id="a list target",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    r = s = client.run(['status'])\n    return s.returncode  # read\n",
+            id="a chained assignment",
+        ),
+        # "what a function annotated to return GitResult returns", awaited, on a method, or quoted.
+        pytest.param(
+            "from git_client import GitResult\n\n\nasync def produce() -> GitResult:\n    return GitResult(0, '', '')\n"
+            "\n\nasync def f():\n    return (await produce()).returncode  # read\n",
+            id="an awaited producer",
+        ),
+        pytest.param(
+            "from git_client import GitResult\n\n\nasync def produce() -> GitResult:\n    return GitResult(0, '', '')\n"
+            "\n\nasync def f():\n    r = await produce()\n    return r.returncode  # read\n",
+            id="a name bound to an awaited producer",
+        ),
+        pytest.param(
+            f"{STATUS_CLASS}\n    def f(self):\n        return self.produce().returncode  # read\n",
+            id="a method producer",
+        ),
+        pytest.param(
+            f"{STATUS_CLASS}\n\ndef f(repo: Repo):\n    return repo.produce().returncode  # read\n",
+            id="a method producer on an annotated name",
+        ),
+        pytest.param(
+            f"{STATUS_CLASS}\n\ndef f():\n    repo = Repo()\n    return repo.produce().returncode  # read\n",
+            id="a method producer on a constructed instance",
+        ),
+        pytest.param(
+            f"{STATUS_CLASS}\n\ndef f():\n    return Repo().produce().returncode  # read\n",
+            id="a method producer on a call of its class",
+        ),
+        pytest.param(
+            "from git_client import GitResult\n\n\ndef produce() -> 'GitResult':\n    return GitResult(0, '', '')\n"
+            "\n\ndef f():\n    return produce().returncode  # read\n",
+            id="a quoted return annotation",
+        ),
+        pytest.param(
+            "from git_client import GitResult\n\n\ndef f(r: 'GitResult | None'):\n    return r.returncode  # read\n",
+            id="a quoted parameter annotation",
+        ),
+        # "a getattr of returncode is a read", by any spelling of getattr and any name that is not another attribute.
+        pytest.param(
+            "import builtins\n\n\ndef f(client: GitClient):\n    r = client.run(['status'])\n"
+            "    return builtins.getattr(r, 'returncode')  # read\n",
+            id="builtins.getattr",
+        ),
+        pytest.param(
+            "FIELD = 'returncode'\n\n\ndef f(client: GitClient):\n    r = client.run(['status'])\n"
+            "    return getattr(r, FIELD)  # read\n",
+            id="getattr of a name bound to returncode",
+        ),
+        pytest.param(
+            "def f(client: GitClient, field):\n    r = client.run(['status'])\n    return getattr(r, field)  # read\n",
+            id="getattr of a name given",
+        ),
     ],
 )
 def test_git_status_policy_refuses_every_form_its_paragraph_names(body: str) -> None:
@@ -2096,6 +2338,48 @@ def test_git_status_policy_refuses_every_form_its_paragraph_names(body: str) -> 
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(root, {**STATUS_REEXPORTS, "skills/alpha/scripts/alpha.py": source})
+        found = python_checks.git_status_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{line}"]
+
+
+# "through every module that imports it again": a module's top level binds a re-export under a try:, an if, an else, or
+# a with as it does unindented, and a function annotated to return a GitResult defined there is a producer too.
+@pytest.mark.parametrize(
+    "support",
+    [
+        pytest.param(
+            "try:\n    from tools.helper import git as git\nexcept ImportError:\n    git = None\n", id="under try"
+        ),
+        pytest.param(
+            "try:\n    import os\nexcept ImportError:\n    pass\nelse:\n    from tools.helper import git as git\n",
+            id="under try's else",
+        ),
+        pytest.param("if True:\n    from tools.helper import git as git\n", id="under if"),
+        pytest.param("if False:\n    pass\nelse:\n    from tools.helper import git as git\n", id="under else"),
+        pytest.param(
+            "import contextlib\n\nwith contextlib.suppress(ImportError):\n    from tools.helper import git as git\n",
+            id="under with",
+        ),
+        pytest.param(
+            "from tools import helper\n\ntry:\n    git = helper.git\nexcept AttributeError:\n    raise\n",
+            id="an assignment under try",
+        ),
+        pytest.param(
+            "from git_client import GitClient, GitResult\n\nif True:\n\n    def git(cwd) -> GitResult:\n"
+            "        return GitClient().run(['status'], directory=cwd)\n",
+            id="a producer defined under if",
+        ),
+    ],
+)
+def test_git_status_policy_follows_a_re_export_under_a_block(support: str) -> None:
+    source = STATUS_IMPORTS + "def f():\n    return git('.').returncode  # read\n"
+    line = next(number for number, text in enumerate(source.splitlines(), 1) if text.endswith("# read"))
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {**STATUS_REEXPORTS, "tests/validation/support.py": support, "skills/alpha/scripts/alpha.py": source},
+        )
         found = python_checks.git_status_problems(root, sorted(root.rglob("*.py")))
     assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{line}"]
 
@@ -2115,12 +2399,36 @@ def test_git_status_policy_refuses_every_form_its_paragraph_names(body: str) -> 
             "def f(client: GitClient):\n    r = client.run(['status'])\n    return getattr(r, 'stdout')\n",
             id="getattr of another attribute",
         ),
+        # A method returns a result only on an instance of the class that annotates it, not on another object whose
+        # method shares its name.
+        pytest.param(
+            f"{STATUS_CLASS}\n\ndef f(other):\n    return other.produce().returncode\n",
+            id="a method of the same name on another object",
+        ),
+        pytest.param(
+            f"{STATUS_CLASS}\n    @staticmethod\n    def f(other):\n        return other.produce().returncode\n",
+            id="a static method's first parameter",
+        ),
+        # The paragraph's named limit: a method of a class another module defines is not followed.
+        pytest.param(
+            "from tools.repo import Repo\n\n\ndef f():\n    return Repo().produce().returncode\n",
+            id="a method of a class another module defines, a named limit",
+        ),
+        # A tuple target unpacks a result only from a literal tuple or list of as many values; unpacking a GitResult
+        # itself raises, since it is no sequence.
+        pytest.param(
+            "def f(client: GitClient):\n    r, _ = 1, client.run(['status'])\n    return r.returncode\n",
+            id="a tuple target whose name takes another value",
+        ),
     ],
 )
 def test_git_status_policy_passes_what_reads_no_git_status(body: str) -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        write_fixture_tree(root, {**STATUS_REEXPORTS, "skills/alpha/scripts/alpha.py": STATUS_IMPORTS + body})
+        write_fixture_tree(
+            root,
+            {**STATUS_REEXPORTS, "tools/repo.py": STATUS_CLASS, "skills/alpha/scripts/alpha.py": STATUS_IMPORTS + body},
+        )
         assert python_checks.git_status_problems(root, sorted(root.rglob("*.py"))) == []
 
 
@@ -2346,6 +2654,14 @@ CLAIM_FORMS: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
             ("builtins.open", "import builtins", "builtins.open('p').read()"),
             ("os.popen", "import os", "os.popen('git status').read()"),
             ("subprocess.getoutput", "import subprocess", "subprocess.getoutput('git status')"),
+            # "a path's read_text, write_text, or open in a text mode", named on the class with the path first, where
+            # the path's slot is no encoding.
+            ("Path.read_text unbound", "from pathlib import Path", "Path.read_text(p)"),
+            ("Path.read_text unbound given the path's slot", "from pathlib import Path", "Path.read_text(p, None)"),
+            ("pathlib.Path.write_text unbound", "import pathlib", "pathlib.Path.write_text(p, s)"),
+            ("Path.open unbound", "from pathlib import Path", "Path.open(p, 'w')"),
+            ("Path.open unbound in a text mode", "from pathlib import Path", "Path.open(p, 'r', -1)"),
+            ("zipfile.Path.read_text unbound", "import zipfile", "zipfile.Path.read_text(p)"),
         )
     ),
     # a write that takes json.dumps text "through a name its function binds to it"
@@ -2427,6 +2743,16 @@ CLAIM_PASSES: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
         "codecs.open with an encoding",
         python_checks.encoding_problems,
         "import codecs\n\n\ncodecs.open('p', encoding='utf-8').read()\n",
+    ),
+    # A path method named on its class takes its encoding one slot after the path, and a binary open needs none.
+    *(
+        (f"{call} unbound with its encoding", python_checks.encoding_problems, f"{imports}\n\n\n{call}\n")
+        for imports, call in (
+            ("from pathlib import Path", "Path.read_text(p, 'utf-8')"),
+            ("import pathlib", "pathlib.Path.write_text(p, s, 'utf-8')"),
+            ("from pathlib import Path", "Path.open(p, 'w', -1, 'utf-8')"),
+            ("from pathlib import Path", "Path.open(p, 'rb')"),
+        )
     ),
     # A print with no file= writes to standard output, the script's report, which is no file or stream it names.
     (
