@@ -39,8 +39,9 @@ policy checks and suite jobs, tests/validation/job_selection.py deals them acros
 so the legs together run exactly what one run would, each once.
 
 --known-failure-issues, given alone, runs nothing but the one check that reads GitHub: it asks, through gh, whether
-each issue tests/malformed_input/known_failures.json names is open, prints a FAILED line for each that is not or that
-gh cannot answer about, and exits 1 when there is one. CI runs it in a job of its own, the only job given the run's
+each issue tests/malformed_input/known_failures.json or PENDING in tests/malformed_input/readers.py names is an open
+issue, prints a FAILED line for each that is not, is a pull request, or gh cannot answer about, and exits 1 when there
+is one. CI runs it in a job of its own, the only job given the run's
 token, so no suite and no process a suite starts holds the token.
 
 The policy checks run on the main thread while the pool's thread starts jobs from os.environ and prints each result
@@ -300,8 +301,8 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
     parser.add_argument(
         "--known-failure-issues",
         action="store_true",
-        help="ask GitHub, through gh, whether each issue the malformed-input known failures name is open, and run "
-        "nothing else",
+        help="ask GitHub, through gh, whether each issue the malformed-input known failures and pending readers name "
+        "is open, and run nothing else",
     )
     arguments = parser.parse_args(argv)
     if arguments.known_failure_issues and any(

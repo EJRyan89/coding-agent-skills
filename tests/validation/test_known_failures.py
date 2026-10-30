@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 from github_client import CommandResult, GitHubClient
 from known_failures import (
     KNOWN_FAILURES,
+    PENDING_MODULE,
     KnownFailure,
     KnownFailuresUnreadable,
     checkout_repository,
@@ -25,7 +26,9 @@ from known_failures import (
     closed_known_failure_problems,
     known_failure_problems,
     open_issue_problems,
+    pending_problems,
     read_known_failures,
+    read_pending,
 )
 from validation_support import REPOSITORY_ROOT, git
 
@@ -33,6 +36,8 @@ from tests import run_validation
 
 ENTRY = {"reader": "module.reader", "case": "deep_nesting", "issue": 4242}
 REPOSITORY = "EJRyan89/coding-agent-skills"
+# What gh answers for an open issue asked for its state and its URL.
+ISSUE_ANSWER = f'{{"state": "OPEN", "url": "https://github.com/{REPOSITORY}/issues/4242"}}'
 
 
 class KnownFailureFixture(unittest.TestCase):
@@ -44,6 +49,9 @@ class KnownFailureFixture(unittest.TestCase):
 
     def write(self, value: object) -> None:
         (self.root / KNOWN_FAILURES).write_text(json.dumps(value), encoding="utf-8")
+
+    def write_pending(self, source: str) -> None:
+        (self.root / PENDING_MODULE).write_text(source, encoding="utf-8")
 
 
 class ListShapeTests(KnownFailureFixture):
@@ -127,9 +135,27 @@ class ClosingTests(KnownFailureFixture):
             with self.subTest(body=body):
                 self.assertEqual([], closed_known_failure_problems(self.root, body))
 
-    def test_no_body_passes(self) -> None:
+    def test_no_body_and_no_title_passes(self) -> None:
         self.write([ENTRY])
         self.assertEqual([], closed_known_failure_problems(self.root, None))
+        self.assertEqual([], closed_known_failure_problems(self.root, None, None))
+
+    def test_a_title_closing_the_issue_fails_as_a_body_does(self) -> None:
+        # The squash commit's message is the title and the body, and GitHub closes an issue either names.
+        self.write([ENTRY])
+        for body in ("Fixes the reader.\n", None):
+            with self.subTest(body=body):
+                [problem] = closed_known_failure_problems(self.root, body, "fix: resolves #4242 in the reader")
+                self.assertIn("closes #4242", problem)
+        self.assertEqual([], closed_known_failure_problems(self.root, "Fixes the reader.\n", "fix: the reader (#4242)"))
+
+    def test_a_pull_request_closing_an_issue_pending_names_fails(self) -> None:
+        self.write([])
+        self.write_pending('PENDING: dict[str, int] = {"module.reader": 4242}\n')
+        [problem] = closed_known_failure_problems(self.root, "Closes #4242\n")
+        self.assertIn("#4242", problem)
+        self.assertIn("names module.reader as owed its table entry", problem)
+        self.assertEqual([], closed_known_failure_problems(self.root, "Closes #4243\n"))
 
     def test_closed_issues_reads_every_closing_line(self) -> None:
         self.assertEqual({1, 22, 333}, closed_issues("Closes #1\nfixes #22 and resolves: #333\nSee #4\n", REPOSITORY))
@@ -174,6 +200,29 @@ class ClosingTests(KnownFailureFixture):
         self.assertEqual(1, len(closed_known_failure_problems(checkout, f"Closes {REPOSITORY}#4242\n")))
 
 
+class PendingShapeTests(KnownFailureFixture):
+    def test_a_literal_table_of_names_and_issues_is_read_without_running_the_module(self) -> None:
+        self.write_pending("import nothing_by_this_name\n\nPENDING: dict[str, int] = {'b.reader': 2, 'a.reader': 1}\n")
+        self.assertEqual({"a.reader": 1, "b.reader": 2}, read_pending(self.root / PENDING_MODULE))
+        self.assertEqual([], pending_problems(self.root))
+
+    def test_a_table_the_module_cannot_read_fails(self) -> None:
+        for source, reason in (
+            ("", "must assign PENDING once"),
+            ("PENDING = {}\nPENDING = {}\n", "must assign PENDING once"),
+            ("PENDING = dict(a=1)\n", "a literal dict"),
+            ("PENDING = {'a': 0}\n", "a positive issue number"),
+            ("PENDING = {'a': True}\n", "a positive issue number"),
+            ("PENDING = {'a': '7'}\n", "a positive issue number"),
+            ("PENDING = [('a', 1)]\n", "a positive issue number"),
+            ("PENDING = {\n", "cannot be read"),
+        ):
+            with self.subTest(source=source):
+                self.write_pending(source)
+                [problem] = pending_problems(self.root)
+                self.assertIn(reason, problem)
+
+
 class OpenIssueTests(KnownFailureFixture):
     """Each issue an entry names is open, as GitHub answers through gh; an empty list asks GitHub nothing."""
 
@@ -182,7 +231,7 @@ class OpenIssueTests(KnownFailureFixture):
         git(self.root, "init", "--quiet")
         git(self.root, "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git")
         self.calls: list[list[str]] = []
-        self.answer = CommandResult(0, '{"state": "OPEN"}', "")
+        self.answer = CommandResult(0, ISSUE_ANSWER, "")
 
     def run_gh(self, arguments: Sequence[str]) -> CommandResult:
         self.calls.append(list(arguments))
@@ -200,13 +249,44 @@ class OpenIssueTests(KnownFailureFixture):
         self.write([ENTRY, {**ENTRY, "case": "long_integer"}])
         self.assertEqual([], self.problems())
         # One question per issue, of the repository the checkout's origin names.
-        self.assertEqual([["gh", "issue", "view", "4242", "--repo", REPOSITORY, "--json", "state"]], self.calls)
+        self.assertEqual([["gh", "issue", "view", "4242", "--repo", REPOSITORY, "--json", "state,url"]], self.calls)
 
     def test_a_closed_issue_fails(self) -> None:
         self.write([ENTRY])
-        self.answer = CommandResult(0, '{"state": "CLOSED"}', "")
+        self.answer = CommandResult(0, ISSUE_ANSWER.replace("OPEN", "CLOSED"), "")
         [problem] = self.problems()
         self.assertIn("#4242, which GitHub reports as CLOSED, not OPEN", problem)
+
+    def test_an_open_pull_request_fails_as_no_issue(self) -> None:
+        # gh's issue view answers for a pull request's number too, with its state and its /pull/ URL.
+        self.write([ENTRY])
+        for answer in (ISSUE_ANSWER.replace("/issues/", "/pull/"), '{"state": "OPEN"}', '{"state": "OPEN", "url": 7}'):
+            with self.subTest(answer=answer):
+                self.answer = CommandResult(0, answer, "")
+                [problem] = self.problems()
+                self.assertIn("names #4242, which GitHub reports as a pull request or without its URL", problem)
+
+    def test_each_issue_pending_names_is_asked_about_too(self) -> None:
+        self.write([])
+        self.write_pending('PENDING: dict[str, int] = {"module.reader": 4242, "other.reader": 7}\n')
+        self.answer = CommandResult(0, ISSUE_ANSWER.replace("OPEN", "CLOSED"), "")
+        problems = self.problems()
+        self.assertEqual(["7", "4242"], [call[3] for call in self.calls])
+        self.assertEqual(2, len(problems))
+        self.assertIn(
+            "tests/malformed_input/readers.py's PENDING names #7, which GitHub reports as CLOSED", problems[0]
+        )
+
+    def test_an_issue_both_lists_name_is_asked_about_once(self) -> None:
+        self.write([ENTRY])
+        self.write_pending('PENDING = {"other.reader": 4242}\n')
+        self.answer = CommandResult(0, ISSUE_ANSWER.replace("/issues/", "/pull/"), "")
+        [problem] = self.problems()
+        self.assertEqual(1, len(self.calls))
+        self.assertIn(
+            "tests/malformed_input/known_failures.json and tests/malformed_input/readers.py's PENDING name #4242",
+            problem,
+        )
 
     def test_a_gh_that_cannot_answer_fails_never_reads_as_open(self) -> None:
         self.write([ENTRY])

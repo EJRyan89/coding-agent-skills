@@ -89,8 +89,9 @@ GUARD_GIT_TIMEOUT_SECONDS = 10.0
 def git(cwd: Path, *arguments: str, timeout: float | None = GUARD_GIT_TIMEOUT_SECONDS) -> GitResult:
     """Runs git on the checkout at cwd through CLIENT, within timeout seconds, or the client's own limit for None.
 
-    Raises GitError when git is missing, cannot start, or does not finish in time; the hub guard then skips its
-    decision, as it does for any error, and new and list end with a FAILED line.
+    Raises GitError when git is missing, cannot start, or does not finish in time; the hub guard then allows an edit
+    with a note, refuses a command that names git while a guarded hub is in view, and allows any other with a note,
+    and new and list end with a FAILED line.
     """
     return CLIENT.run(arguments, directory=cwd, timeout=timeout)
 
@@ -115,7 +116,8 @@ def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Check
 
     Raises GitError when git answers nonzero for a directory below a checkout, one that a `.git` beside it or above
     it marks, outside any git directory: a checkout git cannot read, as one it refuses to trust, is not one outside
-    every repository."""
+    every repository. Raises it too when git succeeds with an answer that is not the two lines asked for, as one whose
+    path holds a newline gives on Linux."""
     directory = path
     while not directory.is_dir():
         if directory.parent == directory:
@@ -128,8 +130,10 @@ def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Check
     if result.returncode != 0 and below_a_checkout(directory):
         said = " ".join(result.stderr.split()) or f"git rev-parse exited with {result.returncode}"
         raise GitError(f"git could not read the checkout at {directory}: {said}", returncode=result.returncode)
-    if result.returncode != 0 or len(lines) != 2:
+    if result.returncode != 0:
         return None
+    if len(lines) != 2:
+        raise GitError(f"git rev-parse answered {len(lines)} lines for the checkout at {directory}, not two")
     common = Path(lines[1])
     if common.name != ".git":
         return None

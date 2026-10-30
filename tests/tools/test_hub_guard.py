@@ -257,6 +257,16 @@ class FileGuardTests(GuardTestCase):
                 self.assertEqual("deny", self.edit(hub / "tracked.txt"))
                 self.assertEqual("deny", self.edit(hub / ".git" / "config"))
 
+    def test_the_git_directory_of_another_repository_whose_path_holds_such_a_character_is_open(self) -> None:
+        # Read with splitlines(), rev-parse's answer would be more than two lines, an error the edit is refused on.
+        for character in (chr(0x2028), chr(0x85)):
+            other = self.root / f"b{character}other"
+            other.mkdir()
+            self.git(other, "init", "-q")
+            with self.subTest(character=hex(ord(character))):
+                self.assertIsNone(self.edit(other / ".git" / "config"))
+                self.assertEqual("", self.stderr)
+
     def test_guard_is_inert_unless_this_clone_opts_in(self) -> None:
         for value in (None, "false"):
             with self.subTest(value=value):
@@ -284,6 +294,31 @@ class UnreadableCheckoutFileTests(GuardTestCase):
             failure = git_client.GitError(f"git failed as {kind}", kind=kind)
             with self.subTest(kind=kind), mock.patch.object(hub_guard, "checkout_of", side_effect=failure):
                 self.assertIsNone(self.edit(self.hub / "README.md"))
+                self.assertIn(f"hub guard skipped: GitError: git failed as {kind}", self.stderr)
+
+    def test_an_answer_that_is_not_the_lines_asked_for_is_an_error_git_answered_with(self) -> None:
+        answer = git_client.GitResult(0, "/a\nb\n/c\n", "")
+        with mock.patch.object(worktrees, "git", return_value=answer):
+            self.assertEqual("deny", self.edit(self.tree / "README.md"))
+            self.assertEqual(hub_guard.DENY_REASON, self.reason)
+
+    def test_an_edit_in_a_git_directory_is_refused_when_git_answers_with_an_error_and_allowed_when_it_did_not_run(
+        self,
+    ) -> None:
+        target = self.other_repository() / ".git" / "config"
+        answered = (
+            git_client.GitError("git could not read the git directory", returncode=128),
+            git_client.GitError("git rev-parse answered 3 lines for the git directory, not two"),
+        )
+        for failure in answered:
+            with self.subTest(failure=str(failure)), mock.patch.object(worktrees.CLIENT, "output", side_effect=failure):
+                self.assertEqual("deny", self.edit(target))
+                self.assertEqual(hub_guard.DENY_REASON, self.reason)
+        kinds: tuple[git_client.GitErrorKind, ...] = ("prerequisite", "execution", "timeout")
+        for kind in kinds:
+            failure = git_client.GitError(f"git failed as {kind}", kind=kind)
+            with self.subTest(kind=kind), mock.patch.object(worktrees.CLIENT, "output", side_effect=failure):
+                self.assertIsNone(self.edit(target))
                 self.assertIn(f"hub guard skipped: GitError: git failed as {kind}", self.stderr)
 
 
@@ -640,6 +675,75 @@ class ReadingBoundTests(GuardTestCase):
         self.assertLessEqual(len(looked_up), hub_guard.READING_SECONDS)
         for started, timeout in looked_up:
             self.assertLessEqual(timeout, hub_guard.READING_SECONDS - started)
+
+    def test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session(self) -> None:
+        # The session starts outside every repository and has no project, so only a place the command names can bring
+        # a guarded hub into view. Each lookup costs a simulated second; the hub is named first, so it is found before
+        # the time runs out, or last, so it is never looked up. Either way a place not looked up may be a hub's.
+        outside = self.root / "outside"
+        outside.mkdir()
+        places = []
+        for index in range(40):
+            place = self.root / f"place-{index}"
+            place.mkdir()
+            places.append(place)
+        named = "".join(f'git -C "{place.as_posix()}" status; ' for place in places)
+        hub_call = f'git -C "{self.hub.as_posix()}" commit -m x; '
+        environment = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        find = worktrees.checkout_of
+        clock = [0.0]
+
+        def slow_checkout_of(path: Path, timeout: float = worktrees.GUARD_GIT_TIMEOUT_SECONDS) -> object:
+            found = find(path, timeout)
+            clock[0] += 1
+            return found
+
+        for label, command, expected in (
+            ("hub first", hub_call + named + "echo done", "deny"),
+            ("hub last", named + hub_call + "echo done", "deny"),
+            ("no hub", named + "echo done", "deny"),
+            ("in time", hub_call.replace("commit -m x", "status") + "echo done", None),
+        ):
+            clock[0] = 0.0
+            with (
+                self.subTest(label),
+                mock.patch.object(hub_guard, "reading_clock", side_effect=lambda: clock[0]),
+                mock.patch.object(worktrees, "checkout_of", side_effect=slow_checkout_of),
+            ):
+                self.assertEqual(expected, self.decision(self.event(command, outside), environment))
+                if expected is not None:
+                    self.assertIn("ReadingTimeout: the guard did not finish reading it within 15 seconds", self.reason)
+
+    def test_a_reading_time_that_runs_out_after_the_lookups_finish_with_no_hub_in_view_is_allowed_with_a_note(
+        self,
+    ) -> None:
+        # Every place was looked up and none is a guarded hub's, so a timeout in judging leaves no hub in view.
+        outside = self.root / "outside"
+        outside.mkdir()
+        environment = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        timeout = hub_guard.ReadingTimeout("the guard did not finish reading it within 15 seconds")
+        with mock.patch.object(hub_guard, "denied", side_effect=timeout):
+            self.assertIsNone(self.decision(self.event("git status", outside), environment))
+        self.assertIn("hub guard skipped: ReadingTimeout: the guard did not finish reading it", self.stderr)
+
+    def test_a_lookup_while_judging_ends_with_the_reading_time(self) -> None:
+        # The judge's look at the clock before the call is in time; the hub lookup the call then makes is not.
+        reading = hub_guard.read_command("Bash", "git status", self.hub, self.environment)
+        looks = iter([reading.deadline - 1])
+        with (
+            mock.patch.object(hub_guard, "reading_clock", side_effect=lambda: next(looks, reading.deadline + 1)),
+            self.assertRaises(hub_guard.ReadingTimeout),
+        ):
+            hub_guard.denied(reading, {self.hub})
+
+    def test_a_lookup_while_reading_ends_with_the_reading_time(self) -> None:
+        # Deciding whether to start pwsh looks up the checkout the command starts in, after the reading time is over.
+        reading = hub_guard.start_reading("git status", self.hub, self.environment)
+        with (
+            mock.patch.object(hub_guard, "reading_clock", return_value=reading.deadline + 1),
+            self.assertRaises(hub_guard.ReadingTimeout),
+        ):
+            hub_guard.read_into(reading, "PowerShell", self.hub, self.environment)
 
     def test_a_lookups_git_call_gets_what_is_left_of_the_reading_time(self) -> None:
         with mock.patch.object(hub_guard, "reading_clock", return_value=100.0):
@@ -2102,6 +2206,8 @@ class ContractTests(GuardTestCase):
             ("Bash", "alias g=git\ng switch feat/demo"),
             ("Bash", "alias g='git switch'; g feat/demo"),
             ("Bash", "builtin alias g=git\ng switch feat/demo"),
+            ("Bash", "shopt -s expand_aliases; BASH_ALIASES[g]=git\ng switch feat/demo"),
+            ("Bash", "shopt -s expand_aliases; declare -A BASH_ALIASES=([g]=git)\ng switch feat/demo"),
             ("PowerShell", "[scriptblock]::Create('git switch feat/demo').Invoke()"),
             ("PowerShell", "& ([ScriptBlock]::Create('git switch feat/demo'))"),
             ("PowerShell", "$ExecutionContext.InvokeCommand.NewScriptBlock('git switch feat/demo').Invoke()"),
@@ -2218,6 +2324,24 @@ class ContractTests(GuardTestCase):
                 with self.subTest(tool=tool, command=command):
                     event = {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(self.tree)}
                     self.assertEqual(expected, self.decision(event, environment))
+
+    def test_a_nested_bash_is_read_past_option_bundles_and_with_the_functions_its_parent_exported(self) -> None:
+        for tool in ("Bash", "PowerShell"):
+            for command in (
+                "bash -c -euo pipefail 'git commit -m x'",
+                "bash -euxo pipefail -c 'git commit -m x'",
+                "bash -co pipefail 'git commit -m x'",
+                "bash -oc pipefail 'git commit -m x'",
+            ):
+                with self.subTest(tool=tool, command=command):
+                    self.assertEqual("deny", self.decision(self.shell_event(tool, command, self.hub)))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertEqual("deny", self.bash("f() { git commit -m x; }; export -f f; bash -c f", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.bash("f() { git commit -m x; }; bash -c f", self.hub))
+
+    def shell_event(self, tool: str, command: str, cwd: Path) -> dict[str, object]:
+        return {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}
 
     def test_each_cmdlet_that_defines_a_powershell_alias_is_known_by_each_of_its_names(self) -> None:
         for name in ("set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"):

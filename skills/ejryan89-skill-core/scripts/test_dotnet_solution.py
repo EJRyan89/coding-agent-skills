@@ -233,6 +233,10 @@ class NamedPathTests(unittest.TestCase):
             "nul.csproj": "reserved device as a segment",
             "aux .txt\\x.csproj": "reserved device as a segment",
             "..\\Lpt1\\x.csproj": "reserved device as a segment",
+            # A device name before a colon opens the device too; Windows may make a last `CON:` segment `\\.\CON`.
+            "CON:": "device",
+            "sub\\NUL:stream\\x.csproj": "reserved device as a segment",
+            "COM1:.csproj": "reserved device as a segment",
             "console\\Console.csproj": None,
             "Com10.csproj": None,
         }
@@ -250,6 +254,28 @@ class NamedPathTests(unittest.TestCase):
                         "the path names a reserved device as a segment, which the reader does not open",
                         refusal(project_path(project_dir, text), tree),
                     )
+            for text in ("sub\\NUL:stream\\x.csproj", "COM1:.csproj"):
+                with self.subTest(exact=text):
+                    self.assertEqual(
+                        "the path names a reserved device as a segment, which the reader does not open",
+                        refusal(project_path(project_dir, text), tree),
+                    )
             # A local device form is refused on every platform: as a device where it names one, else as a share.
             self.assertIsNotNone(refusal(project_path(project_dir, "\\\\.\\pipe\\x.csproj"), tree))
         self.assertEqual(tree / "Lib" / "Lib.csproj", project_path(project_dir, "..\\Lib\\Lib.csproj"))
+
+    def test_a_reserved_name_above_the_tree_is_not_judged_and_one_below_it_is(self) -> None:
+        # Built lexically, so Windows, which cannot make a folder named `con`, judges the same path Linux would.
+        for above in ("con", "NUL:"):
+            tree = self.root / above / "repo"
+            project_dir = tree / "App"
+            with (
+                self.subTest(above=above),
+                mock.patch.object(Path, "stat", side_effect=AssertionError("reached the file system")),
+            ):
+                self.assertIsNone(refusal(project_path(project_dir, "..\\Lib\\Lib.csproj"), tree))
+                self.assertIsNone(refusal(project_path(project_dir, "App.csproj"), tree))
+                self.assertEqual(
+                    "the path names a reserved device as a segment, which the reader does not open",
+                    refusal(project_path(project_dir, "..\\Aux\\Aux.csproj"), tree),
+                )
