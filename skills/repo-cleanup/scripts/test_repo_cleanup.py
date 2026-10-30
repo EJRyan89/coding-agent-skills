@@ -2428,6 +2428,33 @@ class ConsoleTests(CleanupTestCase):
         self.assertEqual(0, result.returncode, result.stdout.decode("utf-8", "replace"))
         self.assertIn("SUMMARY\t  Local-only (kept):       1 — caf�", result.stdout.decode("utf-8").splitlines())
 
+    def test_a_sweep_record_holding_a_branch_name_that_is_not_utf_8_reads_back_and_reports(self) -> None:
+        # The record's own lines hold the surrogate escape, as a sweep writes them for a repository with no plan.
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup record ")).resolve()
+        self.addCleanup(remove_tree, root)
+        environment = self.sealed_in(root)
+        for branch in ("main", "feature-\udcff"):
+            with self.subTest(branch=branch.encode("utf-8", "surrogateescape")):
+                entry = {"root": "/repos/my repo", "state": "quiet", "plan": None, "lines": [f"CHECKOUT\t{branch}"]}
+                record = {"schema_version": rc.RECORD_SCHEMA_VERSION, "repositories": [entry], "policy": []}
+                rc.save_plan(root / rc.SWEEP_RECORD, record)
+                self.assertEqual(([entry], []), rc.read_record(root))
+                result = subprocess.run(
+                    [sys.executable, "-B", rc.__file__, "report", "--record", str(root)],
+                    capture_output=True,
+                    env=environment,
+                    check=False,
+                )
+                printed = result.stdout.decode("utf-8")
+                self.assertEqual(0, result.returncode, printed)
+                self.assertEqual(
+                    [
+                        "QUIET\t/repos/my repo",
+                        "PROCESSED\tProcessed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error.",
+                    ],
+                    printed.splitlines(),
+                )
+
 
 class PlanVersionTests(CleanupTestCase):
     def test_a_plan_whose_schema_version_is_not_the_integer_one_is_refused(self) -> None:
