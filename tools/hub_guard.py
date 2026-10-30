@@ -1600,7 +1600,8 @@ def declare_functions(builtin: str, arguments: list[Word], shell: Shell) -> Shel
             exporting, unexporting = word.startswith("-"), word.startswith("+")
     for name in names:
         if unexporting:
-            shell.exported_functions.discard(name or "")
+            if name is not None:
+                shell.exported_functions.discard(name)
         elif exporting:
             shell.exported_functions |= set(shell.functions) if name is None else {name} & shell.functions.keys()
     return shell

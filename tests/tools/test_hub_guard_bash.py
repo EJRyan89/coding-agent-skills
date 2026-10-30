@@ -385,6 +385,7 @@ class OptionBundleTests(unittest.TestCase):
             ["+Oc", "extglob", script],
             ["-c", "+eo", "pipefail", script],
             ["--rcfile", "x", "-c", script],
+            ["--init-file", "x", "-c", script],
         ):
             with self.subTest(words=words):
                 self.assertEqual([script], hub_guard.bash_script(list(words), [], hub_guard.Shell(None, {}, set())))
@@ -401,6 +402,11 @@ class OptionBundleTests(unittest.TestCase):
             ("set -o pipefail", UNSET),
             ("set -eo pipefail", UNSET),
             ("set -o allexport; set +eo allexport", UNSET),
+            # A word after the option's value is a positional parameter, and each option is read in turn.
+            ("set -o pipefail allexport", UNSET),
+            ("set -o allexport +e", START / "after"),
+            ("set -e -o allexport", START / "after"),
+            ("set -o pipefail -o allexport", START / "after"),
         ):
             with self.subTest(command=command):
                 self.assertEqual(expected, git_dir_reaching_git(f"unset GIT_DIR; {command}; GIT_DIR=after"))
@@ -471,6 +477,7 @@ class ExportedFunctionTests(unittest.TestCase):
         for command in (
             "f() { git commit -m x; }; bash -c f",
             "f() { git commit -m x; }; export -f f; export -fn f; bash -c f",
+            "f() { git commit -m x; }; export -f f; export -nf f; bash -c f",
             "f() { git commit -m x; }; declare -fx f; declare +x -f f; bash -c f",
             "f() { git commit -m x; }; export -f f; unset -f f; bash -c f",
             "f() { git commit -m x; }; declare -f f; bash -c f",
@@ -479,6 +486,16 @@ class ExportedFunctionTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual([], self.subcommands(command))
+
+    def test_each_export_adds_to_the_functions_already_exported(self) -> None:
+        command = "f() { git status; }; g() { git commit -m x; }; export -f g; export -f f; bash -c g"
+        self.assertEqual(["commit"], self.subcommands(command))
+
+    def test_a_shell_built_with_no_reading_or_exports_resolves_bash_aliases_without_reporting_it(self) -> None:
+        shell = hub_guard.Shell(None, {}, set())
+        self.assertEqual((set(), None), (shell.exported_functions, shell.reading))
+        self.assertEqual("BASH_ALIASES", shell.target("BASH_ALIASES"))
+        self.assertEqual(set(), shell.copy().exported_functions)
 
     def test_the_last_definition_is_the_one_a_nested_shell_runs(self) -> None:
         command = "f() { git status; }; export -f f; f() { git commit -m x; }; bash -c f"

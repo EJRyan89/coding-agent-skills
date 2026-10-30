@@ -143,6 +143,10 @@ BASH_COMMANDS = (
     "unset GIT_DIR; set -ao pipefail; GIT_DIR=after",
     "unset GIT_DIR; set -eo pipefail; GIT_DIR=after",
     "unset GIT_DIR; set -o allexport; set +eo allexport; GIT_DIR=after",
+    "unset GIT_DIR; set -o pipefail allexport; GIT_DIR=after",
+    "unset GIT_DIR; set -o allexport +e; GIT_DIR=after",
+    "unset GIT_DIR; set -e -o allexport; GIT_DIR=after",
+    "unset GIT_DIR; set -o pipefail -o allexport; GIT_DIR=after",
 )
 UNSET = "<unset>"
 
