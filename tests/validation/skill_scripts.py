@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import git_client
 import json_reader
 import whole_number
-from call_tables import EVENT_LOOP, PROCESS_STARTS
+from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from path_containment import posix_within
@@ -1379,9 +1379,10 @@ def console_entry_points(root: Path) -> list[Path]:
 STANDARD_STREAMS = frozenset(
     f"sys.{name}" for stream in ("stdin", "stdout", "stderr") for name in (stream, f"__{stream}__")
 )
-# Calls that build a text stream over a binary stream or a file descriptor, choosing its encoding, and the codecs
-# calls that return a class that does.
-STREAM_WRAPPERS = frozenset({"io.TextIOWrapper", "open", "builtins.open", "io.open", "os.fdopen"})
+# Calls that build a text stream over a binary stream or a file descriptor, choosing its encoding: every text opener
+# call_tables names, codecs.open among them, which given a standard stream or its descriptor sets the encoding of what
+# it builds over it; and the codecs calls that return a class that does.
+STREAM_WRAPPERS = frozenset(TEXT_OPENERS)
 CODEC_WRAPPERS = frozenset({"codecs.getwriter", "codecs.getreader"})
 
 
