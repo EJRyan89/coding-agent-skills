@@ -2,6 +2,7 @@
 
 Usage: python -B tests/run_validation.py [-k PATTERN ... | --changed | --full] [-v] [--pr-body FILE]
                                         [--pr-title FILE] [--shard INDEX/COUNT]
+       python -B tests/run_validation.py --known-failure-issues
 
 It runs every regression suite under tests/ and each skill's scripts/ in one pool of worker processes, largest first,
 and the policy checks in this process while the pool works, printing their report when they finish. The policies live
@@ -36,6 +37,11 @@ run; CI always passes --shard, so its legs select as they would without them.
 --shard 2/4 runs the second of four legs, as CI's runners do: once -k or the documentation path has selected the
 policy checks and suite jobs, tests/validation/job_selection.py deals them across the legs the same way on every leg,
 so the legs together run exactly what one run would, each once.
+
+--known-failure-issues, given alone, runs nothing but the one check that reads GitHub: it asks, through gh, whether
+each issue tests/malformed_input/known_failures.json names is open, prints a FAILED line for each that is not or that
+gh cannot answer about, and exits 1 when there is one. CI runs it in a job of its own, the only job given the run's
+token, so no suite and no process a suite starts holds the token.
 
 The policy checks run on the main thread while the pool's thread starts jobs from os.environ and prints each result
 to sys.stdout, so no policy check swaps a standard stream or changes the environment, and
@@ -291,7 +297,17 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
         metavar="INDEX/COUNT",
         help="run leg INDEX of COUNT: a share of the selected policy checks and suites, dealt alike on every leg",
     )
+    parser.add_argument(
+        "--known-failure-issues",
+        action="store_true",
+        help="ask GitHub, through gh, whether each issue the malformed-input known failures name is open, and run "
+        "nothing else",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.known_failure_issues and any(
+        given for name, given in vars(arguments).items() if name != "known_failure_issues"
+    ):
+        parser.error("argument --known-failure-issues: not allowed with another argument, since it runs nothing else")
     if arguments.changed and arguments.patterns:
         parser.error("argument --changed: not allowed with argument -k, which selects by name instead")
     if arguments.full and arguments.patterns:
@@ -413,6 +429,18 @@ def unmatched_patterns(patterns: list[str], policies: unittest.TestSuite, jobs: 
     ]
 
 
+def report_known_failure_issues(out: TextIO | io.TextIOBase) -> int:
+    """Print each issue a known failure names that GitHub does not say is open, and return 1 when there is one.
+
+    This is the one part of validation that reads GitHub, so it runs alone: validate.yml gives the run's token to the
+    step that runs it and to no step that starts a suite."""
+    problems = known_failures.open_issue_problems(REPOSITORY_ROOT)
+    for problem in problems:
+        print(f"FAILED {problem}", file=out)
+    print(f"Known-failure issues: {len(problems)} not shown open.", file=out)
+    return 1 if problems else 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -427,6 +455,8 @@ def main(
     errors = sys.stderr if errors is None else errors
     environment = os.environ if environment is None else environment
     arguments = parse_arguments(argv, errors)
+    if arguments.known_failure_issues:
+        return report_known_failure_issues(out)
     try:
         workers = worker_count(environment)
     except ValueError as error:

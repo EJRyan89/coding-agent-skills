@@ -53,10 +53,20 @@ class WorkflowsFixtures(unittest.TestCase):
             "name: Example\n\non:\n  pull_request:\n  # A comment is not a trigger.\n  push:\n    branches: [main]\n\n"
             "permissions:\n  contents: read\n\njobs:\n  run:\n    runs-on: windows-latest\n    steps:\n"
             f"      - uses: actions/checkout@{'a' * 40} # v7.0.1\n"
+            "        with:\n          persist-credentials: false\n"
         )
         expected = ["pull_request", "push"]
         self.assertEqual([], workflow_guard_problems(clean, expected, {"actions/checkout"}))
         for drifted, problem in (
+            # A checkout that stores the job's token where every later step reads it, in each spelling.
+            (clean.replace("        with:\n          persist-credentials: false\n", ""), "persist-credentials"),
+            (clean.replace("persist-credentials: false", "persist-credentials: true"), "persist-credentials"),
+            (clean.replace("persist-credentials: false", "fetch-depth: 0"), "persist-credentials"),
+            (clean.replace("persist-credentials: false", "persist-credentials: 'False'"), "persist-credentials"),
+            (
+                clean + f"      - name: Again\n        uses: actions/checkout@{'a' * 40} # v7.0.1\n",
+                "job run's step 'Again' checks out without persist-credentials",
+            ),
             (clean.replace("  push:\n", "  pull_request_target:\n  push:\n"), "triggers"),
             (clean.replace("  contents: read\n", "  contents: write\n"), "permissions"),
             (clean.replace("  contents: read\n", "  contents: read\n  pull-requests: write\n"), "permissions"),
@@ -71,8 +81,8 @@ class WorkflowsFixtures(unittest.TestCase):
             (clean.replace("    steps:\n", "    permissions:\n      contents: write\n    steps:\n"), "permissions"),
             (clean.replace("    steps:\n", "    permissions:\n      id-token: write\n    steps:\n"), "permissions"),
             (clean + "        env:\n          TOKEN: ${{ secrets['TOKEN'] }}\n", "secret"),
-            (clean + "        with:\n          token: ${{ github['token'] }}\n", "token"),
-            (clean + "        with:\n          token: ${{github.token}}\n", "token"),
+            (clean + "          token: ${{ github['token'] }}\n", "token"),
+            (clean + "          token: ${{github.token}}\n", "token"),
             (clean + "      - run: |\n          echo '${{ secrets.TOKEN }}'\n", "secret"),
             (clean + "      - run: |\n          echo '${{ github.event.pull_request.body }}'\n", "event data"),
             (clean + "        env:\n          TITLE: ${{ github['event']['pull_request']['title'] }}\n", "event data"),
@@ -114,7 +124,7 @@ class WorkflowsFixtures(unittest.TestCase):
                     "github.*",
                 )
             ),
-            (clean + "        with:\n          data: ${{ toJSON(github) }}\n", "github context"),
+            (clean + "          data: ${{ toJSON(github) }}\n", "github context"),
             # An expression the policy cannot split into tokens fails rather than passes unread.
             *(
                 (clean + f'      - run: echo "${{{{ {expression} }}}}"\n', "cannot read")
@@ -384,7 +394,8 @@ LINUX = (
     "  linux:\n    name: Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n"
     "    runs-on: ubuntu-latest\n    strategy:\n      fail-fast: false\n      matrix:\n"
     f"        python-version: {SCHEDULED_LATEST}\n        shard: ['1/2', '2/2']\n    steps:\n"
-    "      - uses: actions/checkout@SHA # v1\n        with:\n          fetch-depth: 0\n"
+    "      - uses: actions/checkout@SHA # v1\n        with:\n          persist-credentials: false\n"
+    "          fetch-depth: 0\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n"
     "          python-version: ${{ matrix.python-version }}\n"
     "          cache: pip\n          cache-dependency-path: requirements-dev.txt\n"
@@ -1431,7 +1442,8 @@ def mutation_leg(leg: str, runner: str, shellcheck: str) -> str:
     return (
         f"  {leg.casefold()}:\n    name: Mutation gate on {leg}\n    needs: select\n"
         f"    if: needs.select.outputs.{leg.casefold()} == 'true'\n    runs-on: {runner}\n    timeout-minutes: 60\n"
-        "    steps:\n      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
+        "    steps:\n      - uses: actions/checkout@abc\n        with:\n          persist-credentials: false\n"
+        "          fetch-depth: 0\n"
         f"{MUTATION_SETUP}{shellcheck}{MUTATION_SHELLCHECK_VERIFY}"
         f"      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
         "      - uses: actions/download-artifact@abc\n        with:\n          name: mutation-mutants\n"
@@ -1447,7 +1459,8 @@ MUTATION = (
     "jobs:\n  select:\n    name: Mutation gate mutants\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n"
     "    outputs:\n      linux: ${{ steps.select.outputs.linux }}\n"
     "      windows: ${{ steps.select.outputs.windows }}\n    steps:\n"
-    "      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
+    "      - uses: actions/checkout@abc\n        with:\n          persist-credentials: false\n"
+    "          fetch-depth: 0\n"
     f"{MUTATION_SETUP}      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
     "      - name: Select\n        id: select\n        run: python -B tools/mutation_gate.py select mutation\n"
     "      - uses: actions/upload-artifact@abc\n        with:\n          name: mutation-mutants\n"
@@ -1456,6 +1469,7 @@ MUTATION = (
     + mutation_leg("Windows", "windows-latest", MUTATION_WINDOWS_SHELLCHECK)
     + "  mutation:\n    name: Mutation gate\n    needs: [select, linux, windows]\n    if: ${{ !cancelled() }}\n"
     "    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@abc\n"
+    "        with:\n          persist-credentials: false\n"
     "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n"
     "      - uses: actions/download-artifact@abc\n        with:\n          pattern: mutation-*\n"
     "          path: mutation\n          merge-multiple: true\n"
@@ -1567,10 +1581,11 @@ CREDENTIAL_WORKFLOW = (
     "name: Example\n\non:\n  push:\n\npermissions:\n  contents: read\n\njobs:\n"
     "  run:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      issues: read\n    steps:\n"
     "      - name: Check\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: python check.py\n"
-    "      - name: Other\n        run: python other.py\n"
     "  other:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Check\n        run: python check.py\n"
 )
-TOKEN_STEP = frozenset({("run", "Check")})
+TOKEN_STEP = {("run", "Check"): "python check.py"}
+# A step appended to the sanctioned job.
+CHECK_JOB_END = "        run: python check.py\n  other:\n"
 
 
 def test_the_token_reaches_exactly_the_sanctioned_step_in_a_job_reading_issues() -> None:
@@ -1585,11 +1600,36 @@ def test_the_token_reaches_exactly_the_sanctioned_step_in_a_job_reading_issues()
         # The token in the sanctioned job's other step, or in another job's step of the same name.
         pytest.param(
             CREDENTIAL_WORKFLOW.replace(
-                "        run: python other.py\n",
-                "        env:\n          GH_TOKEN: ${{ github.token }}\n        run: python other.py\n",
+                CHECK_JOB_END,
+                "        run: python check.py\n      - name: Other\n        env:\n"
+                "          GH_TOKEN: ${{ github.token }}\n        run: python other.py\n  other:\n",
             ),
             "github context",
             id="another step of the job",
+        ),
+        # The sanctioned step running more than its command, or its job starting another command beside it, which
+        # would hold the job's token: a step that runs the validation pool, for one.
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace("run: python check.py\n  other:", "run: python check.py --full\n  other:"),
+            "runs 'python check.py --full', not 'python check.py'",
+            id="another command in the token step",
+        ),
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace(
+                CHECK_JOB_END,
+                "        run: python check.py\n      - name: Validate\n"
+                "        run: python -B tests/run_validation.py\n  other:\n",
+            ),
+            "no step but 'Check' runs a command, yet 'Validate' runs one",
+            id="a step running the pool in the token job",
+        ),
+        pytest.param(
+            CREDENTIAL_WORKFLOW.replace(
+                "    steps:\n      - name: Check\n        env:",
+                "    steps:\n      - name: Before\n        run: python setup.py\n      - name: Check\n        env:",
+            ),
+            "yet 'Before' runs one",
+            id="a step before it in the token job",
         ),
         pytest.param(
             CREDENTIAL_WORKFLOW.replace(
@@ -1625,7 +1665,7 @@ def test_the_token_reaches_exactly_the_sanctioned_step_in_a_job_reading_issues()
     ],
 )
 def test_the_token_anywhere_else_or_in_any_other_form_fails(drifted: str, problem: str) -> None:
-    sanctioned = frozenset() if drifted is CREDENTIAL_WORKFLOW else TOKEN_STEP
+    sanctioned = {} if drifted is CREDENTIAL_WORKFLOW else TOKEN_STEP
     problems = workflow_guard_problems(drifted, ["push"], set(), (), sanctioned)
     assert any(problem in found for found in problems), problems
 
@@ -1663,10 +1703,14 @@ def test_a_mutation_pin_off_validates_fails(mutation: str, validate: str, proble
 
 VALIDATE_CHECKOUTS = "jobs:\n" + "".join(
     f"  {job}:\n    runs-on: {runner}\n    steps:\n      - uses: actions/checkout@abc\n        with:\n"
-    "          fetch-depth: 0\n      - name: Validate\n        run: python -B tests/run_validation.py\n"
+    "          persist-credentials: false\n          fetch-depth: 0\n"
+    "      - name: Validate\n        run: python -B tests/run_validation.py\n"
     for job, runner in (("suite", "windows-latest"), ("linux", "ubuntu-latest"))
 )
-LEG_CHECKOUT = "    steps:\n      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
+LEG_CHECKOUT = (
+    "    steps:\n      - uses: actions/checkout@abc\n        with:\n          persist-credentials: false\n"
+    "          fetch-depth: 0\n"
+)
 
 
 def test_the_mutation_legs_check_out_what_the_validation_legs_do() -> None:
@@ -1681,19 +1725,22 @@ def test_the_mutation_legs_check_out_what_the_validation_legs_do() -> None:
         pytest.param(
             MUTATION.replace(LEG_CHECKOUT, "    steps:\n      - uses: actions/checkout@abc\n"),
             VALIDATE_CHECKOUTS,
-            "the linux job's checkout is [{}], not validate.yml's linux job's [{'fetch-depth': '0'}]",
+            "the linux job's checkout is [{}], not validate.yml's linux job's "
+            "[{'persist-credentials': 'false', 'fetch-depth': '0'}]",
             id="shallow legs",
         ),
         pytest.param(
             MUTATION.replace(LEG_CHECKOUT, LEG_CHECKOUT.replace("0", "1")),
             VALIDATE_CHECKOUTS,
-            "the windows job's checkout is [{'fetch-depth': '1'}], not validate.yml's suite job's",
+            "the windows job's checkout is [{'persist-credentials': 'false', 'fetch-depth': '1'}], not validate.yml's "
+            "suite job's",
             id="another depth",
         ),
         pytest.param(
             MUTATION,
             VALIDATE_CHECKOUTS.replace("fetch-depth: 0\n", "fetch-depth: 0\n          fetch-tags: true\n", 1),
-            "not validate.yml's suite job's [{'fetch-depth': '0', 'fetch-tags': 'true'}]",
+            "not validate.yml's suite job's "
+            "[{'persist-credentials': 'false', 'fetch-depth': '0', 'fetch-tags': 'true'}]",
             id="validation fetching more",
         ),
         pytest.param(

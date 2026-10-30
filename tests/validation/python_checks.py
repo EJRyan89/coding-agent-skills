@@ -22,7 +22,7 @@ import tomllib
 import unittest
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -32,6 +32,7 @@ from call_tables import (
     EVENT_LOOP_STARTS,
     LAST,
     OTHER_OPENS,
+    PATH_CLASSES,
     PROCESS_STARTS,
     TEXT_METHODS,
     TEXT_OPENERS,
@@ -1018,13 +1019,22 @@ TEXT_PROCESS_OPTIONS = ("text", "universal_newlines")
 
 
 def _opener(call: ast.Call, aliases: dict[str, str]) -> TextOpener | None:
-    """Where a call takes its mode and encoding when it may open text, or None for any other call."""
+    """Where a call takes its mode and encoding when it may open text, or None for any other call. A path method named
+    on one of PATH_CLASSES rather than on a path, as in `Path.read_text(path)`, takes the path first, so each of its
+    other arguments sits one slot later."""
     qualified = qualified_name(call.func, aliases)
     if qualified in TEXT_OPENERS:
         return TEXT_OPENERS[qualified]
-    if isinstance(call.func, ast.Attribute) and qualified not in OTHER_OPENS:
-        return TEXT_METHODS.get(call.func.attr)
-    return None
+    if not isinstance(call.func, ast.Attribute) or qualified in OTHER_OPENS:
+        return None
+    opener = TEXT_METHODS.get(call.func.attr)
+    if opener is None or qualified_name(call.func.value, aliases) not in PATH_CLASSES:
+        return opener
+    return replace(
+        opener,
+        mode=None if opener.mode is None else opener.mode + 1,
+        encoding=None if opener.encoding is None else opener.encoding + 1,
+    )
 
 
 def _opens_text(call: ast.Call, opener: TextOpener, method: bool) -> bool:
@@ -1512,8 +1522,9 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # a list's or tuple's items, pass -z or go to GitClient.names, which adds it, and a for-each-ref or log format joins
 # its fields with NUL. str.splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path can
 # hold, so git's output, a call's result, its stdout, or a name a scope binds to either, is split on "\n" or on NUL,
-# never with splitlines(). A listing, a format, or a split that must stay states why in a module-level
-# GIT_SEPARATOR_ALLOWED = {scope: reason}.
+# never with splitlines(), bound or unbound as str.splitlines(out), nor after a string method, a str(), or a slice
+# that keeps its text, as out.strip().splitlines(). A listing, a format, or a split that must stay states why in a
+# module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
 # Each subcommand that lists names, with the options that make it list them; none means it always does. An option
@@ -1532,6 +1543,22 @@ GIT_FORMAT_PREFIXES = ("format:", "tformat:")
 # log (%x00) write it, and the escapes that print a byte, which join fields as literal text does.
 GIT_FORMAT_TOKEN = re.compile(r"%%|%x00|%00|%x[0-9a-fA-F]{2}|%n|%\([^)]*\)|%[a-zA-Z][a-zA-Z?]?")
 GIT_FORMAT_NUL = frozenset({"%00", "%x00"})
+# The str and bytes methods whose result still holds the text they are given, so a split of it splits git's output.
+TEXT_KEEPING_METHODS = frozenset(
+    {
+        "casefold",
+        "decode",
+        "expandtabs",
+        "lower",
+        "lstrip",
+        "removeprefix",
+        "removesuffix",
+        "replace",
+        "rstrip",
+        "strip",
+        "upper",
+    }
+)
 # The git subcommands whose output names a ref, a path, or a commit, which a split of that output reads.
 GIT_OUTPUT_COMMANDS = frozenset(
     {
@@ -1631,14 +1658,37 @@ def _separator_refusal(elements: Sequence[ast.expr]) -> str | None:
     return None
 
 
+def _text_beneath(node: ast.expr) -> ast.expr:
+    """The expression whose text a string method's result, a str() of it, or a slice of it still holds, through each
+    one in turn, bound as `out.strip()` or unbound as `str.strip(out)`; the expression itself when it is none."""
+    while True:
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
+            node = node.value
+            continue
+        if not isinstance(node, ast.Call):
+            return node
+        method = node.func
+        if isinstance(method, ast.Name) and method.id == "str" and len(node.args) == 1:
+            node = node.args[0]
+        elif not isinstance(method, ast.Attribute) or method.attr not in TEXT_KEEPING_METHODS:
+            return node
+        elif not (isinstance(method.value, ast.Name) and method.value.id in ("str", "bytes")):
+            node = method.value
+        elif node.args:
+            node = node.args[0]
+        else:
+            return node
+
+
 def _git_output_command(
     node: ast.expr, lists: Mapping[str, Sequence[ast.expr]], outputs: Mapping[str, str]
 ) -> str | None:
     """The git subcommand whose output an expression holds, or None: a call whose arguments start it, a list or tuple
     among them, or a name its scope binds to one, read in place; that call's stdout, or output as the deployer's
-    run_tool gives it; or a name its scope binds to either."""
+    run_tool gives it; or a name its scope binds to either; through a string method, a str(), or a slice of any."""
+    node = _text_beneath(node)
     if isinstance(node, ast.Attribute) and node.attr in ("stdout", "output"):
-        node = node.value
+        node = _text_beneath(node.value)
     if isinstance(node, ast.Name):
         return outputs.get(node.id)
     if not isinstance(node, ast.Call):
@@ -1653,6 +1703,12 @@ def _git_output_command(
             elements.append(argument)
     started = _git_command(elements)
     return started[0] if started is not None and started[0] in GIT_OUTPUT_COMMANDS else None
+
+
+def _split_text(method: ast.Attribute, arguments: Sequence[ast.expr]) -> ast.expr:
+    """The text a splitlines() call splits: its receiver, or its first argument when unbound, as str.splitlines(out)."""
+    unbound = isinstance(method.value, ast.Name) and method.value.id in ("str", "bytes") and arguments
+    return arguments[0] if unbound else method.value
 
 
 def _git_output_splits(tree: ast.Module) -> list[tuple[int, str, str]]:
@@ -1675,7 +1731,8 @@ def _git_output_splits(tree: ast.Module) -> list[tuple[int, str, str]]:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "splitlines"
-            and (command := _git_output_command(node.func.value, known_lists, known_outputs)) is not None
+            and (command := _git_output_command(_split_text(node.func, node.args), known_lists, known_outputs))
+            is not None
         ):
             found.append(
                 (

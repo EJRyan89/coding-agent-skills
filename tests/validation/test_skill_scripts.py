@@ -1472,6 +1472,37 @@ class SkillScriptsFixtures(unittest.TestCase):
             )
 
 
+# Every opener call_tables names builds a text stream over a standard stream or its descriptor when given one, so each
+# is refused there as the built-in open is; the names are written out, never read from the table under test.
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "open",
+        "builtins.open",
+        "io.open",
+        "codecs.open",
+        "os.fdopen",
+        "io.TextIOWrapper",
+        "tempfile.TemporaryFile",
+        "tempfile.NamedTemporaryFile",
+        "tempfile.SpooledTemporaryFile",
+        "gzip.open",
+        "bz2.open",
+        "lzma.open",
+    ],
+)
+def test_console_setup_policy_refuses_every_text_opener_over_a_standard_stream(tmp_path: Path, opener: str) -> None:
+    module = opener.rpartition(".")[0]
+    imports = f"import {module}\n" if module else ""
+    write_fixture_tree(
+        tmp_path, {"tools/reopened.py": f"{imports}import sys\n\nOUT = {opener}(sys.stdout.fileno(), 'w')\n"}
+    )
+    mark_skills(tmp_path)
+    [problem] = console_setup_problems(tmp_path)
+    assert problem.startswith("tools/reopened.py:")
+    assert "reconfigures a stream itself" in problem
+
+
 @pytest.mark.parametrize("callable_name", [*COMMAND_RUNNERS, *CLIENT_CLASSES])
 def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arguments(callable_name: str) -> None:
     module, _, function = callable_name.rpartition(".")

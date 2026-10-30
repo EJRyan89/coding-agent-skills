@@ -201,6 +201,21 @@ class JobPoolFixtures(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "VALIDATION_JOBS must be a whole number of workers, not 'four'"):
             worker_count({"VALIDATION_JOBS": "four"}, cpus=4)
 
+    def test_a_job_child_receives_no_token_from_the_runner_or_its_caller(self) -> None:
+        # The child fails, naming what it holds, when any token variable reached it, in any case.
+        names = ["GH_ENTERPRISE_TOKEN", "GH_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITHUB_TOKEN"]
+        holds_token = (
+            "import os, sys\n"
+            f"held = sorted(name for name in os.environ if name.upper() in {names!r})\n"
+            "sys.exit(f'holds {held}' if held else 0)\n"
+        )
+        tokens = {"GH_TOKEN": "marker", "GITHUB_TOKEN": "marker", "Gh_Enterprise_Token": "marker"}
+        with mock.patch.dict(os.environ, tokens):
+            run_process([sys.executable, "-c", holds_token], environment={"GITHUB_ENTERPRISE_TOKEN": "marker"})
+        # The control: the same child, given a token another way, fails, so the run above shows the removal.
+        with self.assertRaisesRegex(AssertionError, "holds"):
+            run_process([sys.executable, "-c", holds_token.replace("os.environ", "{'GH_TOKEN': 1}")])
+
     def test_a_program_past_its_time_limit_is_ended_with_every_process_it_started_and_reported_whole(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             recorded = Path(temporary) / "grandchild.txt"

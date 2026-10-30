@@ -64,6 +64,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No later step needs git's credential, so the checkout stores none for them to read.
+          persist-credentials: false
 
       - name: Prepare the run record
         run: |
@@ -284,6 +287,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No later step needs git's credential, so the checkout stores none for them to read.
+          persist-credentials: false
 
       - name: Prepare the run record
         run: |
