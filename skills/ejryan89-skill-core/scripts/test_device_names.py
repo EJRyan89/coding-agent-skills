@@ -67,6 +67,14 @@ class DeviceNameTests(unittest.TestCase):
         "CONIN$",
         "conout$.log",
         "COM¹.py",
+        "NUL:",
+        "CON:",
+        "COM1:",
+        "NUL:stream",
+        "nul.txt:stream",
+        "aux :x",
+        "con:.txt",
+        "NUL:stream:$DATA",
     ],
 )
 def test_a_device_name_in_any_case_alone_or_before_an_extension_is_reserved(name: str) -> None:
@@ -74,7 +82,25 @@ def test_a_device_name_in_any_case_alone_or_before_an_extension_is_reserved(name
 
 
 @pytest.mark.parametrize(
-    "name", ["console", "con-alpha", "nul-check", "com", "com10", "lpt10", "aux2", ".con", " con", "con_.md"]
+    "name",
+    [
+        "console",
+        "con-alpha",
+        "nul-check",
+        "com",
+        "com10",
+        "lpt10",
+        "aux2",
+        ".con",
+        " con",
+        "con_.md",
+        "console:x",
+        ":con",
+        # Windows trims spaces alone before the extension, so another kind of space, or a letter, keeps the name.
+        "con\N{NO-BREAK SPACE}.txt",
+        "nul\t",
+        "CONX",
+    ],
 )
 def test_a_name_that_only_starts_like_one_is_not(name: str) -> None:
     assert not is_reserved_device_name(name)

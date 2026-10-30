@@ -372,7 +372,8 @@ def replacement(path: Path) -> tuple[Path, int]:
     """Where a replacement of `path` is written and the mode it takes: the file the path leads to, through any
     symbolic link, so a link stays a link and its target is what changes, with the mode that file has, or
     `NEW_FILE_MODE` for a file not yet written. A file with another hard link is refused, since a replacement would
-    leave that name with the old content."""
+    leave that name with the old content, and so is a read-only file, which ejryan89-skill-core's `atomic_file` would
+    refuse only once GitHub had been asked."""
     target = path.resolve()
     try:
         status = target.stat()
@@ -384,6 +385,8 @@ def replacement(path: Path) -> tuple[Path, int]:
         raise TrackerError(
             f"{path} has another hard link, which a replacement would leave with the old content; give it one name"
         )
+    if not status.st_mode & stat.S_IWUSR:
+        raise TrackerError(f"{path} is read-only; make it writable for the update to replace it")
     return target, stat.S_IMODE(status.st_mode)
 
 

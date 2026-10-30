@@ -6,7 +6,7 @@ import re
 import shlex
 import tomllib
 import unittest
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 from python_checks import MYPY_CACHE_VARIABLE
@@ -220,6 +220,9 @@ READ_ONLY_SCOPES = frozenset({"read", "none"})
 CREDENTIAL_VARIABLE = "GH_TOKEN"
 CREDENTIAL_VALUE = "${{ github.token }}"
 TOKEN_JOB_PERMISSIONS = {"contents": "read", "issues": "read"}
+# The inputs every actions/checkout step gives, whatever else it gives: the action otherwise writes the job's token into
+# the checkout's git configuration, where every later step of the job, and every process one starts, can read it.
+NO_STORED_CREDENTIAL = {"persist-credentials": "false"}
 
 
 def _expression_tokens(expression: str) -> list[tuple[str, bool]] | None:
@@ -308,12 +311,13 @@ def _expressions(path: str, text: str, is_key: bool) -> list[str]:
     return wrapped
 
 
-def _token_paths(tree: Node, token_steps: Collection[tuple[str, str]]) -> tuple[set[str], list[str]]:
+def _token_paths(tree: Node, token_steps: Mapping[tuple[str, str], str]) -> tuple[set[str], list[str]]:
     """The path of the one GH_TOKEN env entry each sanctioned (job, step name) holds, and a problem for each such step
-    the workflow lacks or that gives the token as anything but CREDENTIAL_VALUE."""
+    the workflow lacks, that gives the token as anything but CREDENTIAL_VALUE, or that runs anything but its command,
+    and for each other step of its job that runs a command, which would start in a job holding the token."""
     paths: set[str] = set()
     problems: list[str] = []
-    for job, step_name in sorted(token_steps):
+    for (job, step_name), command in sorted(token_steps.items()):
         steps = _steps(_mapping(tree, "jobs", job))
         index = next((index for index, step in enumerate(steps) if step.get("name") == step_name), None)
         env = _mapping(steps[index], "env") if index is not None else {}
@@ -321,7 +325,26 @@ def _token_paths(tree: Node, token_steps: Collection[tuple[str, str]]) -> tuple[
             problems.append(f"job {job}'s step {step_name!r} does not give {CREDENTIAL_VARIABLE}: {CREDENTIAL_VALUE}")
             continue
         paths.add(f"jobs.{job}.steps[{index}].env.{CREDENTIAL_VARIABLE}")
+        if steps[index].get("run") != command:
+            problems.append(f"job {job}'s step {step_name!r} runs {steps[index].get('run')!r}, not {command!r}")
+        problems += [
+            f"job {job} holds the token, so no step but {step_name!r} runs a command, yet {step.get('name')!r} runs one"
+            for other, step in enumerate(steps)
+            if other != index and "run" in step
+        ]
     return paths, problems
+
+
+def _checkout_problems(tree: Node) -> list[str]:
+    """Each actions/checkout step whose inputs do not include NO_STORED_CREDENTIAL."""
+    return [
+        f"job {job}'s step {step.get('name')!r} checks out without persist-credentials: false, so the job's token is "
+        "stored where every later step can read it"
+        for job in _mapping(tree, "jobs")
+        for step in _steps(_mapping(tree, "jobs", job))
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+        and any(_mapping(step, "with").get(key) != value for key, value in NO_STORED_CREDENTIAL.items())
+    ]
 
 
 def _string_problems(tree: Node, token_paths: Collection[str] = ()) -> list[str]:
@@ -350,15 +373,16 @@ def workflow_guard_problems(
     triggers: list[str],
     actions: set[str],
     crons: tuple[str, ...] = (),
-    token_steps: Collection[tuple[str, str]] = (),
+    token_steps: Mapping[tuple[str, str], str] | None = None,
 ) -> list[str]:
     """Report how a workflow departs from its expected triggers, crons, and actions, a read-only token, and no secrets.
 
     The workflow is parsed, so every trigger, every job's permissions, and every `${{ }}` expression, key, and value
     are checked wherever they sit. Every action is pinned to a full commit SHA with its version in a comment, which
     docs/dependency-updates.md states and Dependabot reviews. The token reaches a step only as one of `token_steps`
-    names, a (job, step name), whose env gives GH_TOKEN exactly CREDENTIAL_VALUE, in a job whose permissions are exactly
-    TOKEN_JOB_PERMISSIONS.
+    names, a (job, step name), whose env gives GH_TOKEN exactly CREDENTIAL_VALUE and whose command is the one it maps
+    to, in a job whose permissions are exactly TOKEN_JOB_PERMISSIONS and whose other steps run no command. Every
+    checkout stores no credential.
     """
     try:
         tree = read_workflow(workflow)
@@ -375,9 +399,11 @@ def workflow_guard_problems(
         problems.append(f"the schedule's crons are {scheduled}, expected {list(crons)}")
     if tree.get("permissions") != {"contents": "read"}:
         problems.append(f"the top-level permissions are {tree.get('permissions')}, not exactly `contents: read`")
+    token_steps = token_steps or {}
     token_paths, token_problems = _token_paths(tree, token_steps)
     problems += token_problems
     problems += _job_permission_problems(tree.get("jobs"), {job for job, _ in token_steps})
+    problems += _checkout_problems(tree)
     problems += _string_problems(tree, token_paths)
     pins = action_pins(workflow)
     for action, reference, rest in pins:
@@ -430,10 +456,15 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
 }
 
 
-# Each step, by its job and its name, that is given the token: validate.yml's steps that run the pull request checks,
-# whose known-failure check asks GitHub whether each entry's issue is open. No other step of any workflow is.
-TOKEN_STEPS: dict[str, frozenset[tuple[str, str]]] = {
-    "validate.yml": frozenset({("suite", "Run repository validation"), ("linux", "Run repository validation")}),
+# Each step, by its job and its name, that is given the token, with the one command it runs: validate.yml's open-issue
+# query, which asks GitHub whether each issue a malformed-input known failure names is open and starts no suite. No
+# other step of any workflow is given it, and no other step of its job runs a command.
+TOKEN_STEPS: dict[str, dict[tuple[str, str], str]] = {
+    "validate.yml": {
+        ("known-failures", "Ask whether each known failure's issue is open"): (
+            "python -B tests/run_validation.py --known-failure-issues"
+        ),
+    },
 }
 
 
@@ -569,8 +600,10 @@ def linux_job_problems(workflow: str, legs: int) -> list[str]:
         problems.append("the linux matrix does not set fail-fast: false, so one red leg would cancel the other")
     steps = _steps(linux)
     checkouts = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
-    if checkouts != [{"fetch-depth": "0"}]:
-        problems.append(f"the linux job checks out {checkouts}, not the whole history with fetch-depth 0")
+    if checkouts != [{"fetch-depth": "0", **NO_STORED_CREDENTIAL}]:
+        problems.append(
+            f"the linux job checks out {checkouts}, not the whole history with fetch-depth 0 and no stored credential"
+        )
     python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
     setup = {
         "python-version": "${{ matrix.python-version }}",
@@ -1291,7 +1324,7 @@ def _mutation_leg(platform: str, runner: str, shellcheck: tuple[str, list[str]])
         "if": f"needs.select.outputs.{leg} == 'true'",
         "runs-on": runner,
         "timeout-minutes": "60",
-        "checkout": {"fetch-depth": "0"},
+        "checkout": {"fetch-depth": "0", **NO_STORED_CREDENTIAL},
         "python": MUTATION_LOCKED_PYTHON,
         "scripts": [install, MUTATION_SHELLCHECK_VERIFY, [MUTATION_INSTALL], [f"{MUTATION_GATE} leg mutation"]],
         "shells": [shell, "pwsh", None, None],
@@ -1313,7 +1346,7 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "if": None,
         "runs-on": "ubuntu-latest",
         "timeout-minutes": "15",
-        "checkout": {"fetch-depth": "0"},
+        "checkout": {"fetch-depth": "0", **NO_STORED_CREDENTIAL},
         "python": MUTATION_LOCKED_PYTHON,
         "scripts": [[MUTATION_INSTALL], [f"{MUTATION_GATE} select mutation"]],
         "shells": [None, None],
@@ -1332,7 +1365,7 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "if": "${{ !cancelled() }}",
         "runs-on": "ubuntu-latest",
         "timeout-minutes": "15",
-        "checkout": {},
+        "checkout": NO_STORED_CREDENTIAL,
         "python": {"python-version": "3.11"},
         "scripts": [[f"{MUTATION_GATE} join mutation"]],
         "shells": [None],
@@ -1464,7 +1497,7 @@ class WorkflowsPolicies(unittest.TestCase):
         for name, (triggers, actions, crons) in WORKFLOW_GUARDS.items():
             with self.subTest(workflow=name):
                 workflow = (workflows / name).read_text(encoding="utf-8")
-                tokens = TOKEN_STEPS.get(name, frozenset())
+                tokens = TOKEN_STEPS.get(name, {})
                 self.assertEqual([], workflow_guard_problems(workflow, triggers, actions, crons, tokens))
 
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
@@ -1569,7 +1602,7 @@ class WorkflowsPolicies(unittest.TestCase):
         # The image ships the pinned analyzer, so the cache and the install run only on an image that lacks it.
         self.assertEqual([], image_module_problems(workflow, "linux"))
         # Every supported platform gates a merge through the one check branch protection requires.
-        self.assertEqual([], required_check_problems(workflow, ("suite", "linux")))
+        self.assertEqual([], required_check_problems(workflow, ("suite", "linux", "known-failures")))
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
