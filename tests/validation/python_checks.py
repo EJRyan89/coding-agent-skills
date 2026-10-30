@@ -22,7 +22,7 @@ import tomllib
 import unittest
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -32,6 +32,7 @@ from call_tables import (
     EVENT_LOOP_STARTS,
     LAST,
     OTHER_OPENS,
+    PATH_CLASSES,
     PROCESS_STARTS,
     TEXT_METHODS,
     TEXT_OPENERS,
@@ -1018,13 +1019,22 @@ TEXT_PROCESS_OPTIONS = ("text", "universal_newlines")
 
 
 def _opener(call: ast.Call, aliases: dict[str, str]) -> TextOpener | None:
-    """Where a call takes its mode and encoding when it may open text, or None for any other call."""
+    """Where a call takes its mode and encoding when it may open text, or None for any other call. A path method named
+    on one of PATH_CLASSES rather than on a path, as in `Path.read_text(path)`, takes the path first, so each of its
+    other arguments sits one slot later."""
     qualified = qualified_name(call.func, aliases)
     if qualified in TEXT_OPENERS:
         return TEXT_OPENERS[qualified]
-    if isinstance(call.func, ast.Attribute) and qualified not in OTHER_OPENS:
-        return TEXT_METHODS.get(call.func.attr)
-    return None
+    if not isinstance(call.func, ast.Attribute) or qualified in OTHER_OPENS:
+        return None
+    opener = TEXT_METHODS.get(call.func.attr)
+    if opener is None or qualified_name(call.func.value, aliases) not in PATH_CLASSES:
+        return opener
+    return replace(
+        opener,
+        mode=None if opener.mode is None else opener.mode + 1,
+        encoding=None if opener.encoding is None else opener.encoding + 1,
+    )
 
 
 def _opens_text(call: ast.Call, opener: TextOpener, method: bool) -> bool:
