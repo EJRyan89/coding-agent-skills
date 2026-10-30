@@ -482,11 +482,57 @@ class EntryPointTests(unittest.TestCase):
         self.assertIn("draft", ran.stdout)
 
 
-def test_a_closes_number_past_the_digit_limit_fails_by_name() -> None:
-    body = FILLED.replace("Closes #34", "Closes #1" + "0" * 5000)
+@pytest.mark.parametrize("line", ["Closes #1" + "0" * 5000, "This fixes #1" + "0" * 5000 + "."])
+def test_a_closing_number_past_the_digit_limit_fails_by_name(line: str) -> None:
+    body = FILLED.replace("Closes #34", line)
     with pytest.raises(pull_request.PullRequestError) as raised:
         pull_request.closed_issues(body)
-    assert f"a Closes line names an issue number of more than {whole_number.DIGIT_LIMIT} digits" == str(raised.value)
+    assert f"a closing reference names an issue number of more than {whole_number.DIGIT_LIMIT} digits" == str(
+        raised.value
+    )
+
+
+# GitHub closes an issue a closing reference names anywhere in the body, not only on a line that opens with one, so
+# each form is reported closed and refused until it is a `Closes #<n>` line of its own.
+PROSE_REFERENCES = "Closes #5\nThis also fixes #12.\n- Resolves #13\n* closes: #14\n> Fixes #15\n"
+
+
+def test_every_closing_reference_github_reads_is_reported_and_refused_unless_it_is_a_closes_line() -> None:
+    body = FILLED.replace("Closes #12\nCloses #34\n", PROSE_REFERENCES)
+    assert pull_request.closed_issues(body) == [5, 12, 13, 14, 15]
+    assert pull_request.body_problems(body, TEMPLATE) == [
+        "CLOSES_LINE 2 This also fixes #12.",
+        "CLOSES_LINE 3 - Resolves #13",
+        "CLOSES_LINE 4 * closes: #14",
+        "CLOSES_LINE 5 > Fixes #15",
+    ]
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "As before, this resolves o/r#7 too.",
+        "It fixes https://github.com/o/r/issues/7 as well.",
+        "1. Closed #7 with the rest.",
+        "| Fixed #7 | here |",
+        "Closes #7 and refactors.",
+    ],
+)
+def test_a_closing_reference_in_any_other_line_is_refused(prose: str) -> None:
+    body = FILLED.replace("Fixes the quoting of a title.", prose)
+    [problem] = pull_request.body_problems(body, TEMPLATE)
+    assert problem == f"CLOSES_LINE 4 {prose}"
+    assert 7 in pull_request.closed_issues(body)
+
+
+# Neither a reference in a comment, a number with no closing keyword, nor a keyword with no reference closes anything.
+@pytest.mark.parametrize(
+    "prose", ["<!-- fixes #7 -->", "The bug in #7 is fixed.", "Fixes the quoting that #7 found.", "prefixes #7"]
+)
+def test_text_that_closes_nothing_is_neither_reported_nor_refused(prose: str) -> None:
+    body = FILLED.replace("Fixes the quoting of a title.", prose)
+    assert pull_request.body_problems(body, TEMPLATE) == []
+    assert pull_request.closed_issues(body) == [12, 34]
 
 
 def test_an_issue_argument_past_the_digit_limit_is_not_an_issue_number() -> None:
