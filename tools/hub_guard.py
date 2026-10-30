@@ -1979,22 +1979,30 @@ def powershell_starts_script(word: str) -> bool:
 
 def powershell_directory(arguments: list[Word], cwd: Path | None) -> Path | None:
     """Where a pwsh started with these arguments in cwd starts: the directory -WorkingDirectory (-wd) names before its
-    script, read from cwd, or else cwd; None when the text does not settle it."""
+    script, read from cwd, or else cwd; None when the text does not settle it. pwsh takes the last -WorkingDirectory it
+    is given, and reads a leading ~ as home, as Set-Location does."""
     index = 0
+    directory = cwd
     while index < len(arguments):
         word = arguments[index]
         if word is None:
             return None  # it may be -WorkingDirectory
         if not powershell_switch(word) or powershell_starts_script(word):
-            return cwd
+            break
         if powershell_parameter(word, (("workingdirectory", "wo"), ("wd", "wd"))):
             value = arguments[index + 1] if index + 1 < len(arguments) else None
             if value is None:
                 return None
-            path = Path(platform_support.from_shell_path(value))
-            return path if path.is_absolute() else None if cwd is None else cwd / path
+            directory = home_path(value) or moved(cwd, value)
         index += 2 if powershell_takes_value(word) else 1
-    return cwd
+    return directory
+
+
+def home_path(value: str) -> Path | None:
+    """The path a PowerShell file system path with a leading ~ names, under home; None for any other."""
+    if value == "~" or value.startswith(("~/", "~\\")):
+        return Path.home() / value[2:]
+    return None
 
 
 def powershell_takes_value(word: str) -> bool:
@@ -2297,15 +2305,44 @@ def environment_names(paths: list[Word], literal: bool, known: Iterable[str] = (
 
 def defines_powershell_alias(name: str | None, arguments: list[Word]) -> bool:
     """Whether a PowerShell command defines an alias: a cmdlet that defines one, by its name or an alias of it, or one
-    that writes an item at a path on the alias: drive the text names.
+    that writes an item or its content at a path on the alias: drive or the Alias provider the text names.
 
     The tables sit in the function, not the module, so that they run in the tests that call the function rather than
     at import."""
     definers = {"set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"}
-    item_writers = {"set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi", "rename-item", "ren", "rni"}
-    if name in definers:
-        return True
-    return name in item_writers and any(word is not None and word.lower().startswith("alias:") for word in arguments)
+    return name in definers or writes_definition_drive(name, arguments, "alias")
+
+
+def writes_definition_drive(name: str | None, arguments: list[Word], drive: str) -> bool:
+    """Whether a PowerShell command writes an item, or an item's content, at a path on the alias: or function: drive
+    the text names, as alias:g, Alias::g, or Microsoft.PowerShell.Core\\Function::f: a definition a later word runs."""
+    writers = {"set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi", "rename-item", "ren", "rni"}
+    writers |= {"set-content", "sc", "add-content", "ac", "move-item", "mi", "move", "mv"}
+    return name in writers and any(word is not None and definition_drive(word) == drive for word in arguments)
+
+
+def definition_drive(path: str) -> str | None:
+    """The drive whose items are definitions a later word runs, "alias" or "function", that a PowerShell path or a
+    drive-qualified variable's path is on, by the drive or the provider; None for any other."""
+    match = re.match(r"^(?:(?:\\|Microsoft\.PowerShell\.Core\\)?(alias|function)::|(alias|function):)", path, re.I)
+    return None if match is None else (match.group(1) or match.group(2)).lower()
+
+
+def defined(drive: str) -> str:
+    """What a definition on the alias: or function: drive is, as a refusal names it."""
+    return {"alias": "an alias the command defines", "function": "a function the command defines from text"}[drive]
+
+
+def definition_provider(providers: list[Word] | None) -> bool:
+    """Whether New-PSDrive's -PSProvider may be the Alias or Function provider, under whose new drive a path the text
+    names is a definition: true when the text does not settle it."""
+    provider = (providers or [None])[0]
+    return provider is None or re.search(r"(?:^|\\)(?:alias|function)$", provider, re.I) is not None
+
+
+def function_name(name: str) -> str:
+    """The name PowerShell defines or calls a function by, lower-cased, without a scope such as global: or script:."""
+    return re.sub(r"^(?:global|script|local|private):", "", name, flags=re.IGNORECASE).lower()
 
 
 class PowerShellReader:
@@ -2321,7 +2358,7 @@ class PowerShellReader:
 
     def region(self, region: Region, session: Session) -> Session:
         if region.kind == "function":
-            session.functions[region.name.lower()] = region.children
+            session.functions[function_name(region.name)] = region.children
             return session
         if region.kind == "child":
             child = session.copy()
@@ -2348,6 +2385,12 @@ class PowerShellReader:
         if kind == "command":
             return self.command(event, session)
         if kind == "assigned":
+            # The reader reports every assignment with the variable's path.
+            path = str(event["path"])
+            drive = definition_drive(path)
+            if drive is not None:
+                # $alias:g = 'git' or $function:f = '...': a name a later word runs, which the reader cannot follow.
+                self.reading.cannot_read(f"{defined(drive)} (${{{path}}})")
             self.assigned(event, session)
         elif kind == "setVariable":
             variable = event.get("name")
@@ -2385,17 +2428,23 @@ class PowerShellReader:
         # The words the reader reports for each parameter, from which a path the text does not settle is judged.
         reported = {name.lower(): values for name, values in (event.get("parameters") or {}).items()}
         name, arguments = command_name(words[0]), words[1:]
-        if event.get("failed") and name is not None and name in session.functions:
+        function = None if name is None else function_name(name)
+        if event.get("failed") and function in session.functions:
             # A simple function takes the words the binder cannot bind into $args and runs, where an advanced one
             # runs nothing, so its body is read as a path that may run.
-            return join_sessions(session, self.call_function(name, session.copy()))
+            return join_sessions(session, self.call_function(function, session.copy()))
+        if function in session.functions:
+            # -WhatIf reaches only the cmdlets in the body that honour it; a native command such as git still runs.
+            return self.call_function(function, session)
         if event.get("failed") or event.get("whatIf"):
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
-        if name is not None and name in session.functions:
-            return self.call_function(name, session)
+        # A definition may stand for git in a later command, which the reader would take for another program.
         if defines_powershell_alias(name, arguments):
-            # An alias may stand for git in a later command, which the reader would take for another program.
-            self.reading.cannot_read(f"an alias the command defines ({name})")
+            self.reading.cannot_read(f"{defined('alias')} ({name})")
+        if writes_definition_drive(name, arguments, "function"):
+            self.reading.cannot_read(f"{defined('function')} ({name})")
+        if name in NEW_DRIVE_NAMES and definition_provider(parameters.get("psprovider")):
+            self.reading.cannot_read(f"a drive on the alias or function provider ({name})")
         if name in LOCATION_NAMES | PUSH_LOCATION_NAMES | POP_LOCATION_NAMES:
             return self.location(name, arguments, parameters, session)
         if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS:
@@ -2539,10 +2588,8 @@ def location_after(cwd: Path | None, named: bool, target: Word) -> Path | None:
         return Path.home()
     if target is None or target in {"-", "+"}:
         return None
-    if target == "~" or target.startswith(("~/", "~\\")):
-        # PowerShell's file system provider reads a leading ~ as home; the parser leaves it as text.
-        return Path.home() / target[2:]
-    return moved(cwd, target)
+    # PowerShell's file system provider reads a leading ~ as home; the parser leaves it as text.
+    return home_path(target) or moved(cwd, target)
 
 
 def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int, variables: Variables) -> None:
