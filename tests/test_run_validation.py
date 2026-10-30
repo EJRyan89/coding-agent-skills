@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import executable_locator
+import known_failures
 from git_client import MISSING_GIT
 from job_pool import Failure, Job, PoolResult, Retry
 from job_selection import MARKDOWN_SHELL_JOB, flatten
@@ -97,7 +98,7 @@ class KnownFailureIssuesOption(unittest.TestCase):
             with self.subTest(problems=problems):
                 out = io.StringIO()
                 with (
-                    mock.patch.object(run_validation.known_failures, "open_issue_problems", return_value=problems),
+                    mock.patch.object(known_failures, "open_issue_problems", return_value=problems),
                     mock.patch.object(run_validation, "tool_versions") as versions,
                     mock.patch.object(run_validation, "run_beside") as pool,
                 ):
@@ -114,7 +115,7 @@ class KnownFailureIssuesOption(unittest.TestCase):
             with self.subTest(other=other):
                 error = io.StringIO()
                 with (
-                    mock.patch.object(run_validation.known_failures, "open_issue_problems") as asked,
+                    mock.patch.object(known_failures, "open_issue_problems") as asked,
                     self.assertRaises(SystemExit) as raised,
                 ):
                     main(["--known-failure-issues", *other], errors=error)
