@@ -53,7 +53,8 @@ def _description(source_dir: Path, commit: str) -> str | None:
     # A tag name can hold U+0085 or U+2028, which str.strip() and str.splitlines() take for a space and a line end, so
     # git's answer is split on a newline alone and loses only the line end git wrote.
     lines = output_lines(described.rstrip("\r\n"))
-    if len(lines) != 1 or not lines[0]:
+    # output_lines gives no line for an empty answer, and one line of an answer that is never empty.
+    if len(lines) != 1:
         raise DeployError(f"{cannot}: git describe answered {flat_text(described)!r}, not one name")
     return lines[0]
 
