@@ -769,7 +769,8 @@ class CheckCommandTests(DeployerTestCase):
         (self.source / ".git").mkdir()
 
     def deployed_line(self, output: str) -> str:
-        return next(line for line in output.splitlines() if line.startswith("Deployed commit:"))
+        # On "\n" alone, as check prints its lines, since a name can hold U+2028.
+        return next(line for line in output.split("\n") if line.startswith("Deployed commit:"))
 
     def test_the_deployed_commit_is_described_from_the_source_checkout(self) -> None:
         self.record_commit()
@@ -806,6 +807,23 @@ class CheckCommandTests(DeployerTestCase):
         result = self.check(Machine(describe="v0.1.0", rev_parse_failure="fatal: bad object\n"))
         self.assertEqual(1, result.code, result.output)
         self.assertIn(": fatal: bad object\n", result.output)
+
+    def test_a_describe_answer_loses_only_the_line_end_git_wrote(self) -> None:
+        # Git ends its answer with "\n", or "\r\n" through a text-mode layer; every other character is the name's, a
+        # trailing U+2028 or letter included.
+        self.record_commit()
+        for answer, name in (
+            ("v1.0.0\r", "v1.0.0"),
+            (f"v1.0.0{chr(0x2028)}", f"v1.0.0{chr(0x2028)}"),
+            ("v1.0.0X", "v1.0.0X"),
+            (" v1.0.0 ", " v1.0.0 "),
+        ):
+            with self.subTest(answer=answer):
+                result = self.check(Machine(describe=answer))
+                self.assertEqual(0, result.code, result.output)
+                self.assertEqual(f"Deployed commit: {name} ({COMMIT})", self.deployed_line(result.output))
+        # A line end before the name is not removed, so an answer whose name starts on its second line is refused.
+        self.assertEqual(1, self.check(Machine(describe="\r\nv1.0.0")).code)
 
     def test_git_runs_within_the_tool_deadline_with_its_warnings_apart_from_its_answer(self) -> None:
         # A warning on stderr beside a describe that succeeds is no part of the name, since stderr is kept apart.

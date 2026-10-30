@@ -66,6 +66,7 @@ import os
 import re
 import sys
 import tokenize
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -535,16 +536,41 @@ def imported_names(module: ast.Module) -> set[str]:
 def converted_calls(
     change: FileChange, lines: list[str], added: list[int], imported: set[str]
 ) -> list[tuple[int, str]]:
-    """Each call one of `added` makes, by its line, through a name an import binds, that the lines it replaces did
-    not make: a call site routed through a shared helper, such as a write through `json_writer`."""
-    found: list[tuple[int, str]] = []
-    for line in added:
-        if line not in change.replaced:
+    """Each call one of `added` makes, by its line, through a name an import binds, to a callee the lines replacing a
+    removed block call more often than that block did: a call site routed through a shared helper, such as a write
+    through `json_writer`. Calls are counted as call sites, so converting one site beside another that already
+    called the helper still counts. The diff does not pair an added line with the line it replaced, so every site of
+    such a callee among the replacing lines is named, the unchanged one with the converted one."""
+    wanted = set(added)
+    found: set[tuple[int, str]] = set()
+    for run in replacing_runs(change):
+        if wanted.isdisjoint(run):
             continue
-        before = set(CALL.findall("\n".join(change.replaced[line])))
-        calls = sorted(set(CALL.findall(lines[line - 1])) - before)
-        found.extend((line, callee) for callee in calls if callee.split(".", 1)[0] in imported)
-    return found
+        sites = {line: CALL.findall(lines[line - 1]) for line in run}
+        before = Counter(CALL.findall("\n".join(change.replaced[run[0]])))
+        after = Counter(callee for calls in sites.values() for callee in calls)
+        grown = {callee for callee, count in after.items() if count > before[callee]}
+        found.update(
+            (line, callee)
+            for line, calls in sites.items()
+            if line in wanted
+            for callee in calls
+            if callee in grown and callee.split(".", 1)[0] in imported
+        )
+    return sorted(found)
+
+
+def replacing_runs(change: FileChange) -> list[list[int]]:
+    """Each run of added lines that directly follows one removed block, in line order. Every line of a run holds the
+    one tuple `_read_hunk` made for its block, so a run ends where the tuple does, even beside a block of equal text."""
+    runs: list[list[int]] = []
+    for line in sorted(change.replaced):
+        previous = runs[-1][-1] if runs else None
+        if previous == line - 1 and change.replaced[previous] is change.replaced[line]:
+            runs[-1].append(line)
+        else:
+            runs.append([line])
+    return runs
 
 
 def converted_entry(
