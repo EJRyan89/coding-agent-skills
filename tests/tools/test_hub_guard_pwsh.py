@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -192,3 +193,107 @@ class SpellingTests(unittest.TestCase):
         ):
             with self.subTest(word=word):
                 self.assertEqual(expected, hub_guard.powershell_takes_value(word))
+
+
+class WorkingDirectoryTests(unittest.TestCase):
+    """pwsh starts in the last -WorkingDirectory it is given, a leading ~ read as home, as Set-Location reads it."""
+
+    def test_the_last_working_directory_counts_and_a_leading_tilde_is_home(self) -> None:
+        start, home = Path("start").absolute(), Path("home").absolute()
+        with mock.patch.object(Path, "home", return_value=home):
+            for arguments, expected in (
+                (["-c", "x"], start),
+                (["-wd", "inner", "-c", "x"], start / "inner"),
+                (["-wd", "~", "-c", "x"], home),
+                (["-wd", "~/hub", "-c", "x"], home / "hub"),
+                (["-wd", "~\\hub", "-c", "x"], home / "hub"),
+                (["-wd", "~hub", "-c", "x"], start / "~hub"),
+                (["-wd", "one", "-wd", "two", "-c", "x"], start / "two"),
+                (["-wd", "~/hub", "-WorkingDirectory", "two", "-c", "x"], start / "two"),
+                (["-wd", "two", "-wd", "~/hub", "-c", "x"], home / "hub"),
+                (["-wd", "one", None, "-wd", "two", "-c", "x"], None),
+                (["-wd", "one", "-c", "x", "-wd", "two"], start / "one"),
+                (["-wd", "one", "-wd"], None),
+            ):
+                with self.subTest(arguments=arguments):
+                    self.assertEqual(expected, hub_guard.powershell_directory(list(arguments), start))
+
+
+class DefinitionTests(unittest.TestCase):
+    """The names a PowerShell command defines for a later word: aliases and functions, at a path on their drive or
+    provider, and functions under a scope."""
+
+    def test_a_path_on_the_alias_or_function_drive_or_provider_is_known_by_each_spelling(self) -> None:
+        for path, expected in (
+            ("alias:g", "alias"),
+            ("Alias:g", "alias"),
+            ("alias:", "alias"),
+            ("Alias::g", "alias"),
+            ("\\Alias::g", "alias"),
+            ("Microsoft.PowerShell.Core\\Alias::g", "alias"),
+            ("function:f", "function"),
+            ("Function::f", "function"),
+            ("microsoft.powershell.core\\function::f", "function"),
+            ("function:global:f", "function"),
+            ("env:GIT_DIR", None),
+            ("variable:x", None),
+            ("aliases:g", None),
+            ("C:\\alias:g", None),
+            ("Other\\Alias::g", None),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(expected, hub_guard.definition_drive(path))
+
+    def test_each_command_that_writes_a_definition_drive_is_known_by_each_of_its_names(self) -> None:
+        writers: tuple[str, ...] = ("set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi")
+        writers += (
+            "rename-item",
+            "ren",
+            "rni",
+            "set-content",
+            "sc",
+            "add-content",
+            "ac",
+            "move-item",
+            "mi",
+            "move",
+            "mv",
+        )
+        for name in writers:
+            for drive, path in (("alias", "Alias::g"), ("function", "function:f")):
+                with self.subTest(name=name, drive=drive):
+                    self.assertTrue(hub_guard.writes_definition_drive(name, [path, "git"], drive))
+                    self.assertFalse(hub_guard.writes_definition_drive(name, [path, "git"], "other"))
+                    self.assertFalse(hub_guard.writes_definition_drive(name, ["a.txt", None], drive))
+        self.assertFalse(hub_guard.writes_definition_drive("get-item", ["function:f"], "function"))
+        self.assertTrue(hub_guard.defines_powershell_alias("sc", ["alias:g", "git"]))
+        self.assertFalse(hub_guard.defines_powershell_alias("sc", ["function:g", "git"]))
+
+    def test_a_drive_on_the_alias_or_function_provider_is_known_unless_another_provider_is_named(self) -> None:
+        cases: tuple[tuple[list[hub_guard.Word] | None, bool], ...] = (
+            (["Alias"], True),
+            (["function"], True),
+            (["Microsoft.PowerShell.Core\\Alias"], True),
+            ([None], True),
+            (None, True),
+            (["FileSystem"], False),
+            (["Environment"], False),
+            (["Aliases"], False),
+        )
+        for providers, expected in cases:
+            with self.subTest(providers=providers):
+                self.assertEqual(expected, hub_guard.definition_provider(providers))
+
+    def test_a_function_is_named_without_its_scope(self) -> None:
+        for name, expected in (
+            ("f", "f"),
+            ("F", "f"),
+            ("global:f", "f"),
+            ("Script:F", "f"),
+            ("local:f", "f"),
+            ("private:f", "f"),
+            ("using:f", "using:f"),
+            ("global:global:f", "global:f"),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(expected, hub_guard.function_name(name))

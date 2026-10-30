@@ -16,7 +16,8 @@ using namespace System.Management.Automation.Language
 #                                                        words PowerShell's own binder gives each parameter, by
 #                                                        the name the command declares, an array's elements
 #                                                        apart; failed means the binder refused the command and
-#                                                        whatIf that -WhatIf is set, so that it runs nothing
+#                                                        whatIf that -WhatIf is set, so that it runs nothing,
+#                                                        unless it calls a function the command defines
 #   {"kind": "assigned", "path": path, "removed": bool,  a variable on a drive or provider, as in $env:NAME or
 #    "value": word}                                      ${Environment::NAME}, was assigned, as a foreach loop's
 #                                                        variable, or through PSVariable.Set; removed when $null
@@ -95,6 +96,11 @@ function Get-Binding([CommandAst] $Command) {
     $binding.failed = $result.BindingExceptions.Count -gt 0
     $bound = $result.BoundParameters
     $binding.whatIf = $bound.ContainsKey('WhatIf') -and $bound['WhatIf'].ConstantValue -eq $true
+    if (($binding.failed -or $binding.whatIf) -and -not (Test-Bindable $Command)) {
+        # A native program takes its words as they are: no binder refuses them, and -WhatIf is one of them.
+        $binding.failed = $false
+        $binding.whatIf = $false
+    }
     foreach ($name in $bound.Keys) {
         $value = $bound[$name].Value
         $elements = if ($value -is [ArrayLiteralAst]) { $value.Elements } else { @($value) }
@@ -107,6 +113,16 @@ function Get-Binding([CommandAst] $Command) {
         $binding.parameters[$name] = $words.ToArray()
     }
     $binding
+}
+
+# Whether PowerShell's binder decides what a command runs: one that does not resolve, through any alias, to a native
+# program. The binder neither refuses nor gives -WhatIf to a command the session does not have.
+function Test-Bindable([CommandAst] $Command) {
+    $resolved = Get-Command -Name $Command.GetCommandName() -ErrorAction Ignore | Select-Object -First 1
+    while ($resolved -is [Management.Automation.AliasInfo]) {
+        $resolved = $resolved.ResolvedCommand
+    }
+    $resolved -isnot [Management.Automation.ApplicationInfo]
 }
 
 # The lower-cased name a command is called by, without its directory or extension; $null when it is computed.
@@ -256,16 +272,42 @@ function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [Collections.Generic
         $arguments[1].VariablePath.UserPath -eq 'null'
         $settled = $name -is [StringConstantExpressionAst]
         $Events.Add([ordered]@{ kind = 'setVariable'; name = if ($settled) { $name.Value }; removed = $removed })
-    } elseif (($Node.Member.Value -eq 'Create' -and $Node.Expression.Extent.Text -match 'ScriptBlock\]$') -or
-        $Node.Member.Value -in @('NewScriptBlock', 'InvokeScript')) {
-        # A script block built from a string runs text the parser never saw as a command.
-        $Events.Add([ordered]@{ kind = 'unread'; text = "a script block built from a string ($($Node.Member.Value))" })
     } elseif ($Node.Member.Value -eq 'Set' -and $Node.Expression.Extent.Text -match 'PSVariable$') {
         if ($name -is [StringConstantExpressionAst]) {
             $Events.Add([ordered]@{ kind = 'assigned'; path = $name.Value; removed = $false })
         } else {
             $Events.Add([ordered]@{ kind = 'opaque' })
         }
+    }
+}
+
+# The type an expression names, through parentheses, as in ([scriptblock])::Create; $null when it names none or a
+# type PowerShell cannot resolve.
+function Get-NamedType([ExpressionAst] $Expression) {
+    while ($Expression -is [ParenExpressionAst] -and $Expression.Pipeline -is [PipelineAst] -and
+        $Expression.Pipeline.PipelineElements.Count -eq 1 -and
+        $Expression.Pipeline.PipelineElements[0] -is [CommandExpressionAst]) {
+        $Expression = $Expression.Pipeline.PipelineElements[0].Expression
+    }
+    if ($Expression -is [TypeExpressionAst]) {
+        $Expression.TypeName.GetReflectionType()
+    }
+}
+
+# The events of a member a command reaches, called or not, as in [scriptblock]::Create.Invoke(...). A member that
+# builds a script block from a string, or runs a string as commands, runs text the parser never saw as a command:
+# ScriptBlock's Create, by the type the receiver resolves to, and NewScriptBlock, InvokeScript, ExpandString,
+# AddScript, and AddCommand, by name. A method call goes on to Add-MethodEvent.
+function Add-MemberEvent([MemberExpressionAst] $Node, [Collections.Generic.List[object]] $Events) {
+    if ($Node.Member -isnot [StringConstantExpressionAst]) {
+        return
+    }
+    $member = $Node.Member.Value
+    $fromText = @('NewScriptBlock', 'InvokeScript', 'ExpandString', 'AddScript', 'AddCommand')
+    if ($member -in $fromText -or ($member -eq 'Create' -and (Get-NamedType $Node.Expression) -eq [scriptblock])) {
+        $Events.Add([ordered]@{ kind = 'unread'; text = "a script block built from a string ($member)" })
+    } elseif ($Node -is [InvokeMemberExpressionAst]) {
+        Add-MethodEvent $Node $Events
     }
 }
 
@@ -363,7 +405,7 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [int] $Limit, [Collecti
     # in; of two that end together, the inner one starts later and runs first.
     $nodes = $ast.FindAll({
             param($node)
-            $node -is [CommandAst] -or $node -is [AssignmentStatementAst] -or $node -is [InvokeMemberExpressionAst] -or
+            $node -is [CommandAst] -or $node -is [AssignmentStatementAst] -or $node -is [MemberExpressionAst] -or
             ($node -is [VariableExpressionAst] -and $node.Parent -is [ForEachStatementAst] -and
             [object]::ReferenceEquals($node.Parent.Variable, $node))
         }, $true) |
@@ -393,8 +435,8 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [int] $Limit, [Collecti
 
         if ($node -is [CommandAst]) {
             Add-CommandEvent $node $Depth $Limit $Events
-        } elseif ($node -is [InvokeMemberExpressionAst]) {
-            Add-MethodEvent $node $Events
+        } elseif ($node -is [MemberExpressionAst]) {
+            Add-MemberEvent $node $Events
         } else {
             Add-AssignmentEvent $node $Events
         }

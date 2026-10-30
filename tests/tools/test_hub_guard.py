@@ -2128,6 +2128,78 @@ class ContractTests(GuardTestCase):
         self.assertEqual("deny", self.powershell("sal g git; g switch feat/demo", self.hub))
         self.assertIn("could not read part of this command (an alias the command defines (sal))", self.reason)
 
+    def test_a_powershell_definition_or_script_block_in_any_spelling_is_refused_while_a_hub_is_guarded(self) -> None:
+        for command in (
+            "$alias:g = 'git'; g commit -m x",
+            "${alias:g} = 'git'; g commit -m x",
+            "${Alias::g} = 'git'; g commit -m x",
+            "Set-Content alias:g git; g commit -m x",
+            "Set-Item -Path Microsoft.PowerShell.Core\\Alias::g -Value git; g commit -m x",
+            "New-PSDrive -Name a -PSProvider Alias -Root ''; Set-Item a:g git; g commit -m x",
+            "Set-Item function:f 'git commit -m x'; f",
+            "$function:f = 'git commit -m x'; f",
+            "Set-Content function:f 'git commit -m x'; f",
+            "New-Item -Path function: -Name f -Value 'git commit -m x'; f",
+            "([scriptblock])::Create('git commit -m x').Invoke()",
+            "[scriptblock]::Create.Invoke('git commit -m x').Invoke()",
+            "[System.Management.Automation.ScriptBlock]::Create('git commit -m x').Invoke()",
+            "$ExecutionContext.InvokeCommand.NewScriptBlock.Invoke('git commit -m x').Invoke()",
+            "[powershell]::Create().AddScript('git commit -m x').Invoke()",
+            "[powershell]::Create().AddCommand('git').AddArgument('commit').Invoke()",
+            "$ExecutionContext.InvokeCommand.ExpandString('$(git commit -m x)')",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn("The guard could not read part of this command", self.reason)
+        # Reading a definition, or building a type other than a script block, defines nothing.
+        for command in ("Get-Item alias:g; git status", "[powershell]::Create(); git status", "$alias:g; git status"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.powershell(command, self.hub))
+
+    def test_a_function_called_with_whatif_or_defined_with_a_scope_runs_its_body(self) -> None:
+        for command in (
+            "function f { [CmdletBinding(SupportsShouldProcess)] param() git commit -m x }; f -WhatIf",
+            "function f { [CmdletBinding(SupportsShouldProcess)] param() git commit -m x }; f -wi",
+            "function global:f { git commit -m x }; f",
+            "function script:f { git commit -m x }; f extra",
+            "function global:f { git commit -m x }; global:f",
+            "function f { git commit -m x }; script:f",
+            "function Remove-Item { [CmdletBinding(SupportsShouldProcess)] param() git commit -m x }; "
+            "Remove-Item -WhatIf",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+
+    def test_a_native_program_runs_its_words_whatever_the_binder_makes_of_them(self) -> None:
+        # The binder refuses a repeated parameter and takes -WhatIf, but git, bash, and pwsh are handed their words.
+        for command in (
+            f"git -C '{self.tree}' -C '{self.hub}' commit -m x",
+            f"git -C '{self.hub}' commit -m x -WhatIf",
+            f"bash -c \"git -C '{self.hub}' commit -m x\" -c x",
+            f"pwsh -wd '{self.tree}' -wd '{self.hub}' -c 'git commit -m x'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(WRITES.format("commit"), self.reason)
+        # A cmdlet the binder refuses, or one given -WhatIf, still runs nothing.
+        self.assertIsNone(self.powershell(f"Set-Location -Path '{self.hub}' -Path x; git commit -m x", self.tree))
+        self.assertIsNone(self.powershell(f"Set-Location '{self.hub}' -WhatIf; git commit -m x", self.tree))
+
+    def test_pwsh_starts_where_its_last_working_directory_names_a_leading_tilde_read_as_home(self) -> None:
+        relative = self.hub.relative_to(self.root).as_posix()
+        environment = self.environment | {"USERPROFILE": str(self.root), "HOME": str(self.root)}
+        for tool in ("Bash", "PowerShell"):
+            for command, expected in (
+                (f"pwsh -wd '~/{relative}' -c 'git commit -m x'", "deny"),
+                (f"pwsh -wd '~\\{relative}' -c 'git commit -m x'", "deny"),
+                (f"pwsh -wd '{self.tree}' -wd '{self.hub}' -c 'git commit -m x'", "deny"),
+                (f"pwsh -wd '{self.hub}' -wd '{self.tree}' -c 'git commit -m x'", None),
+            ):
+                with self.subTest(tool=tool, command=command):
+                    event = {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(self.tree)}
+                    self.assertEqual(expected, self.decision(event, environment))
+
     def test_each_cmdlet_that_defines_a_powershell_alias_is_known_by_each_of_its_names(self) -> None:
         for name in ("set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"):
             with self.subTest(name=name):

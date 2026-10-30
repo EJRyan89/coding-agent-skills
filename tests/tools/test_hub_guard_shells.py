@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -254,6 +255,19 @@ class FunctionCallDifferentialTests(unittest.TestCase):
             ("function f { [CmdletBinding()] param() BODY }", "f"),
             ("function f { [CmdletBinding()] param() BODY }", "f extra"),
             ("function f { param([Parameter()] $a) BODY }", "f one two"),
+            # -WhatIf reaches only the cmdlets in an advanced function's body that honour it.
+            ("function f { [CmdletBinding(SupportsShouldProcess)] param() BODY }", "f -WhatIf"),
+            ("function f { [CmdletBinding(SupportsShouldProcess)] param() BODY }", "f -wi"),
+            ("function f { [CmdletBinding()] param() BODY }", "f -WhatIf"),
+            # A function that takes a cmdlet's name is the one called, and the binder reads -WhatIf by the cmdlet's.
+            ("function Remove-Item { [CmdletBinding(SupportsShouldProcess)] param() BODY }", "Remove-Item -WhatIf"),
+            # A scope in the definition is not part of the name the function is called by.
+            ("function global:f { BODY }", "f"),
+            ("function script:f { BODY }", "f extra"),
+            ("function local:f { BODY }", "f"),
+            ("function private:f { BODY }", "f"),
+            ("function Global:f { BODY }", "global:f"),
+            ("function f { BODY }", "script:f"),
         )
         for definition, call in forms:
             ran_script = f"{definition.replace('BODY', 'Write-Output BODY-RAN')}; {call}"
@@ -268,6 +282,68 @@ class FunctionCallDifferentialTests(unittest.TestCase):
                 self.assertEqual([], reading.unread)
                 if ran:
                     self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
+
+class PowerShellDefinitionDifferentialTests(unittest.TestCase):
+    """Each way PowerShell runs a name or text the parser never read as a command, run by pwsh with a marker for git,
+    is refused by the guard; and a native program is handed its words whatever the binder makes of them."""
+
+    def pwsh_output(self, script: str) -> str:
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if pwsh is None:
+            raise AssertionError("pwsh was not found on PATH; pwsh checks the guard's reading of definitions")
+        result = run_bounded([pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-c", script], 120, env=os.environ)
+        return result.stdout.decode("utf-8", "replace")
+
+    def test_each_definition_from_text_pwsh_runs_is_a_part_the_guard_cannot_read(self) -> None:
+        # Each command, with PROGRAM standing for git and ARG for its arguments.
+        forms = (
+            "$alias:g = 'PROGRAM'; g ARG",
+            "${alias:g} = 'PROGRAM'; g ARG",
+            "${Alias::g} = 'PROGRAM'; g ARG",
+            "Set-Content alias:g PROGRAM; g ARG",
+            "Set-Item -Path Microsoft.PowerShell.Core\\Alias::g -Value PROGRAM; g ARG",
+            "Set-Item -Path Alias::g -Value PROGRAM; g ARG",
+            "New-PSDrive -Name a -PSProvider Alias -Root '' | Out-Null; Set-Item a:g PROGRAM; g ARG",
+            "Set-Item function:f 'PROGRAM ARG'; f",
+            "$function:f = 'PROGRAM ARG'; f",
+            "${Function::f} = 'PROGRAM ARG'; f",
+            "Set-Content function:f 'PROGRAM ARG'; f",
+            "New-Item -Path function: -Name f -Value 'PROGRAM ARG' | Out-Null; f",
+            "[scriptblock]::Create('PROGRAM ARG').Invoke()",
+            "([scriptblock])::Create('PROGRAM ARG').Invoke()",
+            "[System.Management.Automation.ScriptBlock]::Create('PROGRAM ARG').Invoke()",
+            "[scriptblock]::Create.Invoke('PROGRAM ARG').Invoke()",
+            "$ExecutionContext.InvokeCommand.NewScriptBlock('PROGRAM ARG').Invoke()",
+            "$ExecutionContext.InvokeCommand.NewScriptBlock.Invoke('PROGRAM ARG').Invoke()",
+            "$ExecutionContext.InvokeCommand.InvokeScript('PROGRAM ARG')",
+            "[powershell]::Create().AddScript('PROGRAM ARG').Invoke()",
+            "[powershell]::Create().AddCommand('PROGRAM').AddArgument('ARG').Invoke()",
+            "$ExecutionContext.InvokeCommand.ExpandString('$(PROGRAM ARG)')",
+        )
+        for form in forms:
+            output = self.pwsh_output(form.replace("PROGRAM", "Write-Output").replace("ARG", "MARKER-RAN"))
+            text = form.replace("PROGRAM", "git").replace("ARG", "status")
+            reading = hub_guard.Reading(dict(os.environ), text)
+            hub_guard.read_powershell(text, None, reading, 0, {})
+            with self.subTest(form=form):
+                self.assertIn("MARKER-RAN", output)
+                self.assertTrue(
+                    reading.unread, "a definition or script block from text is a part the guard cannot read"
+                )
+
+    def test_a_native_program_runs_its_words_where_the_binder_refuses_them_or_takes_whatif(self) -> None:
+        # Each argument list, which pwsh hands a native program as written, and the binder refuses or reads -WhatIf in.
+        native = f"& '{sys.executable}' -c \"print('MARKER-RAN')\""
+        for arguments in ("-WhatIf", "-c x -c y", "-wi"):
+            output = self.pwsh_output(f"{native} {arguments}")
+            text = f"git status {arguments}"
+            reading = hub_guard.Reading(dict(os.environ), text)
+            events = hub_guard.powershell_events(text, reading, 0) or []
+            with self.subTest(arguments=arguments):
+                self.assertIn("MARKER-RAN", output)
+                [event] = [event for event in events if event["kind"] == "command"]
+                self.assertEqual((False, False), (event["failed"], event["whatIf"]))
 
 
 class StartDifferentialTests(unittest.TestCase):
@@ -306,16 +382,27 @@ class StartDifferentialTests(unittest.TestCase):
             start = Path(folder).resolve()
             (start / "inner").mkdir()
             script = "Write-Output (Get-Location).ProviderPath"
+            (start / "home" / "inner").mkdir(parents=True)
+            home = start / "home"
             forms = (
                 ("-c", script),
                 ("-wd", "inner", "-c", script),
                 ("-WorkingDirectory", str(start / "inner"), "-Command", script),
                 ("-NoProfile", "-wo", "inner", "-c", script),
+                # A leading ~ is home, by either separator, and the last -WorkingDirectory counts.
+                ("-wd", "~", "-c", script),
+                ("-wd", "~/inner", "-c", script),
+                ("-wd", "~\\inner", "-c", script),
+                ("-wd", str(start), "-wd", "inner", "-c", script),
+                ("-wd", "inner", "-wd", str(start), "-c", script),
+                ("-wd", "inner", "-WorkingDirectory", "~/inner", "-c", script),
             )
+            # pwsh takes home from USERPROFILE on Windows and HOME elsewhere, as Path.home() does.
+            environment = {**os.environ, "USERPROFILE": str(home), "HOME": str(home)}
             for words in forms:
-                result = run_bounded([pwsh, "-NoLogo", "-NonInteractive", *words], 120, cwd=start, env=os.environ)
+                result = run_bounded([pwsh, "-NoLogo", "-NonInteractive", *words], 120, cwd=start, env=environment)
                 ran = Path(result.stdout.decode("utf-8", "replace").strip())
-                with self.subTest(words=words, ran=ran):
+                with self.subTest(words=words, ran=ran), mock.patch.dict(os.environ, environment):
                     self.assertEqual(ran.resolve(), hub_guard.powershell_directory(list(words), start))
 
     if platform_support.WINDOWS:

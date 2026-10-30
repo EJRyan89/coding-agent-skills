@@ -324,8 +324,11 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
   parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
-  refuses, or one given `-WhatIf`, runs nothing, except a call to a function the command defines: a simple function
-  takes the words it declares no parameter for into `$args` and runs, so its body is read as a path that may run.
+  refuses, or one given `-WhatIf`, runs nothing, except a call to a function the command defines and a native program.
+  A function runs its body whatever `-WhatIf` says, since it reaches only the cmdlets that honour it, and a simple
+  function takes the words it declares no parameter for into `$args` and runs, so its body is read as a path that may
+  run; one defined with a scope, as `function global:f`, is called by its bare name and its scoped one. A native
+  program such as git is handed its words as they are, `-WhatIf` and a repeated option among them.
   `tools/hub_guard-powershell.ps1` only reports what the parser and
   binder found, in the order PowerShell would run it, and `tools/hub_guard.py` makes every decision. The guard
   follows `cd`, `chdir`, `sl`, and `Set-Location` (bare goes home, a leading `~` means home, `cd -` and `cd +` leave
@@ -360,7 +363,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   script the first word after all of its options and a `--`, as in `bash -c -e '<script>'`, and Windows PowerShell
   runs a leading word that names no parameter as `-Command`, as in `powershell '<script>'`, where `pwsh` runs it as a
   script file. Each nested shell is read as a process of its own that starts with the variables its parent exported,
-  in its parent's directory or the one `pwsh -WorkingDirectory` (`-wd`) names, read from there; its directory and
+  in its parent's directory or the one the last `pwsh -WorkingDirectory` (`-wd`) names, read from there with a
+  leading `~` as home; its directory and
   what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
@@ -396,9 +400,13 @@ command names. While one is, the guard refuses:
   timeout, past which Claude Code lets the command run, and a command either shell's reader fails on with an error
   of its own;
 - a shell alias the command defines, by Bash's `alias` with a value, or by PowerShell's `Set-Alias`, `New-Alias`,
-  `Import-Alias`, or an item cmdlet writing the `alias:` drive at a path the text names, and a script block
-  PowerShell builds from a string (`[scriptblock]::Create`, `NewScriptBlock`, `InvokeScript`), when the command names
-  git: a later word may then run git under another name, or text the parser never read as a command;
+  `Import-Alias`, an item or content cmdlet or an assignment such as `$alias:g = 'git'` writing the `alias:` drive or
+  the Alias provider at a path the text names, or a drive `New-PSDrive` makes on the Alias or Function provider; a
+  PowerShell function defined from text the same ways on the `function:` drive; and text PowerShell runs as commands
+  from a string (`[scriptblock]::Create`, by the type its receiver resolves to through parentheses, `NewScriptBlock`,
+  `InvokeScript`, `ExpandString`, `AddScript`, and `AddCommand`, each whether called or reached as a member, as in
+  `[scriptblock]::Create.Invoke(...)`), when the command names git: a later word may then run git under another name,
+  or text the parser never read as a command;
 - an alias that cannot be read, as above.
 
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
@@ -420,7 +428,10 @@ The hook sees the command text. It does not see:
 - git run indirectly: from a script or program (`bash script.sh`, `bash < script.sh`, `xargs`, `find -exec`, `make`,
   a Python script), through `Start-Process`, `cmd /c`, `pwsh -File`, or `pwsh -EncodedCommand`, from a `trap`, or by
   a program whose name is computed at run time;
-- an alias the `alias:` drive gains at a path the text does not settle, or one the shell's startup files define;
+- an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
+  shell's startup files define;
+- text run as commands through a type or method the text holds in a variable, as in `$t = [scriptblock]` then
+  `$t::Create(...)`;
 - shell redirection or other programs writing files;
 - what the shell's own startup files set, or a variable the Bash tool's shell holds that the hook's environment does
   not, or holds with another value;
