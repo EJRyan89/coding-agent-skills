@@ -165,8 +165,6 @@ ENVIRONMENT_REMOVERS = {"remove-item", "ri", "rm", "rmdir", "del", "erase", "rd"
 NEW_ITEM_NAMES = {"new-item", "ni"}
 RENAME_ITEM_NAMES = {"rename-item", "ren", "rni"}
 NEW_DRIVE_NAMES = {"new-psdrive", "ndr", "mount"}
-# What a definition on the alias: or function: drive is, as a refusal names it.
-DEFINED = {"alias": "an alias the command defines", "function": "a function the command defines from text"}
 # Options of env that take no value, and those that take the next word as one.
 ENV_FLAGS = {"-0", "--null", "-v", "--debug"}
 ENV_UNSET = {"-u", "--unset"}
@@ -2246,6 +2244,11 @@ def definition_drive(path: str) -> str | None:
     return None if match is None else (match.group(1) or match.group(2)).lower()
 
 
+def defined(drive: str) -> str:
+    """What a definition on the alias: or function: drive is, as a refusal names it."""
+    return "an alias the command defines" if drive == "alias" else "a function the command defines from text"
+
+
 def definition_provider(providers: list[Word] | None) -> bool:
     """Whether New-PSDrive's -PSProvider may be the Alias or Function provider, under whose new drive a path the text
     names is a definition: true when the text does not settle it."""
@@ -2298,10 +2301,12 @@ class PowerShellReader:
         if kind == "command":
             return self.command(event, session)
         if kind == "assigned":
-            drive = definition_drive(str(event.get("path", "")))
+            # The reader reports every assignment with the variable's path.
+            path = str(event["path"])
+            drive = definition_drive(path)
             if drive is not None:
                 # $alias:g = 'git' or $function:f = '...': a name a later word runs, which the reader cannot follow.
-                self.reading.cannot_read(f"{DEFINED[drive]} (${{{event.get('path')}}})")
+                self.reading.cannot_read(f"{defined(drive)} (${{{path}}})")
             self.assigned(event, session)
         elif kind == "setVariable":
             variable = event.get("name")
@@ -2351,9 +2356,9 @@ class PowerShellReader:
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
         # A definition may stand for git in a later command, which the reader would take for another program.
         if defines_powershell_alias(name, arguments):
-            self.reading.cannot_read(f"{DEFINED['alias']} ({name})")
+            self.reading.cannot_read(f"{defined('alias')} ({name})")
         if writes_definition_drive(name, arguments, "function"):
-            self.reading.cannot_read(f"{DEFINED['function']} ({name})")
+            self.reading.cannot_read(f"{defined('function')} ({name})")
         if name in NEW_DRIVE_NAMES and definition_provider(parameters.get("psprovider")):
             self.reading.cannot_read(f"a drive on the alias or function provider ({name})")
         if name in LOCATION_NAMES | PUSH_LOCATION_NAMES | POP_LOCATION_NAMES:

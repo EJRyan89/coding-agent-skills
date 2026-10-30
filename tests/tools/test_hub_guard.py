@@ -2151,10 +2151,29 @@ class ContractTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.hub))
                 self.assertIn("The guard could not read part of this command", self.reason)
-        # Reading a definition, or building a type other than a script block, defines nothing.
-        for command in ("Get-Item alias:g; git status", "[powershell]::Create(); git status", "$alias:g; git status"):
+        # The refusal names what was defined and how.
+        for command, named in (
+            ("$function:f = 'git commit -m x'; f", "a function the command defines from text (${function:f})"),
+            ("${Alias::g} = 'git'; g commit -m x", "an alias the command defines (${Alias::g})"),
+            ("Set-Item function:f 'git commit -m x'; f", "a function the command defines from text (set-item)"),
+            (
+                "New-PSDrive -Name a -PSProvider Alias -Root ''; git commit -m x",
+                "a drive on the alias or function provider (new-psdrive)",
+            ),
+        ):
             with self.subTest(command=command):
-                self.assertIsNone(self.powershell(command, self.hub))
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn(f"could not read part of this command ({named})", self.reason)
+        # Reading a definition, building a type other than a script block, or a drive on another provider defines
+        # nothing, so a commit in a worktree stays allowed.
+        for command in (
+            "Get-Item alias:g; git commit -m x",
+            "[powershell]::Create(); git commit -m x",
+            "$alias:g; git commit -m x",
+            f"New-PSDrive -Name a -PSProvider FileSystem -Root '{self.root}'; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.powershell(command, self.tree))
 
     def test_a_function_called_with_whatif_or_defined_with_a_scope_runs_its_body(self) -> None:
         for command in (
