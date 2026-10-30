@@ -12,7 +12,7 @@ import re
 
 from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line
 
-from deployer import discovery, platform_support, render, state_files
+from deployer import discovery, manifest, platform_support, render, state_files
 from deployer.errors import DeployError
 
 # An integer past the digit limit, which json.loads raises ValueError for, and lists nested past the recursion limit,
@@ -99,6 +99,17 @@ class StateFileTests(DeployerTestCase):
                 self.assertNotIn("Manifest is malformed", result.output)
                 self.assertNotIn("FAILED", result.output)
         self.assertIn(refusal, self.run_cli("check").output)
+
+    def test_a_manifest_holding_text_beyond_ascii_reads_as_utf_8_whatever_the_locale(self) -> None:
+        # The deployer escapes what it writes to ASCII, but a copy put back by hand may hold UTF-8 itself, which a
+        # locale's code page, such as Windows' cp1252 outside UTF-8 mode, would read as other characters.
+        self.deploy_ok("--all")
+        data = self.manifest()
+        source_dir = data["sources"][SOURCE_ID]["source_dir"] + "/Zoë Ünal checkout"
+        data["sources"][SOURCE_ID]["source_dir"] = source_dir
+        self.manifest_file.write_bytes((json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        loaded = manifest.load(self.manifest_file)
+        self.assertEqual(source_dir, loaded.data["sources"][SOURCE_ID]["source_dir"])
 
     def test_a_lone_surrogate_is_told_apart_from_json_that_is_malformed_otherwise(self) -> None:
         cases = [
