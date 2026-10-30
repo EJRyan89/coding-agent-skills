@@ -206,8 +206,6 @@ READING_SECONDS = 15
 # How much of the reader's output is kept: far more than the events of any command a tool call carries, and a reading
 # cut short is not JSON, so it is a command the guard cannot read rather than one read in part.
 POWERSHELL_OUTPUT_LIMIT = 1 << 22
-# The GitError kinds of a git call that did not run or finish: git is missing, could not start, or ran out of time.
-UNFINISHED_GIT = frozenset({"prerequisite", "execution", "timeout"})
 MENTIONS_GIT = re.compile(r"git", re.IGNORECASE)
 MENTIONS_WRITING_SUBCOMMAND = re.compile(
     r"\b(?:" + "|".join(map(re.escape, sorted(WRITING_SUBCOMMANDS | {FETCH}))) + r")\b", re.IGNORECASE
@@ -308,12 +306,6 @@ def git_builtins() -> frozenset[str]:
     return frozenset(result.stdout.split()) if result.returncode == 0 else frozenset()
 
 
-def git_answered(exc: GitError) -> bool:
-    """Whether git ran and finished, so that its error is an answer about the place, not one that git is missing,
-    could not start, or did not finish in time, which says nothing of it."""
-    return exc.kind not in UNFINISHED_GIT
-
-
 def hub_protected(path: Path) -> bool:
     """Whether path lies in the tracked surface of a guarded hub or anywhere in its git directory; ignored files such
     as local settings do not.
@@ -326,14 +318,14 @@ def hub_protected(path: Path) -> bool:
             try:
                 return guarded_hub_of_repository(directory) is not None
             except GitError as exc:
-                if not git_answered(exc):
+                if not exc.answered:
                     raise
                 return True
 
     try:
         hub = guarded_hub_at(normalized)
     except GitError as exc:
-        if not git_answered(exc):
+        if not exc.answered:
             raise
         return True
     if hub is None:

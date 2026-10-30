@@ -311,13 +311,13 @@ class UnreadableCheckoutFileTests(GuardTestCase):
             git_client.GitError("git rev-parse answered 3 lines for the git directory, not two"),
         )
         for failure in answered:
-            with self.subTest(failure=str(failure)), mock.patch.object(hub_guard.CLIENT, "output", side_effect=failure):
+            with self.subTest(failure=str(failure)), mock.patch.object(worktrees.CLIENT, "output", side_effect=failure):
                 self.assertEqual("deny", self.edit(target))
                 self.assertEqual(hub_guard.DENY_REASON, self.reason)
         kinds: tuple[git_client.GitErrorKind, ...] = ("prerequisite", "execution", "timeout")
         for kind in kinds:
             failure = git_client.GitError(f"git failed as {kind}", kind=kind)
-            with self.subTest(kind=kind), mock.patch.object(hub_guard.CLIENT, "output", side_effect=failure):
+            with self.subTest(kind=kind), mock.patch.object(worktrees.CLIENT, "output", side_effect=failure):
                 self.assertIsNone(self.edit(target))
                 self.assertIn(f"hub guard skipped: GitError: git failed as {kind}", self.stderr)
 
