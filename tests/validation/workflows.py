@@ -1241,8 +1241,9 @@ def uninstall_check_problems(workflow: str) -> list[str]:
 
 # What mutation.yml's jobs run. mutmut refuses Windows, so the select job, on Linux, installs the lock, which holds the
 # development dependencies and the mutation tools, with hash checking and wheels only, makes the mutants, and hands
-# them on as an artifact, with step outputs naming the legs that have mutants to run. Each leg installs the same lock,
-# and ShellCheck at validate.yml's pin, which the deployer's suites run: the Linux leg from the release's archive
+# them on as an artifact, with step outputs naming the legs that have mutants to run. Each leg checks out what its
+# platform's validation job does, since a suite run unmutated there reads main's history and tags, installs the same
+# lock, and ShellCheck at validate.yml's pin, which the deployer's suites run: the Linux leg from the release's archive
 # checked against its pinned digest, the Windows leg through Chocolatey, each refusing another version on PATH. Each
 # runs its platform's leg of the mutants, never mutmut, within its own cap (DEFAULT_MINUTES in tools/mutation_gate.py),
 # which sits well inside the job's time limit, and hands on its outcomes. The join, named as the gate and never as the
@@ -1290,7 +1291,7 @@ def _mutation_leg(platform: str, runner: str, shellcheck: tuple[str, list[str]])
         "if": f"needs.select.outputs.{leg} == 'true'",
         "runs-on": runner,
         "timeout-minutes": "60",
-        "checkout": {},
+        "checkout": {"fetch-depth": "0"},
         "python": MUTATION_LOCKED_PYTHON,
         "scripts": [install, MUTATION_SHELLCHECK_VERIFY, [MUTATION_INSTALL], [f"{MUTATION_GATE} leg mutation"]],
         "shells": [shell, "pwsh", None, None],
@@ -1410,6 +1411,26 @@ def mutation_pin_problems(workflow: str, validate: str) -> list[str]:
     return problems
 
 
+# Each mutation leg, by its job, and the job of validate.yml that runs the suites on the same platform.
+MUTATION_LEG_VALIDATION_JOBS = {"linux": "linux", "windows": "suite"}
+
+
+def _checkout_inputs(tree: Node, job: str) -> list[dict[str, Node]]:
+    return [_mapping(step, "with") for step in _steps(_mapping(tree, "jobs", job)) if _uses(step, "checkout")]
+
+
+def mutation_checkout_problems(workflow: str, validate: str) -> list[str]:
+    """Report each mutation leg whose checkout's inputs differ from those of the validate.yml job that runs the suites
+    on its platform, so a suite the leg runs unmutated reads the history, branches, and tags it passes with there."""
+    legs = read_workflow(workflow)
+    reviewed = read_workflow(validate)
+    return [
+        f"the {leg} job's checkout is {found!r}, not validate.yml's {job} job's {expected!r}"
+        for leg, job in MUTATION_LEG_VALIDATION_JOBS.items()
+        if (found := _checkout_inputs(legs, leg)) != (expected := _checkout_inputs(reviewed, job))
+    ]
+
+
 class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_verify_reports_read_the_logs_saved_by_their_own_steps(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
@@ -1480,6 +1501,7 @@ class WorkflowsPolicies(unittest.TestCase):
         self.assertEqual([], mutation_job_problems(workflow))
         validate = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "validate.yml").read_text(encoding="utf-8")
         self.assertEqual([], mutation_pin_problems(workflow, validate))
+        self.assertEqual([], mutation_checkout_problems(workflow, validate))
 
     def test_validate_workflow_reads_the_pull_requests_body_and_title_from_the_event_payload(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")

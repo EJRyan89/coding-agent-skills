@@ -32,6 +32,7 @@ from workflows import (
     leg_problems,
     linux_job_problems,
     linux_verify_log_problems,
+    mutation_checkout_problems,
     mutation_job_problems,
     mutation_pin_problems,
     mypy_cache_problems,
@@ -1430,7 +1431,7 @@ def mutation_leg(leg: str, runner: str, shellcheck: str) -> str:
     return (
         f"  {leg.casefold()}:\n    name: Mutation gate on {leg}\n    needs: select\n"
         f"    if: needs.select.outputs.{leg.casefold()} == 'true'\n    runs-on: {runner}\n    timeout-minutes: 60\n"
-        "    steps:\n      - uses: actions/checkout@abc\n"
+        "    steps:\n      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
         f"{MUTATION_SETUP}{shellcheck}{MUTATION_SHELLCHECK_VERIFY}"
         f"      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
         "      - uses: actions/download-artifact@abc\n        with:\n          name: mutation-mutants\n"
@@ -1657,4 +1658,51 @@ def test_the_mutation_legs_read_validates_shellcheck_pins() -> None:
 )
 def test_a_mutation_pin_off_validates_fails(mutation: str, validate: str, problem: str) -> None:
     problems = mutation_pin_problems(mutation + MUTATION, validate)
+    assert any(problem in found for found in problems), problems
+
+
+VALIDATE_CHECKOUTS = "jobs:\n" + "".join(
+    f"  {job}:\n    runs-on: {runner}\n    steps:\n      - uses: actions/checkout@abc\n        with:\n"
+    "          fetch-depth: 0\n      - name: Validate\n        run: python -B tests/run_validation.py\n"
+    for job, runner in (("suite", "windows-latest"), ("linux", "ubuntu-latest"))
+)
+LEG_CHECKOUT = "    steps:\n      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
+
+
+def test_the_mutation_legs_check_out_what_the_validation_legs_do() -> None:
+    assert mutation_checkout_problems(MUTATION, VALIDATE_CHECKOUTS) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "validate", "problem"),
+    [
+        # A suite the legs run unmutated reads main's history, as the silent-revert suite's replay does, so shallow
+        # legs fail it where Validation passes it.
+        pytest.param(
+            MUTATION.replace(LEG_CHECKOUT, "    steps:\n      - uses: actions/checkout@abc\n"),
+            VALIDATE_CHECKOUTS,
+            "the linux job's checkout is [{}], not validate.yml's linux job's [{'fetch-depth': '0'}]",
+            id="shallow legs",
+        ),
+        pytest.param(
+            MUTATION.replace(LEG_CHECKOUT, LEG_CHECKOUT.replace("0", "1")),
+            VALIDATE_CHECKOUTS,
+            "the windows job's checkout is [{'fetch-depth': '1'}], not validate.yml's suite job's",
+            id="another depth",
+        ),
+        pytest.param(
+            MUTATION,
+            VALIDATE_CHECKOUTS.replace("fetch-depth: 0\n", "fetch-depth: 0\n          fetch-tags: true\n", 1),
+            "not validate.yml's suite job's [{'fetch-depth': '0', 'fetch-tags': 'true'}]",
+            id="validation fetching more",
+        ),
+        pytest.param(
+            MUTATION, VALIDATE_CHECKOUTS.replace("  linux:", "  ubuntu:"), "validate.yml's linux job's []", id="no job"
+        ),
+    ],
+)
+def test_a_mutation_leg_checking_out_otherwise_than_validation_fails(
+    mutation: str, validate: str, problem: str
+) -> None:
+    problems = mutation_checkout_problems(mutation, validate)
     assert any(problem in found for found in problems), problems
