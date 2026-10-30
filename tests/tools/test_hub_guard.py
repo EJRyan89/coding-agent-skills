@@ -714,6 +714,18 @@ class ReadingBoundTests(GuardTestCase):
                 if expected is not None:
                     self.assertIn("ReadingTimeout: the guard did not finish reading it within 15 seconds", self.reason)
 
+    def test_a_reading_time_that_runs_out_after_the_lookups_finish_with_no_hub_in_view_is_allowed_with_a_note(
+        self,
+    ) -> None:
+        # Every place was looked up and none is a guarded hub's, so a timeout in judging leaves no hub in view.
+        outside = self.root / "outside"
+        outside.mkdir()
+        environment = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        timeout = hub_guard.ReadingTimeout("the guard did not finish reading it within 15 seconds")
+        with mock.patch.object(hub_guard, "denied", side_effect=timeout):
+            self.assertIsNone(self.decision(self.event("git status", outside), environment))
+        self.assertIn("hub guard skipped: ReadingTimeout: the guard did not finish reading it", self.stderr)
+
     def test_a_lookup_while_judging_ends_with_the_reading_time(self) -> None:
         # The judge's look at the clock before the call is in time; the hub lookup the call then makes is not.
         reading = hub_guard.read_command("Bash", "git status", self.hub, self.environment)
