@@ -50,10 +50,12 @@ def _description(source_dir: Path, commit: str) -> str | None:
         raise DeployError(f"{cannot}: {reason}", "Put right what Git reports in the checkout, then retry.") from error
     except OSError as exc:
         raise DeployError(f"{cannot}: {exc.strerror or exc}", "Check that Git runs, then retry.") from exc
-    lines = described.strip().splitlines()
-    if len(lines) != 1:
+    # A tag name can hold U+0085 or U+2028, which str.strip() and str.splitlines() take for a space and a line end, so
+    # git's answer is split on a newline alone and loses only the line end git wrote.
+    lines = output_lines(described.rstrip("\r\n"))
+    if len(lines) != 1 or not lines[0]:
         raise DeployError(f"{cannot}: git describe answered {flat_text(described)!r}, not one name")
-    return lines[0].strip()
+    return lines[0]
 
 
 def head_commit(source_dir: Path) -> str | None:
