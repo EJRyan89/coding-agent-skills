@@ -551,7 +551,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   makes that an intermittent failure.
 - **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_reader_that_ends_early`
 - **Search for:** `| grep -q`, `| grep -m`, or `| head` in any form, `-n`, `-c`, `-1`, or alone, in a `.sh` file
-  that runs `set -o pipefail` or `set -euo pipefail`.
+  that runs `set -o pipefail` or `set -euo pipefail`; the reader also in a `{ ...; }` or `( ... )` group after the pipe,
+  in a `$(...)` or backtick substitution, by a path such as `/usr/bin/head`, or behind `env`, `exec`, `timeout`, or
+  `command`, and `head` whose last count is positive, as in `head -n -1 -n 1`.
 - **Examples:** #1557, #1602
 
 ### A program whose status is the verdict starts with no shell above it

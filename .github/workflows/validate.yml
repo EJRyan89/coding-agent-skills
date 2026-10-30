@@ -34,11 +34,9 @@ jobs:
     name: Windows shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}
     runs-on: windows-latest
     timeout-minutes: 30
-    # Reading the issues lets the pull request checks' known-failure check ask whether each entry's issue is open; the
-    # token reaches only the step that runs them.
+    # The legs read the checkout and nothing else: no step here is given the token, so no suite holds it.
     permissions:
       contents: read
-      issues: read
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +51,8 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # No later step needs git's credential, so the checkout stores none for them to read.
+          persist-credentials: false
           # Validation compares with the base branch to find documentation-only changes; without its history it
           # cannot tell and runs every suite.
           fetch-depth: 0
@@ -161,8 +161,6 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           VALIDATION_MYPY_CACHE: ${{ runner.temp }}/mypy-cache
-          # The pull request checks ask gh whether each known failure's issue is open.
-          GH_TOKEN: ${{ github.token }}
         run: |
           # Outside a pull request there is no base to compare with, so run every suite.
           $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)
@@ -205,10 +203,9 @@ jobs:
     name: Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # As the Windows legs: the known-failure check reads whether each entry's issue is open.
+    # As the Windows legs: the checkout and nothing else, and no step is given the token.
     permissions:
       contents: read
-      issues: read
     strategy:
       fail-fast: false
       matrix:
@@ -222,6 +219,8 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # No later step needs git's credential, so the checkout stores none for them to read.
+          persist-credentials: false
           # As on the Windows legs: the base branch tells a documentation-only change, and the tags the upgrade notes.
           fetch-depth: 0
 
@@ -323,8 +322,6 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           VALIDATION_MYPY_CACHE: ${{ runner.temp }}/mypy-cache
-          # The pull request checks ask gh whether each known failure's issue is open.
-          GH_TOKEN: ${{ github.token }}
           # More workers than the runner's four vCPUs, since most Linux jobs wait on Git and other processes: it cut the
           # legs' summed seconds by about a fifth with no retry or timeout, where the Windows legs gained nothing.
           VALIDATION_JOBS: '6'
@@ -345,13 +342,41 @@ jobs:
           python @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+  # The one check that reads GitHub, run alone: it asks gh whether each issue the malformed-input known failures and
+  # pending readers name is open. It is the only job given the run's token, and its one step that runs anything starts no suite, so the
+  # token reaches that query and nothing else.
+  known-failures:
+    name: Known-failure issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No later step needs git's credential, so the checkout stores none for them to read.
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.11'
+
+      - name: Ask whether each known failure's issue is open
+        env:
+          # gh reads the token from here; this step's command is the only one given it.
+          GH_TOKEN: ${{ github.token }}
+        run: python -B tests/run_validation.py --known-failure-issues
+
   # Branch protection requires the single check named `Validation`, this job's name, so every leg on each platform
   # reports through this job: a matrix job's result is success only when every one of its legs succeeded. It runs
   # when a leg fails, since a skipped required check would count as passing.
   validate:
     name: Validation
     if: ${{ !cancelled() }}
-    needs: [suite, linux]
+    needs: [suite, linux, known-failures]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -359,7 +384,9 @@ jobs:
         env:
           WINDOWS: ${{ needs.suite.result }}
           LINUX: ${{ needs.linux.result }}
+          ISSUES: ${{ needs.known-failures.result }}
         run: |
-          echo "Windows legs: $WINDOWS; Linux legs: $LINUX"
+          echo "Windows legs: $WINDOWS; Linux legs: $LINUX; known-failure issues: $ISSUES"
           test "$WINDOWS" = success
           test "$LINUX" = success
+          test "$ISSUES" = success

@@ -5,13 +5,17 @@ format, and a reader that fails a case today is listed in tests/malformed_input/
 that fixes it, never marked as an expected failure. The suite fails a listed case that now passes, so the fix removes
 its entry, and an unlisted case that fails, so the list never grows in silence. This module holds the list itself: each
 entry names its reader, its case, and its issue, once, in order. A pull request that closes an issue an entry still
-names is refused, in every form GitHub closes it by, since the issue would close while its case still fails; the pull
-request that fixes the reader removes the entry with it. A pull request check also asks GitHub, through gh, that each
-issue an entry names is open, and asks nothing while the list is empty; a gh that cannot answer fails the check.
+names is refused, in every form GitHub closes it by, in its title or its body, since the issue would close while its
+case still fails; the pull request that fixes the reader removes the entry with it. tests/malformed_input/readers.py's
+PENDING, each reader no table holds yet with the issue whose pull request adds it, is held to the same two rules.
+`tests/run_validation.py --known-failure-issues`, a run of its own that runs no suite, also asks GitHub, through gh,
+that each issue either list names is an open issue, never a pull request, and asks nothing while both are empty; a gh
+that cannot answer fails it.
 """
 
 from __future__ import annotations
 
+import ast
 import unittest
 from dataclasses import dataclass
 from functools import partial
@@ -22,14 +26,18 @@ from closing_references import closing_references
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_remote import github_repository
 from markdown_sections import HTML_COMMENT
-from validation_support import REPOSITORY_ROOT, PullRequestChecks
+from validation_support import REPOSITORY_ROOT, PullRequestChecks, UnreadablePython, parse_python
 
 from tools.release_notes import ReleaseNotesError, git_output
 
 KNOWN_FAILURES = Path("tests") / "malformed_input" / "known_failures.json"
 ENTRY_KEYS = ("reader", "case", "issue")
-# The state gh reports for an open issue.
+# The table of readers owed a reader-table entry, each with the issue whose pull request adds it, and its name there.
+PENDING_MODULE = Path("tests") / "malformed_input" / "readers.py"
+PENDING = "PENDING"
+# The state gh reports for an open issue, and what a pull request's URL holds where an issue's holds /issues/.
 OPEN = "OPEN"
+PULL_PATH = "/pull/"
 
 
 @dataclass(frozen=True, order=True)
@@ -87,6 +95,80 @@ def known_failure_problems(root: Path) -> list[str]:
     return problems
 
 
+@dataclass(frozen=True)
+class OwedIssue:
+    """An issue a list names as the one whose pull request ends what it lists: its number, the list, and what the list
+    says is owed under it."""
+
+    issue: int
+    source: str
+    owed: str
+
+
+def read_pending(path: Path) -> dict[str, int]:
+    """The PENDING table a readers module assigns: each reader's name and its issue, read from the syntax tree, never
+    run; KnownFailuresUnreadable when the module assigns none, or one that is not a literal dict of names to positive
+    issue numbers."""
+    try:
+        tree = parse_python(path)
+    except (OSError, UnreadablePython) as error:
+        raise KnownFailuresUnreadable(f"cannot be read: {error}") from error
+    values = [
+        node.value
+        for node in tree.body
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and node.value is not None
+        and any(
+            isinstance(target, ast.Name) and target.id == PENDING
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        )
+    ]
+    if len(values) != 1:
+        raise KnownFailuresUnreadable(f"must assign {PENDING} once at module level")
+    try:
+        table = ast.literal_eval(values[0])
+    except ValueError as error:
+        raise KnownFailuresUnreadable(f"must assign {PENDING} a literal dict") from error
+    if not isinstance(table, dict) or not all(
+        isinstance(name, str) and isinstance(issue, int) and not isinstance(issue, bool) and issue > 0
+        for name, issue in table.items()
+    ):
+        raise KnownFailuresUnreadable(f"must map each name in {PENDING} to a positive issue number")
+    return table
+
+
+def pending_problems(root: Path) -> list[str]:
+    """Why the PENDING table cannot be read, or nothing."""
+    try:
+        read_pending(root / PENDING_MODULE)
+    except KnownFailuresUnreadable as error:
+        return [f"{PENDING_MODULE.as_posix()} {error}"]
+    return []
+
+
+def owed_issues(root: Path) -> list[OwedIssue]:
+    """Each issue the known-failure list and the PENDING table name, with what each still lists under it; a list that
+    cannot be read adds nothing, since known_failure_problems and pending_problems name it."""
+    owed: list[OwedIssue] = []
+    try:
+        entries = read_known_failures(root / KNOWN_FAILURES)
+    except KnownFailuresUnreadable:
+        entries = []
+    owed += [
+        OwedIssue(entry.issue, KNOWN_FAILURES.as_posix(), f"lists {entry.reader} failing case {entry.case}")
+        for entry in entries
+    ]
+    try:
+        pending = read_pending(root / PENDING_MODULE)
+    except KnownFailuresUnreadable:
+        pending = {}
+    owed += [
+        OwedIssue(issue, f"{PENDING_MODULE.as_posix()}'s {PENDING}", f"names {reader} as owed its table entry")
+        for reader, issue in sorted(pending.items())
+    ]
+    return owed
+
+
 def closed_issues(body: str, repository: str | None) -> set[int]:
     """The issues of `repository`, `owner/name`, a pull request body closes when it merges, in every form GitHub
     reads, outside an HTML comment; with no repository known, every reference counts, so none is missed. A number
@@ -106,58 +188,60 @@ def checkout_repository(root: Path) -> str | None:
         return None
 
 
-def closed_known_failure_problems(root: Path, body: str | None) -> list[str]:
-    """Each issue the body closes that a known failure still names, with the case that would go on failing."""
-    if body is None:
+def closed_known_failure_problems(root: Path, body: str | None, title: str | None = None) -> list[str]:
+    """Each issue the pull request closes, by its title or its body, since the squash commit carries both and GitHub
+    closes an issue either names, that a known failure or a PENDING reader still names, with what is still owed."""
+    if body is None and title is None:
         return []
-    try:
-        entries = read_known_failures(root / KNOWN_FAILURES)
-    except KnownFailuresUnreadable:
-        # known_failure_problems names the unreadable list; this check has nothing to compare.
+    owed = owed_issues(root)
+    if not owed:
         return []
-    if not entries:
-        return []
-    closing = closed_issues(body, checkout_repository(root))
+    text = "\n".join(part for part in (title, body) if part is not None)
+    closing = closed_issues(text, checkout_repository(root))
     return [
-        f"the pull request closes #{entry.issue}, but {KNOWN_FAILURES.as_posix()} still lists {entry.reader} failing "
-        f"case {entry.case} under it; fix the reader and remove the entry, or do not close the issue"
-        for entry in entries
-        if entry.issue in closing
+        f"the pull request closes #{item.issue}, but {item.source} still {item.owed} under it; finish that work and "
+        "remove the entry, or do not close the issue"
+        for item in owed
+        if item.issue in closing
     ]
 
 
-def open_issue_problems(root: Path, body: str | None, client: GitHubClient | None = None) -> list[str]:
-    """Each issue a known failure names that GitHub does not say is open, in a pull request check; none while the
-    list is empty, which asks GitHub nothing. A gh that cannot answer, or a checkout whose origin names no GitHub
-    repository, is a problem, never an open issue."""
-    if body is None:
-        return []
-    try:
-        entries = read_known_failures(root / KNOWN_FAILURES)
-    except KnownFailuresUnreadable:
-        # known_failure_problems names the unreadable list; this check has nothing to ask about.
-        return []
-    if not entries:
+def open_issue_problems(root: Path, client: GitHubClient | None = None) -> list[str]:
+    """Each issue the known-failure list or the PENDING table names that GitHub does not report as an open issue: one
+    in another state, or a pull request, which gh's `issue view` answers for as well, and whose URL holds /pull/; none
+    while both are empty, which asks GitHub nothing. A gh that cannot answer, or a checkout whose origin names no
+    GitHub repository, is a problem, never an open issue. Only `tests/run_validation.py --known-failure-issues` runs it,
+    so the token gh reads reaches no suite."""
+    owed = owed_issues(root)
+    if not owed:
         return []
     repository = checkout_repository(root)
     if repository is None:
         return [
-            f"{KNOWN_FAILURES.as_posix()} names issues, but the checkout's origin names no GitHub repository, so the "
+            f"{owed[0].source} names issues, but the checkout's origin names no GitHub repository, so the "
             "known-failure check cannot ask whether they are open"
         ]
     client = client or GitHubClient(runner=partial(subprocess_runner, cwd=root))
     problems: list[str] = []
-    for issue in sorted({entry.issue for entry in entries}):
+    for issue in sorted({item.issue for item in owed}):
+        sources = sorted({item.source for item in owed if item.issue == issue})
+        named = f"{' and '.join(sources)} {'name' if len(sources) > 1 else 'names'} #{issue}"
         try:
-            answer = client.json(["issue", "view", str(issue), "--repo", repository, "--json", "state"])
+            answer = client.json(["issue", "view", str(issue), "--repo", repository, "--json", "state,url"])
         except GitHubError as error:
             problems.append(f"the known-failure check cannot ask GitHub whether #{issue} is open: {error}")
             continue
         state = answer.get("state") if isinstance(answer, dict) else None
-        if state != OPEN:
+        url = answer.get("url") if isinstance(answer, dict) else None
+        if not isinstance(url, str) or PULL_PATH in url:
             problems.append(
-                f"{KNOWN_FAILURES.as_posix()} names #{issue}, which GitHub reports as {state}, not {OPEN}; a known "
-                "failure names the open issue that fixes it"
+                f"{named}, which GitHub reports as a pull request or without its URL ({url}), not an issue; each "
+                "names the open issue whose pull request ends what it lists"
+            )
+        elif state != OPEN:
+            problems.append(
+                f"{named}, which GitHub reports as {state}, not {OPEN}; each names the open issue whose pull request "
+                "ends what it lists"
             )
     return problems
 
@@ -166,10 +250,15 @@ class KnownFailurePolicies(unittest.TestCase):
     def test_the_known_failure_list_names_each_case_once_in_order_with_its_issue(self) -> None:
         self.assertEqual([], known_failure_problems(REPOSITORY_ROOT))
 
+    def test_the_pending_table_is_a_literal_this_module_reads(self) -> None:
+        self.assertEqual([], pending_problems(REPOSITORY_ROOT))
+
 
 class KnownFailurePullRequestPolicies(PullRequestChecks):
     def test_the_pull_request_closes_no_issue_a_known_failure_still_names(self) -> None:
-        self.assertEqual([], closed_known_failure_problems(REPOSITORY_ROOT, self.pull_request.body_text()))
-
-    def test_each_issue_a_known_failure_names_is_open(self) -> None:
-        self.assertEqual([], open_issue_problems(REPOSITORY_ROOT, self.pull_request.body_text()))
+        self.assertEqual(
+            [],
+            closed_known_failure_problems(
+                REPOSITORY_ROOT, self.pull_request.body_text(), self.pull_request.title_text()
+            ),
+        )
