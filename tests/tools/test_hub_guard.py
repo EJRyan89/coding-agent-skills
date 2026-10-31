@@ -843,16 +843,18 @@ class PlaceLookupTests(GuardTestCase):
                     self.assertNotIn("hub guard skipped", self.stderr)
             with self.subTest(label, order="alone"), mock.patch.object(worktrees, "git", side_effect=git):
                 self.assertEqual("deny", self.bash(other, self.outside, self.unshared))
-            reading = hub_guard.read_command("Bash", f"{hub_call}; {other}", self.outside, self.unshared)
-            found: set[Path] = set()
-            with self.subTest(label, order="found"):
-                with (
-                    mock.patch.dict(os.environ, self.unshared, clear=True),
-                    mock.patch.object(worktrees, "git", side_effect=git),
-                    self.assertRaises(git_client.GitError),
-                ):
-                    hub_guard.reached_hubs(reading, found)
-                self.assertEqual({self.hub}, {Path(os.path.realpath(hub)) for hub in found})
+            # Every place is looked up, before the failing one and after it, before the error is raised.
+            for order, command in (("found first", f"{hub_call}; {other}"), ("found last", f"{other}; {hub_call}")):
+                reading = hub_guard.read_command("Bash", command, self.outside, self.unshared)
+                found: set[Path] = set()
+                with self.subTest(label, order=order):
+                    with (
+                        mock.patch.dict(os.environ, self.unshared, clear=True),
+                        mock.patch.object(worktrees, "git", side_effect=git),
+                        self.assertRaises(git_client.GitError),
+                    ):
+                        hub_guard.reached_hubs(reading, found)
+                    self.assertEqual({self.hub}, {Path(os.path.realpath(hub)) for hub in found})
         self.assertIsNone(self.bash(f'git -C "{self.tree.as_posix()}" status', self.outside, self.unshared))
 
     def test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git(self) -> None:
@@ -909,12 +911,14 @@ class PlaceLookupTests(GuardTestCase):
             for path in (self.hub, self.tree / "README.md", self.outside, self.root / "missing" / "deeper"):
                 with self.subTest(path=path):
                     self.assertIsNone(hub_guard.git_directory_holding(path))
-            answers = ("true\n", "true\n/a\n/b\n")
-            for answer in answers:
+            answers = (("true\n", 1), ("true\n/a\n/b\n", 3))
+            for answer, count in answers:
                 with (
                     self.subTest(answer=answer),
                     mock.patch.object(worktrees.CLIENT, "output", return_value=answer),
-                    self.assertRaises(git_client.GitError),
+                    self.assertRaisesRegex(
+                        git_client.GitError, f"answered {count} lines for the git directory holding"
+                    ),
                 ):
                     hub_guard.git_directory_holding(self.hub / ".git")
             failure = git_client.GitError("git could not read it", returncode=128)
@@ -923,6 +927,23 @@ class PlaceLookupTests(GuardTestCase):
                 self.assertRaises(git_client.GitError),
             ):
                 hub_guard.git_directory_holding(self.hub / ".git")
+            # Its git call is given what is left of the reading time, as every lookup's is.
+            with (
+                mock.patch.object(hub_guard, "reading_clock", return_value=100.0),
+                hub_guard.lookups_within(103.0),
+                mock.patch.object(worktrees.CLIENT, "output", wraps=worktrees.CLIENT.output) as output,
+            ):
+                hub_guard.git_directory_holding(self.hub / ".git")
+            self.assertEqual([3.0], [call.kwargs["timeout"] for call in output.call_args_list])
+
+    def test_a_hub_a_named_place_reaches_is_in_view_for_a_place_the_text_does_not_settle(self) -> None:
+        # The session starts outside every repository, so only the named place brings the hub into view, and the
+        # unsettled place is refused only while one is.
+        unsettled = 'cd "$NOT_SET_HERE" && git commit -m x'
+        self.assertIsNone(self.bash(unsettled, self.outside, self.unshared))
+        command = f'git -C "{self.hub.as_posix()}" status; {unsettled}'
+        self.assertEqual("deny", self.bash(command, self.outside, self.unshared))
+        self.assertIn("The guard could not tell where `git commit` runs", self.reason)
 
 
 def same(left: Path, right: Path) -> bool:
