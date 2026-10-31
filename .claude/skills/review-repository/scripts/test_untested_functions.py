@@ -168,6 +168,34 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
         self.assertIn("converted calls json_writer.write at line 5, hunk", written)
 
+    def test_removing_one_site_of_the_helper_and_converting_another_opens_the_route(self) -> None:
+        # The helper's count is unchanged, one site gone and one converted, so the pairing is ambiguous.
+        test = {"tests/test_report.py": "import report\n\nassert report.save\n"}
+        source = "import json\nimport json_writer\n\n\ndef save(first, second, a, b):\n"
+        source += '    json_writer.write(first, a)\n    second.write_text(json.dumps(b), encoding="utf-8")\n'
+        converted = "import json\nimport json_writer\n\n\ndef save(first, second, a, b):\n"
+        converted += "    json_writer.write(second, b)\n"
+        code, out, written = self.run_condition(
+            {"tools/report.py": source, **test}, {"tools/report.py": converted, **test}
+        )
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(
+            written.startswith(
+                "CONVERTED tools/report.py:5 function save, a test names it, converted calls json_writer.write at "
+                "line 6, hunk @@ -3,5 +3,4 @@, tests of its file tests/test_report.py\n"
+            ),
+            written,
+        )
+        # A removed site's text the replacing lines keep, beside another call dropped, is no converted site.
+        moved = source.replace(
+            '    json_writer.write(first, a)\n    second.write_text(json.dumps(b), encoding="utf-8")\n',
+            "    second.touch()\n    json_writer.write(first, a)\n",
+        )
+        self.assertEqual(
+            (1, "UNTESTED 0 given=0\n", ""),
+            self.run_condition({"tools/report.py": source, **test}, {"tools/report.py": moved, **test}),
+        )
+
     def test_reordering_or_rewriting_sites_that_already_called_the_helper_closes_the_route(self) -> None:
         test = {"tests/test_report.py": "import report\n\nassert report.save\n"}
         source = "import json_writer\n\n\ndef save(path, data):\n"
