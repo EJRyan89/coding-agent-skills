@@ -479,6 +479,9 @@ def mentions(pattern: re.Pattern[str], text: str) -> bool:
 
 # A word is its text, or None when the text does not settle its value (an unset variable, a $( ) result).
 Word = str | None
+# How the PowerShell reader would report a parameter's value a command may take from its pipeline: a word the text
+# does not settle.
+PIPED_WORD: Mapping[str, Any] = {"text": "", "dynamic": True}
 # The variables a shell has set, by name; a value is None when the text does not settle it.
 Variables = Mapping[str, Word]
 
@@ -2116,7 +2119,11 @@ def read_bash(
 
 @functools.cache
 def powershell_reader() -> str:
-    return POWERSHELL_READER.read_text(encoding="utf-8")
+    """The reader as pwsh is handed it on its command line: without its comment lines, which run nothing and would
+    otherwise bring it past the 32767 characters a command line Windows starts may hold. The reader holds no
+    here-string, so no line of a string begins with #."""
+    lines = POWERSHELL_READER.read_text(encoding="utf-8").splitlines()
+    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
 
 
 def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[str, Any]] | None:
@@ -2303,22 +2310,27 @@ def environment_names(paths: list[Word], literal: bool, known: Iterable[str] = (
     return found
 
 
-def defines_powershell_alias(name: str | None, arguments: list[Word]) -> bool:
+def defines_powershell_alias(name: str | None, arguments: list[Word], piped: Iterable[str] = ()) -> bool:
     """Whether a PowerShell command defines an alias: a cmdlet that defines one, by its name or an alias of it, or one
-    that writes an item or its content at a path on the alias: drive or the Alias provider the text names.
+    that writes an item or its content at a path on the alias: drive or the Alias provider the text names, or at a
+    path it may take from its pipeline, one of the parameters piped names.
 
     The tables sit in the function, not the module, so that they run in the tests that call the function rather than
     at import."""
     definers = {"set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"}
-    return name in definers or writes_definition_drive(name, arguments, "alias")
+    return name in definers or writes_definition_drive(name, arguments, "alias", piped)
 
 
-def writes_definition_drive(name: str | None, arguments: list[Word], drive: str) -> bool:
+def writes_definition_drive(name: str | None, arguments: list[Word], drive: str, piped: Iterable[str] = ()) -> bool:
     """Whether a PowerShell command writes an item, or an item's content, at a path on the alias: or function: drive
-    the text names, as alias:g, Alias::g, or Microsoft.PowerShell.Core\\Function::f: a definition a later word runs."""
+    the text names, as alias:g, Alias::g, or Microsoft.PowerShell.Core\\Function::f, or at a path it may take from its
+    pipeline, by one of the parameters piped names that name the item it writes: a definition a later word runs."""
     writers = {"set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi", "rename-item", "ren", "rni"}
     writers |= {"set-content", "sc", "add-content", "ac", "move-item", "mi", "move", "mv"}
-    return name in writers and any(word is not None and definition_drive(word) == drive for word in arguments)
+    from_pipeline = not {"path", "literalpath", "destination"}.isdisjoint(piped)
+    return name in writers and (
+        from_pipeline or any(word is not None and definition_drive(word) == drive for word in arguments)
+    )
 
 
 def definition_drive(path: str) -> str | None:
@@ -2427,6 +2439,12 @@ class PowerShellReader:
         }
         # The words the reader reports for each parameter, from which a path the text does not settle is judged.
         reported = {name.lower(): values for name, values in (event.get("parameters") or {}).items()}
+        # A command after the first in its pipeline may take each parameter its arguments leave unbound from there,
+        # with a value the text does not settle.
+        piped = {str(parameter).lower() for parameter in event.get("fromPipeline") or []}
+        for parameter in piped:
+            parameters.setdefault(parameter, [None])
+            reported.setdefault(parameter, [dict(PIPED_WORD)])
         name, arguments = command_name(words[0]), words[1:]
         function = None if name is None else function_name(name)
         if event.get("failed") and function in session.functions:
@@ -2439,9 +2457,9 @@ class PowerShellReader:
         if event.get("failed") or event.get("whatIf"):
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
         # A definition may stand for git in a later command, which the reader would take for another program.
-        if defines_powershell_alias(name, arguments):
+        if defines_powershell_alias(name, arguments, piped):
             self.reading.cannot_read(f"{defined('alias')} ({name})")
-        if writes_definition_drive(name, arguments, "function"):
+        if writes_definition_drive(name, arguments, "function", piped):
             self.reading.cannot_read(f"{defined('function')} ({name})")
         if name in NEW_DRIVE_NAMES and definition_provider(parameters.get("psprovider")):
             self.reading.cannot_read(f"a drive on the alias or function provider ({name})")
