@@ -187,7 +187,9 @@ def read_pending(path: Path) -> dict[str, int]:
         )
     try:
         table = ast.literal_eval(value)
-    except ValueError as error:
+    # A value that is not a literal raises ValueError, a literal set or dictionary of an unhashable key TypeError, and
+    # one nested past the parser's depth MemoryError or RecursionError, as validation_support.module_allowance reads.
+    except (ValueError, TypeError, MemoryError, RecursionError) as error:
         raise KnownFailuresUnreadable(f"must assign {PENDING} a literal dict") from error
     if not isinstance(table, dict) or not all(
         isinstance(name, str) and isinstance(issue, int) and not isinstance(issue, bool) and issue > 0

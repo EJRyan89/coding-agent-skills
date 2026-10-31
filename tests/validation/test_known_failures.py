@@ -217,6 +217,7 @@ class PendingShapeTests(KnownFailureFixture):
             ("", "must assign PENDING once"),
             ("PENDING = {}\nPENDING = {}\n", "must assign PENDING once"),
             ("PENDING = dict(a=1)\n", "a literal dict"),
+            ("PENDING = {[]: 1}\n", "a literal dict"),
             ("PENDING = {'a': 0}\n", "a positive issue number"),
             ("PENDING = {'a': True}\n", "a positive issue number"),
             ("PENDING = {'a': '7'}\n", "a positive issue number"),
