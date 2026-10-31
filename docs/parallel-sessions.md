@@ -350,9 +350,11 @@ refused while a guarded hub is in view, and what they do not see at all is named
   script before it runs any of it, so none of it runs.
 - **Paths that do not all run.** A command that runs only when another succeeds or fails, only in some branch, or
   any number of times in a loop or script block, is read as running, and afterwards the guard keeps only what every
-  path agrees on: a directory or variable one path changes is unknown after it. A directory change whose target is
-  not a directory fails and leaves the shell where it was, so it is unknown after it too, except along `&&`, which
-  goes on only when it succeeded. The guard reads a loop's or script block's body twice, so it follows loops and
+  path agrees on: a directory or variable one path changes is unknown after it. A function one path defines,
+  redefines, or removes keeps every body the paths give it, and no function where one leaves it undefined, and a
+  call to it, a nested `bash` it is exported to included, is read once with each, as the builtin or program its name
+  names where it has none. A directory change whose target is not a directory fails and leaves the shell where it
+  was, so it is unknown after it too, except along `&&`, which goes on only when it succeeded. The guard reads a loop's or script block's body twice, so it follows loops and
   script blocks, counted together across nested shells and function calls, to eight deep; deeper is a command the
   guard cannot read, and the directory and every variable are unknown after it.
 - **Nested shells.** `bash -c` (alone or in a bundle such as `-lc`), `bash <<< '<script>'`, a here-document handed
