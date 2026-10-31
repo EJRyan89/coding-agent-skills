@@ -149,6 +149,12 @@ class ClosingTests(KnownFailureFixture):
                 self.assertIn("closes #4242", problem)
         self.assertEqual([], closed_known_failure_problems(self.root, "Fixes the reader.\n", "fix: the reader (#4242)"))
 
+    def test_a_body_closing_the_issue_fails_beside_a_title_that_closes_none(self) -> None:
+        # validate.yml always passes both, so a check that read the title alone once one is given would pass this.
+        self.write([ENTRY])
+        [problem] = closed_known_failure_problems(self.root, "Closes #4242\n", "fix: the reader")
+        self.assertIn("closes #4242", problem)
+
     def test_a_pull_request_closing_an_issue_pending_names_fails(self) -> None:
         self.write([])
         self.write_pending('PENDING: dict[str, int] = {"module.reader": 4242}\n')
@@ -211,16 +217,71 @@ class PendingShapeTests(KnownFailureFixture):
             ("", "must assign PENDING once"),
             ("PENDING = {}\nPENDING = {}\n", "must assign PENDING once"),
             ("PENDING = dict(a=1)\n", "a literal dict"),
+            ("PENDING = {[]: 1}\n", "a literal dict"),
             ("PENDING = {'a': 0}\n", "a positive issue number"),
             ("PENDING = {'a': True}\n", "a positive issue number"),
             ("PENDING = {'a': '7'}\n", "a positive issue number"),
             ("PENDING = [('a', 1)]\n", "a positive issue number"),
             ("PENDING = {\n", "cannot be read"),
+            ("PENDING, OTHER = {}, 1\n", "must assign PENDING once"),
+            ("OTHER = PENDING = {}\n", "must assign PENDING once"),
+            ("PENDING = {}\nPENDING: dict[str, int] = {'a': 1}\n", "must assign PENDING once"),
         ):
             with self.subTest(source=source):
                 self.write_pending(source)
                 [problem] = pending_problems(self.root)
                 self.assertIn(reason, problem)
+
+    def test_any_other_write_binding_or_mention_of_the_table_fails(self) -> None:
+        # Each would leave the module running with a table other than the literal read, so it is refused, wherever in
+        # the module it stands: one row for every way Python spells a write, a binding, or a reach to the name.
+        writes = (
+            'PENDING["x"] = 4242',
+            'PENDING["x"] += 1',
+            'del PENDING["x"]',
+            "del PENDING",
+            'PENDING.update({"x": 4242})',
+            'PENDING.setdefault("x", 4242)',
+            'PENDING.__setitem__("x", 4242)',
+            'PENDING |= {"x": 4242}',
+            'if True:\n    PENDING = {"x": 4242}',
+            'for PENDING in [{"x": 4242}]:\n    pass',
+            'while False:\n    PENDING = {"x": 4242}',
+            "try:\n    pass\nexcept OSError as PENDING:\n    pass",
+            "with open(__file__) as PENDING:\n    pass",
+            '(PENDING := {"x": 4242})',
+            "PENDING: dict[str, int]",
+            "TABLE = PENDING",
+            'TABLE = PENDING\nTABLE["x"] = 4242',
+            'register(PENDING, "x")',
+            'def add():\n    global PENDING\n    PENDING = {"x": 4242}',
+            "def add(PENDING):\n    pass",
+            "def PENDING():\n    pass",
+            "class PENDING:\n    pass",
+            "import os as PENDING",
+            "from os import PENDING",
+            "from os import environ as PENDING",
+            'globals()["PENDING"] = {"x": 4242}',
+            'globals().update(PENDING={"x": 4242})',
+            'setattr(sys.modules[__name__], "PENDING", {"x": 4242})',
+            'sys.modules[__name__].PENDING = {"x": 4242}',
+            "match {}:\n    case {**PENDING}:\n        pass",
+            "match {}:\n    case PENDING:\n        pass",
+            "match []:\n    case [*PENDING]:\n        pass",
+            "TABLES = [PENDING for PENDING in ()]",
+        )
+        for write in writes:
+            with self.subTest(write=write):
+                self.write_pending(f"import sys\n\nPENDING: dict[str, int] = {{}}\n\n{write}\n")
+                [problem] = pending_problems(self.root)
+                self.assertIn("must name PENDING only in its one assignment, but names it again on line", problem)
+
+    def test_the_table_named_in_all_and_in_prose_passes(self) -> None:
+        self.write_pending(
+            '"""PENDING names each reader owed a table entry."""\n\nPENDING = {"a.reader": 1}\n\n'
+            '__all__ = ["PENDING", "READERS"]\n__all__ += ["PENDING"]\n'
+        )
+        self.assertEqual({"a.reader": 1}, read_pending(self.root / PENDING_MODULE))
 
 
 class OpenIssueTests(KnownFailureFixture):
