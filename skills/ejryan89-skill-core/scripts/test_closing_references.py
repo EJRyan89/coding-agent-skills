@@ -122,7 +122,7 @@ def test_every_keyword_separator_and_reference_in_the_catalogue_is_read(
     assert closing_references(f"Intro.\n{text} and more.\n") == expected, text
 
 
-# The spellings #2149 found unread, each now read.
+# The spellings the third outside review found unread, each now read.
 @pytest.mark.parametrize(
     "text",
     [
