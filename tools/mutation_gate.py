@@ -741,8 +741,9 @@ def suite_environment() -> dict[str, str]:
 def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ()) -> str:
     """Run one suite in a worktree, or only its tests named by node id, stopping at the first failure, with every
     process it starts ended after it: passed on pytest's exit 0, killed on its exit for a failed test or for a test
-    module it failed to collect, timed out past `timeout`, and errored on any other exit, which judges nothing. The
-    node ids go to pytest in an argument file, which no command line's length limits."""
+    module it failed to collect, timed out past `timeout`, and errored on any other exit, which judges nothing and
+    logs pytest's exit and the start of its output. The node ids go to pytest in an argument file, which no command
+    line's length limits."""
     with tempfile.TemporaryDirectory(prefix="mutation-tests-") as temporary:
         target = suite
         if tests:
@@ -763,7 +764,12 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
     if finished.returncode == 0:
         return PASSED
     collection_failed = finished.returncode == INTERRUPTED_EXIT and COLLECTION_ERROR in finished.stdout
-    return KILLED if finished.returncode == TESTS_FAILED_EXIT or collection_failed else ERRORED
+    if finished.returncode == TESTS_FAILED_EXIT or collection_failed:
+        return KILLED
+    # The log is where the summary sends a reader to see why: pytest names its error at the start of its output.
+    output = flat_text((finished.stderr + finished.stdout).decode("utf-8", "replace"))[:STEP_OUTPUT_CHARACTERS]
+    print(f"{ERRORED:<11} {suite}: pytest exited {finished.returncode}: {output}", flush=True)
+    return ERRORED
 
 
 def coverage_settings(folder: Path, files: Iterable[Path]) -> str:

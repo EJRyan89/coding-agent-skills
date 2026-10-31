@@ -695,6 +695,34 @@ def test_only_a_test_failure_or_a_failed_collection_kills_a_mutant(code: int, st
     assert tuple(found) == statuses
 
 
+def test_an_errored_run_logs_pytests_exit_and_the_start_of_its_output(capsys: pytest.CaptureFixture[str]) -> None:
+    stderr = b"ERROR: not found: tests/x.py::test_gone\n(no match in any of [<Module x.py>])\n"
+    finished = types.SimpleNamespace(returncode=4, stdout=b"no tests ran\n" + b"x" * 400, stderr=stderr)
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", return_value=finished),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == ERRORED
+    line = capsys.readouterr().out
+    assert line.startswith(
+        "errored     tests/x.py: pytest exited 4: ERROR: not found: tests/x.py::test_gone "
+        "(no match in any of [<Module x.py>]) no tests ran xxx"
+    ), line
+    assert len(line) == len("errored     tests/x.py: pytest exited 4: ") + mutation_gate.STEP_OUTPUT_CHARACTERS + 1
+    # A pass and a kill log nothing.
+    for exit_code in (0, 1):
+        with (
+            mock.patch.object(
+                mutation_gate,
+                "run_bounded",
+                return_value=types.SimpleNamespace(returncode=exit_code, stdout=b"", stderr=stderr),
+            ),
+            mock.patch("deployer.platform_support.process_tree"),
+        ):
+            run_suite(Path("tree"), "tests/x.py", 42.0)
+    assert capsys.readouterr().out == ""
+
+
 class RunSuiteFixtures(unittest.TestCase):
     """The real suite runner, over a suite with a test that fails and one that passes."""
 
@@ -1581,6 +1609,44 @@ class SummaryFixtures(unittest.TestCase):
             text,
         )
 
+    def test_errored_mutants_of_two_modules_and_two_legs_beside_a_cut_are_each_named(self) -> None:
+        calc = [
+            Outcome(mutant(1), ERRORED, ("tests/x.py",)),
+            Outcome(mutant(2), ERRORED, ("tests/x.py",)),
+            Outcome(mutant(3), NOT_RUN),
+        ]
+        paths = [Outcome(mutant(5, PATH_MODULE), ERRORED, ("tests/y.py",))]
+        windows = [Outcome(mutant(5, PATH_MODULE), ERRORED, ("tests/z.py",))]
+        legs = [
+            LegRun(LINUX_LEG, 40, 600.0, 4, {"tools/calc.py": calc, PATH_MODULE: paths}, {}, []),
+            LegRun(WINDOWS_LEG, 40, 600.0, 4, {PATH_MODULE: windows}, {}, []),
+        ]
+        modules = [
+            linux_module("tools/calc.py", calc, 3),
+            ModuleReport(PATH_MODULE, 1, (), {LINUX_LEG: paths, WINDOWS_LEG: windows}),
+        ]
+        report = Report("origin/main", "3.8.0", modules, legs)
+        self.assertEqual(
+            "**Unfinished, so not a verdict:** a leg's cap cut the run short: 1 of the 3 mutants of `tools/calc.py` "
+            "did not run on Linux. Split the pull request, or move its module-level tables into the functions that "
+            "use them, until it finishes. A suite ended with neither a pass nor a test failure, so it judged nothing: "
+            "2 of the 3 mutants of `tools/calc.py` errored on Linux; 1 of the 1 mutants of `tools/paths.py` errored "
+            "on Linux and Windows. Rerun the gate, and fix what its log shows the suite stopped on.",
+            unfinished_line(report),
+        )
+        text = summary(report)
+        self.assertIn(
+            "\n\n### `tools/calc.py`: 2 errored mutants, which no suite judged\n\n"
+            "- Line 1: `line 1` became `mutated 1`; ran `tests/x.py` on Linux\n"
+            "- Line 2: `line 2` became `mutated 2`; ran `tests/x.py` on Linux\n",
+            text,
+        )
+        self.assertIn(
+            "\n\n### `tools/paths.py`: 1 errored mutant, which no suite judged\n\n"
+            "- Line 5: `line 5` became `mutated 5`; ran `tests/y.py` on Linux; `tests/z.py` on Windows\n",
+            text,
+        )
+
     def test_a_finished_run_opens_on_its_heading_with_no_unfinished_line(self) -> None:
         report = self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_REACHED)])
         report.legs[0].unmeasured_suites.clear()
@@ -1762,6 +1828,7 @@ def test_the_windows_leg_runs_a_module_that_names_any_token_of_the_platform_cata
         "os.path.sep",
         "os.path.altsep",
         "os.path.pathsep",
+        "os.path.devnull",
     ],
 )
 def test_the_windows_leg_runs_a_module_that_reads_a_separator_or_the_null_device(value: str) -> None:
@@ -1778,6 +1845,9 @@ def test_the_windows_leg_runs_a_module_that_reads_a_separator_or_the_null_device
 def test_a_module_that_reads_no_platform_value_stays_on_linux() -> None:
     source = "import os\nVALUE = os.path.join(os.curdir, os.extsep)\nNAME = getattr(os, 'getcwd')\n"
     assert not runs_on_windows("tools/report.py", source)
+    # Nor does a module importing a name that is no platform value, or a sibling module whose name only looks like one.
+    assert not runs_on_windows("tools/report.py", "from os import getcwd\n")
+    assert not runs_on_windows("tools/report.py", "from .os import sep\n")
 
 
 @pytest.mark.parametrize("seam", ["platform_support", *(Path(name).stem for name in claude_md_seam_modules())])
