@@ -74,6 +74,8 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{INSIGHTS_SCRIPTS}/review_insights.py",
     f"{INSIGHTS_SCRIPTS}/review_signals.py",
     f"{INSIGHTS_SCRIPTS}/review_synthesis.py",
+    # The plugin build's installer of the reviewer guard's hook.
+    "tools/plugin_agents.py",
     f"{SKILL_CORE}/bounded_process.py",
     f"{SKILL_CORE}/device_names.py",
     f"{SKILL_CORE}/diff_paths.py",
@@ -113,6 +115,15 @@ OUTSIDE_THE_BOUNDARY = {
     f"{SKILL_CORE}/folder_walk.py": "dotnet_solution takes only its skipped folder names; the inventory walks none",
     f"{SKILL_CORE}/frontmatter.py": "reads the frontmatter of a reviewer skill from the trusted commit",
     f"{SKILL_CORE}/skill_roots.py": "finds a sibling skill's scripts folder in the checkout or the deployed home",
+}
+# Each repository tool that imports the run contract or a pipeline module that stages a run, with why the
+# trust-boundary reviewer need not hold it: none carries a pull request's text to a reviewer.
+TOOLS_OUTSIDE_THE_BOUNDARY = {
+    "tools/plugin_canary.py": "stages a guarded run of its own fixture in a throwaway configuration to check the guard",
+    "tools/runtime_canary.py": "takes Copilot's session version and local session from review_hosts, starting no run",
+    "tools/runtime_command_lines.py": "builds each runtime's command line from review_hosts and starts it signed out",
+    "tools/runtime_prompts.py": "renders each reviewer prompt from fixtures into its committed sample, staging no run",
+    "tools/skill_evals_scenarios.py": "reads the fixed scenarios under tests/fixtures/skill-evals, staging no run",
 }
 # Each profile, by its file's stem, with every trusted file it names as TRUSTED_ROOT/<path> and the sections of that
 # file it tells its reviewer to read, each as the profile writes it: a heading's text, or the heading line itself.
@@ -183,20 +194,39 @@ def trust_boundary_modules() -> list[str]:
     return [path for path in TRUST_BOUNDARY_SCRIPTS if not conditions.is_suite(path)]
 
 
-def stages_a_guarded_run(source: str) -> bool:
-    """Whether a module takes part in the reviewer guard's run contract: it imports review_guard, by an import
-    statement or by the module name as a string, as importlib does, or names a run's `run.json`, which only a
-    script that writes or reads a guarded run does."""
+# The modules that hold the reviewer guard's run contract: the guard, and the run whose RUN_FILE a staging script
+# writes.
+RUN_CONTRACT = frozenset({"review_guard", "review_run"})
+
+
+def stages_a_guarded_run(source: str, staging: frozenset[str] = RUN_CONTRACT) -> bool:
+    """Whether a module takes part in the reviewer guard's run contract: it imports one of `staging`, the run
+    contract's modules unless given the pipeline modules that stage a run, by an import statement or by the module
+    name as a string, as importlib does, or names a run's `run.json`, which only a script that writes or reads a
+    guarded run does."""
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import) and any(alias.name.split(".")[0] == "review_guard" for alias in node.names):
+        if isinstance(node, ast.Import) and any(alias.name.split(".")[0] in staging for alias in node.names):
             return True
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "review_guard":
+        if isinstance(node, ast.ImportFrom) and not node.level and (node.module or "").split(".")[0] in staging:
             return True
-        if isinstance(node, ast.Constant) and node.value in ("review_guard", "run.json"):
+        if isinstance(node, ast.Constant) and (node.value in staging or node.value == "run.json"):
             return True
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.endswith("/run.json"):
             return True
     return False
+
+
+def staging_modules() -> frozenset[str]:
+    """The run contract's modules and every pipeline module that stages a run through them, directly or through
+    another pipeline module that does, as review_runtime does through review_guard: a script importing one of them
+    stages a guarded run as surely as one importing the guard."""
+    sources = {
+        path.stem: path.read_text(encoding="utf-8") for path in (REPOSITORY / PIPELINE_SCRIPTS).glob("review_*.py")
+    }
+    staging = RUN_CONTRACT
+    while grown := {name for name, text in sources.items() if stages_a_guarded_run(text, staging)} - staging:
+        staging |= grown
+    return staging
 
 
 def alternatives(pattern: str) -> list[str]:
@@ -255,7 +285,9 @@ class ManifestTests(unittest.TestCase):
             "skills/repo-cleanup/scripts/test_repo_cleanup.py": script,
             f"{SKILL}/scripts/doc_passages.py": skill_script,
             "deploy-meta/review-prs.json": {"skill-contract", "upgrade-notes"},
-            "agents/code-review-reviewer.md": {"skill-contract"},
+            "agents/code-review-reviewer.md": {"skill-contract", "trust-boundary"},
+            "skills/ejryan89-code-review-core/references/generic-reviewer.md": {"trust-boundary"},
+            "skills/ejryan89-code-review-core/references/design-reviewer.md": {"trust-boundary"},
             "source.json": {"skill-contract"},
             ".claude/skills/audit-repository/SKILL.md": {"skill-contract"},
             ".agents/skills/audit-repository/SKILL.md": {"skill-contract"},
@@ -263,7 +295,10 @@ class ManifestTests(unittest.TestCase):
             "tests/run_validation.py": {"validation-policy", *script},
             "pyproject.toml": {"validation-policy"},
             "docs/code-review-operations-contract.md": {"trust-boundary", "documentation", "upgrade-notes"},
-            **dict.fromkeys(trust_boundary_modules(), trusted),
+            **{
+                path: {"trust-boundary", *script} if path.startswith("tools/") else trusted
+                for path in trust_boundary_modules()
+            },
             f"{SKILL_CORE}/pdf_tool.py": {"upgrade-notes", *trusted},
             f"{PIPELINE_SCRIPTS}/test_adversarial_inputs.py": {"trust-boundary", *script},
             "skills/ejryan89-code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
@@ -409,17 +444,33 @@ class ManifestTests(unittest.TestCase):
         # A script that imports the guard's run contract or writes a run.json writes what the guard holds a reviewer
         # to, and the prompt that run names, which carries author text, as review_synthesis.py's does. Each is one the
         # trust-boundary reviewer holds, wherever under skills/ it sits, not only the modules the route lists by name.
+        # A script reaching the run file through review_run's RUN_FILE, or staging through a pipeline module that
+        # does, as review-document's does through review_runtime, is found as one importing the guard is.
+        modules = staging_modules()
+        self.assertTrue({"review_run", "review_dispatch", "review_pipeline", "review_runtime"} <= modules, modules)
         staging = [
             path
             for path in tracked_files()
-            if path.startswith("skills/")
+            if path.startswith(("skills/", "tools/"))
             and path.endswith(".py")
             and not conditions.is_suite(path)
-            and stages_a_guarded_run((REPOSITORY / path).read_text(encoding="utf-8"))
+            and stages_a_guarded_run((REPOSITORY / path).read_text(encoding="utf-8"), modules)
         ]
         self.assertIn(f"{INSIGHTS_SCRIPTS}/review_synthesis.py", staging)
         self.assertIn(f"{PIPELINE_SCRIPTS}/review_guard.py", staging)
-        self.assertEqual([], [path for path in staging if "trust-boundary" not in reached([path])[path]])
+        self.assertIn("skills/review-document/scripts/review_document.py", staging)
+        self.assertIn("tools/plugin_canary.py", staging)
+        self.assertEqual(
+            [],
+            [
+                path
+                for path in staging
+                if "trust-boundary" not in reached([path])[path] and path not in TOOLS_OUTSIDE_THE_BOUNDARY
+            ],
+        )
+        # Each tool named outside the boundary still stages through the run contract, and none of them is routed.
+        self.assertEqual([], [path for path in TOOLS_OUTSIDE_THE_BOUNDARY if path not in staging])
+        self.assertEqual([], [path for path in TOOLS_OUTSIDE_THE_BOUNDARY if "trust-boundary" in reached([path])[path]])
 
     def test_every_script_the_threat_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
         # The threat model states the boundary row by row, so a script a row names, such as review-document's, is
@@ -965,6 +1016,38 @@ class UntestedChangesTests(unittest.TestCase):
             written,
         )
 
+    def test_a_conversion_that_also_removes_a_site_of_the_same_helper_opens_the_untested_route(self) -> None:
+        # One json_writer.write goes and a write_text becomes one, so the helper's count is unchanged.
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            reviewer, source = scratch / "reviewer", scratch / "source"
+            for path in declared_reviewer_files(MANIFEST):
+                (reviewer / path).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(REPOSITORY / path, reviewer / path)
+            (source / "tools").mkdir(parents=True)
+            (source / "tests").mkdir()
+            (source / "tools" / "report.py").write_bytes(
+                b"import json\nimport json_writer\n\n\ndef save(first, second, a, b):\n"
+                b"    json_writer.write(second, b)\n"
+            )
+            (source / "tests" / "test_report.py").write_bytes(
+                b"import report\n\n\ndef test_save(tmp_path):\n    assert report.save is not None\n"
+            )
+            diff = "diff --git a/tools/report.py b/tools/report.py\n--- a/tools/report.py\n+++ b/tools/report.py\n"
+            diff += "@@ -3,6 +3,5 @@\n \n \n def save(first, second, a, b):\n"
+            diff += "-    json_writer.write(first, a)\n"
+            diff += '-    second.write_text(json.dumps(b), encoding="utf-8")\n'
+            diff += "+    json_writer.write(second, b)\n"
+            code, out, written = run_condition(reviewer / UNTESTED, source, diff, scratch)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(
+            written.startswith(
+                "CONVERTED tools/report.py:5 function save, a test names it, converted calls json_writer.write at "
+                "line 6, hunk @@ -3,6 +3,5 @@, tests of its file tests/test_report.py\n"
+            ),
+            written,
+        )
+
 
 class RealDiffTests(unittest.TestCase):
     """Each condition reads a diff git wrote, whose headers end a path holding a space with a tab and quote a path
@@ -1279,6 +1362,10 @@ def test_the_guidance_names_no_release(name: str) -> None:
     ("source", "staging"),
     [
         ("from review_guard import RUN_FILE, RUN_PREFIX\n", True),
+        ("from review_run import RUN_FILE\nPATH = folder / RUN_FILE\n", True),
+        ("import review_run\n", True),
+        ('import importlib\nrun = importlib.import_module("review_run")\n', True),
+        ("from . import review_guard\n", False),
         ("import review_guard\n", True),
         ("import review_guard as guard\n", True),
         ('import importlib\nguard = importlib.import_module("review_guard")\n', True),
@@ -1292,3 +1379,35 @@ def test_the_guidance_names_no_release(name: str) -> None:
 )
 def test_a_module_stages_a_guarded_run_when_it_imports_the_guard_or_names_run_json(source: str, staging: bool) -> None:
     assert stages_a_guarded_run(source) is staging
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from review_runtime import DOCUMENT_STAGES\n",
+        "import review_dispatch\n",
+        "from review_pipeline import main\n",
+        'import importlib\nimportlib.import_module("review_reviewer_setup")\n',
+    ],
+)
+def test_a_module_stages_a_guarded_run_through_a_pipeline_module_that_stages_one(source: str) -> None:
+    assert not stages_a_guarded_run(source)
+    assert stages_a_guarded_run(source, staging_modules())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "agents/code-review-reviewer.md",
+        *(
+            path.relative_to(REPOSITORY).as_posix()
+            for path in sorted((REPOSITORY / "skills/ejryan89-code-review-core/references").glob("*-reviewer.md"))
+        ),
+        "tools/plugin_agents.py",
+    ],
+)
+def test_the_reviewer_agent_its_protocols_and_its_hook_installer_reach_the_trust_boundary_reviewer(path: str) -> None:
+    # The agent definition declares the guard's hook and tells the reviewer a pull request's text is untrusted, each
+    # protocol is a prompt that carries author text to a reviewer, and the plugin installer writes the hook.
+    assert (REPOSITORY / path).is_file()
+    assert "trust-boundary" in route(MANIFEST, [path], lambda name: True)
