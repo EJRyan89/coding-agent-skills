@@ -41,6 +41,7 @@ from suite_discovery import (
     unsuited_script_problems,
     untested_module_problems,
 )
+from toolchain import find_git_bash
 from validation_support import REPOSITORY_ROOT, SUITE_NAME_PATTERNS, is_test_script, write_fixture_tree
 
 
@@ -601,6 +602,149 @@ def test_the_pipe_race_policy_finds_the_reader_in_every_shape_and_spelling(
     ],
 )
 def test_the_pipe_race_policy_passes_a_reader_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
+    assert races_in(tmp_path, script) == []
+
+
+# Each shape Bash gives a command a pipe feeds: a wrapper by its path, each compound command, a function the pipe runs,
+# a script a shell or eval runs, and a wrapper the reader table reads past. Each race below exited 141 under pipefail
+# in Git Bash, which the test after this one checks wherever Bash runs.
+BASH_RACES = [
+    pytest.param("seq 1 200000 | /usr/bin/env head -n 1", "head -n", id="env by a path"),
+    pytest.param("seq 1 200000 | /usr/bin/timeout 5 head -n 1", "head -n", id="timeout by a path"),
+    pytest.param("seq 1 200000 | if true; then head -n 1; fi", "head -n", id="if's body"),
+    pytest.param("seq 1 200000 | if head -n 1; then :; fi", "head -n", id="if's condition"),
+    pytest.param("seq 1 200000 | if false; then :; else head -n 1; fi", "head -n", id="else"),
+    pytest.param("seq 1 200000 | if false; then :; elif head -n 1; then :; fi", "head -n", id="elif"),
+    pytest.param("seq 1 200000 | for x in a; do head -n 1; done", "head -n", id="for"),
+    pytest.param("seq 1 200000 | while true; do head -n 1; break; done", "head -n", id="while"),
+    pytest.param("seq 1 200000 | until false; do head -n 1; break; done", "head -n", id="until"),
+    pytest.param("seq 1 200000 | case a in a) head -n 1;; esac", "head -n", id="case"),
+    pytest.param("seq 1 200000 | case a in b|a) head -n 1;; esac", "head -n", id="case with alternatives"),
+    pytest.param("seq 1 200000 | case a in\n  (a)\n    head -n 1\n    ;;\nesac", "head -n", id="case over lines"),
+    pytest.param("seq 1 200000 | { if true; then head -n 1; fi; }", "head -n", id="a compound in a group"),
+    pytest.param("seq 1 200000 | if true; then { head -n 1; }; fi", "head -n", id="a group in a compound"),
+    pytest.param("seq 1 200000 | if true; then if true; then head -n 1; fi; fi", "head -n", id="nested ifs"),
+    pytest.param("f() { head -n 1; }; seq 1 200000 | f", "head -n", id="a function"),
+    pytest.param("function g { head -n 1; }; seq 1 200000 | g", "head -n", id="a function keyword"),
+    pytest.param("function g() ( head -n 1 ); seq 1 200000 | g", "head -n", id="a subshell function"),
+    pytest.param("f() { g; }; g() { head -n 1; }; seq 1 200000 | f", "head -n", id="a function calling one"),
+    pytest.param("f() { head -n 1; }; seq 1 200000 | { f; }", "head -n", id="a function in a group"),
+    pytest.param("seq 1 200000 | bash -c 'head -n 1'", "head -n", id="bash -c"),
+    pytest.param("seq 1 200000 | sh -c 'head -n 1'", "head -n", id="sh -c"),
+    pytest.param("seq 1 200000 | bash -ec 'head -n 1'", "head -n", id="bash -c in a cluster"),
+    pytest.param("seq 1 200000 | bash -o errexit -c 'head -n 1'", "head -n", id="bash -c after -o"),
+    pytest.param("seq 1 200000 | /usr/bin/bash -c 'head -n 1'", "head -n", id="bash by a path"),
+    pytest.param("seq 1 200000 | eval 'head -n 1'", "head -n", id="eval"),
+    pytest.param("seq 1 200000 | eval head -n 1", "head -n", id="eval's words"),
+    pytest.param("seq 1 200000 | command eval 'head -n 1'", "head -n", id="eval behind command"),
+    pytest.param("seq 1 200000 | bash -c 'eval \"head -n 1\"'", "head -n", id="eval in a shell"),
+    pytest.param("seq 1 200000 | env -S 'head -n 1'", "head -n", id="env -S"),
+    pytest.param('seq 1 200000 | env -S"head -n 1"', "head -n", id="env -S glued"),
+    pytest.param("seq 1 200000 | env --split-string='head -n 1'", "head -n", id="env --split-string"),
+    pytest.param("seq 1 200000 | env -u HOME -S 'LC_ALL=C head -n 1'", "head -n", id="env -S after an option"),
+]
+
+
+@pytest.mark.parametrize(("script", "reader"), BASH_RACES)
+def test_the_pipe_race_policy_finds_the_reader_in_every_bash_form(tmp_path: Path, script: str, reader: str) -> None:
+    # The race is named at the reader's line, or at the line that runs the function or shell holding it.
+    line = 3 + script[: script.rindex(reader.split()[0])].count("\n")
+    assert races_in(tmp_path, script) == [f"{line} pipes into {reader}"]
+
+
+@pytest.mark.parametrize(("script", "reader"), BASH_RACES)
+def test_each_bash_form_the_policy_refuses_fails_under_pipefail_in_bash(script: str, reader: str) -> None:
+    # The table is held to real Bash: each form ends with the writer's SIGPIPE status, 141, under pipefail.
+    del reader
+    result = subprocess.run(
+        [find_git_bash(), "-c", f"set -o pipefail\n{script}"], capture_output=True, encoding="utf-8", check=False
+    )
+    assert result.returncode == 141, (result.returncode, result.stderr)
+
+
+# Readers that end early by their own options, as their programs document, which a shell may not show in every run.
+@pytest.mark.parametrize(
+    ("script", "race"),
+    [
+        pytest.param("seq 1 200000 | grep -l 1", "3 pipes into grep -l", id="grep -l"),
+        pytest.param("seq 1 200000 | grep -L 1", "3 pipes into grep -L", id="grep -L"),
+        pytest.param("seq 1 200000 | grep -sl 1", "3 pipes into grep -l", id="grep -l in a cluster"),
+        pytest.param("seq 1 200000 | grep --files-with 1", "3 pipes into grep --files-with-matches", id="grep long"),
+        pytest.param("seq 1 200000 | grep --files-witho 1", "3 pipes into grep --files-without-match", id="-L long"),
+        pytest.param("seq 1 200000 | rg -q 1", "3 pipes into rg -q", id="rg -q"),
+        pytest.param("seq 1 200000 | rg -m1 1", "3 pipes into rg -m", id="rg -m"),
+        pytest.param("seq 1 200000 | rg -l 1", "3 pipes into rg -l", id="rg -l"),
+        pytest.param("seq 1 200000 | rg --quiet 1", "3 pipes into rg --quiet", id="rg --quiet"),
+        pytest.param("seq 1 200000 | sudo head -n 1", "3 pipes into head -n", id="sudo"),
+        pytest.param("seq 1 200000 | sudo -u someone VAR=1 head -n 1", "3 pipes into head -n", id="sudo's options"),
+        pytest.param("seq 1 200000 | doas -u someone head -n 1", "3 pipes into head -n", id="doas"),
+        pytest.param("seq 1 200000 | setsid head -n 1", "3 pipes into head -n", id="setsid"),
+        pytest.param("seq 1 200000 | builtin eval 'head -n 1'", "3 pipes into head -n", id="eval behind builtin"),
+        # A race inside a script a shell runs is the suite's too.
+        pytest.param("bash -c 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in bash -c"),
+        pytest.param("eval 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in eval"),
+    ],
+)
+def test_the_pipe_race_policy_finds_a_reader_by_its_documented_options_and_wrappers(
+    tmp_path: Path, script: str, race: str
+) -> None:
+    assert races_in(tmp_path, script) == [race]
+
+
+def test_a_race_in_unquoted_backticks_is_named_once(tmp_path: Path) -> None:
+    assert races_in(tmp_path, "x=`printf a | head -1`") == ["3 pipes into head -1"]
+    assert races_in(tmp_path, "x=`printf a | head -1`; printf a | grep -q a") == [
+        "3 pipes into grep -q",
+        "3 pipes into head -1",
+    ]
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        pytest.param("set -o pipefail", id="set -o"),
+        pytest.param("set -e -o pipefail", id="set -e -o"),
+        pytest.param("set -euo pipefail", id="set in a cluster"),
+        pytest.param("shopt -so pipefail", id="shopt -so"),
+        pytest.param("shopt -s -o pipefail", id="shopt -s -o"),
+        pytest.param("builtin set -o pipefail", id="builtin set"),
+        pytest.param("command set -o pipefail", id="command set"),
+        pytest.param("eval 'set -o pipefail'", id="eval"),
+        pytest.param("if true; then set -o pipefail; fi", id="in a compound"),
+        pytest.param("x=$(set -o pipefail)", id="in a substitution"),
+        pytest.param("bash -o pipefail -c 'printf a | head -n 1'", id="a shell started with it"),
+        pytest.param("env SHELLOPTS=pipefail bash -c 'printf a | head -n 1'", id="SHELLOPTS"),
+        pytest.param("SHELLOPTS=braceexpand:pipefail bash -c 'printf a | head -n 1'", id="SHELLOPTS listing it"),
+    ],
+)
+def test_each_way_bash_turns_pipefail_on_has_its_suite_examined(tmp_path: Path, setting: str) -> None:
+    write_fixture_tree(tmp_path, {"tests/test_race.sh": f"#!/usr/bin/env bash\n{setting}\nprintf a | head -n 1\n"})
+    assert [problem.partition(" ")[0] for problem in pipe_race_problems(tmp_path)][-1:] == ["tests/test_race.sh:3"]
+
+
+def test_a_suite_that_never_turns_pipefail_on_is_not_examined(tmp_path: Path) -> None:
+    script = "#!/usr/bin/env bash\nset -eu\n# pipefail is off\nprintf a | head -n 1\necho set -o pipefail\n"
+    write_fixture_tree(tmp_path, {"tests/test_race.sh": script})
+    assert pipe_race_problems(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param("case x in head|grep) printf a;; esac", id="a case's patterns"),
+        pytest.param("printf a | case x in (head) cat;; esac", id="a pattern named head"),
+        pytest.param("printf a | while read -r x; do :; done; head -n 1 file", id="after a loop"),
+        pytest.param("printf a | if true; then cat; fi; head -n 1 file", id="after an if"),
+        pytest.param("for head in a; do :; done", id="a loop's name"),
+        pytest.param("printf a | for x in head; do cat; done", id="a loop's words"),
+        pytest.param("f() { head -n 1 file; }; printf a | cat; f", id="a function the pipe does not run"),
+        pytest.param("printf a | bash script.sh", id="a script by its file"),
+        pytest.param("printf a | bash -c 'cat'", id="a shell reading to the end"),
+        pytest.param("printf a | env -S 'cat -u'", id="env -S reading to the end"),
+        pytest.param("f() { f; }; printf a | f", id="a function calling itself"),
+    ],
+)
+def test_the_pipe_race_policy_passes_each_bash_form_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
     assert races_in(tmp_path, script) == []
 
 
