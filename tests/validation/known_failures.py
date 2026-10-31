@@ -105,29 +105,91 @@ class OwedIssue:
     owed: str
 
 
+def _sole_assignment(node: ast.stmt) -> tuple[ast.Name, ast.expr] | None:
+    """The one name a module-level statement assigns, with its value, when it assigns one name and nothing else."""
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        return node.targets[0], node.value
+    if isinstance(node, ast.AnnAssign) and node.value is not None and isinstance(node.target, ast.Name):
+        return node.target, node.value
+    return None
+
+
+def _named(node: ast.AST) -> str | None:
+    """The identifier a node spells, as a name, an attribute, a string, or a binding of any kind, or None. Each
+    binding Python spells outside a Name node is here: a parameter, a keyword, an import, a global or nonlocal
+    declaration, a match mapping's rest, and, by their `name`, a definition, an exception or match capture, and a
+    type parameter."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.arg):
+        return node.arg
+    if isinstance(node, ast.keyword):
+        return node.arg
+    if isinstance(node, ast.alias):
+        return node.asname or node.name.rpartition(".")[2]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return PENDING if PENDING in node.names else None
+    if isinstance(node, ast.MatchMapping):
+        return node.rest
+    name = getattr(node, "name", None)
+    return name if isinstance(name, str) else None
+
+
+def _other_mentions(tree: ast.Module, assignment: ast.Name) -> list[int]:
+    """The line of each place the module names PENDING other than its one assignment's target and the strings its
+    `__all__` lists: any other binding, write, call, alias, or read could change the table the module ends with."""
+    exported = {
+        id(node)
+        for statement in tree.body
+        if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+        and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in (statement.targets if isinstance(statement, ast.Assign) else [statement.target])
+        )
+        and statement.value is not None
+        for node in ast.walk(statement.value)
+        if isinstance(node, ast.Constant)
+    }
+    return sorted(
+        getattr(node, "lineno", 0)
+        for node in ast.walk(tree)
+        if node is not assignment and id(node) not in exported and _named(node) == PENDING
+    )
+
+
 def read_pending(path: Path) -> dict[str, int]:
     """The PENDING table a readers module assigns: each reader's name and its issue, read from the syntax tree, never
-    run; KnownFailuresUnreadable when the module assigns none, or one that is not a literal dict of names to positive
-    issue numbers."""
+    run; KnownFailuresUnreadable when the module assigns none, assigns it more than once, names it anywhere else, by
+    a write, a call, an alias, a binding, or a string other than `__all__`'s, so that the table it runs with could
+    differ from the one read, or assigns one that is not a literal dict of names to positive issue numbers. A write
+    through a string the module builds, such as `globals()["PEND" + "ING"]`, and a write from another module are not
+    seen."""
     try:
         tree = parse_python(path)
     except (OSError, UnreadablePython) as error:
         raise KnownFailuresUnreadable(f"cannot be read: {error}") from error
-    values = [
-        node.value
+    assignments = [
+        assignment
         for node in tree.body
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-        and node.value is not None
-        and any(
-            isinstance(target, ast.Name) and target.id == PENDING
-            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-        )
+        if (assignment := _sole_assignment(node)) is not None and assignment[0].id == PENDING
     ]
-    if len(values) != 1:
+    if len(assignments) != 1:
         raise KnownFailuresUnreadable(f"must assign {PENDING} once at module level")
+    [(target, value)] = assignments
+    if lines := _other_mentions(tree, target):
+        raise KnownFailuresUnreadable(
+            f"must name {PENDING} only in its one assignment, but names it again on line "
+            f"{', '.join(str(line) for line in lines)}"
+        )
     try:
-        table = ast.literal_eval(values[0])
-    except ValueError as error:
+        table = ast.literal_eval(value)
+    # A value that is not a literal raises ValueError, a literal set or dictionary of an unhashable key TypeError, and
+    # one nested past the parser's depth MemoryError or RecursionError, as validation_support.module_allowance reads.
+    except (ValueError, TypeError, MemoryError, RecursionError) as error:
         raise KnownFailuresUnreadable(f"must assign {PENDING} a literal dict") from error
     if not isinstance(table, dict) or not all(
         isinstance(name, str) and isinstance(issue, int) and not isinstance(issue, bool) and issue > 0
