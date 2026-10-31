@@ -657,7 +657,7 @@ def test_each_bash_form_the_policy_refuses_fails_under_pipefail_in_bash(script: 
     # The table is held to real Bash: each form ends with the writer's SIGPIPE status, 141, under pipefail.
     del reader
     result = subprocess.run(
-        [find_git_bash(), "-c", f"set -o pipefail\n{script}"], capture_output=True, text=True, check=False
+        [find_git_bash(), "-c", f"set -o pipefail\n{script}"], capture_output=True, encoding="utf-8", check=False
     )
     assert result.returncode == 141, (result.returncode, result.stderr)
 
