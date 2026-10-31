@@ -32,6 +32,7 @@ import github_client
 import pdf_tool
 import python_checks
 import review_vocabularies
+from call_tables import TEXT_OPENERS, TextOpener
 from job_selection import all_jobs
 from python_checks import (
     BLIND_EXCEPT_CEILING,
@@ -805,6 +806,70 @@ def _form(policy: FormsPolicy, text: str, path: str = SCRIPT, *, refused: bool =
     return (policy, path, text, refused)
 
 
+# Where a form's statements sit: in a function given `t`, or at the module's top level, each statement its own, so a
+# name one statement binds is read by a later one.
+PLACES = ("in a function", "at module level")
+
+
+def _placed(imports: str, body: str, place: str) -> str:
+    """A module of `imports` and then `body`, its lines in a function given `t` or at the top level."""
+    if place == PLACES[0]:
+        body = "def f(t):\n" + "".join(f"    {line}\n" for line in body.splitlines())
+    return f"{imports}\n\n\n{body}\n"
+
+
+# Each expression whose text holds `X`'s, and each place git's output is read from, as the binding that reads it and
+# the expression that holds it.
+TEXT_WRAPPERS = (
+    ("str() given an encoding", "str(X, 'utf-8')"),
+    ("str() given an encoding by keyword", "str(X, encoding='utf-8', errors='strict')"),
+    ("bytes() given an encoding", "bytes(X, 'utf-8')"),
+    ("a formatted string", "f'{X}'"),
+    ("format()", "'{}'.format(X)"),
+    ("format() by keyword", "'{x}'.format(x=X)"),
+    ("str.format() unbound", "str.format('{}', X)"),
+    ("format_map()", "'{x}'.format_map({'x': X})"),
+    ("%", "'%s' % X"),
+    ("% of a tuple", "'%s %s' % (1, X)"),
+    ("concatenation", "X + ''"),
+    ("concatenation after", "'' + X"),
+    ("repetition", "X * 1"),
+    ("a join", "''.join([X])"),
+    ("or", "X or ''"),
+    ("a conditional expression", "X if X else ''"),
+)
+GIT_OUTPUT_SOURCES = (
+    ("a name bound to client.output", "out = client.output(['describe', 'HEAD'])", "out"),
+    ("a run result's stdout", "result = client.run(['describe', 'HEAD'])", "result.stdout"),
+    ("the call", "", "client.output(['describe', 'HEAD'])"),
+)
+
+
+# Every spelling of a call of re's function `{name}`, as the module's imports and the callee: by the module, an alias
+# of it, a bare import, an alias of that, a name bound to the function, and a getattr of it.
+REGEX_SPELLINGS = (
+    ("re.{name}", "import re", "re.{name}"),
+    ("an alias of re", "import re as r", "r.{name}"),
+    ("a bare import", "from re import {name}", "{name}"),
+    ("an aliased bare import", "from re import {name} as found", "found"),
+    ("a bound name", "import re\n\nfound = re.{name}", "found"),
+    ("getattr", "import re", "getattr(re, '{name}')"),
+)
+
+
+def _regex_forms(name: str, bodies: dict[str, str]) -> dict[str, tuple[Any, ...]]:
+    """A refused int() form for each body, spelling of re's `name`, and place: the body calls it as `F`."""
+    return {
+        f"int() of {form} through {spelling.format(name=name)} {place}": _form(
+            int_parse_problems,
+            _placed(imports.format(name=name), body.replace("F", callee.format(name=name)), place),
+        )
+        for form, body in bodies.items()
+        for spelling, imports, callee in REGEX_SPELLINGS
+        for place in PLACES
+    }
+
+
 DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     # CONTRIBUTING.md: a finding that must stay is suppressed on its line by a noqa naming its codes and its reason.
     "noqa alone": _form(noqa_without_reason, "x = 1  # noqa\n"),
@@ -910,6 +975,11 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ),
         )
     },
+    "a discarded run on a GitClient subclass": _form(
+        discarded_result_problems,
+        "from git_client import GitClient\n\n\nclass Mine(GitClient):\n    def f(self):\n"
+        "        self.run(['status'])\n",
+    ),
     "a discarded GitClient.run on an annotated client": _form(
         discarded_result_problems,
         "from git_client import GitClient\n\n\ndef f(client: GitClient):\n    client.run(['status'])\n",
@@ -991,6 +1061,50 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("decode().splitlines()", "return out.decode().splitlines()"),
         )
     },
+    # A str() given an encoding, a formatted string, format(), %, concatenation, and a join keep the text as a str()
+    # does, through each place git's output is read: a name bound to client.output, a run result's stdout, and the call.
+    **{
+        f"a split of {source} through {form} {place}": _form(
+            git_separator_problems, _placed("", f"{binding}\n({wrapper.replace('X', held)}).splitlines()", place)
+        )
+        for form, wrapper in TEXT_WRAPPERS
+        for source, binding, held in GIT_OUTPUT_SOURCES
+        for place in PLACES
+    },
+    # "an assignment expression" binds as an assignment does, and so do the other ways a name is bound.
+    **{
+        f"a split of git's output through {form} {place}": _form(
+            git_separator_problems, _placed("", f"out = client.output(['describe', 'HEAD'])\n{body}", place)
+        )
+        for form, body in (
+            ("a walrus", "if (text := str(out, 'utf-8')):\n    text.splitlines()"),
+            ("a walrus of the call", "if (text := client.output(['tag'])):\n    text.splitlines()"),
+            ("an annotated assignment", "text: str = str(out, 'utf-8')\ntext.splitlines()"),
+            ("an augmented assignment", "text = ''\ntext += out\ntext.splitlines()"),
+            ("a chained assignment", "text = other = str(out, 'utf-8')\nother.splitlines()"),
+            ("a tuple assignment", "text, n = out.strip(), 1\ntext.splitlines()"),
+            ("str.splitlines of a formatted string", "str.splitlines(f'{out}')"),
+        )
+        for place in PLACES
+    },
+    # A module-level binding is read by a function that reads the module's name.
+    "a split in a function of git's output a module-level name holds": _form(
+        git_separator_problems,
+        "OUT = client.output(['tag'])\n\n\ndef f():\n    return OUT.splitlines()\n",
+    ),
+    # A count of git's output holds none of its text.
+    "a split of a count of git's output": _form(
+        git_separator_problems,
+        "def f(client):\n    out = client.output(['tag'])\n    return str(len(out)).splitlines()\n",
+        refused=False,
+    ),
+    # A name is git's output only in the scope that binds it: g's parameter is not f's output.
+    "a split of a parameter another function's output shares the name of": _form(
+        git_separator_problems,
+        "def f(client):\n    out = client.output(['tag'])\n    return out\n\n\n"
+        "def g(out):\n    return out.splitlines()\n",
+        refused=False,
+    ),
     "a split of git's output on a newline alone": _form(
         git_separator_problems,
         "from git_client import output_lines\n\n\n"
@@ -1022,6 +1136,60 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("items mapped through int", "return list(map(int, re.findall('[0-9]+', t)))"),
         )
     },
+    # "resolving names through its imports": findall's result and a value fullmatch, match, or search admitted, by
+    # every spelling of the call, read in a function and across module-level statements alike.
+    **_regex_forms(
+        "findall",
+        {
+            "findall's first item": "n = int(F('[0-9]+', t)[0])",
+            "a list findall's result is bound to": "items = F('[0-9]+', t)\nn = int(items[0])",
+            "an item of a loop over findall": "for v in F('[0-9]+', t):\n    n = int(v)",
+            "items mapped over findall": "n = list(map(int, F('[0-9]+', t)))",
+        },
+    ),
+    **{
+        key: row
+        for method in ("fullmatch", "match", "search")
+        for key, row in _regex_forms(
+            method, {f"a value {method} admitted": "if F('[0-9]+', t):\n    n = int(t)"}
+        ).items()
+    },
+    **{
+        f"int() of a value {form} admitted {place}": _form(int_parse_problems, _placed(imports, body, place))
+        for form, imports, body in (
+            (
+                "a compiled pattern's fullmatch",
+                "import re",
+                "P = re.compile('[0-9]+')\nif P.fullmatch(t):\n    n = int(t)",
+            ),
+            ("re.Pattern.fullmatch", "import re", "if re.Pattern.fullmatch(P, t):\n    n = int(t)"),
+            ("a walrus's match", "import re", "if m := re.match('([0-9]+)', t):\n    n = int(m.group(1))"),
+        )
+        for place in PLACES
+    },
+    # A module-level binding is read by a function that reads the module's name.
+    "int() in a function of a module-level findall list": _form(
+        int_parse_problems, "import re\n\nITEMS = re.findall('[0-9]+', T)\n\n\ndef f():\n    return int(ITEMS[0])\n"
+    ),
+    # A name is a group's only in the scope that binds it: g's parameter is not f's list.
+    "int() of a parameter another function's findall list shares the name of": _form(
+        int_parse_problems,
+        "import re\n\n\ndef f(t):\n    items = re.findall('[0-9]+', t)\n    return items\n\n\n"
+        "def g(items):\n    return int(items[0])\n",
+        refused=False,
+    ),
+    # A function the module defines under re's name is no re function.
+    "int() of a findall the module defines": _form(
+        int_parse_problems,
+        "def findall(p, t):\n    return [t]\n\n\ndef f(t):\n    return int(findall('[0-9]+', t)[0])\n",
+        refused=False,
+    ),
+    # re's function tests its second argument, the text; the pattern it is given first is no value it admits.
+    "int() of the pattern fullmatch was given": _form(
+        int_parse_problems,
+        "import re as r\n\n\ndef f(t, p):\n    if r.fullmatch(p, t):\n        return int(p)\n",
+        refused=False,
+    ),
     # A call such as next() or pop() hands back an item the policy does not follow; the paragraph names this limit.
     "int() of findall's item through next()": _form(
         int_parse_problems,
@@ -2233,12 +2401,53 @@ STATUS_REEXPORTS = {
     "tools/helper.py": STATUS_HELPER,
     "tests/validation/support.py": "from tools.helper import git as git\n",
     "tests/validation/again.py": "from support import git as git\n",
+    # A subclass of GitClient another module defines, and one that subclasses it again there.
+    "tools/clients.py": "from git_client import GitClient\n\n\nclass Mine(GitClient):\n    pass\n\n\n"
+    "class Again(Mine):\n    pass\n",
 }
 STATUS_IMPORTS = "from git_client import GitClient\nfrom support import git\nfrom again import git as twice\n\n\n"
 STATUS_CLASS = (
     "from git_client import GitResult\n\n\nclass Repo:\n    def produce(self) -> GitResult:\n"
     "        return GitResult(0, '', '')\n"
 )
+
+
+# Each way a read of the result `r` reaches its returncode, with what it imports: an attribute read by its name, a
+# class pattern, and a reach of the result's fields as a whole.
+STATUS_READS = [
+    ("an attribute", "", "return r.returncode"),
+    ("getattr", "", "return getattr(r, 'returncode')"),
+    ("inspect.getattr_static", "import inspect\n\n\n", "return inspect.getattr_static(r, 'returncode')"),
+    ("object.__getattribute__", "", "return object.__getattribute__(r, 'returncode')"),
+    ("a bound __getattribute__", "", "return r.__getattribute__('returncode')"),
+    ("operator.attrgetter", "import operator\n\n\n", "return operator.attrgetter('returncode')(r)"),
+    ("attrgetter imported", "from operator import attrgetter\n\n\n", "return attrgetter('stdout', 'returncode')(r)"),
+    ("attrgetter given a name", "import operator\n\n\n", "return operator.attrgetter(FIELD)(r)"),
+    ("vars", "", "return vars(r)['returncode']"),
+    ("__dict__", "", "return r.__dict__['returncode']"),
+    ("__getstate__", "", "return r.__getstate__()"),
+    ("dataclasses.asdict", "import dataclasses\n\n\n", "return dataclasses.asdict(r)['returncode']"),
+    ("asdict imported", "from dataclasses import asdict\n\n\n", "return asdict(r).get('returncode')"),
+    ("dataclasses.astuple", "import dataclasses\n\n\n", "return dataclasses.astuple(r)[0]"),
+    *(
+        (f"a class pattern {form}", "from git_client import GitResult\n\n\n", f"match r:\n        {case}: return 1")
+        for form, case in (
+            ("by keyword", "case GitResult(returncode=0)"),
+            ("by position", "case GitResult(0, _, _)"),
+            ("of another class by keyword", "case object(returncode=0)"),
+            ("under as", "case GitResult(returncode=0) as s"),
+            ("in an alternative", "case None | GitResult(returncode=1)"),
+        )
+    ),
+]
+# Each client a GitClient subclass gives, from this module, from another, and from a subclass of a subclass.
+STATUS_CLIENTS = [
+    ("a subclass the module defines", "class Mine(GitClient):\n    pass\n\n\n", "Mine()"),
+    ("a subclass of a subclass", "class Mine(GitClient):\n    pass\n\n\nclass Again(Mine):\n    pass\n\n\n", "Again()"),
+    ("a subclass another module defines", "from tools.clients import Mine\n\n\n", "Mine()"),
+    ("a subclass of a subclass another module defines", "from tools.clients import Again\n\n\n", "Again()"),
+    ("a subclass through a module import", "from tools import clients\n\n\n", "clients.Mine()"),
+]
 
 
 # Each form of a read of a git result's exit status, from the policy's paragraph in "Validation" in
@@ -2330,6 +2539,31 @@ STATUS_CLASS = (
             "def f(client: GitClient, field):\n    r = client.run(['status'])\n    return getattr(r, field)  # read\n",
             id="getattr of a name given",
         ),
+        *(
+            pytest.param(
+                f"{imports}def f(client: GitClient):\n    r = client.run(['status'])\n    {read}  # read\n", id=form
+            )
+            for form, imports, read in STATUS_READS
+        ),
+        *(
+            pytest.param(f"{imports}def f():\n    return {client}.run(['status']).returncode  # read\n", id=form)
+            for form, imports, client in STATUS_CLIENTS
+        ),
+        # "a name is one only in the function that binds it": bound to a name that holds one, or captured by a case.
+        pytest.param(
+            "def f(client: GitClient):\n    r = client.run(['status'])\n    s = r\n    return s.returncode  # read\n",
+            id="a name bound to a held name",
+        ),
+        pytest.param(
+            "def f(client: GitClient):\n    match client.run(['status']):\n        case r:\n"
+            "            return r.returncode  # read\n",
+            id="a case capturing the result",
+        ),
+        # A subclass's own methods run on a client.
+        pytest.param(
+            "class Mine(GitClient):\n    def f(self):\n        return self.run(['status']).returncode  # read\n",
+            id="self in a subclass's method",
+        ),
     ],
 )
 def test_git_status_policy_refuses_every_form_its_paragraph_names(body: str) -> None:
@@ -2398,6 +2632,23 @@ def test_git_status_policy_follows_a_re_export_under_a_block(support: str) -> No
         pytest.param(
             "def f(client: GitClient):\n    r = client.run(['status'])\n    return getattr(r, 'stdout')\n",
             id="getattr of another attribute",
+        ),
+        *(
+            pytest.param(f"{imports}def f(client: GitClient):\n    r = client.run(['status'])\n    {read}\n", id=form)
+            for form, imports, read in (
+                ("attrgetter of another attribute", "import operator\n\n\n", "return operator.attrgetter('stdout')(r)"),
+                (
+                    "a class pattern of another field",
+                    "from git_client import GitResult\n\n\n",
+                    "match r:\n        case GitResult(stdout=''): return 1",
+                ),
+                ("vars of another object", "", "return vars(client)"),
+            )
+        ),
+        # A class that subclasses something other than GitClient runs no git.
+        pytest.param(
+            "class Other(dict):\n    pass\n\n\ndef f():\n    return Other().run(['status']).returncode\n",
+            id="a class of another base",
         ),
         # A method returns a result only on an instance of the class that annotates it, not on another object whose
         # method shares its name.
@@ -2662,6 +2913,17 @@ CLAIM_FORMS: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
             ("Path.open unbound", "from pathlib import Path", "Path.open(p, 'w')"),
             ("Path.open unbound in a text mode", "from pathlib import Path", "Path.open(p, 'r', -1)"),
             ("zipfile.Path.read_text unbound", "import zipfile", "zipfile.Path.read_text(p)"),
+            # zipfile.Path.open takes its encoding first after the mode, a slot earlier than pathlib's.
+            ("zipfile.Path.open unbound", "import zipfile", "zipfile.Path.open(p, 'r')"),
+            ("zipfile.Path.open bound", "import zipfile", "zipfile.Path(z).open('r')"),
+            # On a receiver that may be either class, a buffering size at zipfile's slot names no encoding.
+            ("a path's open given a buffering size", "import pathlib", "pathlib.Path(p).open('r', -1)"),
+            ("an open on any receiver given a buffering size", "import os", "p.open('r', -1)"),
+            # subprocess opens its pipes in text when given errors=, as it does for text= or universal_newlines=.
+            *(
+                (f"subprocess.{start} given errors=", "import subprocess", f"subprocess.{start}(a, errors='strict')")
+                for start in ("run", "Popen", "check_output")
+            ),
         )
     ),
     # a write that takes json.dumps text "through a name its function binds to it"
@@ -2754,6 +3016,24 @@ CLAIM_PASSES: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
             ("from pathlib import Path", "Path.open(p, 'rb')"),
         )
     ),
+    # zipfile.Path.open names its encoding first after the mode, bound or unbound, and so does a pathlib path's open
+    # at its own slot.
+    *(
+        (f"{call} with its encoding", python_checks.encoding_problems, f"{imports}\n\n\n{call}\n")
+        for imports, call in (
+            ("import zipfile", "zipfile.Path(z).open('r', 'utf-8')"),
+            ("import zipfile", "zipfile.Path.open(p, 'r', 'utf-8')"),
+            ("import zipfile", "zipfile.Path(z).open('r', encoding='utf-8')"),
+            ("import pathlib", "pathlib.Path(p).open('r', -1, 'utf-8')"),
+            ("import subprocess", "subprocess.run(a, errors='strict', encoding='utf-8')"),
+            # An errors= that is empty or None leaves the pipes in bytes.
+            ("import subprocess", "subprocess.run(a, errors=None)"),
+            # fileinput hands each file to a hook that names its own encoding.
+            ("import fileinput", "fileinput.input(f, openhook=fileinput.hook_encoded('utf-8'))"),
+            ("import fileinput", "fileinput.input(f, mode='rb')"),
+            ("import logging", "logging.FileHandler(p, 'a', 'utf-8')"),
+        )
+    ),
     # A print with no file= writes to standard output, the script's report, which is no file or stream it names.
     (
         "a print to standard output",
@@ -2774,3 +3054,24 @@ def test_each_claim_policy_passes_the_forms_its_paragraph_leaves_out(
     policy: Callable[[Path, list[Path]], list[str]], source: str
 ) -> None:
     assert run_claim_form(policy, source) == []
+
+
+def _opener_call(name: str, opener: TextOpener, encoding: str) -> str:
+    """A module calling a TEXT_OPENERS entry in a text mode, with what else it is given."""
+    module = name.rpartition(".")[0]
+    imports = f"import {module}\n\n\n" if module else ""
+    mode = "mode='wt'" if opener.default_mode else ""
+    arguments = ", ".join(part for part in (mode, encoding) if part)
+    return f"{imports}{name}({arguments})  # read\n"
+
+
+# Every text opener the table names, in a text mode: refused without an encoding, and passed with one.
+@pytest.mark.parametrize("name", sorted(TEXT_OPENERS))
+def test_the_encoding_policy_reads_every_text_opener_in_the_table(name: str) -> None:
+    opener = TEXT_OPENERS[name]
+    found = run_claim_form(python_checks.encoding_problems, _opener_call(name, opener, ""))
+    line = 4 if "." in name else 1
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{line}"], found
+    for keyword in opener.encoding_keywords:
+        source = _opener_call(name, opener, f"{keyword}=e")
+        assert run_claim_form(python_checks.encoding_problems, source) == [], (name, keyword)

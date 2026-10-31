@@ -83,18 +83,22 @@ EVENT_LOOP_STARTS = frozenset(name.rpartition(".")[2] for name in PROCESS_STARTS
 @dataclass(frozen=True)
 class TextOpener:
     """Where a call that may open text takes its mode and its encoding, by position (None for a keyword alone or no
-    mode at all), the mode it opens in when given none, empty for a call that opens only text, and whether it opens a
-    plain file by name with the built-in open's arguments, its mode second."""
+    mode at all), the mode it opens in when given none, empty for a call that opens only text, whether it opens a
+    plain file by name with the built-in open's arguments, its mode second, and the keywords any of which names the
+    encoding, as fileinput's openhook= hands the opening to a hook that names its own."""
 
     mode: int | None
     default_mode: str
     encoding: int | None
     plain_file: bool = False
+    encoding_keywords: tuple[str, ...] = ("encoding",)
 
 
 BINARY_DEFAULT = "rb"
 # The module functions and classes that open text, by the name they are imported as. codecs.open given no encoding
-# opens the file with the built-in open, in text.
+# opens the file with the built-in open, in text, as fileinput does each file it is given, and a logging file handler
+# its log. logging.basicConfig and logging.config.fileConfig open a file only when given a name rather than a stream or
+# a parser, and a ConfigParser's read is a method on a receiver no reader can place, so none of them is here.
 TEXT_OPENERS = {
     "open": TextOpener(1, "r", 3, plain_file=True),
     "builtins.open": TextOpener(1, "r", 3, plain_file=True),
@@ -108,15 +112,35 @@ TEXT_OPENERS = {
     "gzip.open": TextOpener(1, BINARY_DEFAULT, 3),
     "bz2.open": TextOpener(1, BINARY_DEFAULT, 3),
     "lzma.open": TextOpener(1, BINARY_DEFAULT, None),
+    **{
+        f"fileinput.{name}": TextOpener(None, "r", None, encoding_keywords=("encoding", "openhook"))
+        for name in ("input", "FileInput")
+    },
+    "logging.FileHandler": TextOpener(1, "a", 2),
+    "logging.handlers.WatchedFileHandler": TextOpener(1, "a", 2),
+    "logging.handlers.RotatingFileHandler": TextOpener(1, "a", 4),
+    "logging.handlers.TimedRotatingFileHandler": TextOpener(None, "", 4),
 }
-# The path methods that open, read, or write text, by the attribute a call names: pathlib's and zipfile's alike.
-TEXT_METHODS = {
+# The path methods that open, read, or write text, by the class that defines them: pathlib's take the encoding as a
+# parameter of its own, and zipfile.Path's hand their positional arguments after the mode to io.TextIOWrapper, whose
+# first is the encoding, so open takes it a slot earlier there than on a pathlib path.
+_PATHLIB_METHODS = {
     "read_text": TextOpener(None, "", 0),
     "write_text": TextOpener(None, "", 1),
     "open": TextOpener(0, "r", 2),
 }
-# The classes whose TEXT_METHODS a call may name unbound, as in `Path.read_text(path)`, where the path takes the first
+PATH_METHODS: dict[str, dict[str, TextOpener]] = {
+    **dict.fromkeys(("pathlib.Path", "pathlib.PosixPath", "pathlib.WindowsPath"), _PATHLIB_METHODS),
+    "zipfile.Path": {"read_text": TextOpener(None, "", 0), "open": TextOpener(0, "r", 1)},
+}
+# Each path method by the attribute a call names, with every class's reading of it: a call on a receiver no reader
+# can place may be any of them.
+TEXT_METHODS: dict[str, tuple[TextOpener, ...]] = {
+    method: tuple(dict.fromkeys(methods[method] for methods in PATH_METHODS.values() if method in methods))
+    for method in dict.fromkeys(method for methods in PATH_METHODS.values() for method in methods)
+}
+# The classes whose PATH_METHODS a call may name unbound, as in `Path.read_text(path)`, where the path takes the first
 # argument slot and every other argument sits one slot later.
-PATH_CLASSES = frozenset({"pathlib.Path", "pathlib.PosixPath", "pathlib.WindowsPath", "zipfile.Path"})
+PATH_CLASSES = frozenset(PATH_METHODS)
 # The module functions named open that take no text encoding: a call through one is no path's open.
 OTHER_OPENS = frozenset({"os.open", "tarfile.open", "shelve.open", "dbm.open", "webbrowser.open", "wave.open"})
