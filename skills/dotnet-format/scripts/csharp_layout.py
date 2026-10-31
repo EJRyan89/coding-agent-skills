@@ -41,14 +41,19 @@ evaluates a project the solution lists only when the entry lies inside the repos
 anything touches it; an entry outside the root, or written as a network share or a device, prints `REFUSED <entry>
 <reason>` and is left unread. A --solution that is absolute or lies outside the root, judged as a FILE_LIST entry
 is, fails as `FAILED the solution <solution> is refused: <reason>` before the solution is read. Neither writes a file
-that is a symbolic link or a Windows junction, or that lies below one inside the repository, since the write would land
-wherever the link points: `check --fix` prints `REFUSED <file> <reason>` and leaves the file unfixed, and `config
---apply` prints `REFUSED <.editorconfig> <reason>`, adds nothing there, and exits 1, a setting still missing. Each
+that is read-only, or one that is a symbolic link or a Windows junction or lies below one inside the repository, since
+the write would land wherever the link points. Each judges and reads every file it would write before it writes
+any, so a refusal never stops it part way: `check --fix` prints `REFUSED <file> <reason>` for each file with a fix
+pending that is a link, lies below one, or is read-only, checks it unfixed, and fixes the rest, and `config --apply`
+prints `REFUSED <.editorconfig> <reason>`, adds nothing there, adds the rest, and exits 1, a setting still missing. Each
 replaces a file it writes whole, keeping its encoding, byte order mark, and permissions, so a write that fails part way
 leaves the file as it was.
 
 A failure, such as a listed file that does not exist or a file it cannot read or write, prints `FAILED <reason>`
-as the last line and exits 1. A usage error exits 2.
+as the last line and exits 1. A write that fails after the checks, such as a full disk, a folder the script may not
+create a file in, or a file another process holds or made read-only since, ends the run there: the `FIXED` or `ADDED`
+lines before the `FAILED` line name changes already written, and the files after it are unchanged. A usage error
+exits 2.
 """
 
 from __future__ import annotations
@@ -69,7 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import json_reader
 import nesting_depth
 import whole_number
-from atomic_file import replace_bytes
+from atomic_file import is_read_only, replace_bytes
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
@@ -552,15 +557,27 @@ class Failed(Exception):
     pass
 
 
+def write_refusal(root: Path, path: Path) -> str | None:
+    """Why `path`, a file under `root` that a fix would rewrite, is not written, or None: `link_refusal`'s reason, or
+    the file is read-only, which `atomic_file` refuses to replace."""
+    refused = link_refusal(root, path)
+    if refused is None and is_read_only(path):
+        refused = "the file is read-only; make it writable to fix it"
+    return refused
+
+
 def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], None]) -> bool:
     """Check (and fix) each file; return whether a violation remains, a file could not be read, or an entry was
-    refused. An entry `inside_root` refuses is never opened, a file `link_refusal` refuses is checked and left unfixed,
-    and one `read_source` cannot decode is reported and left alone while the rest are checked."""
+    refused. An entry `inside_root` refuses is never opened, and one `read_source` cannot decode is reported and left
+    alone while the rest are checked. With `fix`, every file is read and its fix worked out before the first write, and
+    a file with a fix pending that `write_refusal` refuses is reported, checked, and left unfixed, so a refusal never
+    stops the run part way."""
     names = inside_root(root, listed, emit)
     missing = next((root / name for name in names if not (root / name).is_file()), None)
     if missing is not None:
         raise Failed(f"{missing} does not exist")
-    remaining: list[tuple[str, Violation]] = []
+    checked: list[tuple[str, str]] = []
+    pending: list[tuple[str, Source, str, list[Violation]]] = []
     unreadable = False
     for name in names:
         path = root / name
@@ -570,17 +587,19 @@ def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], 
             emit(f"UNREADABLE\t{name}\t{error}")
             unreadable = True
             continue
-        text = source.text
-        refused = link_refusal(root, path) if fix else None
+        text, fixed = fix_text(source.text) if fix else (source.text, [])
+        refused = write_refusal(root, path) if fixed else None
         if refused:
             emit(f"REFUSED\t{name}\t{refused}")
-        elif fix:
-            text, fixed = fix_text(text)
-            if fixed:
-                write_source(path, source, text)
-            for violation in fixed:
-                emit(f"FIXED\t{name}\t{violation.line + 1}\t{violation.rule}")
-        remaining += [(name, violation) for violation in check_text(text)]
+            text = source.text
+        elif fixed:
+            pending.append((name, source, text, fixed))
+        checked.append((name, text))
+    for name, source, text, fixed in pending:
+        write_source(root / name, source, text)
+        for violation in fixed:
+            emit(f"FIXED\t{name}\t{violation.line + 1}\t{violation.rule}")
+    remaining = [(name, violation) for name, text in checked for violation in check_text(text)]
     for name, violation in remaining:
         emit(
             "\t".join(
@@ -957,13 +976,13 @@ def package_state(
     return ("present", "") if projects else ("missing", "")
 
 
-def insert_settings(path: Path, settings: list[tuple[str, str]]) -> None:
-    """Add a [*.cs] section as the file's first section, so every existing section and nearer file still wins.
+def insert_settings(source: Source, settings: list[tuple[str, str]]) -> str:
+    """`source`'s text with a [*.cs] section added as its first section, so every existing section and nearer file
+    still wins.
 
     Within an .editorconfig, a later section overrides an earlier one, so appending would override a
     path-specific choice such as `[src/**.cs]` setting a rule to none.
     """
-    source = read_source(path) if path.is_file() else Source("", b"", "utf-8")
     newline = "\r\n" if "\r\n" in source.text else "\n"
     section = newline.join(["[*.cs]", *(f"{key} = {value}" for key, value in settings)]) + newline
     lines = source.text.splitlines(keepends=True)
@@ -975,15 +994,17 @@ def insert_settings(path: Path, settings: list[tuple[str, str]]) -> None:
         text += (newline if text.strip() else "") + section
     else:
         text = "".join(lines[:first]) + section + newline + "".join(lines[first:])
-    write_source(path, source, text)
+    return text
 
 
 def configure(
     root: Path, solution: Path, listed: list[str], apply: bool, services: Services, emit: Callable[[str], None]
 ) -> bool:
     """Report each setting as the changed files see it; with apply, fill only the gaps. Return whether a setting
-    is still missing, which an .editorconfig `link_refusal` refuses to write, or `read_source` cannot read, leaves
-    so, or an entry was refused. An entry `inside_root` refuses is never judged, and a list it refuses whole fails."""
+    is still missing, which an .editorconfig `write_refusal` refuses to write, or `read_source` cannot read, leaves
+    so, or an entry was refused. An entry `inside_root` refuses is never judged, and a list it refuses whole fails.
+    With apply, every .editorconfig is judged and read before the first is written, so a refusal never stops it part
+    way."""
     files = inside_root(root, listed, emit)
     if not files:
         raise Failed("no listed file lies inside the repository root")
@@ -1011,18 +1032,22 @@ def configure(
     if not apply:
         return bool(gaps) or left_out
     still_missing = False
+    pending: list[tuple[Path, Source, list[tuple[str, str]]]] = []
     for target, missing in gaps.items():
-        refused = link_refusal(root, target)
+        refused = write_refusal(root, target)
         if refused:
             emit(f"REFUSED\t{target.relative_to(root).as_posix()}\t{refused}")
             still_missing = True
             continue
         try:
-            insert_settings(target, missing)
+            source = read_source(target) if target.is_file() else Source("", b"", "utf-8")
         except Unreadable as error:
             emit(f"UNREADABLE\t{target.relative_to(root).as_posix()}\t{error}")
             still_missing = True
             continue
+        pending.append((target, source, missing))
+    for target, source, missing in pending:
+        write_source(target, source, insert_settings(source, missing))
         for key, value in missing:
             emit(f"ADDED\t{target.relative_to(root).as_posix()}\t{key}\t{value}")
     return still_missing or left_out
