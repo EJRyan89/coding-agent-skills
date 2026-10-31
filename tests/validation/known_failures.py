@@ -8,7 +8,7 @@ entry names its reader, its case, and its issue, once, in order. A pull request 
 names is refused, in every form GitHub closes it by, in its title or its body, since the issue would close while its
 case still fails; the pull request that fixes the reader removes the entry with it. tests/malformed_input/readers.py's
 PENDING, each reader no table holds yet with the issue whose pull request adds it, is held to the same two rules.
-`tests/run_validation.py --known-failure-issues`, a run of its own that runs no suite, also asks GitHub, through gh,
+`tests/known_failure_issues.py`, a program of its own that runs no policy and no suite, also asks GitHub, through gh,
 that each issue either list names is an open issue, never a pull request, and asks nothing while both are empty; a gh
 that cannot answer fails it.
 """
@@ -210,8 +210,8 @@ def open_issue_problems(root: Path, client: GitHubClient | None = None) -> list[
     """Each issue the known-failure list or the PENDING table names that GitHub does not report as an open issue: one
     in another state, or a pull request, which gh's `issue view` answers for as well, and whose URL holds /pull/; none
     while both are empty, which asks GitHub nothing. A gh that cannot answer, or a checkout whose origin names no
-    GitHub repository, is a problem, never an open issue. Only `tests/run_validation.py --known-failure-issues` runs it,
-    so the token gh reads reaches no suite."""
+    GitHub repository, is a problem, never an open issue. Only `tests/known_failure_issues.py` runs it, so the token gh
+    reads reaches no policy and no suite."""
     owed = owed_issues(root)
     if not owed:
         return []

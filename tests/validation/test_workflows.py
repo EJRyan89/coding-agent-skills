@@ -1670,6 +1670,92 @@ def test_the_token_anywhere_else_or_in_any_other_form_fails(drifted: str, proble
     assert any(problem in found for found in problems), problems
 
 
+# Every key GitHub reads that changes how or where a step's command runs, at the step, the job, and the workflow, each
+# written out so a key the policy stops reading fails here: one row each, the token step's env included.
+TOKEN_STEP_DRIFTS = {
+    "shell": "        shell: bash\n",
+    "working-directory": "        working-directory: tests\n",
+    "if": "        if: always()\n",
+    "continue-on-error": "        continue-on-error: true\n",
+    "timeout-minutes": "        timeout-minutes: 5\n",
+    "id": "        id: check\n",
+    "uses": "        uses: actions/checkout@v4\n",
+    "with": "        with:\n          args: x\n",
+}
+TOKEN_ENV_DRIFTS = ("BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "GIT_DIR", "OTHER")
+TOKEN_JOB_DRIFTS = {
+    "defaults": "    defaults:\n      run:\n        shell: bash\n",
+    "container": "    container: python:3.11\n",
+    "services": "    services:\n      cache:\n        image: redis\n",
+    "env": "    env:\n      BASH_ENV: setup.sh\n",
+    "strategy": "    strategy:\n      matrix:\n        os:\n          - ubuntu-latest\n",
+    "environment": "    environment: production\n",
+    "continue-on-error": "    continue-on-error: true\n",
+    "outputs": "    outputs:\n      result: x\n",
+    "concurrency": "    concurrency: one\n",
+}
+RUNNERS = ("self-hosted", "my-runner", "${{ matrix.os }}", "ubuntu")
+WORKFLOW_DRIFTS = {
+    "defaults": "defaults:\n  run:\n    shell: bash\n\n",
+    "BASH_ENV": "env:\n  BASH_ENV: setup.sh\n\n",
+    "PYTHONPATH": "env:\n  SHELLCHECK_VERSION: '0.9.0'\n  PYTHONPATH: lib\n\n",
+}
+
+
+def token_problems(workflow: str) -> list[str]:
+    return workflow_guard_problems(workflow, ["push"], set(), (), TOKEN_STEP)
+
+
+@pytest.mark.parametrize("key", sorted(TOKEN_STEP_DRIFTS))
+def test_a_token_step_key_beside_its_name_env_and_run_fails(key: str) -> None:
+    drifted = CREDENTIAL_WORKFLOW.replace(CHECK_JOB_END, TOKEN_STEP_DRIFTS[key] + CHECK_JOB_END)
+    assert any(
+        f"not [{key!r}], which change how or where its command runs" in found for found in token_problems(drifted)
+    )
+
+
+@pytest.mark.parametrize("name", TOKEN_ENV_DRIFTS)
+def test_a_variable_beside_the_token_in_its_steps_env_fails(name: str) -> None:
+    drifted = CREDENTIAL_WORKFLOW.replace(
+        "          GH_TOKEN: ${{ github.token }}\n",
+        f"          GH_TOKEN: ${{{{ github.token }}}}\n          {name}: x\n",
+    )
+    assert any(f"gives GH_TOKEN alone, not [{name!r}]" in found for found in token_problems(drifted))
+
+
+@pytest.mark.parametrize("key", sorted(TOKEN_JOB_DRIFTS))
+def test_a_token_job_key_that_changes_how_its_steps_run_fails(key: str) -> None:
+    drifted = CREDENTIAL_WORKFLOW.replace(
+        "  run:\n    runs-on: ubuntu-latest\n", "  run:\n    runs-on: ubuntu-latest\n" + TOKEN_JOB_DRIFTS[key]
+    )
+    assert any(
+        "job run holds the token, so it has only" in found and repr(key) in found for found in token_problems(drifted)
+    )
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_a_token_job_on_a_runner_github_does_not_host_fails(runner: str) -> None:
+    drifted = CREDENTIAL_WORKFLOW.replace("  run:\n    runs-on: ubuntu-latest\n", f"  run:\n    runs-on: {runner}\n")
+    assert any("runs on a runner GitHub hosts" in found for found in token_problems(drifted))
+
+
+@pytest.mark.parametrize("drift", sorted(WORKFLOW_DRIFTS))
+def test_a_workflow_setting_how_the_token_jobs_steps_run_fails(drift: str) -> None:
+    drifted = CREDENTIAL_WORKFLOW.replace("jobs:\n", WORKFLOW_DRIFTS[drift] + "jobs:\n", 1)
+    assert any("the workflow gives a step the token" in found for found in token_problems(drifted))
+
+
+@pytest.mark.parametrize("runner", ["ubuntu-latest", "ubuntu-24.04", "windows-latest", "macos-15", "ubuntu-24.04-arm"])
+def test_a_token_job_on_a_hosted_runner_with_pinned_versions_passes(runner: str) -> None:
+    workflow = CREDENTIAL_WORKFLOW.replace(
+        "jobs:\n", "env:\n  SHELLCHECK_VERSION: '0.9.0'\n  X_SHA256: 'abc'\n\njobs:\n", 1
+    )
+    workflow = workflow.replace(
+        "  run:\n    runs-on: ubuntu-latest\n", f"  run:\n    name: Run\n    runs-on: {runner}\n"
+    )
+    assert token_problems(workflow) == []
+
+
 PINS = "env:\n  SHELLCHECK_VERSION: '0.9.0'\n  SHELLCHECK_LINUX_SHA256: 'abc'\n"
 VALIDATE_PINS = (
     "env:\n  SHELLCHECK_VERSION: '0.9.0'\n  PSSCRIPTANALYZER_VERSION: '1.25.0'\n  SHELLCHECK_LINUX_SHA256: 'abc'\n"
