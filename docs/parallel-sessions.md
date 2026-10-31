@@ -274,10 +274,14 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **Location variables.** `GIT_DIR`, `GIT_WORK_TREE`, and the two configuration variables reach a git call from
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
-  `typeset -x`, an assignment under `set -a`, `set -o allexport` in a bundle as in `set -eo allexport`, or to a
+  `typeset -x`, an assignment under `set -a`, `set -o allexport` in a bundle as in `set -eo allexport`,
+  `shopt -so allexport`, or a nested `bash -a` or `bash -o allexport`, or to a
   variable already exported), and removed by `unset`,
   `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, `readarray`, and
-  `wait -p` leave each variable they set unsettled, and every variable when a word the text does not settle is among
+  `wait -p` leave each variable they set unsettled, as an expansion that assigns does, `${NAME:=word}` or
+  `${NAME=word}`, to an element or not, or `${!NAME:=word}` through the variable it names, in any word or
+  redirection, an arithmetic `for`'s header, or nested in another expansion, unless the variable already holds a
+  value that is not empty, which neither form changes, and every variable when a word the text does not settle is among
   their options or operands; a name reference that `declare -n`, `local -n`, or `typeset -n` makes stands for the variable it names,
   so an assignment to it, its expansion, and each of those builtins reach that variable, until `unset -n` or
   `declare +n` ends it, and one a function makes stands for no variable the guard knows once the function returns;
@@ -295,7 +299,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **Bash, by its grammar.** `tools/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
   escapes and line continuations, comments, and here-documents, whose bodies are data and never commands; and the
   command tree of lists, `&&` and `||`, pipelines, `( )` subshells, `{ }` groups, `if`, `while`, `until`, `for`,
-  `select`, `case`, `[[ ]]`, `!`, `time`, and function definitions, with redirections and array assignments,
+  `select`, `case`, `[[ ]]`, `!`, `time`, and function definitions, reading an arithmetic command, `(( ))`, as a
+  subshell, after which each variable an expansion in it assigns is unsettled, with redirections and array assignments,
   whose substitutions it reads and whose value it leaves unsettled. Before a command's name it reads every
   assignment Bash reads there, and places the command after them: `NAME=value`, `NAME+=value`, an element's
   `NAME[SUBSCRIPT]=value` and `NAME[SUBSCRIPT]+=value`, whose subscript it reads whole as Bash does, blanks, quotes,
@@ -311,7 +316,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   `2>/dev/null time git push` or `x=1 time git push` Bash runs the program `time`. A word's value comes from its
   literal text, `~`, and each `$NAME` the command sets or the environment holds, and `$PWD` is where the shell is; a
   substitution, arithmetic, a special parameter, a glob, a brace expansion, or a value that would split leaves the
-  word unsettled. The guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
+  word unsettled. An unsettled word as a command's name, or among the options of `command`, `exec`, or `builtin`,
+  may expand to nothing, so the words after it are also read as the command that runs, as in `$x git commit`. The
+  guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
   directory unknown), `pushd`, `popd`, and `env -C`, whose last `-C` alone counts, read from where `env` starts, and
   runs a function's body where a command calls it.
   Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, and `env`
@@ -349,7 +356,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   string is read as part of the same session. A command that does not parse is allowed: PowerShell parses a whole
   script before it runs any of it, so none of it runs.
 - **Paths that do not all run.** A command that runs only when another succeeds or fails, only in some branch, or
-  any number of times in a loop or script block, is read as running, and afterwards the guard keeps only what every
+  any number of times in a loop or script block, is read as running, and so is the `command_not_found_handle`
+  function a command defines, at each program a later word starts, since Bash runs it for a program it does not
+  find, and afterwards the guard keeps only what every
   path agrees on: a directory or variable one path changes is unknown after it. A directory change whose target is
   not a directory fails and leaves the shell where it was, so it is unknown after it too, except along `&&`, which
   goes on only when it succeeded. The guard reads a loop's or script block's body twice, so it follows loops and
@@ -365,8 +374,10 @@ refused while a guarded hub is in view, and what they do not see at all is named
   bundle taking the next word as its value, as in `bash -euo pipefail -c '<script>'`, and Windows PowerShell
   runs a leading word that names no parameter as `-Command`, as in `powershell '<script>'`, where `pwsh` runs it as a
   script file. Each nested shell is read as a process of its own that starts with the variables its parent exported,
-  a nested `bash` or `sh` also with the functions its parent exported (`export -f`, `declare -fx`) and those its
-  environment hands it as `BASH_FUNC_<name>%%`, in its parent's directory or the one the last
+  a nested `bash` or `sh` also with the functions its parent exported (`export -f`, `declare -fx`, `declare -Fx`
+  in either case and order, or a definition under allexport), through any `pwsh` between them, and those its
+  environment hands it as `BASH_FUNC_<name>%%`, from Bash or from a PowerShell assignment such as
+  `${env:BASH_FUNC_<name>%%}`, a declaration word the text does not settle exporting every function, in its parent's directory or the one the last
   `pwsh -WorkingDirectory` (`-wd`) names, read from there with a leading `~` as home; its directory and
   what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.
@@ -393,7 +404,10 @@ command that names git as if one were in view. While one is, the guard refuses:
 - a command with a part it cannot read that may start git, when the command names git: Bash its grammar cannot read
   (the lines before a syntax error do run, unlike PowerShell's), Bash nested deeper than its reader follows, loops
   and script blocks nested more than eight deep, a script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression`
-  that the text does not settle or that nests more than four deep, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
+  that the text does not settle or that nests more than four deep, a `bash` with a word the text does not settle
+  among its options, as in `bash -c"$x"` or `bash $x -c`, which may be `-c`, an option word of `set` or `shopt`
+  the text does not settle, which may turn on allexport, a `BASH_FUNC_<name>%%` a PowerShell cmdlet writes,
+  whose body the text does not settle, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
   inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
   lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline
   command, script file, or encoded command at all), a callback `mapfile -C` runs, every `env -S`, whatever follows
@@ -404,7 +418,8 @@ command that names git as if one were in view. While one is, the guard refuses:
   timeout, past which Claude Code lets the command run, and a command either shell's reader fails on with an error
   of its own;
 - a shell alias the command defines, by Bash's `alias` with a value or a name that reaches `BASH_ALIASES` (an
-  element's assignment, `declare -A`, a builtin that sets a variable, or a name reference), or by PowerShell's
+  element's assignment, `declare -A`, a builtin that sets a variable, an expansion that assigns, or a name
+  reference), or a command name it defines by `hash -p` or a name that reaches `BASH_CMDS` the same ways, or by PowerShell's
   `Set-Alias`, `New-Alias`, `Import-Alias`, an item or content cmdlet or an assignment such as `$alias:g = 'git'`
   writing the `alias:` drive or the Alias provider at a path the text names, or a drive `New-PSDrive` makes on the
   Alias or Function provider; a PowerShell function defined from text the same ways on the `function:` drive; and
@@ -436,7 +451,10 @@ The hook sees the command text. It does not see:
   a program whose name is computed at run time;
 - a script handed to a shell other than `bash`, `sh`, `pwsh`, and `powershell`, such as `zsh -c`, `dash -c`, or
   `ksh -c`: the guard reads that shell as a program and never reads its script;
-- an alias `BASH_ALIASES` gains through a name the text does not settle;
+- an alias `BASH_ALIASES` or a command name `BASH_CMDS` gains through a name the text does not settle;
+- a variable an arithmetic expression assigns, in `(( ))`, `let`, or an arithmetic `for`, which holds a number,
+  and a builtin `enable -f` loads from a shared object;
+- a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
 - text run as commands through a type or method the text holds in a variable, as in `$t = [scriptblock]` then

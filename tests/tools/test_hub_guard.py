@@ -2343,6 +2343,102 @@ class ContractTests(GuardTestCase):
     def shell_event(self, tool: str, command: str, cwd: Path) -> dict[str, object]:
         return {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}
 
+    def test_each_way_bash_defines_a_command_name_is_refused_while_a_hub_is_guarded(self) -> None:
+        # hash -p and every way a name reaches BASH_CMDS, the table hash keeps, as BASH_ALIASES is refused.
+        for command in (
+            'hash -p "$(type -P git)" g; g switch -c x',
+            "hash -p /usr/bin/git g; g switch -c x",
+            "hash -lp /usr/bin/git g; g switch -c x",
+            "hash $o /usr/bin/git g; g switch -c x",
+            "BASH_CMDS[g]=/usr/bin/git; bash -c 'g switch -c x'",
+            "BASH_CMDS+=([g]=/usr/bin/git); g switch -c x",
+            "declare -A BASH_CMDS=([g]=/usr/bin/git); g switch -c x",
+            "printf -v 'BASH_CMDS[g]' /usr/bin/git; g switch -c x",
+            "declare -n ref=BASH_CMDS; ref[g]=/usr/bin/git; g switch -c x",
+            ": ${BASH_CMDS[g]:=/usr/bin/git}; g switch -c x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("a command name the command defines", self.reason)
+        self.assertIsNone(self.bash("hash git; hash -r; hash -t git; git status", self.hub))
+
+    def test_a_function_exported_by_allexport_by_declare_f_or_across_pwsh_is_read_where_a_nested_bash_runs_it(
+        self,
+    ) -> None:
+        body = "f() { git switch -c x; }"
+        for tool, command in (
+            ("Bash", f"set -a; {body}; bash -c f"),
+            ("Bash", f"set -o allexport; {body}; bash -c f"),
+            ("Bash", f"set -eo allexport; {body}; bash -c f"),
+            ("Bash", f"shopt -so allexport; {body}; bash -c f"),
+            ("Bash", f"shopt -s -o allexport; {body}; bash -c f"),
+            ("Bash", f"bash -ac '{body}; bash -c f'"),
+            ("Bash", f"bash -o allexport -c '{body}; bash -c f'"),
+            ("Bash", f"{body}; declare -Fx f; bash -c f"),
+            ("Bash", f"{body}; typeset -xF f; bash -c f"),
+            ("Bash", f"{body}; declare -F -x f; bash -c f"),
+            ("Bash", f"{body}; declare $o f; bash -c f"),
+            ("Bash", f"{body}; export -f f; pwsh -c 'bash -c f'"),
+            ("Bash", f"set -a; {body}; pwsh -c 'bash -c f'"),
+            ("Bash", f"{body}; export -f f; pwsh -c 'pwsh -c \"bash -c f\"'"),
+            ("PowerShell", "${env:BASH_FUNC_f%%} = '() { git switch -c x; }'; bash -c f"),
+            ("PowerShell", "Set-Item 'env:BASH_FUNC_f%%' '() { git switch -c x; }'; bash -c f"),
+            (
+                "PowerShell",
+                "[Environment]::SetEnvironmentVariable('BASH_FUNC_f%%', '() { git switch -c x; }'); bash -c f",
+            ),
+            ("Bash", 'command_not_found_handle() { git "$@"; }; nosuch switch -c x'),
+        ):
+            with self.subTest(tool=tool, command=command):
+                self.assertEqual("deny", self.decision(self.shell_event(tool, command, self.hub)))
+        # A function defined before allexport is turned on, or listed by -F alone, is not exported.
+        self.assertIsNone(self.bash(f"{body}; set -a; bash -c f", self.hub))
+        self.assertIsNone(self.bash(f"{body}; declare -F f; bash -c f", self.hub))
+        self.assertIsNone(self.bash(f"set -a; set +a; {body}; bash -c f", self.hub))
+        # An option set does not settle may be any.
+        self.assertEqual("deny", self.bash(f"set $o; {body}; bash -c f", self.hub))
+        self.assertIn("could not read the options passed to set", self.reason)
+
+    def test_an_expansion_that_assigns_sets_its_variable(self) -> None:
+        git_directory = (self.hub / ".git").as_posix()
+        for form in (":=", "="):
+            for command, cwd in (
+                (f"shopt -s expand_aliases; : ${{BASH_ALIASES[g]{form}git}}; g switch -c x", self.hub),
+                (f'export GIT_DIR; : ${{GIT_DIR{form}"{git_directory}"}}; git switch -c x', self.tree),
+                (f'export GIT_DIR; : "${{GIT_DIR{form}{git_directory}}}"; git switch -c x', self.tree),
+                (f"export GIT_DIR; : ${{z:-${{GIT_DIR{form}{git_directory}}}}}; git switch -c x", self.tree),
+                (f"export GIT_DIR; (( ${{GIT_DIR{form}{git_directory}}} )); git switch -c x", self.tree),
+                (f'y=GIT_DIR; export GIT_DIR; : ${{!y{form}"{git_directory}"}}; git switch -c x', self.tree),
+                (f'export GIT_DIR; echo hi > "${{GIT_DIR{form}{git_directory}}}"; git switch -c x', self.tree),
+                (f"export GIT_DIR; for (( i = ${{GIT_DIR{form}1}}; i < 0; )); do :; done; git switch -c x", self.tree),
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.bash(command, cwd))
+        # A variable that holds a value is not assigned, and an expansion in a command substitution assigns there.
+        tree_directory = self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-dir").strip()
+        command = f'export GIT_DIR="{tree_directory}"; : ${{GIT_DIR:={git_directory}}}; git switch -c x'
+        self.assertIsNone(self.bash(command, self.tree))
+        command = f"x=$(: ${{GIT_DIR:={git_directory}}}); git switch -c x"
+        self.assertIsNone(self.bash(command, self.tree))
+
+    def test_bash_with_an_option_word_the_text_does_not_settle_is_refused_as_a_script_it_cannot_read(self) -> None:
+        for command in (
+            "bash -c\"$x\" 'git switch -c x'",
+            "bash $x -c 'git switch -c x'",
+            "sh $x -c 'git switch -c x'",
+            "bash -e $x -c 'git switch -c x'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("could not read the command passed to", self.reason)
+        self.assertEqual("deny", self.bash("x=; bash -c\"$x\" 'git switch -c x'", self.hub))
+        self.assertIn(WRITES.format("switch"), self.reason)
+        # A word the text does not settle may expand to nothing, leaving git the command.
+        for command in ("$x git switch -c x", "command $x git switch -c x", "exec -- $x git switch -c x"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(WRITES.format("switch"), self.reason)
+
     def test_each_cmdlet_that_defines_a_powershell_alias_is_known_by_each_of_its_names(self) -> None:
         for name in ("set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"):
             with self.subTest(name=name):
