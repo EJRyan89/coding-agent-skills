@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import dataclasses
 import io
 import itertools
 import json
@@ -2386,6 +2388,36 @@ class ContractTests(GuardTestCase):
                 self.assertEqual("deny", self.powershell(f"{definition}; f extra; git commit -m x", self.hub))
         self.assertIsNone(self.powershell(f"function f {{ Set-Location {tree} }}; f; git commit -m x", self.hub))
 
+    def test_a_function_the_paths_define_differently_is_read_with_each_body_they_give_it(self) -> None:
+        # Either branch's body, or none, where only one branch defines the name or unsets it.
+        bash = (
+            'if test -n "$y"; then f() { git switch -c x; }; else f() { :; }; fi; f',
+            'if test -n "$y"; then f() { :; }; else f() { git switch -c x; }; fi; f',
+            'if test -n "$y"; then f() { git switch -c x; }; else f() { :; }; fi; export -f f; bash -c f',
+            'if test -n "$y"; then f() { :; }; else f() { git switch -c x; }; fi; export -f f; bash -c f',
+            'if test -n "$y"; then git() { :; }; fi; git switch -c x',
+            'git() { :; }; if test -n "$y"; then unset -f git; fi; git switch -c x',
+            'test -n "$y" && f() { git switch -c x; }; f',
+        )
+        # The reader reports no definition with an empty body, so each body here runs a command.
+        powershell = (
+            "if ($y) { function f { git switch -c x } } else { function f { Write-Output a } }; f",
+            "if ($y) { function f { Write-Output a } } else { function f { git switch -c x } }; f",
+            "if ($y) { function git { Write-Output a } }; git switch -c x",
+            "foreach ($i in $y) { function git { Write-Output a } }; git switch -c x",
+            "if ($y) { function f { git switch -c x } } else { function f { Write-Output a } }; f extra",
+            "function g { git switch -c x }; if ($y) { function f { g } } else { function f { Write-Output a } }; f",
+        )
+        for tool, commands in (("Bash", bash), ("PowerShell", powershell)):
+            for command in commands:
+                with self.subTest(tool=tool, command=command):
+                    self.assertEqual("deny", self.decision(self.shell_event(tool, command, self.hub)))
+                    self.assertIn(WRITES.format("switch"), self.reason)
+        self.assertIsNone(self.bash('if test -n "$y"; then f() { :; }; else f() { git status; }; fi; f', self.hub))
+        self.assertIsNone(
+            self.powershell("if ($y) { function f { Write-Output a } } else { function f { git status } }; f", self.hub)
+        )
+
     def test_bash_runs_its_first_operand_after_every_option_as_the_c_script(self) -> None:
         for command in (
             "bash -c 'git commit -m x'",
@@ -2969,3 +3001,77 @@ def test_rename_options_before_or_after_values_are_still_detected(arguments: lis
 )
 def test_a_command_is_named_lower_cased_without_its_directory_or_exe(word: str | None, expected: str | None) -> None:
     assert expected == hub_guard.command_name(word)
+
+
+# Two different function bodies in each shell, for the join tests below.
+BODY = bash_syntax.Group(bash_syntax.CommandList())
+OTHER_BODY = bash_syntax.Subshell(bash_syntax.CommandList())
+POWERSHELL_BODY: list[hub_guard.Region | dict[str, Any]] = [{"kind": "note", "text": "one"}]
+OTHER_POWERSHELL_BODY: list[hub_guard.Region | dict[str, Any]] = [{"kind": "note", "text": "other"}]
+# For each field of a Bash shell and a PowerShell session, pairs of values two paths may leave it with, and the value
+# their join must hold: what the paths agree on, and otherwise what neither settles, or every alternative.
+SHELL_JOINS: dict[str, list[tuple[object, object, object]]] = {
+    "cwd": [(Path(HUB), Path(HUB), Path(HUB)), (Path(HUB), Path(TREE), None), (Path(HUB), None, None)],
+    "variables": [
+        ({"A": "1"}, {"A": "1"}, {"A": "1"}),
+        ({"A": "1"}, {"A": "2"}, {"A": None}),
+        ({"A": "1"}, {}, {"A": None}),
+    ],
+    "exported": [({"A"}, {"B"}, {"A", "B"})],
+    "stack": [([Path(HUB)], [Path(HUB)], [Path(HUB)]), ([Path(HUB)], [Path(TREE), Path(HUB)], [None, None])],
+    "allexport": [(False, False, False), (True, False, True)],
+    "opaque": [(False, False, False), (True, False, True)],
+    "functions": [
+        ({"f": (BODY,)}, {"f": (BODY,)}, {"f": (BODY,)}),
+        ({"f": (BODY,)}, {"f": (OTHER_BODY,)}, {"f": (BODY, OTHER_BODY)}),
+        ({"f": (BODY,)}, {}, {"f": (BODY, None)}),
+        ({"f": (BODY, None)}, {"f": (OTHER_BODY,)}, {"f": (BODY, None, OTHER_BODY)}),
+    ],
+    "references": [
+        ({"r": "A"}, {"r": "A"}, {"r": "A"}),
+        ({"r": "A"}, {"r": "B"}, {"r": None}),
+        ({"r": "A"}, {}, {"r": None}),
+    ],
+    "exported_functions": [({"f"}, {"g"}, {"f", "g"})],
+}
+SESSION_JOINS: dict[str, list[tuple[object, object, object]]] = {
+    "cwd": SHELL_JOINS["cwd"],
+    "variables": SHELL_JOINS["variables"],
+    "stack": SHELL_JOINS["stack"],
+    "opaque": SHELL_JOINS["opaque"],
+    "functions": [
+        ({"f": (POWERSHELL_BODY,)}, {"f": (POWERSHELL_BODY,)}, {"f": (POWERSHELL_BODY,)}),
+        ({"f": (POWERSHELL_BODY,)}, {"f": (OTHER_POWERSHELL_BODY,)}, {"f": (POWERSHELL_BODY, OTHER_POWERSHELL_BODY)}),
+        ({"f": (POWERSHELL_BODY,)}, {}, {"f": (POWERSHELL_BODY, None)}),
+    ],
+}
+
+
+def alternatives(value: object) -> object:
+    """A joined value as the join rule reads it: a function table's bodies in any order."""
+    if isinstance(value, dict) and all(isinstance(bodies, tuple) for bodies in value.values()):
+        return {name: sorted(map(repr, bodies)) for name, bodies in value.items()}
+    return value
+
+
+@pytest.mark.parametrize(
+    ("state", "join", "rules"),
+    [
+        (lambda: hub_guard.Shell(None, {}, set(), reading=hub_guard.Reading({}, "")), hub_guard.join, SHELL_JOINS),
+        (lambda: hub_guard.Session(None, {}), hub_guard.join_sessions, SESSION_JOINS),
+    ],
+    ids=["Shell", "Session"],
+)
+def test_every_field_two_paths_leave_differently_is_joined_by_the_rule(
+    state: Any, join: Any, rules: dict[str, list[tuple[object, object, object]]]
+) -> None:
+    # The reading is the one the whole command shares, never a path's own.
+    fields = {field.name for field in dataclasses.fields(state())} - {"reading"}
+    assert fields == rules.keys(), "each field of the state names how two paths join it"
+    for name, rows in rules.items():
+        for left, right, expected in rows:
+            first, second = state(), state()
+            setattr(first, name, copy.deepcopy(left))
+            setattr(second, name, copy.deepcopy(right))
+            assert alternatives(getattr(join(first, second), name)) == alternatives(expected), (name, left, right)
+            assert alternatives(getattr(join(second, first), name)) == alternatives(expected), (name, right, left)

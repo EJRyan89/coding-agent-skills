@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -481,6 +481,31 @@ def mentions(pattern: re.Pattern[str], text: str) -> bool:
 Word = str | None
 # The variables a shell has set, by name; a value is None when the text does not settle it.
 Variables = Mapping[str, Word]
+# A function's body as either shell's reader holds it.
+Body = TypeVar("Body")
+
+
+def joined_functions(
+    first: Mapping[str, tuple[Body, ...]], second: Mapping[str, tuple[Body, ...]], absent: Body
+) -> dict[str, tuple[Body, ...]]:
+    """The functions of a shell that may have taken either of two paths: each name with every body either path gives
+    it, and absent for a path on which no function has the name, where a call runs the builtin or program it names."""
+    joined: dict[str, tuple[Body, ...]] = {}
+    for name in [*first, *(name for name in second if name not in first)]:
+        bodies: list[Body] = []
+        for body in (*first.get(name, (absent,)), *second.get(name, (absent,))):
+            if body not in bodies:
+                bodies.append(body)
+        joined[name] = tuple(bodies)
+    return joined
+
+
+Taken = TypeVar("Taken", "Shell", "Session")
+
+
+def paths(state: Taken, count: int) -> list[Taken]:
+    """The state each of count paths starts from: the state itself for one, and a copy of it for each of several."""
+    return [state] if count == 1 else [state.copy() for _ in range(count)]
 
 
 def moved(directory: Path | None, target: Word) -> Path | None:
@@ -985,9 +1010,10 @@ class Shell:
     exported, those its commands see. opaque marks a shell in which a command the guard cannot read, such as a
     sourced file, may have set any variable. references holds each name reference declare -n, local -n, or
     typeset -n made, by its name: the variable it stands for, "" while it stands for none, so that its first
-    assignment names one, or None when the text does not settle which. exported_functions holds the functions
-    export -f exported, which a shell it starts defines. reading, when set, is told of each name that reaches
-    BASH_ALIASES, whose elements are aliases.
+    assignment names one, or None when the text does not settle which. functions holds each name a path the
+    shell may have taken defines a function by, with every body it may have, and None where it may have none.
+    exported_functions holds the functions export -f exported, which a shell it starts defines. reading, when set,
+    is told of each name that reaches BASH_ALIASES, whose elements are aliases.
     """
 
     cwd: Path | None
@@ -996,7 +1022,7 @@ class Shell:
     stack: list[Path | None] = field(default_factory=list)
     allexport: bool = False
     opaque: bool = False
-    functions: dict[str, bash_syntax.Command] = field(default_factory=dict)
+    functions: dict[str, tuple[bash_syntax.Command | None, ...]] = field(default_factory=dict)
     references: dict[str, str | None] = field(default_factory=dict)
     exported_functions: set[str] = field(default_factory=set)
     reading: Reading | None = None
@@ -1102,7 +1128,7 @@ def join(first: Shell, second: Shell) -> Shell:
         list(stack),
         first.allexport or second.allexport,
         first.opaque or second.opaque,
-        {**first.functions, **second.functions},
+        joined_functions(first.functions, second.functions, None),
         references,
         first.exported_functions | second.exported_functions,
         first.reading,
@@ -1228,7 +1254,7 @@ class BashReader:
         if isinstance(node, bash_syntax.Simple):
             return self.run_simple(node, shell)
         if isinstance(node, bash_syntax.FunctionDefinition):
-            shell.functions[node.name] = node.body
+            shell.functions[node.name] = (node.body,)
             return certain(shell)
         self.read_substitutions([], node.redirects, shell)
         if isinstance(node, bash_syntax.Subshell):
@@ -1340,21 +1366,42 @@ class BashReader:
         if name is None:
             return certain(shell)
         if name in shell.functions:
-            return self.call_function(name, shell)
+            # A name the paths before the call define differently runs each body, or no function, on its own path.
+            bodies = shell.functions[name]
+            outcomes = [
+                self.run_unless_function(name, arguments, redirects, path, local)
+                if body is None
+                else self.call_function(name, body, path)
+                for body, path in zip(bodies, paths(shell, len(bodies)), strict=True)
+            ]
+            return Outcome(
+                join_all([outcome.ok for outcome in outcomes]), join_all([outcome.fail for outcome in outcomes])
+            )
+        return self.run_unless_function(name, arguments, redirects, shell, local)
+
+    def run_unless_function(
+        self,
+        name: str,
+        arguments: list[Word],
+        redirects: list[bash_syntax.Redirect],
+        shell: Shell,
+        local: dict[str, Word],
+    ) -> Outcome:
+        """A command no function takes: the builtin or the program it names."""
         builtin = BASH_BUILTINS.get(name)
         if builtin is not None:
             return builtin(self.with_builtin(name), arguments, redirects, shell, local)
         self.run_program(command_name(name), arguments, redirects, shell, shell.program_variables(local))
         return certain(shell)
 
-    def call_function(self, name: str, shell: Shell) -> Outcome:
+    def call_function(self, name: str, body: bash_syntax.Command, shell: Shell) -> Outcome:
         if self.depth >= NESTING_LIMIT:
             self.reading.cannot_read(f"the function {name} nests more than {NESTING_LIMIT} deep")
             lost = shell.copy()
             lost.cwd, lost.opaque = None, True
             return certain(lost)
         before = dict(shell.references)
-        outcome = BashReader(self.reading, self.depth + 1).run_command(shell.functions[name], shell)
+        outcome = BashReader(self.reading, self.depth + 1).run_command(body, shell)
         # declare -n and local -n make a reference local to the function, which Bash drops when it returns, unless
         # declare -g made it, so after the call a reference it made or changed stands for no variable the guard knows.
         for after in (outcome.ok, outcome.fail):
@@ -2090,7 +2137,7 @@ def read_bash(
     reading: Reading,
     depth: int,
     variables: Variables,
-    functions: Mapping[str, bash_syntax.Command] | None = None,
+    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
 ) -> None:
     """Reads a Bash command, started with these variables exported, as Bash runs it, with the functions the shell
     that starts it exported, and those its environment hands it as BASH_FUNC_<name>%% variables, defined."""
@@ -2233,13 +2280,15 @@ def event_tree(events: list[dict[str, Any]]) -> list[Region | dict[str, Any]]:
 @dataclass
 class Session:
     """A PowerShell session's location, its Push-Location stack, the tracked variables of its environment, and its
-    functions. opaque marks a session in which a command the guard cannot read may have set any variable."""
+    functions. opaque marks a session in which a command the guard cannot read may have set any variable. functions
+    holds each name a path the session may have taken defines a function by, with every body it may have, and None
+    where it may have none."""
 
     cwd: Path | None
     variables: dict[str, Word]
     stack: list[Path | None] = field(default_factory=list)
     opaque: bool = False
-    functions: dict[str, list[Region | dict[str, Any]]] = field(default_factory=dict)
+    functions: dict[str, tuple[list[Region | dict[str, Any]] | None, ...]] = field(default_factory=dict)
 
     def copy(self) -> Session:
         return replace(self, variables=dict(self.variables), stack=list(self.stack), functions=dict(self.functions))
@@ -2279,7 +2328,7 @@ def join_sessions(first: Session, second: Session) -> Session:
         variables,
         list(stack),
         first.opaque or second.opaque,
-        {**first.functions, **second.functions},
+        joined_functions(first.functions, second.functions, None),
     )
 
 
@@ -2358,7 +2407,7 @@ class PowerShellReader:
 
     def region(self, region: Region, session: Session) -> Session:
         if region.kind == "function":
-            session.functions[function_name(region.name)] = region.children
+            session.functions[function_name(region.name)] = (region.children,)
             return session
         if region.kind == "child":
             child = session.copy()
@@ -2421,6 +2470,33 @@ class PowerShellReader:
 
     def command(self, event: dict[str, Any], session: Session) -> Session:
         words: list[Word] = [session.word(word) for word in event["words"]]
+        name = command_name(words[0])
+        function = None if name is None else function_name(name)
+        if function not in session.functions:
+            return self.run_unless_function(event, session)
+        # A name the paths before the call define differently runs each body, or no function, on its own path.
+        bodies = session.functions[function]
+        sessions = [
+            self.run_unless_function(event, path) if body is None else self.call_function_event(event, body, path)
+            for body, path in zip(bodies, paths(session, len(bodies)), strict=True)
+        ]
+        return functools.reduce(join_sessions, sessions)
+
+    def call_function_event(
+        self, event: dict[str, Any], body: list[Region | dict[str, Any]], session: Session
+    ) -> Session:
+        """A command a function takes."""
+        name = str(command_name(session.word(event["words"][0])))
+        if event.get("failed"):
+            # A simple function takes the words the binder cannot bind into $args and runs, where an advanced one
+            # runs nothing, so its body is read as a path that may run.
+            return join_sessions(session, self.call_function(name, body, session.copy()))
+        # -WhatIf reaches only the cmdlets in the body that honour it; a native command such as git still runs.
+        return self.call_function(name, body, session)
+
+    def run_unless_function(self, event: dict[str, Any], session: Session) -> Session:
+        """A command no function takes: the cmdlet or the program it names."""
+        words: list[Word] = [session.word(word) for word in event["words"]]
         parameters = {
             name.lower(): [session.word(word) for word in values]
             for name, values in (event.get("parameters") or {}).items()
@@ -2428,14 +2504,6 @@ class PowerShellReader:
         # The words the reader reports for each parameter, from which a path the text does not settle is judged.
         reported = {name.lower(): values for name, values in (event.get("parameters") or {}).items()}
         name, arguments = command_name(words[0]), words[1:]
-        function = None if name is None else function_name(name)
-        if event.get("failed") and function in session.functions:
-            # A simple function takes the words the binder cannot bind into $args and runs, where an advanced one
-            # runs nothing, so its body is read as a path that may run.
-            return join_sessions(session, self.call_function(function, session.copy()))
-        if function in session.functions:
-            # -WhatIf reaches only the cmdlets in the body that honour it; a native command such as git still runs.
-            return self.call_function(function, session)
         if event.get("failed") or event.get("whatIf"):
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
         # A definition may stand for git in a later command, which the reader would take for another program.
@@ -2479,12 +2547,12 @@ class PowerShellReader:
             if command is not None:
                 self.run_program(*command, opaque)
 
-    def call_function(self, name: str, session: Session) -> Session:
+    def call_function(self, name: str, body: list[Region | dict[str, Any]], session: Session) -> Session:
         if self.depth >= NESTING_LIMIT:
             self.reading.cannot_read(f"the function {name} nests more than {NESTING_LIMIT} deep")
             session.cwd, session.opaque = None, True
             return session
-        return PowerShellReader(self.reading, self.depth + 1).run(session.functions[name], session)
+        return PowerShellReader(self.reading, self.depth + 1).run(body, session)
 
     def location(
         self, name: str, arguments: list[Word], parameters: Mapping[str, list[Word]], session: Session
