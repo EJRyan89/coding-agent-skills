@@ -1476,10 +1476,11 @@ def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
 # A git command's exit status read outside ejryan89-skill-core's git_client.py is where a failure turns into absence:
 # a nonzero exit taken for "not there". The client's forms give the three answers, found, absent as git reports it,
 # and could not tell, so a module reads them instead. A git result is what GitClient.run returns on a client the
-# module holds, a GitClient or a subclass's instance, what a function annotated to return git_client.GitResult returns, awaited or not, in any module the
-# repository's Python reads, what a method so annotated returns on an instance of its class in the module defining it,
-# and a name annotated as one. A read that must stay, such as a status reported with git's reason or
-# one whose failure is refused, states why in a module-level GIT_STATUS_ALLOWED = {scope: reason}.
+# module holds, a GitClient or a subclass's instance, what a function annotated to return git_client.GitResult
+# returns, awaited or not, in any module the repository's Python reads, what a method so annotated returns on an
+# instance of its class in the module defining it, and a name annotated as one. A read that must stay, such as a status
+# reported with git's reason or one whose failure is refused, states why in a module-level
+# GIT_STATUS_ALLOWED = {scope: reason}.
 GIT_STATUS_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_RESULT = "git_client.GitResult"
 GIT_STATUS_ALLOWANCE = "GIT_STATUS_ALLOWED"
