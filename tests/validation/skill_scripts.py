@@ -30,6 +30,7 @@ from validation_support import (
     CallableResolver,
     UnreadablePython,
     call_argument,
+    call_arguments,
     find_fences,
     import_aliases,
     is_main_guard,
@@ -52,7 +53,9 @@ from validation_support import (
 from deployer import platform_support, render
 
 PLATFORM_ALLOWED = {
-    "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform"
+    "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform",
+    "/proc": "names Linux's per-process descriptor path as one spelling of a standard stream the console-setup policy "
+    "refuses on every platform; it opens nothing",
 }
 SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", ">", "\n")
 COMMAND_SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", "\n", "{"}
@@ -1445,9 +1448,39 @@ STANDARD_STREAMS = frozenset(
 )
 # Calls that build a text stream over a binary stream or a file descriptor, choosing its encoding: every text opener
 # call_tables names, codecs.open among them, which given a standard stream or its descriptor sets the encoding of what
-# it builds over it; and the codecs calls that return a class that does.
-STREAM_WRAPPERS = frozenset(TEXT_OPENERS)
+# it builds over it; the codecs calls that build a stream over one; and the codecs calls that return a class that does.
+STREAM_WRAPPERS = frozenset(TEXT_OPENERS) | frozenset(
+    {
+        "codecs.EncodedFile",
+        "codecs.StreamReaderWriter",
+        "codecs.StreamRecoder",
+        "codecs.StreamReader",
+        "codecs.StreamWriter",
+    }
+)
 CODEC_WRAPPERS = frozenset({"codecs.getwriter", "codecs.getreader"})
+# A codec's own stream classes, as `encodings.utf_8.StreamWriter` or `codecs.lookup("utf-8").streamwriter` names them.
+CODEC_STREAM_CLASSES = frozenset({"StreamReader", "StreamWriter", "StreamReaderWriter", "StreamRecoder"})
+CODEC_STREAM_ATTRIBUTES = frozenset({"streamreader", "streamwriter"})
+# The standard streams' descriptors, the calls that take one as the file they open or copy, and the names a call may
+# pass that file by; tempfile's openers take no file. The console's device names open the same streams by path.
+STANDARD_DESCRIPTORS = frozenset({0, 1, 2})
+DESCRIPTOR_TAKERS = frozenset(name for name in STREAM_WRAPPERS if not name.startswith("tempfile.")) | frozenset(
+    {"io.FileIO", "os.dup"}
+)
+FILE_KEYWORDS = ("file", "fd", "filename", "fileobj", "stream", "buffer", "raw")
+# What a name bound to a standard stream may hold and still be that stream: a layer under it, by attribute or by
+# method, or a binary layer or a descriptor copy built over it or its descriptor.
+STREAM_LAYERS = frozenset({"buffer", "raw"})
+STREAM_LAYER_METHODS = frozenset({"detach", "fileno"})
+BINARY_LAYERS = frozenset(
+    {"io.FileIO", "io.BufferedWriter", "io.BufferedReader", "io.BufferedRandom", "io.BufferedRWPair", "os.dup"}
+)
+CONSOLE_DEVICES = frozenset(
+    {"CON", "CONIN$", "CONOUT$"}
+    | {f"/dev/{stream}" for stream in ("stdin", "stdout", "stderr")}
+    | {f"{folder}/{fd}" for folder in ("/dev/fd", "/proc/self/fd") for fd in STANDARD_DESCRIPTORS}
+)
 
 
 def _is_reconfigure(node: ast.expr) -> bool:
@@ -1475,14 +1508,115 @@ def _reconfigure_names(tree: ast.Module) -> set[str]:
     return names
 
 
-def _names_a_standard_stream(node: ast.AST, aliases: dict[str, str]) -> bool:
-    """Whether an expression reaches a standard stream, such as sys.stdout.buffer or sys.stderr.fileno()."""
-    return any(qualified_name(part, aliases) in STANDARD_STREAMS for part in ast.walk(node))
+@dataclass(frozen=True)
+class _StreamNames:
+    """The names a module binds, anywhere in it, to a standard stream or what reaches one, such as its buffer or its
+    fileno(); to a standard descriptor or a console device's path; and to a codec's stream class, such as what
+    codecs.getwriter returns."""
+
+    streams: frozenset[str]
+    descriptors: frozenset[str]
+    codec_classes: frozenset[str]
 
 
-def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[str]) -> bool:
+def _bindings(tree: ast.Module) -> list[tuple[str, ast.expr]]:
+    """Each name an assignment, an annotated assignment, or a walrus binds a value to, with that value."""
+    bound: list[tuple[str, ast.expr]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            bound += [(target.id, node.value) for target in node.targets if isinstance(target, ast.Name)]
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value and isinstance(node.target, ast.Name):
+            bound.append((node.target.id, node.value))
+    return bound
+
+
+def _is_standard_descriptor(node: ast.AST, names: _StreamNames | None) -> bool:
+    """Whether an expression is a standard stream's descriptor or a console device's path, as a literal or a name bound
+    to one."""
+    if isinstance(node, ast.Constant):
+        value = node.value
+        return (isinstance(value, int) and not isinstance(value, bool) and value in STANDARD_DESCRIPTORS) or (
+            isinstance(value, str) and value in CONSOLE_DEVICES
+        )
+    return names is not None and isinstance(node, ast.Name) and node.id in names.descriptors
+
+
+def _opens_a_standard_descriptor(node: ast.AST, aliases: dict[str, str], names: _StreamNames | None) -> bool:
+    """Whether a call opens or copies a standard descriptor, given as the file it takes, such as io.FileIO(1)."""
+    return (
+        isinstance(node, ast.Call)
+        and qualified_name(node.func, aliases) in DESCRIPTOR_TAKERS
+        and any(_is_standard_descriptor(file, names) for file in call_arguments(node, 0, FILE_KEYWORDS))
+    )
+
+
+def _names_a_standard_stream(node: ast.AST, aliases: dict[str, str], names: _StreamNames | None = None) -> bool:
+    """Whether an expression reaches a standard stream, such as sys.stdout.buffer or sys.stderr.fileno(), a name bound
+    to one, or a call that opens a standard descriptor, such as io.FileIO(1)."""
+    return any(
+        qualified_name(part, aliases) in STANDARD_STREAMS
+        or (names is not None and isinstance(part, ast.Name) and part.id in names.streams)
+        or _opens_a_standard_descriptor(part, aliases, names)
+        for part in ast.walk(node)
+    )
+
+
+def _is_stream_value(node: ast.AST, aliases: dict[str, str], names: _StreamNames) -> bool:
+    """Whether an expression's value is a standard stream itself or a layer under it: the stream, a name bound to one,
+    its buffer or raw file, what its detach() or fileno() returns, or a binary layer or descriptor copy over one. What
+    the stream reads or returns otherwise, such as sys.stdin.read(), is data, not the stream."""
+    if qualified_name(node, aliases) in STANDARD_STREAMS or (isinstance(node, ast.Name) and node.id in names.streams):
+        return True
+    if isinstance(node, ast.Attribute) and node.attr in STREAM_LAYERS:
+        return _is_stream_value(node.value, aliases, names)
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Attribute) and node.func.attr in STREAM_LAYER_METHODS:
+        return _is_stream_value(node.func.value, aliases, names)
+    return qualified_name(node.func, aliases) in BINARY_LAYERS and any(
+        _is_stream_value(file, aliases, names) or _is_standard_descriptor(file, names)
+        for file in call_arguments(node, 0, FILE_KEYWORDS)
+    )
+
+
+def _is_codec_class(node: ast.AST, aliases: dict[str, str], names: _StreamNames | None) -> bool:
+    """Whether an expression is a codec's stream class: what codecs.getwriter or getreader returns, a codec's
+    StreamWriter and its kin, codecs.lookup(...).streamwriter, or a name bound to one of them."""
+    if isinstance(node, ast.Call):
+        return qualified_name(node.func, aliases) in CODEC_WRAPPERS
+    if isinstance(node, ast.Attribute) and node.attr in CODEC_STREAM_ATTRIBUTES:
+        return True
+    if isinstance(node, ast.Name) and names is not None and node.id in names.codec_classes:
+        return True
+    return qualified_name(node, aliases).rpartition(".")[2] in CODEC_STREAM_CLASSES
+
+
+def _stream_names(tree: ast.Module, aliases: dict[str, str]) -> _StreamNames:
+    """The names the module binds to a standard stream, descriptor, or codec stream class, each followed through the
+    names bound before it, in any order, until no binding adds one."""
+    bound = _bindings(tree)
+    names = _StreamNames(frozenset(), frozenset(), frozenset())
+    while True:
+        found = _StreamNames(
+            frozenset(name for name, value in bound if _is_stream_value(value, aliases, names)),
+            frozenset(name for name, value in bound if _is_standard_descriptor(value, names)),
+            frozenset(name for name, value in bound if _is_codec_class(value, aliases, names)),
+        )
+        if found == names:
+            return names
+        names = found
+
+
+def _is_stream_wrapper(function: ast.expr, aliases: dict[str, str], names: _StreamNames) -> bool:
+    """Whether a call's function builds a text stream: a text opener, a codecs stream, a codec's stream class, or a
+    class a call or a name returns, as codecs.getwriter("utf-8") does."""
+    return qualified_name(function, aliases) in STREAM_WRAPPERS or _is_codec_class(function, aliases, names)
+
+
+def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[str], names: _StreamNames) -> bool:
     """Whether a node sets a stream's encoding: a reconfigure call that may pass one, directly or through a name bound
-    to the method; an assignment or setattr that replaces a standard stream; or a text wrapper built over one."""
+    to the method; an assignment or setattr that replaces a standard stream; or a text wrapper built over one, its
+    buffer, or its descriptor, inline or through a name bound to it, or partially applied by functools.partial."""
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         return any(
@@ -1502,21 +1636,27 @@ def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[
             and isinstance(stream.value, str)
             and f"sys.{stream.value}" in STANDARD_STREAMS
         )
-    wrapper = qualified_name(function, aliases) in STREAM_WRAPPERS or (
-        isinstance(function, ast.Call) and qualified_name(function.func, aliases) in CODEC_WRAPPERS
-    )
     arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
-    return wrapper and any(_names_a_standard_stream(argument, aliases) for argument in arguments)
+    if qualified_name(function, aliases) == "functools.partial" and node.args:
+        function, arguments = node.args[0], arguments[1:]
+    if not _is_stream_wrapper(function, aliases, names):
+        return False
+    files = call_arguments(node, 0, FILE_KEYWORDS) if function is node.func else node.args[1:2]
+    return any(_names_a_standard_stream(argument, aliases, names) for argument in arguments) or (
+        qualified_name(function, aliases) in DESCRIPTOR_TAKERS
+        and any(_is_standard_descriptor(file, names) for file in files)
+    )
 
 
 def _stream_change_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
     """The lines on which a module sets a standard stream's encoding itself."""
     reconfigures = _reconfigure_names(tree)
+    names = _stream_names(tree, aliases)
     return sorted(
         {
             node.lineno
             for node in ast.walk(tree)
-            if isinstance(node, (ast.stmt, ast.expr)) and _changes_a_stream(node, aliases, reconfigures)
+            if isinstance(node, (ast.stmt, ast.expr)) and _changes_a_stream(node, aliases, reconfigures, names)
         }
     )
 
@@ -1570,6 +1710,10 @@ def console_setup_problems(root: Path) -> list[str]:
     Skill scripts, deploy.py, the deployer, and tools/ print paths and text the user wrote, which a Windows pipe's
     legacy code page cannot encode, and promise a FAILED line, never a traceback, when they fail; one runner sets up
     the console and keeps that promise, so the copies cannot drift apart again.
+
+    A wrapper is refused over a standard stream, a layer under it, or its descriptor, inline or through a name the
+    module binds to one anywhere, as it is when built from a class a name holds. It does not see a stream reached
+    through a function's parameter or return, an attribute, a container, or a descriptor that arithmetic computes.
     """
     problems: list[str] = []
     for _, name, tree in python_trees(console_entry_points(root), root, problems):
