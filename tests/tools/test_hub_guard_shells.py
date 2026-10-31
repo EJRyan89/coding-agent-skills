@@ -464,6 +464,7 @@ class StartDifferentialTests(unittest.TestCase):
             # command and exec pass over functions, so the marker is a program, as git is.
             program = Path(folder) / "marker"
             program.write_text("#!/bin/bash\necho MARKER-RAN\n", encoding="utf-8", newline="\n")
+            program.chmod(0o755)
             for form in forms:
                 path = Path(folder) / "form.sh"
                 ran = form.replace("PROGRAM", platform_support.normalize(program))
@@ -592,6 +593,7 @@ class BashDefinitionDifferentialTests(unittest.TestCase):
                 # A program by PATH runs the marker as git would run: a script that calls it.
                 program = Path(folder) / "program"
                 program.write_text("#!/bin/bash\nmarker\n", encoding="utf-8", newline="\n")
+                program.chmod(0o755)
                 ran = form.replace("PROGRAM", "marker").replace("PATH", platform_support.normalize(program))
                 path.write_text(marker + ran + "\n", encoding="utf-8", newline="\n")
                 result = platform_support.run_tool([bash, "--norc", "--noprofile", platform_support.normalize(path)])
