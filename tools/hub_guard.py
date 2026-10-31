@@ -265,11 +265,38 @@ def guard_enabled(hub: Path) -> bool:
 
 @functools.cache
 def guarded_hub_at(path: Path) -> Path | None:
-    """The guarded hub whose checkout holds path; None when it is a worktree, another repository, or none."""
+    """The guarded hub git acts on from path: the one whose checkout holds it, or, inside a git directory, where git
+    has no work tree and acts on that directory's repository, the one whose own git directory it is; None when it is
+    a worktree, another repository, or none."""
     checkout = checkout_of(path)
-    if checkout is None or not checkout.is_hub or not guard_enabled(checkout.hub):
+    if checkout is None:
+        repository = git_directory_holding(path)
+        return None if repository is None else guarded_hub_of_repository(repository)
+    if not checkout.is_hub or not guard_enabled(checkout.hub):
         return None
     return checkout.hub
+
+
+def git_directory_holding(path: Path) -> Path | None:
+    """The git directory git finds from path when path lies inside one; None in a work tree, outside every
+    repository, and where nothing of path exists.
+
+    Raises GitError when git answers otherwise with an error, or with lines other than the two asked for, so a start
+    git cannot read is never read as one outside every repository."""
+    directory = worktrees.existing_directory(path)
+    if directory is None:
+        return None
+    arguments = ["rev-parse", "--path-format=absolute", "--is-inside-git-dir", "--git-dir"]
+    try:
+        output = CLIENT.output(arguments, directory=directory, timeout=lookup_timeout())
+    except GitError as exc:
+        if exc.kind == "not_repository":
+            return None
+        raise
+    lines = output_lines(output)
+    if len(lines) != 2:
+        raise GitError(f"git rev-parse answered {len(lines)} lines for the git directory holding {path}, not two")
+    return Path(lines[1]) if lines[0] == "true" else None
 
 
 @functools.cache
@@ -342,7 +369,8 @@ def hub_protected(path: Path) -> bool:
 
 def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
     """The guarded hubs a session can reach: the hub of its own directory's checkout, a worktree's included, and of
-    its project's. A directory whose checkout git cannot read is noted and passed over, so the others still count."""
+    its project's, or the guarded hub whose git directory holds one. A directory whose checkout git cannot read is
+    noted and passed over, so the others still count."""
     directories = [cwd]
     project = environment.get("CLAUDE_PROJECT_DIR")
     if project:
@@ -351,11 +379,12 @@ def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
     for directory in directories:
         try:
             checkout = checkout_of(directory)
+            hub = guarded_hub_at(directory) if checkout is None else checkout.hub
         except GitError as exc:
             print(f"hub guard could not look up the hub of {directory}: {exc}", file=sys.stderr)
             continue
-        if checkout is not None and guard_enabled(checkout.hub):
-            found.add(checkout.hub)
+        if hub is not None and guard_enabled(hub):
+            found.add(hub)
     return found
 
 
@@ -2639,15 +2668,26 @@ def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Re
     return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), deadline=deadline)
 
 
-def reached_hubs(reading: Reading) -> set[Path]:
-    """The guarded hubs a reading's settled places name, each looked up within the reading time."""
-    found: set[Path] = set()
+def reached_hubs(reading: Reading, found: set[Path] | None = None) -> set[Path]:
+    """The guarded hubs a reading's settled places name, each looked up within the reading time, added to found.
+
+    A place git answers with an error for, or whose git call the reading time cuts short, may be a guarded hub's, and
+    is never read as a place outside every repository: every other place is still looked up, so the hubs it reaches
+    join found, and then the first such error is raised."""
+    found = set() if found is None else found
+    failures: list[GitError] = []
     with lookups_within(reading.deadline):
         for call in reading.calls:
             reading.time_left()
-            hub, _ = reached_hub(call.place)
+            try:
+                hub, _ = reached_hub(call.place)
+            except GitError as exc:
+                failures.append(exc)
+                continue
             if hub is not None:
                 found.add(hub)
+    if failures:
+        raise failures[0]
     return found
 
 
@@ -2659,8 +2699,8 @@ def guard(stream: str) -> int:
     # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
     # fails leaves a command the guard cannot read; None until then.
     in_view: tuple[str, set[Path]] | None = None
-    # Whether the hubs of the places the command names are being looked up: a lookup the reading time cuts short
-    # leaves places not looked up, any of which may be a guarded hub's.
+    # Whether the hubs of the places the command names are being looked up: a lookup the reading time cuts short, or
+    # one git answers with an error for, leaves a place not looked up, which may be a guarded hub's.
     looking_up = False
     try:
         event = json_reader.loads(stream)
@@ -2682,14 +2722,14 @@ def guard(stream: str) -> int:
             in_view = (reading.text, hubs)
             read_into(reading, tool, cwd, os.environ)
             looking_up = True
-            hubs |= reached_hubs(reading)
+            reached_hubs(reading, hubs)
             looking_up = False
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
             for note in reading.notes:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses
-        cut_short = looking_up and isinstance(exc, ReadingTimeout)
+        cut_short = looking_up and isinstance(exc, (ReadingTimeout, GitError))
         if in_view is None or not ((in_view[1] or cut_short) and mentions(MENTIONS_GIT, in_view[0])):
             print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 0

@@ -57,15 +57,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
   `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
-  `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`
+  `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
+  `tests/tools/test_hub_guard.py::PlaceLookupTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
   followed by a `return None`, `return []`, or `return False`, where `is_present` should probe; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
-  that catch the same `GitError` and read its kinds differently.
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091
+  that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
+  callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
+  another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
+  other than absence, such as a start inside a git directory, which has no work tree to show.
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133
 
 ### Evidence that was never produced is never a pass
 
@@ -464,12 +468,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   and one test for each step the deadline holds, each failing with that step's bound removed:
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_reading_ends_with_the_reading_time`,
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_judging_ends_with_the_reading_time`, and
-  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`
+  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`,
+  `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`
 - **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
   as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
   each item's work starts processes; a deadline set after work it promises to bound has begun; a loop that gathers
-  what it finds into a local and returns it only at the end, while a step inside it can raise the deadline's error.
-- **Examples:** #2031, #2087, #2092
+  what it finds into a local and returns it only at the end, while a step inside it can raise the deadline's error;
+  a handler that counts the deadline's own error as cut short but not a process's timeout error, which a step given
+  the time left raises when the deadline ends inside it; a test that moves the clock only between steps, never
+  inside one.
+- **Examples:** #2031, #2087, #2092, #2132
 
 ### A check reaches its whole rule
 
