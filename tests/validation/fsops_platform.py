@@ -243,6 +243,12 @@ def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[in
     return found
 
 
+def platform_tokens_named(tree: ast.Module) -> list[tuple[int, str]]:
+    """The platform tokens a module's code names, of every kind PLATFORM_TOKENS catalogues, read as this policy reads
+    them, with no sanction table left out, as (line, token)."""
+    return _platform_names(tree, set())
+
+
 # The base a test case derives from directly: unittest's, named alone or as an attribute of its module.
 TEST_CASE_NAMES = frozenset({"TestCase"})
 
