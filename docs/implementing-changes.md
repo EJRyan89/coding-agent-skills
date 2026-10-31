@@ -271,11 +271,14 @@ request in continuous integration.
 A pull request that closes an issue a known failure of the malformed-input suite still names, in
 `tests/malformed_input/known_failures.json`, or that `PENDING` in `tests/malformed_input/readers.py` still names for a
 reader owed its table entry, is refused by the known-failure closing check, in `tests/validation/known_failures.py`:
-the issue would close while that work is undone. It reads every closing reference GitHub reads, through
-ejryan89-skill-core's `closing_references`: `close`, `fix`, or `resolve`, in any of their forms, before `#<number>`,
-`<owner>/<repo>#<number>` naming this repository, or the issue's URL, outside an HTML comment, in the title and the
-body alike, since the squash commit carries both, from `--pr-title <file>` and `--pr-body <file>` locally and the pull
-request in continuous integration, and passes when neither is given. The pull request that does the work removes the
+the issue would close while that work is undone. It reads every closing reference, through ejryan89-skill-core's
+`closing_references`: `close`, `fix`, or `resolve`, in any of their forms, before `#<number>`, `GH-<number>`,
+`<owner>/<repo>#<number>` naming this repository, or the issue's URL, and the spellings of them GitHub's pages leave
+open, which that module's docstring names with what it does not see. It reads the title and the body alike, HTML
+comments included: the squash commit carries the title and the body as written, comments and all, and GitHub closes
+an issue a commit message on the default branch names, so a reference hidden from the rendered body still closes its
+issue. It reads them from `--pr-title <file>` and `--pr-body <file>` locally and the pull request in continuous
+integration, and passes when neither is given. The pull request that does the work removes the
 entry, which the suite then requires, and closes the issue. A run of its own,
 `python -B tests/run_validation.py --known-failure-issues`, asks GitHub, through gh, whether each issue either list
 names is an open issue, and fails one that is not, one that is a pull request, or one gh cannot answer about; it asks
