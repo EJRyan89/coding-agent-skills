@@ -196,6 +196,26 @@ class ConditionTests(unittest.TestCase):
             self.run_condition({"tools/report.py": source, **test}, {"tools/report.py": moved, **test}),
         )
 
+    def test_a_kept_site_or_rewritten_sites_beside_no_dropped_call_convert_nothing(self) -> None:
+        test = {"tests/test_report.py": "import report\n\nassert report.save\n"}
+        source = "import json\nimport json_writer\n\n\ndef save(first, second, a, b):\n"
+        source += '    json_writer.write(first, a)\n    second.write_text(json.dumps(b), encoding="utf-8")\n'
+        # The helper's site moves into a block, its text kept, while another call is dropped: nothing converted.
+        indented = source.replace(
+            '    json_writer.write(first, a)\n    second.write_text(json.dumps(b), encoding="utf-8")\n',
+            "    if first:\n        json_writer.write(first, a)\n",
+        )
+        # Two imported helpers' sites each rewritten, their counts held and no call dropped: nothing converted.
+        both = "import json_writer\nimport logs\n\n\ndef save(path, data):\n"
+        both += "    json_writer.write(path, data)\n    logs.note(path)\n"
+        rewritten = both.replace("(path, data)\n", "(path, data, indent=4)\n").replace("note(path)", "note(path, 1)")
+        for name, before, after in (("indented", source, indented), ("rewritten", both, rewritten)):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    (1, "UNTESTED 0 given=0\n", ""),
+                    self.run_condition({"tools/report.py": before, **test}, {"tools/report.py": after, **test}),
+                )
+
     def test_reordering_or_rewriting_sites_that_already_called_the_helper_closes_the_route(self) -> None:
         test = {"tests/test_report.py": "import report\n\nassert report.save\n"}
         source = "import json_writer\n\n\ndef save(path, data):\n"
