@@ -111,18 +111,17 @@ class Checkout:
 
 
 def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Checkout | None:
-    """The worktree containing path, and the hub that owns it; None outside a non-bare repository. git answers within
-    timeout seconds, which the hub guard lowers to what is left of its reading time.
+    """The worktree containing path, and the hub that owns it; None outside a non-bare repository, and inside a git
+    directory, where git has no work tree to show. git answers within timeout seconds, which the hub guard lowers to
+    what is left of its reading time.
 
     Raises GitError when git answers nonzero for a directory below a checkout, one that a `.git` beside it or above
     it marks, outside any git directory: a checkout git cannot read, as one it refuses to trust, is not one outside
     every repository. Raises it too when git succeeds with an answer that is not the two lines asked for, as one whose
     path holds a newline gives on Linux."""
-    directory = path
-    while not directory.is_dir():
-        if directory.parent == directory:
-            return None
-        directory = directory.parent
+    directory = existing_directory(path)
+    if directory is None:
+        return None
     result = git(
         directory, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", timeout=timeout
     )
@@ -138,6 +137,16 @@ def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Check
     if common.name != ".git":
         return None
     return Checkout(Path(lines[0]), common.parent)
+
+
+def existing_directory(path: Path) -> Path | None:
+    """path, or the nearest directory above it that exists, where git is started to look it up; None when none does."""
+    directory = path
+    while not directory.is_dir():
+        if directory.parent == directory:
+            return None
+        directory = directory.parent
+    return directory
 
 
 def below_a_checkout(directory: Path) -> bool:

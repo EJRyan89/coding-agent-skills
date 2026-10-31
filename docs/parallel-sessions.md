@@ -263,7 +263,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
 
 - **Where a git call acts.** git writes the `HEAD` and index of its repository and the files of its work tree, so a
   call acts on the hub when either one is the hub's. The repository is the one `--git-dir` or `GIT_DIR` names, or
-  else the one git finds from where it starts; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a
+  else the one git finds from where it starts, which inside a git directory, such as `-C <hub>/.git`, is that
+  directory's own repository; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a
   `core.worktree` setting names, or else where git starts, after each `-C`. A relative path is read from where git
   finally starts, and a relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the
   store of refs and objects every worktree shares, so it does not change which checkout a call writes. The guard
@@ -380,8 +381,10 @@ refused while a guarded hub is in view, and what they do not see at all is named
 #### What it refuses because it cannot settle it
 
 A guarded hub is in view when it is the hub of the session's own directory, of its project, or of a place the
-command names. A place whose lookup the reading time cuts short may be a guarded hub's, so the guard then refuses a
-command that names git as if one were in view. While one is, the guard refuses:
+command names, or the one whose git directory holds that directory or place. A place whose lookup the reading time
+cuts short, between git calls or inside one, or whose lookup git answers with an error for, may be a guarded hub's,
+so the guard then refuses a command that names git as if one were in view; it looks up every other place first, so
+the hubs they reach stay in view. While one is, the guard refuses:
 
 - a git call that would write the checkout it runs in, where the text does not settle its repository or work tree:
   a directory or location variable named by a value the command computes or does not set, or set by a builtin that
@@ -418,14 +421,18 @@ The refusal names what it could not settle and asks for the directory to be writ
 `cd <dir> &&`. With no guarded hub in view, the same calls are allowed with a note on stderr. A defect in the guard
 itself, once it has found a guarded hub in view, is refused the same way when the command names git, since a failure
 says nothing about where the call acts; a defect before that, such as an event it cannot decode, an event that names
-no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
-stderr, so that it cannot block every tool and is never passed unseen. A directory below a checkout, which a `.git`
-in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
-a place outside every repository, and the other hubs in view still count. A successful answer that is not the lines
-the guard asked for is read as such an error. A file an edit names in such a checkout, or in a git directory git
-answers with an error for, may lie in a guarded hub, so the edit is refused; one where git did not run or finish is
-allowed with a note. The hook command reads the project's own
-opt-in before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
+no command or file path, or a hub of the session's own directory or project it cannot look up, an opt-in git cannot
+read among them, is allowed with a note on stderr, so that it cannot block every tool and is never passed unseen. A
+reading the time cuts short before the lookups of the places it names, in either reader, `pwsh` not finishing
+included, is such a failure: refused while a hub of the session's own directory or project is in view, and
+otherwise allowed with a note. A directory of the session's below a checkout, which a `.git` in it or above it
+marks, where git answers with an error is one such hub: it is noted and passed over, never read as a place outside
+every repository, and the other hubs in view still count; a git call that starts there is a place git answers with
+an error for, refused as above. A successful answer that is not the lines the guard asked for is read as such an
+error. A file an edit names in such a checkout, or in a git directory git answers with an error for, may lie in a
+guarded hub, so the edit is refused; one where git did not run or finish is allowed with a note. The hook command
+reads the project's own opt-in before it starts the guard, and when git cannot read it, stops there with a note on
+stderr the same way.
 
 #### What it does not see
 
