@@ -53,7 +53,9 @@ from validation_support import (
 from deployer import platform_support, render
 
 PLATFORM_ALLOWED = {
-    "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform"
+    "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform",
+    "/proc": "names Linux's per-process descriptor path as one spelling of a standard stream the console-setup policy "
+    "refuses on every platform; it opens nothing",
 }
 SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", ">", "\n")
 COMMAND_SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", "\n", "{"}
