@@ -220,6 +220,17 @@ READ_ONLY_SCOPES = frozenset({"read", "none"})
 CREDENTIAL_VARIABLE = "GH_TOKEN"
 CREDENTIAL_VALUE = "${{ github.token }}"
 TOKEN_JOB_PERMISSIONS = {"contents": "read", "issues": "read"}
+# How a step given the token is written: its name, its env holding the token alone, and its one command, so no key
+# changes how or where that command runs, such as `shell`, `working-directory`, or another variable like BASH_ENV.
+TOKEN_STEP_KEYS = frozenset({"name", "env", "run"})
+# The keys a job holding the token may have: none that changes how or where its steps run, such as `defaults`, an
+# `env`, a `container`, `services`, or a matrix, and it runs on a runner GitHub hosts, never one a label could place
+# elsewhere.
+TOKEN_JOB_KEYS = frozenset({"name", "runs-on", "timeout-minutes", "permissions", "steps", "if", "needs"})
+HOSTED_RUNNER = re.compile(r"(?:ubuntu|windows|macos)-(?:latest|\d+(?:\.\d+)?)(?:-arm)?")
+# What a workflow that gives the token may set for every job: no `defaults`, and only env variables that pin a tool's
+# version or a download's digest, whose names no shell or interpreter reads.
+TOKEN_WORKFLOW_ENV = re.compile(r"[A-Z][A-Z0-9_]*_(?:VERSION|SHA256)")
 # The inputs every actions/checkout step gives, whatever else it gives: the action otherwise writes the job's token into
 # the checkout's git configuration, where every later step of the job, and every process one starts, can read it.
 NO_STORED_CREDENTIAL = {"persist-credentials": "false"}
@@ -327,12 +338,49 @@ def _token_paths(tree: Node, token_steps: Mapping[tuple[str, str], str]) -> tupl
         paths.add(f"jobs.{job}.steps[{index}].env.{CREDENTIAL_VARIABLE}")
         if steps[index].get("run") != command:
             problems.append(f"job {job}'s step {step_name!r} runs {steps[index].get('run')!r}, not {command!r}")
+        if extra := sorted(set(steps[index]) - TOKEN_STEP_KEYS):
+            problems.append(
+                f"job {job}'s step {step_name!r} holds the token, so it has only {sorted(TOKEN_STEP_KEYS)}, "
+                f"not {extra}, which change how or where its command runs"
+            )
+        if others := sorted(set(env) - {CREDENTIAL_VARIABLE}):
+            problems.append(
+                f"job {job}'s step {step_name!r} holds the token, so its env gives {CREDENTIAL_VARIABLE} alone, "
+                f"not {others}"
+            )
         problems += [
             f"job {job} holds the token, so no step but {step_name!r} runs a command, yet {step.get('name')!r} runs one"
             for other, step in enumerate(steps)
             if other != index and "run" in step
         ]
     return paths, problems
+
+
+def _token_job_problems(tree: Node, token_jobs: Collection[str]) -> list[str]:
+    """Each key of a job holding the token, or of its workflow, that changes how or where the job's steps run: a job
+    key outside TOKEN_JOB_KEYS, a runner GitHub does not host, the workflow's `defaults`, and a workflow env variable
+    TOKEN_WORKFLOW_ENV does not name."""
+    if not token_jobs:
+        return []
+    problems: list[str] = []
+    for job in sorted(token_jobs):
+        keys = _mapping(tree, "jobs", job)
+        if extra := sorted(set(keys) - TOKEN_JOB_KEYS):
+            problems.append(
+                f"job {job} holds the token, so it has only {sorted(TOKEN_JOB_KEYS)}, not {extra}, which change how "
+                "or where its steps run"
+            )
+        runner = keys.get("runs-on")
+        if not isinstance(runner, str) or not HOSTED_RUNNER.fullmatch(runner):
+            problems.append(f"job {job} holds the token, so it runs on a runner GitHub hosts, not {runner!r}")
+    if isinstance(tree, dict) and "defaults" in tree:
+        problems.append("the workflow gives a step the token, so it sets no defaults for how its jobs' steps run")
+    problems += [
+        f"the workflow gives a step the token, so its env sets only a version or a digest, not {name}"
+        for name in sorted(_mapping(tree, "env"))
+        if not TOKEN_WORKFLOW_ENV.fullmatch(name)
+    ]
+    return problems
 
 
 def _checkout_problems(tree: Node) -> list[str]:
@@ -380,9 +428,12 @@ def workflow_guard_problems(
     The workflow is parsed, so every trigger, every job's permissions, and every `${{ }}` expression, key, and value
     are checked wherever they sit. Every action is pinned to a full commit SHA with its version in a comment, which
     docs/dependency-updates.md states and Dependabot reviews. The token reaches a step only as one of `token_steps`
-    names, a (job, step name), whose env gives GH_TOKEN exactly CREDENTIAL_VALUE and whose command is the one it maps
-    to, in a job whose permissions are exactly TOKEN_JOB_PERMISSIONS and whose other steps run no command. Every
-    checkout stores no credential.
+    names, a (job, step name), whose env gives GH_TOKEN exactly CREDENTIAL_VALUE and nothing else, whose command is the
+    one it maps to, and which has no key but TOKEN_STEP_KEYS, in a job whose permissions are exactly
+    TOKEN_JOB_PERMISSIONS, whose keys are TOKEN_JOB_KEYS on a runner GitHub hosts, and whose other steps run no command,
+    in a workflow with no defaults and no env but TOKEN_WORKFLOW_ENV's. Every checkout stores no credential. The pinned
+    actions that run before the token step in its job, such as actions/setup-python, which puts Python on its PATH,
+    may set its environment, and are trusted at their pins.
     """
     try:
         tree = read_workflow(workflow)
@@ -403,6 +454,7 @@ def workflow_guard_problems(
     token_paths, token_problems = _token_paths(tree, token_steps)
     problems += token_problems
     problems += _job_permission_problems(tree.get("jobs"), {job for job, _ in token_steps})
+    problems += _token_job_problems(tree, {job for job, _ in token_steps})
     problems += _checkout_problems(tree)
     problems += _string_problems(tree, token_paths)
     pins = action_pins(workflow)
@@ -457,13 +509,12 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
 
 
 # Each step, by its job and its name, that is given the token, with the one command it runs: validate.yml's open-issue
-# query, which asks GitHub whether each issue a malformed-input known failure names is open and starts no suite. No
-# other step of any workflow is given it, and no other step of its job runs a command.
+# query, which asks GitHub whether each issue a malformed-input known failure names is open, from a program that
+# imports none of the policy checks and starts no suite. No other step of any workflow is given it, and no other step
+# of its job runs a command.
 TOKEN_STEPS: dict[str, dict[tuple[str, str], str]] = {
     "validate.yml": {
-        ("known-failures", "Ask whether each known failure's issue is open"): (
-            "python -B tests/run_validation.py --known-failure-issues"
-        ),
+        ("known-failures", "Ask whether each known failure's issue is open"): "python -B tests/known_failure_issues.py",
     },
 }
 

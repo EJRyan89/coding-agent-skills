@@ -277,7 +277,7 @@ ejryan89-skill-core's `closing_references`: `close`, `fix`, or `resolve`, in any
 body alike, since the squash commit carries both, from `--pr-title <file>` and `--pr-body <file>` locally and the pull
 request in continuous integration, and passes when neither is given. The pull request that does the work removes the
 entry, which the suite then requires, and closes the issue. A run of its own,
-`python -B tests/run_validation.py --known-failure-issues`, asks GitHub, through gh, whether each issue either list
+`python -B tests/known_failure_issues.py`, which loads none of the policy checks, asks GitHub, through gh, whether each issue either list
 names is an open issue, and fails one that is not, one that is a pull request, or one gh cannot answer about; it asks
 nothing while both are empty. Continuous integration runs it in a job of its own on every run, the one job given the
 run's read-only token, so no suite holds the token; locally it needs gh signed in only while an entry exists.
