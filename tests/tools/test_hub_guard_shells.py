@@ -70,6 +70,29 @@ PWSH_COMMAND_LINES = (
     ("-", "-c", INLINE),
     ("-NoProfile", "-", "-c", INLINE),
 )
+# Each expansion that assigns GIT_DIR, as `<before>` leaves it, in each place a word is expanded: before (export
+# GIT_DIR=before), unset and exported (so the assignment is exported), set empty, or through a reference.
+ASSIGNING_EXPANSIONS = tuple(
+    f"{before}{place.format(expansion=expansion.format(operator=operator))}"
+    for before in ("", "unset GIT_DIR; export GIT_DIR; ", "GIT_DIR=; ")
+    for operator in (":=", "=")
+    for expansion in (
+        "${{GIT_DIR{operator}after}}",
+        "${{ref{operator}after}}",
+        "${{!name{operator}after}}",
+        "${{other:-${{GIT_DIR{operator}after}}}}",
+    )
+    for place in (
+        "declare -n ref=GIT_DIR; name=GIT_DIR; : {expansion}",
+        'declare -n ref=GIT_DIR; name=GIT_DIR; : "{expansion}"',
+        "declare -n ref=GIT_DIR; name=GIT_DIR; x={expansion}",
+        "declare -n ref=GIT_DIR; name=GIT_DIR; [[ -n {expansion} ]]",
+        "declare -n ref=GIT_DIR; name=GIT_DIR; case {expansion} in *) ;; esac",
+        "declare -n ref=GIT_DIR; name=GIT_DIR; for x in {expansion}; do :; done",
+        "declare -n ref=GIT_DIR; name=GIT_DIR; : < /dev/null > /dev/null 2> /dev/null; echo > /dev/null {expansion}",
+        "declare -n ref=GIT_DIR; name=GIT_DIR; (( ${{#GIT_DIR}} >= 0 )); : $(: {expansion})",
+    )
+)
 # Each Bash command that may set GIT_DIR, exported as `before` when it starts.
 BASH_COMMANDS = (
     "read GIT_DIR <<< after",
@@ -148,6 +171,8 @@ BASH_COMMANDS = (
     "unset GIT_DIR; set -o allexport +e; GIT_DIR=after",
     "unset GIT_DIR; set -e -o allexport; GIT_DIR=after",
     "unset GIT_DIR; set -o pipefail -o allexport; GIT_DIR=after",
+    # An expansion that assigns, in each operator, place, and spelling of its name, generated below.
+    *ASSIGNING_EXPANSIONS,
 )
 UNSET = "<unset>"
 
@@ -188,6 +213,13 @@ def bash_values(commands: tuple[str, ...], start: Path) -> list[str]:
             index, _, value = line[4:].partition(" ")
             values[int(index)] = value
     return [values.get(index, "") for index in range(len(commands))]
+
+
+def find_bash() -> str:
+    bash = platform_support.find_bash()
+    if bash is None:
+        raise AssertionError(f"{platform_support.BASH_MISSING} Bash checks the guard's reading of bash's options")
+    return bash
 
 
 def guard_value(command: str, start: Path) -> Path | str | None:
@@ -396,6 +428,57 @@ class StartDifferentialTests(unittest.TestCase):
                     ran, platform_support.run_tool([bash, "--norc", "--noprofile", "-c", str(text)]).output
                 )
 
+    def test_an_option_word_the_text_does_not_settle_makes_a_script_the_guard_cannot_read(self) -> None:
+        # Each command line, with x unset, where Bash runs the -c script, and the guard cannot tell it does.
+        forms = (
+            "bash -c\"$x\" 'echo MARKER-RAN'",
+            "bash $x -c 'echo MARKER-RAN'",
+            "bash -e $x -c 'echo MARKER-RAN'",
+            "bash $x -lc 'echo MARKER-RAN'",
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            for form in forms:
+                path = Path(folder) / "form.sh"
+                path.write_text(f"unset x; {form}\n", encoding="utf-8", newline="\n")
+                result = platform_support.run_tool(
+                    [find_bash(), "--norc", "--noprofile", platform_support.normalize(path)]
+                )
+                text = form.replace("echo MARKER-RAN", "git status")
+                reading = hub_guard.Reading({}, text)
+                hub_guard.read_bash(text, Path(folder), reading, 0, {})
+                with self.subTest(form=form):
+                    self.assertIn("MARKER-RAN", result.output)
+                    self.assertIn("could not read the command passed to bash", reading.unread)
+
+    def test_a_word_the_text_does_not_settle_may_vanish_and_leave_the_next_word_the_command(self) -> None:
+        # Each command, with x unset, where Bash runs PROGRAM, and the guard reads the call as one that may run.
+        forms = (
+            "$x PROGRAM status",
+            "$x $x PROGRAM status",
+            "command $x PROGRAM status",
+            "command -- $x PROGRAM status",
+            "exec $x PROGRAM status",
+            "builtin $x command PROGRAM status",
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            # command and exec pass over functions, so the marker is a program, as git is.
+            program = Path(folder) / "marker"
+            program.write_text("#!/bin/bash\necho MARKER-RAN\n", encoding="utf-8", newline="\n")
+            program.chmod(0o755)
+            for form in forms:
+                path = Path(folder) / "form.sh"
+                ran = form.replace("PROGRAM", platform_support.normalize(program))
+                path.write_text(f"unset x; {ran}\n", encoding="utf-8", newline="\n")
+                result = platform_support.run_tool(
+                    [find_bash(), "--norc", "--noprofile", platform_support.normalize(path)]
+                )
+                text = form.replace("PROGRAM", "git")
+                reading = hub_guard.Reading({}, text)
+                hub_guard.read_bash(text, Path(folder), reading, 0, {})
+                with self.subTest(form=form):
+                    self.assertIn("MARKER-RAN", result.output)
+                    self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
     def test_the_guard_starts_a_nested_pwsh_where_working_directory_names(self) -> None:
         pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
         if pwsh is None:
@@ -451,38 +534,106 @@ class BashDefinitionDifferentialTests(unittest.TestCase):
         bash = platform_support.find_bash()
         if bash is None:
             raise AssertionError(f"{platform_support.BASH_MISSING} Bash checks the guard's reading of definitions")
-        # Each command, with PROGRAM standing for git, and whether the guard refuses it as an alias it cannot read.
+        # Each command, with PROGRAM standing for git and PATH for the program's path, and the part the guard cannot
+        # read that it refuses, or None where it follows the definition into the body that runs.
+        aliases = f"an alias the command defines ({hub_guard.BASH_ALIASES})"
+        names = f"a command name the command defines ({hub_guard.BASH_CMDS})"
+        exported = "f() { PROGRAM status; }"
         forms = (
-            ("shopt -s expand_aliases; BASH_ALIASES[g]=PROGRAM\ng status", True),
-            ("shopt -s expand_aliases; declare -A BASH_ALIASES=([g]=PROGRAM)\ng status", True),
-            ("shopt -s expand_aliases; BASH_ALIASES+=([g]=PROGRAM)\ng status", True),
-            ("shopt -s expand_aliases; declare -n ref=BASH_ALIASES; ref[g]=PROGRAM\ng status", True),
-            ("shopt -s expand_aliases; printf -v 'BASH_ALIASES[g]' PROGRAM\ng status", True),
-            ("f() { PROGRAM status; }; export -f f; bash -c f", False),
+            ("shopt -s expand_aliases; BASH_ALIASES[g]=PROGRAM\ng status", aliases),
+            ("shopt -s expand_aliases; declare -A BASH_ALIASES=([g]=PROGRAM)\ng status", aliases),
+            ("shopt -s expand_aliases; BASH_ALIASES+=([g]=PROGRAM)\ng status", aliases),
+            ("shopt -s expand_aliases; declare -n ref=BASH_ALIASES; ref[g]=PROGRAM\ng status", aliases),
+            ("shopt -s expand_aliases; printf -v 'BASH_ALIASES[g]' PROGRAM\ng status", aliases),
+            ("shopt -s expand_aliases; : ${BASH_ALIASES[g]:=PROGRAM}\ng status", aliases),
+            ("shopt -s expand_aliases; : ${BASH_ALIASES[g]=PROGRAM}\ng status", aliases),
+            # hash keeps BASH_CMDS, whose elements name the program a command name runs.
+            ("hash -p PATH g; g status", "a command name the command defines (hash -p)"),
+            ("hash -lp PATH g; g status", "a command name the command defines (hash -p)"),
+            ("BASH_CMDS[g]=PATH; g status", names),
+            ("BASH_CMDS+=([g]=PATH); g status", names),
+            ("declare -A BASH_CMDS=([g]=PATH); g status", names),
+            ("printf -v 'BASH_CMDS[g]' %s PATH; g status", names),
+            ("declare -n ref=BASH_CMDS; ref[g]=PATH; g status", names),
+            (": ${BASH_CMDS[g]:=PATH}; g status", names),
+            (f"{exported}; export -f f; bash -c f", None),
             # sh is Bash under Git Bash and may be dash elsewhere, which imports no function, so only bash is run.
-            ("f() { PROGRAM status; }; declare -fx f; bash -c f", False),
-            ("f() { PROGRAM status; }; typeset -xf f; bash -euo pipefail -c f", False),
-            ("f() { PROGRAM status; }; export -f f; env bash -c f", False),
-            ("f() { PROGRAM status; }; export -f f; bash -c 'bash -c f'", False),
-            ("env 'BASH_FUNC_f%%=() { PROGRAM status; }' bash -c f", False),
+            (f"{exported}; declare -fx f; bash -c f", None),
+            (f"{exported}; typeset -xf f; bash -euo pipefail -c f", None),
+            (f"{exported}; export -f f; env bash -c f", None),
+            (f"{exported}; export -f f; bash -c 'bash -c f'", None),
+            ("env 'BASH_FUNC_f%%=() { PROGRAM status; }' bash -c f", None),
+            # -F names functions too, in each case and order, and an option the text does not settle may be -fx.
+            (f"{exported}; declare -Fx f; bash -c f", None),
+            (f"{exported}; declare -xF f; bash -c f", None),
+            (f"{exported}; declare -F -x f; bash -c f", None),
+            (f"{exported}; typeset -Fx f; bash -c f", None),
+            (f"{exported}; typeset -xF f; bash -c f", None),
+            (f"o=-fx; {exported}; declare $o f; bash -c f", None),
+            # allexport exports a function as it is defined, in each spelling that turns it on.
+            (f"set -a; {exported}; bash -c f", None),
+            (f"set -o allexport; {exported}; bash -c f", None),
+            (f"set -eo allexport; {exported}; bash -c f", None),
+            (f"set -ae; {exported}; bash -c f", None),
+            (f"shopt -so allexport; {exported}; bash -c f", None),
+            (f"shopt -s -o allexport; {exported}; bash -c f", None),
+            (f"bash -ac '{exported}; bash -c f'", None),
+            (f"bash -o allexport -c '{exported}; bash -c f'", None),
+            # A pwsh between the two shells hands the function on in its environment.
+            (f"{exported}; export -f f; pwsh -NoProfile -c 'bash -c f'", None),
+            (f"set -a; {exported}; pwsh -NoProfile -c 'bash -c f'", None),
+            # Bash runs the handler for a program it does not find.
+            ("command_not_found_handle() { PROGRAM status; }; no-such-program", None),
         )
         with tempfile.TemporaryDirectory() as folder:
-            for form, alias in forms:
+            for form, unread in forms:
                 path = Path(folder) / "form.sh"
                 # The marker is a function, so a nested shell finds it only where it is exported, as git is on PATH.
                 marker = "marker() { echo MARKER-RAN; }; export -f marker\n"
-                path.write_text(marker + form.replace("PROGRAM", "marker") + "\n", encoding="utf-8", newline="\n")
+                # A program by PATH runs the marker as git would run: a script that calls it.
+                program = Path(folder) / "program"
+                program.write_text("#!/bin/bash\nmarker\n", encoding="utf-8", newline="\n")
+                program.chmod(0o755)
+                ran = form.replace("PROGRAM", "marker").replace("PATH", platform_support.normalize(program))
+                path.write_text(marker + ran + "\n", encoding="utf-8", newline="\n")
                 result = platform_support.run_tool([bash, "--norc", "--noprofile", platform_support.normalize(path)])
-                text = form.replace("PROGRAM", "git")
-                reading = hub_guard.Reading({}, text)
+                text = form.replace("PROGRAM", "git").replace("PATH", "/usr/bin/git")
+                reading = hub_guard.Reading(dict(os.environ), text)
                 hub_guard.read_bash(text, Path(folder), reading, 0, {})
                 with self.subTest(form=form):
                     self.assertIn("MARKER-RAN", result.output)
-                    if alias:
-                        self.assertIn(f"an alias the command defines ({hub_guard.BASH_ALIASES})", reading.unread)
+                    if unread is not None:
+                        self.assertIn(unread, reading.unread)
                     else:
                         self.assertEqual([], reading.unread)
                         self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
+    def test_the_guard_reads_a_function_powershell_hands_a_bash_it_starts(self) -> None:
+        bash = platform_support.find_bash()
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if bash is None or pwsh is None:
+            raise AssertionError("Bash and pwsh check the guard's reading of a function pwsh hands bash")
+        # Each PowerShell command, with BODY standing for the function's body and STARTS for bash, and the part the
+        # guard cannot read that it refuses, or None where it follows the function into its body.
+        forms = (
+            ("${env:BASH_FUNC_f%%} = '() { BODY; }'; STARTS -c f", None),
+            ("${Env:BASH_FUNC_f%%} = '() { BODY; }'; STARTS -c f", None),
+            ("Set-Item 'env:BASH_FUNC_f%%' '() { BODY; }'; STARTS -c f", "BASH_FUNC_"),
+            ("[Environment]::SetEnvironmentVariable('BASH_FUNC_f%%', '() { BODY; }'); STARTS -c f", "BASH_FUNC_"),
+        )
+        for form, unread in forms:
+            ran = form.replace("BODY", "echo MARKER-RAN").replace("STARTS", f"& '{bash}'")
+            result = run_bounded([pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-c", ran], 120, env=os.environ)
+            text = form.replace("BODY", "git status").replace("STARTS", "bash")
+            reading = hub_guard.Reading(dict(os.environ), text)
+            hub_guard.read_powershell(text, None, reading, 0, {})
+            with self.subTest(form=form):
+                self.assertIn("MARKER-RAN", result.stdout.decode("utf-8", "replace"))
+                if unread is not None:
+                    self.assertTrue(any(unread in part for part in reading.unread), reading.unread)
+                else:
+                    self.assertEqual([], reading.unread)
+                    self.assertEqual(["status"], [call.subcommand for call in reading.calls])
 
 
 class BashDifferentialTests(unittest.TestCase):

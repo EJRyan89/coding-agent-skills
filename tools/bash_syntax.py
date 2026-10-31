@@ -77,6 +77,8 @@ RESERVED = frozenset(
     | {"esac", "in", "function", "time", "[["}
 )
 NAME = re.compile(r"[A-Za-z_]\w*", re.ASCII)
+# The start of an expansion that assigns, ${NAME:=word} or ${NAME=word}, to a subscript or not, or through ${!NAME.
+ASSIGNING = re.compile(r"\$\{(!?)([A-Za-z_]\w*(?:\[.*?\])?):?=", re.ASCII)
 # A subscript after a name where Bash reads no assignment, whose `[ ]` holds only plain characters of one word.
 PLAIN_SUBSCRIPT = re.compile(r"\[[^]\s|&;()<>'\"\\$`]*\]")
 # The reserved words after which the next word starts a command, where Bash reads an assignment.
@@ -126,6 +128,9 @@ class Word:
     array: bool = False
     # What the word assigns when it starts as an assignment does, which Bash reads as one before a command's name.
     assignment: Assignment | None = None
+    # The variables its expansions assign, ${NAME:=word} and ${NAME=word}, each as NAME or NAME[SUBSCRIPT], or as
+    # !NAME for ${!NAME:=word}, which assigns the variable NAME's value names.
+    assigns: tuple[str, ...] = ()
 
     @property
     def literal(self) -> str | None:
@@ -144,6 +149,8 @@ class HereDocument:
     delimiter: str
     body: str = ""
     substitutions: tuple[str, ...] = ()
+    # The variables the body's expansions assign, as a word's assigns holds them.
+    assigns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -196,6 +203,8 @@ class Loop:
     words: list[Word] | None
     body: CommandList
     redirects: list[Redirect] = field(default_factory=list)
+    # An arithmetic for's header, whose words are expanded once, before the first pass.
+    header: list[Word] = field(default_factory=list)
 
 
 @dataclass
@@ -253,6 +262,8 @@ class Lexer:
         self.redirections_only = True
         self.redirecting = False
         self.naming_function = False
+        # The variables the expansions read since the word being read began assign.
+        self.assigned: list[str] = []
 
     def peek(self, offset: int = 0) -> str:
         position = self.index + offset
@@ -343,12 +354,20 @@ class Lexer:
                 lines.append(compared)
             document.body = "\n".join(lines)
             if not document.quoted:
-                document.substitutions = tuple(expansion_substitutions(document.body))
+                substitutions, assigns = expansions(document.body)
+                document.substitutions, document.assigns = tuple(substitutions), tuple(assigns)
         self.pending = []
 
     def word(self, subscripts: bool = False) -> Word:
         """One word; with subscripts set it stands where Bash reads an assignment, so a subscript after a name at its
         start is read whole."""
+        outer, self.assigned = self.assigned, []
+        try:
+            return self.word_parts(subscripts)
+        finally:
+            self.assigned = outer
+
+    def word_parts(self, subscripts: bool) -> Word:
         start = self.index
         parts: list[Part] = []
         substitutions: list[str] = []
@@ -386,15 +405,16 @@ class Lexer:
                 add_text(parts, character, quoted=False)
                 self.index += 1
         raw = self.text[start : self.index]
+        assigns = tuple(self.assigned)
         if head is None:
-            return Word(raw, tuple(parts), tuple(substitutions), array)
+            return Word(raw, tuple(parts), tuple(substitutions), array, assigns=assigns)
         whole = [Part("text", self.text[start:value_start])]
         for part in parts:
             if part.kind == "text" and len(whole) == 1:
                 add_text(whole, part.text, part.quoted)
             else:
                 whole.append(part)
-        return Word(raw, tuple(whole), tuple(substitutions), array, Assignment(*head, tuple(parts)))
+        return Word(raw, tuple(whole), tuple(substitutions), array, Assignment(*head, tuple(parts)), assigns)
 
     def assignment_head(self, subscripts: bool, substitutions: list[str]) -> tuple[str, bool, bool] | None:
         """Reads the start of an assignment, NAME or NAME[SUBSCRIPT] and the = or += after it, and returns the name,
@@ -612,6 +632,8 @@ class Lexer:
                 self.index += 1
         content = self.text[start : self.index]
         self.index += 1
+        # ${NAME:=word} and ${NAME=word} assign, and so does each such expansion nested in the word.
+        self.assigned.extend(match.group(1) + match.group(2) for match in ASSIGNING.finditer("${" + content))
         if NAME.fullmatch(content):
             parts.append(Part("parameter", content, quoted=quoted))
         else:
@@ -658,6 +680,12 @@ def add_text(parts: list[Part], text: str, quoted: bool) -> None:
 def expansion_substitutions(text: str) -> list[str]:
     """The command substitutions in text that expands as a double-quoted string does, such as an unquoted
     here-document's body; a double quote there is an ordinary character."""
+    return expansions(text)[0]
+
+
+def expansions(text: str) -> tuple[list[str], list[str]]:
+    """The command substitutions in text that expands as a double-quoted string does, and the variables its
+    expansions assign, as a word's assigns holds them."""
     lexer = Lexer(text.replace('"', " "))
     found: list[str] = []
     while lexer.index < len(lexer.text):
@@ -670,7 +698,7 @@ def expansion_substitutions(text: str) -> list[str]:
             found.append(lexer.backquoted())
         else:
             lexer.index += 1
-    return found
+    return found, lexer.assigned
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -897,17 +925,21 @@ class Parser:
 
     def for_clause(self, kind: str) -> Command:
         if self.at_operator("("):
-            # for (( ...; ...; ... )): the arithmetic header assigns no word the guard reads.
+            # for (( ...; ...; ... )): the header's words are expanded before the first pass, so their substitutions
+            # run and their assigning expansions assign; the arithmetic itself assigns no word the guard reads.
             depth = 0
+            header: list[Word] = []
             while True:
                 token = self.advance() if self.peek() is not None else None
                 if token is None:
                     raise BashSyntaxError("an arithmetic for is not closed")
+                if isinstance(token, Word):
+                    header.append(token)
                 if isinstance(token, Operator) and token.text in "()":
                     depth += 1 if token.text == "(" else -1
                     if depth == 0:
                         break
-            return Loop(kind, None, None, None, self.do_group(), self.redirects())
+            return Loop(kind, None, None, None, self.do_group(), self.redirects(), header)
         name = self.advance()
         if not isinstance(name, Word) or not name.literal or not NAME.fullmatch(name.literal):
             raise BashSyntaxError(f"{kind} names no variable")

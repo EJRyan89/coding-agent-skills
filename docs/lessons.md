@@ -256,12 +256,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later
-  word runs, an alias, a function, or one handed to a child in its environment, against the ways the guard reads;
+  word runs, an alias, a function, a `hash -p` or `BASH_CMDS` command name, a `command_not_found_handle`, or one
+  handed to a child in its environment, through any shell between them, against the ways the guard reads; each
+  way a variable is assigned, an expansion's `${NAME:=word}` and `${NAME=word}` among them, and each way an
+  attribute is given, allexport and an option's upper-case spelling such as `-F` among them, against the ways the
+  guard reads; an option loop that ends at a word the text does not settle without saying it may be an option;
   a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample under
   `tests/fixtures/captured-output/`; each interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
   forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
   guard follows, such as a working directory, read only as taking a value and never for what it changes.
-- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
+  #2137
 
 ### A recursive parser of input has a depth bound
 
