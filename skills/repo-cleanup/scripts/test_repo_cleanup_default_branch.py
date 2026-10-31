@@ -246,6 +246,14 @@ class DefaultBranchTests(CleanupTestCase):
         self.assertTrue(found.note.startswith(prefix) and len(found.note) > len(prefix), found.note)
         self.assertEqual("refs/remotes/origin/master", git(clone, "symbolic-ref", "refs/remotes/origin/HEAD"))
 
+    def test_a_refused_refresh_gives_gits_whole_first_line_as_its_reason(self) -> None:
+        # git ends a line with "\n" alone; a U+2028 a ref name holds is part of the line, not the end of it.
+        def refused(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(1, "", "error: not a ref: refs/remotes/origin/a\u2028b\nhint: second line\n")
+
+        reason = rc.refresh_origin_head(rc.Services(git=GitClient(refused)), self.repository("topic"))
+        self.assertEqual((None, rc.one_line("error: not a ref: refs/remotes/origin/a\u2028b")), reason)
+
     def test_a_dangling_origin_head_with_nothing_to_fall_back_on_leaves_the_repository_on_its_branch(self) -> None:
         root = self.repository("topic")
         git(root, "update-ref", "refs/remotes/origin/trunk", "HEAD")

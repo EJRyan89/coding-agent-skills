@@ -32,7 +32,7 @@ from call_tables import (
     EVENT_LOOP_STARTS,
     LAST,
     OTHER_OPENS,
-    PATH_CLASSES,
+    PATH_METHODS,
     PROCESS_STARTS,
     TEXT_METHODS,
     TEXT_OPENERS,
@@ -782,17 +782,20 @@ WHOLE_NUMBER_READER = "skills/ejryan89-skill-core/scripts/whole_number.py"
 INT_PARSE_ALLOWANCE = "INT_PARSE_ALLOWED"
 
 
-def _method_call(node: ast.AST, *methods: str) -> ast.expr | None:
-    """The receiver of a call of one of `methods` on it, or None."""
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in methods:
-        return node.func.value
-    return None
+# The objects whose functions and methods a call may name through the re module: a call on either names its pattern or
+# its match first, as re.fullmatch(pattern, text) and re.Pattern.fullmatch(pattern, text) do.
+REGEX_OWNERS = frozenset({"re", "re.Pattern", "re.Match"})
+# The callables int() is reached by, through the module's imports.
+INT_CALLABLES = frozenset({"int", "builtins.int"})
+MAP_CALLABLES = frozenset({"map", "builtins.map"})
 
 
-def _names(target: ast.expr) -> list[str]:
-    """The names an assignment target binds, through tuples and lists."""
+def _names(target: ast.expr) -> list[ast.Name]:
+    """The names an assignment target binds, through tuples, lists, and a starred name."""
     if isinstance(target, ast.Name):
-        return [target.id]
+        return [target]
+    if isinstance(target, ast.Starred):
+        return _names(target.value)
     if isinstance(target, ast.Tuple | ast.List):
         return [name for element in target.elts for name in _names(element)]
     return []
@@ -808,35 +811,79 @@ def _branches(node: ast.expr) -> list[ast.expr]:
     return [node]
 
 
-def _iterated(node: ast.expr) -> list[ast.expr]:
-    """The iterables a value's items come from: the value, and each argument of a zip(), enumerate(), sorted(), or
-    reversed() call over it."""
-    over = {"zip", "enumerate", "sorted", "reversed"}
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in over:
-        return [node, *(item for argument in node.args for item in _iterated(argument))]
-    return [node]
-
-
-def _bindings(node: ast.AST) -> list[tuple[list[str], ast.expr]]:
-    """Each name list an assignment, a walrus, a for loop, or a comprehension binds, with the value or iterable it binds
-    them from."""
+def _bindings(node: ast.AST) -> list[tuple[ast.AST, list[ast.Name], ast.expr]]:
+    """Each name list an assignment, a walrus, a for loop, or a comprehension binds, with the node whose scope reads
+    the names and the value or iterable it binds them from. A walrus's target is read from the walrus itself, whose
+    scope finds the one the name is bound in."""
     if isinstance(node, ast.Assign):
-        return [(_names(target), node.value) for target in node.targets]
-    if isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
-        return [(_names(node.target), node.value)]
+        return [(node, _names(target), node.value) for target in node.targets]
+    if isinstance(node, ast.NamedExpr):
+        return [(node, _names(node.target), node.value)]
+    if isinstance(node, ast.AnnAssign) and node.value is not None:
+        return [(node.target, _names(node.target), node.value)]
     if isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
-        return [(_names(node.target), node.iter)]
+        return [(node.target, _names(node.target), node.iter)]
     return []
 
 
-class _ScopeNumbers:
-    """What one scope binds that int() must not convert: the names bound to a regular-expression match, the names bound
-    to a group of one, and each expression a digit test admitted, by its dump with any strip() calls taken off."""
+def _unstripped(node: ast.expr) -> ast.expr:
+    """An expression with each strip(), lstrip(), or rstrip() call on its end taken off."""
+    while (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("strip", "lstrip", "rstrip")
+    ):
+        node = node.func.value
+    return node
 
-    def __init__(self) -> None:
-        self.matches: set[str] = set()
-        self.groups: set[str] = set()
-        self.tested: dict[str, str] = {}
+
+class _ModuleNumbers:
+    """What a module binds that int() must not convert, each name by the scope that binds it, wherever in the module it
+    is read: the names bound to a regular-expression match, the names bound to a group of one or to a list of them, and
+    each expression a digit test admitted, by the scope of the name it reads and its dump with any strip() calls taken
+    off. A function or method of re counts by the name the module's imports resolve it to, a bare import and an alias
+    included, and a method of a compiled pattern or a match by its name on any receiver."""
+
+    def __init__(self, tree: ast.Module, resolver: CallableResolver) -> None:
+        self.resolver = resolver
+        self.matches: set[tuple[int, str]] = set()
+        self.groups: set[tuple[int, str]] = set()
+        self.tested: dict[tuple[int, str], str] = {}
+        nodes = list(ast.walk(tree))
+        # A binding may read a name another binds later in the walk, so they are read until they add no name.
+        while True:
+            known = len(self.matches) + len(self.groups)
+            for node in nodes:
+                self.bind(node)
+            if len(self.matches) + len(self.groups) == known:
+                break
+        for node in nodes:
+            self.test(node)
+
+    def _key(self, node: ast.AST, name: str) -> tuple[int, str]:
+        """The scope that binds a name where a node reads or binds it, with the name."""
+        scope = self.resolver.scopes.get(id(node))
+        owner = scope.owner(name) if scope is not None else None
+        return (id(owner) if owner is not None else 0, name)
+
+    def regex_call(self, node: ast.AST, *methods: str) -> tuple[str, bool] | None:
+        """The method a call of one of `methods` makes, and whether it is given the pattern or the match first, or None
+        for any other call: re's function or a method named on re.Pattern or re.Match, through the module's imports
+        or a getattr of a constant name on one of them, or a method by its name on any other receiver."""
+        if not isinstance(node, ast.Call):
+            return None
+        function = node.func
+        if isinstance(function, ast.Call) and self.resolver.name(function.func) in ATTRIBUTE_LOOKUPS:
+            attribute = call_argument(function, 1, "name")
+            if function.args and isinstance(attribute, ast.Constant) and attribute.value in methods:
+                return str(attribute.value), self.resolver.name(function.args[0]) in REGEX_OWNERS
+            return None
+        owner, _, method = self.resolver.name(function).rpartition(".")
+        if owner in REGEX_OWNERS and method in methods:
+            return method, True
+        if isinstance(function, ast.Attribute) and function.attr in methods:
+            return function.attr, False
+        return None
 
     def is_group(self, node: ast.expr) -> bool:
         """Whether an expression is a group of a match: a group() call, an index of groups(), groupdict(), or
@@ -845,79 +892,72 @@ class _ScopeNumbers:
         return any(self._group(branch) for branch in _branches(node))
 
     def _group(self, node: ast.expr) -> bool:
-        if _method_call(node, "group") is not None:
+        if self.regex_call(node, "group") is not None:
             return True
         if isinstance(node, ast.Subscript):
             value = node.value
             return (
-                _method_call(value, "groups", "groupdict", "findall") is not None
-                or (isinstance(value, ast.Name) and value.id in self.matches)
+                self.regex_call(value, "groups", "groupdict", "findall") is not None
+                or (isinstance(value, ast.Name) and self._key(value, value.id) in self.matches)
                 or self.is_group(_unstripped(value))
             )
-        return isinstance(node, ast.Name) and node.id in self.groups
+        return isinstance(node, ast.Name) and self._key(node, node.id) in self.groups
+
+    def _lists_groups(self, node: ast.expr) -> bool:
+        """Whether an expression's items are groups: a groups() or findall() call, through a zip(), enumerate(),
+        sorted(), or reversed() over one, or a name bound to one."""
+        if isinstance(node, ast.Call) and self.resolver.name(node.func) in ("zip", "enumerate", "sorted", "reversed"):
+            return any(self._lists_groups(argument) for argument in node.args)
+        return self.regex_call(node, "groups", "findall") is not None or self.is_group(node)
 
     def bind(self, node: ast.AST) -> None:
-        """Record what one node of the scope binds to a match or a group, in the order the scope's walk meets it."""
-        for names, value in _bindings(node):
-            if any(_method_call(branch, "match", "fullmatch", "search", "finditer") for branch in _branches(value)):
-                self.matches.update(names)
-            elif self.is_group(value) or any(_method_call(item, "groups", "findall") for item in _iterated(value)):
-                self.groups.update(names)
+        """Record what one node binds to a match or a group."""
+        for place, names, value in _bindings(node):
+            branches = _branches(value)
+            if any(self.regex_call(branch, "match", "fullmatch", "search", "finditer") for branch in branches):
+                self.matches.update(self._key(place, name.id) for name in names)
+            elif any(self._lists_groups(branch) for branch in branches):
+                self.groups.update(self._key(place, name.id) for name in names)
+
+    def _place(self, node: ast.expr) -> tuple[int, str]:
+        """Where a tested expression is read: the scope binding the name it reads, through its attributes, indexes,
+        and calls, with its dump with any strip() calls taken off."""
+        root: ast.expr = node
+        while isinstance(root, ast.Attribute | ast.Subscript | ast.Call):
+            root = root.func if isinstance(root, ast.Call) else root.value
+        scope = self._key(root, root.id)[0] if isinstance(root, ast.Name) else id(self.resolver.scopes.get(id(node)))
+        return scope, ast.dump(_unstripped(node))
 
     def test(self, node: ast.AST) -> None:
         """Record the expression a digit test or a regular-expression test on this node admits, with how to name the
         test."""
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        if not isinstance(node, ast.Call):
             return
-        method = node.func.attr
-        receiver = _method_call(node, "isdigit", "isdecimal", "isnumeric")
-        if receiver is not None:
-            self.tested.setdefault(ast.dump(_unstripped(receiver)), f"an {method}() test")
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("isdigit", "isdecimal", "isnumeric"):
+            self.tested.setdefault(self._place(_unstripped(node.func.value)), f"an {node.func.attr}() test")
             return
-        pattern = _method_call(node, "match", "fullmatch", "search")
+        found = self.regex_call(node, "match", "fullmatch", "search")
+        if found is None:
+            return
+        method, pattern_first = found
         # re.fullmatch(pattern, text) tests its second argument, and a compiled pattern's fullmatch(text) its first.
-        index = 1 if isinstance(pattern, ast.Name) and pattern.id == "re" else 0
-        if pattern is not None and len(node.args) > index:
-            self.tested.setdefault(ast.dump(_unstripped(node.args[index])), f"a regular-expression {method}()")
+        index = 1 if pattern_first else 0
+        if len(node.args) > index:
+            self.tested.setdefault(self._place(node.args[index]), f"a regular-expression {method}()")
 
     def refusal(self, call: ast.Call) -> str | None:
         """What a one-argument int() call converts that it must not, or a map(int, ...) over groups, or None. A
         strip() leaves a group's digits as they were, so a stripped group is one too."""
-        if _maps_int(call):
-            over = call.args[1:]
-            groups = any(
-                self.is_group(item) or _method_call(item, "groups", "findall") is not None
-                for argument in over
-                for item in _iterated(argument)
-            )
-            return "regular-expression groups" if groups else None
-        if not (
-            isinstance(call.func, ast.Name) and call.func.id == "int" and len(call.args) == 1 and not call.keywords
-        ):
+        called = self.resolver.name(call.func)
+        if called in MAP_CALLABLES and len(call.args) >= 2 and self.resolver.name(call.args[0]) in INT_CALLABLES:
+            return "regular-expression groups" if any(self._lists_groups(item) for item in call.args[1:]) else None
+        if called not in INT_CALLABLES or len(call.args) != 1 or call.keywords:
             return None
         argument = call.args[0]
         if self.is_group(_unstripped(argument)):
             return "a regular-expression group"
-        test = self.tested.get(ast.dump(_unstripped(argument)))
+        test = self.tested.get(self._place(argument))
         return f"a value {test} admitted" if test else None
-
-
-def _maps_int(call: ast.Call) -> bool:
-    """Whether a call is map(int, ...), which converts each item as a one-argument int() does."""
-    return (
-        isinstance(call.func, ast.Name)
-        and call.func.id == "map"
-        and len(call.args) >= 2
-        and isinstance(call.args[0], ast.Name)
-        and call.args[0].id == "int"
-    )
-
-
-def _unstripped(node: ast.expr) -> ast.expr:
-    """An expression with each strip(), lstrip(), or rstrip() call on its end taken off."""
-    while (receiver := _method_call(node, "strip", "lstrip", "rstrip")) is not None:
-        node = receiver
-    return node
 
 
 def int_parse_problems(root: Path, files: list[Path]) -> list[str]:
@@ -926,12 +966,7 @@ def int_parse_problems(root: Path, files: list[Path]) -> list[str]:
     problems: list[str] = []
     paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != WHOLE_NUMBER_READER]
     for _, name, tree in python_trees(paths, root, problems):
-        nodes = list(scoped_nodes(tree.body))
-        scopes: dict[str, _ScopeNumbers] = {}
-        for node, scope in nodes:
-            numbers = scopes.setdefault(scope, _ScopeNumbers())
-            numbers.bind(node)
-            numbers.test(node)
+        numbers = _ModuleNumbers(tree, CallableResolver(tree))
         found = [
             (
                 node.lineno,
@@ -940,8 +975,8 @@ def int_parse_problems(root: Path, files: list[Path]) -> list[str]:
                 "ValueError naming no input; call ejryan89-skill-core's whole_number.read, the one reader of a whole "
                 f"number from text, or state why in {INT_PARSE_ALLOWANCE}",
             )
-            for node, scope in nodes
-            if isinstance(node, ast.Call) and (what := scopes[scope].refusal(node))
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call) and (what := numbers.refusal(node))
         ]
         problems += sanctioned_problems(name, tree, INT_PARSE_ALLOWANCE, found)
     return problems
@@ -1046,27 +1081,34 @@ def json_write_problems(root: Path, files: list[Path]) -> list[str]:
 ENCODING_ALLOWANCE = "ENCODING_ALLOWED"
 
 
-# The opens and process starts come from call_tables: TEXT_OPENERS, TEXT_METHODS, and OTHER_OPENS, and each
-# PROCESS_STARTS entry that decodes its output as text, always or when one of TEXT_PROCESS_OPTIONS asks.
-TEXT_PROCESS_OPTIONS = ("text", "universal_newlines")
+# The opens and process starts come from call_tables: TEXT_OPENERS, PATH_METHODS, TEXT_METHODS, and OTHER_OPENS, and
+# each PROCESS_STARTS entry that decodes its output as text, always or when one of TEXT_PROCESS_OPTIONS asks: subprocess
+# opens its pipes in text when given text=, universal_newlines=, or errors=, in the locale's encoding unless given one.
+TEXT_PROCESS_OPTIONS = ("text", "universal_newlines", "errors")
 
 
-def _opener(call: ast.Call, aliases: dict[str, str]) -> TextOpener | None:
-    """Where a call takes its mode and encoding when it may open text, or None for any other call. A path method named
-    on one of PATH_CLASSES rather than on a path, as in `Path.read_text(path)`, takes the path first, so each of its
-    other arguments sits one slot later."""
+def _openers(call: ast.Call, aliases: dict[str, str]) -> tuple[TextOpener, ...]:
+    """Each reading of where a call takes its mode and encoding when it may open text, or none for any other call: a
+    module's opener, the method of the path class it names unbound, as in `Path.read_text(path)`, which takes the path
+    first, so each of its other arguments sits one slot later, or, on any other receiver, the method of every path
+    class that defines it."""
     qualified = qualified_name(call.func, aliases)
     if qualified in TEXT_OPENERS:
-        return TEXT_OPENERS[qualified]
+        return (TEXT_OPENERS[qualified],)
     if not isinstance(call.func, ast.Attribute) or qualified in OTHER_OPENS:
-        return None
-    opener = TEXT_METHODS.get(call.func.attr)
-    if opener is None or qualified_name(call.func.value, aliases) not in PATH_CLASSES:
-        return opener
-    return replace(
-        opener,
-        mode=None if opener.mode is None else opener.mode + 1,
-        encoding=None if opener.encoding is None else opener.encoding + 1,
+        return ()
+    methods = PATH_METHODS.get(qualified_name(call.func.value, aliases))
+    if methods is None:
+        return TEXT_METHODS.get(call.func.attr, ())
+    opener = methods.get(call.func.attr)
+    if opener is None:
+        return ()
+    return (
+        replace(
+            opener,
+            mode=None if opener.mode is None else opener.mode + 1,
+            encoding=None if opener.encoding is None else opener.encoding + 1,
+        ),
     )
 
 
@@ -1083,15 +1125,19 @@ def _opens_text(call: ast.Call, opener: TextOpener, method: bool) -> bool:
     return not method
 
 
-def _names_encoding(call: ast.Call, position: int | None) -> bool:
-    """Whether a call passes an encoding other than None, or an unpacking that may hold one."""
-    given = call_argument(call, position, "encoding")
-    return given is not None and not (isinstance(given, ast.Constant) and given.value is None)
+def _names_encoding(call: ast.Call, position: int | None, keywords: Sequence[str] = ("encoding",)) -> bool:
+    """Whether a call passes an encoding, at its position or by one of its keywords, or an unpacking that may hold one:
+    any value but a constant that is no string, as None, or a buffering size given where another class takes the
+    encoding."""
+    given = call_argument(call, position, *keywords)
+    if isinstance(given, ast.UnaryOp) and isinstance(given.operand, ast.Constant):
+        given = given.operand
+    return given is not None and not (isinstance(given, ast.Constant) and not isinstance(given.value, str))
 
 
 def _starts_text_process(call: ast.Call, aliases: dict[str, str]) -> bool:
     """Whether a call starts a process whose output it decodes as text: always, as os.popen and subprocess.getoutput
-    do, or because its text= or universal_newlines= asks."""
+    do, or because its text=, universal_newlines=, or errors= asks."""
     start = PROCESS_STARTS.get(qualified_name(call.func, aliases))
     if start is None or start.text == "never":
         return False
@@ -1103,15 +1149,19 @@ def _starts_text_process(call: ast.Call, aliases: dict[str, str]) -> bool:
 
 
 def _encoding_refusal(call: ast.Call, aliases: dict[str, str]) -> str | None:
-    """What a text open, read, write, or process start that names no encoding is refused for, or None."""
+    """What a text open, read, write, or process start that names no encoding is refused for, or None. A method whose
+    receiver may be a path of more than one class is refused only when no class's reading of it names an encoding."""
     if _starts_text_process(call, aliases):
         if _names_encoding(call, None):
             return None
         return f"decodes {qualified_name(call.func, aliases)}'s output as text"
-    opener = _opener(call, aliases)
     qualified = qualified_name(call.func, aliases)
     method = qualified not in TEXT_OPENERS
-    if opener is None or not _opens_text(call, opener, method) or _names_encoding(call, opener.encoding):
+    openers = _openers(call, aliases)
+    if not openers or not all(
+        _opens_text(call, opener, method) and not _names_encoding(call, opener.encoding, opener.encoding_keywords)
+        for opener in openers
+    ):
         return None
     what = call.func.attr if method and isinstance(call.func, ast.Attribute) else qualified
     return f"opens text with {what}()"
@@ -1262,12 +1312,52 @@ RESULT_CLIENT_METHOD = "run"
 RESULT_DISCARD_ALLOWANCE = "RESULT_DISCARD_ALLOWED"
 
 
-class _GitClients:
-    """What a module binds to a GitClient, through its imports: each name assigned a GitClient(...) call or annotated
-    as one, a parameter's included, and each attribute name a class or an instance assigns or annotates so."""
+def _client_bases(node: ast.ClassDef, resolver: CallableResolver) -> list[str]:
+    """The qualified name of each base a class names, through the module's imports."""
+    return [name for base in node.bases if (name := resolver.name(base))]
 
-    def __init__(self, tree: ast.Module, resolver: CallableResolver) -> None:
+
+def git_client_classes(trees: list[tuple[str, ast.Module]]) -> set[str]:
+    """GitClient and each class that subclasses it, at any depth, by the qualified name a caller reaches it by, and
+    each name a module's top level binds to one, as a re-export does, followed through every module that binds it
+    again; a class a module defines inside a function or another class is read by _GitClients alone."""
+    classes = {RESULT_CLIENT}
+    bases: list[tuple[str, list[str]]] = []
+    bindings: list[tuple[str, str]] = []
+    for name, tree in trees:
+        resolver = CallableResolver(tree)
+        key = _module_key(name)
+        # A base the module defines itself is reached by its module's name, as a caller elsewhere reaches it.
+        bases += [
+            (
+                f"{key}.{node.name}",
+                [
+                    f"{key}.{base.removeprefix('<local>.')}" if base.startswith("<local>.") else base
+                    for base in _client_bases(node, resolver)
+                ],
+            )
+            for node in _top_level(tree.body)
+            if isinstance(node, ast.ClassDef)
+        ]
+        bindings += [(f"{_module_key(name)}.{bound}", target) for bound, target in _module_bindings(tree, resolver)]
+    while found := {
+        bound
+        for bound, targets in [*bases, *((bound, [target]) for bound, target in bindings)]
+        if bound not in classes and any(_reaches(target, known) for target in targets for known in classes)
+    }:
+        classes |= found
+    return classes
+
+
+class _GitClients:
+    """What a module binds to a GitClient or a subclass of it, through its imports: each name assigned a call of one or
+    annotated as one, a parameter's included, each attribute name a class or an instance assigns or annotates so, and
+    `self` or `cls` in the methods of a subclass the module defines."""
+
+    def __init__(self, tree: ast.Module, resolver: CallableResolver, classes: set[str] | None = None) -> None:
         self.resolver = resolver
+        self.classes = {RESULT_CLIENT} if classes is None else classes
+        self._read_subclasses(tree)
         self.names: set[str] = set()
         self.attributes: set[str] = set()
         for node in ast.walk(tree):
@@ -1290,6 +1380,33 @@ class _GitClients:
             and isinstance(target := statement.target, ast.Name)
         }
 
+    def _read_subclasses(self, tree: ast.Module) -> None:
+        """Add each class of the module that subclasses a client class, by the name the resolver gives it, and record
+        the first parameter of each of its methods but a static one, which is an instance of it or the class."""
+        definitions = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+        self.instances: set[tuple[int, str]] = set()
+        subclasses: list[ast.ClassDef] = []
+        while found := [
+            node
+            for node in definitions
+            if node not in subclasses and any(self._is_class(base) for base in _client_bases(node, self.resolver))
+        ]:
+            subclasses += found
+            self.classes |= {f"<local>.{node.name}" for node in found}
+        for node in subclasses:
+            for function in node.body:
+                if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                given = function.args.posonlyargs + function.args.args
+                static = any(self.resolver.name(decorator) == "staticmethod" for decorator in function.decorator_list)
+                owner = self.resolver.scopes[id(given[0])].owner(given[0].arg) if given and not static else None
+                if owner is not None:
+                    self.instances.add((id(owner), given[0].arg))
+
+    def _is_class(self, name: str) -> bool:
+        """Whether a qualified name is a client class: GitClient through its package, or a subclass of it."""
+        return any(resolves_to(name, known) or _reaches(name, known) for known in self.classes)
+
     def _bind(self, target: ast.expr) -> None:
         if isinstance(target, ast.Name):
             self.names.add(target.id)
@@ -1297,20 +1414,23 @@ class _GitClients:
             self.attributes.add(target.attr)
 
     def constructed(self, node: ast.expr | None) -> bool:
-        """Whether an expression is a GitClient(...) call."""
-        return isinstance(node, ast.Call) and resolves_to(self.resolver.name(node.func), RESULT_CLIENT)
+        """Whether an expression is a call of GitClient or a subclass of it."""
+        return isinstance(node, ast.Call) and self._is_class(self.resolver.name(node.func))
 
     def annotated(self, annotation: ast.expr) -> bool:
-        """Whether an annotation names GitClient, alone or in a union or a subscript."""
+        """Whether an annotation names GitClient or a subclass of it, alone or in a union or a subscript."""
         return any(
-            isinstance(part, ast.Name | ast.Attribute) and resolves_to(self.resolver.name(part), RESULT_CLIENT)
+            isinstance(part, ast.Name | ast.Attribute) and self._is_class(self.resolver.name(part))
             for part in ast.walk(annotation)
         )
 
     def holds(self, node: ast.expr) -> bool:
-        """Whether an expression is a GitClient: one constructed in place, a name, or an attribute bound to one."""
+        """Whether an expression is a client: one constructed in place, a name, or an attribute bound to one, or
+        `self` or `cls` in a method of a subclass."""
         if isinstance(node, ast.Name):
-            return node.id in self.names
+            scope = self.resolver.scopes.get(id(node))
+            owner = scope.owner(node.id) if scope is not None else None
+            return node.id in self.names or (owner is not None and (id(owner), node.id) in self.instances)
         if isinstance(node, ast.Attribute):
             return node.attr in self.attributes
         return self.constructed(node)
@@ -1332,9 +1452,11 @@ def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
     """Each expression statement that discards a process runner's result, which no RESULT_DISCARD_ALLOWED entry
     sanctions."""
     problems: list[str] = []
-    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+    trees = [(name, tree) for _, name, tree in python_trees(claim_files(root, files), root, problems)]
+    classes = git_client_classes(trees)
+    for name, tree in trees:
         resolver = CallableResolver(tree)
-        clients = _GitClients(tree, resolver)
+        clients = _GitClients(tree, resolver, set(classes))
         found = [
             (
                 node.lineno,
@@ -1354,13 +1476,28 @@ def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
 # A git command's exit status read outside ejryan89-skill-core's git_client.py is where a failure turns into absence:
 # a nonzero exit taken for "not there". The client's forms give the three answers, found, absent as git reports it,
 # and could not tell, so a module reads them instead. A git result is what GitClient.run returns on a client the
-# module holds, what a function annotated to return git_client.GitResult returns, awaited or not, in any module the
+# module holds, a GitClient or a subclass's instance, what a function annotated to return git_client.GitResult returns, awaited or not, in any module the
 # repository's Python reads, what a method so annotated returns on an instance of its class in the module defining it,
 # and a name annotated as one. A read that must stay, such as a status reported with git's reason or
 # one whose failure is refused, states why in a module-level GIT_STATUS_ALLOWED = {scope: reason}.
 GIT_STATUS_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_RESULT = "git_client.GitResult"
 GIT_STATUS_ALLOWANCE = "GIT_STATUS_ALLOWED"
+# The calls that read an object's attribute by its name, given the object and the name.
+ATTRIBUTE_READERS = frozenset(
+    {
+        "getattr",
+        "builtins.getattr",
+        "inspect.getattr_static",
+        "object.__getattribute__",
+        "builtins.object.__getattribute__",
+    }
+)
+# The call that builds a reader of the attributes it names, applied to the object after.
+ATTRIBUTE_GETTER = "operator.attrgetter"
+# The calls and the attributes that reach a dataclass instance's fields as a whole, returncode among them.
+RESULT_FIELD_READERS = frozenset({"vars", "builtins.vars", "dataclasses.asdict", "dataclasses.astuple"})
+RESULT_FIELD_ATTRIBUTES = frozenset({"__dict__", "__getstate__"})
 
 
 def _module_key(name: str) -> str:
@@ -1473,9 +1610,11 @@ class _GitResults:
     on that class's instance: `self` or `cls` in its methods, a call of the class, or a name annotated as or bound to
     one."""
 
-    def __init__(self, tree: ast.Module, resolver: CallableResolver, producers: set[str]) -> None:
+    def __init__(
+        self, tree: ast.Module, resolver: CallableResolver, producers: set[str], classes: set[str] | None = None
+    ) -> None:
         self.resolver = resolver
-        self.clients = _GitClients(tree, resolver)
+        self.clients = _GitClients(tree, resolver, None if classes is None else set(classes))
         self.local = {
             f"<local>.{node.name}"
             for node in ast.walk(tree)
@@ -1489,20 +1628,51 @@ class _GitResults:
         self._read_classes(tree)
         # Each name by the scope that binds it, so a name another function binds to a result is not one here.
         self.names: set[tuple[int, str]] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    for name, value in _assigned(target, node.value):
-                        if self.is_result(value):
-                            self._bind(name, name.id)
-            elif isinstance(node, ast.NamedExpr) and self.is_result(node.value):
-                # The scope reader visits a walrus but not its target, and binds the name where the walrus sits.
-                self._bind(node, node.target.id)
-            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                if self.annotated(node.annotation) or self.is_result(node.value):
-                    self._bind(node.target, node.target.id)
-            elif isinstance(node, ast.arg) and node.annotation is not None and self.annotated(node.annotation):
-                self._bind(node, node.arg)
+        nodes = list(ast.walk(tree))
+        # A name bound to one a scope holds is held too, so the bindings are read until they add no name.
+        while True:
+            held = len(self.names)
+            for node in nodes:
+                self._read_binding(node)
+            if len(self.names) == held:
+                break
+        # Each class pattern, by its node, that reads returncode on a held subject.
+        self.patterns = {id(pattern) for node in nodes if isinstance(node, ast.Match) for pattern in self._reads(node)}
+
+    def _read_binding(self, node: ast.AST) -> None:
+        """Record each name one node binds to a result: by an assignment, an assignment expression, an annotation, or
+        a case that captures a held subject whole."""
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name, value in _assigned(target, node.value):
+                    if self.holds(value):
+                        self._bind(name, name.id)
+        elif isinstance(node, ast.NamedExpr) and self.holds(node.value):
+            # The scope reader visits a walrus but not its target, and binds the name where the walrus sits.
+            self._bind(node, node.target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if self.annotated(node.annotation) or (node.value is not None and self.holds(node.value)):
+                self._bind(node.target, node.target.id)
+        elif isinstance(node, ast.arg) and node.annotation is not None and self.annotated(node.annotation):
+            self._bind(node, node.arg)
+        elif isinstance(node, ast.Match) and self.holds(node.subject):
+            for case in node.cases:
+                for pattern in _case_patterns(case.pattern):
+                    if isinstance(pattern, ast.MatchAs) and pattern.name is not None:
+                        self._bind(node, pattern.name)
+
+    def _reads(self, node: ast.Match) -> Iterator[ast.MatchClass]:
+        """Each class pattern of a match on a held subject that reads returncode: by its keyword, or by position on
+        GitResult, whose first match argument it is."""
+        if not self.holds(node.subject):
+            return
+        for case in node.cases:
+            for pattern in _case_patterns(case.pattern):
+                if not isinstance(pattern, ast.MatchClass):
+                    continue
+                positional = bool(pattern.patterns) and resolves_to(self.resolver.name(pattern.cls), GIT_RESULT)
+                if "returncode" in pattern.kwd_attrs or positional:
+                    yield pattern
 
     def _key(self, node: ast.AST, name: str) -> tuple[int, str] | None:
         """The scope that binds a name where the node reads or binds it, with the name, or None when none does."""
@@ -1584,18 +1754,52 @@ class _GitResults:
             return self._key(node, node.id) in self.names
         return self.is_result(node)
 
-    def status_read(self, node: ast.expr) -> bool:
-        """Whether a node reads a held result's returncode, as an attribute or through getattr, by any spelling, given
-        any name but a constant that names another attribute."""
+    def status_read(self, node: ast.AST) -> bool:
+        """Whether a node reads a held result's returncode: as an attribute, through a lookup of an attribute by its
+        name or an attrgetter given any name but a constant that names another attribute, by a class pattern, or by
+        reaching the result's fields as a whole, which hold it."""
+        if isinstance(node, ast.pattern):
+            return id(node) in self.patterns
         if isinstance(node, ast.Attribute):
+            if node.attr in RESULT_FIELD_ATTRIBUTES:
+                return self.holds(node.value)
             return node.attr == "returncode" and isinstance(node.ctx, ast.Load) and self.holds(node.value)
+        if not isinstance(node, ast.Call):
+            return False
+        called = self.resolver.name(node.func)
+        if called in ATTRIBUTE_READERS:
+            return len(node.args) >= 2 and _may_name_status(node.args[1]) and self.holds(node.args[0])
+        if called in RESULT_FIELD_READERS:
+            return bool(node.args) and self.holds(node.args[0])
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "__getattribute__":
+            return bool(node.args) and _may_name_status(node.args[0]) and self.holds(node.func.value)
+        getter = node.func
         return (
-            isinstance(node, ast.Call)
-            and self.resolver.name(node.func) in ("getattr", "builtins.getattr")
-            and len(node.args) >= 2
-            and not (isinstance(attribute := node.args[1], ast.Constant) and attribute.value != "returncode")
+            isinstance(getter, ast.Call)
+            and self.resolver.name(getter.func) == ATTRIBUTE_GETTER
+            and any(_may_name_status(name) for name in getter.args)
+            and bool(node.args)
             and self.holds(node.args[0])
         )
+
+
+def _case_patterns(pattern: ast.pattern) -> Iterator[ast.pattern]:
+    """A case's pattern and each one it matches the whole subject with: an `as` pattern's own and each alternative of
+    an `|` pattern, through any nesting."""
+    yield pattern
+    if isinstance(pattern, ast.MatchAs) and pattern.pattern is not None:
+        yield from _case_patterns(pattern.pattern)
+    elif isinstance(pattern, ast.MatchOr):
+        for alternative in pattern.patterns:
+            yield from _case_patterns(alternative)
+
+
+def _may_name_status(name: ast.expr) -> bool:
+    """Whether an attribute name a lookup is given may be returncode: that constant, a dotted path that starts with
+    it, or anything that is not a constant."""
+    if not isinstance(name, ast.Constant):
+        return True
+    return isinstance(name.value, str) and name.value.split(".", 1)[0] == "returncode"
 
 
 def git_status_problems(root: Path, files: list[Path]) -> list[str]:
@@ -1603,10 +1807,11 @@ def git_status_problems(root: Path, files: list[Path]) -> list[str]:
     problems: list[str] = []
     trees = [(name, tree) for _, name, tree in python_trees(claim_files(root, files), root, problems)]
     producers = git_result_producers(trees)
+    classes = git_client_classes(trees)
     for name, tree in trees:
         if name == GIT_STATUS_OWNER:
             continue
-        results = _GitResults(tree, CallableResolver(tree), producers)
+        results = _GitResults(tree, CallableResolver(tree), producers, classes)
         found = [
             (
                 node.lineno,
@@ -1615,7 +1820,7 @@ def git_status_problems(root: Path, files: list[Path]) -> list[str]:
                 f"quiet_output, commit_of, file_at, or rev_parse_paths, or state why in {GIT_STATUS_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.expr) and results.status_read(node)
+            if isinstance(node, ast.expr | ast.pattern) and results.status_read(node)
         ]
         problems += sanctioned_problems(name, tree, GIT_STATUS_ALLOWANCE, found)
     return problems
@@ -1659,8 +1864,9 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # a list's or tuple's items, pass -z or go to GitClient.names, which adds it, and a for-each-ref or log format joins
 # its fields with NUL. str.splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path can
 # hold, so git's output, a call's result, its stdout, or a name a scope binds to either, is split on "\n" or on NUL,
-# never with splitlines(), bound or unbound as str.splitlines(out), nor after a string method, a str(), or a slice
-# that keeps its text, as out.strip().splitlines(). A listing, a format, or a split that must stay states why in a
+# never with splitlines(), bound or unbound as str.splitlines(out), nor after what keeps its text, as
+# out.strip().splitlines() does: a string method, a str() or a bytes(), a slice, a formatted string, a format(), a %,
+# a concatenation, or a join. A listing, a format, or a split that must stay states why in a
 # module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
@@ -1724,6 +1930,12 @@ GIT_OUTPUT_COMMANDS = frozenset(
     }
 )
 GIT_FORMAT_ESCAPES = re.compile(r"%%|%x[0-9a-fA-F]{2}|%n")
+# The types whose call of a value holds its text, given an encoding or not, by the names they are reached by, and
+# on which a string method may be named unbound, as in `str.strip(out)`.
+TEXT_TYPES = frozenset({"str", "bytes", "builtins.str", "builtins.bytes"})
+# The str and bytes methods whose result holds the text of its receiver and of each argument it is given, through the
+# items of a literal sequence or mapping, as `"{}".format(out)` and `"".join([out])` hold out's.
+TEXT_JOINING_METHODS = frozenset({"format", "format_map", "join"})
 
 
 def _git_command(elements: Sequence[ast.expr]) -> tuple[str, list[str]] | None:
@@ -1795,92 +2007,155 @@ def _separator_refusal(elements: Sequence[ast.expr]) -> str | None:
     return None
 
 
-def _text_beneath(node: ast.expr) -> ast.expr:
-    """The expression whose text a string method's result, a str() of it, or a slice of it still holds, through each
-    one in turn, bound as `out.strip()` or unbound as `str.strip(out)`; the expression itself when it is none."""
-    while True:
+def _items(node: ast.expr) -> list[ast.expr]:
+    """The values a literal tuple, list, set, or dict holds, or the expression itself for anything else."""
+    if isinstance(node, ast.Tuple | ast.List | ast.Set):
+        return [item.value if isinstance(item, ast.Starred) else item for item in node.elts]
+    if isinstance(node, ast.Dict):
+        return list(node.values)
+    return [node]
+
+
+class _GitOutputs:
+    """What a module holds as git's output, each name by the scope that binds it, wherever in the module it is read:
+    the arguments a name is bound to as a literal list or tuple, and the git subcommand whose output a name holds. A
+    name holds it when an assignment, an annotated assignment, an assignment expression, or an augmented one binds
+    it to an expression whose text holds that output."""
+
+    def __init__(self, tree: ast.Module, resolver: CallableResolver) -> None:
+        self.resolver = resolver
+        self.lists: dict[tuple[int, str], Sequence[ast.expr]] = {}
+        self.outputs: dict[tuple[int, str], str] = {}
+        nodes = list(ast.walk(tree))
+        # A binding may read a name another binds later in the walk, so they are read until they add no name.
+        while True:
+            known = len(self.lists) + len(self.outputs)
+            for node in nodes:
+                for place, name, value in self._bindings(node):
+                    key = self._key(place, name)
+                    if isinstance(value, ast.List | ast.Tuple):
+                        self.lists.setdefault(key, value.elts)
+                    if key not in self.outputs and (command := self.command(value)) is not None:
+                        self.outputs[key] = command
+            if len(self.lists) + len(self.outputs) == known:
+                break
+
+    @staticmethod
+    def _bindings(node: ast.AST) -> Iterator[tuple[ast.AST, str, ast.expr]]:
+        """Each name a node binds, with the node whose scope reads it and the value it binds the name to."""
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                yield from ((name, name.id, value) for name, value in _assigned(target, node.value))
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign) and isinstance(node.target, ast.Name):
+            if node.value is not None:
+                yield node.target, node.target.id, node.value
+        elif isinstance(node, ast.NamedExpr):
+            yield node, node.target.id, node.value
+
+    def _key(self, node: ast.AST, name: str) -> tuple[int, str]:
+        scope = self.resolver.scopes.get(id(node))
+        owner = scope.owner(name) if scope is not None else None
+        return (id(owner) if owner is not None else 0, name)
+
+    def _unbound(self, method: ast.Attribute) -> bool:
+        """Whether a method is named on str or bytes rather than on a value, as in `str.strip(out)`."""
+        return self.resolver.name(method.value) in TEXT_TYPES
+
+    def texts(self, node: ast.expr) -> list[ast.expr]:
+        """Each expression whose text an expression still holds: through a string method's result, bound as
+        `out.strip()` or unbound as `str.strip(out)`, a str() or a bytes() of it, given an encoding or not, a slice, a
+        formatted string, a format() or a %, a concatenation or a repetition, a join of a literal sequence, and each
+        branch of a conditional expression or of `and` or `or`; the expression itself when it is none of them."""
+        found: list[ast.expr] = []
+        pending = [node]
+        while pending:
+            current = pending.pop()
+            beneath = self._beneath(current)
+            if beneath is None:
+                found.append(current)
+            else:
+                pending += beneath
+        return found
+
+    def _beneath(self, node: ast.expr) -> list[ast.expr] | None:
+        """The expressions whose text one expression holds, a step down, or None when it holds no other's."""
         if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice):
-            node = node.value
-            continue
+            return [node.value]
+        if isinstance(node, ast.IfExp | ast.BoolOp):
+            return _branches(node)
+        if isinstance(node, ast.JoinedStr):
+            return [part.value for part in node.values if isinstance(part, ast.FormattedValue)]
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add | ast.Mult):
+            return [node.left, node.right]
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            return [node.left, *_items(node.right)]
         if not isinstance(node, ast.Call):
-            return node
+            return None
+        if self.resolver.name(node.func) in TEXT_TYPES:
+            given = call_argument(node, 0, "object")
+            return [given] if given is not None and not isinstance(given, ast.Starred) else None
         method = node.func
-        if isinstance(method, ast.Name) and method.id == "str" and len(node.args) == 1:
-            node = node.args[0]
-        elif not isinstance(method, ast.Attribute) or method.attr not in TEXT_KEEPING_METHODS:
-            return node
-        elif not (isinstance(method.value, ast.Name) and method.value.id in ("str", "bytes")):
-            node = method.value
-        elif node.args:
-            node = node.args[0]
-        else:
-            return node
+        if not isinstance(method, ast.Attribute) or method.attr not in TEXT_JOINING_METHODS | TEXT_KEEPING_METHODS:
+            return None
+        arguments = node.args[1:] if self._unbound(method) else node.args
+        receiver = node.args[:1] if self._unbound(method) else [method.value]
+        if method.attr in TEXT_KEEPING_METHODS:
+            return receiver or None
+        extras = [*arguments, *(keyword.value for keyword in node.keywords)]
+        return [*receiver, *(item for argument in extras for item in _items(argument))]
 
-
-def _git_output_command(
-    node: ast.expr, lists: Mapping[str, Sequence[ast.expr]], outputs: Mapping[str, str]
-) -> str | None:
-    """The git subcommand whose output an expression holds, or None: a call whose arguments start it, a list or tuple
-    among them, or a name its scope binds to one, read in place; that call's stdout, or output as the deployer's
-    run_tool gives it; or a name its scope binds to either; through a string method, a str(), or a slice of any."""
-    node = _text_beneath(node)
-    if isinstance(node, ast.Attribute) and node.attr in ("stdout", "output"):
-        node = _text_beneath(node.value)
-    if isinstance(node, ast.Name):
-        return outputs.get(node.id)
-    if not isinstance(node, ast.Call):
+    def command(self, node: ast.expr) -> str | None:
+        """The git subcommand whose output an expression's text holds, or None: a call whose arguments start it, a
+        list or tuple among them, or a name bound to one, read in place; that call's stdout, or output as the
+        deployer's run_tool gives it; or a name bound to either."""
+        for text in self.texts(node):
+            command = self._command(text)
+            if command is not None:
+                return command
         return None
-    elements: list[ast.expr] = []
-    for argument in node.args:
-        if isinstance(argument, ast.List | ast.Tuple):
-            elements += argument.elts
-        elif isinstance(argument, ast.Name) and argument.id in lists:
-            elements += lists[argument.id]
-        else:
-            elements.append(argument)
-    started = _git_command(elements)
-    return started[0] if started is not None and started[0] in GIT_OUTPUT_COMMANDS else None
 
+    def _command(self, node: ast.expr) -> str | None:
+        if isinstance(node, ast.Attribute) and node.attr in ("stdout", "output"):
+            return self.command(node.value)
+        if isinstance(node, ast.Name):
+            return self.outputs.get(self._key(node, node.id))
+        if not isinstance(node, ast.Call):
+            return None
+        elements: list[ast.expr] = []
+        for argument in node.args:
+            if isinstance(argument, ast.List | ast.Tuple):
+                elements += argument.elts
+            elif isinstance(argument, ast.Name) and (bound := self.lists.get(self._key(argument, argument.id))):
+                elements += bound
+            else:
+                elements.append(argument)
+        started = _git_command(elements)
+        return started[0] if started is not None and started[0] in GIT_OUTPUT_COMMANDS else None
 
-def _split_text(method: ast.Attribute, arguments: Sequence[ast.expr]) -> ast.expr:
-    """The text a splitlines() call splits: its receiver, or its first argument when unbound, as str.splitlines(out)."""
-    unbound = isinstance(method.value, ast.Name) and method.value.id in ("str", "bytes") and arguments
-    return arguments[0] if unbound else method.value
+    def split(self, node: ast.AST) -> str | None:
+        """The git subcommand whose output a splitlines() call splits, bound or unbound as `str.splitlines(out)`, or
+        None."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "splitlines"):
+            return None
+        if self._unbound(node.func):
+            return self.command(node.args[0]) if node.args else None
+        return self.command(node.func.value)
 
 
 def _git_output_splits(tree: ast.Module) -> list[tuple[int, str, str]]:
     """Each splitlines() of git's output, by its line, its scope, and its refusal."""
-    lists: dict[str, dict[str, Sequence[ast.expr]]] = {}
-    outputs: dict[str, dict[str, str]] = {}
-    found: list[tuple[int, str, str]] = []
-    for node, scope in scoped_nodes(tree.body):
-        known_lists, known_outputs = lists.setdefault(scope, {}), outputs.setdefault(scope, {})
-        if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if len(targets) != 1 or not isinstance(targets[0], ast.Name):
-                continue
-            if isinstance(node.value, ast.List | ast.Tuple):
-                known_lists[targets[0].id] = node.value.elts
-            command = _git_output_command(node.value, known_lists, known_outputs)
-            if command is not None:
-                known_outputs[targets[0].id] = command
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "splitlines"
-            and (command := _git_output_command(_split_text(node.func, node.args), known_lists, known_outputs))
-            is not None
-        ):
-            found.append(
-                (
-                    node.lineno,
-                    scope,
-                    f"splits the output of git {command} with splitlines(), which also breaks on U+0085, U+2028, and "
-                    'other characters a ref name or a path can hold; split on "\\n", or on NUL with -z or a %00 '
-                    f"format, or state why in {GIT_SEPARATOR_ALLOWANCE}",
-                )
-            )
-    return found
+    outputs = _GitOutputs(tree, CallableResolver(tree))
+    return [
+        (
+            node.lineno,
+            scope,
+            f"splits the output of git {command} with splitlines(), which also breaks on U+0085, U+2028, and "
+            'other characters a ref name or a path can hold; split on "\\n", or on NUL with -z or a %00 '
+            f"format, or state why in {GIT_SEPARATOR_ALLOWANCE}",
+        )
+        for node, scope in scoped_nodes(tree.body)
+        if isinstance(node, ast.Call) and (command := outputs.split(node)) is not None
+    ]
 
 
 def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
