@@ -254,6 +254,13 @@ class DefaultBranchTests(CleanupTestCase):
         reason = rc.refresh_origin_head(rc.Services(git=GitClient(refused)), self.repository("topic"))
         self.assertEqual((None, rc.one_line("error: not a ref: refs/remotes/origin/a\u2028b")), reason)
 
+    def test_a_refresh_refused_with_no_line_gives_the_exit_status_as_its_reason(self) -> None:
+        def silent(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(3, "", "\n \n")
+
+        reason = rc.refresh_origin_head(rc.Services(git=GitClient(silent)), self.repository("topic"))
+        self.assertEqual((None, "exit status 3"), reason)
+
     def test_a_dangling_origin_head_with_nothing_to_fall_back_on_leaves_the_repository_on_its_branch(self) -> None:
         root = self.repository("topic")
         git(root, "update-ref", "refs/remotes/origin/trunk", "HEAD")
