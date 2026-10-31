@@ -265,7 +265,14 @@ class DefinitionTests(unittest.TestCase):
                     self.assertTrue(hub_guard.writes_definition_drive(name, [path, "git"], drive))
                     self.assertFalse(hub_guard.writes_definition_drive(name, [path, "git"], "other"))
                     self.assertFalse(hub_guard.writes_definition_drive(name, ["a.txt", None], drive))
+                    # A path the cmdlet takes from its pipeline may be on either drive; another piped parameter names
+                    # no item it writes.
+                    for piped in ({"path"}, {"literalpath"}, {"destination"}, {"value", "path"}):
+                        self.assertTrue(hub_guard.writes_definition_drive(name, ["-Value", "x"], drive, piped))
+                    self.assertFalse(hub_guard.writes_definition_drive(name, ["-Value", "x"], drive, {"value"}))
         self.assertFalse(hub_guard.writes_definition_drive("get-item", ["function:f"], "function"))
+        self.assertFalse(hub_guard.writes_definition_drive("get-item", [], "function", {"path"}))
+        self.assertTrue(hub_guard.defines_powershell_alias("si", [], {"path"}))
         self.assertTrue(hub_guard.defines_powershell_alias("sc", ["alias:g", "git"]))
         self.assertFalse(hub_guard.defines_powershell_alias("sc", ["function:g", "git"]))
 
@@ -283,6 +290,17 @@ class DefinitionTests(unittest.TestCase):
         for providers, expected in cases:
             with self.subTest(providers=providers):
                 self.assertEqual(expected, hub_guard.definition_provider(providers))
+
+    def test_the_reader_pwsh_is_handed_fits_a_windows_command_line_with_every_line_that_runs(self) -> None:
+        source = hub_guard.POWERSHELL_READER.read_text(encoding="utf-8")
+        handed = hub_guard.powershell_reader()
+        # A here-string could hold a line that begins with #, which the comment lines' removal would take out.
+        self.assertNotIn("@'", source)
+        self.assertNotIn('@"', source)
+        code = [line for line in source.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(code, [line for line in handed.splitlines() if line.strip()])
+        # Windows starts no command line longer than 32767 characters; the rest of pwsh's is far under 2048.
+        self.assertLess(len(handed), 32767 - 2048)
 
     def test_a_function_is_named_without_its_scope(self) -> None:
         for name, expected in (

@@ -2253,6 +2253,28 @@ class ContractTests(GuardTestCase):
             "[powershell]::Create().AddScript('git commit -m x').Invoke()",
             "[powershell]::Create().AddCommand('git').AddArgument('commit').Invoke()",
             "$ExecutionContext.InvokeCommand.ExpandString('$(git commit -m x)')",
+            # A member of the engine by any name, a member name in parentheses, a type through a cast, and a member
+            # whose name or receiver's type the text does not settle.
+            "$ExecutionContext.SessionState.InvokeProvider.Item.Set('function:f', 'git commit -m x'); f",
+            "$ExecutionContext.SessionState.InvokeProvider.Item.Set('alias:g', 'git'); g commit -m x",
+            "$ExecutionContext.SessionState.InvokeProvider.Item.New('function:', 'f', 'Function', 'git commit'); f",
+            "$global:ExecutionContext.SessionState.InvokeProvider.Item.Set('function:f', 'git commit -m x'); f",
+            "${variable:ExecutionContext}.InvokeCommand.InvokeScript('git commit -m x')",
+            "[scriptblock]::('Create')('git commit -m x').Invoke()",
+            "[scriptblock]::(('Create'))('git commit -m x').Invoke()",
+            "$ExecutionContext.InvokeCommand.('NewScriptBlock')('git commit -m x').Invoke()",
+            "([type]'scriptblock')::Create('git commit -m x').Invoke()",
+            "([type]('scriptblock'))::Create('git commit -m x').Invoke()",
+            "[System.Management.Automation.Language.Parser]::ParseInput('git commit -m x', [ref]$null, [ref]$null)"
+            ".GetScriptBlock().Invoke()",
+            "$Host.Runspace.CreateNestedPipeline('git commit -m x', $false).Invoke()",
+            "[runspace]::DefaultRunspace.CreateNestedPipeline('git commit -m x', $false).Invoke()",
+            "[scriptblock].GetMethod('Create').Invoke($null, @('git commit -m x')).Invoke()",
+            "$c = $ExecutionContext; $c.InvokeCommand.InvokeScript('git commit -m x')",
+            "$i = $ExecutionContext.SessionState.InvokeProvider.Item; $i.Set('function:f', 'git commit -m x'); f",
+            "$t = 'scriptblock' -as [type]; $t::Create('git commit -m x').Invoke()",
+            "$m = 'NewScriptBlock'; $ExecutionContext.InvokeCommand.$m('git commit -m x').Invoke()",
+            "$o = Get-Variable ExecutionContext -ValueOnly; $o.InvokeCommand.NewScriptBlock('git commit').Invoke()",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.hub))
@@ -2270,16 +2292,53 @@ class ContractTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.hub))
                 self.assertIn(f"could not read part of this command ({named})", self.reason)
-        # Reading a definition, building a type other than a script block, or a drive on another provider defines
-        # nothing, so a commit in a worktree stays allowed.
+        # Reading a definition, a member of a type outside the engine, a property of the engine the command reaches
+        # no further, or a drive on another provider defines nothing, so a commit in a worktree stays allowed.
         for command in (
             "Get-Item alias:g; git commit -m x",
-            "[powershell]::Create(); git commit -m x",
+            "[IO.Path]::Combine('a', 'b'); [Environment]::NewLine.Length; git commit -m x",
+            "$ExecutionContext.SessionState.Path.CurrentLocation.Path; $Host.Name; git commit -m x",
             "$alias:g; git commit -m x",
             f"New-PSDrive -Name a -PSProvider FileSystem -Root '{self.root}'; git commit -m x",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.powershell(command, self.tree))
+
+    def test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle(self) -> None:
+        # A definition from the pipeline, by property name or from an item, is a part the guard cannot read.
+        for command in (
+            "[pscustomobject]@{Path='function:f'} | Set-Item -Value 'git commit -m x'; f",
+            "[pscustomobject]@{Path='alias:g'} | Set-Item -Value git; g commit -m x",
+            "[pscustomobject]@{Path='function:f'} | New-Item -Value 'git commit -m x'; f",
+            "[pscustomobject]@{Path='function:f'} | Set-Content -Value 'git commit -m x'; f",
+            "[pscustomobject]@{LiteralPath='function:f'} | Set-Item -Value 'git commit -m x'; f",
+            "Get-Item function:prompt | Set-Item -Value 'git commit -m x'; prompt",
+            "Get-Item function:prompt | Rename-Item -NewName git; git commit -m x",
+            "[pscustomobject]@{Destination='function:git'} | Copy-Item -Path function:prompt; git commit -m x",
+            "[pscustomobject]@{Name='a'; PSProvider='Alias'; Root=''} | New-PSDrive; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn("The guard could not read part of this command", self.reason)
+        # A location or an environment variable from the pipeline leaves where git starts unknown.
+        hub = f"'{self.hub}'"
+        for command in (
+            f"{hub} | Set-Location; git commit -m x",
+            f"{hub} | cd; git commit -m x",
+            f"{hub} | sl; git commit -m x",
+            f"{hub} | Push-Location; git commit -m x",
+            f"[pscustomobject]@{{LiteralPath={hub}}} | Set-Location; git commit -m x",
+            f"Get-Item {hub} | Set-Location; git commit -m x",
+            f"[pscustomobject]@{{Path='env:GIT_DIR'}} | Set-Item -Value '{self.hub / '.git'}'; git commit -m x",
+            f"[pscustomobject]@{{Path='env:GIT_WORK_TREE'}} | New-Item -Value {hub}; git commit -m x",
+            "Get-Item env:GIT_DIR | Remove-Item; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+        # Its argument-bound twin is read as before, and a cmdlet first in its pipeline takes nothing from it.
+        self.assertIsNone(self.powershell(f"Set-Location '{self.tree}'; git commit -m x", self.hub))
+        self.assertIsNone(self.powershell(f"'{self.hub}' | Set-Location '{self.tree}'; git commit -m x", self.hub))
+        self.assertIsNone(self.powershell("Get-ChildItem | Select-Object -First 1; git commit -m x", self.tree))
 
     def test_a_function_called_with_whatif_or_defined_with_a_scope_runs_its_body(self) -> None:
         for command in (

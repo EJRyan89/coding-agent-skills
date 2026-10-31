@@ -324,8 +324,14 @@ refused while a guarded hub is in view, and what they do not see at all is named
   here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
-  parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
-  refuses, or one given `-WhatIf`, runs nothing, except a call to a function the command defines and a native program.
+  parameter abbreviated, aliased, or left positional, and each path of an array, is read. A cmdlet after the first in
+  its pipeline may take each parameter its arguments leave unbound from there, by value or by property name, as its
+  metadata says, in a parameter set that holds those its arguments bind; such a parameter's value is one the text
+  does not settle, so `'<dir>' | Set-Location` leaves the directory unknown, an environment variable a piped path may
+  name is unknown after it, and an item or content cmdlet that may take the path it writes from its pipeline is a
+  definition, as below. A command the binder refuses, or one given `-WhatIf`, runs nothing, except a call to a
+  function the command defines, a native program, and a cmdlet after the first in its pipeline, which may take what
+  the binder sees missing from there.
   A function runs its body whatever `-WhatIf` says, since it reaches only the cmdlets that honour it, and a simple
   function takes the words it declares no parameter for into `$args` and runs, so its body is read as a path that may
   run; one defined with a scope, as `function global:f`, is called by its bare name and its scoped one. A native
@@ -406,12 +412,21 @@ command that names git as if one were in view. While one is, the guard refuses:
 - a shell alias the command defines, by Bash's `alias` with a value or a name that reaches `BASH_ALIASES` (an
   element's assignment, `declare -A`, a builtin that sets a variable, or a name reference), or by PowerShell's
   `Set-Alias`, `New-Alias`, `Import-Alias`, an item or content cmdlet or an assignment such as `$alias:g = 'git'`
-  writing the `alias:` drive or the Alias provider at a path the text names, or a drive `New-PSDrive` makes on the
-  Alias or Function provider; a PowerShell function defined from text the same ways on the `function:` drive; and
-  text PowerShell runs as commands from a string (`[scriptblock]::Create`, by the type its receiver resolves to
-  through parentheses, `NewScriptBlock`, `InvokeScript`, `ExpandString`, `AddScript`, and `AddCommand`, each
-  whether called or reached as a member, as in `[scriptblock]::Create.Invoke(...)`), when the command names git: a
-  later word may then run git under another name, or text the parser never read as a command;
+  writing the `alias:` drive or the Alias provider at a path the text names or one it may take from its pipeline, or
+  a drive `New-PSDrive` makes on the Alias or Function provider; a PowerShell function defined from text the same
+  ways on the `function:` drive; and each member through which PowerShell may run text as commands, read by one
+  resolver that settles a member's name, a constant in parentheses or not, as in `[scriptblock]::('Create')`, and
+  its receiver's type, through parentheses, casts such as `[type]'scriptblock'`, the engine's automatic variables
+  (`$ExecutionContext`, `$Host`, `$MyInvocation`, `$PSCmdlet`), and each property, field, or method whose type
+  reflection settles: on a type of PowerShell's engine or of reflection (one in `System.Management.Automation`,
+  `Microsoft.PowerShell`, or `System.Reflection`, a `Type`, `Activator`, or `AppDomain`), each method, whether
+  called or reached as a member as in `[scriptblock]::Create.Invoke(...)`, other than `PSVariable.Set`, which is
+  read as an assignment, and each object of such a type the command keeps rather than reaching a member of, as
+  `$i = $ExecutionContext.SessionState.InvokeProvider.Item` keeps one; a member whose name the text does not settle
+  on such a type or on one it does not settle; a static member of a type it does not settle, as in `$t::Create(...)`;
+  and, on a receiver it does not type, `NewScriptBlock`, `InvokeScript`, `ExpandString`, `AddScript`, `AddCommand`,
+  `GetScriptBlock`, `CreateNestedPipeline`, `CreatePipeline`, `ParseInput`, and `ParseFile` by name, when the
+  command names git: a later word may then run git under another name, or text the parser never read as a command;
 - an alias that cannot be read, as above.
 
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
@@ -439,8 +454,9 @@ The hook sees the command text. It does not see:
 - an alias `BASH_ALIASES` gains through a name the text does not settle;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
-- text run as commands through a type or method the text holds in a variable, as in `$t = [scriptblock]` then
-  `$t::Create(...)`;
+- text run as commands through an object of PowerShell's engine the text does not type, such as one a variable
+  holds from a command's output, as after `$o = Get-Variable ExecutionContext -ValueOnly`, reached by a method
+  outside the names above;
 - shell redirection or other programs writing files;
 - what the shell's own startup files set, or a variable the Bash tool's shell holds that the hook's environment does
   not, or holds with another value;
