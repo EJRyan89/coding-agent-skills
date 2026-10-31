@@ -128,12 +128,18 @@ class ClosingTests(KnownFailureFixture):
         for body in (
             "Closes #4243\n",
             "Part of #4242\n",
-            "<!-- Closes #4242 -->\n",
             "Closes #42420\n",
             "discloses #4242\n",
         ):
             with self.subTest(body=body):
                 self.assertEqual([], closed_known_failure_problems(self.root, body))
+
+    def test_a_reference_inside_an_html_comment_fails_as_one_outside_does(self) -> None:
+        # The squash commit carries the body as written, comments included, and GitHub closes an issue its message
+        # names.
+        self.write([ENTRY])
+        [problem] = closed_known_failure_problems(self.root, "Fixes the reader.\n<!-- Closes #4242 -->\n")
+        self.assertIn("closes #4242", problem)
 
     def test_no_body_and_no_title_passes(self) -> None:
         self.write([ENTRY])
@@ -173,6 +179,12 @@ class ClosingTests(KnownFailureFixture):
             f"Closes {REPOSITORY}#4242\n",
             "closes ejryan89/CODING-AGENT-SKILLS#4242\n",
             f"Fixes https://github.com/{REPOSITORY}/issues/4242\n",
+            "Closes GH-4242\n",
+            f"Closes <https://github.com/{REPOSITORY}/issues/4242>\n",
+            "**Closes** #4242\n",
+            "CLOSES:#4242\n",
+            f"Closes http://github.com/{REPOSITORY}/issues/4242\n",
+            f"Closes https://www.github.com/{REPOSITORY}/issues/4242\n",
         ):
             with self.subTest(body=body):
                 self.assertEqual({4242}, closed_issues(body, REPOSITORY))

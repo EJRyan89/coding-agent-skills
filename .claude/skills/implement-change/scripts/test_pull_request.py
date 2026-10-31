@@ -161,6 +161,42 @@ class TitleCheckTests(unittest.TestCase):
         self.assertEqual(["TITLE_LINES 2"], pull_request.read_title("fix: a\nsecond\n")[1])
 
 
+# The squash commit's title is the pull request's title, and GitHub closes an issue a commit message names, so a
+# closing reference in the title, in any form closing_references reads or one that starts a reference, is refused.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "fix: resolves #5 and fixes owner/repo#6",
+        "fix: closes #5",
+        "fix(scope): Fixes: #5",
+        "fix: closes:#5",
+        "fix: **Closes** #5",
+        "fix: closes GH-5",
+        "fix: resolves https://github.com/o/r/issues/5",
+        "fix: resolves <http://www.github.com/o/r/issues/5>",
+        "fix: closes #abc",
+        "fix: closes https://github.com/o/r/pull/5",
+    ],
+)
+def test_a_title_holding_a_closing_reference_is_refused(title: str) -> None:
+    assert pull_request.read_title(title + "\n") == (title, [f"TITLE_CLOSES {title}"])
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        AWKWARD_TITLE,
+        "fix(deployer): read the title (#4242)",
+        "fix: the closes check reads #12 now",
+        "ci: run on GH-hosted runners",
+        "docs: what prefixes #7 means",
+        "fix: closes the file it opens",
+    ],
+)
+def test_a_title_with_no_closing_reference_is_accepted(title: str) -> None:
+    assert pull_request.read_title(title) == (title, [])
+
+
 class TemplateLookupTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="implement-change-test-"))
@@ -308,6 +344,15 @@ class CheckCommandTests(Repository):
         (self.root / "tool.py").write_text("print('changed')\n", encoding="utf-8")
         code, lines = self.run_script("check", *self.files_arguments())
         self.assertEqual((1, "UNCOMMITTED 2"), (code, lines[-1]))
+
+    def test_a_title_closing_issues_is_refused_and_each_issue_it_closes_named(self) -> None:
+        self.title.write_text("fix: resolves #5 and fixes owner/repo#6\n", encoding="utf-8")
+        self.body.write_text(FILLED.replace("Closes #12\nCloses #34\n", "Closes #7\n"), encoding="utf-8")
+        code, lines = self.run_script("check", *self.files_arguments())
+        self.assertEqual(1, code)
+        self.assertEqual(["CLOSES 5", "CLOSES 6", "CLOSES 7"], [line for line in lines if line.startswith("CLOSES")])
+        self.assertIn("TITLE_CLOSES fix: resolves #5 and fixes owner/repo#6", lines)
+        self.assertNotIn("READY", lines)
 
     def test_body_and_title_problems_are_each_named(self) -> None:
         self.title.write_text("", encoding="utf-8")
@@ -525,14 +570,47 @@ def test_a_closing_reference_in_any_other_line_is_refused(prose: str) -> None:
     assert 7 in pull_request.closed_issues(body)
 
 
-# Neither a reference in a comment, a number with no closing keyword, nor a keyword with no reference closes anything.
+# Neither a number with no closing keyword nor a keyword with no reference closes anything.
 @pytest.mark.parametrize(
-    "prose", ["<!-- fixes #7 -->", "The bug in #7 is fixed.", "Fixes the quoting that #7 found.", "prefixes #7"]
+    "prose", ["The bug in #7 is fixed.", "Fixes the quoting that #7 found.", "prefixes #7", "ci: GH-hosted runners"]
 )
 def test_text_that_closes_nothing_is_neither_reported_nor_refused(prose: str) -> None:
     body = FILLED.replace("Fixes the quoting of a title.", prose)
     assert pull_request.body_problems(body, TEMPLATE) == []
     assert pull_request.closed_issues(body) == [12, 34]
+
+
+# The squash commit carries the body as written, so a reference in a comment the author wrote closes its issue, and
+# is reported and refused; a template comment left in the body is a placeholder, read for nothing else.
+@pytest.mark.parametrize("prose", ["<!-- fixes #7 -->", "<!-- Resolves GH-7 -->"])
+def test_a_closing_reference_in_an_author_s_comment_is_reported_and_refused(prose: str) -> None:
+    body = FILLED.replace("Fixes the quoting of a title.", prose)
+    assert pull_request.body_problems(body, TEMPLATE) == [f"CLOSES_LINE 4 {prose}"]
+    assert pull_request.closed_issues(body) == [12, 34, 7]
+
+
+def test_a_closing_reference_in_a_template_comment_left_in_the_body_is_only_a_placeholder() -> None:
+    template = TEMPLATE.replace("<!-- The problem, in a paragraph. -->", "<!-- e.g. fixes #99 -->")
+    body = FILLED.replace("Fixes the quoting of a title.", "<!-- e.g. fixes #99 -->")
+    assert pull_request.body_problems(body, template) == ["PLACEHOLDER 4 a template comment"]
+
+
+# Every spelling closing_references reads is refused on a line of its own unless it is `Closes #<n>`.
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Closes GH-12",
+        "Closes <https://github.com/o/r/issues/12>",
+        "**Closes** #12",
+        "CLOSES:#12",
+        "Closes http://github.com/o/r/issues/12",
+        "Closes https://www.github.com/o/r/issues/12",
+    ],
+)
+def test_each_spelling_the_reader_reads_is_refused_as_a_closing_line(line: str) -> None:
+    body = FILLED.replace("Closes #34", line)
+    assert [f"CLOSES_LINE 2 {line}"] == pull_request.body_problems(body, TEMPLATE)
+    assert pull_request.closed_issues(body) == [12]
 
 
 def test_an_issue_argument_past_the_digit_limit_is_not_an_issue_number() -> None:
