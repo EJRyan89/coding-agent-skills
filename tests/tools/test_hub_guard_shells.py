@@ -388,7 +388,9 @@ class PowerShellDefinitionDifferentialTests(unittest.TestCase):
             for cmdlet, piped, part in rows:
                 if part == "location":
                     ran = self.pwsh_output(f"{piped.replace('TARGET', str(moved))}; (Get-Location).Path")
-                    took = str(moved) in ran
+                    # pwsh may name the directory by another spelling, as a long name for a short one.
+                    lines = ran.strip().splitlines()
+                    took = bool(lines) and Path(lines[-1].strip()).is_dir() and Path(lines[-1].strip()).samefile(moved)
                     text = f"{piped.replace('TARGET', str(moved))}; git status"
                 elif part == "definition":
                     ran = self.pwsh_output(f"{piped.replace('TARGET', 'function:g')} -Value 'Write-Output TOOK';g")
