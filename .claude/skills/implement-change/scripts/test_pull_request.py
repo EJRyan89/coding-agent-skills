@@ -360,6 +360,7 @@ class CheckCommandTests(Repository):
         code, lines = self.run_script("check", *self.files_arguments())
         self.assertEqual(1, code)
         self.assertIn("TITLE_EMPTY", lines)
+        self.assertFalse([line for line in lines if line.startswith("TITLE ")], lines)
         self.assertIn("CLOSES_LINE 2 Closes #34, #35", lines)
 
     def test_a_fetch_that_fails_is_a_failed_line(self) -> None:
@@ -587,6 +588,20 @@ def test_a_closing_reference_in_an_author_s_comment_is_reported_and_refused(pros
     body = FILLED.replace("Fixes the quoting of a title.", prose)
     assert pull_request.body_problems(body, TEMPLATE) == [f"CLOSES_LINE 4 {prose}"]
     assert pull_request.closed_issues(body) == [12, 34, 7]
+
+
+def test_a_template_comment_left_beside_a_closes_line_leaves_the_line_a_closes_line() -> None:
+    body = FILLED.replace("Closes #34", "Closes #34 <!-- The problem, in a paragraph. -->")
+    assert pull_request.body_problems(body, TEMPLATE) == ["PLACEHOLDER 2 a template comment"]
+
+
+def test_a_closing_number_past_the_digit_limit_in_the_title_alone_fails_by_name() -> None:
+    with pytest.raises(pull_request.PullRequestError, match="more than"):
+        pull_request.closed_issues(FILLED, "fix: closes #1" + "0" * 5000)
+
+
+def test_a_title_alone_names_the_issues_it_closes() -> None:
+    assert pull_request.closed_issues("", "fix: resolves GH-5") == [5]
 
 
 def test_a_closing_reference_in_a_template_comment_left_in_the_body_is_only_a_placeholder() -> None:
