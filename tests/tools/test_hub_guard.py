@@ -1812,6 +1812,21 @@ class CommandReadingTests(GuardTestCase):
         self.assertEqual([], self.read("git commit -m 'unterminated", tool="Bash"))
         self.assertIn("a single quote is not closed", self.unread[0])
 
+    def test_a_writer_that_takes_its_path_from_its_pipeline_may_define_an_alias_or_a_function(self) -> None:
+        # The pipeline may hand it a path on either drive, so the reading records both definitions, each on its own.
+        for command, name in (
+            ("$p | Set-Item -Value 'git commit -m x'", "set-item"),
+            ("$p | Rename-Item -NewName git; git commit -m x", "rename-item"),
+            ("$p | Copy-Item -Path function:prompt; git commit -m x", "copy-item"),
+        ):
+            with self.subTest(command=command):
+                self.reading(command)
+                self.assertIn(f"an alias the command defines ({name})", self.unread)
+                self.assertIn(f"a function the command defines from text ({name})", self.unread)
+        # Its argument-bound twin on another drive defines neither.
+        self.reading("$p | Set-Item -Path env:X -Value 'git commit -m x'")
+        self.assertEqual([], [what for what in self.unread if "the command defines" in what])
+
     def test_pwsh_starts_only_for_text_that_could_hold_a_refused_git_call(self) -> None:
         # A PATH that names no existing directory: an empty or missing one would let Windows find pwsh anyway.
         unavailable = {**self.environment, "PATH": str(self.root / "no-such-directory")}
