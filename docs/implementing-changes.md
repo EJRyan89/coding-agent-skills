@@ -154,10 +154,12 @@ surviving mutant on a line the pull request changed that alters behavior a calle
 a document or test treats as a contract, add the test that kills it, or name it in the pull request with why it is
 equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere.
 mutmut refuses Windows, so the mutants are made on Linux and run on a Linux leg for every module and on a Windows leg,
-which never runs mutmut, for each module whose behavior differs on Windows: `deployer/platform_support.py`,
-`path_keys`, `link_probe`, and `device_names`, each module that imports one, each that holds a `PLATFORM_ALLOWED`
-table, and each whose own code compares a platform name the platform policy's `PLATFORM_TOKENS` catalogues, such as
-`sys.platform` or `os.name`. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
+which never runs mutmut, for each module whose behavior differs on Windows: `deployer/platform_support.py` and
+the ejryan89-skill-core seam modules `CLAUDE.md` names, each module that imports one, each that holds a
+`PLATFORM_ALLOWED` table, and each whose own code reads the platform in any expression, through a token of any kind
+the platform policy's `PLATFORM_TOKENS` catalogues, such as `sys.platform`, `msvcrt`, or `creationflags`, or a
+separator or the null device, such as `os.altsep`. A suite run that ends with neither a pass nor a test failure judges
+nothing, so its mutant is errored, which leaves the run unfinished like a mutant not run. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
 lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its
 own cap, and either leg's cut leaves the run unfinished while it leaves a mutant without a verdict. The gate's docstring in `tools/mutation_gate.py` gives the
 details.
@@ -271,13 +273,16 @@ request in continuous integration.
 A pull request that closes an issue a known failure of the malformed-input suite still names, in
 `tests/malformed_input/known_failures.json`, or that `PENDING` in `tests/malformed_input/readers.py` still names for a
 reader owed its table entry, is refused by the known-failure closing check, in `tests/validation/known_failures.py`:
-the issue would close while that work is undone. It reads every closing reference GitHub reads, through
-ejryan89-skill-core's `closing_references`: `close`, `fix`, or `resolve`, in any of their forms, before `#<number>`,
-`<owner>/<repo>#<number>` naming this repository, or the issue's URL, outside an HTML comment, in the title and the
-body alike, since the squash commit carries both, from `--pr-title <file>` and `--pr-body <file>` locally and the pull
-request in continuous integration, and passes when neither is given. The pull request that does the work removes the
+the issue would close while that work is undone. It reads every closing reference, through ejryan89-skill-core's
+`closing_references`: `close`, `fix`, or `resolve`, in any of their forms, before `#<number>`, `GH-<number>`,
+`<owner>/<repo>#<number>` naming this repository, or the issue's URL, and the spellings of them GitHub's pages leave
+open, which that module's docstring names with what it does not see. It reads the title and the body alike, HTML
+comments included: the squash commit carries the title and the body as written, comments and all, and GitHub closes
+an issue a commit message on the default branch names, so a reference hidden from the rendered body still closes its
+issue. It reads them from `--pr-title <file>` and `--pr-body <file>` locally and the pull request in continuous
+integration, and passes when neither is given. The pull request that does the work removes the
 entry, which the suite then requires, and closes the issue. A run of its own,
-`python -B tests/run_validation.py --known-failure-issues`, asks GitHub, through gh, whether each issue either list
+`python -B tests/known_failure_issues.py`, which loads none of the policy checks, asks GitHub, through gh, whether each issue either list
 names is an open issue, and fails one that is not, one that is a pull request, or one gh cannot answer about; it asks
 nothing while both are empty. Continuous integration runs it in a job of its own on every run, the one job given the
 run's read-only token, so no suite holds the token; locally it needs gh signed in only while an entry exists.

@@ -263,7 +263,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
 
 - **Where a git call acts.** git writes the `HEAD` and index of its repository and the files of its work tree, so a
   call acts on the hub when either one is the hub's. The repository is the one `--git-dir` or `GIT_DIR` names, or
-  else the one git finds from where it starts; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a
+  else the one git finds from where it starts, which inside a git directory, such as `-C <hub>/.git`, is that
+  directory's own repository; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a
   `core.worktree` setting names, or else where git starts, after each `-C`. A relative path is read from where git
   finally starts, and a relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the
   store of refs and objects every worktree shares, so it does not change which checkout a call writes. The guard
@@ -331,8 +332,14 @@ refused while a guarded hub is in view, and what they do not see at all is named
   here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
-  parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
-  refuses, or one given `-WhatIf`, runs nothing, except a call to a function the command defines and a native program.
+  parameter abbreviated, aliased, or left positional, and each path of an array, is read. A cmdlet after the first in
+  its pipeline may take each parameter its arguments leave unbound from there, by value or by property name, as its
+  metadata says, in a parameter set that holds those its arguments bind; such a parameter's value is one the text
+  does not settle, so `'<dir>' | Set-Location` leaves the directory unknown, an environment variable a piped path may
+  name is unknown after it, and an item or content cmdlet that may take the path it writes from its pipeline is a
+  definition, as below. A command the binder refuses, or one given `-WhatIf`, runs nothing, except a call to a
+  function the command defines, a native program, and a cmdlet after the first in its pipeline, which may take what
+  the binder sees missing from there.
   A function runs its body whatever `-WhatIf` says, since it reaches only the cmdlets that honour it, and a simple
   function takes the words it declares no parameter for into `$args` and runs, so its body is read as a path that may
   run; one defined with a scope, as `function global:f`, is called by its bare name and its scoped one. A native
@@ -357,11 +364,14 @@ refused while a guarded hub is in view, and what they do not see at all is named
   script before it runs any of it, so none of it runs.
 - **Paths that do not all run.** A command that runs only when another succeeds or fails, only in some branch, or
   any number of times in a loop or script block, is read as running, and so is the `command_not_found_handle`
-  function a command defines, at each program a later word starts, since Bash runs it for a program it does not
-  find, and afterwards the guard keeps only what every
-  path agrees on: a directory or variable one path changes is unknown after it. A directory change whose target is
-  not a directory fails and leaves the shell where it was, so it is unknown after it too, except along `&&`, which
-  goes on only when it succeeded. The guard reads a loop's or script block's body twice, so it follows loops and
+  function a command defines, with each body it may have, at each program a later word starts, since Bash runs it
+  for a program it does not find, and afterwards the guard keeps only what every path agrees on: a directory or
+  variable one path changes is unknown after it. A function one path defines, redefines, or removes keeps every body
+  the paths give it, and no function where one leaves it undefined, and a call to it, a nested `bash` it is exported
+  to included, is read once with each, as the builtin or program its name names where it has none. A directory
+  change whose target is not a directory fails and leaves the shell where it was, so it is unknown after it too,
+  except along `&&`, which goes on only when it succeeded. The guard reads a loop's or script block's body twice, so
+  it follows loops and
   script blocks, counted together across nested shells and function calls, to eight deep; deeper is a command the
   guard cannot read, and the directory and every variable are unknown after it.
 - **Nested shells.** `bash -c` (alone or in a bundle such as `-lc`), `bash <<< '<script>'`, a here-document handed
@@ -391,8 +401,10 @@ refused while a guarded hub is in view, and what they do not see at all is named
 #### What it refuses because it cannot settle it
 
 A guarded hub is in view when it is the hub of the session's own directory, of its project, or of a place the
-command names. A place whose lookup the reading time cuts short may be a guarded hub's, so the guard then refuses a
-command that names git as if one were in view. While one is, the guard refuses:
+command names, or the one whose git directory holds that directory or place. A place whose lookup the reading time
+cuts short, between git calls or inside one, or whose lookup git answers with an error for, may be a guarded hub's,
+so the guard then refuses a command that names git as if one were in view; it looks up every other place first, so
+the hubs they reach stay in view. While one is, the guard refuses:
 
 - a git call that would write the checkout it runs in, where the text does not settle its repository or work tree:
   a directory or location variable named by a value the command computes or does not set, or set by a builtin that
@@ -421,26 +433,39 @@ command that names git as if one were in view. While one is, the guard refuses:
   element's assignment, `declare -A`, a builtin that sets a variable, an expansion that assigns, or a name
   reference), or a command name it defines by `hash -p` or a name that reaches `BASH_CMDS` the same ways, or by PowerShell's
   `Set-Alias`, `New-Alias`, `Import-Alias`, an item or content cmdlet or an assignment such as `$alias:g = 'git'`
-  writing the `alias:` drive or the Alias provider at a path the text names, or a drive `New-PSDrive` makes on the
-  Alias or Function provider; a PowerShell function defined from text the same ways on the `function:` drive; and
-  text PowerShell runs as commands from a string (`[scriptblock]::Create`, by the type its receiver resolves to
-  through parentheses, `NewScriptBlock`, `InvokeScript`, `ExpandString`, `AddScript`, and `AddCommand`, each
-  whether called or reached as a member, as in `[scriptblock]::Create.Invoke(...)`), when the command names git: a
-  later word may then run git under another name, or text the parser never read as a command;
+  writing the `alias:` drive or the Alias provider at a path the text names or one it may take from its pipeline, or
+  a drive `New-PSDrive` makes on the Alias or Function provider; a PowerShell function defined from text the same
+  ways on the `function:` drive; and each member through which PowerShell may run text as commands, read by one
+  resolver that settles a member's name, a constant in parentheses or not, as in `[scriptblock]::('Create')`, and
+  its receiver's type, through parentheses, casts such as `[type]'scriptblock'`, the engine's automatic variables
+  (`$ExecutionContext`, `$Host`, `$MyInvocation`, `$PSCmdlet`), and each property, field, or method whose type
+  reflection settles: on a type of PowerShell's engine or of reflection (one in `System.Management.Automation`,
+  `Microsoft.PowerShell`, or `System.Reflection`, a `Type`, `Activator`, or `AppDomain`), each method, whether
+  called or reached as a member as in `[scriptblock]::Create.Invoke(...)`, other than `PSVariable.Set`, which is
+  read as an assignment, and each object of such a type the command keeps rather than reaching a member of, as
+  `$i = $ExecutionContext.SessionState.InvokeProvider.Item` keeps one; a member whose name the text does not settle
+  on such a type or on one it does not settle; a static member of a type it does not settle, as in `$t::Create(...)`;
+  and, on a receiver it does not type, `NewScriptBlock`, `InvokeScript`, `ExpandString`, `AddScript`, `AddCommand`,
+  `GetScriptBlock`, `CreateNestedPipeline`, `CreatePipeline`, `ParseInput`, and `ParseFile` by name, when the
+  command names git: a later word may then run git under another name, or text the parser never read as a command;
 - an alias that cannot be read, as above.
 
 The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
 `cd <dir> &&`. With no guarded hub in view, the same calls are allowed with a note on stderr. A defect in the guard
 itself, once it has found a guarded hub in view, is refused the same way when the command names git, since a failure
 says nothing about where the call acts; a defect before that, such as an event it cannot decode, an event that names
-no command or file path, or a hub it cannot look up, an opt-in git cannot read among them, is allowed with a note on
-stderr, so that it cannot block every tool and is never passed unseen. A directory below a checkout, which a `.git`
-in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
-a place outside every repository, and the other hubs in view still count. A successful answer that is not the lines
-the guard asked for is read as such an error. A file an edit names in such a checkout, or in a git directory git
-answers with an error for, may lie in a guarded hub, so the edit is refused; one where git did not run or finish is
-allowed with a note. The hook command reads the project's own
-opt-in before it starts the guard, and when git cannot read it, stops there with a note on stderr the same way.
+no command or file path, or a hub of the session's own directory or project it cannot look up, an opt-in git cannot
+read among them, is allowed with a note on stderr, so that it cannot block every tool and is never passed unseen. A
+reading the time cuts short before the lookups of the places it names, in either reader, `pwsh` not finishing
+included, is such a failure: refused while a hub of the session's own directory or project is in view, and
+otherwise allowed with a note. A directory of the session's below a checkout, which a `.git` in it or above it
+marks, where git answers with an error is one such hub: it is noted and passed over, never read as a place outside
+every repository, and the other hubs in view still count; a git call that starts there is a place git answers with
+an error for, refused as above. A successful answer that is not the lines the guard asked for is read as such an
+error. A file an edit names in such a checkout, or in a git directory git answers with an error for, may lie in a
+guarded hub, so the edit is refused; one where git did not run or finish is allowed with a note. The hook command
+reads the project's own opt-in before it starts the guard, and when git cannot read it, stops there with a note on
+stderr the same way.
 
 #### What it does not see
 
@@ -457,8 +482,9 @@ The hook sees the command text. It does not see:
 - a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
-- text run as commands through a type or method the text holds in a variable, as in `$t = [scriptblock]` then
-  `$t::Create(...)`;
+- text run as commands through an object of PowerShell's engine the text does not type, such as one a variable
+  holds from a command's output, as after `$o = Get-Variable ExecutionContext -ValueOnly`, reached by a method
+  outside the names above;
 - shell redirection or other programs writing files;
 - what the shell's own startup files set, or a variable the Bash tool's shell holds that the hook's environment does
   not, or holds with another value;

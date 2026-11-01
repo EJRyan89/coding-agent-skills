@@ -57,15 +57,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
   `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
-  `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`
+  `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
+  `tests/tools/test_hub_guard.py::PlaceLookupTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
   followed by a `return None`, `return []`, or `return False`, where `is_present` should probe; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
-  that catch the same `GitError` and read its kinds differently.
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091
+  that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
+  callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
+  another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
+  other than absence, such as a start inside a git directory, which has no work tree to show.
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133
 
 ### Evidence that was never produced is never a pass
 
@@ -253,7 +257,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard.py::ContractTests::test_an_alias_or_a_script_block_built_from_a_string_is_refused_while_a_hub_is_guarded`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
   `tests/tools/test_hub_guard_shells.py::FunctionCallDifferentialTests`,
-  `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`
+  `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`,
+  `tests/tools/test_hub_guard_shells.py::PowerShellDefinitionDifferentialTests`,
+  `tests/tools/test_hub_guard.py::ContractTests::test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle`,
+  `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later
   word runs, an alias, a function, a `hash -p` or `BASH_CMDS` command name, a `command_not_found_handle`, or one
@@ -264,9 +271,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample under
   `tests/fixtures/captured-output/`; each interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
   forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
-  guard follows, such as a working directory, read only as taking a value and never for what it changes.
+  guard follows, such as a working directory, read only as taking a value and never for what it changes; a list of
+  member names where the receiver's type, read through parentheses and casts, settles what a member can run, and a
+  `$Node.Member -isnot [StringConstantExpressionAst]` that passes over a member it cannot name rather than refusing
+  it; a parameter read from a command's arguments alone, where a cmdlet after the first in its pipeline takes it
+  from there; a join of two paths' state that keeps one path's value, as `{**first.<field>, **second.<field>}` does,
+  where the paths differ.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137
+  #2137, #2138, #2139, #2140
 
 ### A recursive parser of input has a depth bound
 
@@ -469,12 +481,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   and one test for each step the deadline holds, each failing with that step's bound removed:
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_reading_ends_with_the_reading_time`,
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_judging_ends_with_the_reading_time`, and
-  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`
+  `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`,
+  `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`
 - **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
   as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
   each item's work starts processes; a deadline set after work it promises to bound has begun; a loop that gathers
-  what it finds into a local and returns it only at the end, while a step inside it can raise the deadline's error.
-- **Examples:** #2031, #2087, #2092
+  what it finds into a local and returns it only at the end, while a step inside it can raise the deadline's error;
+  a handler that counts the deadline's own error as cut short but not a process's timeout error, which a step given
+  the time left raises when the deadline ends inside it; a test that moves the clock only between steps, never
+  inside one.
+- **Examples:** #2031, #2087, #2092, #2132
 
 ### A check reaches its whole rule
 
@@ -554,15 +570,18 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A pipe's reader never ends before its writer under `pipefail`
 
 - **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, and a first line by parameter
-  expansion, never through a pipe into a reader that exits early: `grep -q` or `-m`, or `head`.
+  expansion, never through a pipe into a reader that exits early: `grep -q`, `-m`, `-l`, or `-L`, `rg -q`, `-m`, or
+  `-l`, or `head`.
 - **Why:** `grep -q` exits at its match and `head` at its count, the writer then fails with `SIGPIPE`, and `pipefail`
   makes that an intermittent failure.
 - **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_reader_that_ends_early`
-- **Search for:** `| grep -q`, `| grep -m`, or `| head` in any form, `-n`, `-c`, `-1`, or alone, in a `.sh` file
-  that runs `set -o pipefail` or `set -euo pipefail`; the reader also in a `{ ...; }` or `( ... )` group after the pipe,
-  in a `$(...)` or backtick substitution, by a path such as `/usr/bin/head`, or behind `env`, `exec`, `timeout`, or
-  `command`, and `head` whose last count is positive, as in `head -n -1 -n 1`.
-- **Examples:** #1557, #1602
+- **Search for:** `| grep -q`, `| grep -m`, `| grep -l`, `| grep -L`, `| rg -q`, or `| head` in any form, `-n`, `-c`,
+  `-1`, or alone, in a `.sh` file that turns `pipefail` on by `set`, `shopt -so`, `builtin set`, `bash -o pipefail`, or
+  `SHELLOPTS`; the reader also in a `{ ...; }` or `( ... )` group or an `if`, `while`, `until`, `for`, `select`, or
+  `case` after the pipe, in a function the pipe runs, in a `bash -c` or `eval` script, in a `$(...)` or backtick
+  substitution, by a path such as `/usr/bin/head`, or behind `env` (and `env -S`), `exec`, `timeout`, `command`, or
+  `sudo`, each by a path or not, and `head` whose last count is positive, as in `head -n -1 -n 1`.
+- **Examples:** #1557, #1602, #2151
 
 ### A program whose status is the verdict starts with no shell above it
 
@@ -656,6 +675,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tools.mutation_gate:verdict`, which counts a mutant either leg killed as killed.
 - **Guard:** `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_the_platform_seam_each_module_that_imports_it_or_holds_its_table_and_each_that_branches`,
   `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_each_seam_module_claude_md_names_and_each_module_that_branches_on_the_platform`,
+  `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_a_module_that_names_any_token_of_the_platform_catalogue`,
+  `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_an_importer_of_each_seam_module_claude_md_names`,
   `tests/tools/test_mutation_gate.py::SplitRunFixtures::test_a_mutant_that_survives_the_linux_leg_and_the_windows_leg_kills_reads_as_killed`,
   `tests/validation/test_workflows.py::test_a_mutation_job_off_its_shape_fails`
 - **Search for:** a survivor named "Linux-invisible" or "Windows-only" in a pull request's "Mutation survivors"

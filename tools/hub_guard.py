@@ -30,7 +30,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -273,11 +273,38 @@ def guard_enabled(hub: Path) -> bool:
 
 @functools.cache
 def guarded_hub_at(path: Path) -> Path | None:
-    """The guarded hub whose checkout holds path; None when it is a worktree, another repository, or none."""
+    """The guarded hub git acts on from path: the one whose checkout holds it, or, inside a git directory, where git
+    has no work tree and acts on that directory's repository, the one whose own git directory it is; None when it is
+    a worktree, another repository, or none."""
     checkout = checkout_of(path)
-    if checkout is None or not checkout.is_hub or not guard_enabled(checkout.hub):
+    if checkout is None:
+        repository = git_directory_holding(path)
+        return None if repository is None else guarded_hub_of_repository(repository)
+    if not checkout.is_hub or not guard_enabled(checkout.hub):
         return None
     return checkout.hub
+
+
+def git_directory_holding(path: Path) -> Path | None:
+    """The git directory git finds from path when path lies inside one; None in a work tree, outside every
+    repository, and where nothing of path exists.
+
+    Raises GitError when git answers otherwise with an error, or with lines other than the two asked for, so a start
+    git cannot read is never read as one outside every repository."""
+    directory = worktrees.existing_directory(path)
+    if directory is None:
+        return None
+    arguments = ["rev-parse", "--path-format=absolute", "--is-inside-git-dir", "--git-dir"]
+    try:
+        output = CLIENT.output(arguments, directory=directory, timeout=lookup_timeout())
+    except GitError as exc:
+        if exc.kind == "not_repository":
+            return None
+        raise
+    lines = output_lines(output)
+    if len(lines) != 2:
+        raise GitError(f"git rev-parse answered {len(lines)} lines for the git directory holding {path}, not two")
+    return Path(lines[1]) if lines[0] == "true" else None
 
 
 @functools.cache
@@ -350,7 +377,8 @@ def hub_protected(path: Path) -> bool:
 
 def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
     """The guarded hubs a session can reach: the hub of its own directory's checkout, a worktree's included, and of
-    its project's. A directory whose checkout git cannot read is noted and passed over, so the others still count."""
+    its project's, or the guarded hub whose git directory holds one. A directory whose checkout git cannot read is
+    noted and passed over, so the others still count."""
     directories = [cwd]
     project = environment.get("CLAUDE_PROJECT_DIR")
     if project:
@@ -359,11 +387,12 @@ def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
     for directory in directories:
         try:
             checkout = checkout_of(directory)
+            hub = guarded_hub_at(directory) if checkout is None else checkout.hub
         except GitError as exc:
             print(f"hub guard could not look up the hub of {directory}: {exc}", file=sys.stderr)
             continue
-        if checkout is not None and guard_enabled(checkout.hub):
-            found.add(checkout.hub)
+        if hub is not None and guard_enabled(hub):
+            found.add(hub)
     return found
 
 
@@ -487,8 +516,36 @@ def mentions(pattern: re.Pattern[str], text: str) -> bool:
 
 # A word is its text, or None when the text does not settle its value (an unset variable, a $( ) result).
 Word = str | None
+# How the PowerShell reader would report a parameter's value a command may take from its pipeline: a word the text
+# does not settle.
+PIPED_WORD: Mapping[str, Any] = {"text": "", "dynamic": True}
 # The variables a shell has set, by name; a value is None when the text does not settle it.
 Variables = Mapping[str, Word]
+# A function's body as either shell's reader holds it.
+Body = TypeVar("Body")
+
+
+def joined_functions(
+    first: Mapping[str, tuple[Body, ...]], second: Mapping[str, tuple[Body, ...]], absent: Body
+) -> dict[str, tuple[Body, ...]]:
+    """The functions of a shell that may have taken either of two paths: each name with every body either path gives
+    it, and absent for a path on which no function has the name, where a call runs the builtin or program it names."""
+    joined: dict[str, tuple[Body, ...]] = {}
+    for name in [*first, *(name for name in second if name not in first)]:
+        bodies: list[Body] = []
+        for body in (*first.get(name, (absent,)), *second.get(name, (absent,))):
+            if body not in bodies:
+                bodies.append(body)
+        joined[name] = tuple(bodies)
+    return joined
+
+
+Taken = TypeVar("Taken", "Shell", "Session")
+
+
+def paths(state: Taken, count: int) -> list[Taken]:
+    """The state each of count paths starts from: the state itself for one, and a copy of it for each of several."""
+    return [state] if count == 1 else [state.copy() for _ in range(count)]
 
 
 def moved(directory: Path | None, target: Word) -> Path | None:
@@ -993,11 +1050,13 @@ class Shell:
     exported, those its commands see. opaque marks a shell in which a command the guard cannot read, such as a
     sourced file, may have set any variable. references holds each name reference declare -n, local -n, or
     typeset -n made, by its name: the variable it stands for, "" while it stands for none, so that its first
-    assignment names one, or None when the text does not settle which. exported_functions holds the functions
-    export -f exported, or that were defined under allexport, which a shell it starts defines. environment_functions
-    holds those its environment handed it, which on a platform whose environment names fold case a later word may
-    call in any case, since the guard may have read their names folded. reading, when set, is told of each name that
-    reaches BASH_ALIASES, whose elements are aliases, or BASH_CMDS, whose elements are command names.
+    assignment names one, or None when the text does not settle which. functions holds each name a path the
+    shell may have taken defines a function by, with every body it may have, and None where it may have none.
+    exported_functions holds the functions export -f exported, or that were defined under allexport, which a shell
+    it starts defines. environment_functions holds those its environment handed it, which on a platform whose
+    environment names fold case a later word may call in any case, since the guard may have read their names folded.
+    reading, when set, is told of each name that reaches BASH_ALIASES, whose elements are aliases, or BASH_CMDS, whose
+    elements are command names.
     """
 
     cwd: Path | None
@@ -1006,7 +1065,7 @@ class Shell:
     stack: list[Path | None] = field(default_factory=list)
     allexport: bool = False
     opaque: bool = False
-    functions: dict[str, bash_syntax.Command] = field(default_factory=dict)
+    functions: dict[str, tuple[bash_syntax.Command | None, ...]] = field(default_factory=dict)
     references: dict[str, str | None] = field(default_factory=dict)
     exported_functions: set[str] = field(default_factory=set)
     environment_functions: set[str] = field(default_factory=set)
@@ -1057,7 +1116,8 @@ class Shell:
             return name
         if platform_support.ENVIRONMENT_NAMES_FOLD_CASE:
             folded_name = name.upper()
-            return next((each for each in sorted(self.environment_functions) if each.upper() == folded_name), None)
+            named = (each for each in sorted(self.environment_functions) if each in self.functions)
+            return next((each for each in named if each.upper() == folded_name), None)
         return None
 
     def lookup(self, name: str) -> Word:
@@ -1126,7 +1186,7 @@ def join(first: Shell, second: Shell) -> Shell:
         list(stack),
         first.allexport or second.allexport,
         first.opaque or second.opaque,
-        {**first.functions, **second.functions},
+        joined_functions(first.functions, second.functions, None),
         references,
         first.exported_functions | second.exported_functions,
         first.environment_functions | second.environment_functions,
@@ -1253,7 +1313,7 @@ class BashReader:
         if isinstance(node, bash_syntax.Simple):
             return self.run_simple(node, shell)
         if isinstance(node, bash_syntax.FunctionDefinition):
-            shell.functions[node.name] = node.body
+            shell.functions[node.name] = (node.body,)
             if shell.allexport:
                 # Under allexport a function is exported as it is defined, as a variable is as it is assigned.
                 shell.exported_functions.add(node.name)
@@ -1382,26 +1442,49 @@ class BashReader:
             return certain(join(shell, vanished))
         function = shell.function_named(name)
         if function is not None:
-            return self.call_function(function, shell)
+            # A name the paths before the call define differently runs each body, or no function, on its own path.
+            bodies = shell.functions[function]
+            outcomes = [
+                self.run_unless_function(name, arguments, redirects, path, local)
+                if body is None
+                else self.call_function(function, body, path)
+                for body, path in zip(bodies, paths(shell, len(bodies)), strict=True)
+            ]
+            return Outcome(
+                join_all([outcome.ok for outcome in outcomes]), join_all([outcome.fail for outcome in outcomes])
+            )
+        return self.run_unless_function(name, arguments, redirects, shell, local)
+
+    def run_unless_function(
+        self,
+        name: str,
+        arguments: list[Word],
+        redirects: list[bash_syntax.Redirect],
+        shell: Shell,
+        local: dict[str, Word],
+    ) -> Outcome:
+        """A command no function takes: the builtin or the program it names."""
         builtin = BASH_BUILTINS.get(name)
         if builtin is not None:
             return builtin(self.with_builtin(name), arguments, redirects, shell, local)
         program = command_name(name)
         if NOT_FOUND_HANDLER in shell.functions and program not in GIT_NAMES:
             # Bash runs the handler, in an environment of its own, for a program it does not find, which the text
-            # does not settle, so its body is read as a path that may run.
-            self.call_function(NOT_FOUND_HANDLER, shell.copy())
+            # does not settle, so each body it may have is read as a path that may run.
+            for body in shell.functions[NOT_FOUND_HANDLER]:
+                if body is not None:
+                    self.call_function(NOT_FOUND_HANDLER, body, shell.copy())
         self.run_program(program, arguments, redirects, shell, shell.program_variables(local))
         return certain(shell)
 
-    def call_function(self, name: str, shell: Shell) -> Outcome:
+    def call_function(self, name: str, body: bash_syntax.Command, shell: Shell) -> Outcome:
         if self.depth >= NESTING_LIMIT:
             self.reading.cannot_read(f"the function {name} nests more than {NESTING_LIMIT} deep")
             lost = shell.copy()
             lost.cwd, lost.opaque = None, True
             return certain(lost)
         before = dict(shell.references)
-        outcome = BashReader(self.reading, self.depth + 1).run_command(shell.functions[name], shell)
+        outcome = BashReader(self.reading, self.depth + 1).run_command(body, shell)
         # declare -n and local -n make a reference local to the function, which Bash drops when it returns, unless
         # declare -g made it, so after the call a reference it made or changed stands for no variable the guard knows.
         for after in (outcome.ok, outcome.fail):
@@ -1442,7 +1525,7 @@ class BashReader:
                 self.run_program(name, rest, redirects, started, given)
 
 
-def exported_functions(shell: Shell) -> dict[str, bash_syntax.Command]:
+def exported_functions(shell: Shell) -> dict[str, tuple[bash_syntax.Command | None, ...]]:
     """The functions a shell this one starts defines: those it exported."""
     return {name: shell.functions[name] for name in shell.exported_functions if name in shell.functions}
 
@@ -2229,7 +2312,7 @@ def follow_powershell(
     variables: Variables,
     reading: Reading,
     depth: int,
-    functions: Mapping[str, bash_syntax.Command] | None = None,
+    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
 ) -> None:
     """Reads the script a pwsh or Windows PowerShell started in cwd runs, where -WorkingDirectory starts it, with the
     Bash functions its environment hands a bash it starts."""
@@ -2245,7 +2328,7 @@ def read_bash(
     reading: Reading,
     depth: int,
     variables: Variables,
-    functions: Mapping[str, bash_syntax.Command] | None = None,
+    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
     allexport: bool = False,
 ) -> None:
     """Reads a Bash command, started with these variables exported, as Bash runs it, with the functions the shell
@@ -2277,7 +2360,11 @@ def read_bash(
 
 @functools.cache
 def powershell_reader() -> str:
-    return POWERSHELL_READER.read_text(encoding="utf-8")
+    """The reader as pwsh is handed it on its command line: without its comment lines, which run nothing and would
+    otherwise bring it past the 32767 characters a command line Windows starts may hold. The reader holds no
+    here-string, so no line of a string begins with #."""
+    lines = POWERSHELL_READER.read_text(encoding="utf-8").splitlines()
+    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
 
 
 def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[str, Any]] | None:
@@ -2394,13 +2481,15 @@ def event_tree(events: list[dict[str, Any]]) -> list[Region | dict[str, Any]]:
 @dataclass
 class Session:
     """A PowerShell session's location, its Push-Location stack, the tracked variables of its environment, and its
-    functions. opaque marks a session in which a command the guard cannot read may have set any variable."""
+    functions. opaque marks a session in which a command the guard cannot read may have set any variable. functions
+    holds each name a path the session may have taken defines a function by, with every body it may have, and None
+    where it may have none."""
 
     cwd: Path | None
     variables: dict[str, Word]
     stack: list[Path | None] = field(default_factory=list)
     opaque: bool = False
-    functions: dict[str, list[Region | dict[str, Any]]] = field(default_factory=dict)
+    functions: dict[str, tuple[list[Region | dict[str, Any]] | None, ...]] = field(default_factory=dict)
 
     def copy(self) -> Session:
         return replace(self, variables=dict(self.variables), stack=list(self.stack), functions=dict(self.functions))
@@ -2440,7 +2529,7 @@ def join_sessions(first: Session, second: Session) -> Session:
         variables,
         list(stack),
         first.opaque or second.opaque,
-        {**first.functions, **second.functions},
+        joined_functions(first.functions, second.functions, None),
     )
 
 
@@ -2464,22 +2553,27 @@ def environment_names(paths: list[Word], literal: bool, known: Iterable[str] = (
     return found
 
 
-def defines_powershell_alias(name: str | None, arguments: list[Word]) -> bool:
+def defines_powershell_alias(name: str | None, arguments: list[Word], piped: Iterable[str] = ()) -> bool:
     """Whether a PowerShell command defines an alias: a cmdlet that defines one, by its name or an alias of it, or one
-    that writes an item or its content at a path on the alias: drive or the Alias provider the text names.
+    that writes an item or its content at a path on the alias: drive or the Alias provider the text names, or at a
+    path it may take from its pipeline, one of the parameters piped names.
 
     The tables sit in the function, not the module, so that they run in the tests that call the function rather than
     at import."""
     definers = {"set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"}
-    return name in definers or writes_definition_drive(name, arguments, "alias")
+    return name in definers or writes_definition_drive(name, arguments, "alias", piped)
 
 
-def writes_definition_drive(name: str | None, arguments: list[Word], drive: str) -> bool:
+def writes_definition_drive(name: str | None, arguments: list[Word], drive: str, piped: Iterable[str] = ()) -> bool:
     """Whether a PowerShell command writes an item, or an item's content, at a path on the alias: or function: drive
-    the text names, as alias:g, Alias::g, or Microsoft.PowerShell.Core\\Function::f: a definition a later word runs."""
+    the text names, as alias:g, Alias::g, or Microsoft.PowerShell.Core\\Function::f, or at a path it may take from its
+    pipeline, by one of the parameters piped names that name the item it writes: a definition a later word runs."""
     writers = {"set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi", "rename-item", "ren", "rni"}
     writers |= {"set-content", "sc", "add-content", "ac", "move-item", "mi", "move", "mv"}
-    return name in writers and any(word is not None and definition_drive(word) == drive for word in arguments)
+    from_pipeline = not {"path", "literalpath", "destination"}.isdisjoint(piped)
+    return name in writers and (
+        from_pipeline or any(word is not None and definition_drive(word) == drive for word in arguments)
+    )
 
 
 def definition_drive(path: str) -> str | None:
@@ -2508,7 +2602,10 @@ def function_name(name: str) -> str:
 
 class PowerShellReader:
     def __init__(
-        self, reading: Reading, depth: int, bash_functions: Mapping[str, bash_syntax.Command] | None = None
+        self,
+        reading: Reading,
+        depth: int,
+        bash_functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
     ) -> None:
         self.reading = reading
         self.depth = depth
@@ -2523,7 +2620,7 @@ class PowerShellReader:
 
     def region(self, region: Region, session: Session) -> Session:
         if region.kind == "function":
-            session.functions[function_name(region.name)] = region.children
+            session.functions[function_name(region.name)] = (region.children,)
             return session
         if region.kind == "child":
             child = session.copy()
@@ -2586,27 +2683,52 @@ class PowerShellReader:
 
     def command(self, event: dict[str, Any], session: Session) -> Session:
         words: list[Word] = [session.word(word) for word in event["words"]]
+        name = command_name(words[0])
+        function = None if name is None else function_name(name)
+        if function not in session.functions:
+            return self.run_unless_function(event, session)
+        # A name the paths before the call define differently runs each body, or no function, on its own path.
+        bodies = session.functions[function]
+        sessions = [
+            self.run_unless_function(event, path) if body is None else self.call_function_event(event, body, path)
+            for body, path in zip(bodies, paths(session, len(bodies)), strict=True)
+        ]
+        return functools.reduce(join_sessions, sessions)
+
+    def call_function_event(
+        self, event: dict[str, Any], body: list[Region | dict[str, Any]], session: Session
+    ) -> Session:
+        """A command a function takes."""
+        name = str(command_name(session.word(event["words"][0])))
+        if event.get("failed"):
+            # A simple function takes the words the binder cannot bind into $args and runs, where an advanced one
+            # runs nothing, so its body is read as a path that may run.
+            return join_sessions(session, self.call_function(name, body, session.copy()))
+        # -WhatIf reaches only the cmdlets in the body that honour it; a native command such as git still runs.
+        return self.call_function(name, body, session)
+
+    def run_unless_function(self, event: dict[str, Any], session: Session) -> Session:
+        """A command no function takes: the cmdlet or the program it names."""
+        words: list[Word] = [session.word(word) for word in event["words"]]
         parameters = {
             name.lower(): [session.word(word) for word in values]
             for name, values in (event.get("parameters") or {}).items()
         }
         # The words the reader reports for each parameter, from which a path the text does not settle is judged.
         reported = {name.lower(): values for name, values in (event.get("parameters") or {}).items()}
+        # A command after the first in its pipeline may take each parameter its arguments leave unbound from there,
+        # with a value the text does not settle.
+        piped = {str(parameter).lower() for parameter in event.get("fromPipeline") or []}
+        for parameter in piped:
+            parameters.setdefault(parameter, [None])
+            reported.setdefault(parameter, [dict(PIPED_WORD)])
         name, arguments = command_name(words[0]), words[1:]
-        function = None if name is None else function_name(name)
-        if event.get("failed") and function in session.functions:
-            # A simple function takes the words the binder cannot bind into $args and runs, where an advanced one
-            # runs nothing, so its body is read as a path that may run.
-            return join_sessions(session, self.call_function(function, session.copy()))
-        if function in session.functions:
-            # -WhatIf reaches only the cmdlets in the body that honour it; a native command such as git still runs.
-            return self.call_function(function, session)
         if event.get("failed") or event.get("whatIf"):
             return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
         # A definition may stand for git in a later command, which the reader would take for another program.
-        if defines_powershell_alias(name, arguments):
+        if defines_powershell_alias(name, arguments, piped):
             self.reading.cannot_read(f"{defined('alias')} ({name})")
-        if writes_definition_drive(name, arguments, "function"):
+        if writes_definition_drive(name, arguments, "function", piped):
             self.reading.cannot_read(f"{defined('function')} ({name})")
         if name in NEW_DRIVE_NAMES and definition_provider(parameters.get("psprovider")):
             self.reading.cannot_read(f"a drive on the alias or function provider ({name})")
@@ -2647,12 +2769,12 @@ class PowerShellReader:
             if command is not None:
                 self.run_program(*command, opaque)
 
-    def call_function(self, name: str, session: Session) -> Session:
+    def call_function(self, name: str, body: list[Region | dict[str, Any]], session: Session) -> Session:
         if self.depth >= NESTING_LIMIT:
             self.reading.cannot_read(f"the function {name} nests more than {NESTING_LIMIT} deep")
             session.cwd, session.opaque = None, True
             return session
-        return PowerShellReader(self.reading, self.depth + 1, self.bash_functions).run(session.functions[name], session)
+        return PowerShellReader(self.reading, self.depth + 1, self.bash_functions).run(body, session)
 
     def location(
         self, name: str, arguments: list[Word], parameters: Mapping[str, list[Word]], session: Session
@@ -2766,7 +2888,7 @@ def read_powershell(
     reading: Reading,
     depth: int,
     variables: Variables,
-    functions: Mapping[str, bash_syntax.Command] | None = None,
+    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
 ) -> None:
     """Reads a PowerShell command with PowerShell's own parser, started only for text it could refuse, with the Bash
     functions the bash that starts it exported, which a bash it starts defines.
@@ -2817,15 +2939,26 @@ def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Re
     return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), deadline=deadline)
 
 
-def reached_hubs(reading: Reading) -> set[Path]:
-    """The guarded hubs a reading's settled places name, each looked up within the reading time."""
-    found: set[Path] = set()
+def reached_hubs(reading: Reading, found: set[Path] | None = None) -> set[Path]:
+    """The guarded hubs a reading's settled places name, each looked up within the reading time, added to found.
+
+    A place git answers with an error for, or whose git call the reading time cuts short, may be a guarded hub's, and
+    is never read as a place outside every repository: every other place is still looked up, so the hubs it reaches
+    join found, and then the first such error is raised."""
+    found = set() if found is None else found
+    failures: list[GitError] = []
     with lookups_within(reading.deadline):
         for call in reading.calls:
             reading.time_left()
-            hub, _ = reached_hub(call.place)
+            try:
+                hub, _ = reached_hub(call.place)
+            except GitError as exc:
+                failures.append(exc)
+                continue
             if hub is not None:
                 found.add(hub)
+    if failures:
+        raise failures[0]
     return found
 
 
@@ -2837,8 +2970,8 @@ def guard(stream: str) -> int:
     # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
     # fails leaves a command the guard cannot read; None until then.
     in_view: tuple[str, set[Path]] | None = None
-    # Whether the hubs of the places the command names are being looked up: a lookup the reading time cuts short
-    # leaves places not looked up, any of which may be a guarded hub's.
+    # Whether the hubs of the places the command names are being looked up: a lookup the reading time cuts short, or
+    # one git answers with an error for, leaves a place not looked up, which may be a guarded hub's.
     looking_up = False
     try:
         event = json_reader.loads(stream)
@@ -2860,14 +2993,14 @@ def guard(stream: str) -> int:
             in_view = (reading.text, hubs)
             read_into(reading, tool, cwd, os.environ)
             looking_up = True
-            hubs |= reached_hubs(reading)
+            reached_hubs(reading, hubs)
             looking_up = False
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
             for note in reading.notes:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses
-        cut_short = looking_up and isinstance(exc, ReadingTimeout)
+        cut_short = looking_up and isinstance(exc, (ReadingTimeout, GitError))
         if in_view is None or not ((in_view[1] or cut_short) and mentions(MENTIONS_GIT, in_view[0])):
             print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 0

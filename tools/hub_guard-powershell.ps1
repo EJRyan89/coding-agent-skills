@@ -11,13 +11,15 @@ using namespace System.Management.Automation.Language
 # none of it; otherwise {"events": [...]}, each one of:
 #   {"kind": "command", "words": [{"text", "dynamic"}],  a command, its name first; dynamic means the text does
 #    "parameters": {name: [{"text", "dynamic"}]},       not settle the word's value, unless the word names the
-#    "failed": bool, "whatIf": bool}                     variables it holds, as "variable" or "expansions", for
-#                                                        hub_guard.py to read in the session. parameters are the
+#    "failed": bool, "whatIf": bool,                     variables it holds, as "variable" or "expansions", for
+#    "fromPipeline": [name]}                             hub_guard.py to read in the session. parameters are the
 #                                                        words PowerShell's own binder gives each parameter, by
 #                                                        the name the command declares, an array's elements
 #                                                        apart; failed means the binder refused the command and
 #                                                        whatIf that -WhatIf is set, so that it runs nothing,
-#                                                        unless it calls a function the command defines
+#                                                        unless it calls a function the command defines;
+#                                                        fromPipeline, for a command after the first in its
+#                                                        pipeline, each unbound parameter it may take from there
 #   {"kind": "assigned", "path": path, "removed": bool,  a variable on a drive or provider, as in $env:NAME or
 #    "value": word}                                      ${Environment::NAME}, was assigned, as a foreach loop's
 #                                                        variable, or through PSVariable.Set; removed when $null
@@ -81,10 +83,11 @@ function Get-ElementWord([CommandElementAst] $Element) {
 
 # What PowerShell's own binder makes of a command: the words it gives each parameter, keyed by the name the command
 # declares, with abbreviations, aliases, and positions resolved, and an array's elements as separate words; whether
-# it refuses to bind the command, which then runs nothing; and whether -WhatIf is set. Nothing is bound when the
-# command's name is computed or the binder cannot be run.
+# it refuses to bind the command, which then runs nothing; whether -WhatIf is set; and, for a command after the first
+# in its pipeline, each parameter its metadata lets it take from the pipeline, by value or by property name, that its
+# arguments leave unbound. Nothing is bound when the command's name is computed or the binder cannot be run.
 function Get-Binding([CommandAst] $Command) {
-    $binding = [ordered]@{ parameters = [ordered]@{}; failed = $false; whatIf = $false }
+    $binding = [ordered]@{ parameters = [ordered]@{}; failed = $false; whatIf = $false; fromPipeline = @() }
     if ($null -eq $Command.GetCommandName()) {
         return $binding
     }
@@ -112,17 +115,59 @@ function Get-Binding([CommandAst] $Command) {
         }
         $binding.parameters[$name] = $words.ToArray()
     }
+    $pipeline = $Command.Parent
+    if ($pipeline -is [PipelineAst] -and $pipeline.PipelineElements.IndexOf($Command) -gt 0) {
+        # A parameter the pipeline supplies is one the binder sees missing, so its refusal says nothing here.
+        $binding.failed = $false
+        $binding.fromPipeline = @(Get-PipelineParameter $Command @($bound.Keys))
+    }
     $binding
+}
+
+# The command a command's name resolves to in this session, through any alias; $null for one it does not have.
+function Get-ResolvedCommand([CommandAst] $Command) {
+    $resolved = Get-Command -Name $Command.GetCommandName() -ErrorAction Ignore | Select-Object -First 1
+    while ($resolved -is [Management.Automation.AliasInfo]) {
+        $resolved = $resolved.ResolvedCommand
+    }
+    $resolved
 }
 
 # Whether PowerShell's binder decides what a command runs: one that does not resolve, through any alias, to a native
 # program. The binder neither refuses nor gives -WhatIf to a command the session does not have.
 function Test-Bindable([CommandAst] $Command) {
-    $resolved = Get-Command -Name $Command.GetCommandName() -ErrorAction Ignore | Select-Object -First 1
-    while ($resolved -is [Management.Automation.AliasInfo]) {
-        $resolved = $resolved.ResolvedCommand
+    (Get-ResolvedCommand $Command) -isnot [Management.Automation.ApplicationInfo]
+}
+
+# The parameters a command's metadata lets it take from the pipeline, by value or by property name, by the names it
+# declares: each one $Bound, the parameters its arguments bind, leaves unbound, in a parameter set that holds every
+# one of those.
+function Get-PipelineParameter([CommandAst] $Command, [string[]] $Bound) {
+    $resolved = Get-ResolvedCommand $Command
+    if ($null -eq $resolved -or $resolved -is [Management.Automation.ApplicationInfo]) {
+        return
     }
-    $resolved -isnot [Management.Automation.ApplicationInfo]
+    $all = '__AllParameterSets'
+    $sets = $null
+    foreach ($name in $Bound) {
+        $parameter = $resolved.Parameters[$name]
+        if ($null -ne $parameter -and -not $parameter.ParameterSets.ContainsKey($all)) {
+            $own = @($parameter.ParameterSets.Keys)
+            $sets = if ($null -eq $sets) { $own } else { @($sets | Where-Object { $_ -in $own }) }
+        }
+    }
+    foreach ($parameter in $resolved.Parameters.Values) {
+        if ($parameter.Name -in $Bound) {
+            continue
+        }
+        foreach ($set in $parameter.ParameterSets.GetEnumerator()) {
+            $open = $set.Key -eq $all -or $null -eq $sets -or $set.Key -in $sets
+            if ($open -and ($set.Value.ValueFromPipeline -or $set.Value.ValueFromPipelineByPropertyName)) {
+                $parameter.Name
+                break
+            }
+        }
+    }
 }
 
 # The lower-cased name a command is called by, without its directory or extension; $null when it is computed.
@@ -254,14 +299,11 @@ function Get-Region([Ast] $Ast) {
 }
 
 # The events of a method call that sets an environment variable: [Environment]::SetEnvironmentVariable in this
-# process, and PSVariable.Set on a provider path.
-function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [Collections.Generic.List[object]] $Events) {
-    if ($Node.Member -isnot [StringConstantExpressionAst]) {
-        return
-    }
+# process, and PSVariable.Set on a provider path. $Member is the method's name, as Get-MemberName reads it.
+function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [string] $Member, [Collections.Generic.List[object]] $Events) {
     $arguments = @($Node.Arguments)
     $name = $arguments | Select-Object -First 1
-    if ($Node.Member.Value -eq 'SetEnvironmentVariable') {
+    if ($Member -eq 'SetEnvironmentVariable') {
         $target = if ($arguments.Count -ge 3) { $arguments[2] }
         if ($null -ne $target -and $target.Extent.Text -notmatch 'Process') {
             if ($target -is [StringConstantExpressionAst] -or $target -is [MemberExpressionAst]) {
@@ -272,7 +314,7 @@ function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [Collections.Generic
         $arguments[1].VariablePath.UserPath -eq 'null'
         $settled = $name -is [StringConstantExpressionAst]
         $Events.Add([ordered]@{ kind = 'setVariable'; name = if ($settled) { $name.Value }; removed = $removed })
-    } elseif ($Node.Member.Value -eq 'Set' -and $Node.Expression.Extent.Text -match 'PSVariable$') {
+    } elseif ($Member -eq 'Set' -and $Node.Expression.Extent.Text -match 'PSVariable$') {
         if ($name -is [StringConstantExpressionAst]) {
             $Events.Add([ordered]@{ kind = 'assigned'; path = $name.Value; removed = $false })
         } else {
@@ -281,33 +323,185 @@ function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [Collections.Generic
     }
 }
 
-# The type an expression names, through parentheses, as in ([scriptblock])::Create; $null when it names none or a
-# type PowerShell cannot resolve.
-function Get-NamedType([ExpressionAst] $Expression) {
+# An expression with the parentheses around it taken off, as in ([scriptblock]) or ('Create').
+function Get-Unwrapped([Ast] $Expression) {
     while ($Expression -is [ParenExpressionAst] -and $Expression.Pipeline -is [PipelineAst] -and
         $Expression.Pipeline.PipelineElements.Count -eq 1 -and
         $Expression.Pipeline.PipelineElements[0] -is [CommandExpressionAst]) {
         $Expression = $Expression.Pipeline.PipelineElements[0].Expression
     }
-    if ($Expression -is [TypeExpressionAst]) {
-        $Expression.TypeName.GetReflectionType()
+    $Expression
+}
+
+# The name of the member a member expression reaches: a constant, in parentheses or not, as in .Create or
+# .('Create'); $null when the text does not settle it.
+function Get-MemberName([MemberExpressionAst] $Node) {
+    $member = Get-Unwrapped $Node.Member
+    if ($member -is [StringConstantExpressionAst]) {
+        $member.Value
     }
 }
 
-# The events of a member a command reaches, called or not, as in [scriptblock]::Create.Invoke(...). A member that
-# builds a script block from a string, or runs a string as commands, runs text the parser never saw as a command:
-# ScriptBlock's Create, by the type the receiver resolves to, and NewScriptBlock, InvokeScript, ExpandString,
-# AddScript, and AddCommand, by name. A method call goes on to Add-MethodEvent.
-function Add-MemberEvent([MemberExpressionAst] $Node, [Collections.Generic.List[object]] $Events) {
-    if ($Node.Member -isnot [StringConstantExpressionAst]) {
-        return
+# The type a type literal names, as in [scriptblock]; $null for one this session cannot resolve, or one that names
+# its assembly, which is never loaded to read a command.
+function Resolve-TypeName([ITypeName] $TypeName) {
+    if (-not $TypeName.AssemblyName) {
+        $TypeName.GetReflectionType()
     }
-    $member = $Node.Member.Value
-    $fromText = @('NewScriptBlock', 'InvokeScript', 'ExpandString', 'AddScript', 'AddCommand')
-    if ($member -in $fromText -or ($member -eq 'Create' -and (Get-NamedType $Node.Expression) -eq [scriptblock])) {
-        $Events.Add([ordered]@{ kind = 'unread'; text = "a script block built from a string ($member)" })
+}
+
+# The type an expression names, for a static member it reaches: a type literal, or a constant cast to a type, as in
+# [type]'scriptblock', through parentheses; $null when the text does not settle one.
+function Get-NamedType([Ast] $Expression) {
+    $Expression = Get-Unwrapped $Expression
+    if ($Expression -is [TypeExpressionAst]) {
+        Resolve-TypeName $Expression.TypeName
+    } elseif ($Expression -is [ConvertExpressionAst] -and (Resolve-TypeName $Expression.Type.TypeName) -eq [type]) {
+        $name = Get-Unwrapped $Expression.Child
+        if ($name -is [StringConstantExpressionAst] -and -not $name.Value.Contains(',')) {
+            $name.Value -as [type]
+        }
+    }
+}
+
+# The type of an automatic variable whose value is part of PowerShell's engine, by its name with any scope or the
+# variable: drive; $null for any other.
+function Get-AutomaticType([VariableExpressionAst] $Variable) {
+    $path = $Variable.VariablePath
+    if ($path.IsDriveQualified -and $path.DriveName -ne 'variable') {
+        return $null
+    }
+    switch ($path.UserPath -replace '^(global|script|local|private|variable):', '') {
+        'ExecutionContext' { $ExecutionContext.GetType() }
+        'Host' { $Host.GetType() }
+        'MyInvocation' { [Management.Automation.InvocationInfo] }
+        'PSCmdlet' { [Management.Automation.PSCmdlet] }
+    }
+}
+
+# The members a member expression reaches, looked up by its name on the type of its receiver, static or not.
+function Get-ReachedMember([MemberExpressionAst] $Node, [type] $Receiver, [string] $Name) {
+    $flags = [Reflection.BindingFlags]'Public, IgnoreCase, FlattenHierarchy'
+    $flags = $flags -bor $(if ($Node.Static) { [Reflection.BindingFlags]::Static } else { [Reflection.BindingFlags]::Instance })
+    @($Receiver.GetMember($Name, $flags))
+}
+
+# The type of the receiver a member expression reaches its member on: the type it names for a static member, and the
+# type of its value otherwise; $null when the text does not settle it.
+function Get-ReceiverType([MemberExpressionAst] $Node) {
+    if ($Node.Static) {
+        Get-NamedType $Node.Expression
+    } else {
+        Get-ValueType $Node.Expression
+    }
+}
+
+# The type of an expression's value as the text settles it, through parentheses, casts, the engine's automatic
+# variables, and each property, field, or method whose type reflection settles; $null otherwise.
+function Get-ValueType([Ast] $Expression) {
+    $Expression = Get-Unwrapped $Expression
+    if ($Expression -is [TypeExpressionAst]) {
+        return [type]
+    }
+    if ($Expression -is [ConvertExpressionAst]) {
+        return Resolve-TypeName $Expression.Type.TypeName
+    }
+    if ($Expression -is [VariableExpressionAst]) {
+        return Get-AutomaticType $Expression
+    }
+    if ($Expression -isnot [MemberExpressionAst]) {
+        return $null
+    }
+    $receiver = Get-ReceiverType $Expression
+    $name = Get-MemberName $Expression
+    if ($null -eq $receiver -or $null -eq $name) {
+        return $null
+    }
+    $members = Get-ReachedMember $Expression $receiver $name
+    $types = @(foreach ($member in $members) {
+            if ($Expression -is [InvokeMemberExpressionAst]) {
+                if ($member -is [Reflection.MethodInfo]) { $member.ReturnType } else { $null }
+            } elseif ($member -is [Reflection.PropertyInfo]) {
+                $member.PropertyType
+            } elseif ($member -is [Reflection.FieldInfo]) {
+                $member.FieldType
+            } else {
+                $null
+            }
+        }) | Select-Object -Unique
+    if ($types.Count -eq 1) {
+        $types[0]
+    }
+}
+
+# Whether a type is part of PowerShell's engine or of reflection, whose members can run text as commands or reach
+# one that does: a type in System.Management.Automation, Microsoft.PowerShell, or System.Reflection, a Type, and
+# Activator and AppDomain.
+function Test-EngineType([type] $Type) {
+    $Type.Namespace -match '^(System\.Management\.Automation|Microsoft\.PowerShell|System\.Reflection)(\.|$)' -or
+    [type].IsAssignableFrom($Type) -or $Type -eq [Activator] -or $Type -eq [AppDomain]
+}
+
+# Whether an expression is the receiver of the member expression around it, as $ExecutionContext is in
+# $ExecutionContext.SessionState.
+function Test-Receiver([Ast] $Expression) {
+    $Expression.Parent -is [MemberExpressionAst] -and [object]::ReferenceEquals($Expression.Parent.Expression, $Expression)
+}
+
+# The events of a member a command reaches, called or not, as in [scriptblock]::Create.Invoke(...), read by one
+# resolver that fails closed: the member's name and its receiver's type, through parentheses and casts. On a type of
+# the engine or of reflection (Test-EngineType), each method, and each property whose value is such a type that the
+# command keeps rather than reaching a member of, is unread, since it may run text the parser never saw as a command
+# or hand on what does; PSVariable.Set goes on to Add-MethodEvent, which reads it. A member whose name the text does
+# not settle, on a receiver of such a type or one it does not settle, and a static member of a type it does not
+# settle, are unread too. On a receiver the text does not type, as a variable's value, the members that build a
+# script block from a string or run a string as commands are unread by name. A method call on any other receiver
+# goes on to Add-MethodEvent.
+function Add-MemberEvent([MemberExpressionAst] $Node, [Collections.Generic.List[object]] $Events) {
+    $name = Get-MemberName $Node
+    $receiver = Get-ReceiverType $Node
+    $unread = $null
+    if ($null -eq $name) {
+        if ($null -eq $receiver -or (Test-EngineType $receiver)) {
+            $unread = "a member the text does not name ($($Node.Member.Extent.Text))"
+        }
+    } elseif ($null -eq $receiver) {
+        $fromText = @(
+            'NewScriptBlock', 'InvokeScript', 'ExpandString', 'AddScript', 'AddCommand', 'GetScriptBlock',
+            'CreateNestedPipeline', 'CreatePipeline', 'ParseInput', 'ParseFile'
+        )
+        if ($Node.Static) {
+            $unread = "a member of a type the text does not settle ($name)"
+        } elseif ($name -in $fromText) {
+            $unread = "a script block built from a string ($name)"
+        } elseif ($Node -is [InvokeMemberExpressionAst]) {
+            Add-MethodEvent $Node $name $Events
+        }
+    } elseif (Test-EngineType $receiver) {
+        $members = Get-ReachedMember $Node $receiver $name
+        $data = @($members | Where-Object { $_ -is [Reflection.PropertyInfo] -or $_ -is [Reflection.FieldInfo] })
+        $kept = -not (Test-Receiver $Node) -and ($null -eq ($type = Get-ValueType $Node) -or (Test-EngineType $type))
+        if ($receiver -eq [Management.Automation.PSVariableIntrinsics] -and $name -eq 'Set' -and
+            $Node -is [InvokeMemberExpressionAst]) {
+            Add-MethodEvent $Node $name $Events
+        } elseif ($Node -is [InvokeMemberExpressionAst] -or $data.Count -eq 0 -or $data.Count -ne $members.Count) {
+            $unread = "a method of PowerShell's engine ($($receiver.Name).$name)"
+        } elseif ($kept) {
+            $unread = "an object of PowerShell's engine the command keeps ($($receiver.Name).$name)"
+        }
     } elseif ($Node -is [InvokeMemberExpressionAst]) {
-        Add-MethodEvent $Node $Events
+        Add-MethodEvent $Node $name $Events
+    }
+    if ($null -ne $unread) {
+        $Events.Add([ordered]@{ kind = 'unread'; text = $unread })
+    }
+}
+
+# The events of a reference to an automatic variable whose value is part of PowerShell's engine, as $ExecutionContext,
+# that is not the receiver of a member, whose own events read that: the command keeps or hands on the engine object.
+function Add-VariableEvent([VariableExpressionAst] $Node, [Collections.Generic.List[object]] $Events) {
+    if (-not (Test-Receiver $Node)) {
+        $Events.Add([ordered]@{ kind = 'unread'; text = "an object of PowerShell's engine the command keeps (`$$($Node.VariablePath.UserPath))" })
     }
 }
 
@@ -358,7 +552,7 @@ function Add-CommandEvent([CommandAst] $Node, [int] $Depth, [int] $Limit, [Colle
     $binding = Get-Binding $Node
     $Events.Add([ordered]@{
             kind = 'command'; words = $words.ToArray(); parameters = $binding.parameters
-            failed = $binding.failed; whatIf = $binding.whatIf
+            failed = $binding.failed; whatIf = $binding.whatIf; fromPipeline = $binding.fromPipeline
         })
     if ($binding.failed -or $binding.whatIf) {
         return
@@ -407,7 +601,8 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [int] $Limit, [Collecti
             param($node)
             $node -is [CommandAst] -or $node -is [AssignmentStatementAst] -or $node -is [MemberExpressionAst] -or
             ($node -is [VariableExpressionAst] -and $node.Parent -is [ForEachStatementAst] -and
-            [object]::ReferenceEquals($node.Parent.Variable, $node))
+            [object]::ReferenceEquals($node.Parent.Variable, $node)) -or
+            ($node -is [VariableExpressionAst] -and $null -ne (Get-AutomaticType $node))
         }, $true) |
         Sort-Object { $_.Extent.EndOffset }, @{ Expression = { $_.Extent.StartOffset }; Descending = $true }
     $regions = Get-Region $ast
@@ -437,6 +632,8 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [int] $Limit, [Collecti
             Add-CommandEvent $node $Depth $Limit $Events
         } elseif ($node -is [MemberExpressionAst]) {
             Add-MemberEvent $node $Events
+        } elseif ($node -is [VariableExpressionAst] -and $node.Parent -isnot [ForEachStatementAst]) {
+            Add-VariableEvent $node $Events
         } else {
             Add-AssignmentEvent $node $Events
         }

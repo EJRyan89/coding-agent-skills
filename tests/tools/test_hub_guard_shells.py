@@ -333,6 +333,43 @@ class FunctionCallDifferentialTests(unittest.TestCase):
                 if ran:
                     self.assertEqual(["status"], [call.subcommand for call in reading.calls])
 
+    def test_the_guard_reads_every_body_the_branches_give_a_function_that_runs(self) -> None:
+        # Each command, with ONE and TWO standing for two bodies and Y for a condition that holds or does not.
+        bash_forms = (
+            'if test -n "Y"; then f() { ONE; }; else f() { TWO; }; fi; f',
+            'if test -n "Y"; then f() { ONE; }; else f() { TWO; }; fi; export -f f; bash -c f',
+            'f() { ONE; }; if test -n "Y"; then f() { TWO; }; fi; f',
+            'if test -n "Y"; then f() { ONE; }; elif true; then f() { TWO; }; fi; f',
+            'case "Y" in y) f() { ONE; } ;; *) f() { TWO; } ;; esac; f',
+            'f() { ONE; }; test -n "Y" && f() { TWO; }; f',
+        )
+        powershell_forms = (
+            "if ('Y') { function f { ONE } } else { function f { TWO } }; f",
+            "function f { ONE }; if ('Y') { function f { TWO } }; f",
+            "function f { ONE }; foreach ($i in @('Y') -ne '') { function f { TWO } }; f",
+        )
+        bash = platform_support.find_bash()
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if bash is None or pwsh is None:
+            raise AssertionError("Bash and pwsh check the guard's reading of a function the branches define")
+        for tool, forms in (("Bash", bash_forms), ("PowerShell", powershell_forms)):
+            for form in forms:
+                ran = set()
+                for condition in ("y", ""):
+                    script = form.replace("Y", condition).replace("ONE", "echo ONE-RAN").replace("TWO", "echo TWO-RAN")
+                    shell = [bash, "--norc", "--noprofile", "-c"] if tool == "Bash" else [pwsh, "-NoProfile", "-c"]
+                    result = run_bounded([*shell, script], 120, env=os.environ)
+                    output = result.stdout.decode("utf-8", "replace")
+                    ran |= {body for body in ("ONE", "TWO") if f"{body}-RAN" in output}
+                text = form.replace("Y", "$y").replace("ONE", "git status").replace("TWO", "git log")
+                reading = hub_guard.Reading(dict(os.environ), text)
+                read = hub_guard.read_bash if tool == "Bash" else hub_guard.read_powershell
+                read(text, None, reading, 0, {})
+                read_calls = {call.subcommand for call in reading.calls}
+                with self.subTest(tool=tool, form=form, ran=ran):
+                    self.assertEqual({"ONE", "TWO"}, ran)
+                    self.assertEqual({"status", "log"}, read_calls)
+
 
 class PowerShellDefinitionDifferentialTests(unittest.TestCase):
     """Each way PowerShell runs a name or text the parser never read as a command, run by pwsh with a marker for git,
@@ -370,6 +407,17 @@ class PowerShellDefinitionDifferentialTests(unittest.TestCase):
             "[powershell]::Create().AddScript('PROGRAM ARG').Invoke()",
             "[powershell]::Create().AddCommand('PROGRAM').AddArgument('ARG').Invoke()",
             "$ExecutionContext.InvokeCommand.ExpandString('$(PROGRAM ARG)')",
+            "$ExecutionContext.SessionState.InvokeProvider.Item.Set('function:g', 'PROGRAM ARG'); g",
+            "$ExecutionContext.SessionState.InvokeProvider.Item.Set('alias:g', 'PROGRAM'); g ARG",
+            "$ExecutionContext.SessionState.InvokeProvider.Item.New('function:', 'g', 'Function', 'PROGRAM ARG') |"
+            " Out-Null; g",
+            "[scriptblock]::('Create')('PROGRAM ARG').Invoke()",
+            "$ExecutionContext.InvokeCommand.('NewScriptBlock')('PROGRAM ARG').Invoke()",
+            "([type]'scriptblock')::Create('PROGRAM ARG').Invoke()",
+            "[System.Management.Automation.Language.Parser]::ParseInput('PROGRAM ARG', [ref]$null, [ref]$null)"
+            ".GetScriptBlock().Invoke()",
+            "$Host.Runspace.CreateNestedPipeline('PROGRAM ARG', $false).Invoke()",
+            "[scriptblock].GetMethod('Create').Invoke($null, @('PROGRAM ARG')).Invoke()",
         )
         for form in forms:
             output = self.pwsh_output(form.replace("PROGRAM", "Write-Output").replace("ARG", "MARKER-RAN"))
@@ -381,6 +429,67 @@ class PowerShellDefinitionDifferentialTests(unittest.TestCase):
                 self.assertTrue(
                     reading.unread, "a definition or script block from text is a part the guard cannot read"
                 )
+
+    def test_a_path_each_cmdlet_takes_from_its_pipeline_is_one_the_guard_does_not_settle(self) -> None:
+        # Each path parameter of each cmdlet that takes pipeline input, by value or by property name, as its metadata
+        # in pwsh says, with the parts of the guard's reading it reaches: a location, a definition, and a variable.
+        cmdlets = {
+            "Set-Location": ("location",),
+            "Push-Location": ("location",),
+            "Set-Item": ("definition", "variable"),
+            "New-Item": ("definition", "variable"),
+            "Set-Content": ("definition", "variable"),
+            "Remove-Item": ("removal",),
+            "Clear-Item": ("removal",),
+        }
+        names = "', '".join(cmdlets)
+        metadata = self.pwsh_output(
+            f"foreach ($name in '{names}') {{ foreach ($parameter in 'Path', 'LiteralPath') {{"
+            " $sets = (Get-Command $name).Parameters[$parameter].ParameterSets.Values;"
+            " '{0} {1} {2} {3}' -f $name, $parameter, [bool]($sets | Where-Object ValueFromPipeline),"
+            " [bool]($sets | Where-Object ValueFromPipelineByPropertyName) } }"
+        )
+        rows = []
+        for line in metadata.splitlines():
+            cmdlet, parameter, by_value, by_name = line.split()
+            for piped, taken in ((by_value, "'TARGET'"), (by_name, f"[pscustomobject]@{{{parameter}='TARGET'}}")):
+                if piped == "True":
+                    rows += [(cmdlet, f"{taken} | {cmdlet}", part) for part in cmdlets[cmdlet]]
+        self.assertEqual(set(cmdlets), {cmdlet for cmdlet, _, _ in rows})
+        with tempfile.TemporaryDirectory() as temporary:
+            start, moved = Path(temporary, "start dir"), Path(temporary, "moved dir")
+            start.mkdir()
+            moved.mkdir()
+            for cmdlet, piped, part in rows:
+                if part == "location":
+                    ran = self.pwsh_output(f"{piped.replace('TARGET', str(moved))}; (Get-Location).Path")
+                    # pwsh may name the directory by another spelling, as a long name for a short one.
+                    lines = ran.strip().splitlines()
+                    took = bool(lines) and Path(lines[-1].strip()).is_dir() and Path(lines[-1].strip()).samefile(moved)
+                    text = f"{piped.replace('TARGET', str(moved))}; git status"
+                elif part == "definition":
+                    ran = self.pwsh_output(f"{piped.replace('TARGET', 'function:g')} -Value 'Write-Output TOOK';g")
+                    took = "TOOK" in ran
+                    text = f"{piped.replace('TARGET', 'function:g')} -Value 'git status'; g"
+                elif part == "variable":
+                    ran = self.pwsh_output(f"{piped.replace('TARGET', 'env:GIT_DIR')} -Value TOOK; $env:GIT_DIR")
+                    took = "TOOK" in ran
+                    text = f"$env:GIT_DIR = 'before'; {piped.replace('TARGET', 'env:GIT_DIR')} -Value x; git status"
+                else:
+                    removal = piped.replace("TARGET", "env:GIT_DIR")
+                    ran = self.pwsh_output(f"$env:GIT_DIR = 'before'; {removal}; \"[$env:GIT_DIR]\"")
+                    took = "[]" in ran
+                    text = f"$env:GIT_DIR = 'before'; {removal}; git status"
+                reading = hub_guard.Reading(dict(os.environ), text)
+                hub_guard.read_powershell(text, start, reading, 0, {})
+                with self.subTest(cmdlet=cmdlet, piped=piped, part=part):
+                    self.assertTrue(took, "pwsh takes the path from the pipeline")
+                    if part == "definition":
+                        self.assertTrue(reading.unread)
+                    elif part == "location":
+                        self.assertIsNone(reading.calls[-1].place.start)
+                    else:
+                        self.assertIsNone(reading.calls[-1].place.repository)
 
     def test_a_native_program_runs_its_words_where_the_binder_refuses_them_or_takes_whatif(self) -> None:
         # Each argument list, which pwsh hands a native program as written, and the binder refuses or reads -WhatIf in.
