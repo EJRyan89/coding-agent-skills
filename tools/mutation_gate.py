@@ -81,9 +81,10 @@ says so beside their names. An unfinished run's summary says so on its first lin
 run and how many of them lie on lines that run at import, and each such leg's count of unmeasured suites and of the
 mutants they leave open. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
 pytest's exit for a failed test kills a mutant, and so does its interrupted exit when it failed to collect a test
-module, as a mutant that breaks an import does. Any other nonzero exit, an interruption, an internal error, a usage
-error such as a node id it cannot resolve, or no test collected, judges nothing: the mutant runs against the next
-suite, and is errored when none killed it, which leaves the run unfinished too, naming each such mutant.
+module, as a mutant that breaks an import does, or its usage error then, which it exits with instead when the run
+named the module's tests by node id. Any other nonzero exit, an interruption, an internal error, a usage error such as
+a node id it cannot resolve, or no test collected, judges nothing: the mutant runs against the next suite, and is
+errored when none killed it, which leaves the run unfinished too, naming each such mutant.
 
 While the mutants run, the log gets a line for each one a suite ran against and each one no suite reached, with its
 outcome, module, line, and mutation. The report, each module's changed lines, counts, and kill ratio, each changed
@@ -173,12 +174,14 @@ NOT_RUN = "not run"
 # A mutant a suite ran against ended with neither a pass nor a test failure, so that suite judged nothing.
 ERRORED = "errored"
 PASSED = "passed"
-# pytest's exits that judge a mutant, as pytest.ExitCode numbers them: a test failed, or the run was interrupted, which
-# kills the mutant only when collecting a test module failed, as a mutant that breaks an import or the syntax does.
-# Every other nonzero exit, an interruption, an internal error, a usage error such as a node id it cannot resolve, no
-# test collected, or too many warnings, judges nothing.
+# pytest's exits that judge a mutant, as pytest.ExitCode numbers them: a test failed, or the run was interrupted, or
+# ended in a usage error, either of which kills the mutant only when collecting a test module failed, as a mutant that
+# breaks an import or the syntax does; pytest reports that failure, then exits with the usage error when the run named
+# the module's tests by node id, since it then finds none of them. Every other nonzero exit, an interruption, an
+# internal error, a usage error such as a node id it cannot resolve, no test collected, or too many warnings, judges
+# nothing.
 TESTS_FAILED_EXIT = 1
-INTERRUPTED_EXIT = 2
+COLLECTION_EXITS = frozenset({2, 4})
 # What pytest's report heads each module it failed to collect with, at the start of its output.
 COLLECTION_ERROR = b"ERROR collecting "
 
@@ -741,9 +744,9 @@ def suite_environment() -> dict[str, str]:
 def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ()) -> str:
     """Run one suite in a worktree, or only its tests named by node id, stopping at the first failure, with every
     process it starts ended after it: passed on pytest's exit 0, killed on its exit for a failed test or for a test
-    module it failed to collect, timed out past `timeout`, and errored on any other exit, which judges nothing and
-    logs pytest's exit and the start of its output. The node ids go to pytest in an argument file, which no command
-    line's length limits."""
+    module it failed to collect, an interruption or, when the run named tests, a usage error, timed out past
+    `timeout`, and errored on any other exit, which judges nothing and logs pytest's exit and the start of its output.
+    The node ids go to pytest in an argument file, which no command line's length limits."""
     with tempfile.TemporaryDirectory(prefix="mutation-tests-") as temporary:
         target = suite
         if tests:
@@ -763,7 +766,7 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
             return TIMED_OUT
     if finished.returncode == 0:
         return PASSED
-    collection_failed = finished.returncode == INTERRUPTED_EXIT and COLLECTION_ERROR in finished.stdout
+    collection_failed = finished.returncode in COLLECTION_EXITS and COLLECTION_ERROR in finished.stdout
     if finished.returncode == TESTS_FAILED_EXIT or collection_failed:
         return KILLED
     # The log is where the summary sends a reader to see why: pytest names its error at the start of its output.

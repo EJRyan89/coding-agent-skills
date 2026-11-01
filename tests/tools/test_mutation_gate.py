@@ -670,7 +670,7 @@ EXIT_STATUSES = {
     pytest.ExitCode.TESTS_FAILED: (KILLED, KILLED),
     pytest.ExitCode.INTERRUPTED: (ERRORED, KILLED),
     pytest.ExitCode.INTERNAL_ERROR: (ERRORED, ERRORED),
-    pytest.ExitCode.USAGE_ERROR: (ERRORED, ERRORED),
+    pytest.ExitCode.USAGE_ERROR: (ERRORED, KILLED),
     pytest.ExitCode.NO_TESTS_COLLECTED: (ERRORED, ERRORED),
     pytest.ExitCode.MAX_WARNINGS_ERROR: (ERRORED, ERRORED),
 }
@@ -723,6 +723,18 @@ def test_an_errored_run_logs_pytests_exit_and_the_start_of_its_output(capsys: py
     assert capsys.readouterr().out == ""
 
 
+def test_an_errored_run_whose_output_is_not_utf_8_logs_it_with_the_bytes_replaced(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    finished = types.SimpleNamespace(returncode=3, stdout=b"INTERNALERROR \xff\xfe in a hook\n", stderr=b"")
+    with (
+        mock.patch.object(mutation_gate, "run_bounded", return_value=finished),
+        mock.patch("deployer.platform_support.process_tree"),
+    ):
+        assert run_suite(Path("tree"), "tests/x.py", 42.0) == ERRORED
+    assert capsys.readouterr().out == "errored     tests/x.py: pytest exited 3: INTERNALERROR �� in a hook\n"
+
+
 class RunSuiteFixtures(unittest.TestCase):
     """The real suite runner, over a suite with a test that fails and one that passes."""
 
@@ -755,6 +767,13 @@ class RunSuiteFixtures(unittest.TestCase):
         # pytest exits 2, interrupted, having failed to collect the module, as a mutant that breaks an import does.
         self.assertEqual(KILLED, self.run_tree({"tests/test_x.py": "import not_a_module_anywhere\n"}))
         self.assertEqual(KILLED, self.run_tree({"tests/test_x.py": "def test_x(:\n    pass\n"}))
+
+    def test_a_test_module_pytest_fails_to_collect_kills_the_mutant_whose_run_named_its_tests(self) -> None:
+        # pytest reports the failed collection, then exits 4, a usage error, since it finds none of the named tests, as
+        # a mutant of a module-level table the suite imports does.
+        broken = {"tests/test_x.py": "X = frozenset(None)\n\n\ndef test_x():\n    pass\n"}
+        self.assertEqual(KILLED, self.run_tree(broken, ("tests/test_x.py::test_x",)))
+        self.assertEqual(KILLED, self.run_tree(broken, ("tests/test_x.py::test_x", "tests/test_x.py::test_y")))
 
     def test_an_exit_that_is_neither_a_pass_nor_a_test_failure_errors_and_judges_nothing(self) -> None:
         cases = {
