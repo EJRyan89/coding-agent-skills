@@ -8,7 +8,7 @@ entry names its reader, its case, and its issue, once, in order. A pull request 
 names is refused, in every form GitHub closes it by, in its title or its body, since the issue would close while its
 case still fails; the pull request that fixes the reader removes the entry with it. tests/malformed_input/readers.py's
 PENDING, each reader no table holds yet with the issue whose pull request adds it, is held to the same two rules.
-`tests/run_validation.py --known-failure-issues`, a run of its own that runs no suite, also asks GitHub, through gh,
+`tests/known_failure_issues.py`, a program of its own that runs no policy and no suite, also asks GitHub, through gh,
 that each issue either list names is an open issue, never a pull request, and asks nothing while both are empty; a gh
 that cannot answer fails it.
 """
@@ -22,10 +22,9 @@ from functools import partial
 from pathlib import Path
 
 import json_reader
-from closing_references import closing_references
+from closing_references import pull_request_references
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_remote import github_repository
-from markdown_sections import HTML_COMMENT
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, UnreadablePython, parse_python
 
 from tools.release_notes import ReleaseNotesError, git_output
@@ -231,13 +230,14 @@ def owed_issues(root: Path) -> list[OwedIssue]:
     return owed
 
 
-def closed_issues(body: str, repository: str | None) -> set[int]:
-    """The issues of `repository`, `owner/name`, a pull request body closes when it merges, in every form GitHub
-    reads, outside an HTML comment; with no repository known, every reference counts, so none is missed. A number
-    past the digit limit, or in digits other than ASCII, names no issue."""
+def closed_issues(body: str | None, repository: str | None, title: str | None = None) -> set[int]:
+    """The issues of `repository`, `owner/name`, a pull request closes when it is squash-merged, by its title or its
+    body, in every form closing_references reads, HTML comments included, since the squash commit carries the body as
+    written; with no repository known, every reference counts, so none is missed. A number past the digit limit, or in
+    digits other than ASCII, names no issue."""
     return {
         reference.number
-        for reference in closing_references(HTML_COMMENT.sub("", body))
+        for reference in pull_request_references(title, body)
         if repository is None or reference.in_repository(repository)
     }
 
@@ -258,8 +258,7 @@ def closed_known_failure_problems(root: Path, body: str | None, title: str | Non
     owed = owed_issues(root)
     if not owed:
         return []
-    text = "\n".join(part for part in (title, body) if part is not None)
-    closing = closed_issues(text, checkout_repository(root))
+    closing = closed_issues(body, checkout_repository(root), title)
     return [
         f"the pull request closes #{item.issue}, but {item.source} still {item.owed} under it; finish that work and "
         "remove the entry, or do not close the issue"
@@ -272,8 +271,8 @@ def open_issue_problems(root: Path, client: GitHubClient | None = None) -> list[
     """Each issue the known-failure list or the PENDING table names that GitHub does not report as an open issue: one
     in another state, or a pull request, which gh's `issue view` answers for as well, and whose URL holds /pull/; none
     while both are empty, which asks GitHub nothing. A gh that cannot answer, or a checkout whose origin names no
-    GitHub repository, is a problem, never an open issue. Only `tests/run_validation.py --known-failure-issues` runs it,
-    so the token gh reads reaches no suite."""
+    GitHub repository, is a problem, never an open issue. Only `tests/known_failure_issues.py` runs it, so the token gh
+    reads reaches no policy and no suite."""
     owed = owed_issues(root)
     if not owed:
         return []

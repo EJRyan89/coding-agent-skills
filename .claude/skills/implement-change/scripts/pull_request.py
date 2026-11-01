@@ -10,19 +10,22 @@
 The template is `pull_request_template.md`, in any case, in `.github/`, the top folder, or `docs/`, as GitHub reads
 it. The body check refuses what the template leaves for the author: a comment copied from it, a closing line with no
 issue, and an empty list item; every closing reference GitHub reads, through ejryan89-skill-core's closing_references,
-that is not a `Closes #<n>` line of its own, in prose, a list, a quote, or with a colon alike; and a template heading
-the body dropped. A comment the author wrote is not read.
+that is not a `Closes #<n>` line of its own, in prose, a list, a quote, with a colon, or inside a comment the author
+wrote alike, since the squash commit carries the body as written; and a template heading the body dropped. The title
+check refuses a title holding a closing reference, which the squash commit carries as its title, so every issue the
+pull request closes is named by a `Closes #<n>` line of the body.
 
 Every line is one fact:
 
     TEMPLATE "<file>"              draft: the template read, from the top of the repository
-    CLOSES <n>                     each issue the body closes, by any closing reference GitHub reads
+    CLOSES <n>                     each issue the title or the body closes, by any closing reference GitHub reads
     BODY "<file>"                  draft: the body written, for the author to fill
     TITLE "<file>"                 draft: where to write the title, one line; nothing is there yet
     TITLE <title>                  check, open: the title read
     BASE <remote>/<branch> <sha>   check, open: the base's tip after the fetch
     TITLE_EMPTY                    the title file holds no title
     TITLE_LINES <count>            the title file holds more than one line
+    TITLE_CLOSES <title>           the title holds a closing reference
     PLACEHOLDER <line> <what>      a placeholder the template left in the body, at its line
     CLOSES_LINE <line> <text>      a line holding a closing reference that is not `Closes #<n>` alone
     HEADING_MISSING <heading>      a template heading the body does not keep
@@ -52,7 +55,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import whole_number
-from closing_references import CLOSING_KEYWORDS, CLOSING_REFERENCE, REPOSITORY, closing_references
+from closing_references import (
+    CLOSING_KEYWORDS,
+    CLOSING_PREFIX,
+    CLOSING_REFERENCE,
+    REFERENCE_START,
+    pull_request_references,
+    pull_request_text,
+    reference_digits,
+)
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -63,9 +74,11 @@ from typed_text import read_typed
 TEMPLATE_NAME = "pull_request_template.md"
 # The folders GitHub reads a pull request template from, relative to the top of the repository.
 TEMPLATE_FOLDERS = (".github", "", "docs")
-# A line that opens with a closing keyword and the start of an issue reference, `#`, `<owner>/<repo>#`, or a URL, which
-# is refused unless it is `Closes #<n>` even where what follows is no reference CLOSING_REFERENCE reads.
-CLOSING_LINE = re.compile(rf"(?i)\s*{CLOSING_KEYWORDS}\b:?\s+(?:(?:{REPOSITORY})?#|https://github\.com/)")
+# A closing keyword and the start of an issue reference, `#`, `<owner>/<repo>#`, `GH-`, or a URL, which is refused,
+# as a line that opens with it or anywhere in a title, unless it is `Closes #<n>` even where what follows is no
+# reference CLOSING_REFERENCE reads.
+CLOSING_START = re.compile(rf"(?i){CLOSING_PREFIX}{REFERENCE_START}")
+CLOSING_LINE = re.compile(rf"(?i)\s*{CLOSING_PREFIX}{REFERENCE_START}")
 BARE_CLOSING_LINE = re.compile(rf"(?i){CLOSING_KEYWORDS}\b:?\s+#")
 CLOSES_ONE = re.compile(r"Closes #([1-9][0-9]*)")
 EMPTY_LIST_ITEM = re.compile(r"\s*(?:[-*+]|[0-9]+[.)])\s*")
@@ -129,18 +142,25 @@ def draft_body(template: str, closes: Sequence[int]) -> str:
     return "".join(kept[:first] + closing + kept[first + 1 :])
 
 
-def closed_issues(body: str) -> list[int]:
-    """Each issue the body closes outside comments, once, in order, by every closing reference GitHub reads, as
-    closing_references reads them, or PullRequestError for a number too long to read."""
-    text = blank_comments(body)
+def closed_issues(body: str, title: str | None = None) -> list[int]:
+    """Each issue the title or the body closes, comments included, once, in order, by every closing reference GitHub
+    reads, as closing_references reads them, or PullRequestError for a number too long to read."""
     if any(
-        whole_number.parse(match["number"] or match["linked_number"]) is None
-        for match in CLOSING_REFERENCE.finditer(text)
+        whole_number.parse(reference_digits(match)) is None
+        for match in CLOSING_REFERENCE.finditer(pull_request_text(title, body))
     ):
         raise PullRequestError(
             f"a closing reference names an issue number of more than {whole_number.DIGIT_LIMIT} digits"
         )
-    return list(dict.fromkeys(reference.number for reference in closing_references(text)))
+    return list(dict.fromkeys(reference.number for reference in pull_request_references(title, body)))
+
+
+def blank_template_comments(body: str, template: str) -> str:
+    """`body` with each comment copied from `template` blanked as blank_comments blanks one, and every other comment
+    kept, since the squash commit carries the comments the author wrote."""
+    for comment in {match.group() for match in HTML_COMMENT.finditer(template)}:
+        body = body.replace(comment, re.sub(r"[^\n]", " ", comment))
+    return body
 
 
 def headings(text: str) -> list[str]:
@@ -161,12 +181,16 @@ def body_problems(body: str, template: str) -> list[str]:
             number = line_of(body, start)
             problems.append((number, f"PLACEHOLDER {number} a template comment"))
             start = body.find(comment, start + len(comment))
-    for number, line in enumerate(blank_comments(body).splitlines(), start=1):
+    # Both views blank characters but never a line feed, so split at line feeds they hold the same lines.
+    read = blank_template_comments(body, template).split("\n")
+    for number, (line, written) in enumerate(zip(blank_comments(body).split("\n"), read, strict=True), start=1):
         text = line.strip()
         if BARE_CLOSING_LINE.fullmatch(text):
             problems.append((number, f"PLACEHOLDER {number} a Closes line with no issue"))
-        elif (CLOSING_REFERENCE.search(line) or CLOSING_LINE.match(line)) and not CLOSES_ONE.fullmatch(text):
-            problems.append((number, f"CLOSES_LINE {number} {flat_text(text)}"))
+        elif (CLOSING_REFERENCE.search(written) or CLOSING_LINE.match(written)) and not (
+            CLOSES_ONE.fullmatch(written.strip()) or BARE_CLOSING_LINE.fullmatch(written.strip())
+        ):
+            problems.append((number, f"CLOSES_LINE {number} {flat_text(written.strip())}"))
         elif EMPTY_LIST_ITEM.fullmatch(line):
             problems.append((number, f"PLACEHOLDER {number} an empty list item"))
     lines = [problem for _, problem in sorted(problems, key=lambda problem: problem[0])]
@@ -175,12 +199,16 @@ def body_problems(body: str, template: str) -> list[str]:
 
 
 def read_title(text: str) -> tuple[str, list[str]]:
-    """The title a title file holds, and its problems."""
+    """The title a title file holds, and its problems: none, more than one line, or a closing reference, which the
+    squash commit's title carries as GitHub reads it in the body."""
     title = text.strip()
     if not title:
         return "", ["TITLE_EMPTY"]
     count = len(title.splitlines())
-    return title, [f"TITLE_LINES {count}"] if count > 1 else []
+    problems = [f"TITLE_LINES {count}"] if count > 1 else []
+    if CLOSING_REFERENCE.search(title) or CLOSING_START.search(title):
+        problems.append(f"TITLE_CLOSES {flat_text(title)}")
+    return title, problems
 
 
 def read_file(path: Path) -> str:
@@ -277,7 +305,8 @@ def check(
     _, template = template_of(git, repository)
     title, title_problems = read_title(read_file(title_file))
     body = read_file(body_file)
-    facts = ([f"TITLE {flat_text(title)}"] if title else []) + [f"CLOSES {number}" for number in closed_issues(body)]
+    closed = closed_issues(body, title or None)
+    facts = ([f"TITLE {flat_text(title)}"] if title else []) + [f"CLOSES {number}" for number in closed]
     base_facts, branch_problems = branch_facts(git, repository, base)
     problems = title_problems + body_problems(body, read_file(template)) + branch_problems
     return title, facts + base_facts, problems
