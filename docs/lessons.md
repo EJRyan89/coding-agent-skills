@@ -258,6 +258,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
   `tests/tools/test_hub_guard_shells.py::FunctionCallDifferentialTests`,
   `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`,
+  `tests/tools/test_hub_guard_shells.py::PowerShellDefinitionDifferentialTests`,
+  `tests/tools/test_hub_guard.py::ContractTests::test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle`,
   `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later
@@ -265,9 +267,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample under
   `tests/fixtures/captured-output/`; each interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
   forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
-  guard follows, such as a working directory, read only as taking a value and never for what it changes; a join of
-  two paths' state that keeps one path's value, as `{**first.<field>, **second.<field>}` does, where the paths differ.
-- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2138
+  guard follows, such as a working directory, read only as taking a value and never for what it changes; a list of
+  member names where the receiver's type, read through parentheses and casts, settles what a member can run, and a
+  `$Node.Member -isnot [StringConstantExpressionAst]` that passes over a member it cannot name rather than refusing
+  it; a parameter read from a command's arguments alone, where a cmdlet after the first in its pipeline takes it
+  from there; a join of two paths' state that keeps one path's value, as `{**first.<field>, **second.<field>}` does,
+  where the paths differ.
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2138, #2139, #2140
 
 ### A recursive parser of input has a depth bound
 
@@ -664,6 +670,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tools.mutation_gate:verdict`, which counts a mutant either leg killed as killed.
 - **Guard:** `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_the_platform_seam_each_module_that_imports_it_or_holds_its_table_and_each_that_branches`,
   `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_each_seam_module_claude_md_names_and_each_module_that_branches_on_the_platform`,
+  `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_a_module_that_names_any_token_of_the_platform_catalogue`,
+  `tests/tools/test_mutation_gate.py::test_the_windows_leg_runs_an_importer_of_each_seam_module_claude_md_names`,
   `tests/tools/test_mutation_gate.py::SplitRunFixtures::test_a_mutant_that_survives_the_linux_leg_and_the_windows_leg_kills_reads_as_killed`,
   `tests/validation/test_workflows.py::test_a_mutation_job_off_its_shape_fails`
 - **Search for:** a survivor named "Linux-invisible" or "Windows-only" in a pull request's "Mutation survivors"
