@@ -1814,6 +1814,18 @@ class CommandReadingTests(GuardTestCase):
         self.assertEqual([], self.read("git commit -m 'unterminated", tool="Bash"))
         self.assertIn("a single quote is not closed", self.unread[0])
 
+    def test_powershell_functions_are_followed_four_calls_deep(self) -> None:
+        definitions = "function f1 { f2 }; function f2 { f3 }; function f3 { f4 }; function f4 { git commit -m x }; "
+        self.assertEqual(self.at(self.hub, "commit"), self.read(definitions + "f1"))
+        self.assertEqual([], self.unread)
+        self.assertEqual([], self.read("function f0 { f1 }; " + definitions + "f0"))
+        self.assertEqual(["the function f4 nests more than 4 deep"], self.unread)
+        # A call the binder cannot bind still runs a simple function's body, named as the call names it.
+        for command in ("function f { f }; f; git commit -m x", "function f { f x }; f x; git commit -m x"):
+            with self.subTest(command=command):
+                self.reading(command)
+                self.assertEqual(["the function f nests more than 4 deep"], self.unread)
+
     def test_pwsh_starts_only_for_text_that_could_hold_a_refused_git_call(self) -> None:
         # A PATH that names no existing directory: an empty or missing one would let Windows find pwsh anyway.
         unavailable = {**self.environment, "PATH": str(self.root / "no-such-directory")}
@@ -2398,6 +2410,8 @@ class ContractTests(GuardTestCase):
             'if test -n "$y"; then git() { :; }; fi; git switch -c x',
             'git() { :; }; if test -n "$y"; then unset -f git; fi; git switch -c x',
             'test -n "$y" && f() { git switch -c x; }; f',
+            # Where no function takes the name, the program it names reads its redirects.
+            "if test -n \"$y\"; then bash() { :; }; fi; bash <<< 'git switch -c x'",
         )
         # The reader reports no definition with an empty body, so each body here runs a command.
         powershell = (
