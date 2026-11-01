@@ -5,9 +5,9 @@ GitHub closes an issue a pull request or a commit message on the default branch 
 documentation names two forms of the issue, `#<n>` in the same repository and `<owner>/<repo>#<n>`, and its autolink
 documentation two more it links an issue by, `GH-<n>` and the issue's URL, `https://github.com/<owner>/<repo>/issues/<n>`.
 This reads all four, and spellings of them GitHub's pages leave open: a keyword or a reference in Markdown emphasis
-(`**Closes** #<n>`), no space after the keyword or its colon (`CLOSES:#<n>`), a URL in angle brackets, over `http`, through
-`www.`, or with no scheme. Every caller refuses what it reads, so a spelling GitHub may not close by costs a refusal
-the author can rewrite, while one left unread would let an issue close unseen.
+(`**Closes** #<n>`), no space after the keyword or its colon (`CLOSES:#<n>`), a URL in angle brackets, over `http`,
+through `www.`, or with no scheme. Every caller refuses what it reads, so a spelling GitHub may not close by costs a
+refusal the author can rewrite, while one left unread would let an issue close unseen.
 
 What it does not see: a keyword and its reference on different lines, a reference after the first in a list that
 names its keyword once (`Closes #<n>, #<m>`; GitHub's pages ask for the keyword before each), `_` or `~` emphasis, a
