@@ -677,15 +677,10 @@ def add_text(parts: list[Part], text: str, quoted: bool) -> None:
         parts.append(Part("text", text, quoted))
 
 
-def expansion_substitutions(text: str) -> list[str]:
-    """The command substitutions in text that expands as a double-quoted string does, such as an unquoted
-    here-document's body; a double quote there is an ordinary character."""
-    return expansions(text)[0]
-
-
 def expansions(text: str) -> tuple[list[str], list[str]]:
-    """The command substitutions in text that expands as a double-quoted string does, and the variables its
-    expansions assign, as a word's assigns holds them."""
+    """The command substitutions in text that expands as a double-quoted string does, such as an unquoted
+    here-document's body, where a double quote is an ordinary character, and the variables its expansions assign,
+    as a word's assigns holds them."""
     lexer = Lexer(text.replace('"', " "))
     found: list[str] = []
     while lexer.index < len(lexer.text):

@@ -91,6 +91,10 @@ ASSIGNING_EXPANSIONS = tuple(
         "declare -n ref=GIT_DIR; name=GIT_DIR; for x in {expansion}; do :; done",
         "declare -n ref=GIT_DIR; name=GIT_DIR; : < /dev/null > /dev/null 2> /dev/null; echo > /dev/null {expansion}",
         "declare -n ref=GIT_DIR; name=GIT_DIR; (( ${{#GIT_DIR}} >= 0 )); : $(: {expansion})",
+        # A subshell, and an arithmetic command and for's header, which the reader reads as the same.
+        "declare -n ref=GIT_DIR; name=GIT_DIR; ( : {expansion} )",
+        "declare -n ref=GIT_DIR; name=GIT_DIR; (( {expansion} )) || :",
+        "declare -n ref=GIT_DIR; name=GIT_DIR; for (( i = {expansion}; i < 0; )); do :; done",
     )
 )
 # Each Bash command that may set GIT_DIR, exported as `before` when it starts.
@@ -171,6 +175,8 @@ BASH_COMMANDS = (
     "unset GIT_DIR; set -o allexport +e; GIT_DIR=after",
     "unset GIT_DIR; set -e -o allexport; GIT_DIR=after",
     "unset GIT_DIR; set -o pipefail -o allexport; GIT_DIR=after",
+    # A word the text does not settle, alone, may expand to nothing, and the shell goes on.
+    "unset x; $x",
     # An expansion that assigns, in each operator, place, and spelling of its name, generated below.
     *ASSIGNING_EXPANSIONS,
 )
@@ -459,6 +465,8 @@ class StartDifferentialTests(unittest.TestCase):
             "command -- $x PROGRAM status",
             "exec $x PROGRAM status",
             "builtin $x command PROGRAM status",
+            "$x PROGRAM status; true",
+            "$x bash <<< 'PROGRAM status'",
         )
         with tempfile.TemporaryDirectory() as folder:
             # command and exec pass over functions, so the marker is a program, as git is.

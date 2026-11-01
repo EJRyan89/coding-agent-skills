@@ -346,6 +346,41 @@ class HereDocumentTests(unittest.TestCase):
         self.assertEqual([["cat"]], simple_commands(tree))
 
 
+class AssigningExpansionTests(unittest.TestCase):
+    """A word, and an unquoted here-document's body, record each variable an expansion in it assigns."""
+
+    def test_each_expansion_that_assigns_is_recorded_by_the_name_it_assigns(self) -> None:
+        for text, assigns in (
+            (": ${x:=1}", ("x",)),
+            (": ${x=1}", ("x",)),
+            (': "${x:=1}"', ("x",)),
+            (": ${a[1]:=1}", ("a[1]",)),
+            (": ${!r:=1}", ("!r",)),
+            (": ${z:-${x:=1}}", ("x",)),
+            (": ${x:-1} ${#x} ${x/a=b/c}", ()),
+            (": '${x:=1}' \\${x:=1}", ()),
+            # Bash's names are ASCII, so an expansion holding another letter assigns none.
+            (": ${xé:=1}", ()),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(assigns, tuple(name for word in first_simple(text).words for name in word.assigns))
+        here = first_simple("cat <<EOF\n${h:=1}\nEOF").redirects[0].here
+        self.assertEqual(("h",), here.assigns if here is not None else None)
+        # A word built anywhere else assigns nothing.
+        self.assertEqual((), bash_syntax.Word("x", ()).assigns)
+
+    def test_an_arithmetic_for_keeps_its_header_words_kind_body_and_redirections(self) -> None:
+        loop = parse("for (( i = ${n:=1}; i < 2; i++ )); do echo; done > out").items[0][0].first.commands[0]
+        self.assertIsInstance(loop, bash_syntax.Loop)
+        assert isinstance(loop, bash_syntax.Loop)
+        self.assertEqual("for", loop.kind)
+        self.assertTrue(loop.header)
+        self.assertTrue(all(isinstance(word, bash_syntax.Word) for word in loop.header))
+        self.assertEqual(["n"], [name for word in loop.header for name in word.assigns])
+        self.assertEqual([["echo"]], simple_commands(loop.body))
+        self.assertEqual([">"], [redirect.operator for redirect in loop.redirects])
+
+
 class TreeTests(unittest.TestCase):
     def test_a_comment_runs_to_the_end_of_its_line_but_a_hash_inside_a_word_does_not_start_one(self) -> None:
         self.assertEqual(

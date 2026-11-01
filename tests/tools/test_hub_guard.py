@@ -2381,23 +2381,38 @@ class ContractTests(GuardTestCase):
             ("Bash", f"{body}; export -f f; pwsh -c 'bash -c f'"),
             ("Bash", f"set -a; {body}; pwsh -c 'bash -c f'"),
             ("Bash", f"{body}; export -f f; pwsh -c 'pwsh -c \"bash -c f\"'"),
+            ("Bash", f"{body}; export -f f; pwsh -c 'env pwsh -c \"bash -c f\"'"),
+            # Windows PowerShell runs a leading word as -Command does.
+            ("Bash", f"{body}; export -f f; pwsh -c 'powershell \"bash -c f\"'"),
+            ("Bash", f"{body}; export -f f; pwsh -c 'function g {{ bash -c f }}; g'"),
+            ("PowerShell", f"bash -ac '{body}; bash -c f'"),
             ("PowerShell", "${env:BASH_FUNC_f%%} = '() { git switch -c x; }'; bash -c f"),
-            ("PowerShell", "Set-Item 'env:BASH_FUNC_f%%' '() { git switch -c x; }'; bash -c f"),
-            (
-                "PowerShell",
-                "[Environment]::SetEnvironmentVariable('BASH_FUNC_f%%', '() { git switch -c x; }'); bash -c f",
-            ),
-            ("Bash", 'command_not_found_handle() { git "$@"; }; nosuch switch -c x'),
+            ("PowerShell", "${env:BASH_FUNC_f%%} = '() { git switch -c x; }'; function g { bash -c f }; g"),
+            ("PowerShell", "function g { git switch -c x }; function h { g }; h"),
+            ("Bash", "command_not_found_handle() { git switch -c x; }; nosuch"),
         ):
             with self.subTest(tool=tool, command=command):
                 self.assertEqual("deny", self.decision(self.shell_event(tool, command, self.hub)))
+                self.assertIn(WRITES.format("switch"), self.reason)
+        # A cmdlet that writes the environment provider leaves the function's value unsettled.
+        for command in (
+            "Set-Item 'env:BASH_FUNC_f%%' '() { git switch -c x; }'; bash -c f",
+            "[Environment]::SetEnvironmentVariable('BASH_FUNC_f%%', '() { git switch -c x; }'); bash -c f",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn("BASH_FUNC_", self.reason)
         # A function defined before allexport is turned on, or listed by -F alone, is not exported.
         self.assertIsNone(self.bash(f"{body}; set -a; bash -c f", self.hub))
         self.assertIsNone(self.bash(f"{body}; declare -F f; bash -c f", self.hub))
         self.assertIsNone(self.bash(f"set -a; set +a; {body}; bash -c f", self.hub))
         # An option set does not settle may be any.
-        self.assertEqual("deny", self.bash(f"set $o; {body}; bash -c f", self.hub))
-        self.assertIn("could not read the options passed to set", self.reason)
+        for command in (f"set $o; {body}; bash -c f", f"set -o $o; {body}; bash -c f"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("could not read the options passed to set", self.reason)
+        self.assertEqual("deny", self.bash(f"shopt -so $o; {body}; bash -c f", self.hub))
+        self.assertIn("could not read the options passed to shopt", self.reason)
 
     def test_an_expansion_that_assigns_sets_its_variable(self) -> None:
         git_directory = (self.hub / ".git").as_posix()
@@ -2409,6 +2424,8 @@ class ContractTests(GuardTestCase):
                 (f"export GIT_DIR; : ${{z:-${{GIT_DIR{form}{git_directory}}}}}; git switch -c x", self.tree),
                 (f"export GIT_DIR; (( ${{GIT_DIR{form}{git_directory}}} )); git switch -c x", self.tree),
                 (f'y=GIT_DIR; export GIT_DIR; : ${{!y{form}"{git_directory}"}}; git switch -c x', self.tree),
+                # A name the text does not settle may name any variable, GIT_DIR among them.
+                (f'y=$(cat n); : ${{!y{form}"{git_directory}"}}; git switch -c x', self.tree),
                 (f'export GIT_DIR; echo hi > "${{GIT_DIR{form}{git_directory}}}"; git switch -c x', self.tree),
                 (f"export GIT_DIR; for (( i = ${{GIT_DIR{form}1}}; i < 0; )); do :; done; git switch -c x", self.tree),
             ):
