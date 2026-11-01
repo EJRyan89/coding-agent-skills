@@ -1503,6 +1503,85 @@ def test_console_setup_policy_refuses_every_text_opener_over_a_standard_stream(t
     assert "reconfigures a stream itself" in problem
 
 
+# Every way a script reaches a standard stream to build a text stream over it: by its descriptor, written out, taken
+# from fileno(), copied, or opened as a file first; by a name bound to the stream, a layer under it, its descriptor, or
+# a codec class; through a codec's own stream classes; by the console's device path; and partially applied.
+STREAM_REACHES = [
+    *(f'open({fd}, "w", encoding="utf-8")' for fd in (0, 1, 2)),
+    'os.fdopen(1, "w", encoding="utf-8")',
+    'io.open(2, "w", encoding="utf-8")',
+    'codecs.open(1, "w", "utf-8")',
+    'open(file=1, mode="w", encoding="utf-8")',
+    'io.TextIOWrapper(io.FileIO(1, "w"), encoding="utf-8")',
+    'io.TextIOWrapper(io.BufferedWriter(io.FileIO(fd=2, mode="w")), encoding="utf-8")',
+    'os.fdopen(os.dup(1), "w", encoding="utf-8")',
+    *(
+        f'fd = sys.{stream}.fileno()\nopen(fd, "w", encoding="utf-8")'
+        for stream in ("stdin", "stdout", "stderr", "__stdout__")
+    ),
+    'fd = 1\nos.fdopen(fd, "w", encoding="utf-8")',
+    'B = sys.stdout.buffer\nio.TextIOWrapper(B, encoding="utf-8")',
+    'S = sys.stderr\nB = S.buffer\nio.TextIOWrapper(B, encoding="utf-8")',
+    'io.TextIOWrapper(B, encoding="utf-8")\nB = sys.stdout.buffer',
+    'if (B := sys.stdout.buffer):\n    io.TextIOWrapper(B, encoding="utf-8")',
+    'B: object = sys.stdout.buffer\nio.TextIOWrapper(B, encoding="utf-8")',
+    'B = sys.stdout.detach()\nio.TextIOWrapper(B, encoding="utf-8")',
+    'R = sys.stdout.buffer.raw\nio.TextIOWrapper(R, encoding="utf-8")',
+    'B = io.BufferedWriter(io.FileIO(1, "w"))\nio.TextIOWrapper(B, encoding="utf-8")',
+    'fd = os.dup(sys.stderr.fileno())\nos.fdopen(fd, "w", encoding="utf-8")',
+    'W = codecs.getwriter("utf-8")\nW(sys.stdout.buffer)',
+    'R = codecs.getreader("utf-8")\nB = sys.stdin.buffer\nR(B)',
+    'codecs.EncodedFile(sys.stdout.buffer, "utf-8")',
+    'B = sys.stdout.buffer\ncodecs.EncodedFile(B, "utf-8")',
+    'codecs.StreamReaderWriter(sys.stdout.buffer, codecs.getreader("utf-8"), codecs.getwriter("utf-8"))',
+    "codecs.StreamRecoder(sys.stdout.buffer, None, None, None, None)",
+    'codecs.lookup("utf-8").streamwriter(sys.stdout.buffer)',
+    'W = codecs.lookup("utf-8").streamwriter\nW(sys.stdout.buffer)',
+    "encodings.utf_8.StreamWriter(sys.stdout.buffer)",
+    *(f'open("{device}", "w", encoding="utf-8")' for device in ("/dev/stdout", "/dev/fd/2", "CONOUT$", "CON")),
+    'functools.partial(io.TextIOWrapper, sys.stdout.buffer)(encoding="utf-8")',
+    'functools.partial(open, 1, "w")(encoding="utf-8")',
+]
+
+
+@pytest.mark.parametrize("reach", STREAM_REACHES)
+def test_console_setup_policy_refuses_a_wrapper_over_every_reach_to_a_standard_stream(
+    tmp_path: Path, reach: str
+) -> None:
+    imports = "import codecs\nimport encodings.utf_8\nimport functools\nimport io\nimport os\nimport sys\n\n"
+    write_fixture_tree(tmp_path, {"tools/reopened.py": imports + reach + "\n"})
+    mark_skills(tmp_path)
+    [problem] = console_setup_problems(tmp_path)
+    assert problem.startswith("tools/reopened.py:")
+    assert "reconfigures a stream itself" in problem
+
+
+# The same calls over a file that is no standard stream, a descriptor in another argument, or a stream only written to.
+@pytest.mark.parametrize(
+    "use",
+    [
+        'open(path, "w", 1, encoding="utf-8")',
+        'open(path, "w", buffering=1, encoding="utf-8")',
+        'open(3, "w", encoding="utf-8")',
+        'fd = 3\nos.fdopen(fd, "w", encoding="utf-8")',
+        'B = raw.buffer\nio.TextIOWrapper(B, encoding="utf-8")',
+        'W = codecs.getwriter("utf-8")\nW(raw)',
+        'codecs.EncodedFile(raw, "utf-8")',
+        'open("/dev/null", "w", encoding="utf-8")',
+        'out = sys.stdout\nout.write("text")',
+        'tempfile.TemporaryFile("w+", 1, "utf-8")',
+        # What a standard stream reads is data, not the stream, and neither is what is built from it.
+        'data = sys.stdin.read()\nio.TextIOWrapper(io.BytesIO(data.encode()), encoding="utf-8")',
+        'fd = os.open(path, os.O_WRONLY)\nos.fdopen(fd, "w", encoding="utf-8")',
+    ],
+)
+def test_console_setup_policy_passes_a_wrapper_over_any_other_file(tmp_path: Path, use: str) -> None:
+    imports = "import codecs\nimport io\nimport os\nimport sys\nimport tempfile\n\n"
+    write_fixture_tree(tmp_path, {"tools/plain.py": imports + use + "\n"})
+    mark_skills(tmp_path)
+    assert console_setup_problems(tmp_path) == []
+
+
 @pytest.mark.parametrize("callable_name", [*COMMAND_RUNNERS, *CLIENT_CLASSES])
 def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arguments(callable_name: str) -> None:
     module, _, function = callable_name.rpartition(".")

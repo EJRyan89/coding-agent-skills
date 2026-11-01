@@ -32,11 +32,14 @@ it through a caller, followed by that hunk, cut at MAX_HUNK_CHARACTERS; at most 
 `OMITTED <n>` line for the rest; and `UNPARSED <file>: <reason>` for a changed Python file `ast` cannot read.
 
 A changed Python definition a test names is still written when its change converts a call site: an added line that
-directly replaces removed lines and calls, through a name the module's imports bind, something those lines did not
-call, as a write routed through `json_writer` does. It gets a `CONVERTED <file>:<line> <kind> <name>, a test names
-it, converted calls <call> at line <n>, ..., hunk <header>, tests of its file <tests>` entry followed by the hunk of
-its first converted call, which opens the route for the reviewer to check that a test pins the site's output. A call
-is found by its text, so a call inside a string counts too; the reviewer judges each one.
+directly replaces removed lines and calls, through a name the module's imports bind, a callee the replacing lines call
+more often than those lines did, as a write routed through `json_writer` does, or one whose count held while the
+replacing lines drop a call to another callee and add a site of it whose text no removed line holds, where which site
+is the conversion is ambiguous. The callee may be one the removed lines also called. It gets a `CONVERTED
+<file>:<line> <kind> <name>, a test names it, converted calls <call> at line <n>, ..., hunk <header>, tests of its file
+<tests>` entry followed by the hunk of its first converted call, which opens the route for the reviewer to check that
+a test pins the site's output. A call is found by its text, so a call inside a string counts too; the reviewer judges
+each one.
 
 It reads the diff through conditions.read_files, so a changed file whose path could name a file outside the snapshot
 is neither read nor listed, and gets a `REFUSED <path>: ...` line on stdout instead.
@@ -540,22 +543,31 @@ def converted_calls(
     removed block call more often than that block did: a call site routed through a shared helper, such as a write
     through `json_writer`. Calls are counted as call sites, so converting one site beside another that already
     called the helper still counts. The diff does not pair an added line with the line it replaced, so every site of
-    such a callee among the replacing lines is named, the unchanged one with the converted one."""
+    such a callee among the replacing lines is named, the unchanged one with the converted one.
+
+    A callee whose count did not rise may still have been converted to, when the replacing lines drop a call to
+    another callee and add a site of this one whose text no removed line holds: one helper site removed and another
+    converted leaves the count where it was. Which added site is the conversion is ambiguous then, so each such site
+    is named. Sites the replacing lines only reorder or rewrite, with no other call gone, convert nothing."""
     wanted = set(added)
     found: set[tuple[int, str]] = set()
     for run in replacing_runs(change):
         if wanted.isdisjoint(run):
             continue
+        removed = change.replaced[run[0]]
         sites = {line: CALL.findall(lines[line - 1]) for line in run}
-        before = Counter(CALL.findall("\n".join(change.replaced[run[0]])))
+        before = Counter(CALL.findall("\n".join(removed)))
         after = Counter(callee for calls in sites.values() for callee in calls)
         grown = {callee for callee, count in after.items() if count > before[callee]}
+        dropped = {callee for callee, count in before.items() if count > after[callee]}
+        removed_sites = Counter(text.strip() for text in removed)
         found.update(
             (line, callee)
             for line, calls in sites.items()
             if line in wanted
             for callee in calls
-            if callee in grown and callee.split(".", 1)[0] in imported
+            if callee.split(".", 1)[0] in imported
+            and (callee in grown or (dropped - {callee} and not removed_sites[lines[line - 1].strip()]))
         )
     return sorted(found)
 
