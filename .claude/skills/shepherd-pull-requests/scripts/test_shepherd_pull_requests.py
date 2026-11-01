@@ -1359,9 +1359,11 @@ class SourceTest(unittest.TestCase):
         self.assertTrue(any(shepherd.CLOSING.search(line) for line in lines), lines)
 
     def test_the_validation_steps_are_the_workflow_s_steps_that_run_the_runner(self) -> None:
+        # The runner's steps, and the known-failure issues' query, which runs as a program of its own.
         workflow = (Path(__file__).resolve().parents[4] / ".github" / "workflows" / "validate.yml").read_text("utf-8")
         steps = re.split(r"^\s*- name: ", workflow, flags=re.MULTILINE)[1:]
-        running = {step.split("\n", 1)[0].strip() for step in steps if "tests/run_validation.py" in step}
+        programs = ("tests/run_validation.py", "tests/known_failure_issues.py")
+        running = {step.split("\n", 1)[0].strip() for step in steps if any(program in step for program in programs)}
         self.assertEqual(shepherd.VALIDATION_STEPS, running)
 
 
