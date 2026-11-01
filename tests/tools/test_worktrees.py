@@ -237,6 +237,8 @@ class CheckoutTests(WorktreesTestCase):
         self.assertIsNone(worktrees.checkout_of(outside))
         # Inside a git directory there is no work tree to show, and that is no failure either.
         self.assertIsNone(worktrees.checkout_of(self.hub / ".git" / "refs"))
+        self.assertIsNone(worktrees.checkout_of(self.hub / ".git"))
+        self.assertIsNone(worktrees.checkout_of(self.hub / ".git" / "missing" / "deeper"))
         # Rewritten in place: git for Windows hides the file, and Windows refuses to create a hidden file anew.
         with (self.tree / ".git").open("r+", encoding="utf-8") as dot_git:
             dot_git.write(f"gitdir: {self.root / 'gone'}\n")
