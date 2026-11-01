@@ -22,10 +22,9 @@ from functools import partial
 from pathlib import Path
 
 import json_reader
-from closing_references import closing_references
+from closing_references import pull_request_references
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_remote import github_repository
-from markdown_sections import HTML_COMMENT
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, UnreadablePython, parse_python
 
 from tools.release_notes import ReleaseNotesError, git_output
@@ -231,13 +230,14 @@ def owed_issues(root: Path) -> list[OwedIssue]:
     return owed
 
 
-def closed_issues(body: str, repository: str | None) -> set[int]:
-    """The issues of `repository`, `owner/name`, a pull request body closes when it merges, in every form GitHub
-    reads, outside an HTML comment; with no repository known, every reference counts, so none is missed. A number
-    past the digit limit, or in digits other than ASCII, names no issue."""
+def closed_issues(body: str | None, repository: str | None, title: str | None = None) -> set[int]:
+    """The issues of `repository`, `owner/name`, a pull request closes when it is squash-merged, by its title or its
+    body, in every form closing_references reads, HTML comments included, since the squash commit carries the body as
+    written; with no repository known, every reference counts, so none is missed. A number past the digit limit, or in
+    digits other than ASCII, names no issue."""
     return {
         reference.number
-        for reference in closing_references(HTML_COMMENT.sub("", body))
+        for reference in pull_request_references(title, body)
         if repository is None or reference.in_repository(repository)
     }
 
@@ -258,8 +258,7 @@ def closed_known_failure_problems(root: Path, body: str | None, title: str | Non
     owed = owed_issues(root)
     if not owed:
         return []
-    text = "\n".join(part for part in (title, body) if part is not None)
-    closing = closed_issues(text, checkout_repository(root))
+    closing = closed_issues(body, checkout_repository(root), title)
     return [
         f"the pull request closes #{item.issue}, but {item.source} still {item.owed} under it; finish that work and "
         "remove the entry, or do not close the issue"
