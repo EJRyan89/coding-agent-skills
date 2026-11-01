@@ -549,15 +549,18 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A pipe's reader never ends before its writer under `pipefail`
 
 - **Rule:** A Bash suite that sets `pipefail` reads text it matches from a here-string, and a first line by parameter
-  expansion, never through a pipe into a reader that exits early: `grep -q` or `-m`, or `head`.
+  expansion, never through a pipe into a reader that exits early: `grep -q`, `-m`, `-l`, or `-L`, `rg -q`, `-m`, or
+  `-l`, or `head`.
 - **Why:** `grep -q` exits at its match and `head` at its count, the writer then fails with `SIGPIPE`, and `pipefail`
   makes that an intermittent failure.
 - **Guard:** `tests/validation/suite_discovery.py::SuiteDiscoveryPolicies::test_no_bash_suite_pipes_into_a_reader_that_ends_early`
-- **Search for:** `| grep -q`, `| grep -m`, or `| head` in any form, `-n`, `-c`, `-1`, or alone, in a `.sh` file
-  that runs `set -o pipefail` or `set -euo pipefail`; the reader also in a `{ ...; }` or `( ... )` group after the pipe,
-  in a `$(...)` or backtick substitution, by a path such as `/usr/bin/head`, or behind `env`, `exec`, `timeout`, or
-  `command`, and `head` whose last count is positive, as in `head -n -1 -n 1`.
-- **Examples:** #1557, #1602
+- **Search for:** `| grep -q`, `| grep -m`, `| grep -l`, `| grep -L`, `| rg -q`, or `| head` in any form, `-n`, `-c`,
+  `-1`, or alone, in a `.sh` file that turns `pipefail` on by `set`, `shopt -so`, `builtin set`, `bash -o pipefail`, or
+  `SHELLOPTS`; the reader also in a `{ ...; }` or `( ... )` group or an `if`, `while`, `until`, `for`, `select`, or
+  `case` after the pipe, in a function the pipe runs, in a `bash -c` or `eval` script, in a `$(...)` or backtick
+  substitution, by a path such as `/usr/bin/head`, or behind `env` (and `env -S`), `exec`, `timeout`, `command`, or
+  `sudo`, each by a path or not, and `head` whose last count is positive, as in `head -n -1 -n 1`.
+- **Examples:** #1557, #1602, #2151
 
 ### A program whose status is the verdict starts with no shell above it
 

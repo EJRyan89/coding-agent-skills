@@ -24,6 +24,7 @@ import whole_number
 from run_dotnet_format import Completed, Services
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
+READ_ONLY_FILE = "the file is read-only; make it writable to fix it"
 OUTSIDE_THROUGH_LINK = "a symbolic link or junction leads it outside the repository root"
 
 
@@ -404,7 +405,7 @@ class FileTests(unittest.TestCase):
         )
         status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
         self.assertEqual(1, status, "an unreadable file is never clean")
-        self.assertEqual(["FIXED", "UNREADABLE", "UNREADABLE", "SUMMARY"], [fields[0] for fields in lines])
+        self.assertEqual(["UNREADABLE", "UNREADABLE", "FIXED", "SUMMARY"], [fields[0] for fields in lines])
         self.assertEqual(["SUMMARY", "0", "0", "-"], lines[-1])
         self.assertEqual((bad, odd), ((self.root / "Bad.cs").read_bytes(), (self.root / "Odd.cs").read_bytes()))
         self.assertEqual(b"#region R\n\n#endregion\n", (self.root / "Good.cs").read_bytes())
@@ -471,21 +472,74 @@ class FileTests(unittest.TestCase):
         self.assertEqual(original, fixable.read_bytes())
         self.assertEqual(["Fixable.cs", "files.txt"], sorted(path.name for path in self.root.iterdir()))
 
-    def test_a_fix_of_a_read_only_file_fails_and_leaves_it_as_it_was(self) -> None:
-        fixable = self.root / "Fixable.cs"
+    def read_only(self, path: Path) -> None:
+        path.chmod(stat.S_IREAD)
+        self.addCleanup(path.chmod, stat.S_IREAD | stat.S_IWRITE)
+
+    def test_fix_refuses_each_read_only_file_wherever_it_is_listed_and_fixes_the_rest(self) -> None:
+        names = ("A.cs", "B.cs", "C.cs")
+        original, fixed = b"#region A\n\n#endregion A\n", b"#region A\n\n#endregion\n"
+        for read_only in ({"A.cs"}, {"B.cs"}, {"C.cs"}, {"A.cs", "C.cs"}, set(names)):
+            with self.subTest(read_only=sorted(read_only)):
+                for name in names:
+                    path = self.root / name
+                    if path.exists():
+                        path.chmod(stat.S_IREAD | stat.S_IWRITE)
+                    path.write_bytes(original)
+                    if name in read_only:
+                        self.read_only(path)
+                file_list = self.file_list(*names)
+                status, lines = self.main(
+                    "check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix"
+                )
+                self.assertEqual(1, status, "the violations a refused file keeps remain")
+                self.assertEqual(
+                    [
+                        *(["REFUSED", name, READ_ONLY_FILE] for name in names if name in read_only),
+                        *(["FIXED", name, "3", "endregion-description"] for name in names if name not in read_only),
+                        *(["VIOLATION", name, "3", "warning", "endregion-description"] for name in sorted(read_only)),
+                        ["SUMMARY", str(len(read_only)), str(len(read_only)), "endregion-description"],
+                    ],
+                    [line[:5] if line[0] == "VIOLATION" else line for line in lines],
+                )
+                for name in names:
+                    expected = original if name in read_only else fixed
+                    self.assertEqual(expected, (self.root / name).read_bytes(), name)
+                self.assertEqual(["A.cs", "B.cs", "C.cs", "files.txt"], sorted(p.name for p in self.root.iterdir()))
+
+    def test_a_read_only_file_with_nothing_to_fix_is_checked_and_not_refused(self) -> None:
+        clean = self.root / "Clean.cs"
+        clean.write_bytes(b"#region A\n#endregion\n")
+        self.read_only(clean)
+        status, lines = self.main(
+            "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Clean.cs")), "--fix"
+        )
+        self.assertEqual((0, [["SUMMARY", "0", "0", "-"]]), (status, lines))
+
+    def test_a_write_that_fails_after_the_checks_ends_the_fix_with_the_earlier_fixes_written(self) -> None:
+        names = ("A.cs", "B.cs", "C.cs")
         original = b"#region A\n\n#endregion A\n"
-        fixable.write_bytes(original)
-        fixable.chmod(stat.S_IREAD)
-        self.addCleanup(fixable.chmod, stat.S_IREAD | stat.S_IWRITE)
-        file_list = self.file_list("Fixable.cs")
-        status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
+        for name in names:
+            (self.root / name).write_bytes(original)
+        replace = atomic_file.replace_bytes
+        full = OSError(28, "No space left on device")
+
+        def failing_on_b(path: Path, data: bytes, *, mode: int) -> None:
+            if path.name == "B.cs":
+                raise full
+            replace(path, data, mode=mode)
+
+        with mock.patch.object(layout, "replace_bytes", side_effect=failing_on_b):
+            status, lines = self.main(
+                "check", "--repo-root", str(self.root), "--file-list", str(self.file_list(*names)), "--fix"
+            )
         self.assertEqual(
-            (1, [[f"FAILED [Errno 13] the file is read-only; make it writable to replace it: {str(fixable)!r}"]]),
+            (1, [["FIXED", "A.cs", "3", "endregion-description"], ["FAILED [Errno 28] No space left on device"]]),
             (status, lines),
         )
-        self.assertEqual(original, fixable.read_bytes())
-        self.assertFalse(fixable.stat().st_mode & stat.S_IWUSR)
-        self.assertEqual(["Fixable.cs", "files.txt"], sorted(path.name for path in self.root.iterdir()))
+        self.assertEqual(b"#region A\n\n#endregion\n", (self.root / "A.cs").read_bytes())
+        self.assertEqual(original, (self.root / "B.cs").read_bytes())
+        self.assertEqual(original, (self.root / "C.cs").read_bytes())
 
     def test_a_fix_keeps_a_lone_surrogate_a_file_with_a_byte_order_mark_holds(self) -> None:
         # The bytes ED A0 80 encode U+D800, which only surrogatepass reads and writes back.
@@ -1116,6 +1170,26 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([[".editorconfig", LINKED_FILE]], grouped["REFUSED"])
         self.assertNotIn("ADDED", grouped)
         self.assertEqual("# shared\n", editorconfig.read_text(encoding="utf-8"))
+
+    def test_apply_refuses_each_read_only_editorconfig_and_adds_the_rest(self) -> None:
+        folders = ("a", "b", "c")
+        for folder in folders:
+            (self.root / folder).mkdir()
+            (self.root / folder / ".editorconfig").write_text("root = true\n", encoding="utf-8")
+        read_only = self.root / "b" / ".editorconfig"
+        read_only.chmod(stat.S_IREAD)
+        self.addCleanup(read_only.chmod, stat.S_IREAD | stat.S_IWRITE)
+        self.changed(*(f"{folder}/Program.cs" for folder in folders))
+        status, grouped = self.run_config("--apply")
+        self.assertEqual(1, status, "the settings it did not add are still missing")
+        self.assertEqual([["b/.editorconfig", READ_ONLY_FILE]], grouped["REFUSED"])
+        self.assertEqual(
+            [[f"{folder}/.editorconfig", key, value] for folder in ("a", "c") for key, value in layout.SETTINGS],
+            grouped["ADDED"],
+        )
+        self.assertEqual("root = true\n", read_only.read_text(encoding="utf-8"))
+        for folder in ("a", "c"):
+            self.assertIn("[*.cs]", (self.root / folder / ".editorconfig").read_text(encoding="utf-8"))
 
     def test_apply_never_writes_through_a_real_link(self) -> None:
         real = self.root / "real"
