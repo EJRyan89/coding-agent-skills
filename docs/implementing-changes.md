@@ -154,10 +154,12 @@ surviving mutant on a line the pull request changed that alters behavior a calle
 a document or test treats as a contract, add the test that kills it, or name it in the pull request with why it is
 equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere.
 mutmut refuses Windows, so the mutants are made on Linux and run on a Linux leg for every module and on a Windows leg,
-which never runs mutmut, for each module whose behavior differs on Windows: `deployer/platform_support.py`,
-`path_keys`, `link_probe`, and `device_names`, each module that imports one, each that holds a `PLATFORM_ALLOWED`
-table, and each whose own code compares a platform name the platform policy's `PLATFORM_TOKENS` catalogues, such as
-`sys.platform` or `os.name`. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
+which never runs mutmut, for each module whose behavior differs on Windows: `deployer/platform_support.py` and
+the ejryan89-skill-core seam modules `CLAUDE.md` names, each module that imports one, each that holds a
+`PLATFORM_ALLOWED` table, and each whose own code reads the platform in any expression, through a token of any kind
+the platform policy's `PLATFORM_TOKENS` catalogues, such as `sys.platform`, `msvcrt`, or `creationflags`, or a
+separator or the null device, such as `os.altsep`. A suite run that ends with neither a pass nor a test failure judges
+nothing, so its mutant is errored, which leaves the run unfinished like a mutant not run. A mutant either leg killed counts as killed, and the summary's table names the legs that ran each module and
 lists each mutant one leg alone killed, so a mutant only Windows tells apart needs no ruling by hand. Each leg has its
 own cap, and either leg's cut leaves the run unfinished while it leaves a mutant without a verdict. The gate's docstring in `tools/mutation_gate.py` gives the
 details.
@@ -280,7 +282,7 @@ an issue a commit message on the default branch names, so a reference hidden fro
 issue. It reads them from `--pr-title <file>` and `--pr-body <file>` locally and the pull request in continuous
 integration, and passes when neither is given. The pull request that does the work removes the
 entry, which the suite then requires, and closes the issue. A run of its own,
-`python -B tests/run_validation.py --known-failure-issues`, asks GitHub, through gh, whether each issue either list
+`python -B tests/known_failure_issues.py`, which loads none of the policy checks, asks GitHub, through gh, whether each issue either list
 names is an open issue, and fails one that is not, one that is a pull request, or one gh cannot answer about; it asks
 nothing while both are empty. Continuous integration runs it in a job of its own on every run, the one job given the
 run's read-only token, so no suite holds the token; locally it needs gh signed in only while an entry exists.

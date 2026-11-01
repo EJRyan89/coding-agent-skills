@@ -405,7 +405,7 @@ def refresh_origin_head(services: Services, root: str | Path) -> tuple[str | Non
     """
     result = git(services, root, "remote", "set-head", "origin", "--auto")
     if result.returncode != 0:
-        first = next((line for line in (result.stderr or result.stdout).splitlines() if line.strip()), "")
+        first = next((line for line in git_client.output_lines(result.stderr or result.stdout) if line.strip()), "")
         return None, one_line(first).strip() or f"exit status {result.returncode}"
     name = origin_head(services, root)
     if name is None or not origin_has(services, root, name):

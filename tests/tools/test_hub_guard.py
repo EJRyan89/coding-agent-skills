@@ -419,10 +419,12 @@ class EndToEndTests(GuardTestCase):
         with (self.tree / ".git").open("r+", encoding="utf-8") as dot_git:
             dot_git.write(f"gitdir: {self.root / 'gone'}\n")
             dot_git.truncate()
-        for command, expected in (("git status", None), (f'git -C "{self.hub}" commit -m x', "deny")):
+        # git status starts in that checkout, a place whose lookup git answers with an error for, which may be a
+        # guarded hub's, so it is refused as a command naming git.
+        for command in ("git status", f'git -C "{self.hub}" commit -m x'):
             with self.subTest(command=command):
                 event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.tree)}
-                self.assertEqual(expected, self.both(event))
+                self.assertEqual("deny", self.both(event))
                 self.assertIn(f"hub guard could not look up the hub of {self.tree}: git could not read", self.stderr)
 
     def test_an_opt_in_changed_between_events_is_read_afresh_as_by_a_new_process(self) -> None:
@@ -580,10 +582,17 @@ class ReadingBoundTests(GuardTestCase):
                 self.reason,
             )
             self.assertIsNone(self.decision(json.dumps(self.event("echo done", self.hub))))
+            # A reading cut short before the lookups of the places it names, in either reader, with no hub of the
+            # session's own in view, is allowed with a note: no place it names was looked up as a hub's.
             outside = self.root / "not-a-repository"
             outside.mkdir()
-            self.assertIsNone(self.decision(json.dumps(self.event("git status", outside))))
-            self.assertIn("hub guard skipped: ReadingTimeout: the guard did not finish reading it", self.stderr)
+            environment = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+            for tool in ("Bash", "PowerShell"):
+                with self.subTest(tool=tool):
+                    command = f'git -C "{self.hub}" commit -m x'
+                    self.assertIsNone(self.decision(json.dumps(self.event(command, outside, tool)), environment))
+                    self.assertIn("hub guard skipped: ReadingTimeout: the guard did not finish reading it", self.stderr)
+                    self.assertEqual("deny", self.decision(json.dumps(self.event(command, self.hub, tool))))
 
     def event(self, command: str, cwd: Path, tool: str = "Bash") -> dict[str, object]:
         return {"tool_name": tool, "tool_input": {"command": command}, "cwd": str(cwd)}
@@ -786,6 +795,159 @@ class ReadingBoundTests(GuardTestCase):
         with mock.patch.object(hub_guard, "READING_SECONDS", 0):
             reading = hub_guard.start_reading("git status", self.tree, self.environment)
         self.assertEqual({self.hub}, {Path(os.path.realpath(hub)) for hub in reading.context_hubs})
+
+
+class PlaceLookupTests(GuardTestCase):
+    """A place the command names whose hub lookup git answers with an error for, or does not finish within the reading
+    time, may be a guarded hub's: it is never read as a place outside every repository, the hubs the other places
+    reach stay in view, and a command naming git is refused. A start inside a git directory is looked up as the
+    repository git acts on there."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.outside = self.root / "outside"
+        self.outside.mkdir()
+        self.unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+
+    def erroring_place(self) -> Path:
+        """A directory below a checkout, whose `.git` file points nowhere, which git answers with an error for."""
+        place = self.root / "broken checkout"
+        place.mkdir()
+        (place / ".git").write_text(f"gitdir: {self.root / 'gone'}\n", encoding="utf-8")
+        return place
+
+    def miscounted_place(self) -> Path:
+        """A directory whose lookup git answers successfully with lines other than the two asked for."""
+        place = self.root / "miscounted"
+        place.mkdir()
+        return place
+
+    def test_a_place_git_answers_with_an_error_for_refuses_a_command_naming_git_and_keeps_the_hubs_found(
+        self,
+    ) -> None:
+        hub_call = f'git -C "{self.hub.as_posix()}" commit -m x'
+        find = worktrees.git
+        miscounted = self.miscounted_place()
+
+        def git(cwd: Path, *arguments: str, timeout: float | None = None) -> git_client.GitResult:
+            if same(cwd, miscounted) and "--show-toplevel" in arguments:
+                return git_client.GitResult(0, "/a\nb\n/c\n", "")
+            return find(cwd, *arguments, timeout=timeout)
+
+        for label, place in (("error", self.erroring_place()), ("line count", miscounted)):
+            other = f'git -C "{place.as_posix()}" status'
+            for order, command in (("hub first", f"{hub_call}; {other}"), ("hub last", f"{other}; {hub_call}")):
+                with self.subTest(label, order=order), mock.patch.object(worktrees, "git", side_effect=git):
+                    self.assertEqual("deny", self.bash(command, self.outside, self.unshared))
+                    self.assertIn("GitError", self.reason)
+                    self.assertNotIn("hub guard skipped", self.stderr)
+            with self.subTest(label, order="alone"), mock.patch.object(worktrees, "git", side_effect=git):
+                self.assertEqual("deny", self.bash(other, self.outside, self.unshared))
+            # Every place is looked up, before the failing one and after it, before the error is raised.
+            for order, command in (("found first", f"{hub_call}; {other}"), ("found last", f"{other}; {hub_call}")):
+                reading = hub_guard.read_command("Bash", command, self.outside, self.unshared)
+                found: set[Path] = set()
+                with self.subTest(label, order=order):
+                    with (
+                        mock.patch.dict(os.environ, self.unshared, clear=True),
+                        mock.patch.object(worktrees, "git", side_effect=git),
+                        self.assertRaises(git_client.GitError),
+                    ):
+                        hub_guard.reached_hubs(reading, found)
+                    self.assertEqual({self.hub}, {Path(os.path.realpath(hub)) for hub in found})
+        self.assertIsNone(self.bash(f'git -C "{self.tree.as_posix()}" status', self.outside, self.unshared))
+
+    def test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git(self) -> None:
+        # The reading starts at 0 and its deadline is READING_SECONDS later; every later look at the clock leaves half
+        # a millisecond, so the lookup's own git call is the one that runs out of time, not a look between calls.
+        looks = iter([0.0])
+        timeouts: list[float] = []
+        find = worktrees.git
+
+        def git(cwd: Path, *arguments: str, timeout: float | None = None) -> git_client.GitResult:
+            timeouts.append(timeout or 0.0)
+            return find(cwd, *arguments, timeout=timeout)
+
+        with (
+            mock.patch.object(
+                hub_guard, "reading_clock", side_effect=lambda: next(looks, hub_guard.READING_SECONDS - 0.0005)
+            ),
+            mock.patch.object(worktrees, "git", side_effect=git),
+        ):
+            self.assertEqual("deny", self.bash(f'git -C "{self.hub}" commit -m x', self.outside, self.unshared))
+        self.assertIn("GitError", self.reason)
+        self.assertIn("did not finish", self.reason)
+        self.assertIn(0.0005, [round(timeout, 4) for timeout in timeouts])
+
+    def test_a_start_inside_a_hub_s_git_directory_is_the_hub_s(self) -> None:
+        git_directory = (self.hub / ".git").as_posix()
+        commands = (
+            f'git -C "{git_directory}" symbolic-ref HEAD refs/heads/x',
+            f'git -C "{git_directory}" update-ref refs/heads/main HEAD~1',
+            f'git -C "{git_directory}/refs" symbolic-ref HEAD refs/heads/x',
+            f'cd "{git_directory}" && git symbolic-ref HEAD refs/heads/x',
+        )
+        for cwd in (self.hub, self.tree, self.outside):
+            for command in commands:
+                with self.subTest(cwd=cwd.name, command=command):
+                    self.assertEqual("deny", self.bash(command, cwd, self.unshared))
+        # The session's own directory inside the hub's git directory brings the hub into view.
+        self.assertEqual("deny", self.bash("git symbolic-ref HEAD refs/heads/x", self.hub / ".git", self.unshared))
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            self.assertEqual({self.hub}, hub_guard.hubs_in_view(self.hub / ".git" / "refs", self.unshared))
+        # Another repository's git directory, and a worktree's own, are no guarded hub's.
+        other = (self.other_repository() / ".git").as_posix()
+        self.assertIsNone(self.bash(f'git -C "{other}" symbolic-ref HEAD refs/heads/x', self.outside, self.unshared))
+        tree_git_directory = self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-dir").strip()
+        command = f'git -C "{tree_git_directory}" symbolic-ref HEAD refs/heads/x'
+        self.assertIsNone(self.bash(command, self.outside, self.unshared))
+
+    def test_the_git_directory_holding_a_path_is_found_only_inside_one(self) -> None:
+        with mock.patch.dict(os.environ, self.environment, clear=True):
+            for path in (self.hub / ".git", self.hub / ".git" / "refs" / "heads", self.hub / ".git" / "missing"):
+                with self.subTest(path=path):
+                    found = hub_guard.git_directory_holding(path)
+                    self.assertTrue(found is not None and same(found, self.hub / ".git"))
+            for path in (self.hub, self.tree / "README.md", self.outside, self.root / "missing" / "deeper"):
+                with self.subTest(path=path):
+                    self.assertIsNone(hub_guard.git_directory_holding(path))
+            answers = (("true\n", 1), ("true\n/a\n/b\n", 3))
+            for answer, count in answers:
+                with (
+                    self.subTest(answer=answer),
+                    mock.patch.object(worktrees.CLIENT, "output", return_value=answer),
+                    self.assertRaisesRegex(
+                        git_client.GitError, f"answered {count} lines for the git directory holding"
+                    ),
+                ):
+                    hub_guard.git_directory_holding(self.hub / ".git")
+            failure = git_client.GitError("git could not read it", returncode=128)
+            with (
+                mock.patch.object(worktrees.CLIENT, "output", side_effect=failure),
+                self.assertRaises(git_client.GitError),
+            ):
+                hub_guard.git_directory_holding(self.hub / ".git")
+            # Its git call is given what is left of the reading time, as every lookup's is.
+            with (
+                mock.patch.object(hub_guard, "reading_clock", return_value=100.0),
+                hub_guard.lookups_within(103.0),
+                mock.patch.object(worktrees.CLIENT, "output", wraps=worktrees.CLIENT.output) as output,
+            ):
+                hub_guard.git_directory_holding(self.hub / ".git")
+            self.assertEqual([3.0], [call.kwargs["timeout"] for call in output.call_args_list])
+
+    def test_a_hub_a_named_place_reaches_is_in_view_for_a_place_the_text_does_not_settle(self) -> None:
+        # The session starts outside every repository, so only the named place brings the hub into view, and the
+        # unsettled place is refused only while one is.
+        unsettled = 'cd "$NOT_SET_HERE" && git commit -m x'
+        self.assertIsNone(self.bash(unsettled, self.outside, self.unshared))
+        command = f'git -C "{self.hub.as_posix()}" status; {unsettled}'
+        self.assertEqual("deny", self.bash(command, self.outside, self.unshared))
+        self.assertIn("The guard could not tell where `git commit` runs", self.reason)
+
+
+def same(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
 
 
 class NestedAliasTests(GuardTestCase):

@@ -1,7 +1,7 @@
 """The token variables no suite is given.
 
-Validation reads GitHub once, in `tests/run_validation.py --known-failure-issues`, which runs nothing else, so CI gives
-the run's token to that run alone. Each process the pool starts, through `job_pool.run_process`, and each suite pytest
+Validation reads GitHub once, in `tests/known_failure_issues.py`, which runs nothing else, so CI gives the run's token
+to that run alone. Each process the pool starts, through `job_pool.run_process`, and each suite pytest
 starts directly, through the root conftest.py, runs without these variables as well, so a token in a contributor's
 shell or a workflow step reaches no suite either.
 """
