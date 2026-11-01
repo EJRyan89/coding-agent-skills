@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import dataclasses
 import fnmatch
 import functools
 import json
@@ -29,7 +30,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -194,6 +195,13 @@ PREFIX_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
 BASH_LONG_OPTIONS_WITH_VALUE = {"--rcfile", "--init-file"}
 # The variable whose elements are Bash's aliases, by name: assigning one defines an alias, as `alias` does.
 BASH_ALIASES = "BASH_ALIASES"
+# The variable whose elements are the programs Bash runs for command names, by name: assigning one, or hash -p,
+# makes a later word by that name run the program it names.
+BASH_CMDS = "BASH_CMDS"
+# What a name each table defines is to a later word, by the table.
+NAME_TABLES = {BASH_ALIASES: "an alias", BASH_CMDS: "a command name"}
+# The function Bash runs, with the command's words, for a command it finds no program for.
+NOT_FOUND_HANDLER = "command_not_found_handle"
 # The environment variable by which Bash hands a function exported with export -f to a shell it starts, holding the
 # function's body after its name, and the start of the value Bash imports a function from.
 EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
@@ -1044,8 +1052,11 @@ class Shell:
     typeset -n made, by its name: the variable it stands for, "" while it stands for none, so that its first
     assignment names one, or None when the text does not settle which. functions holds each name a path the
     shell may have taken defines a function by, with every body it may have, and None where it may have none.
-    exported_functions holds the functions export -f exported, which a shell it starts defines. reading, when set,
-    is told of each name that reaches BASH_ALIASES, whose elements are aliases.
+    exported_functions holds the functions export -f exported, or that were defined under allexport, which a shell
+    it starts defines. environment_functions holds those its environment handed it, which on a platform whose
+    environment names fold case a later word may call in any case, since the guard may have read their names folded.
+    reading, when set, is told of each name that reaches BASH_ALIASES, whose elements are aliases, or BASH_CMDS, whose
+    elements are command names.
     """
 
     cwd: Path | None
@@ -1057,6 +1068,7 @@ class Shell:
     functions: dict[str, tuple[bash_syntax.Command | None, ...]] = field(default_factory=dict)
     references: dict[str, str | None] = field(default_factory=dict)
     exported_functions: set[str] = field(default_factory=set)
+    environment_functions: set[str] = field(default_factory=set)
     reading: Reading | None = None
 
     def copy(self) -> Shell:
@@ -1075,8 +1087,9 @@ class Shell:
         reference in the chain stands for no variable, for an element, or for one the text does not settle, or when
         the chain is deeper than Bash follows, eight references.
 
-        A name that reaches BASH_ALIASES, by any spelling of an assignment, a declaration, or a builtin that sets a
-        variable, may define an alias, which the reading is told of."""
+        A name that reaches BASH_ALIASES or BASH_CMDS, by any spelling of an assignment, a declaration, a builtin
+        that sets a variable, or an expansion that assigns, may define an alias or a command name, which the reading
+        is told of."""
         for _ in range(8):
             self.note_alias(name)
             if name not in self.references:
@@ -1090,9 +1103,22 @@ class Shell:
         return None if name in self.references else name
 
     def note_alias(self, name: str) -> None:
-        """Tells the reading of a name of BASH_ALIASES or one of its elements, which may define an alias."""
-        if name.partition("[")[0] == BASH_ALIASES and self.reading is not None:
-            self.reading.cannot_read(f"an alias the command defines ({BASH_ALIASES})")
+        """Tells the reading of a name of BASH_ALIASES or BASH_CMDS or one of their elements, which may define an
+        alias or a command name."""
+        table = name.partition("[")[0]
+        if table in NAME_TABLES and self.reading is not None:
+            self.reading.cannot_read(f"{NAME_TABLES[table]} the command defines ({table})")
+
+    def function_named(self, name: str) -> str | None:
+        """The function a command by this name calls: one the shell defines by it, or, where environment names fold
+        case, one its environment handed it whose name matches in any case; None for none."""
+        if name in self.functions:
+            return name
+        if platform_support.ENVIRONMENT_NAMES_FOLD_CASE:
+            folded_name = name.upper()
+            named = (each for each in sorted(self.environment_functions) if each in self.functions)
+            return next((each for each in named if each.upper() == folded_name), None)
+        return None
 
     def lookup(self, name: str) -> Word:
         """A variable's value as the shell expands it, through any name reference; None when the text does not settle
@@ -1163,6 +1189,7 @@ def join(first: Shell, second: Shell) -> Shell:
         joined_functions(first.functions, second.functions, None),
         references,
         first.exported_functions | second.exported_functions,
+        first.environment_functions | second.environment_functions,
         first.reading,
     )
 
@@ -1287,10 +1314,16 @@ class BashReader:
             return self.run_simple(node, shell)
         if isinstance(node, bash_syntax.FunctionDefinition):
             shell.functions[node.name] = (node.body,)
+            if shell.allexport:
+                # Under allexport a function is exported as it is defined, as a variable is as it is assigned.
+                shell.exported_functions.add(node.name)
             return certain(shell)
         self.read_substitutions([], node.redirects, shell)
         if isinstance(node, bash_syntax.Subshell):
             self.run_list(node.body, shell.copy())
+            # The reader reads an arithmetic command, (( )), as a subshell, though it runs in this shell, so an
+            # expansion in it that assigns leaves its variable unsettled here too.
+            assign_expanded(shell, subtree_assigns(node.body))
             return certain(shell)
         if isinstance(node, bash_syntax.Group):
             return self.run_list(node.body, shell)
@@ -1317,6 +1350,7 @@ class BashReader:
         end, reach every state the guard tells apart."""
         if node.words is not None:
             self.read_substitutions(node.words, [], shell)
+        self.read_substitutions(node.header, [], shell)
         if self.reading.loops >= LOOP_NESTING_LIMIT:
             self.reading.cannot_read(f"loops nest more than {LOOP_NESTING_LIMIT} deep")
             lost = shell.copy()
@@ -1349,15 +1383,20 @@ class BashReader:
     def read_substitutions(
         self, words: list[bash_syntax.Word], redirects: list[bash_syntax.Redirect], shell: Shell
     ) -> None:
-        """Each command and process substitution runs, in a subshell, before the command it is part of."""
+        """Each command and process substitution runs, in a subshell, before the command it is part of, and each
+        expansion that assigns, ${NAME:=word} or ${NAME=word}, assigns in this shell."""
         texts = [text for word in words for text in word.substitutions]
+        assigns = [name for word in words for name in word.assigns]
         for redirect in redirects:
             if redirect.target is not None:
                 texts.extend(redirect.target.substitutions)
+                assigns.extend(redirect.target.assigns)
             if redirect.here is not None:
                 texts.extend(redirect.here.substitutions)
+                assigns.extend(redirect.here.assigns)
         for text in texts:
             self.run_text(text, shell.copy())
+        assign_expanded(shell, assigns)
 
     def run_simple(self, node: bash_syntax.Simple, shell: Shell) -> Outcome:
         self.read_substitutions(node.words, node.redirects, shell)
@@ -1396,14 +1435,19 @@ class BashReader:
     ) -> Outcome:
         name, arguments = values[0], values[1:]
         if name is None:
-            return certain(shell)
-        if name in shell.functions:
+            if not arguments:
+                return certain(shell)
+            # A word the text does not settle may expand to nothing, and the next word is then the command's name.
+            vanished = self.run_words(arguments, redirects, shell.copy(), local).merged()
+            return certain(join(shell, vanished))
+        function = shell.function_named(name)
+        if function is not None:
             # A name the paths before the call define differently runs each body, or no function, on its own path.
-            bodies = shell.functions[name]
+            bodies = shell.functions[function]
             outcomes = [
                 self.run_unless_function(name, arguments, redirects, path, local)
                 if body is None
-                else self.call_function(name, body, path)
+                else self.call_function(function, body, path)
                 for body, path in zip(bodies, paths(shell, len(bodies)), strict=True)
             ]
             return Outcome(
@@ -1423,7 +1467,14 @@ class BashReader:
         builtin = BASH_BUILTINS.get(name)
         if builtin is not None:
             return builtin(self.with_builtin(name), arguments, redirects, shell, local)
-        self.run_program(command_name(name), arguments, redirects, shell, shell.program_variables(local))
+        program = command_name(name)
+        if NOT_FOUND_HANDLER in shell.functions and program not in GIT_NAMES:
+            # Bash runs the handler, in an environment of its own, for a program it does not find, which the text
+            # does not settle, so each body it may have is read as a path that may run.
+            for body in shell.functions[NOT_FOUND_HANDLER]:
+                if body is not None:
+                    self.call_function(NOT_FOUND_HANDLER, body, shell.copy())
+        self.run_program(program, arguments, redirects, shell, shell.program_variables(local))
         return certain(shell)
 
     def call_function(self, name: str, body: bash_syntax.Command, shell: Shell) -> Outcome:
@@ -1455,11 +1506,16 @@ class BashReader:
             read_git(arguments, shell.cwd, variables, self.reading, shell.opaque)
         elif program in BASH_NAMES:
             script = bash_script(arguments, redirects, shell)
-            exported = {name: shell.functions[name] for name in shell.exported_functions if name in shell.functions}
-            read = functools.partial(read_bash, functions=exported)
+            read = functools.partial(
+                read_bash, functions=exported_functions(shell), allexport=bash_allexport(arguments)
+            )
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read)
         elif program in POWERSHELL_NAMES:
-            follow_powershell(program, arguments, shell.cwd, variables, self.reading, self.depth)
+            # A bash the pwsh starts defines the functions this shell exported, which pwsh hands on in its
+            # environment.
+            follow_powershell(
+                program, arguments, shell.cwd, variables, self.reading, self.depth, exported_functions(shell)
+            )
         elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
             command = started_command(program, arguments, shell.cwd, variables, self.reading)
             if command is not None:
@@ -1467,6 +1523,37 @@ class BashReader:
                 started = shell.copy()
                 started.cwd = cwd
                 self.run_program(name, rest, redirects, started, given)
+
+
+def exported_functions(shell: Shell) -> dict[str, tuple[bash_syntax.Command | None, ...]]:
+    """The functions a shell this one starts defines: those it exported."""
+    return {name: shell.functions[name] for name in shell.exported_functions if name in shell.functions}
+
+
+def subtree_assigns(node: object) -> list[str]:
+    """The variables every expansion that assigns in a command tree names, as a word's assigns holds them."""
+    if isinstance(node, (bash_syntax.Word, bash_syntax.HereDocument)):
+        return list(node.assigns)
+    if isinstance(node, (list, tuple)):
+        return [name for item in node for name in subtree_assigns(item)]
+    if dataclasses.is_dataclass(node) and not isinstance(node, type):
+        return [name for item in dataclasses.fields(node) for name in subtree_assigns(getattr(node, item.name))]
+    return []
+
+
+def assign_expanded(shell: Shell, names: Iterable[str]) -> None:
+    """What each ${NAME:=word} or ${NAME=word} leaves: the variable unsettled, unless the shell holds a value for it
+    that is not empty, which neither form changes. ${!NAME:=word} assigns the variable NAME's value names, which may
+    be any variable when the text does not settle that value."""
+    for name in names:
+        if name.startswith("!"):
+            named = shell.lookup(name[1:])
+            if named is None:
+                shell.opaque = True
+            else:
+                assign_unsettled(shell, [named])
+        elif "[" in name or not shell.lookup(name):
+            assign_unsettled(shell, [name])
 
 
 def started_command(
@@ -1634,7 +1721,10 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
     through any name reference, and the name references declare, typeset, and local make with -n and undo with
     +n."""
     builtin = reader.current_builtin
-    if any(is_declare_option(word) and "f" in word[1:] for word in arguments if word is not None):
+    if None in arguments:
+        # A word the text does not settle may be -fx, which exports any function.
+        shell.exported_functions |= set(shell.functions)
+    if any(is_declare_option(word) and names_functions(builtin, word) for word in arguments if word is not None):
         return certain(declare_functions(builtin, arguments, shell))
     exporting, unexporting = builtin == "export", False
     referencing: bool | None = None
@@ -1667,6 +1757,13 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
 
 def is_declare_option(word: str) -> bool:
     return word.startswith(("-", "+")) and not ASSIGNMENT.match(word)
+
+
+def names_functions(builtin: str, option: str) -> bool:
+    """Whether a declaration's option makes its names functions: -f, or for declare, typeset, and local also -F,
+    which export and readonly refuse."""
+    flags = option[1:]
+    return "f" in flags or (builtin in {"declare", "typeset", "local"} and "F" in flags)
 
 
 def declare_functions(builtin: str, arguments: list[Word], shell: Shell) -> Shell:
@@ -1846,15 +1943,61 @@ def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shel
 def bash_set(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
     """set -a, set -o allexport, and their + forms, which export every variable assigned while they hold; each o in a
     bundle, as in `set -eo allexport`, takes the next word as the option it sets."""
+    allexport = options_allexport(arguments)
+    if allexport == "unsettled":
+        reader.reading.cannot_read("could not read the options passed to set")
+    elif allexport is not None:
+        shell.allexport = allexport == "on"
+    return certain(shell)
+
+
+def options_allexport(arguments: list[Word]) -> Literal["on", "off", "unsettled"] | None:
+    """What the options of set, or of a bash it starts, do to allexport, as -a, -o allexport, or a bundle holding
+    either, the last winning: on, off, or None when they leave it as it was; unsettled when a word the text does not
+    settle stands among them, which may be any option."""
+    found: Literal["on", "off"] | None = None
     index = 0
     while index < len(arguments):
         word = arguments[index]
-        if word is None or word == "--" or len(word) < 2 or word[0] not in "-+" or not word[1:].isalpha():
+        if word is None:
+            return "unsettled"
+        if word == "--" or len(word) < 2 or word[0] not in "-+" or not word[1:].isalpha():
             break
         values = bash_option_values(word)
-        if "a" in word[1:] or "allexport" in arguments[index + 1 : index + 1 + values]:
-            shell.allexport = word[0] == "-"
+        named = arguments[index + 1 : index + 1 + values]
+        if None in named:
+            return "unsettled"
+        if "a" in word[1:] or "allexport" in named:
+            found = "on" if word[0] == "-" else "off"
         index += 1 + values
+    return found
+
+
+def bash_allexport(arguments: list[Word]) -> bool:
+    """Whether a bash starts with allexport on, by its own options before its script: -a or -o allexport. An option
+    word the text does not settle makes the script one the text does not hold (bash_script)."""
+    return options_allexport(arguments) == "on"
+
+
+def bash_shopt(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """shopt -o sets set's options by name, as `shopt -so allexport` does; a word the text does not settle may be
+    any option."""
+    read = builtin_operands(arguments, "")
+    if read is None:
+        reader.reading.cannot_read("could not read the options passed to shopt")
+        return certain(shell)
+    flags, operands = {flag for flag, _ in read[0]}, read[1]
+    if "o" in flags and "allexport" in operands and flags & {"s", "u"}:
+        shell.allexport = "s" in flags
+    return certain(shell)
+
+
+def bash_hash(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
+    """hash -p puts a name in BASH_CMDS, so a later word by that name runs the program it gives; a word the text
+    does not settle may be -p."""
+    read = builtin_operands(arguments, "p")
+    if read is None or any(flag == "p" for flag, _ in read[0]):
+        reader.reading.cannot_read(f"{NAME_TABLES[BASH_CMDS]} the command defines (hash -p)")
     return certain(shell)
 
 
@@ -1906,9 +2049,12 @@ def bash_exec(
     rest = arguments[index:]
     if not rest:
         return certain(shell)
+    if rest[0] is None:
+        # A word the text does not settle, among the options or as the name, may expand to nothing.
+        return reader.run_words(rest, redirects, shell, local)
     if reader.current_builtin == "builtin" and rest[0] not in BASH_BUILTINS:
         return certain(shell)
-    if rest[0] is not None and rest[0] in BASH_BUILTINS:
+    if rest[0] in BASH_BUILTINS:
         return BASH_BUILTINS[rest[0]](reader.with_builtin(rest[0]), rest[1:], redirects, shell, local)
     reader.run_program(command_name(rest[0]), rest[1:], redirects, shell, shell.program_variables(local))
     return certain(shell)
@@ -1929,6 +2075,8 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
     "wait": bash_wait,
     "eval": bash_eval,
     "alias": bash_alias,
+    "hash": bash_hash,
+    "shopt": bash_shopt,
     "source": bash_source,
     ".": bash_source,
     **dict.fromkeys(("exec", "command", "builtin"), bash_exec),
@@ -1938,12 +2086,15 @@ BASH_BUILTINS: dict[str, BuiltinReader] = {
 def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], shell: Shell) -> list[Word] | None:
     """The one word bash runs from -c, alone or in a bundle such as -lc: its first operand, after every option and a
     `--`, as in `bash -c -e '<script>'`; or, with no script file or with -s, the here-string or here-document it reads;
-    [None], a script the text does not hold, for one it reads from a pipe or the standard input the command inherits;
-    None for a script file, which the guard does not read."""
+    [None], a script the text does not hold, for one it reads from a pipe or the standard input the command inherits,
+    and where a word the text does not settle stands among its options, as -c"$x" or $x -c, which may be -c; None
+    for a script file, which the guard does not read."""
     index = 0
     from_input = command_mode = False
     while index < len(arguments):
         word = arguments[index]
+        if word is None and not command_mode:
+            return [None]
         if word is None or not word.startswith(("-", "+")) or word == "--":
             index += word == "--"
             break
@@ -2155,12 +2306,20 @@ def follow(
 
 
 def follow_powershell(
-    program: str, arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading, depth: int
+    program: str,
+    arguments: list[Word],
+    cwd: Path | None,
+    variables: Variables,
+    reading: Reading,
+    depth: int,
+    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
 ) -> None:
-    """Reads the script a pwsh or Windows PowerShell started in cwd runs, where -WorkingDirectory starts it."""
+    """Reads the script a pwsh or Windows PowerShell started in cwd runs, where -WorkingDirectory starts it, with the
+    Bash functions its environment hands a bash it starts."""
     arguments = powershell_arguments(program, arguments)
     script: list[Word] | None = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
-    follow(program, script, powershell_directory(arguments, cwd), variables, reading, depth, read_powershell)
+    read = functools.partial(read_powershell, functions=functions)
+    follow(program, script, powershell_directory(arguments, cwd), variables, reading, depth, read)
 
 
 def read_bash(
@@ -2170,10 +2329,12 @@ def read_bash(
     depth: int,
     variables: Variables,
     functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
+    allexport: bool = False,
 ) -> None:
     """Reads a Bash command, started with these variables exported, as Bash runs it, with the functions the shell
-    that starts it exported, and those its environment hands it as BASH_FUNC_<name>%% variables, defined."""
-    allexport = "allexport" in reading.environment.get("SHELLOPTS", "").split(":")
+    that starts it exported, and those its environment hands it as BASH_FUNC_<name>%% variables, defined; with
+    allexport on when its own options turn it on, or its environment's SHELLOPTS does."""
+    allexport = allexport or "allexport" in reading.environment.get("SHELLOPTS", "").split(":")
     # A shell inherits the environment the hook was given; the tracked variables are those its starter passes on.
     untracked = {name: value for name, value in reading.environment.items() if not is_tracked(name)}
     inherited: dict[str, Word] = {**untracked, **variables}
@@ -2181,10 +2342,14 @@ def read_bash(
     shell.functions.update(functions or {})
     reader = BashReader(reading, depth)
     for name, value in inherited.items():
-        # A variable reaches here only with a value: env reads a word the text does not settle as its program.
+        # From Bash a variable reaches here only with a value, since env reads a word the text does not settle as its
+        # program; a PowerShell cmdlet that writes the environment provider leaves one unsettled.
         function = EXPORTED_FUNCTION.match(name)
-        if function is not None and value is not None and value.startswith(EXPORTED_FUNCTION_VALUE):
+        if function is not None and value is None:
+            reading.cannot_read(f"a function its environment hands bash ({name}), whose body the text does not settle")
+        elif function is not None and value is not None and value.startswith(EXPORTED_FUNCTION_VALUE):
             shell = reader.run_text(f"{function.group(1)} {value}", shell).merged()
+            shell.environment_functions.add(function.group(1))
     shell.exported_functions = set(shell.functions)
     reader.run_text(command, shell)
 
@@ -2436,9 +2601,16 @@ def function_name(name: str) -> str:
 
 
 class PowerShellReader:
-    def __init__(self, reading: Reading, depth: int) -> None:
+    def __init__(
+        self,
+        reading: Reading,
+        depth: int,
+        bash_functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
+    ) -> None:
         self.reading = reading
         self.depth = depth
+        # The Bash functions the bash that started this pwsh exported, which its environment hands each bash it starts.
+        self.bash_functions = dict(bash_functions or {})
 
     def run(self, nodes: list[Region | dict[str, Any]], session: Session) -> Session:
         for node in nodes:
@@ -2570,7 +2742,9 @@ class PowerShellReader:
             # -Command, which the reader does not see, so that script is followed here.
             started = powershell_arguments(name, arguments)
             if started is not arguments:
-                follow_powershell(name, arguments, session.cwd, session.variables, self.reading, self.depth)
+                follow_powershell(
+                    name, arguments, session.cwd, session.variables, self.reading, self.depth, self.bash_functions
+                )
             elif powershell_reads_input(arguments):
                 self.reading.cannot_read(f"could not read the command passed to {name}")
         else:
@@ -2586,9 +2760,10 @@ class PowerShellReader:
             read_git(arguments, cwd, variables, self.reading, opaque)
         elif name in BASH_NAMES:
             script = bash_script(arguments, [], Shell(None, {}, set()))
-            follow(name, script, cwd, variables, self.reading, self.depth, read_bash)
+            read = functools.partial(read_bash, functions=self.bash_functions, allexport=bash_allexport(arguments))
+            follow(name, script, cwd, variables, self.reading, self.depth, read)
         elif name in POWERSHELL_NAMES:
-            follow_powershell(name, arguments, cwd, variables, self.reading, self.depth)
+            follow_powershell(name, arguments, cwd, variables, self.reading, self.depth, self.bash_functions)
         elif name in ENV_NAMES or name in PREFIX_PROGRAMS:
             command = started_command(name, arguments, cwd, variables, self.reading)
             if command is not None:
@@ -2599,7 +2774,7 @@ class PowerShellReader:
             self.reading.cannot_read(f"the function {name} nests more than {NESTING_LIMIT} deep")
             session.cwd, session.opaque = None, True
             return session
-        return PowerShellReader(self.reading, self.depth + 1).run(body, session)
+        return PowerShellReader(self.reading, self.depth + 1, self.bash_functions).run(body, session)
 
     def location(
         self, name: str, arguments: list[Word], parameters: Mapping[str, list[Word]], session: Session
@@ -2707,13 +2882,23 @@ def location_after(cwd: Path | None, named: bool, target: Word) -> Path | None:
     return home_path(target) or moved(cwd, target)
 
 
-def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int, variables: Variables) -> None:
-    """Reads a PowerShell command with PowerShell's own parser, started only for text it could refuse.
+def read_powershell(
+    command: str,
+    cwd: Path | None,
+    reading: Reading,
+    depth: int,
+    variables: Variables,
+    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
+) -> None:
+    """Reads a PowerShell command with PowerShell's own parser, started only for text it could refuse, with the Bash
+    functions the bash that starts it exported, which a bash it starts defines.
 
-    Starting pwsh costs far more than the guard's git calls, so text may_refuse passes never pays for it. A location
-    belongs to the session, not to a script block's scope, so only a child pwsh restores one.
+    Starting pwsh costs far more than the guard's git calls, so text may_refuse passes never pays for it, unless a
+    Bash function reaches the session, whose body a bash the text starts may run. A location belongs to the session,
+    not to a script block's scope, so only a child pwsh restores one.
     """
-    if not may_refuse(command, cwd, reading):
+    handed = bool(functions) or any(EXPORTED_FUNCTION.match(name) for name in variables)
+    if not handed and not may_refuse(command, cwd, reading):
         return
     events = powershell_events(command, reading, depth)
     if events is None:
@@ -2722,7 +2907,7 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
     inherited = {name: value for name, value in {**reading.environment, **variables}.items() if not is_tracked(name)}
     environment = {folded(name): value for name, value in inherited.items()}
     session = Session(cwd, {**environment, **git_variables(variables, reading.notes)})
-    PowerShellReader(reading, depth).run(event_tree(events), session)
+    PowerShellReader(reading, depth, functions).run(event_tree(events), session)
 
 
 ShellReader = Callable[[str, "Path | None", Reading, int, Variables], None]
