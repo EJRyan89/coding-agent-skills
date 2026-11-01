@@ -259,7 +259,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::FunctionCallDifferentialTests`,
   `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`,
   `tests/tools/test_hub_guard_shells.py::PowerShellDefinitionDifferentialTests`,
-  `tests/tools/test_hub_guard.py::ContractTests::test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle`
+  `tests/tools/test_hub_guard.py::ContractTests::test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle`,
+  `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later
   word runs, an alias, a function, or one handed to a child in its environment, against the ways the guard reads;
@@ -270,8 +271,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   member names where the receiver's type, read through parentheses and casts, settles what a member can run, and a
   `$Node.Member -isnot [StringConstantExpressionAst]` that passes over a member it cannot name rather than refusing
   it; a parameter read from a command's arguments alone, where a cmdlet after the first in its pipeline takes it
-  from there.
-- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2139, #2140
+  from there; a join of two paths' state that keeps one path's value, as `{**first.<field>, **second.<field>}` does,
+  where the paths differ.
+- **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2138, #2139, #2140
 
 ### A recursive parser of input has a depth bound
 

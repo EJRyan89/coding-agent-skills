@@ -295,6 +295,43 @@ class FunctionCallDifferentialTests(unittest.TestCase):
                 if ran:
                     self.assertEqual(["status"], [call.subcommand for call in reading.calls])
 
+    def test_the_guard_reads_every_body_the_branches_give_a_function_that_runs(self) -> None:
+        # Each command, with ONE and TWO standing for two bodies and Y for a condition that holds or does not.
+        bash_forms = (
+            'if test -n "Y"; then f() { ONE; }; else f() { TWO; }; fi; f',
+            'if test -n "Y"; then f() { ONE; }; else f() { TWO; }; fi; export -f f; bash -c f',
+            'f() { ONE; }; if test -n "Y"; then f() { TWO; }; fi; f',
+            'if test -n "Y"; then f() { ONE; }; elif true; then f() { TWO; }; fi; f',
+            'case "Y" in y) f() { ONE; } ;; *) f() { TWO; } ;; esac; f',
+            'f() { ONE; }; test -n "Y" && f() { TWO; }; f',
+        )
+        powershell_forms = (
+            "if ('Y') { function f { ONE } } else { function f { TWO } }; f",
+            "function f { ONE }; if ('Y') { function f { TWO } }; f",
+            "function f { ONE }; foreach ($i in @('Y') -ne '') { function f { TWO } }; f",
+        )
+        bash = platform_support.find_bash()
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if bash is None or pwsh is None:
+            raise AssertionError("Bash and pwsh check the guard's reading of a function the branches define")
+        for tool, forms in (("Bash", bash_forms), ("PowerShell", powershell_forms)):
+            for form in forms:
+                ran = set()
+                for condition in ("y", ""):
+                    script = form.replace("Y", condition).replace("ONE", "echo ONE-RAN").replace("TWO", "echo TWO-RAN")
+                    shell = [bash, "--norc", "--noprofile", "-c"] if tool == "Bash" else [pwsh, "-NoProfile", "-c"]
+                    result = run_bounded([*shell, script], 120, env=os.environ)
+                    output = result.stdout.decode("utf-8", "replace")
+                    ran |= {body for body in ("ONE", "TWO") if f"{body}-RAN" in output}
+                text = form.replace("Y", "$y").replace("ONE", "git status").replace("TWO", "git log")
+                reading = hub_guard.Reading(dict(os.environ), text)
+                read = hub_guard.read_bash if tool == "Bash" else hub_guard.read_powershell
+                read(text, None, reading, 0, {})
+                read_calls = {call.subcommand for call in reading.calls}
+                with self.subTest(tool=tool, form=form, ran=ran):
+                    self.assertEqual({"ONE", "TWO"}, ran)
+                    self.assertEqual({"status", "log"}, read_calls)
+
 
 class PowerShellDefinitionDifferentialTests(unittest.TestCase):
     """Each way PowerShell runs a name or text the parser never read as a command, run by pwsh with a marker for git,
