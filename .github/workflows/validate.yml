@@ -343,8 +343,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # The one check that reads GitHub, run alone: it asks gh whether each issue the malformed-input known failures and
-  # pending readers name is open. It is the only job given the run's token, and its one step that runs anything starts no suite, so the
-  # token reaches that query and nothing else.
+  # pending readers name is open. It is the only job given the run's token, and its one step that runs anything runs
+  # tests/known_failure_issues.py, which loads the query's own modules and none of the policy checks or suites, so the
+  # token reaches that query and the pinned actions before it, nothing else.
   known-failures:
     name: Known-failure issues
     runs-on: ubuntu-latest
@@ -368,7 +369,7 @@ jobs:
         env:
           # gh reads the token from here; this step's command is the only one given it.
           GH_TOKEN: ${{ github.token }}
-        run: python -B tests/run_validation.py --known-failure-issues
+        run: python -B tests/known_failure_issues.py
 
   # Branch protection requires the single check named `Validation`, this job's name, so every leg on each platform
   # reports through this job: a matrix job's result is success only when every one of its legs succeeded. It runs
