@@ -185,6 +185,26 @@ query($owner: String!, $name: String!, $number: Int!, $first: Int!) {
 """.strip()
 
 
+# The GraphQL errors GitHub reports for a closing issue the viewer may not read, such as one in a private repository:
+# the node is then null, and the review counts it without its text rather than failing.
+UNREADABLE_NODE_ERRORS = ("FORBIDDEN", "NOT_FOUND")
+CLOSING_NODE_PATH = ["repository", "pullRequest", "closingIssuesReferences", "nodes"]
+
+
+def _unreadable_closing_issue(error: Any) -> bool:
+    """Whether a GraphQL error is GitHub refusing the viewer one closing issue, at its node and no wider: its type is
+    one of UNREADABLE_NODE_ERRORS and its path is a node of the closing issues, or a field of one."""
+    if not isinstance(error, dict) or error.get("type") not in UNREADABLE_NODE_ERRORS:
+        return False
+    path = error.get("path")
+    return (
+        isinstance(path, list)
+        and len(path) > len(CLOSING_NODE_PATH)
+        and path[: len(CLOSING_NODE_PATH)] == CLOSING_NODE_PATH
+        and type(path[len(CLOSING_NODE_PATH)]) is int
+    )
+
+
 def _closing_issue(value: Any, path: str) -> dict[str, Any] | None:
     """One closing issue as a review keeps it, or None for a reference GitHub no longer resolves for the viewer."""
     if value is None:
@@ -376,7 +396,8 @@ class GitHubClient:
         arguments = ["api", "graphql", "-f", f"query={CLOSING_ISSUES_QUERY}", "-f", f"owner={owner}", "-f"]
         arguments.extend([f"name={name}", "-F", f"number={number}", "-F", f"first={first}"])
         path = "graphql response.data"
-        page: Any = READ.json_object(self.github.json(arguments, graphql=True), "graphql response").get("data")
+        answer = self.github.partial_graphql(arguments, _unreadable_closing_issue)
+        page: Any = READ.json_object(answer, "graphql response").get("data")
         for key in ("repository", "pullRequest", "closingIssuesReferences"):
             page = READ.json_object(page, path).get(key)
             path = f"{path}.{key}"

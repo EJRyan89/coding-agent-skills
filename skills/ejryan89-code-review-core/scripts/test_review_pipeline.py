@@ -4992,13 +4992,16 @@ class FixtureCanaryTests(PipelineFixture):
         state = self.prepare_fixture_run("--fixture", str(directory))
         run = Path(state["request_path"]).parent
         self.assertEqual(["completeness", "generic-review"], [role["id"] for role in state["roles"]])
+        given = {"number": 7, "state": "OPEN", "title": "Totals", "body_lines": ["Totals fail on text and on None."]}
         self.assertEqual(
-            {"total": 1, "issues": [{"repository": "example/fixture", **issues[0]}]},
+            {"total": 1, "issues": [{"repository": "example/fixture", **given}]},
             json.loads((run / "closing-issues.json").read_text(encoding="utf-8")),
         )
         completeness = state["roles"][0]
         self.assertIn(str(run / "closing-issues.json"), completeness["reads"])
         self.assertNotIn("reads", state["roles"][1], "a role given every text keeps the whole run")
+        # The other roles keep their whole run but this file, which the guard keeps from them.
+        self.assertEqual({str(run / "closing-issues.json"): ["completeness"]}, state.get("restricted"))
         lines = self.finish(state)
         _, record = self.canary_record(lines)
         self.assertEqual(

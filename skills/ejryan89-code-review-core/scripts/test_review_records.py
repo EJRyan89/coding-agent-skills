@@ -801,7 +801,10 @@ class RecordTests(unittest.TestCase):
                 "body_given": given,
             }
 
-        closing = {"total": 4, "issues": [issue(1, 30_000, 24_000), issue(2, 0, 0, same=False), issue(3, 9, 9)]}
+        closing: dict[str, Any] = {
+            "total": 4,
+            "issues": [issue(1, 30_000, 24_000), issue(2, 0, 0, same=False), issue(3, 9, 9)],
+        }
         request = {**valid_request(), "closing_issues": closing}
         record = build_record(request, valid_adapter_result(), version=1, policy={})
         validate_record(record)
@@ -835,6 +838,40 @@ class RecordTests(unittest.TestCase):
                 broken["pull_request"]["closing_issues"] = value
                 with self.assertRaisesRegex(RecordError, message):
                     validate_record(broken)
+        # Each refusal names the field it read, whole.
+        field = "record.pull_request.closing_issues"
+        named: list[tuple[Any, str]] = [
+            ("x", f'{field} must be an object, found string "x"'),
+            ({"total": -1, "issues": []}, f"{field}.total must be an integer of at least 0, found integer -1"),
+            ({"total": 1, "issues": "x"}, f'{field}.issues must be an array, found string "x"'),
+            ({"total": 1, "issues": ["x"]}, f'{field}.issues[0] must be an object, found string "x"'),
+            (
+                {"total": 1, "issues": [{**issue(1, 5, 5), "number": 0}]},
+                f"{field}.issues[0].number must be an integer of at least 1, found integer 0",
+            ),
+            (
+                {"total": 1, "issues": [{**issue(1, 5, 5), "repository": 5}]},
+                f"{field}.issues[0].repository must be a non-empty string, found integer 5",
+            ),
+            (
+                {"total": 1, "issues": [{**issue(1, 5, 5), "extra": 1}]},
+                f'{field}.issues[0] must be an object of known fields, found unknown field "extra"',
+            ),
+        ]
+        for value, message in named:
+            with self.subTest(message=message):
+                broken = copy.deepcopy(older)
+                broken["pull_request"]["closing_issues"] = value
+                with self.assertRaises(RecordError) as caught:
+                    validate_record(broken)
+                self.assertEqual(message, str(caught.exception))
+        # No closing issue at all is an account too.
+        none = copy.deepcopy(older)
+        none["pull_request"]["closing_issues"] = {"total": 0, "issues": []}
+        validate_record(none)
+        # The record holds its own copy: a later change to the request's account does not reach it.
+        closing["issues"][0]["body_given"] = 0
+        self.assertEqual(24_000, record["pull_request"]["closing_issues"]["issues"][0]["body_given"])
 
 
 class CoveragePathTests(unittest.TestCase):

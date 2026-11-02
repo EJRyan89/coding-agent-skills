@@ -242,6 +242,8 @@ class WithheldInputTests(GuardFixture):
         ]
         state = json.loads((run / "run.json").read_text(encoding="utf-8"))
         state["roles"][1]["reads"] = self.reads
+        # Only the withheld role is given the closing issues.
+        state["restricted"] = {str(run / "closing-issues.json"): ["sql-review"]}
         (run / "run.json").write_text(json.dumps(state), encoding="utf-8")
         for name in ("pull-request-body.md", "request.json", "closing-issues.json"):
             (run / name).write_text("{}", encoding="utf-8")
@@ -295,6 +297,43 @@ class WithheldInputTests(GuardFixture):
         (self.run_directory / "run.json").write_text(json.dumps(state), encoding="utf-8")
         self.claim("sql-review")
         self.assert_denied(self.decide("Read", file_path=str(self.checkout / "app" / "Collections.cs")))
+
+    def test_a_read_that_loses_the_claim_race_is_held_to_the_claimed_role_s_reads(self) -> None:
+        # Two first reads race: the other one wrote the claim between this one's look and its own write, so this read,
+        # of another role's prompt and its review comments, is judged against the claimed role, its reads included.
+        self.claims.mkdir(exist_ok=True)
+        claim = {"run": str(self.run_directory), "role": "sql-review"}
+        (self.claims / f"{AGENT}.json").write_text(json.dumps(claim), encoding="utf-8")
+        with self.assertRaises(guard.Denied) as caught:
+            guard._claim(AGENT, Path(self.prompt("csharp-review")))
+        self.assertIn("the inputs your prompt names", str(caught.exception))
+        guard._claim(AGENT, Path(self.prompt("sql-review")))  # its own prompt, which its reads name
+
+    def test_the_closing_issues_reach_only_the_roles_the_run_gives_them(self) -> None:
+        # A role with no reads keeps its whole run but the closing issues, which only the roles given them read, and a
+        # search of a folder holding the file is refused as a read of the file is.
+        run = self.run_directory
+        self.claim("csharp-review")
+        for tool, tool_input in (
+            ("Read", {"file_path": str(run / "closing-issues.json")}),
+            ("Read", {"file_path": str(run / "source" / ".." / "closing-issues.json")}),
+            ("Grep", {"pattern": "Totals", "path": str(run)}),
+            ("Glob", {"pattern": "*.json", "path": str(run)}),
+        ):
+            with self.subTest(tool=tool, input=tool_input):
+                self.assert_denied(self.decide(tool, **tool_input), "holds one it does not")
+        self.assertIsNone(self.decide("Read", file_path=str(run / "pull-request-body.md")))
+        self.assertIsNone(self.decide("Grep", pattern="class", path=str(run / "source")))
+
+    def test_a_malformed_restriction_denies_every_read(self) -> None:
+        self.claim("csharp-review")
+        malformed: list[Any] = [[], {"x": "csharp-review"}, {"x": [5]}]
+        for restricted in malformed:
+            state = json.loads((self.run_directory / "run.json").read_text(encoding="utf-8"))
+            state["restricted"] = restricted
+            (self.run_directory / "run.json").write_text(json.dumps(state), encoding="utf-8")
+            with self.subTest(restricted=restricted):
+                self.assert_denied(self.decide("Read", file_path=str(self.run_directory / "pull-request-body.md")))
 
 
 class LocalPathTests(GuardFixture):

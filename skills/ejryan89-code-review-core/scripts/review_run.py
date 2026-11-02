@@ -171,6 +171,8 @@ class RunState(TypedDict):
     uncovered_files: list[str]
     archive_base: NotRequired[dict[str, Any]]
     documents: NotRequired[dict[str, list[str]]]
+    # Each file only some roles are given, such as the closing issues, with the roles given it.
+    restricted: NotRequired[dict[str, list[str]]]
     seal: NotRequired[Seal]
 
 
@@ -351,6 +353,10 @@ def _read_optional(state: dict[str, Any], read: RunState, identities: set[str]) 
         read["archive_base"] = READ.json_object(state["archive_base"], "run.archive_base")
     if "documents" in state:
         read["documents"] = _object_of(state["documents"], "run.documents", _document_places)
+    if "restricted" in state:
+        read["restricted"] = _object_of(
+            state["restricted"], "run.restricted", lambda value, path: READ.array(value, path, READ.string)
+        )
     if "seal" in state:
         read["seal"] = _read_seal(state["seal"], "run.seal", identities)
 
