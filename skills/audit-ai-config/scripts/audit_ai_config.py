@@ -3658,8 +3658,30 @@ def audit(root: Path) -> AuditResult:
     # Step 1: Inventory
     result.findings.extend(check_inventory(root))
     _authority_and_checks(root, result)
-    result.findings = _one_unread_error_per_path(_one_finding_per_link(result.findings))
+    result.findings = _left_to_reading_check(_one_unread_error_per_path(_one_finding_per_link(result.findings)))
     return result
+
+
+# The fixed files whose own check asks whether the file is there inside the handler that reports its read failure, so
+# its ERROR names every failure the inventory's examination of the file meets: a stat that fails, or a folder or
+# anything else in the file's place.
+SELF_REPORTED_FILES: frozenset[str] = frozenset({*MCP_JSON_FILES, CODEX_CONFIG, CLAUDE_SETTINGS, CODEX_HOOKS_FILE})
+
+
+def _left_to_reading_check(findings: list[Finding]) -> list[Finding]:
+    """The findings without the inventory's ERROR at one of SELF_REPORTED_FILES its own check reported as an ERROR,
+    so the path is reported once, by the check that reads it. Where that check did not run, as when the authority is
+    not conforming, the inventory's ERROR stays, so the file is never passed by."""
+    reported = {
+        finding.path
+        for finding in findings
+        if finding.severity == "ERROR" and finding.check != "inventory" and finding.path in SELF_REPORTED_FILES
+    }
+    return [
+        finding
+        for finding in findings
+        if not (finding.severity == "ERROR" and finding.check == "inventory" and finding.path in reported)
+    ]
 
 
 def _one_finding_per_link(findings: list[Finding]) -> list[Finding]:

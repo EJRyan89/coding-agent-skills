@@ -4212,6 +4212,33 @@ class UnreadableConfigurationTests(unittest.TestCase):
                 self.assertIn("not a file", errors[0][1])
                 (self.root / rel).rmdir()
 
+    def test_a_directory_in_a_configuration_file_place_is_the_inventorys_error_where_its_check_does_not_run(
+        self,
+    ) -> None:
+        # A manifest naming AGENTS.md as the canonical source is an alternative authority, so no check after the
+        # classification runs, and the inventory's ERROR is the one report of the file.
+        manifest = self.root / ".github/ai-config-manifest.json"
+        manifest.write_text(json.dumps({"generatedBy": "gen.py", "canonicalSource": "AGENTS.md"}), encoding="utf-8")
+        for rel in (".mcp.json", ".claude/settings.json", ".codex/config.toml", ".codex/hooks.json"):
+            with self.subTest(rel=rel):
+                (self.root / rel).mkdir(parents=True)
+                result = audit.audit(self.root)
+                errors = [(f.check, f.message) for f in result.findings if f.path == rel and f.severity == "ERROR"]
+                self.assertEqual("alternative", result.authority)
+                self.assertEqual(["inventory"], [check for check, _ in errors])
+                self.assertTrue(errors[0][1].startswith(UNREAD), errors)
+                (self.root / rel).rmdir()
+
+    def test_only_the_reading_checks_error_takes_the_place_of_the_inventorys(self) -> None:
+        unread = audit.Finding("ERROR", "inventory", ".mcp.json", message=f"{UNREAD} not a file")
+        warning = audit.Finding("WARNING", "mcp", ".mcp.json", message="Server 'x': no command")
+        self.assertEqual([unread, warning], audit._left_to_reading_check([unread, warning]))
+
+    def test_a_configuration_file_its_check_cannot_parse_is_still_found_by_the_inventory(self) -> None:
+        (self.root / ".mcp.json").write_text("{", encoding="utf-8")
+        rows = [(f.severity, f.check) for f in audit.audit(self.root).findings if f.path == ".mcp.json"]
+        self.assertEqual([("INFO", "inventory"), ("ERROR", "mcp")], rows)
+
     def test_an_undecodable_file_the_length_checks_read_is_an_inventory_error(self) -> None:
         # CLAUDE.local.md is the memory check's, GEMINI.md and REVIEW.md the code-review length check's: one they
         # could not read would otherwise pass as a file within its length.
@@ -5675,6 +5702,14 @@ class UnexaminedPathTests(unittest.TestCase):
         {".github/instructions/a.instructions.md", ".claude/rules/testing.md"}
     )
 
+    # The files among EXAMINED whose own check reports a failed examination as its read failure, with that check: the
+    # audit reports each once, by that check, though the inventory alone reports it as its own.
+    READ_BY_OWN_CHECK: ClassVar[dict[str, str]] = {
+        ".claude/settings.json": "claude-settings",
+        ".codex/config.toml": "mcp",
+        ".mcp.json": "mcp",
+    }
+
     def test_each_path_a_check_reads_that_cannot_be_examined_is_one_inventory_error(self) -> None:
         # Once as the repository walk meets the path, which it reports as an entry it cannot examine, and once as a
         # listing that found it by its name alone, which leaves it to the reporter of the files or folders it is one of.
@@ -5691,7 +5726,15 @@ class UnexaminedPathTests(unittest.TestCase):
                     findings = audit.audit(self.root).findings
                 self.assertEqual([("ERROR", "inventory", rel)], [row[:3] for row in rows if row[0] == "ERROR"])
                 self.assertTrue(rows[[row[2] for row in rows].index(rel)][3].startswith(UNREAD), rows)
-                self.assertIn(("ERROR", "inventory", rel), [(f.severity, f.check, f.path) for f in findings])
+                if rel in self.READ_BY_OWN_CHECK:
+                    # The check that reads the file reports its failure itself, so the audit reports it once, there.
+                    self.assertEqual(
+                        [self.READ_BY_OWN_CHECK[rel]],
+                        [f.check for f in findings if f.path == rel and f.severity == "ERROR"],
+                        findings,
+                    )
+                else:
+                    self.assertIn(("ERROR", "inventory", rel), [(f.severity, f.check, f.path) for f in findings])
 
     # Each folder there whose listing is refused, with a file in it: the inventory's one ERROR at the folder, though
     # a glob matches nothing in it.

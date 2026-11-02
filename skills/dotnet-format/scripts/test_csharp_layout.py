@@ -1204,14 +1204,15 @@ class ConfigTests(unittest.TestCase):
         (self.root / "App.slnx").write_text(
             f'<Solution><Project Path="src\\App\\App.csproj" />{listed}</Solution>', encoding="utf-8"
         )
+        # Every path the run examines, through file_presence or a Path predicate, is a Path.stat call.
         touched: list[str] = []
-        is_file = Path.is_file
+        examine = Path.stat
 
-        def recording(path: Path) -> bool:
+        def recording(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
             touched.append(str(path))
-            return is_file(path)
+            return examine(path, follow_symlinks=follow_symlinks)
 
-        with mock.patch.object(Path, "is_file", recording):
+        with mock.patch.object(Path, "stat", recording):
             grouped = self.config(solution="App.slnx")
         self.assertEqual(list(entries), [entry for entry, _ in grouped["REFUSED"]])
         for (entry, reason), expected in zip(grouped["REFUSED"], entries.values(), strict=True):
