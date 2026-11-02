@@ -20,6 +20,7 @@ from harness import DeployerTestCase, backup_entry, forward, install_entry, jour
 
 from deployer import hashing, journal, platform_support, source, source_commit, source_ref
 from deployer.errors import DeployError
+from deployer.kinds import AGENT_KIND, SKILL
 from deployer.names import BACKUP_SUFFIX
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
@@ -318,3 +319,53 @@ class RecoveryPresenceTests(DeployerTestCase):
             "Access is denied",
             raised.exception.lines[0],
         )
+
+
+class PlanPresenceTests(DeployerTestCase):
+    """The plan, with the stat of an item's destination failing: the deployment is refused before any change, and
+    the manifest keeps what it owns, where the plan read the item as absent."""
+
+    def deployed(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        self.deploy_ok("--all")
+
+    def test_an_owned_item_it_cannot_stat_is_refused_not_dropped_as_already_absent(self) -> None:
+        self.deployed()
+        self.remove_skill("alpha")
+        # The link check before the plan is stubbed, so the plan is what meets the failed stat.
+        with mock.patch.object(hashing, "find_link", return_value=None), stat_failing_at(self.skills_dir / "alpha"):
+            self.deploy_fails("--all", pattern="Access is denied")
+        self.assertIn("alpha", self.owned("skills"))
+        self.assertTrue((self.skills_dir / "alpha").is_dir())
+
+    def test_a_destination_it_cannot_stat_is_refused_not_planned_as_absent(self) -> None:
+        self.deployed()
+        self.make_skill("gamma", "Gamma")
+        # The link check before the plan is stubbed, so the plan is what meets the failed stat.
+        with mock.patch.object(hashing, "find_link", return_value=None), stat_failing_at(self.skills_dir / "gamma"):
+            self.deploy_fails("--all", pattern="Access is denied")
+        self.assertNotIn("gamma", self.owned("skills"))
+
+    def test_has_expected_type_raises_for_a_path_it_cannot_stat_and_answers_otherwise(self) -> None:
+        folder = self.root / "folder"
+        folder.mkdir()
+        file = self.root / "file"
+        file.write_text("", encoding="utf-8")
+        for kind in (SKILL, AGENT_KIND):
+            with self.subTest(kind=kind.key):
+                for path in (folder, file):
+                    with stat_failing_at(path), self.assertRaises(PermissionError):
+                        kind.has_expected_type(path)
+                self.assertEqual(kind.directory, kind.has_expected_type(folder))
+                self.assertEqual(not kind.directory, kind.has_expected_type(file))
+                self.assertFalse(kind.has_expected_type(self.root / "missing"))
+
+    def test_a_file_at_the_staging_root_fails_recovery_as_unexpected_state(self) -> None:
+        self.paths.staging_root.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.staging_root.write_text("", encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()) as printed, contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(journal.recover_incomplete(self.paths))
+        self.assertIn("Cannot list the staging runs", printed.getvalue())

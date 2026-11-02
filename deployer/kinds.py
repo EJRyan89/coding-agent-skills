@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import file_presence
+
 from .render import ADAPTER_STAGING, AGENT_STAGING
 
 # Runtime adapters are recorded under "wrappers", their name before they were called adapters. Renaming the key
@@ -56,7 +58,14 @@ class ItemKind:
         return "a directory" if self.directory else "a file"
 
     def has_expected_type(self, path: Path) -> bool:
-        return path.is_dir() if self.directory else path.is_file()
+        """Whether this kind's folder or file is at path, following links: False when nothing or something else
+        is, and the stat's OSError when it cannot tell, so no caller plans an item it could not see as absent."""
+        if self.directory:
+            return file_presence.is_directory(path, other_is_absent=True)
+        try:
+            return file_presence.is_present(path)
+        except file_presence.NotAFile:
+            return False
 
 
 @dataclass(frozen=True, kw_only=True)
