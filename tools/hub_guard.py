@@ -221,6 +221,10 @@ ELEVATING_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], frozenset[st
     ),
     "doas": (frozenset({"-L", "-n", "-s"}), frozenset({"-u"}), frozenset({"-C"})),
 }
+GH_LIMIT_ALLOWED = {
+    "ELEVATING_PROGRAMS": "doas's own -L, which clears its remembered authentication; it is read from a command, and "
+    "no gh listing is made here"
+}
 LOGIN_OPTIONS = {"-i", "--login"}
 CHDIR_OPTIONS = {"-D", "--chdir"}
 # Bash's long options whose next word is their value, so it is not the script that -c runs; in a single-dash or

@@ -2241,6 +2241,8 @@ class ContractTests(GuardTestCase):
             "stdbuf": "stdbuf -oL git commit -m x",
             "time": "time -p git commit -m x",
             "env": "env git commit -m x",
+            "sudo": "sudo git commit -m x",
+            "doas": "doas git commit -m x",
         }
         # In Bash `time` as a command's first word is the reserved word; after an assignment it is the program.
         bash_cases = {**cases, "time": "x=1 time -p git commit -m x"}
