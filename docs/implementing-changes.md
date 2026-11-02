@@ -284,7 +284,7 @@ integration, and passes when neither is given. The pull request that does the wo
 entry, which the suite then requires, and closes the issue. A run of its own,
 `python -B tests/known_failure_issues.py`, which loads none of the policy checks, asks GitHub, through gh, whether each issue either list
 names is an open issue, and fails one that is not, one that is a pull request, or one gh cannot answer about; it asks
-nothing while both are empty. Continuous integration runs it in a job of its own on every run, the one job given the
+nothing while both are empty. Continuous integration runs it in a job of its own on every run, the one job whose command is given the
 run's read-only token, so no suite holds the token; locally it needs gh signed in only while an entry exists.
 
 Before `gh pr create`, run `git fetch origin main` and `git rebase origin/main`: onto `origin/main`, not the local
