@@ -21,6 +21,20 @@ A pull request whose change no user meets writes `None` under its `## Upgrade no
 
 Level: minor.
 
+### check names Git as needed to deploy from a Git checkout
+
+- Level: patch, a defect fix: `check` reported ready to deploy where the deployment refuses.
+- Contract: none
+- User action: none. If `check` now lists `Git` as `MISSING` and is not ready to deploy, install Git as "Installing the tools" in `docs/installation.md` says, or put it on `PATH`, then run `check` again.
+- Pull request: #2180
+
+### verify reads a Codex catalog whose skill paths hold a space or a parenthesis
+
+- Level: patch, a defect fix: a catalog verify refused as a shape it does not know is read as Codex wrote it.
+- Contract: none
+- User action: none. A profile folder whose name holds a space or a parenthesis no longer makes `python deploy.py verify` fail Codex when Codex names its skills by absolute path.
+- Pull request: #2179
+
 ### dotnet-format's layout fixer refuses a read-only file per file and checks every file before the first write
 
 - Level: patch. A fix: `--fix` and `--apply` now refuse a read-only file with a `REFUSED` line and carry on, where they used to stop with `FAILED` after part of the tree was changed.
@@ -39,7 +53,7 @@ Level: minor.
 
 - Level: patch, a defect fix. The refusal makes Linux behave as Windows already did, and keeps the protection the user set on the file.
 - Contract: none
-- User action: none, unless you keep a file a skill writes read-only, such as a source file in a TFVC or Perforce workspace before `dotnet-format --fix`, or a dashboard, history, or plan file. Make it writable, for example by checking it out, before running the skill. The failure line names the file.
+- User action: none, unless you keep a file a skill writes read-only, such as a dashboard, history, or plan file. Make it writable before running the skill; the failure line names the file. `dotnet-format`'s layout fixer instead skips such a file with a `REFUSED` line and goes on, as the entry for #2158 says.
 - Pull request: #2117
 
 ### `deploy.py check` names a tag holding a Unicode line separator
@@ -95,7 +109,7 @@ Level: minor.
 
 - Level: patch, a defect fix whose record change is an optional field older records omit.
 - Contract: `record.review.reviewers[].summary`
-- User action: none. A record written by this version holds each specialist's own summary on its reviewer run, and its stored combined summary labels each role as `role: text` without bold markers; a reader of records that relied on the `**role:**` markers reads the per-reviewer `summary` instead.
+- User action: none. A record written by this version holds each specialist's own summary on its reviewer run, and its stored combined summary labels each role as `role: text` without bold markers; a reader of records that relied on the `**role:**` markers reads the per-reviewer `summary` instead. An earlier release refuses a record that has a reviewer's `summary`, as it refuses one with `searches` (#2001).
 - Pull request: #1992
 
 ### verify and the shepherd refuse an answer of a shape they do not know
