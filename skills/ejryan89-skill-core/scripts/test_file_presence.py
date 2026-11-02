@@ -65,6 +65,7 @@ class FilePresenceTests(unittest.TestCase):
         with self.assertRaises(NotAFile) as raised:
             is_present(path)
         self.assertEqual(EINVAL, raised.exception.errno)
+        self.assertEqual(str(path), raised.exception.filename)
 
     def test_a_stat_that_fails_with_anything_but_not_found_reaches_the_caller(self) -> None:
         path = self.root / "settings.json"
@@ -109,4 +110,20 @@ class FilePresenceTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(OSError) as raised:
                 is_present(path)
             self.assertEqual(EINVAL, raised.exception.errno)
+            self.assertEqual("the path holds a NUL character, which no file name holds", raised.exception.strerror)
+            self.assertEqual(str(path), raised.exception.filename)
             self.assertNotIsInstance(raised.exception, NotAFile)
+
+    def test_a_path_whose_link_stat_answers_where_its_target_is_missing_is_refused_naming_it(self) -> None:
+        # The stat a link to nothing gives on every platform: the target is missing, the link itself is there.
+        path = self.root / "settings.json"
+        link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def answer(follow_symlinks: bool = True) -> os.stat_result:
+            if follow_symlinks:
+                raise FileNotFoundError(errno.ENOENT, "missing")
+            return link
+
+        with mock.patch.object(Path, "stat", side_effect=answer), self.assertRaises(NotAFile) as raised:
+            is_present(path)
+        self.assertEqual((EINVAL, str(path)), (raised.exception.errno, raised.exception.filename))
