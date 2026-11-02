@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import sys
@@ -228,16 +229,25 @@ def check_backup_root(paths: Paths, root: str, run_id: str | None = None) -> Non
 
 
 def _probe_backup_folder(backups: Path, run_backups: Path) -> None:
-    """Create this run's backup folder and remove it again, and .backups with it when the probe made it, so a .backups
-    the run cannot write, by its permissions or its owner, is refused before the first change."""
-    existed = os.path.lexists(backups)
+    """Create this run's backup folder, a file and a folder in it, as a kept file or folder would be, then remove what
+    the probe made, .backups with it when the probe made that too, whether or not it succeeded, so a .backups the run
+    cannot write, by its permissions or its owner, is refused before the first change and the home is left as found.
+
+    What changes after the probe, before the run keeps a copy there, is met after the commit by keep_backup."""
+    made = [run_backups] if os.path.lexists(backups) else [run_backups, backups]
     try:
-        fsops.make_directories(run_backups)
-        fsops.remove(run_backups)
-        if not existed:
-            fsops.remove(backups)
+        fsops.make_directories(run_backups / PROBE_NAME)
+        fsops.write_file(run_backups / f"{PROBE_NAME}.file", b"")
     except OSError as exc:
         raise _not_writable(backups, exc) from exc
+    finally:
+        for path in made:
+            with contextlib.suppress(OSError):
+                fsops.remove(path)
+
+
+# The name of what the probe makes in this run's own backup folder, which no other run, and no item, shares.
+PROBE_NAME = ".probe"
 
 
 def _not_writable(backups: Path, error: OSError) -> DeployError:
@@ -352,9 +362,39 @@ def backup_unchanged(paths: Paths, entry: BackupEntry) -> bool:
     return _hash_existing(_item_path(paths, entry, BACKUP_SUFFIX)) in (None, entry["backup_hash"])
 
 
+def keep_backup(
+    paths: Paths, run_id: str, entry: BackupEntry, before_move: Callable[[], None] | None = None
+) -> str | None:
+    """Move a committed run's transient backup into .backups/<run-id>/ in its root and return where it went, as that
+    root names it, after running before_move, which journals the move. Should the folder not be made, the move fail, or
+    something already be there, the copy stays beside its item, a warning says why, and None is returned.
+
+    The run is committed, so its items stay, and no check before the commit covers what changes between it and this
+    move. Every one of these ends the same way, after the commit as in recovery: the copy is never deleted, the run
+    finishes, and the next deployment of the item refuses until the user moves the copy.
+    """
+    root, item = entry_root(entry), entry["item"]
+    transient = _item_path(paths, entry, BACKUP_SUFFIX)
+    kept_at = f".backups/{run_id}/{item}"
+    try:
+        destination = prepare_backup_destination(paths, run_id, item, root)
+        if os.path.lexists(destination):
+            raise DeployError(f"ERROR: Something is already at {platform_support.normalize(destination)}")
+        if before_move is not None:
+            before_move()
+        fsops.move(transient, destination)
+    except (DeployError, OSError) as exc:
+        reason = exc.lines[0].removeprefix("ERROR: ") if isinstance(exc, DeployError) else exc.strerror or str(exc)
+        _warn(
+            f"{item}'s previous copy is kept at {platform_support.normalize(transient)}, since it could not be moved "
+            f"to {kept_at}: {reason}. Move it out of the root after checking it. {see_recovery('Backups')}"
+        )
+        return None
+    return kept_at
+
+
 def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
-    """Delete an unchanged transient backup the committed run did not keep, or move it to permanent storage."""
-    root = entry_root(entry)
+    """Delete an unchanged transient backup the committed run did not keep, or keep it, through keep_backup."""
     item = entry["item"]
     transient = _item_path(paths, entry, BACKUP_SUFFIX)
     kept_at = f".backups/{run_id}/{item}"
@@ -366,33 +406,15 @@ def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
             f"{item} changed after run {run_id} planned it, so its previous copy is kept at {kept_at} "
             "instead of being deleted."
         )
-    try:
-        destination = prepare_backup_destination(paths, run_id, item, root)
-    except (DeployError, OSError) as exc:
-        if isinstance(exc, DeployError):
-            _report(exc)
-        else:
-            _warn(f"Cannot make {kept_at}: {exc.strerror or exc}")
-        if not os.path.lexists(transient):
-            return False
-        # The run is committed, so its items stay; the copy it displaced stays beside its item, never deleted, and the
-        # next deployment of the item refuses until the user moves it.
-        _warn(
-            f"{item}'s previous copy is kept at {platform_support.normalize(transient)}, since {kept_at} cannot be "
-            f"made. Move it out of the root after checking it. {see_recovery('Backups')}"
-        )
-        return True
     if os.path.lexists(transient):
-        if os.path.lexists(destination):
-            _warn(f"Both transient and permanent backups exist for {item}")
-            return False
         if entry["retain"] and _hash_existing(transient) != entry["backup_hash"]:
             _warn(f"Backup hash mismatch for {item}")
             return False
-        fsops.move(transient, destination)
-        print(f"  Preserved backup: {item} -> {kept_at}")
+        if keep_backup(paths, run_id, entry) is not None:
+            print(f"  Preserved backup: {item} -> {kept_at}")
         return True
-    # Only a kept backup gets here: one the run did not keep and that is gone returned above.
+    # Only a kept backup an earlier attempt moved gets here: one the run did not keep and that is gone returned above.
+    destination = root_directory(paths, entry_root(entry)) / ".backups" / run_id / item
     if os.path.lexists(destination):
         if _hash_existing(destination) != entry["backup_hash"]:
             _warn(f"Permanent backup hash mismatch for {item} at {kept_at}")

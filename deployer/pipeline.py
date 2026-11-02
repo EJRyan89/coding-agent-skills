@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import os
 import secrets
 import sys
@@ -148,20 +149,12 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
         root = journal.entry_root(entry)
         item = entry["item"]
         transient = journal.root_directory(context.paths, root) / transient_name(item)
-        try:
-            destination = journal.prepare_backup_destination(context.paths, run_id, item, root)
-        except DeployError as exc:
-            raise DeployError(*exc.lines, f"ERROR: Refusing unsafe permanent backup destination for {item}") from exc
         if os.path.lexists(transient):
-            if os.path.lexists(destination):
-                raise DeployError(
-                    f"ERROR: Permanent backup destination already exists: {platform_support.normalize(destination)}",
-                    "Move it out of the deployment root after checking its contents, then retry.",
-                    see_recovery("Backups"),
-                )
-            record.preserve(root, item)
-            fsops.move(transient, destination)
-            kept_at = f".backups/{run_id}/{item}"
+            # After the commit nothing refuses: a copy that cannot be kept under .backups stays beside its item.
+            preserve = functools.partial(record.preserve, root, item)
+            kept_at = journal.keep_backup(context.paths, run_id, entry, preserve)
+            if kept_at is None:
+                continue
             backups.append((item, kept_at))
             if not entry["retain"]:
                 print(

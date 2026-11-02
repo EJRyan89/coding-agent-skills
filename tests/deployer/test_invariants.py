@@ -635,7 +635,7 @@ class RefusalBeforeTheFirstWriteTests(DeployerTestCase):
                 planted.rmdir()
                 (root / ".backups").rmdir()
 
-    def test_a_committed_run_whose_backups_folder_turns_unusable_recovers_and_keeps_the_copy_beside_its_item(
+    def test_a_committed_run_whose_backups_folder_turns_unwritable_finishes_and_keeps_the_copy_beside_its_item(
         self,
     ) -> None:
         backups = self.skills_dir / ".backups"
@@ -643,13 +643,12 @@ class RefusalBeforeTheFirstWriteTests(DeployerTestCase):
         restore = self.deny_writes(backups)
         # The checks before the first change passed, as they do when the folder changes while the run is under way.
         with mock.patch("deployer.journal.check_backup_root"):
-            result = self.deploy_fails(
-                "--all", "--force-item", "alpha", pattern="Backup path is not writable", changes_home=FAILS_PARTWAY
-            )
+            result = self.deploy_ok("--all", "--force-item", "alpha")
         transient = self.skills_dir / transient_name("alpha")
         self.assertIn(f"alpha's previous copy is kept at {forward(transient)}", result.output)
-        # Recovery finished the committed run: the new copy stays, the displaced one is beside it, and neither the
-        # journal nor the lock is left for the next run to stop on.
+        self.assertIn(f"Backup path is not writable: {forward(backups)}", result.output)
+        # The committed run finished: the new copy stays, the displaced one is beside it, and neither the journal nor
+        # the lock is left for the next run to stop on.
         self.assertNotIn("# edit", self.skill_text("alpha"))
         self.assertIn("# edit", (transient / "SKILL.md").read_text(encoding="utf-8"))
         self.assertEqual([], list(self.paths.staging_root.iterdir()) if self.paths.staging_root.exists() else [])

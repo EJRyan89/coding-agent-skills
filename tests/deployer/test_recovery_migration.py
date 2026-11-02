@@ -4,10 +4,13 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar, get_args
 from unittest import mock
@@ -29,9 +32,10 @@ from harness import (
     tree_state,
 )
 
-from deployer import fsops, hashing, journal, manifest, platform_support, render
+from deployer import fsops, hashing, journal, manifest, pipeline, platform_support, render
 from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED, DeployError
 from deployer.kinds import KINDS
+from deployer.names import transient_name
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
 
@@ -581,7 +585,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         # the journal and the lock until the folder can be made.
         with failing_at("make_directories", backups):
             result = self.deploy_fails("--all", pattern="transient backup already exists", changes_home=RECOVERS)
-        self.assertIn(f"ERROR: Backup path is not writable: {forward(backups.parent)}: Access is denied", result.output)
+        self.assertIn(f"Backup path is not writable: {forward(backups.parent)}: Access is denied", result.output)
         self.assertIn("alpha's previous copy is kept at", result.output)
         self.assertFalse((self.home / ".claude" / "deployer" / "staging" / self.HELD / "journal.jsonl").exists())
         self.assertEqual("previous alpha\n", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text("utf-8"))
@@ -877,11 +881,13 @@ with mock.patch("deployer.fsops.move", side_effect=failing_move):
     def test_an_unexpected_immediate_rollback_error_is_reported_and_releases_the_lock(self) -> None:
         self.assert_stopped_recovery("RuntimeError")
 
+    # After the commit a failed move into .backups keeps the copy beside its item and the run finishes, so the
+    # committed cases stop the run there with Ctrl+C, which nothing after the commit absorbs.
     def test_ctrl_c_during_immediate_committed_recovery_preserves_the_backup_and_releases_the_lock(self) -> None:
-        self.assert_stopped_recovery("KeyboardInterrupt", committed=True)
+        self.assert_stopped_recovery("KeyboardInterrupt", deployment_failure="KeyboardInterrupt", committed=True)
 
     def test_an_unexpected_immediate_committed_recovery_error_preserves_the_backup_and_releases_the_lock(self) -> None:
-        self.assert_stopped_recovery("RuntimeError", committed=True)
+        self.assert_stopped_recovery("RuntimeError", deployment_failure="KeyboardInterrupt", committed=True)
 
 
 class RecoveryBranchTests(RecoveryTestCase):
@@ -948,10 +954,13 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertNotIn("Preserved backup", result.output)
         self.assertEqual("previous alpha\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
-    def test_both_a_transient_and_a_permanent_backup_stop_completion(self) -> None:
+    def test_a_transient_and_a_permanent_backup_both_there_keep_the_transient_and_complete(self) -> None:
         journal_file, destination = self.committed_with_kept_backup()
         self.write(destination / "SKILL.md", "previous alpha\n")
-        self.assert_completion_stopped(journal_file, "  WARNING: Both transient and permanent backups exist for alpha")
+        result = self.deploy_fails("--all", pattern="transient backup already exists", changes_home=RECOVERS)
+        self.assertIn(f"Something is already at {forward(destination)}", result.output)
+        self.assertIn("  Recovery complete.", result.output.splitlines())
+        self.assertFalse(journal_file.exists())
         self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
         self.assertTrue((destination / "SKILL.md").is_file())
 
@@ -1203,29 +1212,35 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.deployed(("alpha", "Alpha content"))
         self.write(self.skills_dir / "alpha" / "SKILL.md", "edited by hand\n")
         self.make_skill("alpha", "Updated alpha")
-        real_move = fsops.move
+        staging = self.home / ".claude" / "deployer" / "staging"
+        real_remove = fsops.remove
         state = {"failed": False}
 
-        def failing_move(source: Path, destination: Path) -> None:
-            if ".backups" in destination.parts and not state["failed"]:
+        # A failed move into .backups keeps the copy beside its item, so the run fails after the commit where nothing
+        # absorbs it: removing its staging folder once finalization is done.
+        def failing_remove(path: Path) -> None:
+            if path.parent == staging and not state["failed"]:
                 state["failed"] = True
-                raise OSError("synthetic backup move failure")
-            real_move(source, destination)
+                raise OSError("synthetic staging removal failure")
+            real_remove(path)
 
-        with mock.patch("deployer.fsops.move", side_effect=failing_move):
+        with mock.patch("deployer.fsops.remove", side_effect=failing_remove):
             result = self.deploy_fails(
-                "--all", "--force-item", "alpha", pattern="synthetic backup move failure", changes_home=FAILS_PARTWAY
+                "--all",
+                "--force-item",
+                "alpha",
+                pattern="synthetic staging removal failure",
+                changes_home=FAILS_PARTWAY,
             )
         run_id = self.manifest()["last_run_id"]
         self.assert_lines(
             result.output,
-            "ERROR: Could not finish the deployment: synthetic backup move failure",
+            "ERROR: Could not finish the deployment: synthetic staging removal failure",
             "Check that the path exists and that you can read it, then retry.",
             "Rerun with --debug to see the traceback.",
             "",
             "Deployment failed; reconciling the current journal before exit...",
             f"Recovering committed run {run_id} (completing finalization)...",
-            f"  Preserved backup: alpha -> .backups/{run_id}/alpha",
             "  Recovery complete.",
         )
         self.assertEqual(
@@ -1357,13 +1372,13 @@ class UnkeptBackupTests(RecoveryTestCase):
         )
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
 
-    def test_a_changed_backup_whose_permanent_destination_exists_stops_completion(self) -> None:
+    def test_a_changed_backup_whose_permanent_destination_exists_is_kept_beside_its_item(self) -> None:
         journal_file = self.committed_with_unkept_backup(changed=True)
         destination = self.skills_dir / ".backups" / self.RUN / "alpha"
         self.write(destination / "SKILL.md", "already there\n")
-        result = self.deploy_fails("--all", pattern="Recovery failed")
-        self.assert_lines(result.output, "  WARNING: Both transient and permanent backups exist for alpha")
-        self.assertTrue(journal_file.is_file())
+        result = self.deploy_fails("--all", pattern="transient backup already exists", changes_home=RECOVERS)
+        self.assertIn(f"Something is already at {forward(destination)}", result.output)
+        self.assertFalse(journal_file.exists())
         self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text(encoding="utf-8"))
         self.assertEqual("already there\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
@@ -2221,3 +2236,145 @@ def test_each_journal_op_tags_one_entry_shape() -> None:
     assert get_args(journal.Op) == ("backup", "install", "preserve")
     shapes = (journal.BackupEntry, journal.InstallEntry, journal.PreserveEntry)
     assert [get_args(shape.__annotations__["op"]) for shape in shapes] == [("backup",), ("install",), ("preserve",)]
+
+
+class KeptBesideItsItemTests(DeployerTestCase):
+    """After the manifest commit nothing refuses: in every root, a copy the run cannot keep under .backups, because its
+    folder cannot be made, its move fails, or something is already there, stays beside its item, the run finishes and
+    clears its journal, and the next deployment of the item refuses until the user moves the copy. Finalization and
+    recovery end the same way."""
+
+    RUN_ID = "20991231-000000-beef"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_agent("reviewer", "Review the change.")
+        self.make_skill("alpha", "Alpha at {{HOME}}", ["HOME"], agent_deps=["reviewer"])
+        self.make_config()
+        self.deploy_ok("--all")
+        self.items = {
+            self.skills_dir: self.skills_dir / "alpha",
+            self.agents_dir: self.agents_dir / "alpha",
+            self.claude_agents_dir: self.claude_agents_dir / "reviewer.md",
+        }
+        for item in self.items.values():
+            self.append(self.content(item), "# edit\n")
+
+    @staticmethod
+    def content(item: Path) -> Path:
+        return item / "SKILL.md" if item.is_dir() else item
+
+    def frozen_run_id(self) -> contextlib.ExitStack:
+        """Give the next deployment RUN_ID, so a test can name its backup folder before it runs."""
+        stamp, suffix = self.RUN_ID.rsplit("-", 1)
+        real = time.strftime
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch("secrets.token_hex", return_value=suffix))
+        stack.enter_context(
+            mock.patch(
+                "time.strftime", side_effect=lambda form, *rest: stamp if form == "%Y%m%d-%H%M%S" else real(form, *rest)
+            )
+        )
+        return stack
+
+    def steps(self, root: Path, item: Path) -> dict[str, Callable[[], contextlib.AbstractContextManager[object]]]:
+        """Each step after the commit that can keep a copy from .backups, as a fault it injects into the run."""
+        run_folder = root / ".backups" / self.RUN_ID
+        transient = root / transient_name(item.name)
+        real_commit = pipeline._commit_manifest
+
+        def commit_then_fill(*arguments: Any) -> None:
+            real_commit(*arguments)
+            self.write(self.content(run_folder / item.name), "already here\n")
+
+        return {
+            "the run folder cannot be made": lambda: failing_at("make_directories", run_folder),
+            "the move fails": lambda: failing_at("move", transient),
+            "a target is already there": lambda: mock.patch.object(
+                pipeline, "_commit_manifest", side_effect=commit_then_fill
+            ),
+        }
+
+    def interrupted_finalization(self) -> contextlib.AbstractContextManager[object]:
+        """Stop the run as finalization begins, so the immediate recovery completes the committed run."""
+        return mock.patch.object(pipeline, "_finalize", side_effect=RuntimeError("interrupted after the commit"))
+
+    def assert_kept_beside(self, output: str, root: Path, item: Path) -> None:
+        transient = root / transient_name(item.name)
+        self.assertIn(f"{item.name}'s previous copy is kept at {forward(transient)}", output)
+        self.assertIn("# edit", self.content(transient).read_text(encoding="utf-8"))
+        self.assertNotIn("# edit", self.content(item).read_text(encoding="utf-8"))
+        staging = self.paths.staging_root
+        self.assertEqual([], sorted(staging.rglob("journal.jsonl")) if staging.exists() else [])
+        self.assertFalse(self.lock_dir.exists())
+        # Every other root kept its copy as usual.
+        for other, other_item in self.items.items():
+            if other != root:
+                kept = self.content(other / ".backups" / self.RUN_ID / other_item.name)
+                self.assertIn("# edit", kept.read_text(encoding="utf-8"))
+        self.deploy_fails("--all", pattern="transient backup already exists")
+
+    def test_each_step_after_the_commit_keeps_the_copy_beside_its_item_in_finalization_and_in_recovery(self) -> None:
+        start = self.root / "home-before-each-row"
+        shutil.copytree(self.home, start, symlinks=True)
+        for root, item in self.items.items():
+            for step, fault in self.steps(root, item).items():
+                for path in ("finalization", "recovery"):
+                    with self.subTest(root=root.relative_to(self.home).as_posix(), step=step, path=path):
+                        with self.frozen_run_id(), fault():
+                            if path == "finalization":
+                                result = self.deploy_ok("--all", "--force")
+                            else:
+                                with self.interrupted_finalization():
+                                    result = self.deploy_fails(
+                                        "--all", "--force", pattern="Recovery complete.", changes_home=FAILS_PARTWAY
+                                    )
+                        self.assert_kept_beside(result.output, root, item)
+                    self.reset(start)
+
+    def reset(self, start: Path) -> None:
+        """Put the home back as setUp left it, each item edited and no run under way."""
+        shutil.rmtree(self.home)
+        shutil.copytree(start, self.home, symlinks=True)
+
+
+class BackupProbeTests(DeployerTestCase):
+    """The deployment proves, before its first change, that it can make a folder and a file under each root's
+    .backups, and a refused run leaves the home as it found it, a .backups the probe made included."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_agent("reviewer", "Review the change.")
+        self.make_skill("alpha", "Alpha at {{HOME}}", ["HOME"], agent_deps=["reviewer"])
+        self.make_config()
+        self.deploy_ok("--all")
+        self.append(self.claude_agents_dir / "reviewer.md", "# edit\n")
+
+    def test_a_backups_folder_that_takes_folders_but_no_files_is_refused_before_the_first_change(self) -> None:
+        backups = self.claude_agents_dir / ".backups"
+        backups.mkdir()
+        real = fsops.write_file
+
+        def refuse_files(path: Path, content: bytes) -> None:
+            if backups in path.parents:
+                raise denied(path)
+            real(path, content)
+
+        with mock.patch("deployer.fsops.write_file", side_effect=refuse_files):
+            self.deploy_fails("--all", "--force-item", "reviewer", pattern="Backup path is not writable")
+
+    def test_a_refused_probe_removes_the_backups_folder_it_made(self) -> None:
+        backups = self.skills_dir / ".backups"
+        real = fsops.make_directories
+
+        def make_backups_then_refuse(path: Path) -> None:
+            if backups in path.parents:
+                real(backups)
+                raise denied(path)
+            real(path)
+
+        with mock.patch("deployer.fsops.make_directories", side_effect=make_backups_then_refuse):
+            self.deploy_fails("--all", "--force-item", "reviewer", pattern="Backup path is not writable")
+        self.assertFalse(os.path.lexists(backups))

@@ -479,22 +479,22 @@ class BackupRemedyTests(RemedyTestCase):
             SEE_BACKUPS,
         )
 
-    def test_existing_permanent_backup_says_to_move_it(self) -> None:
+    def test_an_existing_permanent_backup_keeps_the_copy_beside_its_item_and_says_to_move_it(self) -> None:
         self.fixture()
         self.deploy_ok("--all")
         self.append(self.skills_dir / "alpha" / "SKILL.md", "local change\n")
         existing = self.root / "existing-backup"
         existing.mkdir()
         with mock.patch("deployer.journal.prepare_backup_destination", return_value=existing):
-            result = self.deploy_fails(
-                "--all", "--force-item", "alpha", pattern="Permanent backup destination", changes_home=FAILS_PARTWAY
-            )
-        self.assert_lines(
-            result.output,
-            f"ERROR: Permanent backup destination already exists: {forward(existing)}",
-            "Move it out of the deployment root after checking its contents, then retry.",
-            SEE_BACKUPS,
+            result = self.deploy_ok("--all", "--force-item", "alpha")
+        transient = self.skills_dir / "alpha.deploying-bak"
+        self.assertIn(
+            f"  WARNING: alpha's previous copy is kept at {forward(transient)}, since it could not be moved to "
+            f".backups/{self.manifest()['last_run_id']}/alpha: Something is already at {forward(existing)}. Move it "
+            f"out of the root after checking it. {SEE_BACKUPS}",
+            result.output.splitlines(),
         )
+        self.assertIn("local change", (transient / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_a_backups_folder_that_is_a_link_is_refused_as_an_unsafe_destination(self) -> None:
         self.fixture()
@@ -511,7 +511,7 @@ class BackupRemedyTests(RemedyTestCase):
         self.assertNotIn("unsafe permanent backup destination", result.output)
         self.assertEqual([], list(outside.iterdir()))
 
-    def test_a_backups_folder_that_becomes_a_link_during_the_run_names_the_item_it_could_not_keep(self) -> None:
+    def test_a_backups_folder_that_becomes_a_link_during_the_run_keeps_the_copy_beside_its_item(self) -> None:
         self.fixture()
         self.deploy_ok("--all")
         self.append(self.skills_dir / "alpha" / "SKILL.md", "local change\n")
@@ -520,16 +520,14 @@ class BackupRemedyTests(RemedyTestCase):
         make_directory_link(self.skills_dir / ".backups", outside)
         # The check before the first change passed, as it does when the link appears while the run is under way.
         with mock.patch("deployer.journal.check_backup_root"):
-            result = self.deploy_fails(
-                "--all", "--force-item", "alpha", pattern="unsafe permanent backup", changes_home=FAILS_PARTWAY
-            )
-        printed = result.output.splitlines()
-        reason = f"ERROR: Backup path contains a symlink or junction: {forward(self.skills_dir / '.backups')}"
-        self.assertEqual(
-            "ERROR: Refusing unsafe permanent backup destination for alpha",
-            printed[printed.index(reason) + 2],
+            result = self.deploy_ok("--all", "--force-item", "alpha")
+        self.assertIn(
+            "since it could not be moved to .backups/"
+            f"{self.manifest()['last_run_id']}/alpha: Backup path contains a symlink or junction: "
+            f"{forward(self.skills_dir / '.backups')}",
             result.output,
         )
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
         self.assertEqual([], list(outside.iterdir()))
 
 
