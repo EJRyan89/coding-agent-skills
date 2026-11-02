@@ -267,11 +267,20 @@ class StopAndRefusalTests(SweepFixture):
                     "what Git refused is not a completed cleanup",
                 )
 
+        # Each retry names first what the plan never offered: the command refuses it and goes on to the next name.
+        unoffered = {
+            "delete-local": "never-offered",
+            "force-delete": "never-offered",
+            "remove-directory": self.root.as_posix(),
+        }
         for command, named in (("delete-local", "scratch"), ("force-delete", "work"), ("remove-directory", orphan)):
             with self.subTest(retried=command):
                 flag = "--path" if command == "remove-directory" else "--branch"
-                code, lines = self.invoke(command, "--plan", plan, flag, named)
-                self.assertEqual(0, code, lines)
+                code, lines = self.invoke(command, "--plan", plan, flag, unoffered[command], flag, named)
+                self.assertEqual(1, code, "a name the plan never offered needs the agent")
+                self.assertEqual(unoffered[command], facts(lines, "PRESERVED")[0][0], lines)
+                gone = facts(lines, "DELETED_DIR" if command == "remove-directory" else "DELETED")
+                self.assertEqual([named], [fields[0] for fields in gone], lines)
                 pending.remove(named)
                 recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
                 self.assertEqual(pending, recorded.get("confirmation_refused", []))

@@ -1649,7 +1649,11 @@ class SweepTests(SweepFixture):
                 )
         rc.save_plan(record, {"schema_version": 1, "repositories": [entry], "policy": []})
         code, lines = self.report()
-        self.assertEqual(0, code, "a record a sweep wrote before it kept refusals reads as refusing nothing")
+        self.assertEqual(
+            (0, [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error."]]),
+            (code, facts(lines, "PROCESSED")),
+            "a record a sweep wrote before it kept refusals reads as refusing nothing",
+        )
 
     def test_a_repository_is_quiet_only_when_nothing_changed(self) -> None:
         broken = self.make_clone("broken repo")
