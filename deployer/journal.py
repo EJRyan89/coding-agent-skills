@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, TypeGuard, assert_never
 
+import file_presence
 import json_writer
 from path_containment import posix_within
 
@@ -211,20 +212,20 @@ def check_backup_root(paths: Paths, root: str, run_id: str | None = None) -> Non
     base = root_directory(paths, root)
     backups = base / ".backups"
     _reject_backup_links((base, backups), "contains")
-    if os.path.lexists(backups) and not backups.is_dir():
+    if file_presence.is_occupied(backups) and not file_presence.is_directory(backups, other_is_absent=True):
         raise DeployError(
             f"ERROR: Backup path is not a directory: {platform_support.normalize(backups)}", BACKUP_PATH_REMEDY
         )
     if run_id is None:
         return
     run_backups = backups / run_id
-    if os.path.lexists(run_backups):
+    if file_presence.is_occupied(run_backups):
         raise DeployError(
             f"ERROR: Permanent backup folder for this run already exists: {platform_support.normalize(run_backups)}",
             "Move it out of the deployment root after checking its contents, then retry.",
             see_recovery("Backups"),
         )
-    if base.is_dir():
+    if file_presence.is_directory(base, other_is_absent=True):
         _probe_backup_folder(backups, run_backups)
 
 
@@ -234,7 +235,7 @@ def _probe_backup_folder(backups: Path, run_backups: Path) -> None:
     cannot write, by its permissions or its owner, is refused before the first change and the home is left as found.
 
     What changes after the probe, before the run keeps a copy there, is met after the commit by keep_backup."""
-    made = [run_backups] if os.path.lexists(backups) else [run_backups, backups]
+    made = [run_backups] if file_presence.is_occupied(backups) else [run_backups, backups]
     try:
         fsops.make_directories(run_backups / PROBE_NAME)
         fsops.write_file(run_backups / f"{PROBE_NAME}.file", b"")
@@ -271,7 +272,7 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
         problem = safe_name_problem(name, context)
         if problem is not None:
             raise DeployError(problem)
-    if not base.is_dir():
+    if not file_presence.is_directory(base, other_is_absent=True):
         raise DeployError(f"ERROR: Deployment destination is missing: {platform_support.normalize(base)}")
     check_backup_root(paths, root)
     backups = base / ".backups"
@@ -303,8 +304,9 @@ UNSAFE_HASH = "unsafe"
 
 
 def _hash_existing(path: Path) -> str | None:
-    """Hash a recovery target; content containing a link never matches any journaled hash."""
-    if not os.path.lexists(path):
+    """Hash a recovery target; content containing a link never matches any journaled hash. A target whose metadata
+    cannot be read raises its OSError, which fails the run, rather than reading as absent."""
+    if not file_presence.is_occupied(path):
         return None
     try:
         return hashing.hash_path(path)
@@ -344,7 +346,7 @@ def _item_path(paths: Paths, entry: JournalEntry, suffix: str = "") -> Path:
 def _verify_install(paths: Paths, entry: InstallEntry) -> bool:
     target = _item_path(paths, entry)
     actual = _hash_existing(target)
-    if actual is None and not os.path.lexists(target):
+    if actual is None and not file_presence.is_occupied(target):
         _warn(f"Installed destination missing for {entry['item']}")
         return False
     if actual is not None and actual != entry["staged_hash"]:
@@ -360,6 +362,18 @@ def backup_unchanged(paths: Paths, entry: BackupEntry) -> bool:
     as by an edit just before the move, and is kept as a modified item would have been.
     """
     return _hash_existing(_item_path(paths, entry, BACKUP_SUFFIX)) in (None, entry["backup_hash"])
+
+
+def backup_disposition(paths: Paths, entry: BackupEntry) -> tuple[Literal["delete", "keep", "gone"], str]:
+    """What a committed run's finalization does with an entry's transient backup, with the reason a stat failed or "":
+    delete one the run does not keep while it is unchanged, keep one that is still there, or nothing when it is gone.
+    A copy whose stat fails is kept, never deleted or left unreported."""
+    try:
+        if not entry["retain"] and backup_unchanged(paths, entry):
+            return "delete", ""
+        return ("keep" if file_presence.is_occupied(_item_path(paths, entry, BACKUP_SUFFIX)) else "gone"), ""
+    except OSError as error:
+        return "keep", error.strerror or str(error)
 
 
 def keep_backup(
@@ -378,7 +392,7 @@ def keep_backup(
     kept_at = f".backups/{run_id}/{item}"
     try:
         destination = prepare_backup_destination(paths, run_id, item, root)
-        if os.path.lexists(destination):
+        if file_presence.is_occupied(destination):
             raise DeployError(f"ERROR: Something is already at {platform_support.normalize(destination)}")
         if before_move is not None:
             before_move()
@@ -406,7 +420,7 @@ def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
             f"{item} changed after run {run_id} planned it, so its previous copy is kept at {kept_at} "
             "instead of being deleted."
         )
-    if os.path.lexists(transient):
+    if file_presence.is_occupied(transient):
         if entry["retain"] and _hash_existing(transient) != entry["backup_hash"]:
             _warn(f"Backup hash mismatch for {item}")
             return False
@@ -415,7 +429,7 @@ def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
         return True
     # Only a kept backup an earlier attempt moved gets here: one the run did not keep and that is gone returned above.
     destination = root_directory(paths, entry_root(entry)) / ".backups" / run_id / item
-    if os.path.lexists(destination):
+    if file_presence.is_occupied(destination):
         if _hash_existing(destination) != entry["backup_hash"]:
             _warn(f"Permanent backup hash mismatch for {item} at {kept_at}")
             return False
@@ -446,14 +460,14 @@ def _undo_install(paths: Paths, entry: InstallEntry, backup_hash: str | None) ->
     target = _item_path(paths, entry)
     actual = _hash_existing(target)
     if actual is None:
-        if os.path.lexists(target):
+        if file_presence.is_occupied(target):
             _warn(f"Unexpected state for {entry['item']} during rollback")
             return False
         return True
     if actual == entry["staged_hash"]:
         fsops.remove(target)
         return True
-    if actual == backup_hash and not os.path.lexists(_item_path(paths, entry, BACKUP_SUFFIX)):
+    if actual == backup_hash and not file_presence.is_occupied(_item_path(paths, entry, BACKUP_SUFFIX)):
         # An earlier rollback that stopped partway already put the replaced copy back.
         return True
     _warn(f"Cannot rollback install of {entry['item']} (hash mismatch)")
@@ -464,8 +478,8 @@ def _restore_backup(paths: Paths, entry: BackupEntry) -> bool:
     item = entry["item"]
     target = _item_path(paths, entry)
     transient = _item_path(paths, entry, BACKUP_SUFFIX)
-    transient_exists = os.path.lexists(transient)
-    target_exists = os.path.lexists(target)
+    transient_exists = file_presence.is_occupied(transient)
+    target_exists = file_presence.is_occupied(target)
     if transient_exists and not target_exists:
         if _hash_existing(transient) != entry["backup_hash"]:
             _warn(f"Backup hash mismatch for {item} during rollback")
@@ -490,7 +504,7 @@ def _undo_preserve(paths: Paths, run_id: str, entry: PreserveEntry) -> bool:
         _report(exc)
         return False
     transient = _item_path(paths, entry, BACKUP_SUFFIX)
-    if os.path.lexists(destination) and not os.path.lexists(transient):
+    if file_presence.is_occupied(destination) and not file_presence.is_occupied(transient):
         fsops.move(destination, transient)
     return True
 
@@ -583,7 +597,9 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
         )
         return False
     journal_file = run_dir / "journal.jsonl"
-    if not os.path.lexists(journal_file):
+    # A journal whose stat fails raises here, failing the run, so a run is never deleted with a journal it could not
+    # read.
+    if not file_presence.is_occupied(journal_file):
         fsops.remove(run_dir)
         return True
     run_id = run_dir.name
@@ -591,7 +607,11 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
     if committed is None:
         print("  ERROR: Cannot read manifest during recovery.", file=sys.stderr)
         return False
-    if not journal_file.is_file():
+    try:
+        is_journal = file_presence.is_present(journal_file)
+    except file_presence.NotAFile:
+        is_journal = False
+    if not is_journal:
         # A directory or anything else in the journal's place is no journal recovery can read, and deleting the run
         # with it could delete what the run moved aside, so it is kept for the user like a malformed line.
         print(
@@ -637,15 +657,23 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
     return True
 
 
+def _run_folders(paths: Paths) -> list[Path]:
+    """The folders in the staging root, by name: anything else there is no run, and an entry whose stat fails raises
+    its OSError rather than reading as no run."""
+    return [
+        path for path in sorted(paths.staging_root.iterdir()) if file_presence.is_directory(path, other_is_absent=True)
+    ]
+
+
 def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
     """Each interrupted run the next deployment will reconcile, with whether it can do so without the user.
 
     Changes nothing, for --dry-run. A run without journal entries is not listed, since recovery only deletes it.
     """
-    if not paths.staging_root.is_dir():
-        return []
     try:
-        run_dirs = sorted(path for path in paths.staging_root.iterdir() if path.is_dir())
+        if not file_presence.is_directory(paths.staging_root):
+            return []
+        run_dirs = _run_folders(paths)
     except OSError as error:
         raise DeployError(
             f"ERROR: Cannot list the staging runs in {platform_support.normalize(paths.staging_root)}: "
@@ -658,7 +686,12 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
             pending.append((run_dir.name, False))
             continue
         journal_file = run_dir / "journal.jsonl"
-        if not os.path.lexists(journal_file):
+        try:
+            journaled = file_presence.is_occupied(journal_file)
+        except OSError:
+            pending.append((run_dir.name, False))
+            continue
+        if not journaled:
             continue
         if not journal_file.is_file():
             pending.append((run_dir.name, False))
@@ -685,9 +718,11 @@ def journaled_runs(paths: Paths) -> list[tuple[str, bool]] | None:
     if committed is None:
         return None
     try:
-        if not paths.staging_root.is_dir():
+        if not file_presence.is_directory(paths.staging_root):
             return []
-        run_dirs = sorted(path for path in paths.staging_root.iterdir() if os.path.lexists(path / "journal.jsonl"))
+        run_dirs = [
+            path for path in sorted(paths.staging_root.iterdir()) if file_presence.is_occupied(path / "journal.jsonl")
+        ]
     except OSError:
         return None
     return [(run_dir.name, run_dir.name == committed) for run_dir in run_dirs]
@@ -699,10 +734,11 @@ def recover_incomplete(paths: Paths) -> bool:
     An OSError, such as a file another program holds open, fails the run it hit, and recovery moves on to the next run,
     so one held file neither hides the state of the others nor prints a traceback in place of the guidance.
     """
-    if not paths.staging_root.is_dir():
-        return True
     try:
-        run_dirs = sorted(path for path in paths.staging_root.iterdir() if path.is_dir())
+        # Anything but a folder at the staging root is unexpected state, refused as one it cannot list.
+        if not file_presence.is_directory(paths.staging_root):
+            return True
+        run_dirs = _run_folders(paths)
     except OSError as error:
         print(
             f"  ERROR: Cannot list the staging runs in {platform_support.normalize(paths.staging_root)}: "

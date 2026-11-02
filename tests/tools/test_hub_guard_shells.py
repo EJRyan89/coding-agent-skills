@@ -186,6 +186,9 @@ BASH_COMMANDS = (
     *ASSIGNING_EXPANSIONS,
 )
 UNSET = "<unset>"
+# The part the guard cannot read of a SHELLOPTS a PowerShell session hands bash, which holds names folded where the
+# platform folds environment names; None where it reads the name as Bash does.
+FOLDED_SHELLOPTS = "SHELLOPTS" if platform_support.ENVIRONMENT_NAMES_FOLD_CASE else None
 # Each spelling of unset's options: every bundle of -f, -n, and -v Bash reads, in one word or apart, and spellings it
 # refuses or reads as names.
 UNSET_OPTIONS = (
@@ -338,8 +341,7 @@ def guard_value(command: str, start: Path) -> Path | str | None:
     text = f"export GIT_DIR=before; {command}\ngit status"
     reading = hub_guard.Reading({}, text)
     hub_guard.read_bash(text, start, reading, 0, {})
-    place = reading.calls[-1].place
-    return place.repository if place.repository_named else UNSET
+    return guard_place(reading.calls[-1])
 
 
 class PwshDifferentialTests(unittest.TestCase):
@@ -841,6 +843,11 @@ class BashDefinitionDifferentialTests(unittest.TestCase):
             ("${Env:BASH_FUNC_f%%} = '() { BODY; }'; STARTS -c f", None),
             ("Set-Item 'env:BASH_FUNC_f%%' '() { BODY; }'; STARTS -c f", "BASH_FUNC_"),
             ("[Environment]::SetEnvironmentVariable('BASH_FUNC_f%%', '() { BODY; }'); STARTS -c f", "BASH_FUNC_"),
+            # A SHELLOPTS listing allexport exports the function the bash defines to the bash it starts; Bash reads it
+            # by its exact name, which the session holds folded where the platform folds environment names.
+            ("$env:SHELLOPTS = 'allexport'; STARTS -c 'f() { BODY; }; bash -c f'", FOLDED_SHELLOPTS),
+            ("${env:SHELLOPTS} = 'allexport'; STARTS -c 'f() { BODY; }; bash -c f'", FOLDED_SHELLOPTS),
+            ("Set-Item env:SHELLOPTS 'allexport'; STARTS -c 'f() { BODY; }; bash -c f'", "SHELLOPTS"),
         )
         for form, unread in forms:
             ran = form.replace("BODY", "echo MARKER-RAN").replace("STARTS", f"& '{bash}'")
@@ -855,6 +862,84 @@ class BashDefinitionDifferentialTests(unittest.TestCase):
                 else:
                     self.assertEqual([], reading.unread)
                     self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
+
+class ShellOptionsDifferentialTests(unittest.TestCase):
+    """A nested bash handed a SHELLOPTS that lists allexport exports the functions it defines and the variables it
+    assigns; the guard reads both where Bash runs them, by each way the variable reaches it."""
+
+    def test_the_guard_reads_allexport_where_the_shellopts_a_nested_bash_is_handed_turns_it_on(self) -> None:
+        bash = find_bash()
+        # Each start of a nested bash, with SCRIPT standing for its script.
+        starts = (
+            "env SHELLOPTS=allexport bash -c 'SCRIPT'",
+            "env SHELLOPTS=errexit:allexport bash -c 'SCRIPT'",
+            "env SHELLOPTS=allexport bash +a -c 'SCRIPT'",
+            "env SHELLOPTS=allexport env bash -c 'SCRIPT'",
+            "env SHELLOPTS=pipefail bash -c 'SCRIPT'",
+            "env SHELLOPTS=ALLEXPORT bash -c 'SCRIPT'",
+            "env shellopts=allexport bash -c 'SCRIPT'",
+            "env SHELLOPTS=allexport env -u SHELLOPTS bash -c 'SCRIPT'",
+            "SHELLOPTS=allexport bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; bash -c 'SCRIPT'",
+            "declare -x SHELLOPTS; set -o allexport; bash -c 'SCRIPT'",
+            "set -a; export SHELLOPTS; bash -c 'SCRIPT'",
+            "export SHELLOPTS=x; set -a; bash -c 'SCRIPT'",
+            "declare -x SHELLOPTS=x; set -a; bash -c 'SCRIPT'",
+            "declare -n ref=SHELLOPTS; export ref; set -a; bash -c 'SCRIPT'",
+            "set -a; bash -c 'SCRIPT'",
+            "set -a; export SHELLOPTS; set +a; bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; export -n SHELLOPTS; bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; unset SHELLOPTS; bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; env -u SHELLOPTS bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; env -i PATH=/usr/bin:/bin bash -c 'SCRIPT'",
+            "env SHELLOPTS=allexport bash -c 'set +a; SCRIPT'",
+        )
+        # Each script, with PROGRAM standing for git, and the subcommand the guard reads where Bash runs PROGRAM:
+        # a function the nested bash exports to the next, and a variable it exports to the program.
+        scripts = (("f() { PROGRAM status; }; bash -c f", "status"), ("GIT_DIR=after; PROGRAM log", "log"))
+        with tempfile.TemporaryDirectory() as folder:
+            start = Path(folder).resolve()
+            program = start / "program"
+            # The program prints the GIT_DIR it sees, as git would act on it.
+            program.write_text('#!/bin/bash\necho "PROGRAM-RAN [$GIT_DIR]"\n', encoding="utf-8", newline="\n")
+            program.chmod(0o755)
+            forms = [(form, script, read) for form in starts for script, read in scripts]
+            texts = [form.replace("SCRIPT", script) for form, script, _ in forms]
+            # Each form runs in a subshell of its own, and a line `=== <index>` follows what it printed.
+            body = "".join(
+                f"( {text.replace('PROGRAM', platform_support.normalize(program))} ) 2>/dev/null; echo '=== {index}'\n"
+                for index, text in enumerate(texts)
+            )
+            path = start / "forms.sh"
+            path.write_text(body, encoding="utf-8", newline="\n")
+            output = platform_support.run_tool([bash, "--norc", "--noprofile", platform_support.normalize(path)]).output
+            printed: list[list[str]] = [[]]
+            for line in output.splitlines():
+                if line.startswith("=== "):
+                    printed.append([])
+                elif line.startswith("PROGRAM-RAN"):
+                    printed[-1].append(line)
+            self.assertEqual(len(texts) + 1, len(printed))
+            for (form, script, subcommand), text, lines in zip(forms, texts, printed, strict=False):
+                # A function that runs, or a GIT_DIR the program sees, shows allexport held in the nested bash.
+                exported = bool(lines) if "f()" in script else "PROGRAM-RAN [after]" in lines
+                guarded = text.replace("PROGRAM", "git")
+                reading = hub_guard.Reading({}, guarded)
+                hub_guard.read_bash(guarded, start, reading, 0, {})
+                calls = [call for call in reading.calls if call.subcommand == subcommand]
+                with self.subTest(form=form, script=script, exported=exported):
+                    self.assertEqual([], reading.unread)
+                    if "f()" in script:
+                        self.assertEqual(exported, bool(calls))
+                    else:
+                        [call] = calls
+                        self.assertEqual(start / "after" if exported else UNSET, guard_place(call))
+
+
+def guard_place(call: hub_guard.GitCall) -> Path | str | None:
+    """The repository GIT_DIR names for a git call, as the guard reads it, or UNSET when none reaches it."""
+    return call.place.repository if call.place.repository_named else UNSET
 
 
 class EnvironmentSetDifferentialTests(unittest.TestCase):

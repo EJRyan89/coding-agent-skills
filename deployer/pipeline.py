@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import functools
-import os
 import secrets
 import sys
 import time
@@ -143,20 +142,23 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
     for entry in list(record.entries):
         if entry["op"] != "backup":
             continue
-        if not entry["retain"] and journal.backup_unchanged(context.paths, entry):
-            unkept.append(entry)
-            continue
         root = journal.entry_root(entry)
         item = entry["item"]
-        transient = journal.root_directory(context.paths, root) / transient_name(item)
-        if os.path.lexists(transient):
+        disposition, unreadable = journal.backup_disposition(context.paths, entry)
+        if disposition == "delete":
+            unkept.append(entry)
+        elif disposition == "keep":
             # After the commit nothing refuses: a copy that cannot be kept under .backups stays beside its item.
             preserve = functools.partial(record.preserve, root, item)
             kept_at = journal.keep_backup(context.paths, run_id, entry, preserve)
             if kept_at is None:
                 continue
             backups.append((item, kept_at))
-            if not entry["retain"]:
+            if unreadable:
+                why = f"Could not tell whether {item}'s previous copy changed after this deployment planned it"
+                why = f"{why} ({unreadable})"
+                print(f"WARNING: {why}, so it was kept at {kept_at}.", file=sys.stderr)
+            elif not entry["retain"]:
                 print(
                     f"WARNING: {item} changed after this deployment planned it, so its previous copy was kept at "
                     f"{kept_at} instead of being deleted.",
