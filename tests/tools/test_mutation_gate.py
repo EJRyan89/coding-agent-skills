@@ -32,8 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validati
 
 from fsops_platform import PLATFORM_TOKENS
 from git_client import GitClient
-from job_selection import importers, python_imports, reached_suites, repository_files
+from job_selection import importers, python_imports, reached_suites
 from suite_names import is_suite_name
+from validation_support import repository_files
 
 from deployer import platform_support
 from tools import mutation_gate

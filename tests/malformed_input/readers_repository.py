@@ -88,6 +88,7 @@ MUTATION_SELECTION = {
             "lines": 1,
             "tables": [["X_ALLOWED", "tests/validation/x.py"]],
             "windows": True,
+            "digest": "ab" * 32,
             "mutants": [MUTATION_MUTANT],
         }
     ],
@@ -99,6 +100,16 @@ MUTATION_LEG = {
     "workers": 2,
     "failed_suites": {"tests/a.py": "failed unmutated with exit code 1"},
     "unmeasured_suites": ["tests/b.py"],
+    "needed": {"tools/paths.py": 12.5},
+    "available": 30.0,
+    "local": {
+        "minutes": 60,
+        "seconds": 12.0,
+        "workers": 2,
+        "mutants": {"tools/paths.py": [0]},
+        "failed_suites": {"tests/d.py": "failed unmutated with exit code 1"},
+        "unmeasured_suites": ["tests/e.py"],
+    },
     "outcomes": {"tools/paths.py": [{"status": mutation_gate.KILLED, "suites": ["tests/c.py"], "tests": [1]}]},
 }
 
