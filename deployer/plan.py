@@ -6,11 +6,12 @@ The dry run prints the plan and the deployment carries it out, so the two cannot
 from __future__ import annotations
 
 import difflib
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import assert_never
+
+import file_presence
 
 from . import fsops, hashing, journal, platform_support, render, source
 from .arguments import PROG, usage_error
@@ -105,7 +106,7 @@ def _plan_selected(
 ) -> PlanEntry:
     """Plan an item this run installs, with --force and --force-item applied."""
     destination = journal.root_directory(context.paths, kind.root) / name
-    if not os.path.lexists(destination):
+    if not file_presence.is_occupied(destination):
         return PlanEntry(name, kind, "absent", "INSTALL", staged=staged_hash)
     if not kind.has_expected_type(destination):
         return PlanEntry(name, kind, "wrong type", "SKIP", f"destination is not {kind.type_name}", staged=staged_hash)
@@ -159,7 +160,7 @@ def _plan_unselected(context: Context, kind: ItemKind, name: str, owned_hash: st
         renamed = context.source.renamed.get(name)
         reason = f"{MODIFIED}, renamed '{renamed}' in the source" if renamed else MODIFIED
         return PlanEntry(name, kind, "modified", "PRESERVE", reason, existing)
-    if os.path.lexists(destination):
+    if file_presence.is_occupied(destination):
         return PlanEntry(name, kind, "wrong type", "PRESERVE", f"destination is not {kind.type_name}")
     return PlanEntry(name, kind, "absent", "DROP", "already absent")
 
@@ -458,7 +459,8 @@ def _retained(context: Context, kind: ItemKind, survivors: list[str], staged: li
 
 def _ensure_transient_available(item: str, base: Path) -> None:
     transient = base / transient_name(item)
-    if os.path.lexists(transient):
+    # A stale backup whose stat fails raises here, refusing the plan, since the run's move could replace it.
+    if file_presence.is_occupied(transient):
         raise DeployError(
             f"ERROR: Refusing to deploy '{item}': transient backup "
             f"already exists at {platform_support.normalize(transient)}",
