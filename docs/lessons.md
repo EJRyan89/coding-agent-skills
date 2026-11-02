@@ -261,7 +261,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::PowerShellDefinitionDifferentialTests`,
   `tests/tools/test_hub_guard.py::ContractTests::test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle`,
   `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`,
-  `tests/tools/test_hub_guard_pwsh.py::ReaderSourceTests`,
+  `tests/tools/test_hub_guard_shells.py::ReaderSourceTests`,
   `tests/tools/test_hub_guard_shells.py::EnvironmentSetDifferentialTests`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later

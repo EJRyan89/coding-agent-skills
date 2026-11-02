@@ -292,9 +292,13 @@ refused while a guarded hub is in view, and what they do not see at all is named
   `New-Item`, and `Set-Content` at their path, `Copy-Item` at its destination, `New-Item` on the provider's root
   with `-Name`, and `Rename-Item` with `-NewName`, while `Remove-Item` and `Clear-Item` remove one, and so does
   assigning `$null`. `PSVariable.Set` is read on every receiver the resolver types as `PSVariableIntrinsics`,
-  quoted, parenthesized, scoped, through `$PSCmdlet`, or cast, and on one it does not type, and
-  `SetEnvironmentVariable` sets the session's variable unless its target settles to another, as a string, a number, a
-  cast, or a member of `EnvironmentVariableTarget`; neither is decided by the text it is spelled in. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
+  quoted, parenthesized, scoped, through `$PSCmdlet`, or cast, and on one it does not type, which includes one typed
+  as `[object]` or any other type an engine object can be assigned to; `Invoke` and `DynamicInvoke` on a receiver it
+  does not type are read as either setter. `SetEnvironmentVariable` sets the session's variable unless its target
+  settles to another, as a string, a number, a cast, or a member of `EnvironmentVariableTarget`; neither is decided by
+  the text it is spelled in. A method reached without a call, as `[Environment]::SetEnvironmentVariable` kept or
+  handed to `.Invoke`, and a member called by its name, through `ForEach-Object -MemberName` or `.ForEach('Set')`,
+  are parts the guard cannot read. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
   `Environment::<name>` (also `\Environment::<name>` and `Microsoft.PowerShell.Core\Environment::<name>`); after
   `Environment::` a separator becomes part of the variable's name, which git never reads. On Windows git reads an
   environment name in any case, so `git_dir` is `GIT_DIR` there; elsewhere only the upper-case name counts. Bash

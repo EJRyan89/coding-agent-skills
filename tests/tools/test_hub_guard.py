@@ -2165,6 +2165,30 @@ class ContractTests(GuardTestCase):
                     "[Foo]::Machine",
                 )
             ),
+            # A setter reached another way than by calling it, by a receiver typed as one an engine object can be
+            # assigned to, or by its name.
+            *(
+                f"{form}; git reset --hard"
+                for form in (
+                    f"[Environment]::SetEnvironmentVariable.Invoke('GIT_WORK_TREE', '{self.hub}')",
+                    f"$m = [Environment]::SetEnvironmentVariable; $m.Invoke('GIT_WORK_TREE', '{self.hub}')",
+                    f"[System.Environment]::SetEnvironmentVariable.DynamicInvoke('GIT_WORK_TREE', '{self.hub}')",
+                    f"$m.Invoke('GIT_WORK_TREE', '{self.hub}')",
+                    f"$m.DynamicInvoke(@('GIT_WORK_TREE', '{self.hub}'))",
+                    "$v = Get-Variable ExecutionContext -ValueOnly;"
+                    f" ([object]$v.SessionState.PSVariable).Set('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"([object]$p).Set('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"([System.Object]$p).'Set'('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"$v.SessionState.PSVariable.Set.Invoke('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"$p.Set.Invoke('env:GIT_DIR', '{self.hub}')",
+                    f"$p | ForEach-Object -MemberName Set -ArgumentList 'env:GIT_WORK_TREE', '{self.hub}'",
+                    f"$p | % Set 'env:GIT_WORK_TREE' '{self.hub}'",
+                    f"$p | foreach -Member Set -Args 'env:GIT_WORK_TREE', '{self.hub}'",
+                    f"$p.psobject.Methods['Set'].Invoke('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"@($p).ForEach('Set', 'env:GIT_WORK_TREE', '{self.hub}')",
+                    f"$p.ForEach('Set', 'env:GIT_WORK_TREE', '{self.hub}')",
+                )
+            ),
         ]
         for command in commands:
             with self.subTest(command=command):
