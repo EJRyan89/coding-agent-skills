@@ -1165,6 +1165,16 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
 
 UNPLACED = "could not tell where `git {}` runs"
 WRITES = "`git {}` would move the hub's HEAD or write its index or tree."
+# Each spelling of unset's options that removes a function: -f, with any -n beside it, in one word or apart, with
+# -- before the names or not.
+UNSET_FUNCTION_OPTIONS = tuple(
+    f"{spelling}{end}"
+    for count in (1, 2, 3)
+    for letters in itertools.product("fn", repeat=count)
+    if "f" in letters
+    for spelling in dict.fromkeys(("-" + "".join(letters), " ".join(f"-{letter}" for letter in letters)))
+    for end in ("", " --")
+)
 
 
 def guard_section() -> str:
@@ -2783,6 +2793,56 @@ class ContractTests(GuardTestCase):
         self.assertIsNone(
             self.powershell("if ($y) { function f { Write-Output a } } else { function f { git status } }; f", self.hub)
         )
+
+    def test_unset_removes_the_function_by_each_option_spelling_bash_reads(self) -> None:
+        # -f in any bundle or word, beside -n, which a function ignores; and a bare unset of a name no variable has.
+        removed = (
+            *(f"git() {{ :; }}; unset {options} git; git switch -c x" for options in UNSET_FUNCTION_OPTIONS),
+            "git() { :; }; unset git; git switch -c x",
+            "git() { :; }; unset -- git; git switch -c x",
+            "git() { :; }; unset other git; git switch -c x",
+            "declare -n git=other; git() { :; }; unset git; git switch -c x",
+            "o=-fn; git() { :; }; unset $o git; git switch -c x",
+            # exec's -a takes the next word in a bundle too, so git is the program it runs.
+            "exec -ca name git switch -c x",
+            "exec -la name git switch -c x",
+        )
+        for command in removed:
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(WRITES.format("switch"), self.reason)
+        # An option word the text does not settle may be -f, or anything else.
+        for command in (
+            "git() { :; }; unset $o git; git status",
+            'git() { :; }; unset "$@" git; git status',
+            "git() { :; }; unset -n $o git; git status",
+            "git() { :; }; unset -f $o; git status",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("could not read the options passed to unset", self.reason)
+        # A name the text does not settle may be any function's, after --, or among the names.
+        for command in ("git() { :; }; unset -- $o; git status", "git() { :; }; unset -f other $o; git status"):
+            reading = hub_guard.Reading({}, command)
+            hub_guard.read_bash(command, None, reading, 0, {})
+            with self.subTest(command=command):
+                self.assertEqual([], reading.unread)
+                self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+        # -f with -v, or an option Bash does not know, unsets nothing; -v and -n leave the function, as does a bare
+        # unset of a name a variable is set by.
+        for command in (
+            "git() { :; }; unset -fv git; git switch -c x",
+            "git() { :; }; unset -vf git; git switch -c x",
+            "git() { :; }; unset -f -v git; git switch -c x",
+            "git() { :; }; unset -fx git; git switch -c x",
+            "git() { :; }; unset --f git; git switch -c x",
+            "git() { :; }; unset -v git; git switch -c x",
+            "git() { :; }; unset -nv git; git switch -c x",
+            "git() { :; }; unset -n git; git switch -c x",
+            "git=1; git() { :; }; unset git; git switch -c x",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
 
     def test_bash_runs_its_first_operand_after_every_option_as_the_c_script(self) -> None:
         for command in (
