@@ -1355,6 +1355,21 @@ class ScanTests(TemporaryTestCase):
             [line for line in lines if line.startswith("RUNTIME_PROMPT_")],
         )
 
+    def test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line(self) -> None:
+        text = self.source_skill().read_text(encoding="utf-8")
+        for folder in ("space dir/my-skill", "two  spaces/my skill"):
+            with self.subTest(folder=folder):
+                skill = write(self.root / folder / "SKILL.md", text)
+                code, lines, error = run("scan", str(skill))
+                self.assertEqual(0, code, error)
+                self.assertEqual(
+                    [
+                        f"RUNTIME_PROMPT {skill.as_posix()} 4 " + "${CLAUDE_SKILL_DIR}/scripts/pipeline.py",
+                        f"RUNTIME_PROMPT_UNSAMPLED {skill.as_posix()} 4 not in a skill source tree",
+                    ],
+                    [line for line in lines if line.startswith("RUNTIME_PROMPT")],
+                )
+
     def test_a_sample_is_measured_with_the_files_it_names_and_whether_it_bounds_the_reply(self) -> None:
         skill = self.source_skill()
         write(self.root / "skills" / "core" / "references" / "reviewer.md", "x" * 40 + "\n")
