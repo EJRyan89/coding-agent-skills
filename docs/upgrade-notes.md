@@ -17,6 +17,552 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.12.0
+
+Level: minor.
+
+### dotnet-format's layout fixer refuses a read-only file per file and checks every file before the first write
+
+- Level: patch. A fix: `--fix` and `--apply` now refuse a read-only file with a `REFUSED` line and carry on, where they used to stop with `FAILED` after part of the tree was changed.
+- Contract: `dotnet-format` `REFUSED`, `dotnet-format` `FIXED`
+- User action: none.
+- Pull request: #2158
+
+### A state file an earlier release wrote with a lone surrogate is refused
+
+- Level: patch, a defect fix: this release's JSON reader refuses a lone surrogate (#2061), and the refusal of such a state file now says why and what to do.
+- Contract: none
+- User action: none, unless a deployment stops with `holds a lone surrogate` for the manifest, or with a malformed journal entry or lock metadata that holds one. Then follow "A state file that does not read" in `docs/recovery.md`. For the manifest, put back a copy you trust, or move it out of `~/.claude/skills` and run `python deploy.py --all --dry-run`. A journal's run is reconciled as "When recovery fails" describes, and a stale lock is removed.
+- Pull request: #2121
+
+### A read-only file a skill would replace is refused
+
+- Level: patch, a defect fix. The refusal makes Linux behave as Windows already did, and keeps the protection the user set on the file.
+- Contract: none
+- User action: none, unless you keep a file a skill writes read-only, such as a source file in a TFVC or Perforce workspace before `dotnet-format --fix`, or a dashboard, history, or plan file. Make it writable, for example by checking it out, before running the skill. The failure line names the file.
+- Pull request: #2117
+
+### `deploy.py check` names a tag holding a Unicode line separator
+
+- Level: patch, a fix: a valid tag name no longer fails the check.
+- Contract: none.
+- User action: none.
+- Pull request: #2115
+
+### Status overrides that render one heading share one tracker section
+
+- Level: patch, a defect fix: the contract row now states the comparison the tracker applies, which only merges sections that already showed one heading.
+- Contract: `update-pr-dashboard` `status_overrides`
+- User action: none.
+- Pull request: #2069
+
+### dotnet-format refuses an absolute file-list entry or solution, and reads its file list NUL-separated
+
+- Level: patch, a defect fix: the scripts now apply the refusal their contract already stated, and the file list is internal to one run of the skill.
+- Contract: `dotnet-format` `REFUSED`, `dotnet-format` `FILE_LIST`
+- User action: none. A file list saved from an earlier version is refused; run the skill again to write a new one.
+- Pull request: #2059
+
+### A status override spaced like a computed state is refused, and spellings of one status share a section
+
+- Level: patch, a defect fix; the newly refused value already rendered a duplicate computed section.
+- Contract: none
+- User action: if `update-pr-dashboard` now fails naming a status override that duplicates a computed tracker state, set that pull request's override to another status, or clear it, with `dashboard_pipeline.py override`.
+- Pull request: #2014
+
+### Review records count each reviewer's searches, and the report notes a reviewer that read no source of a large change
+
+- Level: minor. An addition: each reviewer the guard held records `searches`, its searches of the source snapshot (a `Grep` of a folder, a `Glob`, or a `source-search`), apart from `files_read`, null when not counted; the report's Reviewers table gains a **Searches** column and a line saying what each read column measures; and a report notes each reviewer that read and searched no source when the pull request changes more lines than the new configuration value `unread_source_lines` (200 by default). The note changes no verdict. An earlier release refuses a record that has `searches`, and a canary's `STATS` reviewer lines end in `searches=<n>`.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none; set `unread_source_lines` in the code-review configuration to change when the note appears.
+- Pull request: #2001
+
+### A finding linked to one of another category is a new finding
+
+- Level: patch. A fix: a reviewer's link across categories was recorded as a repeat, which hid the new finding.
+- Contract: none
+- User action: none. A re-review may now show a finding as new, and count it, where it showed a repeat before.
+- Pull request: #2000
+
+### A report's severity headings and the dashboard's Findings cell name repeats
+
+- Level: patch, a display fix with no contract change.
+- Contract: none
+- User action: none. A severity heading with repeats now reads like `SUGGESTIONS (2 issues, 3 repeats)`, and the dashboard's Findings cell like `2S open (3 repeats)`; both still count each problem once. A dashboard collected before updating shows no repeats until its next update.
+- Pull request: #1993
+
+### A review that ran several specialists keeps each one's summary
+
+- Level: patch, a defect fix whose record change is an optional field older records omit.
+- Contract: `record.review.reviewers[].summary`
+- User action: none. A record written by this version holds each specialist's own summary on its reviewer run, and its stored combined summary labels each role as `role: text` without bold markers; a reader of records that relied on the `**role:**` markers reads the per-reviewer `summary` instead.
+- Pull request: #1992
+
+### verify and the shepherd refuse an answer of a shape they do not know
+
+- Level: patch, a defect fix: each ends such an answer in the failure it already reports for one it cannot read.
+- Contract: none
+- User action: none
+- Pull request: #1988
+
+### A reader names a section or setting of another kind instead of reading it as empty
+
+- Level: patch, a defect fix: each reader ends such input in the failure or report it documents.
+- Contract: none
+- User action: none
+- Pull request: #1987
+
+### Input nested past the shared depth limit is refused by name
+
+- Level: patch, a defect fix: each parser ends such input in the refusal it documents.
+- Contract: none
+- User action: none
+- Pull request: #1986
+
+### audit-skill refuses a plugin hooks file it cannot read whole
+
+- Level: patch, a defect fix: the scan ends in the refusal it already documents for a hooks file it cannot read.
+- Contract: none
+- User action: none
+- Pull request: #1981
+
+### `check` and `--at` name Git's reason when Git cannot read the checkout
+
+- Level: patch, a fix: a refusal that misnamed its cause now names it, and no command, option, or file format changes.
+- Contract: none.
+- User action: none. Where `check` or `--at` now stops with Git's reason, put right what Git reports in the checkout, then retry.
+- Pull request: #1966
+
+### A JSON or XML file nested past 100 levels is refused by name
+
+- Level: patch, a defect fix: each reader ends such a file in the refusal it documents, and no shipped file nests near the limit.
+- Contract: none
+- User action: none
+- Pull request: #1972
+
+### A guarded reviewer may read a snapshot file whose path no UTF-8 log can hold
+
+- Level: patch, a fix: such a Read was denied as a call the guard could not evaluate, though it lay inside the reviewer's run.
+- Contract: none
+- User action: none. The read goes uncounted in the reviewer's `files_read` and `bytes_read`.
+- Pull request: #1979
+
+### A git failure in curate-agent-memory, the code-review pipeline, or review-document is reported, not taken for absence
+
+- Level: patch, a defect fix: each names git's reason where it used to go on as if something were absent.
+- Contract: none.
+- User action: none. If one of them now fails naming git, fix what git names, such as a broken ref or an unparsable `.git/config`.
+- Pull request: #1959
+
+### A ref git cannot read is reported, not taken for missing
+
+- Level: patch, a defect fix: repo-cleanup and dotnet-format report git's reason where they used to go on as if the ref did not exist.
+- Contract: none.
+- User action: none. If repo-cleanup now reports `ERROR git ... failed in <repository>` or dotnet-format `git could not resolve`, fix what git names, such as a broken ref file or an unparsable `.git/config`.
+- Pull request: #1950
+
+### A guidance version git cannot read fails the report
+
+- Level: patch, a defect fix: a git failure is reported as one instead of as a guidance version that is not there.
+- Contract: none.
+- User action: none. If `report` now prints `FAILED git could not read <path> at <commit>`, fix what git names, or point the repository's `checkout_path` at a git checkout of it.
+- Pull request: #1952
+
+### The release adds a twin sweep before tagging
+
+- Level: patch. Maintainer-facing only: "Before tagging" in `docs/releasing.md` gains step 9, run through `audit-repository twins`; nothing changes for an installation.
+- Contract: none.
+- User action: none.
+- Pull request: #1945
+
+### A checkout git cannot read is reported, not taken for none
+
+- Level: patch, a defect fix: these commands stop with git's reason where they used to go on without the repository.
+- Contract: none.
+- User action: none. If audit-skill, shepherd-pull-requests, or review-insights now prints `FAILED git could not read the checkout at <dir>`, fix what git names, such as an unparsable `.git/config` or a `safe.directory` entry, and run it again.
+- Pull request: #1947
+
+### Codex network reasons point to the guide
+
+- Level: patch, since only the wording of declared reasons changes; no level, need, or behavior changes.
+- Contract: `dotnet-format` `runtime_support` `codex`, `github-activity-report` `runtime_support` `codex`, `repo-cleanup` `runtime_support` `codex`, `review-document` `runtime_support` `codex`, `review-prs` `runtime_support` `codex`, `update-coding-agent-skills` `runtime_support` `codex`, `update-pr-dashboard` `runtime_support` `codex`
+- User action: none. A configuration that already opens Codex's network keeps working; "Network access" in `docs/codex-support.md` gives both routes, and warns against setting a permission profile together with `[sandbox_workspace_write]`.
+- Pull request: #1927
+
+### A number past the digit limit ends in each skill's own failure
+
+- Level: patch, a defect fix: `flag-review-finding` and `dotnet-format` end such input in their documented `FAILED <reason>` line, and `audit-skill` reports it as an `EXIT_MISMATCH` line or skips a shell exit no shell takes.
+- Contract: none
+- User action: none
+- Pull request: #1925
+
+### The deploy menu names an answer that is no whole number
+
+- Level: patch, a defect fix: the menu gives its documented refusal.
+- Contract: none
+- User action: none
+- Pull request: #1920
+
+### A JSON integer past the digit limit is refused by name
+
+- Level: patch, a defect fix: each JSON reader ends such a file in the refusal it documents.
+- Contract: none
+- User action: none
+- Pull request: #1919
+
+### A relative GIT_BASH or PROGRAMFILES is ignored on Windows
+
+- Level: patch, a fix that makes the lookups follow the platform seam's rule that nothing is looked up relative to the working directory.
+- Contract: none.
+- User action: none, unless `GIT_BASH` is set to a relative path; set it to the absolute path of Git's `bin\bash.exe`.
+- Pull request: #1904
+
+### dotnet-format's and audit-ai-config's scripts refuse a `--timeout` that is no limit
+
+- Level: patch, a defect fix: the values now refused raised, ran without a bound, or timed out every command at once.
+- Contract: `dotnet-format` `--timeout`, `audit-ai-config` `--timeout`. `run_dotnet_format.py --timeout` and `mcp_handshake.py --timeout` now refuse `nan`, `inf`, zero, a negative number, and text that is not a number with argparse's usage error, exit 2, which names the value: `argument --timeout: must be a positive number of seconds, not <value>`.
+- User action: none.
+- Pull request: #1914
+
+### The duplication policy refuses a shared fact restated outside its owner
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user who deploys. A contributor who writes git's value options, a suite-name pattern such as a `test_*.py` glob, or the code-review default configuration name as a literal outside its owner now fails validation. Import the fact or call what the owner offers, such as `is_suite_name`, or sanction it with `DUPLICATION_ALLOWED` as "Validation" in `docs/adding-a-skill.md` describes.
+- Pull request: #1878
+
+### JSON a skill reads may no longer repeat a key or hold NaN
+
+- Level: patch, a defect fix: every reader already documented refusing a file it cannot read, and JSON leaves a repeated key and `NaN` undefined.
+- Contract: none
+- User action: none, unless a configuration or tracker file you edit by hand repeats a key in one object or holds `NaN` or `Infinity`: the skill now refuses it with its usual failure line, naming the key or the constant. Remove the repeat and run again.
+- Pull request: #1874
+
+### update-pr-dashboard refuses a pull-request number longer than ten digits
+
+- Level: patch, since no GitHub pull request has such a number.
+- Contract: `update-pr-dashboard` `FAILED`. It now also ends `update`, `review-arguments --confirm`, and `override --set` or `--clear` given a pull-request identity whose number has more than ten digits, and `update` given a tracker input file larger than the code-review core's `read_json` reads.
+- User action: none.
+- Pull request: #1874
+
+### Contributors install the development lock with hash checking and wheels only
+
+- Level: patch. A documented command and a printed hint gain the flags CI already passes.
+- Contract: none
+- User action: none for a user who deploys. A contributor installs the development dependencies with `python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt`.
+- Pull request: #1869
+
+### audit-skill reads a Python script's git network calls
+
+- Level: patch. A fix: the derivation now matches what the runtimes need, and no shipped skill's declared support changes.
+- Contract: `audit-skill` `RUNTIME_NEEDS`
+- User action: none
+- Pull request: #1868
+
+### dotnet-format refuses a solution outside the repository
+
+- Level: patch, a defect fix that brings the formatter and the layout checker in line with the skill's promise to act only inside the repository.
+- Contract: `dotnet-format` `FAILED`. `run_dotnet_format.py check` and `fix` and `csharp_layout.py config` now also end with `FAILED the solution <solution> is refused: <reason>` when `--solution` lies outside the repository root, through `..`, an absolute path, a network share or device form, or a symbolic link or junction.
+- User action: none. The solution `resolve` chooses always lies inside the root.
+- Pull request: #1870
+
+### Codex's guide gives a permission profile for network access
+
+- Level: patch, a documentation change to the Codex guide.
+- Contract: none
+- User action: none. A machine that turned the network on with `[sandbox_workspace_write] network_access = true` keeps working. To move to the permission-profile route that "Network access" in `docs/codex-support.md` now gives, remove `sandbox_mode` and `[sandbox_workspace_write]` from `~/.codex/config.toml` first, since the two do not combine.
+- Pull request: #1866
+
+### The hub guard refuses a script pwsh reads from its standard input
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, while a guarded hub is in view, a command that names git and pipes a script to `pwsh`, or runs `pwsh -Command -` or `pwsh -File -`, is now refused as one the guard cannot read, where before it was allowed. Pass the script with `pwsh -Command`, which the guard reads.
+- Pull request: #1865
+
+### The hub guard refuses a script bash or sh reads from its standard input
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, while a guarded hub is in view, a command that names git and pipes a script to `bash` or `sh`, or runs `bash -s`, is now refused as one the guard cannot read, where before it was allowed. Pass the script with `bash -c` or a here-string, which the guard reads.
+- Pull request: #1851
+
+### review-insights names a repository whose guidance overlap search stopped at its budget
+
+- Level: minor, a new output line.
+- Contract: `review-insights` `GUIDANCE_SEARCH_STOPPED`
+- User action: none. When a report prints `GUIDANCE_SEARCH_STOPPED <repo> pairs=<n>`, a missing `GUIDANCE_OVERLAP` for that repository does not mean its guidance agrees.
+- Pull request: #1864
+
+### review-insights refuses a report with a field missing or of the wrong kind, naming it
+
+- Level: patch. A fix: `decide`, `decide-custom`, `synthesize`, and `report` already promised a `FAILED <reason>` last line.
+- Contract: `review-insights` `FAILED`
+- User action: none. A hand-edited report that lacks a field now fails with a line naming the field; restore it, or run `report` again for that range.
+- Pull request: #1864
+
+### The adapter result schema reads whitespace and line ends as the validator does
+
+- Level: patch. A fix: the schema states only what `check` already accepts and refuses, now for every character.
+- Contract: `skills/ejryan89-code-review-core/references/review-adapter.schema.json`
+- User action: none. A tool that validated adapter results against the schema now accepts a field holding U+FEFF and refuses one that is blank by Python's whitespace or a title broken by a Python line end, as `check` always did.
+- Pull request: #1863
+
+### configure clears a repo-cleanup list with a lone `-`
+
+- Level: patch. A defect fix: the prompt promised an empty answer meant none, and nothing let a user clear a list already set.
+- Contract: none
+- User action: none. To clear `REPO_CLEANUP_REGENERABLE` or `REPO_CLEANUP_PROTECTED`, answer `-` at its prompt instead of running `configure --reset`.
+- Pull request: #1862
+
+### Manifest refusals say what to do, and print forward-slash paths
+
+- Level: patch, a defect fix that brings refusal output in line with what `docs/installation.md` already promises.
+- Contract: none
+- User action: none. A manifest the deployer refuses now ends with the step to take: put back a copy you trust, or move it out of the skills folder and rerun with `--dry-run`, as "A state file that does not read" in `docs/recovery.md` describes. A manifest a newer checkout wrote asks you to update this checkout with `git pull` or deploy from that checkout. On Windows, the manifest's path and the configuration file's path in a refusal print with forward slashes, as every other deployer path does.
+- Pull request: #1861
+
+### The hub guard reads a computed PowerShell provider path as Bash reads a computed export
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, a PowerShell cmdlet that writes, removes, or renames an environment variable at a path or name the command computes, such as `Set-Item $p x` or `Set-Content $p x`, now leaves a later git call that writes the checkout unplaced, so it is refused while a guarded hub is in view, as after `export "$v"=x` in Bash. Write the path out, or end it in a literal file name such as `"$dir\out.txt"`.
+- Pull request: #1850
+
+### repo-cleanup drops `summary` and `sweep --plans`, and a never-offered confirmation exits 1
+
+- Level: minor. A subcommand and an option are removed and an exit code changes, which before 1.0.0 a minor carries. The skill's own steps never ran either removed command, and they act on the printed lines, not the exit status.
+- Contract: `repo-cleanup` `summary`, `repo-cleanup` `--plans`, `repo-cleanup` `delete-local`, `repo-cleanup` `force-delete`, `repo-cleanup` `remove-directory`
+- User action: none for the skill. A script of your own that ran `repo_cleanup.py summary --plan <file>` runs `report --record <plans directory>` instead. One that passed `sweep --plans <directory>` drops the option and reads the directory from the `PLANS` line.
+- Pull request: #1860
+
+### audit-skill names a missing script, an unreadable trigger scenario, and the needs of a skill it invokes
+
+- Level: minor, since the skill prints new output lines and gives `RUNTIME_NEEDS` a new evidence kind; a user who updates needs to do nothing.
+- Contract: `audit-skill` `SCRIPT_MISSING`, `audit-skill` `TRIGGER_SCENARIO_UNREADABLE`, and `audit-skill` `RUNTIME_NEEDS` (the `skill <name>` evidence)
+- User action: none
+- Pull request: #1853
+
+### The hub guard notes a checkout git cannot read, and worktrees list shows a count it could not take as unknown
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none. In a clone that has opted into the guard, a checkout git answers with an error for is noted on stderr instead of passed over in silence. `python tools/worktrees.py list` shows a count it could not take as `?` with the state `unknown`, where before it showed `-` and `in progress`.
+- Pull request: #1846
+
+### A malformed hooks file, file list, or memory index is refused by name
+
+- Level: patch, a defect fix that brings each reader in line with the refusal it already documents.
+- Contract: none
+- User action: none.
+- audit-skill's scan ends with `FAILED <file> is not a JSON object` for a plugin hooks file that is not an object, where it read it as holding no hooks.
+- dotnet-format ends with `FAILED <file> line <n> holds a NUL, which no path holds` for a file list with a NUL on a line.
+- curate-agent-memory ends with `FAILED <dir> is not a memory directory: its MEMORY.md cannot be read: not a file` when a directory stands in the index's place, where it said the folder holds no `MEMORY.md`.
+- Pull request: #1848
+
+### A skill whose sibling skill is missing ends with a FAILED line
+
+- Level: patch, a defect fix that brings the missing-sibling exit in line with the "Script results" contract.
+- Contract: none
+- User action: none. A skill script run without a sibling skill it needs now prints `FAILED MissingSibling: skill <name> has no scripts under <folder>; <remedy>` on stdout and exits 1, where it printed the reason on stderr. A git stream that has not exited in time is now reported as `had not exited after <n> seconds` instead of `gave no output`.
+- Pull request: #1840
+
+### The merge shepherd updates one pull request at a time and can hold one from merging
+
+- Level: patch, a change to a repository skill's behavior and status lines; nothing ships.
+- Contract: none
+- User action: none. A shepherd session running `shepherd-pull-requests` now meets `HELD #<number> <branch> "<reason>"` for a pull request whose body holds a line `Shepherd-hold: <reason>`, which it does not arm and whose auto-merge it turns off. It also meets the `disarmed` action, and `next-tick` on every behind pull request but the one it updates. A `HUB` line naming a hub the tick runs in and could not fast-forward now exits 1.
+- Pull request: #1845
+
+### The release and rotation briefs ask four questions, and a duplicate search says when it was cut short
+
+- Level: patch, a change to a repository skill's briefs and status lines; nothing ships.
+- Contract: none
+- User action: none. `audit-repository` now prints `QUESTION <name> <what>` lines and a `question` finding field for release and rotation runs, and `MATCHES_CUT <query> <limit>` after a duplicate search that found more issues than it lists.
+- Pull request: #1845
+
+### The hub guard reads `env -C<dir>`, and only the last of several `-C`
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, a git call that `env -C<dir>` starts, with the directory attached, is now judged where `env` runs it, where before it was refused as an option the guard could not read. Given two `-C`, `env` runs its command in the last one, read from where `env` starts, and the guard now judges the call there rather than at the two joined.
+- Pull request: #1843
+
+### update-pr-dashboard can mute repositories it names as untracked
+
+- Level: minor. An addition: `repository --ignore "<owner/repo or pattern>"` records an entry in the code-review configuration's new `dashboard.ignored_repositories`, printing `IGNORED <entry>`, and `--unignore` removes one, printing `UNIGNORED <entry>`. `collect` no longer prints `UNTRACKED_REPOSITORY` for a repository an entry matches, and prints `UNTRACKED_IGNORED <count>` when it mutes any. An entry that a repository of a set matches is refused.
+- Contract: `update-pr-dashboard` `repository --ignore`, `update-pr-dashboard` `repository --unignore`, `update-pr-dashboard` `IGNORED`, `update-pr-dashboard` `UNIGNORED`, `update-pr-dashboard` `UNTRACKED_IGNORED`, `config.dashboard.ignored_repositories`
+- User action: none. To silence a repository you will never track, ask the skill to mute it.
+- Pull request: #1841
+
+### A deeply nested or misshapen JSON file is refused by name, not as a RecursionError
+
+- Level: patch, a defect fix that brings each reader in line with the refusal it already documents.
+- Contract: none
+- User action: none. repo-cleanup refuses a cleanup policy, plan, or sweep record nested past the recursion limit with its `FAILED cannot read ...` line, and review-insights refuses such a synthesis input, or one whose seal line is not an object, with `FAILED the synthesis input ...`. Both ended in `FAILED RecursionError` or `FAILED AttributeError` before. review-document refuses a recorded file saved with a byte-order mark as not a file it recorded.
+- Pull request: #1839
+
+### github-activity-report searches only the months a history lacks, and a deployer source refuses a repeated JSON key
+
+- Level: patch. Fixes: a gap in a `github-activity-report` history no longer re-searches the closed months after it, and a history count too long to convert is a `[history]` failure rather than an unclassified one. The deployer now refuses a `deploy-meta` file or `source.json` that repeats a key or holds `NaN`, which it used to read as one of the values.
+- Contract: none
+- User action: none, unless you maintain your own skill source whose `deploy-meta` or `source.json` repeats a key; remove the repeat.
+- Pull request: #1844
+
+### audit-ai-config reports new findings for Codex hooks, Copilot's reading of .claude/agents and .claude/rules, and long code-review instructions
+
+- Level: patch. These are defect fixes that bring the checks in line with the runtimes' current documentation. No argument, status line, or exit code changes.
+- Contract: none
+- User action: none. On your next audit, expect these new results:
+  - an `ERROR` for a Codex `prompt`, `agent`, or `http` hook, or an `mcp_tool` hook without `server` or `tool`;
+  - a `WARNING` for an `async` Codex guard;
+  - `copilot-agent` and `collision` findings on `.claude/agents` files;
+  - a `layering` `WARNING` for an instruction file over about 1,000 lines that code review reads;
+  - an inventory `ERROR` for an undecodable `CLAUDE.local.md`, `GEMINI.md`, or `REVIEW.md`;
+  - `.claude/rules` listed among Copilot CLI's sources;
+  - Claude Code in the scope of a repository whose only instructions are `AGENTS.md`.
+- Pull request: #1842
+
+### The hub guard's hook command notes an opt-in git cannot read
+
+- Level: patch, since it brings the hook command to the behavior the guard's contract already states and changes no contract item.
+- Contract: none
+- User action: none. A clone that sees the note has a `coding-agent-skills.hubGuard` value that is no boolean or a `.git/config` git cannot parse, and the guard is not running there until it is fixed.
+- Pull request: #1838
+
+### A pin whose release tags Git cannot read is refused with Git's reason
+
+- Level: patch, a defect fix that corrects a refusal's stated cause; nothing that ran before stops now.
+- Contract: none
+- User action: none. If a deployment or the update stops with `ERROR: Refusing to replace the deployment pinned with --at <ref> to <commit>: Git could not read the release tags reaching it`, put right what Git reports in the clone, then retry.
+- Pull request: #1835
+
+### A JSON file that repeats a key or holds NaN is refused, not read
+
+- Level: patch, a defect fix that brings each reader in line with the refusal it already documents.
+- Contract: none
+- User action: none. audit-ai-config reports its "Could not read or parse" `ERROR` for a `.mcp.json`, `.claude/settings.json`, or other configuration file that repeats a key or holds `NaN`; curate-agent-memory refuses such a settings file as unreadable; audit-skill, review-document, and the code-review skills end in their documented refusal or `FAILED` line; and the code-review analyzer inventory lists such a `package.json` as present but unread. Such a file was read with the repeated key's last value before; remove the repeat to have it read.
+- Pull request: #1830
+
+### verify reports a Codex adapter its skills budget leaves out, and refuses a catalog it cannot read
+
+- Level: patch. These are defect fixes in a read-only command, and no contract item changes.
+- Contract: none
+- User action: none. If `python deploy.py verify` reports an adapter as `OMITTED`, Codex's skills budget is leaving that adapter out of the model's catalog. Deploy fewer skills, or raise `skills.max_context_tokens` in Codex's `config.toml`, as "Checking discovery" in `docs/codex-support.md` says.
+- Pull request: #1831
+
+### A deployment refuses a deployed folder it cannot list
+
+- Level: patch, a defect fix: a folder that could not be listed was hashed and link-checked as empty.
+- Contract: none
+- User action: none. If a deployment names a folder it cannot list, make the folder readable or move it out of the deployed skill, then deploy again.
+- Pull request: #1824
+
+### audit-skill's scan fails on a script it cannot measure
+
+- Level: patch, a defect fix: a script that is not UTF-8 text or not valid Python was left out of the status-line comparison without a sign.
+- Contract: `audit-skill` `FAILED`. `scan` now also ends `FAILED cannot read <path>: not UTF-8 text` or `FAILED cannot read <path>: not valid Python` for a script whose status lines it compares.
+- User action: none.
+- Pull request: #1824
+
+### A skill listing in a shape verify does not know is a discovery failure
+
+- Level: patch, a defect fix: a listing verify misread is now reported as unread.
+- Contract: none
+- User action: none. If a runtime release changes its skill listing, `python deploy.py verify` prints `DISCOVERY_FAILED` with the entry's shape rather than a skill missing or turned off; report it.
+- Pull request: #1823
+
+### A directory in a configuration file's place is reported, not read as no file
+
+- Level: patch, a defect fix that brings each reader in line with the refusal it already documents.
+- Contract: none
+- User action: none. audit-ai-config now reports an `ERROR` (or, for the manifest, its malformed-manifest warning) where a directory stands in place of `.mcp.json`, `.github/mcp.json`, `.vscode/mcp.json`, `.codex/config.toml`, `.claude/settings.json`, or `.github/ai-config-manifest.json`, where it reported nothing before; curate-agent-memory, audit-skill, dotnet-format, and review-document end in their documented refusal or `FAILED` line where they read the directory as absent or ended in a traceback.
+- Pull request: #1820
+
+### check reports a tool whose version it cannot read as unusable
+
+- Level: patch, a defect fix: `check` stops reporting a tool as meeting its floor without reading its version.
+- Contract: none
+- User action: none. If `check` now lists `gh`, `copilot`, `codex`, `dotnet`, or Claude Code as `UNUSABLE` with a `version probe` reason, run that tool's `--version` to see why it fails, and repair or reinstall it.
+- Pull request: #1804
+
+### A deployment from a Git checkout refuses when Git cannot read its commit
+
+- Level: patch, a defect fix: the deployer kept the promise to record the source commit at each deployment by silently recording none.
+- Contract: none
+- User action: if a deployment stops with `ERROR: Cannot read the commit checked out in <checkout>`, install Git or put right what Git reports in the checkout, then rerun.
+- Pull request: #1801
+
+### A state file the deployer cannot read is refused by name
+
+- Level: patch, a defect fix: these files used to end the run as an unclassified `FAILED` line, or a folder in their place read as no file.
+- Contract: none
+- User action: if a run stops with `Manifest is malformed` or `<file> at <path> is not a file`, follow "A state file that does not read" in `docs/recovery.md`.
+- Pull request: #1801
+
+### curate-agent-memory reads a junctioned `.claude` as a link
+
+- Level: patch, a defect fix with no contract change.
+- Contract: none
+- User action: none. On Windows, a repository whose `.claude` folder is a junction now has its `settings.local.json` counted as supplied by the repository, as Claude Code counts it, so a repository-level `autoMemoryDirectory` there gets the same trust and blocking notes as one in `settings.json`.
+- Pull request: #1800
+
+### A path or glob pattern holding a C1 control is refused, and the unguarded-reviewer reason names every setting that keeps the guard's hook from running
+
+- Level: patch, two defect fixes: a check now refuses what its contract already promised to refuse, and a refusal reason names its causes completely.
+- Contract: `review-prs` `check`, `review-document` `check`, `review-insights` `synthesize`, `docs/code-review-operations-contract.md`. Its format tables refuse a `snapshot_exclude` or `reads` pattern holding a line separator beside a control character. The refusal reason, printed in `RETRY <selector> <id> <prompt file> <reason>` and `FAILED <selector> <id> <reason>`, and by `synthesize` as `FAILED <reason>`, is now `the reviewer ran without its guard: the reviewer guard never claimed this role, as when a setting keeps its hook from running (disableAllHooks; allowManagedHooksOnly, which runs no hook an agent's frontmatter declares and no plugin's hook unless managed settings force-enable the plugin; or strictPluginOnlyCustomization locking hooks, which stops the frontmatter hooks of agents in ~/.claude/agents, or agents, which stops loading those agents), the code-review-reviewer agent or its hook did not load, or another agent type ran the role; let the code-review-reviewer agent load and run its hook, or prepare the review again with --inline`. For `synthesize`, the remedy reads `or follow the prompt yourself and record its result with --inline`.
+- User action: on Claude Code with managed settings, the reviewer guard runs on the deployer route only without `allowManagedHooksOnly` and without a `hooks` or `agents` lock in `strictPluginOnlyCustomization`; otherwise review with `--inline`. A `snapshot_exclude` pattern or a condition's `reads` pattern holding a C1 control or a line separator must drop it. Nothing else.
+- Pull request: #1793
+
+### audit-ai-config reads no configuration through a link out of the repository
+
+- Level: patch, a defect fix that makes the audit keep the promise its report already makes.
+- Contract: none
+- User action: none. A repository whose `.claude`, `.codex`, `.vscode`, or another configuration folder or file is a link or junction out of it now gets an `ERROR` for each file the audit could not read there, beside the link's `WARNING`. The optional handshake reports such a file as `CONFIG_ERROR` and starts none of its servers.
+- Pull request: #1785
+
+### audit-ai-config holds a skill's name to its folder only where Codex reads it
+
+- Level: patch, a defect fix that brings a check in line with the pages it rests on.
+- Contract: none
+- User action: none. A skill whose `name` differs from its folder is no longer an `ERROR` under `.github/skills` or `.claude/skills`. Under `.agents/skills`, which Codex reads, it is now a `codex-skill` `ERROR`.
+- Pull request: #1785
+
+### SECURITY.md names every trust-model boundary, and the Copilot CLI host's statement names policy hooks
+
+- Level: patch. Documentation of existing behavior: the security-sensitive areas now cover a standalone document, the PDF parser, and the content of a repository a skill examines, and the bounded Copilot CLI reviewer host is described as keeping the machine's policy hooks, which it always did.
+- Contract: none
+- User action: none
+- Pull request: #1784
+
+### dotnet-format refuses a listed file outside the repository root
+
+- Level: patch, a fix: the user does nothing after updating.
+- Contract: `dotnet-format` `REFUSED`, `dotnet-format` `FAILED`, and the exit codes of `csharp_layout.py check`, `csharp_layout.py config`, and `run_dotnet_format.py`. `REFUSED <entry> <reason>` now also names a FILE_LIST entry that is absolute, leaves the root through `..`, or is led out of it by a symbolic link or junction. The entry is never read or written, and the command exits 1. `csharp_layout.py config` ends with `FAILED no listed file lies inside the repository root` when it refuses every entry.
+- User action: none.
+- Pull request: #1782
+
+### reindex and audit no longer follow an index entry outside the memory store
+
+- Level: patch, a defect fix that brings `reindex` and `audit` to the rule their documentation already states.
+- Contract: none.
+- User action: none. An `UNREADABLE` line for an entry that reaches outside the store means you need to move that memory into the store, or remove the entry.
+- Pull request: #1780
+
+### The release step that records the validation legs' seconds records each platform's
+
+- Level: patch. Maintainer-facing: "Before tagging" step 6 in `docs/releasing.md` now records Linux and Windows seconds, `tests/validation/job_seconds.json` keys its seconds by platform, and the Linux validation job runs as two legs.
+- Contract: none
+- User action: none; the maintainer's release step changes, and nothing changes for an installation.
+- Pull request: #1779
+
+### The local step before a pull request is the suites a change touches and the title and body checks; `--changed` is optional
+
+- Level: patch, since only the contributor procedure changes and nothing a deployment reads.
+- Contract: none.
+- User action: none for a user who deploys. Before a pull request, a contributor runs the suites the change touches one at a time, each new regression test with the fix reverted, ruff and mypy for the changed files, and `python -B tests/run_validation.py --pr-title '<title file>' --pr-body '<body file>'`, which given alone runs only the pull request checks (#1792), as "Validation" in `docs/implementing-changes.md` lists; `--changed` is optional.
+- Pull request: #1776
+
 ## v0.11.1
 
 Level: patch.
