@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from review_flags import FlagAlreadyResolved, FlagError, add_flag, edit_flag, load_store, resolve_flag
+from review_io import FileUnreadable
+from test_review_archive import unstatable
 
 
 class FlagTests(unittest.TestCase):
@@ -100,6 +103,26 @@ class FlagTests(unittest.TestCase):
                     edit_flag(path, flag_id, **changes)
                 self.assertIs(FlagError, type(caught.exception))
                 self.assertEqual(message, str(caught.exception))
+                self.assertEqual(before, path.read_bytes())
+
+    def test_a_store_it_cannot_stat_is_refused_naming_it_never_started_over(self) -> None:
+        # Read as no store, add would write a one-flag store over every flag under the lock and give RF-000001 again,
+        # and edit and resolve would call a flag that is there unknown.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "flags.json"
+            created = add_flag(path, category="Guideline", body="Consider a repository rule.")
+            before = path.read_bytes()
+            calls: dict[str, Callable[[], object]] = {
+                "load": lambda: load_store(path),
+                "add": lambda: add_flag(path, category="Guideline", body="Another rule."),
+                "edit": lambda: edit_flag(path, created["id"], body="Edited."),
+                "resolve": lambda: resolve_flag(path, created["id"], "Accepted"),
+            }
+            for name, call in calls.items():
+                with self.subTest(name), unstatable(path), self.assertRaises(FileUnreadable) as caught:
+                    call()
+                reason = f"[Errno 13] Permission denied: {str(path)!r}"
+                self.assertEqual(f"Cannot read valid JSON from {path}: {reason}", str(caught.exception))
                 self.assertEqual(before, path.read_bytes())
 
     def test_edit_of_a_value_of_the_wrong_kind_fails_before_the_store_is_read(self) -> None:

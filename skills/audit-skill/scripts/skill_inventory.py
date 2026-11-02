@@ -153,6 +153,7 @@ from __future__ import annotations
 import argparse
 import ast
 import errno
+import fnmatch
 import os
 import re
 import sys
@@ -170,7 +171,7 @@ import runtime_support
 import skill_menu
 import whole_number
 from console import run_main
-from file_presence import NotAFile, is_present
+from file_presence import NotAFile, is_directory, is_occupied, is_present
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
@@ -755,7 +756,7 @@ def trailing_wildcard(pattern: str) -> str:
 
 def runs_repository_code(script: Path) -> bool:
     """Whether a Python script declares, as a module-level non-empty string, that it starts repository code."""
-    text = read_text(script) if script.is_file() else None
+    text = read_text(script) if script_is_present(script) else None
     try:
         tree = ast.parse(text or "")
     # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
@@ -941,10 +942,38 @@ def shown_commands(body: list[str], start: int) -> list[str]:
 # --- locate ---------------------------------------------------------------------------------------
 
 
+def is_listed_file(path: Path) -> bool:
+    """Whether a regular file is at a path a listing found or the skill names, following links: False when nothing or
+    something else is there, and the stat's OSError when it cannot tell, so a file the audit cannot look at fails the
+    command rather than being left out of what it measures."""
+    try:
+        return is_present(path)
+    except NotAFile:
+        return False
+
+
+def listed_entries(folder: Path, pattern: str) -> list[Path]:
+    """The entries of `folder` whose names match the one-segment glob `pattern`, in path order, as Path.glob matches
+    them, but listed with iterdir, which raises for a folder it cannot list, where glob matches nothing there and the
+    audit would answer as though the folder were empty."""
+    return sorted(path for path in folder.iterdir() if fnmatch.fnmatch(path.name, pattern))
+
+
+def listed_in_folders(folder: Path, name: str) -> list[Path]:
+    """The entries named `name` in the folders `folder` holds, in path order, as Path.glob("*/<name>") matches them;
+    `folder` or a folder in it that cannot be listed, or looked at, raises."""
+    return sorted(
+        path
+        for child in folder.iterdir()
+        if is_directory(child, other_is_absent=True)
+        for path in listed_entries(child, name)
+    )
+
+
 def main_files(directory: Path) -> list[Path]:
-    if not directory.is_dir():
+    if not is_directory(directory):
         return []
-    return sorted(path for path in directory.iterdir() if path.is_file() and path.name.casefold() == MAIN_NAME)
+    return sorted(path for path in directory.iterdir() if path.name.casefold() == MAIN_NAME and is_listed_file(path))
 
 
 def skill_roots(home: Path, repo: Path | None) -> list[tuple[str, Path]]:
@@ -960,7 +989,7 @@ def skill_roots(home: Path, repo: Path | None) -> list[tuple[str, Path]]:
 
 def skill_files(scope: str, directory: Path) -> list[Path]:
     """A skill directory's main files; a source skill also needs its deploy-meta, which shared assets lack."""
-    if scope == "source" and not (directory.parent.parent / "deploy-meta" / f"{directory.name}.json").is_file():
+    if scope == "source" and source_root(directory) is None:
         return []
     return main_files(directory)
 
@@ -971,11 +1000,14 @@ def identity(path: Path) -> str:
 
 def plugin_roots(folder: Path, depth: int = PLUGIN_DEPTH) -> list[Path]:
     """Each plugin root at or below folder, down to depth folders, never searching inside a plugin."""
-    if (folder / skill_menu.PLUGIN_MANIFEST).is_file():
+    if is_present(folder / skill_menu.PLUGIN_MANIFEST):
         return [folder]
-    if depth == 0 or not folder.is_dir():
+    if depth == 0 or not is_directory(folder):
         return []
-    children = sorted((child for child in folder.iterdir() if child.is_dir()), key=lambda path: path.name.casefold())
+    children = sorted(
+        (child for child in folder.iterdir() if is_directory(child, other_is_absent=True)),
+        key=lambda path: path.name.casefold(),
+    )
     return [root for child in children for root in plugin_roots(child, depth - 1)]
 
 
@@ -1054,10 +1086,14 @@ def available_lines(name: str, roots: list[tuple[str, Path]]) -> list[str]:
     listed: set[str] = set()
     available: dict[str, list[str]] = {}
     for scope, root in roots:
-        if not root.is_dir():
+        if not is_directory(root):
             continue
         for directory in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
-            if directory.is_dir() and skill_files(scope, directory) and identity(directory) not in listed:
+            if (
+                is_directory(directory, other_is_absent=True)
+                and skill_files(scope, directory)
+                and identity(directory) not in listed
+            ):
                 listed.add(identity(directory))
                 lines.append(f"AVAILABLE {scope} {shown_name(scope, directory)}")
                 available.setdefault(scope, []).append(shown_name(scope, directory))
@@ -1151,7 +1187,7 @@ def folder_files(directory: Path) -> list[Path]:
         (
             path
             for path in directory.rglob("*")
-            if path.is_file() and not SKIPPED_DIRECTORIES.intersection(path.relative_to(directory).parts[:-1])
+            if not SKIPPED_DIRECTORIES.intersection(path.relative_to(directory).parts[:-1]) and is_listed_file(path)
         ),
         key=lambda path: posix(path.relative_to(directory)).casefold(),
     )
@@ -1265,11 +1301,16 @@ def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[st
                 if target == root or root in target.parents:
                     continue
                 where = f"{relative}:{number + 1}"
-                if not target.is_file():
-                    lines.append(f"OUTSIDE_MISSING {where} {reference}")
-                    continue
                 key = identity(target)
                 if key in unreadable:
+                    continue
+                try:
+                    present = is_listed_file(target)
+                except OSError as exc:
+                    unreadable[key] = f"UNREADABLE {outside_path(root, target)} {exc.strerror or exc}"
+                    continue
+                if not present:
+                    lines.append(f"OUTSIDE_MISSING {where} {reference}")
                     continue
                 if key not in counted:
                     outside = read_text(target)
@@ -1295,7 +1336,7 @@ def outside_path(root: Path, target: Path) -> str:
 def source_root(directory: Path) -> Path | None:
     """The source tree a skill folder belongs to, which holds the skill's deploy metadata, or None."""
     root = directory.parent.parent
-    return root if (root / "deploy-meta" / f"{directory.name}.json").is_file() else None
+    return root if is_present(metadata_path(root, directory.name)) else None
 
 
 # The metadata keys that hold a list of names, which the inventory reads.
@@ -1330,8 +1371,13 @@ def metadata_path(root: Path, name: str) -> Path:
 
 def unreadable_metadata(root: Path, name: str) -> bool:
     """Whether the skill has a metadata file read_metadata cannot read, whose names are then unknown rather than none,
-    as opposed to no metadata file at all."""
-    return read_metadata(root, name) is None and metadata_path(root, name).exists()
+    as opposed to no metadata file at all, which a stat that fails does not show."""
+    if read_metadata(root, name) is not None:
+        return False
+    try:
+        return is_occupied(metadata_path(root, name))
+    except OSError:
+        return True
 
 
 def skill_closure(root: Path, name: str) -> list[str]:
@@ -1399,7 +1445,7 @@ def plugin_lines(directory: Path) -> list[str]:
         skills = [
             child.name
             for child in sorted((plugin_root / SKILLS_FOLDER).iterdir(), key=lambda path: path.name.casefold())
-            if child.is_dir() and child.name != directory.name and main_files(child)
+            if is_directory(child, other_is_absent=True) and child.name != directory.name and main_files(child)
         ]
         return [
             f"CARRIED_BY {name}",
@@ -1407,8 +1453,14 @@ def plugin_lines(directory: Path) -> list[str]:
             *(f"PLUGIN_CARRIES agent {agent}" for agent in defined_agents(directory)),
         ]
     root = source_root(directory)
-    if root is None or not (root / skill_menu.PLUGIN_MARKETPLACE).is_file():
+    if root is None:
         return []
+    marketplace = root / skill_menu.PLUGIN_MARKETPLACE
+    try:
+        if not is_present(marketplace):
+            return []
+    except OSError as exc:
+        return [f"PLUGINS_UNREADABLE {posix(marketplace)} cannot be read: {exc.strerror or exc}"]
     try:
         carried, reasons = skill_menu.carriers(skill_menu.read_menu(root), directory.name)
     except skill_menu.MenuError as exc:
@@ -1425,7 +1477,7 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
         return []
     scenarios = root / TRIGGER_SCENARIOS / directory.name
     output = []
-    for spec_file in sorted(scenarios.glob("*/scenario.json")):
+    for spec_file in listed_in_folders(scenarios, "scenario.json") if is_directory(scenarios) else []:
         try:
             spec = json_reader.read_file(spec_file)
         except OSError as exc:
@@ -1815,7 +1867,7 @@ def skill_folder(path: Path) -> Path | None:
     file is, so a relative path stays relative."""
     for folder in path.parents:
         folder = folder if folder.name else folder.resolve()
-        if any(child.name.casefold() == MAIN_NAME for child in folder.iterdir() if child.is_file()):
+        if any(child.name.casefold() == MAIN_NAME and is_listed_file(child) for child in folder.iterdir()):
             return folder
     return None
 
@@ -1831,7 +1883,7 @@ def sample_lines(runtime_prompts: list[tuple[Path, int]]) -> list[str]:
             output.append(f"RUNTIME_PROMPT_UNSAMPLED {posix(path)} {line} not in a skill source tree")
             continue
         samples_folder = root / RUNTIME_PROMPT_SAMPLES / folder.name
-        samples = sorted(samples_folder.glob("*.txt")) if samples_folder.is_dir() else []
+        samples = listed_entries(samples_folder, "*.txt") if is_directory(samples_folder) else []
         if not samples:
             output.append(f"RUNTIME_PROMPT_UNSAMPLED {posix(path)} {line} no sample under {posix(samples_folder)}")
         elif samples_folder not in measured:
@@ -1848,7 +1900,7 @@ def measure_sample(root: Path, sample: Path) -> list[str]:
     named = {match.group(1).replace("\\", "/").rstrip(".,;:)") for match in SAMPLE_SOURCE_PATH.finditer(text)}
     for relative in sorted(named):
         target = root / relative
-        if target.suffix.casefold() not in HELPER_SUFFIXES and target.is_file():
+        if target.suffix.casefold() not in HELPER_SUFFIXES and is_listed_file(target):
             tokens = estimate_tokens(require_text(target), "doc")
             output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {tokens}")
     output.append(f"REPLY_BOUNDED {posix(sample)} {'yes' if REPLY_BOUND.search(text) else 'no'}")
@@ -2022,18 +2074,19 @@ def script_facts(path: Path) -> ScriptFacts:
 
 
 def repository_root(folder: Path) -> Path | None:
-    """The nearest folder above a skill that holds a .git entry, where its commands run tools from, or None."""
-    return next((parent for parent in folder.resolve().parents if (parent / ".git").exists()), None)
+    """The nearest folder above a skill that holds a .git entry, where its commands run tools from, or None; a .git
+    entry it cannot look at raises the stat's OSError rather than passing to the folder above."""
+    return next((parent for parent in folder.resolve().parents if is_occupied(parent / ".git")), None)
 
 
 def folder_scripts(folder: Path) -> list[Path]:
     """The scripts of a folder, resolved, without its regression suites, which are no skill's output."""
-    if not folder.is_dir():
+    if not is_directory(folder):
         return []
     return [
         path.resolve()
         for path in sorted(folder.iterdir())
-        if path.is_file() and path.suffix.casefold() in STATUS_SCRIPT_SUFFIXES and not is_suite_name(path.name)
+        if path.suffix.casefold() in STATUS_SCRIPT_SUFFIXES and not is_suite_name(path.name) and is_listed_file(path)
     ]
 
 
@@ -2306,7 +2359,7 @@ def defined_agents(folder: Path) -> dict[str, Path]:
     root = agents_folder(folder)
     plugin = plugin_of(folder)
     prefix = f"{plugin[0]}:" if plugin is not None else ""
-    return {f"{prefix}{path.stem}": path for path in sorted(root.glob("*.md"))} if root.is_dir() else {}
+    return {f"{prefix}{path.stem}": path for path in listed_entries(root, "*.md")} if is_directory(root) else {}
 
 
 def line_agents(line: str, defined: set[str]) -> list[str]:
@@ -2459,7 +2512,7 @@ def agent_lines(folder: Path) -> list[str]:
             output.append(f"AGENT_UNREADABLE {posix(defined_agents(folder)[name])} {definition}")
     for name in declared or {}:
         path = agents_folder(folder) / f"{name}.md"
-        definition = read_agent(path) if path.is_file() and name not in guarded else None
+        definition = read_agent(path) if name not in guarded and is_present(path) else None
         guarded += [name] if isinstance(definition, AgentDefinition) and definition.hooks else []
     defined = set(defined_agents(folder))
     hooks = plugin_hooks(folder)
@@ -2579,7 +2632,9 @@ def dependency_folders(folder: Path, markdown: list[tuple[Path, list[str]]]) -> 
     found = skill_closure(root, folder.name)[1:] if root is not None else []
     found += [name for _, lines in markdown for line in lines for name in SIBLING_SKILL.findall(line)]
     return [
-        folder.parent / name for name in dict.fromkeys(found) if name != folder.name and (folder.parent / name).is_dir()
+        folder.parent / name
+        for name in dict.fromkeys(found)
+        if name != folder.name and is_directory(folder.parent / name, other_is_absent=True)
     ]
 
 
@@ -2721,7 +2776,7 @@ def invoked_evidence(folder: Path) -> list[tuple[str, str]]:
     """Each runtime capability a skill the audited one invokes carries over to it, with that skill, by
     ejryan89-skill-core's runtime_support derivation, which repository validation shares."""
     skills = folder.parent
-    known = {path.parent.name for path in skills.glob("*/SKILL.md")}
+    known = {path.parent.name for path in listed_in_folders(skills, "SKILL.md")}
 
     def invokes(name: str) -> set[str]:
         path = skills / name / "SKILL.md"

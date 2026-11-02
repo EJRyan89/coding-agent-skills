@@ -38,6 +38,7 @@ from review_config import write_config
 from review_flags import FlagError, add_flag, load_store, resolve_flag
 from review_io import PersistenceError, ResourceLock
 from review_records import LedgerEntry, ReviewRecord, build_record, carried_findings, validate_adapter_result
+from test_review_archive import unstatable
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -925,6 +926,22 @@ class DecideTests(InsightFixture):
         )
         style = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"][1]
         self.assertEqual(["Revisit"], [entry["note"] for entry in style["decision_history"]])
+
+    def test_a_report_it_cannot_stat_fails_its_regeneration_and_keeps_its_decisions(self) -> None:
+        # Read as no earlier report, it would be written over with every decision and ID it held gone, once the stat
+        # its write makes succeeds, as it does when another process held the report only for a moment.
+        self.commit("owner/repo", 7, ["Style"])
+        json_path, _ = self.report()
+        self.assertEqual(0, self.decide(json_path, "REC-001", "Style", "none", "deferred", "--note", "Revisit")[0])
+
+        def period() -> dict[str, bytes]:
+            return {str(path): path.read_bytes() for path in json_path.parent.rglob("*") if path.is_file()}
+
+        before = period()
+        with unstatable(json_path, times=1):
+            result = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertFailed(result, f"Permission denied: {str(json_path)!r}")
+        self.assertEqual(before, period())
 
     def test_a_decision_for_another_category_is_refused(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])

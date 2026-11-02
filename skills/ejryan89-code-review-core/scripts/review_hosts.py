@@ -22,6 +22,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import versions
 from bounded_process import run_bounded, without_repository_variables
 from executable_locator import find_executables
@@ -141,7 +142,7 @@ def host_lock(run: Path) -> ResourceLock:
 
 def read_claim(run: Path) -> dict[str, Any] | None:
     path = run / HOST_CLAIM
-    return read_json(path) if path.exists() else None
+    return read_json(path) if file_presence.is_present(path) else None
 
 
 def new_claim(run: Path, *, generation: int, now: float) -> dict[str, Any]:
@@ -196,7 +197,7 @@ def host_state(run: Path, *, probe: Callable[[int], ProcessStatus], now: float) 
     identity = None if pid is None else same_process(probe(pid), claim["start_time"])
     # Read after the probe, so a host that recorded its outcome and then exited is done, not gone.
     outcome_path = _outcome_path(run, claim["attempt"])
-    outcome = read_json(outcome_path) if outcome_path.exists() else None
+    outcome = read_json(outcome_path) if file_presence.is_present(outcome_path) else None
     if outcome is not None and outcome.get("token") == claim["token"]:
         return HostState("done", elapsed, pid, outcome["status"], outcome["reason"])
     if pid is None:

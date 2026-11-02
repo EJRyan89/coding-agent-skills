@@ -9,8 +9,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
-from contextlib import redirect_stderr, redirect_stdout
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -99,6 +99,50 @@ def directory_link(link: Path, target: Path) -> Path:
 
 def memory(name: str, body: str, kind: str = "feedback") -> str:
     return f"---\nname: {name}\ndescription: {name} description\nmetadata:\n  type: {kind}\n---\n\n{body}\n"
+
+
+@contextmanager
+def stat_failing_at(path: Path) -> Iterator[None]:
+    """A stat of one path that fails, as a denied one does: Path.stat, os.stat, and os.lstat raise PermissionError
+    for it, through links or not, and each presence predicate answers False for it, as every one does for a failed
+    stat from Python 3.14 on, on Windows without calling a stat. Every other path is answered as it is."""
+    real_stat = Path.stat
+
+    def denied() -> PermissionError:
+        return PermissionError(13, "Permission denied", str(path))
+
+    def is_path(name: object) -> bool:
+        return isinstance(name, (str, os.PathLike)) and Path(name) == path
+
+    def path_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == path:
+            raise denied()
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    def stat_function(real: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
+        def answer(name: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if is_path(name):
+                raise denied()
+            return real(name, *rest, **options)
+
+        return answer
+
+    def method(real: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda self, *rest, **options: False if self == path else real(self, *rest, **options)
+
+    def function(real: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda name, *rest: False if is_path(name) else real(name, *rest)
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", autospec=True, side_effect=path_stat))
+        for name in ("stat", "lstat"):
+            stack.enter_context(mock.patch.object(os, name, side_effect=stat_function(getattr(os, name))))
+        for name in ("exists", "is_file", "is_dir"):
+            real = getattr(Path, name)
+            stack.enter_context(mock.patch.object(Path, name, autospec=True, side_effect=method(real)))
+        for name in ("exists", "lexists", "isfile", "isdir"):
+            stack.enter_context(mock.patch.object(os.path, name, side_effect=function(getattr(os.path, name))))
+        yield
 
 
 def run_main(*arguments: str) -> tuple[int, str, str]:
@@ -205,6 +249,12 @@ class MemoryAuditTests(unittest.TestCase):
             self.assertEqual(str(self.memory_dir / memory_audit.INDEX_NAME), result["index"]["path"])
             self.assertEqual(["memory.md"], list(self.by_file(result)))
             self.assertEqual(["memory.md"], result["unindexed_files"])
+
+    def test_a_store_without_an_index_reports_an_absent_empty_index(self) -> None:
+        write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
+        (self.memory_dir / memory_audit.INDEX_NAME).unlink(missing_ok=True)
+        index = self.run_audit()["index"]
+        self.assertEqual((False, 0, 0, 0), (index["exists"], index["entries"], index["lines"], index["bytes"]))
 
     def test_a_dot_prefixed_index_target_marks_the_memory_as_indexed(self) -> None:
         write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
@@ -356,6 +406,39 @@ class MemoryAuditTests(unittest.TestCase):
                 overlaps = self.by_file(self.run_audit())["sut.md"]["overlaps"]
                 self.assertTrue(any(Path(o["file"]).as_posix().endswith(relative) for o in overlaps), overlaps)
                 (self.repo / relative).unlink()
+
+    def test_an_instruction_file_whose_stat_fails_fails_the_audit_rather_than_losing_its_overlaps(self) -> None:
+        rule = "Never name the object under test sut; derive the variable name from its class instead."
+        write(self.memory_dir / "sut.md", memory("sut", rule))
+        user_dir = self.root / "user-config"
+        named = write(self.root / "named" / "CLAUDE.md", f"- {rule}\n")
+        # One named on the command line, one a pattern naming one file finds, and one a wildcard pattern finds.
+        for path in (
+            named,
+            write(user_dir / "CLAUDE.md", f"- {rule}\n"),
+            write(self.repo / "docs" / "a.md", f"- {rule}\n"),
+        ):
+            with self.subTest(path=path):
+                found = memory_audit.audit(self.memory_dir, self.repo, [named], user_dir=user_dir)
+                self.assertIn(str(path), [o["file"] for o in found["memories"][0]["overlaps"]])
+                with stat_failing_at(path), self.assertRaises(PermissionError) as raised:
+                    memory_audit.audit(self.memory_dir, self.repo, [named], user_dir=user_dir)
+                self.assertEqual(str(path), raised.exception.filename)
+        write(self.memory_dir / "MEMORY.md", "")
+        with stat_failing_at(named):
+            code, stdout, _ = run_main(
+                "audit", "--memory-dir", str(self.memory_dir), "--repo", str(self.repo), "--instructions", str(named)
+            )
+        self.assertEqual((1, f"FAILED Permission denied: {named}\n"), (code, stdout))
+
+    def test_a_folder_named_like_an_instruction_file_is_passed_over(self) -> None:
+        rule = "Never name the object under test sut; derive the variable name from its class instead."
+        write(self.memory_dir / "sut.md", memory("sut", rule))
+        named, user_dir = self.root / "named.md", self.root / "user-config"
+        for folder in (named, user_dir / "CLAUDE.md", self.repo / "docs" / "folder.md"):
+            folder.mkdir(parents=True)
+        found = memory_audit.audit(self.memory_dir, self.repo, [named], user_dir=user_dir)
+        self.assertEqual([], found["memories"][0]["overlaps"])
 
     def test_user_level_rules_and_skipped_directories(self) -> None:
         rule = "Never name the object under test sut; derive the variable name from its class instead."
@@ -1451,6 +1534,60 @@ class ResolveTests(unittest.TestCase):
             self.assertTrue(result["exists"])
             self.assertNotIn("candidates", result)
 
+    def test_a_memory_directory_whose_stat_fails_is_refused_with_the_candidates_rather_than_missing(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        settings = self.home / ".claude" / "settings.json"
+        write(settings, json.dumps({"autoMemoryDirectory": "~/memory-user"}))
+        for source, directory in (("settings", self.home / "memory-user"), ("derived", self.derived())):
+            with self.subTest(source=source):
+                if source == "derived":
+                    settings.unlink()
+                self.store(directory)
+                with stat_failing_at(directory):
+                    result = self.resolve()
+                self.assertEqual(str(directory), result["memory_dir"])
+                self.assertEqual(
+                    (True, f"{directory} cannot be looked at: Permission denied", [str(other)]),
+                    (result["exists"], result.get("refused"), result.get("candidates")),
+                )
+
+    def test_a_candidate_whose_stat_fails_is_left_out_with_a_note(self) -> None:
+        projects = self.home / ".claude" / "projects"
+        other = projects / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        locked = projects / "C--locked" / "memory"
+        locked.mkdir(parents=True)
+        with stat_failing_at(locked):
+            result = self.resolve()
+        self.assertEqual([str(other)], result["candidates"])
+        self.assertIn(
+            f"Left out a memory directory that cannot be looked at: {str(locked)!r}: Permission denied",
+            result["notes"],
+        )
+        with stat_failing_at(projects):
+            result = self.resolve()
+        self.assertEqual([], result["candidates"])
+        self.assertIn(
+            f"Left out the memory directories under {str(projects)!r}, which cannot be read: Permission denied",
+            result["notes"],
+        )
+
+    def test_a_file_in_the_place_of_a_memory_directory_is_no_directory_and_no_note(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        write(self.derived(), "notes\n")
+        result = self.resolve()
+        self.assertEqual((False, None), (result["exists"], result.get("refused")))
+        self.assertEqual([str(other)], result["candidates"])
+        self.assertEqual([], [note for note in result["notes"] if note.startswith("Left out")])
+
+    def test_a_file_in_the_place_of_the_projects_folder_lists_no_candidates_and_no_note(self) -> None:
+        write(self.home / ".claude" / "projects", "notes\n")
+        result = self.resolve()
+        self.assertEqual((False, []), (result["exists"], result["candidates"]))
+        self.assertEqual([], [note for note in result["notes"] if note.startswith("Left out")])
+
     def test_an_unusable_settings_value_lists_candidates(self) -> None:
         other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
         other.mkdir(parents=True)
@@ -2141,6 +2278,19 @@ class SkillSourceTests(unittest.TestCase):
             result,
         )
 
+    def test_a_project_skill_whose_stat_fails_is_a_failed_line_rather_than_no_project_skill(self) -> None:
+        self.manifest(main=str(self.checkout))
+        project = write(self.repo / ".claude" / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+        real_stat = Path.stat
+
+        def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == project:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", autospec=True, side_effect=denied):
+            self.assertEqual([f"FAILED Access is denied: {project}"], self.source("demo", code=1))
+
     def test_a_name_and_a_file_together_are_a_usage_error(self) -> None:
         code, output, error = run_main("skill-source", "demo", "--file", str(self.source_file))
         self.assertEqual((2, ""), (code, output))
@@ -2316,3 +2466,18 @@ def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_platfo
     # Windows folds the two names into one file; Linux keeps two files, and both are read.
     expected = [notes] if sys.platform == "win32" else [notes, lower]
     assert memory_audit.destination_files(None, [notes, lower]) == expected
+
+
+def test_a_destination_pattern_match_under_a_skipped_folder_below_the_top_is_passed_over(tmp_path: Path) -> None:
+    guide = write(tmp_path / "docs" / "guide.md", "rules\n")
+    write(tmp_path / "docs" / "node_modules" / "vendored.md", "rules\n")
+    write(tmp_path / "docs" / "notes" / "packages" / "deep.md", "rules\n")
+    assert memory_audit.destination_files(tmp_path, []) == [guide]
+
+
+def test_a_folder_a_destination_pattern_matches_is_passed_over(tmp_path: Path) -> None:
+    guide = write(tmp_path / "docs" / "guide.md", "rules\n")
+    (tmp_path / "docs" / "folder.md").mkdir()
+    (tmp_path / "AGENTS.md").mkdir()
+    (tmp_path / "README.md").mkdir()
+    assert memory_audit.destination_files(tmp_path, []) == [guide]

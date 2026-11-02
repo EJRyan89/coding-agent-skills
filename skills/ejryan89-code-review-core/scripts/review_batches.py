@@ -129,7 +129,16 @@ def enumerate_batch(
                 "read": len(read),
             }
             entry["complete"] = True
-        except (GitHubError, ReviewOperationError, ArchiveError, PersistenceError, RecordError, StateError) as exc:
+        # An OSError is an archive folder it cannot stat or list, which fails this repository's entry, never the batch.
+        except (
+            GitHubError,
+            ReviewOperationError,
+            ArchiveError,
+            PersistenceError,
+            RecordError,
+            StateError,
+            OSError,
+        ) as exc:
             entry["error"] = str(exc)
         return entry
 
