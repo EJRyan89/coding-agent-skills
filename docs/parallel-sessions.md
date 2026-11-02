@@ -276,7 +276,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
   `typeset -x`, an assignment under `set -a`, `set -o allexport` in a bundle as in `set -eo allexport`,
-  `shopt -so allexport`, or a nested `bash -a` or `bash -o allexport`, or to a
+  `shopt -so allexport`, or a nested `bash -a`, `bash -o allexport`, or `bash` handed a `SHELLOPTS` listing
+  `allexport`, or to a
   variable already exported), and removed by `unset`,
   `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, `readarray`, and
   `wait -p` leave each variable they set unsettled, as an expansion that assigns does, `${NAME:=word}` or
@@ -329,12 +330,17 @@ refused while a guarded hub is in view, and what they do not see at all is named
   guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
   directory unknown), `pushd`, `popd`, and `env -C`, whose last `-C` alone counts, read from where `env` starts, and
   runs a function's body where a command calls it.
-  Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, and `env`
-  are read as the commands they start, a short option's value read attached, as in `nice -n5`, `stdbuf -oL`, and
-  `env -C<dir>`, or as the next word, in a bundle too, as in `exec -ca <name>`; `env`'s after every word holding `=`, which it takes as an assignment whatever
-  the name; and `eval` of fixed words is read as part of the shell. `tests/tools/test_prefix_programs.py` runs `env`
-  and each of those programs where the system installs it, on the option forms its own `--help` lists, and holds the
-  guard, form by form, to reading the command the program starts or refusing the form. Every command or process
+  Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, `sudo`,
+  `doas`, and `env` are read as the commands they start, a short option's value read attached, as in `nice -n5`,
+  `stdbuf -oL`, and `env -C<dir>`, or as the next word, in a bundle too, as in `exec -ca <name>`; `env`'s after every word holding `=`, which it takes as an
+  assignment whatever the name; and `eval` of fixed words is read as part of the shell. `sudo` and `doas` run their
+  command as another user under a policy that decides which variables reach it, so each one the shell holds is
+  unsettled there, and `sudo` sets each `NAME=value` word before its command there as `env` does, where `doas`
+  takes such a word as its program; `-D` moves the command, a login shell (`-i`) starts in a home the text does not settle, an option
+  after which they start no command, such as `sudo -l`, starts none, and one the guard does not know is a part it
+  cannot read. `tests/tools/test_prefix_programs.py` runs `env` and each of those programs but `sudo` and `doas`,
+  which may prompt or raise privileges, where the system installs it, on the option forms its own `--help` lists, and
+  holds the guard, form by form, to reading the command the program starts or refusing the form. Every command or process
   substitution runs, as Bash runs it, in a subshell before the command that holds it, and so does one in an unquoted
   here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
@@ -365,7 +371,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   path or name the text does not settle may reach any variable, so every one is unsettled after it, as after Bash's
   `export "$v"=x` or `unset "$v"`; a path whose last part is literal text, as in `"$dir\out.txt"`, can name only the
   variable that part names, so it is passed over when git does not read that one. A command after the programs
-  `env`, `nohup`, `nice`, `timeout`, `stdbuf`, and `time` is read as in Bash, as the command it starts. A location
+  `env`, `nohup`, `nice`, `timeout`, `stdbuf`, `time`, `sudo`, and `doas` is read as in Bash, as the command it
+  starts. A location
   set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed
   string is read as part of the same session. A command that does not parse is allowed: PowerShell parses a whole
   script before it runs any of it, so none of it runs.
@@ -401,7 +408,18 @@ refused while a guarded hub is in view, and what they do not see at all is named
   environment hands it as `BASH_FUNC_<name>%%`, from Bash or from a PowerShell assignment such as
   `${env:BASH_FUNC_<name>%%}`, a declaration word the text does not settle exporting every function, in its parent's directory or the one the last
   `pwsh -WorkingDirectory` (`-wd`) names, read from there with a leading `~` as home; its directory and
-  what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
+  what it exports do not outlive it. A nested `bash` or `sh` turns allexport on, whatever its own options say, when
+  the `SHELLOPTS` its environment hands it lists `allexport` by that exact name: one `env` gives it, or the one Bash
+  keeps read-only and lists its options in, once `export` or `declare -x` exports it, never one a prefix assignment
+  names; `env -u` and `env -i` remove it, and `export -n` stops exporting it. A `SHELLOPTS` whose value the text does
+  not settle, or one listing `allexport` from a PowerShell session, which holds environment names folded where the
+  platform folds them, so that Bash may not read it, is a part the guard cannot read. `BASHOPTS` hands on `shopt`'s
+  options the same way. Of the options either hands on, the guard follows allexport alone, though `keyword`, `posix`,
+  `lastpipe`, and `cdable_vars` change where a command runs or what reaches git, as "What it does not see" says. An
+  `env` word the text does not settle, as in `env FOO=$(cmd)`, may assign any variable, so the guard cannot read it,
+  and every variable git or a nested bash reads is unsettled for the command after it. A shell the text does not settle may have exported any
+  variable, so a shell it starts is one the text does not settle either. Nesting of shells, `eval`, function calls,
+  and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
   the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the
