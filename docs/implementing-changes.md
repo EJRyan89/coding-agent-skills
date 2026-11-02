@@ -230,7 +230,11 @@ equivalent ones open, and the section is where the author shows the whole family
 template's `None`. The forms-considered check, in `tests/validation/pull_request_body.py`, holds the section's shape,
 never its judgment: it refuses a body whose title is a `fix`, or with no title, whose branch is a `fix/<name>` one, when
 the section is missing, empty, a filler such as `None` or `TBD`, or still the template's placeholder, and reads nothing
-else in it.
+else in it. It reads the section as GitHub renders it: the heading is `## Forms considered` written with hashes, so a
+setext `Forms considered` underlined with `---` reads as missing, and the section ends at the next first- or
+second-level heading GitHub shows, whether written with hashes, underlined, or in HTML. A comment, one left unclosed
+running to the end of the body, and text that renders as nothing, such as an empty tag, `&nbsp;`, or a zero-width
+space, count as no text.
 
 `review-prs` reviews each pull request with `review-repository`, once the machine's code-review configuration names
 it, as "Configure" in that repository skill says. On each tick the shepherd starts the review once for each admitted

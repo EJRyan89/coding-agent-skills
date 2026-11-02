@@ -1,20 +1,29 @@
 """The fix body guard: a pull request titled `fix` fills its body's `## Forms considered` section.
 
 The check holds the section's shape, never its judgment: a fix body has the heading, and under it text of the author's
-own, not nothing and not the template's guidance left as it was.
+own, not nothing and not the template's guidance left as it was. It reads the section as GitHub renders it. The heading
+is an ATX `## Forms considered`, indented up to three spaces; a setext `Forms considered` over `---`, an HTML `<h2>`,
+and a heading inside a quote or a list item are read as missing. The section ends at the next first- or second-level
+heading GitHub renders, ATX, setext, or an HTML `<h1>` or `<h2>`, indented up to three spaces; a third-level heading,
+and a heading inside a quote, a list item, or a fence, are inside it. A comment GitHub hides is not read, one left
+unclosed running to the end of the body, and text that renders as nothing, such as an empty tag, an entity for a space,
+or an invisible character, is no text.
 """
 
 from __future__ import annotations
 
+import html
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
-# markdown_sections is imported before validation_support, which puts ejryan89-skill-core on sys.path too, so this
-# module states the path itself.
+# agent_skills and markdown_sections are imported before validation_support, which puts ejryan89-skill-core on sys.path
+# too, so this module states the path itself.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from markdown_sections import HTML_COMMENT, find_fences
+from agent_skills import XML_TAG_PATTERN
+from markdown_sections import find_fences
 from pull_request_title import TITLE, head_branch
 from upgrade_notes import PROFILE_DOC
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, markdown_section
@@ -25,8 +34,24 @@ FIX_TYPE = "fix"
 FORMS_HEADING = "## Forms considered"
 TEMPLATE = ".github/pull_request_template.md"
 PROFILE_HEADING = "## Pull requests"
+# The section's own heading: an ATX heading of the second level indented up to three spaces, with any closing hashes.
+FORMS_LINE = re.compile(r" {0,3}## +Forms considered(?: +#*)?[ \t]*")
 # A heading of the first or second level ends the section; a third-level one, such as a table's caption, is inside it.
-SECTION_END = re.compile(r"#{1,2}(?:\s|$)")
+# Each is a line indented up to three spaces: an ATX heading, an HTML h1 or h2 block, or, below a paragraph, a setext
+# underline, which makes the whole paragraph the heading.
+SECTION_END = re.compile(r" {0,3}(?:#{1,2}(?:[ \t]|$)|<h[12](?:[\s>/]|$))", re.IGNORECASE)
+SETEXT_UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
+# A line that is no paragraph's text: blank, a heading, a list item, a quote, a fence, or a rule.
+NOT_PARAGRAPH = re.compile(
+    r"\s*$| {0,3}(?:#{1,6}(?:[ \t]|$)|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|>|`{3,}|~{3,}"
+    r"|([-*_])(?:[ \t]*\1){2,}[ \t]*$)"
+)
+# An HTML comment as GitHub hides it: the empty forms `<!-->` and `<!--->`, or up to `-->`, or, left unclosed, to the
+# end of the body.
+HIDDEN_COMMENT = re.compile(r"<!--(?:-?>|.*?(?:-->|\Z))", re.DOTALL)
+# Characters that render as nothing but are neither whitespace nor a format character, which are dropped by their
+# category: the Hangul fillers and the blank braille pattern.
+INVISIBLE = frozenset("ᅟᅠㅤﾠ⠀")
 # What a line holds that is no text of the author's: list, quote, and table markers, rules, and punctuation.
 MARKUP = re.compile(r"[\s\-*+>|#:.,;_=~`'\"()\[\]]+|\d+[.)](?=\s|$)")
 # A filler word that stands in for an answer rather than giving one; the comparison ignores case.
@@ -45,24 +70,48 @@ def is_fix(title: str | None, branch: str | None) -> bool:
 
 def forms_section(body: str) -> str | None:
     """The text under the body's first `## Forms considered` heading, up to the next heading of the first or second
-    level, with HTML comments removed; None when the body has no such heading. A heading inside an HTML comment or a
+    level, with hidden comments removed; None when the body has no such heading. A heading inside a hidden comment or a
     fenced block is not the section's, and neither ends it."""
-    lines = HTML_COMMENT.sub("", body.replace("\r\n", "\n")).split("\n")
+    lines = HIDDEN_COMMENT.sub("", body.replace("\r\n", "\n")).split("\n")
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     start = next(
-        (index + 1 for index, line in enumerate(lines) if index not in fenced and line.rstrip() == FORMS_HEADING), None
+        (index + 1 for index, line in enumerate(lines) if index not in fenced and FORMS_LINE.fullmatch(line)), None
     )
     if start is None:
         return None
-    end = next(
-        (index for index in range(start, len(lines)) if index not in fenced and SECTION_END.match(lines[index])),
-        len(lines),
-    )
+    end = next((index for index in range(start, len(lines)) if _ends_section(lines, index, start, fenced)), len(lines))
     return "\n".join(lines[start:end])
 
 
+def _ends_section(lines: list[str], index: int, start: int, fenced: set[int]) -> bool:
+    """Whether the line at index opens a first- or second-level heading: an ATX or HTML one, or the first line of a
+    paragraph whose setext underline makes it one."""
+    if index in fenced:
+        return False
+    if SECTION_END.match(lines[index]):
+        return True
+    opens_paragraph = index == start or NOT_PARAGRAPH.match(lines[index - 1]) is not None
+    if not opens_paragraph or NOT_PARAGRAPH.match(lines[index]):
+        return False
+    for later in range(index + 1, len(lines)):
+        if later in fenced:
+            return False
+        if SETEXT_UNDERLINE.fullmatch(lines[later]):
+            return True
+        if NOT_PARAGRAPH.match(lines[later]):
+            return False
+    return False
+
+
 def _words(text: str) -> str:
-    """The text with its markup dropped and its whitespace collapsed, lowercased, for comparison."""
+    """The text as it renders, with its markup dropped and its whitespace collapsed, lowercased, for comparison: tags
+    removed, then entities read, so `&lt;br&gt;` stays the text it shows, then format and invisible characters
+    removed."""
+    # A tag renders as no text of its own.
+    text = html.unescape(XML_TAG_PATTERN.sub(" ", text))
+    text = "".join(
+        character for character in text if unicodedata.category(character) != "Cf" and character not in INVISIBLE
+    )
     return " ".join(MARKUP.sub(" ", text).split()).lower()
 
 
@@ -70,8 +119,8 @@ def placeholder_forms(template: str) -> tuple[str, set[str]]:
     """The template section's visible text, and the text of each of its comments, which an author may have kept with
     the comment markers dropped, each as _words gives it."""
     section = markdown_section(template.replace("\r\n", "\n"), FORMS_HEADING) or ""
-    guidance = {_words(comment[len("<!--") : -len("-->")]) for comment in HTML_COMMENT.findall(section)}
-    return _words(HTML_COMMENT.sub("", section)), guidance - {""}
+    guidance = {_words(comment.removeprefix("<!--").removesuffix("-->")) for comment in HIDDEN_COMMENT.findall(section)}
+    return _words(HIDDEN_COMMENT.sub("", section)), guidance - {""}
 
 
 def is_placeholder(words: str, template: str) -> bool:

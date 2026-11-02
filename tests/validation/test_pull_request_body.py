@@ -58,6 +58,59 @@ MISSING = {
     "trailing colon": body(None, after=f"## Forms considered:\n\n{FILLED}"),
     "no space after the hashes": body(None, after=f"##Forms considered\n\n{FILLED}"),
     "bold text, not a heading": body(None, after=f"**Forms considered**\n\n{FILLED}"),
+    **{
+        f"setext heading underlined with {underline!r}": body(None, after=f"Forms considered\n{underline}\n\n{FILLED}")
+        for underline in ("---", "===", "-", "=")
+    },
+    "HTML heading": body(None, after=f"<h2>Forms considered</h2>\n\n{FILLED}"),
+    "heading inside a quote": body(None, after=f"> ## Forms considered\n\n{FILLED}"),
+    "heading inside a list item": body(None, after=f"- ## Forms considered\n\n{FILLED}"),
+    "heading indented four spaces, a code block": body(None, after=f"    ## Forms considered\n\n{FILLED}"),
+    "heading inside a comment left unclosed": body(None, after=f"<!-- later\n## Forms considered\n\n{FILLED}"),
+}
+# Each heading GitHub renders at the first or second level, which ends the section, so the text under it is not the
+# section's: ATX at each level and indentation up to three spaces, setext under each underline, and HTML.
+NEXT_HEADINGS = {
+    **{
+        f"{hashes} heading indented {indent}": f"{' ' * indent}{hashes} Implications"
+        for hashes in ("#", "##")
+        for indent in range(4)
+    },
+    **{
+        f"setext heading underlined with {underline!r}, indented {indent}": f"Implications\n{' ' * indent}{underline}"
+        for underline in ("---", "===", "-", "=", "------   ")
+        for indent in range(4)
+    },
+    "setext heading over two lines": "The\nimplications\n---",
+    "closed ATX heading": "## Implications ##",
+    **{f"HTML heading {tag!r}": f"{tag}Implications</h2>" for tag in ("<h1>", "<h2>", "<H2 id='i'>", "  <h2>")},
+}
+# Each form of a section that renders as nothing: invisible characters, entities for a space or for nothing, and tags
+# with no text, alone and around a filler.
+RENDERS_EMPTY = {
+    **{f"the invisible character U+{ord(character):04X}": character for character in "​‌‍⁠﻿­ᅟᅠㅤﾠ⠀"},
+    **{
+        f"the entity {entity}": entity
+        for entity in ("&nbsp;", "&#160;", "&#xA0;", "&#8203;", "&zwnj;", "&ensp;", "&emsp;", "&thinsp;", "&#x200B;")
+    },
+    **{
+        f"the markup {markup}": markup
+        for markup in (
+            "<br>",
+            "<br/>",
+            "<BR />",
+            "<p></p>",
+            "<details><summary></summary></details>",
+            "<div>&nbsp;</div>",
+            "<sub>​</sub>",
+        )
+    },
+    "a filler between empty tags": "<p>TBD</p>",
+    "a filler behind a zero-width space": "​None​",
+    "a comment left unclosed": "<!-- forms later",
+    "a comment left unclosed over the rest of the body": f"<!-- forms later\n\n## Implications\n\n{FILLED}",
+    # A paragraph a setext underline follows is a heading, which ends the section before it.
+    "text a setext underline turns into the next heading": f"{FILLED}---",
 }
 # Each form of a section that holds no text of the author's.
 EMPTY = {
@@ -118,6 +171,44 @@ def test_a_fix_body_whose_section_is_empty_fails(form: str) -> None:
     assert "is empty" in problems[0] or "still the placeholder" in problems[0]
 
 
+@pytest.mark.parametrize(
+    "heading", [f"{' ' * indent}## Forms considered{closing}" for indent in range(4) for closing in ("", " ##", "  ")]
+)
+def test_the_heading_is_read_indented_up_to_three_spaces_and_closed(heading: str) -> None:
+    assert forms_problems(body(None, after=f"{heading}\n\n{FILLED}"), True, TEMPLATE) == []
+    assert forms_problems(body(None, after=f"{heading}\n\nTBD\n\n## Implications\n\n{FILLED}"), True, TEMPLATE)
+
+
+@pytest.mark.parametrize("form", sorted(NEXT_HEADINGS))
+def test_an_empty_section_never_takes_the_text_under_the_next_heading(form: str) -> None:
+    text = body("", after=f"{NEXT_HEADINGS[form]}\n\n{FILLED}")
+    problems = forms_problems(text, True, TEMPLATE)
+    assert len(problems) == 1
+    assert "is empty" in problems[0]
+
+
+@pytest.mark.parametrize("form", sorted(RENDERS_EMPTY))
+def test_a_section_that_renders_as_nothing_fails(form: str) -> None:
+    problems = forms_problems(body(RENDERS_EMPTY[form], after=f"## Implications\n\n{FILLED}"), True, TEMPLATE)
+    assert len(problems) == 1
+    assert "is empty" in problems[0] or "still the placeholder" in problems[0]
+
+
+def test_the_templates_section_with_its_comment_left_unclosed_fails_as_the_placeholder() -> None:
+    section = template_section()
+    # GitHub hides everything after an unclosed comment, so a body whose later sections hold no comment of their own,
+    # one closing it by chance, renders this section, and the rest, as nothing.
+    unclosed = section.replace("-->", "", 1)
+    for text in (
+        body(unclosed, after=f"## Implications\n\n{FILLED}"),
+        body(unclosed.replace("\n\nNone", "", 1), after=f"## Implications\n\n{FILLED}"),
+        TEMPLATE.replace(section, unclosed, 1),
+    ):
+        problems = forms_problems(text, True, TEMPLATE)
+        assert len(problems) == 1, text
+        assert "is empty" in problems[0] or "still the placeholder" in problems[0]
+
+
 def test_the_templates_section_left_as_it_was_fails_as_the_placeholder() -> None:
     for text in (body(template_section()), TEMPLATE, TEMPLATE.replace("\n", "\r\n")):
         problems = forms_problems(text, True, TEMPLATE)
@@ -148,6 +239,14 @@ def test_the_template_holds_a_placeholder_and_guidance() -> None:
         f"### Construct\n\n{FILLED}\n### Decisions\n\n| Entry | Decision |\n| --- | --- |\n| `-e` | refused |",
         f"```text\n## not a heading\n```\n{FILLED}",
         "See the table: `--no-index` is refused, `--no-i` refused; `test_spellings` fails reverted.",
+        f"<!-->\n{FILLED}",
+        f"<!--->\n{FILLED}",
+        f"{FILLED}\n---\n\nA rule above, not an underline, since a blank line stands before it.",
+        f"{FILLED}***",
+        f"> ## A heading inside a quote\n\n{FILLED}",
+        f"- ## A heading inside a list item\n\n{FILLED}",
+        "&lt;br&gt; is refused as text it shows.",
+        f"<details><summary>Catalogue</summary>\n\n{FILLED}</details>",
     ],
 )
 def test_a_fix_body_with_a_filled_section_passes(section: str) -> None:
