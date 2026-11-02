@@ -447,18 +447,28 @@ class DeployerPresenceTests(DeployerTestCase):
         self.deploy_ok("--all")
 
     def test_a_skill_whose_files_cannot_be_stat_ed_is_refused_never_dropped_from_the_source(self) -> None:
-        # Were both passed over, beta would leave the source unnoticed, and the deployment would remove it.
+        # Were both passed over, beta would leave the source unnoticed, and the deployment would remove it. Which of
+        # the two is refused first depends on how a Python's glob matches a literal name, so neither is named.
         self.deployed()
         skill_md = self.source / "skills" / "beta" / "SKILL.md"
         metadata = self.source / "deploy-meta" / "beta.json"
-        for failing in ((skill_md,), (skill_md, metadata)):
-            with self.subTest(failing=[path.name for path in failing]):
-                with stat_failing_at(*failing):
-                    result = self.deploy_fails("--all", pattern="Could not read the skill source")
-                self.assertIn(
-                    f"ERROR: Could not read the skill source: {forward(skill_md)}: Access is denied\n", result.output
-                )
-                self.assertTrue((self.skills_dir / "beta" / "SKILL.md").is_file())
+        with stat_failing_at(skill_md, metadata):
+            result = self.deploy_fails("--all", pattern="Could not read the skill source: .*: Access is denied")
+        self.assertNotIn("REMOVED", result.output)
+        self.assertTrue((self.skills_dir / "beta" / "SKILL.md").is_file())
+
+    def test_a_skill_md_whose_stat_fails_is_refused_not_passed_over(self) -> None:
+        # The listing is the one rglob gives: Python 3.11's glob stats a literal name itself, which is not under test.
+        skill_md = self.source / "skills" / "beta" / "SKILL.md"
+        self.deployed()
+        listing = [self.source / "skills" / "alpha" / "SKILL.md", skill_md]
+        with (
+            mock.patch.object(Path, "rglob", return_value=iter(listing)),
+            stat_failing_at(skill_md),
+            self.assertRaises(PermissionError) as raised,
+        ):
+            source._discover_directories(self.paths)
+        self.assertEqual(str(skill_md), raised.exception.filename)
 
     def test_metadata_whose_stat_fails_is_refused_not_passed_over(self) -> None:
         self.deployed()
