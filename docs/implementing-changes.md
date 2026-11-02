@@ -54,7 +54,7 @@ which runs it anyway:
    `python -B tests/run_validation.py -k ruff -k '*mypy*deployer*'` for a change under `deployer/`.
 4. Once the title and the body are written, the checks that read them, and only those. Given without `-k`,
    `--changed`, `--full`, or `--shard`, `--pr-title` and `--pr-body` limit the run to the title, upgrade-note,
-   silent-revert, and known-failure closing checks, start no suite, and say so:
+   forms-considered, silent-revert, and known-failure closing checks, start no suite, and say so:
 
 ```powershell
 python -B tests/run_validation.py --pr-title '<title file>' --pr-body '<body file>'
@@ -237,6 +237,22 @@ for the same construct elsewhere, as the pattern of the [lessons catalogue](less
 hit, fixed here, filed as #N, or not a sibling and why. A fix that reaches one instance of a construct leaves its twin wrong, and the
 author, with the code in hand, is the one placed to look. It is the author's judgment, never an automated result, and
 no check reads it: `review-repository`'s `sibling-search` reviewer holds the search against a change to a script.
+
+A `fix` pull request also fills the body's `## Forms considered` section, which the template holds: the construct the
+fix corrects and the catalogue its spellings come from, such as builtins, options, binding modes, import forms,
+keywords, exit codes, or keys, with a decision for each entry, read, refused, or out of scope and why, an out-of-scope
+entry also named in the contract's or policy's limits; the other callers of the helper it changes and the other
+skills, shells, or modules holding the same construct; the lessons pattern and what its **Search for** found; and the
+regression test that fails with the fix reverted. A fix that closes the spellings its issue showed leaves the
+equivalent ones open, and the section is where the author shows the whole family was weighed. Any other type keeps the
+template's `None`. The forms-considered check, in `tests/validation/pull_request_body.py`, holds the section's shape,
+never its judgment: it refuses a body whose title is a `fix`, or with no title, whose branch is a `fix/<name>` one, when
+the section is missing, empty, a filler such as `None` or `TBD`, or still the template's placeholder, and reads nothing
+else in it. It reads the section as GitHub renders it: the heading is `## Forms considered` written with hashes, so a
+setext `Forms considered` underlined with `---` reads as missing, and the section ends at the next first- or
+second-level heading GitHub shows, whether written with hashes, underlined, or in HTML. A comment, one left unclosed
+running to the end of the body, and text that renders as nothing, such as an empty tag, `&nbsp;`, or a zero-width
+space, count as no text.
 
 `review-prs` reviews each pull request with `review-repository`, once the machine's code-review configuration names
 it, as "Configure" in that repository skill says. On each tick the shepherd starts the review once for each admitted

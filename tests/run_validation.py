@@ -26,7 +26,8 @@ job_selection.CHANGE_REACHES adds, such as the deployer's rendering suite for a 
 suites for a tool floor. A change it cannot determine runs everything.
 
 --pr-body names a file holding the pull request's body, whose `## Upgrade note` the upgrade-notes check reads beside
-the notes merged into origin/main since the last tag; CI passes the body this way. Without it, the check reads the
+the notes merged into origin/main since the last tag, and whose `## Forms considered` the forms-considered check holds
+filled for a fix; CI passes the body this way. Without it, the check reads the
 notes in the commit messages since that tag on HEAD, the branch's own included. --pr-title names a file holding the
 pull request's title, which the title check holds to the typed prefix; CI passes it the same way, and without it the
 check passes. Given with no -k, --changed, --full, or --shard, either one limits the run to the checks that judge the
@@ -73,6 +74,7 @@ import kinds_table
 import known_failures
 import literal_escapes
 import markdown_links
+import pull_request_body
 import pull_request_title
 import python_checks
 import repository_hygiene
@@ -126,6 +128,7 @@ POLICY_MODULES = (
     known_failures,
     literal_escapes,
     markdown_links,
+    pull_request_body,
     pull_request_title,
     python_checks,
     repository_hygiene,
@@ -153,8 +156,8 @@ DOCUMENTATION_FILES = {
     ".github/pull_request_template.md",
 }
 
-# The policy checks that judge the pull request, each policy module's own: the title, upgrade-note, silent-revert, and
-# known-failure closing checks, which a run given only --pr-title or --pr-body limits itself to.
+# The policy checks that judge the pull request, each policy module's own: the title, upgrade-note, forms-considered,
+# silent-revert, and known-failure closing checks, which a run given only --pr-title or --pr-body limits itself to.
 PULL_REQUEST_POLICIES = tuple(
     check
     for module in POLICY_MODULES
