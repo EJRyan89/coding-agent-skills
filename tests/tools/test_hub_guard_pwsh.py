@@ -7,6 +7,7 @@ whose suites start git and pwsh; tests/tools/test_hub_guard_shells.py holds thes
 
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -315,3 +316,40 @@ class DefinitionTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertEqual(expected, hub_guard.function_name(name))
+
+
+# A comparison that decides by an AST node's source text, on either side of the operator.
+TEXT_DECISION = re.compile(
+    r"Extent\.Text\s*-[ci]?(?:not)?(?:match|like|eq|ne|contains|in)\b|-[ci]?(?:not)?(?:match|like|eq|ne)\s+\S*Extent\.Text"
+)
+
+
+def text_decisions(source: str) -> list[str]:
+    """Each line of the PowerShell reader that decides by a node's source text rather than its syntax tree."""
+    return [line.strip() for line in source.splitlines() if TEXT_DECISION.search(line)]
+
+
+class ReaderSourceTests(unittest.TestCase):
+    """The PowerShell reader decides what a node does by its syntax tree and the resolver, never by its text, which
+    another spelling of the same node does not match."""
+
+    def test_no_decision_in_the_powershell_reader_matches_a_nodes_source_text(self) -> None:
+        source = hub_guard.POWERSHELL_READER.read_text(encoding="utf-8")
+        self.assertEqual([], text_decisions(source))
+
+    def test_a_decision_by_source_text_is_found_on_either_side_of_its_operator(self) -> None:
+        for line in (
+            "} elseif ($Member -eq 'Set' -and $Node.Expression.Extent.Text -match 'PSVariable$') {",
+            "if ($null -ne $target -and $target.Extent.Text -notmatch 'Process') {",
+            "if ($Node.Extent.Text -like '*Set*') {",
+            "if ('PSVariable' -eq $Node.Expression.Extent.Text) {",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual([line], text_decisions(line))
+        # Text kept as a word's value, or named in a message, decides nothing.
+        for line in (
+            "$words.Add((ConvertTo-Word $Element.Extent.Text))",
+            '$unread = "a member the text does not name ($($Node.Member.Extent.Text))"',
+        ):
+            with self.subTest(line=line):
+                self.assertEqual([], text_decisions(line))

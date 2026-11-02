@@ -753,6 +753,69 @@ class BashDefinitionDifferentialTests(unittest.TestCase):
                     self.assertEqual(["status"], [call.subcommand for call in reading.calls])
 
 
+class EnvironmentSetDifferentialTests(unittest.TestCase):
+    """Each spelling of PSVariable.Set and SetEnvironmentVariable that pwsh runs and that sets the session's
+    GIT_WORK_TREE leaves it unsettled in the guard's reading, or set to the value pwsh gives it."""
+
+    def test_the_guard_reads_each_method_that_sets_a_variable_pwsh_sets(self) -> None:
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if pwsh is None:
+            raise AssertionError("pwsh was not found on PATH; pwsh checks the guard's reading of PSVariable.Set")
+        receivers = (
+            "$ExecutionContext.SessionState.PSVariable",
+            "$ExecutionContext.SessionState.'PSVariable'",
+            '$ExecutionContext.SessionState."PSVariable"',
+            "$ExecutionContext.SessionState.('PSVariable')",
+            "$ExecutionContext.'SessionState'.PSVariable",
+            "$global:ExecutionContext.SessionState.'PSVariable'",
+            "($ExecutionContext.SessionState.PSVariable)",
+            "([Management.Automation.PSVariableIntrinsics]$p)",
+        )
+        forms = (
+            *(
+                f"{receiver}{member}('env:GIT_WORK_TREE', 'after')"
+                for receiver in receivers
+                for member in (".Set", ".'Set'")
+            ),
+            "function f { [CmdletBinding()] param()"
+            " $PSCmdlet.SessionState.'PSVariable'.Set('env:GIT_WORK_TREE', 'after') }; f",
+            *(
+                f"[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', {target})"
+                for target in ("'0'", "'process'", "0", "[EnvironmentVariableTarget]'0'")
+            ),
+        )
+        # Each form runs after GIT_WORK_TREE is removed, and a line `=== <index> [<value>]` follows it.
+        script = "$p = $ExecutionContext.SessionState.PSVariable\n" + "".join(
+            "Remove-Item env:GIT_WORK_TREE -ErrorAction SilentlyContinue\n"
+            f"try {{ {form} }} catch {{ }}\n"
+            f'Write-Output "=== {index} [$env:GIT_WORK_TREE]"\n'
+            for index, form in enumerate(forms)
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            start = Path(folder).resolve()
+            path = start / "forms.ps1"
+            path.write_text(script, encoding="utf-8")
+            result = run_bounded(
+                [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(path)], 300, env=os.environ
+            )
+            values: dict[int, str] = {}
+            for line in result.stdout.decode("utf-8", "replace").splitlines():
+                if line.startswith("=== "):
+                    number, _, value = line[4:].partition(" ")
+                    values[int(number)] = value.strip("[]")
+            self.assertEqual(len(forms), len(values), result.stdout)
+            environment = {name: value for name, value in os.environ.items() if name.upper() != "GIT_WORK_TREE"}
+            for index, form in enumerate(forms):
+                text = f"{form}; git status"
+                reading = hub_guard.Reading(environment, text)
+                hub_guard.read_powershell(text, start, reading, 0, {})
+                tree = reading.calls[-1].place.tree
+                with self.subTest(form=form, pwsh=values[index]):
+                    self.assertEqual([], reading.unread)
+                    if values[index]:
+                        self.assertIn(tree, (None, start / values[index]))
+
+
 class BashDifferentialTests(unittest.TestCase):
     """After each builtin that may set GIT_DIR, the guard reads the value Bash gives it, or leaves it unsettled."""
 
