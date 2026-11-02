@@ -59,7 +59,8 @@ Input contract (this replaces any instruction above about how to obtain the diff
 - CLOSING_ISSUES_FILE holds, as JSON, the issues GitHub links as closed by this pull
   request: each one's repository, number, and state, and an issue of this repository's title
   and body as their authors wrote them, which say what they asked for, not what the code does.
-  The file lists 1 of the 1 issues GitHub links: example/status-lines#41 (open), with all 667
+  Each body is `body_lines`, its lines in order, a line longer than 300 characters split
+  across consecutive items. The file lists 1 of the 1 issues GitHub links: example/status-lines#41 (open), with all 667
   characters of its body.
 - Make independent reads and searches in the same turn, not one per turn: start by reading
   your instructions, the documents they name, and DIFF_FILE together.
