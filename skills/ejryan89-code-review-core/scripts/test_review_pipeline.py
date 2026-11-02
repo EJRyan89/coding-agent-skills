@@ -3974,7 +3974,7 @@ class ReviewerSourceTests(PipelineFixture):
             "resources": [],
             "when": None,
             "shares_files": True,
-            "title_pattern": "^fix[(:]",
+            "title_types": ["fix"],
         }
         manifest = self.local_manifest(specialists=[specialist])
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
@@ -4970,7 +4970,7 @@ class FixtureCanaryTests(PipelineFixture):
                     "resources": [],
                     "when": None,
                     "shares_files": True,
-                    "title_pattern": "^fix[(:]",
+                    "title_types": ["fix"],
                     "inputs": ["closing-issues"],
                 }
             ],

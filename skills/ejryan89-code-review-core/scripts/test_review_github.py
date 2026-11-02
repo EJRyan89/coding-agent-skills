@@ -283,6 +283,20 @@ class GitHubTests(unittest.TestCase):
                     errors = [{"type": kind, "path": path, "message": "Resource not accessible by integration"}]
                     issues, total = GitHubClient(answering(answer(errors))).list_closing_issues("a/b", 12, first=10)
                     self.assertEqual(([4], 2), ([item["number"] for item in issues], total))
+        # A field GitHub refused leaves the issue marked unreadable, its title and body empty, never read as a body its
+        # author left empty: with the body refused, the body GitHub answered null is no text at all.
+        hidden = {**issue, "title": None, "body": None}
+        for field in ("body", "title"):
+            with self.subTest(field=field):
+                connection = {"totalCount": 1, "nodes": [hidden]}
+                data = {"repository": {"pullRequest": {"closingIssuesReferences": connection}}}
+                errors = [{"type": "FORBIDDEN", "path": [*nodes_path, 0, field], "message": "Resource not accessible"}]
+                body = json.dumps({"data": data, "errors": errors})
+                issues, _ = GitHubClient(answering(CommandResult(1, body, ""))).list_closing_issues("a/b", 12, first=10)
+                self.assertEqual(
+                    [{"repository": "a/b", "number": 4, "state": "OPEN", "title": "", "body": "", "unreadable": True}],
+                    issues,
+                )
         # Any other error, or one at a wider place than one issue's node, still fails the review.
         refused: list[list[Any]] = [
             [{"type": "INTERNAL", "path": [*nodes_path, 0], "message": "boom"}],

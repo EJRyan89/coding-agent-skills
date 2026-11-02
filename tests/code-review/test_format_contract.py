@@ -514,8 +514,9 @@ CLOSING_ISSUES: dict[str, Any] = review_runtime.given_closing_issues(
     [
         {"repository": "example/one", "number": 4, "state": "OPEN", "title": "Totals", "body": "B" * 30_000},
         {"repository": "example/two", "number": 9, "state": "CLOSED", "title": "Other", "body": "Elsewhere."},
+        {"repository": "example/one", "number": 5, "state": "OPEN", "title": "", "body": "", "unreadable": True},
     ],
-    3,
+    4,
     "example/one",
 )[1]
 
@@ -830,7 +831,7 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "resources": [],
                 "when": None,
                 "shares_files": True,
-                "title_pattern": "^fix[(:]",
+                "title_types": ["fix"],
                 "inputs": ["description", "closing-issues"],
             },
         ],
@@ -851,7 +852,7 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     # Without agent-delegation, its specialists may also run inline.
     plain["required_capabilities"] = ["read-diff", "write-result"]
     # A sharing specialist with no title route and every default text, whose shares_files may then be null.
-    del plain["specialists"][1]["title_pattern"], plain["specialists"][1]["inputs"]
+    del plain["specialists"][1]["title_types"], plain["specialists"][1]["inputs"]
     return entrypoint, [specialists, plain]
 
 
@@ -935,6 +936,7 @@ def fixture_pull_fixtures() -> list[dict[str, Any]]:
             "closing_issues": [
                 {"number": 4, "state": "OPEN", "title": "Totals", "body": "Totals fail on text."},
                 {"number": 9, "state": "CLOSED", "title": "", "body": "", "repository": "example/two"},
+                {"number": 5, "state": "OPEN", "title": "", "body": "", "unreadable": True},
             ],
         },
     ]

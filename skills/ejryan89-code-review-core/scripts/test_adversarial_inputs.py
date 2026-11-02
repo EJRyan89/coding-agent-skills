@@ -1712,7 +1712,7 @@ class ClosingIssueTests(AdversarialFixture):
                 "resources": [],
                 "when": None,
                 "shares_files": True,
-                "title_pattern": r"^fix[(:]",
+                "title_types": ["fix"],
                 "inputs": ["closing-issues"],
             }
         ],
@@ -1833,6 +1833,27 @@ class ClosingIssueTests(AdversarialFixture):
         )
         report = (pull_directory(self.archive, REPOSITORY, NUMBER) / "review.md").read_text(encoding="utf-8")
         self.assertNotIn("ISSUE-MARKER", report)
+
+    def test_a_closing_issue_github_would_not_let_the_viewer_read_is_given_without_text_never_as_empty(self) -> None:
+        # GitHub refused a field of its node, so its body came back empty: the prompt, file, record, and report say it
+        # was not read, never that it holds no characters.
+        self.github.closing = [{**self.issue(4, ""), "title": "", "unreadable": True}]
+        self.change()
+        ready = self.prepare()
+        given = json.loads((ready["run"] / "closing-issues.json").read_text(encoding="utf-8"))
+        not_given = "not given: GitHub did not let the viewer read it"
+        self.assertEqual([{"repository": REPOSITORY, "number": 4, "state": "OPEN", "text": not_given}], given["issues"])
+        flat = " ".join(self.roles(ready)["completeness"].split())
+        self.assertIn(
+            f"{REPOSITORY}#4 (open), without its title or body, which GitHub did not let the reviewer's", flat
+        )
+        self.assertNotIn("all 0 characters", flat)
+        self.assertEqual("APPROVED", self.recorded_verdict(ready))
+        record = latest_record(self.archive, REPOSITORY, NUMBER)
+        closing = record and record["pull_request"].get("closing_issues")
+        self.assertEqual([True], [issue.get("unreadable") for issue in (closing["issues"] if closing else [])])
+        report = (pull_directory(self.archive, REPOSITORY, NUMBER) / "review.md").read_text(encoding="utf-8")
+        self.assertIn("&#35;4 &#40;open&#41;&#44; unreadable to the reviewer&#39;s account&#44; not given", report)
 
     def test_a_specialist_withheld_the_description_and_comments_has_neither_and_the_guard_keeps_them_from_it(
         self,

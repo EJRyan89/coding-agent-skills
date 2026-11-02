@@ -865,6 +865,21 @@ class RecordTests(unittest.TestCase):
                 with self.assertRaises(RecordError) as caught:
                     validate_record(broken)
                 self.assertEqual(message, str(caught.exception))
+        # One GitHub did not let the reviewer's account read is marked so and given nothing.
+        unreadable_cases: list[tuple[dict[str, Any], str | None]] = [
+            ({**issue(1, 0, 0), "unreadable": True}, None),
+            ({**issue(1, 0, 0), "unreadable": False}, f"{field}.issues[0].unreadable must be one of true"),
+            ({**issue(1, 5, 5), "unreadable": True}, "body_given is more than the issue's body it could be given"),
+        ]
+        for value, expected in unreadable_cases:
+            with self.subTest(value=value):
+                marked: Any = copy.deepcopy(older)
+                marked["pull_request"]["closing_issues"] = {"total": 1, "issues": [value]}
+                if expected is None:
+                    validate_record(marked)
+                else:
+                    with self.assertRaisesRegex(RecordError, re.escape(expected)):
+                        validate_record(marked)
         # No closing issue at all is an account too.
         none = copy.deepcopy(older)
         none["pull_request"]["closing_issues"] = {"total": 0, "issues": []}
