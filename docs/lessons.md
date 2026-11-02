@@ -260,11 +260,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`,
   `tests/tools/test_hub_guard_shells.py::PowerShellDefinitionDifferentialTests`,
   `tests/tools/test_hub_guard.py::ContractTests::test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle`,
-  `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`
+  `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`,
+  `tests/tools/test_hub_guard_shells.py::ShellOptionsDifferentialTests`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later
   word runs, an alias, a function, a `hash -p` or `BASH_CMDS` command name, a `command_not_found_handle`, or one
   handed to a child in its environment, through any shell between them, against the ways the guard reads; each
+  way a child's options or variables reach it from its starter, a `SHELLOPTS` or `BASHOPTS` the starter exported or
+  `env` gives, and a starter the text does not settle, against what a reader takes from the hook's own environment; each
   way a variable is assigned, an expansion's `${NAME:=word}` and `${NAME=word}` among them, and each way an
   attribute is given, allexport and an option's upper-case spelling such as `-F` among them, against the ways the
   guard reads; an option loop that ends at a word the text does not settle without saying it may be an option;
@@ -278,7 +281,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   from there; a join of two paths' state that keeps one path's value, as `{**first.<field>, **second.<field>}` does,
   where the paths differ.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140
+  #2137, #2138, #2139, #2140, #2233
 
 ### A recursive parser of input has a depth bound
 

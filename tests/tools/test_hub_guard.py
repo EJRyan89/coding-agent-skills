@@ -1165,6 +1165,33 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
 
 UNPLACED = "could not tell where `git {}` runs"
 WRITES = "`git {}` would move the hub's HEAD or write its index or tree."
+# Each way a nested bash, with SCRIPT standing for its script, may be handed a SHELLOPTS, and whether it lists allexport
+# there: Bash reads it by its exact name whatever the nested bash's own options say, keeps it read-only, lists in it
+# the options it holds, and hands it on only once it is exported.
+SHELLOPTS_STARTS = (
+    ("env SHELLOPTS=allexport bash -c 'SCRIPT'", True),
+    ("env SHELLOPTS=errexit:allexport bash -c 'SCRIPT'", True),
+    ("env SHELLOPTS=allexport bash +a -c 'SCRIPT'", True),
+    ("env SHELLOPTS=allexport env bash -c 'SCRIPT'", True),
+    ("export SHELLOPTS; set -a; bash -c 'SCRIPT'", True),
+    ("declare -x SHELLOPTS; set -o allexport; bash -c 'SCRIPT'", True),
+    ("set -a; export SHELLOPTS; bash -c 'SCRIPT'", True),
+    ("export SHELLOPTS=x; set -a; bash -c 'SCRIPT'", True),
+    ("declare -n ref=SHELLOPTS; export ref; set -a; bash -c 'SCRIPT'", True),
+    ("env SHELLOPTS=pipefail bash -c 'SCRIPT'", False),
+    ("env SHELLOPTS=ALLEXPORT bash -c 'SCRIPT'", False),
+    ("env shellopts=allexport bash -c 'SCRIPT'", False),
+    ("SHELLOPTS=allexport bash -c 'SCRIPT'", False),
+    ("set -a; bash -c 'SCRIPT'", False),
+    ("set -a; export SHELLOPTS; set +a; bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; set -a; export -n SHELLOPTS; bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; set -a; unset SHELLOPTS; export -n SHELLOPTS; bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; set -a; env -u SHELLOPTS bash -c 'SCRIPT'", False),
+    ("env SHELLOPTS=allexport env -u SHELLOPTS bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; set -a; env -i PATH=/usr/bin:/bin bash -c 'SCRIPT'", False),
+    ("declare -x SHELLOPTS=x; set -a; bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; SHELLOPTS=allexport; bash -c 'SCRIPT'", False),
+)
 
 
 def guard_section() -> str:
@@ -2666,6 +2693,43 @@ class ContractTests(GuardTestCase):
         reading = hub_guard.Reading({}, "shopt -so $o; git status")
         hub_guard.read_bash("shopt -so $o; git status", None, reading, 0, {})
         self.assertEqual(["could not read the options passed to shopt"], reading.unread)
+
+    def test_a_shellopts_the_starter_hands_a_nested_bash_turns_allexport_on_there(self) -> None:
+        git_directory = (self.hub / ".git").as_posix()
+        # Each start of a nested bash, with SCRIPT standing for its script, and whether allexport holds there.
+        for start, on in SHELLOPTS_STARTS:
+            for script, cwd in (
+                ("f() { git switch -c x; }; bash -c f", self.hub),
+                (f'GIT_DIR="{git_directory}"; git switch -c x', self.tree),
+            ):
+                command = start.replace("SCRIPT", script)
+                with self.subTest(command=command, on=on):
+                    if on:
+                        self.assertEqual("deny", self.bash(command, cwd))
+                        self.assertIn(WRITES.format("switch"), self.reason)
+                    else:
+                        self.assertIsNone(self.bash(command, cwd))
+        # PowerShell holds environment names folded where the platform folds them, so a SHELLOPTS listing allexport
+        # may be one Bash reads, by its exact name, or not.
+        unread = "could not read the SHELLOPTS its environment hands bash"
+        for command in (
+            "$env:SHELLOPTS = 'allexport'; bash -c 'f() { git switch -c x; }; bash -c f'",
+            "${env:SHELLOPTS} = 'allexport'; bash -c 'f() { git switch -c x; }; bash -c f'",
+            "Set-Item env:SHELLOPTS 'allexport'; bash -c 'f() { git switch -c x; }; bash -c f'",
+            "$env:SHELLOPTS = 'allexport'; pwsh -c \"bash -c 'f() { git switch -c x; }; bash -c f'\"",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertTrue(WRITES.format("switch") in self.reason or unread in self.reason, self.reason)
+        self.assertIsNone(
+            self.powershell("$env:SHELLOPTS = 'pipefail'; bash -c 'f() { git switch -c x; }; bash -c f'", self.hub)
+        )
+        # A shell the text does not settle may have exported SHELLOPTS, by a name it does not settle, and its own
+        # variables to the shell it starts.
+        command = "export \"$v\"; set -a; bash -c 'f() { git switch -c x; }; bash -c f'"
+        self.assertEqual("deny", self.bash(command, self.hub))
+        self.assertIn(unread, self.reason)
+        self.assertEqual("deny", self.bash(f"export \"$v\"='{git_directory}'; bash -c 'git switch -c x'", self.tree))
 
     def test_an_expansion_that_assigns_sets_its_variable(self) -> None:
         git_directory = (self.hub / ".git").as_posix()

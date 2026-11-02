@@ -276,7 +276,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
   `typeset -x`, an assignment under `set -a`, `set -o allexport` in a bundle as in `set -eo allexport`,
-  `shopt -so allexport`, or a nested `bash -a` or `bash -o allexport`, or to a
+  `shopt -so allexport`, or a nested `bash -a`, `bash -o allexport`, or `bash` handed a `SHELLOPTS` listing
+  `allexport`, or to a
   variable already exported), and removed by `unset`,
   `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, `readarray`, and
   `wait -p` leave each variable they set unsettled, as an expansion that assigns does, `${NAME:=word}` or
@@ -389,7 +390,15 @@ refused while a guarded hub is in view, and what they do not see at all is named
   environment hands it as `BASH_FUNC_<name>%%`, from Bash or from a PowerShell assignment such as
   `${env:BASH_FUNC_<name>%%}`, a declaration word the text does not settle exporting every function, in its parent's directory or the one the last
   `pwsh -WorkingDirectory` (`-wd`) names, read from there with a leading `~` as home; its directory and
-  what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
+  what it exports do not outlive it. A nested `bash` or `sh` turns allexport on, whatever its own options say, when
+  the `SHELLOPTS` its environment hands it lists `allexport` by that exact name: one `env` gives it, or the one Bash
+  keeps read-only and lists its options in, once `export` or `declare -x` exports it, never one a prefix assignment
+  names; `env -u` and `env -i` remove it, and `export -n` stops exporting it. A `SHELLOPTS` whose value the text does
+  not settle, or one listing `allexport` from a PowerShell session, which holds environment names folded where the
+  platform folds them, so that Bash may not read it, is a part the guard cannot read. `BASHOPTS` hands on `shopt`'s
+  options the same way, and the guard follows none of them. A shell the text does not settle may have exported any
+  variable, so a shell it starts is one the text does not settle either. Nesting of shells, `eval`, function calls,
+  and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
   the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the
