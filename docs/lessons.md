@@ -346,10 +346,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `atomic_file:replace_bytes`, `review_io:atomic_write_json`; the same check for each entry point under tools
   that writes an output is the mechanism in #1911.
 - **Guard:** `tests/deployer/test_invariants.py::RefusalBeforeMutationGuardTests::test_a_refusal_raised_after_the_deployment_changed_the_home_fails_the_test`,
-  `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`
+  `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
+  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
-  `raise` of the step's refusal class.
-- **Examples:** #1396, #1855, #1876, #1911
+  `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
+  as a destination judged in the step that creates it.
+- **Examples:** #1396, #1855, #1876, #1911, #2210
 
 ### What one step accepts, every later step can read and write
 
