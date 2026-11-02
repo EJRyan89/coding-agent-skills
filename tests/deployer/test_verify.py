@@ -215,6 +215,14 @@ class CapturedListingTests(unittest.TestCase):
             {"imagegen": [Listed(forward(Path(CAPTURED_TEMP) / "home/.codex/skills/.system/imagegen"), True)]}, found
         )
 
+    def test_a_codex_catalog_absolute_file_with_spaces_and_parentheses_is_read_whole(self) -> None:
+        sample = captured("codex/debug-prompt-input-absolute-paths.json")
+        spaced = f"{CAPTURED_TEMP}/A Name (Work)"
+        home = json.dumps(f"{CAPTURED_TEMP}/home")[1:-1]
+        self.assertIn(home, sample)
+        found = discovery.parse_codex_catalog(sample.replace(home, json.dumps(spaced)[1:-1]).splitlines())
+        self.assertEqual({"imagegen": [Listed(forward(Path(spaced) / ".codex/skills/.system/imagegen"), True)]}, found)
+
     def test_a_codex_catalog_that_lists_no_skill_is_a_listing_error(self) -> None:
         # Codex lists its own system skills, so prompt input naming none is in a shape this reader does not know;
         # read as an empty catalog, it would pass every user-only adapter as kept out of the model's catalog.
