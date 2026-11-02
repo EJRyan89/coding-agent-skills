@@ -697,7 +697,8 @@ class CheckCommandTests(DeployerTestCase):
 
     def test_git_and_claude_code_versions_are_reported_for_a_bug_report(self) -> None:
         # The bug template asks for check's output alone, so check names the Git and Claude Code versions too, though
-        # deploying needs neither. Without Git the skills fail, but deploying still works.
+        # deploying from a source that is no Git checkout needs neither. Without Git the skills fail, but deploying
+        # from such a source still works.
         groups = self.report_groups(self.check(Machine()).output, "CHECK")
         self.assertIn("Git 2.54.0 (used by every skill)", groups["FOUND"])
         self.assertIn("Claude Code 2.1.300 (used by every skill run in Claude Code)", groups["OPTIONAL"])
@@ -707,6 +708,23 @@ class CheckCommandTests(DeployerTestCase):
         self.assertEqual(["Git (used by every skill)"], groups["MISSING"])
         self.assertIn("Claude Code (not installed; used by every skill run in Claude Code)", groups["OPTIONAL"])
         self.assertIn("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool\n", result.output)
+
+    def test_git_is_needed_to_deploy_from_a_git_checkout_so_check_blocks_without_it(self) -> None:
+        # A deployment from a Git checkout records the commit it deployed and refuses without Git to read it, so check
+        # reports Git with the tools needed to deploy, once, and is not ready to deploy without it.
+        (self.source / ".git").mkdir()
+        result = self.check(Machine(missing=("git",)))
+        self.assertEqual(1, result.code, result.output)
+        groups = self.report_groups(result.output, "CHECK")
+        self.assertEqual(["Git (needed to deploy from a Git checkout; used by every skill)"], groups["MISSING"])
+        self.assertIn("Install the missing tools before deploying", result.output)
+        self.assertNotIn("Ready to deploy.", result.output)
+        result = self.check(Machine())
+        self.assertEqual(0, result.code, result.output)
+        found = self.report_groups(result.output, "CHECK")["FOUND"]
+        self.assertIn("Git 2.54.0 (needed to deploy from a Git checkout; used by every skill)", found)
+        self.assertNotIn("Git 2.54.0 (used by every skill)", found)
+        self.assertEqual(1, result.output.count("Git 2.54.0"), result.output)
 
     def test_claude_code_before_2_1_295_is_outdated_because_the_reviewer_guard_must_block_when_it_cannot_run(
         self,
