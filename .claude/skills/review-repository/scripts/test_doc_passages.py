@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -7,6 +8,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 import doc_passages
 from conditions import read_files
@@ -406,3 +409,21 @@ class ConditionTests(unittest.TestCase):
         code, out, _ = self.run_condition("", environment=missing)
         self.assertEqual(2, code)
         self.assertTrue(out.startswith("FAILED FileNotFoundError: "), out)
+
+    def test_a_folder_it_cannot_list_fails_the_search_rather_than_hiding_its_documents(self) -> None:
+        # A glob matches nothing in a folder it cannot list, so the route would close over documents it never read.
+        self.document("README.md", "# Readme\n")
+        self.document("docs/guide.md", "Run `python -B tools/skill_evals.py` first.\n")
+        folder = self.root / "docs"
+        scandir = os.scandir
+
+        def refused(path: Any = ".") -> Any:
+            if isinstance(path, str | os.PathLike) and Path(path) == folder:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return scandir(path)
+
+        with mock.patch.object(os, "scandir", refused), self.assertRaises(PermissionError) as raised:
+            doc_passages.documents(self.root)
+        self.assertEqual(str(folder), raised.exception.filename)
+        listed = [relative for relative, _ in doc_passages.documents(self.root)]
+        self.assertEqual(["README.md", "docs/guide.md"], listed)

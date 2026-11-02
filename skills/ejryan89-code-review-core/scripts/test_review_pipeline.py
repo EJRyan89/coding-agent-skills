@@ -3067,6 +3067,17 @@ class InlineReviewTests(PipelineFixture):
         self.assertEqual((0, f"INLINE_DONE {SELECTOR}\n"), self.next_role(run))
         self.assertEqual(["generic-review", "python-reviewer"], sorted(review_run.load_run(run)["seal"]["results"]))
 
+    def test_next_role_refuses_a_result_it_cannot_stat_rather_than_hand_its_role_out_again_unsealed(self) -> None:
+        run = self.prepare_inline()
+        self.next_role(run)
+        result = Path(self.role(run, "python-reviewer")["result_file"])
+        self.write_role_result(self.role(run, "python-reviewer"))
+        before = (run / review_run.RUN_FILE).read_bytes()
+        with unstatable(result):
+            code, out = self.next_role(run)
+        self.assertEqual((1, f"FAILED [Errno 13] Permission denied: {str(result)!r}\n"), (code, out))
+        self.assertEqual(before, (run / review_run.RUN_FILE).read_bytes(), "no role is handed out")
+
     def test_a_later_role_that_rewrites_an_earlier_result_fails_the_pull_request(self) -> None:
         run = self.prepare_inline()
         self.next_role(run)
@@ -3199,6 +3210,8 @@ class UnstatableRunStateTests(unittest.TestCase):
             "read log": (log, lambda: review_dispatch.count_reads(run, state, ["csharp-review"])),
             "run folder": (run, lambda: review_dispatch.unfinalized_selector(run)),
             "recorded marker": (run / review_run.RECORDED_FILE, lambda: review_dispatch.unfinalized_selector(run)),
+            # Read as not yet recorded, finalize would archive the run a second time.
+            "recorded marker, finalize": (run / review_run.RECORDED_FILE, lambda: rp.finalize(run)),
             "host claim": (run / HOST_CLAIM, host),
             "host outcome": (run / f"copilot-outcome-{claim['attempt']}.json", host),
         }

@@ -21,7 +21,7 @@ from review_archive import (
     record_paths,
 )
 from review_config import validate_repository_identity
-from review_io import PersistenceError, read_json
+from review_io import FileUnreadable, PersistenceError, read_json, record_present
 from review_records import (
     LedgerEntry,
     ReviewRecord,
@@ -399,11 +399,15 @@ LEGACY_INDEX_KEYS = {
 def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, Any] | None:
     """The migrated legacy review index for a pull request, or None when absent or invalid.
 
-    An index that is invalid or cannot be read, a missing one included, is treated as unreviewed, so the pull request
-    is offered for review again rather than passed over.
+    An index that is not there, or whose content is invalid, is treated as unreviewed, so the pull request is offered
+    for review again rather than passed over. One the file system will not let be stat'ed or read, or anything other
+    than a file in its place, is the FileUnreadable naming it and the reason: it may record a review, so the pull
+    request is neither offered again nor passed over.
     """
     repository = validate_repository_identity(repository)
     path = pull_directory(archive_root, repository, number) / "legacy-review.json"
+    if not record_present(path):
+        return None
     try:
         index = READ.json_object(read_json(path), "legacy-index", required=LEGACY_INDEX_KEYS)
         version = READ.integer(index["schema_version"], "legacy-index.schema_version")
@@ -412,6 +416,8 @@ def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, 
         pull_number = READ.integer(index["pull_number"], "legacy-index.pull_number")
         READ.hex_digest(index["reviewed_head_sha"], "legacy-index.reviewed_head_sha", 40, 64)
         READ.string(index["verdict"], "legacy-index.verdict", empty=True)
+    except FileUnreadable:
+        raise
     except (PersistenceError, FieldError):
         return None
     if version != 1 or indexed.lower() != repository or pull_number != number:

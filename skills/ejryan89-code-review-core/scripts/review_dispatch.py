@@ -179,7 +179,8 @@ def next_role(run: Path, services: Services) -> tuple[str, RunRole | None]:
     following = None
     for role in state["roles"]:
         result = Path(role["result_file"])
-        if result.is_file():
+        # A result it cannot stat is the stat's OSError, never a role without one to hand out again unsealed.
+        if file_presence.is_present(result):
             state["seal"]["results"].setdefault(role["id"], _sha256(result))
         elif following is None:
             following = role

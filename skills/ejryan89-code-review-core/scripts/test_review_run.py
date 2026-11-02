@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import review_pipeline
 import review_run
-from test_review_archive import unstatable
+from test_review_archive import unlistable, unstatable
 
 
 def prepared_state(**fields: Any) -> dict[str, Any]:
@@ -118,6 +118,18 @@ def test_the_inline_seal_passes_over_only_folders_so_a_file_it_cannot_stat_is_st
         sealed = review_run.sealed_files(run, state)
     digest = hashlib.sha256(b"plan.json").hexdigest()
     assert {"request.json": hashlib.sha256(b"request.json").hexdigest(), "work/plan.json": digest} == sealed
+
+
+def test_the_inline_seal_refuses_a_folder_it_cannot_list_rather_than_leave_its_files_out(tmp_path: Path) -> None:
+    # rglob matches nothing in a folder it cannot list, so a seal from it would leave that folder's files unsealed.
+    run = tmp_path.resolve()
+    work = run / "work"
+    work.mkdir()
+    (work / "plan.json").write_text("plan", encoding="utf-8")
+    state: Any = prepared_state(roles=[], result_path=str(run / "result.json"))
+    with unlistable(work), pytest.raises(PermissionError) as raised:
+        review_run.sealed_files(run, state)
+    assert str(work) == raised.value.filename
 
 
 # Every field a run prepared before it was recorded may lack, named here apart from the shape the reader takes them

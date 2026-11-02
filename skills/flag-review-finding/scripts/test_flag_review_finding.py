@@ -26,6 +26,7 @@ from flag_review_finding import flag_line, main
 from review_archive import ArchiveError, ArchiveFieldError, pull_directory
 from review_config import write_config
 from review_io import PersistenceError, ResourceLock
+from test_review_archive import unstatable
 from typed_fields import FieldError
 
 SCRIPT = Path(__file__).with_name("flag_review_finding.py")
@@ -487,6 +488,18 @@ class FlagCliTests(unittest.TestCase):
 
     def test_a_flag_on_a_finding_of_an_unreviewed_pull_request_fails(self) -> None:
         self.assert_result(self.flag_finding("1", "F001"), 1, "FAILED example/one#12 has no review v1 in the archive\n")
+
+    def test_a_flag_on_a_finding_of_a_review_it_cannot_stat_names_the_review_unreadable_not_missing(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        review = pull_directory(self.archive, "example/one", 12) / "review.json"
+        arguments = ["add", "guideline", "Clarify boundary", "--repository", "example/one", "--pull", "12"]
+        printed = io.StringIO()
+        with unstatable(review), contextlib.redirect_stdout(printed):
+            code = main(["--store", self.store, "--config", self.config, *arguments, "--finding", "v1 F001"])
+        reason = f"[Errno 13] Permission denied: {str(review)!r}"
+        failed = f"FAILED Review v1 of example/one#12 could not be read: {reason}\n"
+        self.assertEqual((1, failed), (code, printed.getvalue()))
+        self.assertFalse(Path(self.store).exists())
 
     def test_findings_lists_the_open_findings_of_a_pull_request_by_report_label(self) -> None:
         # v1 F001 is open and was repeated as v3 F001, so it is shown where it was last reported; v1 F002 was

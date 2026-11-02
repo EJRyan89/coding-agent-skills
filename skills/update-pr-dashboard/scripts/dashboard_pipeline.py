@@ -40,7 +40,6 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import file_presence
 from console import run_main
 from flat_text import flat_text
 from github_client import GitHubError
@@ -61,7 +60,7 @@ from review_config import (
 )
 from review_flags import FlagError, default_flags_path, load_store
 from review_github import READ, GitHubClient
-from review_io import PersistenceError, atomic_write_json, map_in_order, read_json, working_path
+from review_io import PersistenceError, atomic_write_json, map_in_order, read_json, record_present, working_path
 from review_operation import reviewed_head
 from review_records import (
     RE_REVIEW_SCOPES,
@@ -473,11 +472,7 @@ def tracker_record_path(config_path: Path) -> Path:
 def read_tracker_record(record: Path) -> dict[str, Any] | None:
     """The validated tracker record at `record`, or None before any update has written it. A record it cannot stat, or
     anything other than a file in its place, is refused as one it cannot read, never one no update has written."""
-    try:
-        present = file_presence.is_present(record)
-    except OSError as exc:
-        raise PersistenceError(f"Cannot read valid JSON from {record}: {exc}") from exc
-    if not present:
+    if not record_present(record):
         return None
     return validate_tracker_record(read_json(record))
 

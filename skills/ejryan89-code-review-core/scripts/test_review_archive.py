@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import os
 import sys
 import tempfile
 import unittest
@@ -20,41 +21,74 @@ from review_archive import ArchiveError, commit_record, latest_record, list_vers
 from review_records import ReviewRecord, build_record, validate_adapter_result
 from test_review_records import valid_adapter_result, valid_request
 
-# The predicates Python 3.14 and later answer False for a path whose stat fails with any OSError.
+# The predicates Python 3.14 and later answer False for a path whose stat fails with any OSError, on Path and in
+# os.path.
 SWALLOWING_PREDICATES = ("exists", "is_file", "is_dir")
+SWALLOWING_OS_PATH_PREDICATES = ("exists", "lexists", "isfile", "isdir")
+
+
+class Refusals:
+    """Whether a call on `path` is refused: a call naming it, the first `times` of them when `times` is given."""
+
+    def __init__(self, path: Path, times: int | None) -> None:
+        self.path = path
+        self.left = times
+
+    def __call__(self, candidate: object = ".") -> bool:
+        if not isinstance(candidate, str | os.PathLike) or Path(candidate) != self.path or self.left == 0:
+            return False
+        if self.left is not None:
+            self.left -= 1
+        return True
+
+
+def refusing(original: Callable[..., Any], refuses: Refusals) -> Callable[..., Any]:
+    """`original`, raising the permission error a refused stat or listing raises for a path `refuses` refuses."""
+
+    def call(candidate: Any = ".", *args: Any, **kwargs: Any) -> Any:
+        if refuses(candidate):
+            raise PermissionError(errno.EACCES, "Permission denied", str(candidate))
+        return original(candidate, *args, **kwargs)
+
+    return call
+
+
+def answering_false(original: Callable[..., Any], refuses: Refusals) -> Callable[..., bool]:
+    """`original`, answering False for a path `refuses` refuses, as a predicate that swallows the stat's error does."""
+
+    def predicate(candidate: Any, *args: Any, **kwargs: Any) -> bool:
+        return False if refuses(candidate) else bool(original(candidate, *args, **kwargs))
+
+    return predicate
 
 
 @contextlib.contextmanager
 def unstatable(path: Path, *, times: int | None = None) -> Iterator[None]:
-    """`path` as one whose stat is refused looks to Python 3.14 and later: Path.stat raises a permission error naming
-    it, and exists, is_file, and is_dir answer False. With `times`, only that many of these calls are refused and
-    the rest read the path as it is, as for a file another process holds for a moment. Every other path is read as it
-    is."""
-    stat = Path.stat
-    predicates = {name: getattr(Path, name) for name in SWALLOWING_PREDICATES}
-    refusals = [0]
-
-    def refusing(candidate: Path) -> bool:
-        if candidate != path or (times is not None and refusals[0] >= times):
-            return False
-        refusals[0] += 1
-        return True
-
-    def refused(self: Path, *args: Any, **kwargs: Any) -> Any:
-        if refusing(self):
-            raise PermissionError(errno.EACCES, "Permission denied", str(self))
-        return stat(self, *args, **kwargs)
-
-    def answering(name: str) -> Any:
-        def predicate(self: Path, *args: Any, **kwargs: Any) -> bool:
-            return False if refusing(self) else bool(predicates[name](self, *args, **kwargs))
-
-        return predicate
-
+    """`path` as one whose stat is refused looks to Python 3.14 and later: Path.stat, os.stat, and os.lstat raise a
+    permission error naming it, and Path's exists, is_file, and is_dir and os.path's exists, lexists, isfile, and isdir
+    answer False. With `times`, only that many of these calls are refused and the rest read the path as it is, as for
+    a file another process holds for a moment. Every other path is read as it is."""
+    refuses = Refusals(path, times)
     with contextlib.ExitStack() as stack:
-        stack.enter_context(mock.patch.object(Path, "stat", refused))
+        stack.enter_context(mock.patch.object(Path, "stat", refusing(Path.stat, refuses)))
+        for name in ("stat", "lstat"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name), refuses)))
         for name in SWALLOWING_PREDICATES:
-            stack.enter_context(mock.patch.object(Path, name, answering(name)))
+            stack.enter_context(mock.patch.object(Path, name, answering_false(getattr(Path, name), refuses)))
+        for name in SWALLOWING_OS_PATH_PREDICATES:
+            stack.enter_context(mock.patch.object(os.path, name, answering_false(getattr(os.path, name), refuses)))
+        yield
+
+
+@contextlib.contextmanager
+def unlistable(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused: os.scandir and os.listdir raise a permission error naming it, which
+    Path.iterdir and os.walk raise too, while Path.glob and Path.rglob match nothing in it, as they do on every
+    supported Python. Its stat, and every other folder, are read as they are."""
+    refuses = Refusals(folder, None)
+    with contextlib.ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name), refuses)))
         yield
 
 
@@ -173,3 +207,32 @@ class ArchiveTests(unittest.TestCase):
                 with self.subTest(name, file_in_place=True), self.assertRaises(NotADirectory) as refused:
                     read()
                 self.assertEqual(str(pulls), refused.exception.filename)
+
+    def test_a_folder_it_cannot_list_is_refused_not_read_as_no_reviews(self) -> None:
+        # A glob matches nothing in a folder it cannot list, so the archive lists each folder with iterdir.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = pull_directory(root, "example/one", 7)
+            folder.mkdir(parents=True)
+            (folder / "review.json").write_text("{}", encoding="utf-8")
+            readers: dict[str, tuple[Path, Callable[[], object]]] = {
+                "record_files, the pulls folder": (folder.parent, lambda: record_files(root, "example/one")),
+                "record_files, a pull request's folder": (folder, lambda: record_files(root, "example/one")),
+                "list_versions": (folder, lambda: list_versions(folder)),
+            }
+            for name, (path, read) in readers.items():
+                with self.subTest(name), unlistable(path), self.assertRaises(PermissionError) as raised:
+                    read()
+                self.assertEqual(str(path), raised.exception.filename)
+
+    def test_a_destination_it_cannot_stat_is_refused_and_nothing_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = pull_directory(root, "example/one", 12)
+            folder.mkdir(parents=True)
+            markdown = folder / "review.md"
+            record = self._record("example/one", 12, 1)
+            with unstatable(markdown), self.assertRaises(PermissionError) as raised:
+                commit_record(root, "example/one", 12, record, expected_latest_version=None)
+            self.assertEqual(str(markdown), raised.exception.filename)
+            self.assertEqual([], sorted(path.name for path in folder.iterdir()), "no half of the pair is written")
