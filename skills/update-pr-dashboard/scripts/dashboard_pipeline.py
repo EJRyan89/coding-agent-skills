@@ -471,9 +471,13 @@ def tracker_record_path(config_path: Path) -> Path:
 
 
 def read_tracker_record(record: Path) -> dict[str, Any] | None:
-    """The validated tracker record at `record`, or None before any update has written it. A record it cannot stat is
-    the OSError file_presence raises, never one no update has written."""
-    if not file_presence.is_present(record):
+    """The validated tracker record at `record`, or None before any update has written it. A record it cannot stat, or
+    anything other than a file in its place, is refused as one it cannot read, never one no update has written."""
+    try:
+        present = file_presence.is_present(record)
+    except OSError as exc:
+        raise PersistenceError(f"Cannot read valid JSON from {record}: {exc}") from exc
+    if not present:
         return None
     return validate_tracker_record(read_json(record))
 

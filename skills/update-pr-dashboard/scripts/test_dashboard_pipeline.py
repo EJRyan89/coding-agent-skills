@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -1444,8 +1445,20 @@ class OverrideTests(TrackerPipelineFixture):
         for arguments in (("override", "--set", "example/two#5=on hold"), ("override",)):
             with self.subTest(arguments=arguments), unstatable(self.record):
                 code, out, err = self.run_main(*arguments)
+            reason = f"[Errno 13] Permission denied: {str(self.record)!r}"
             self.assertEqual(
-                (1, [f"FAILED [Errno 13] Permission denied: {str(self.record)!r}"], ""), (code, out.splitlines(), err)
+                (1, [f"FAILED Cannot read valid JSON from {self.record}: {reason}"], ""), (code, out.splitlines(), err)
+            )
+        self.assertEqual({}, load_config(self.config_path)["dashboard"]["status_overrides"])
+
+    def test_a_folder_in_the_record_s_place_is_refused_never_read_as_no_update(self) -> None:
+        self.record.mkdir()
+        for arguments in (("override", "--set", "example/two#5=on hold"), ("override",)):
+            with self.subTest(arguments=arguments):
+                code, out, err = self.run_main(*arguments)
+            reason = f"[Errno {errno.EISDIR}] not a file: {str(self.record)!r}"
+            self.assertEqual(
+                (1, [f"FAILED Cannot read valid JSON from {self.record}: {reason}"], ""), (code, out.splitlines(), err)
             )
         self.assertEqual({}, load_config(self.config_path)["dashboard"]["status_overrides"])
 
