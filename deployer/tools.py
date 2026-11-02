@@ -25,6 +25,14 @@ from . import platform_support
 MINIMUM_PYTHON = (3, 11, 4)
 
 
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "codex_sandbox_command": "builds the probe for the Codex CLI its caller located",
+    "codex_sandbox_mode": "runs the probe for the Codex CLI its caller located",
+    "probe": "runs the version probe of the program each tool's locator finds",
+}
+
+
 @dataclass(frozen=True)
 class Tool:
     """A tool by its deploy-meta name, how to locate it, and its version or provider support requirement, if any."""

@@ -112,6 +112,12 @@ RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
 }
 
 
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "run_test_script": "starts the PowerShell 7 toolchain.find_powershell located",
+}
+
+
 def _needs_a_test(name: str, scripts: list[str]) -> bool:
     """Whether a repository path is a module under a skill's scripts/, deployer/, or tools/ that a test must import."""
     parts = name.split("/")

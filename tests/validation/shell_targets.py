@@ -13,7 +13,15 @@ from pathlib import Path
 
 import frontmatter
 from job_pool import refuse_termination, run_process
-from toolchain import VALIDATION_FLOORS, find_git_bash, find_psscriptanalyzer, find_shellcheck, powershell_json
+from toolchain import (
+    VALIDATION_FLOORS,
+    bash_syntax_job,
+    find_git_bash,
+    find_psscriptanalyzer,
+    find_shellcheck,
+    powershell_json,
+    shellcheck_job,
+)
 from validation_support import (
     REPOSITORY_ROOT,
     TEMPLATE_TOKEN,
@@ -47,6 +55,12 @@ INTERPRETER_DOC = '"Template values" in docs/adding-a-skill.md'
 LONE_OPTIONAL_TOKEN = re.compile(
     r"(?<![^ \t\n;|&()])([\"'])\{\{(" + "|".join(config.OPTIONAL_VARIABLES) + r")\}\}\1(?![^ \t\n;|&()])"
 )
+
+
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "run_bash_suite": "starts the Git Bash toolchain.find_git_bash located",
+}
 
 
 def _shell_units(path: Path) -> list[tuple[str, int, str]]:
@@ -332,13 +346,15 @@ def static_shell_check() -> None:
     # ended check passed. Started directly, each one's own status reaches the runner, which names a termination.
     bash = find_git_bash()
     for path in scripts:
-        run_process([bash, "-n", relative(path)])
-    run_process([shellcheck, "--severity=warning", *(relative(path) for path in scripts)])
+        bash_syntax_job(bash, relative(path))
+    shellcheck_job(shellcheck, "--severity=warning", *(relative(path) for path in scripts))
 
 
 # PSScriptAnalyzer reads every .ps1 under these roots, and every PowerShell fence in Markdown outside tests/.
 SCRIPT_ANALYZER_ROOTS = ("tools", "tests", "skills", ".claude/skills")
 # Reads the targets from the JSON file PSSA_TARGETS names and prints one JSON array of Warning and Error findings.
+# Given no settings, PSScriptAnalyzer reads a PSScriptAnalyzerSettings.psd1 beside a file it is given, or in the
+# working folder for a fence's text, which could turn its rules off; -Settings @{} keeps every rule on.
 SCRIPT_ANALYZER_RUN = (
     "$ErrorActionPreference = 'Stop'; "
     "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
@@ -348,7 +364,7 @@ SCRIPT_ANALYZER_RUN = (
     "for ($index = 0; $index -lt $targets.Count; $index++) { "
     "$target = $targets[$index]; "
     "$source = if ($null -ne $target.path) { @{ Path = $target.path } } else { @{ ScriptDefinition = $target.text } }; "
-    "foreach ($record in Invoke-ScriptAnalyzer @source -Severity Warning, Error) { "
+    "foreach ($record in Invoke-ScriptAnalyzer @source -Settings @{} -Severity Warning, Error) { "
     "$found.Add([ordered]@{ target = $index; line = $record.Line; rule = $record.RuleName; "
     'severity = "$($record.Severity)"; message = $record.Message }) } }; '
     "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $found.ToArray() -Compress -Depth 3))"
@@ -467,8 +483,9 @@ def markdown_shell_check(root: Path, files: list[Path]) -> None:
             path = Path(directory) / f"{index}.sh"
             path.write_text(f"{render.SHELLCHECK_HEADER}{target.text}\n", encoding="utf-8", newline="\n")
             fragments[platform_support.normalize(path)] = target
-        check = [shellcheck, "--format=gcc", "--severity=warning", *fragments]
-        result = platform_support.run_tool(check)
+        options = ("--format=gcc", "--severity=warning", *fragments)
+        check = render.shellcheck_command(shellcheck, *options)
+        result = render.run_shellcheck(shellcheck, *options)
     refuse_termination(check, result.returncode, result.output)
     if result.returncode == 0:
         return

@@ -7,8 +7,11 @@ or changed: neither may escape as an unclassified failure, nor be read as no fil
 
 from __future__ import annotations
 
+import errno
 import json
 import re
+from pathlib import Path
+from unittest import mock
 
 from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line
 
@@ -58,6 +61,25 @@ class ReaderTests(DeployerTestCase):
             (f"ERROR: The state at {platform_support.normalize(path)} is not a file.", "Move it aside.", "Then retry."),
             raised.exception.lines,
         )
+
+    def test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent(self) -> None:
+        path = self.root / "state.json"
+        denied = PermissionError(errno.EACCES, "Permission denied", str(path))
+        with mock.patch.object(Path, "stat", side_effect=denied), self.assertRaises(DeployError) as raised:
+            state_files.is_present(path, "The manifest")
+        self.assertEqual(
+            (
+                f"ERROR: Could not tell whether the manifest is there: {platform_support.normalize(path)}: "
+                "Permission denied",
+                "Check that the path exists and that you can read it, then retry.",
+                "Rerun with --debug to see the traceback.",
+            ),
+            raised.exception.lines,
+        )
+        self.assertIs(denied, raised.exception.__cause__)
+        with self.assertRaises(DeployError) as raised:
+            state_files.is_present(self.root / "state\0.json", "The manifest")
+        self.assertIn("NUL character", raised.exception.lines[0])
 
 
 class StateFileTests(DeployerTestCase):

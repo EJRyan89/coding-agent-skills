@@ -7,17 +7,26 @@ import sys
 import sysconfig
 import tempfile
 import unittest
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import json_reader
 import json_writer
-from job_pool import Terminated, refuse_termination
+from job_pool import Terminated, refuse_termination, run_process
 from validation_support import REPOSITORY_ROOT, find_fences, markdown_section, repository_files
 
-from deployer import platform_support, tools
+from deployer import platform_support, render, tools
+
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "shellcheck_job": "the ShellCheck runner starts the program its caller located",
+    "bash_syntax_job": "the Bash syntax runner starts the Bash its caller located",
+    "ruff_job": "the ruff runner starts the program find_ruff located",
+    "mypy_job": "the mypy runner starts the program find_mypy located",
+    "read_tool_version": "runs the version probe of a prerequisite its finder located",
+}
 
 
 def find_git_bash() -> str:
@@ -96,6 +105,36 @@ def powershell_json(
     if not isinstance(found, list):
         raise AssertionError(f"{failure} (exit code {result.returncode}):\n{result.output}")
     return found
+
+
+# Concise output names one file per line instead of printing each diff, and no cache is written into the tree. Given a
+# folder, ruff passes over each file a gitignore names, the home's and a .ignore above the repository included, so a
+# setting outside the repository could keep a file from being checked; ruff reads every file under its targets.
+RUFF_OPTIONS = ("--output-format", "concise", "--no-cache", "--no-respect-gitignore")
+# mypy resolves an import through MYPYPATH ahead of mypy_path, so a stub in a folder it names could stand in for a
+# module the repository checks; mypy reads only the paths the configuration names.
+MYPY_ENVIRONMENT = {"MYPYPATH": ""}
+
+
+def shellcheck_job(shellcheck: str, *arguments: str) -> None:
+    """Run ShellCheck on `arguments` as a job, reading no rc file and no SHELLCHECK_OPTS; run_process says how a
+    failure is raised."""
+    run_process(render.shellcheck_command(shellcheck, *arguments), render.SHELLCHECK_ENVIRONMENT)
+
+
+def bash_syntax_job(bash: str, path: str) -> None:
+    """Parse a Bash file with `bash -n` as a job, running none of it."""
+    run_process([bash, "-n", path])
+
+
+def ruff_job(ruff: str, subcommand: Sequence[str], targets: Sequence[str], cwd: Path) -> None:
+    """Run a ruff subcommand on targets from cwd as a job, reading every file under them."""
+    run_process([ruff, *subcommand, *RUFF_OPTIONS, *targets], cwd=cwd)
+
+
+def mypy_job(mypy: str, configuration: Path, arguments: Sequence[str], cwd: Path) -> None:
+    """Run mypy from cwd as a job, with the one configuration given and no MYPYPATH."""
+    run_process([mypy, "--config-file", str(configuration), *arguments], MYPY_ENVIRONMENT, cwd=cwd)
 
 
 def find_ruff() -> str | None:

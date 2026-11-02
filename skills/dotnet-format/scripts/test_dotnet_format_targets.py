@@ -639,7 +639,10 @@ class ResolveTests(unittest.TestCase):
         services.git = GitClient(lambda command, timeout: GitResult(128, "", message))
         with mock.patch.object(targets, "flat_text", wraps=flat_text) as flatten:
             self.assertEqual("Cannot read café 設計 repository.", self.failed(services=services))
-        flatten.assert_called_once_with(message.strip())
+        # The FAILED line flattens the reason once more, which leaves the flattened text as it is.
+        self.assertEqual(
+            [mock.call(message.strip()), mock.call("Cannot read café 設計 repository.")], flatten.call_args_list
+        )
 
     def test_a_fetch_that_succeeds_reports_nothing(self) -> None:
         services = Services()
@@ -1092,3 +1095,72 @@ def test_usage_errors_exit_2_on_stderr(arguments: list[str]) -> None:
     assert raised.value.code == 2
     assert output.getvalue() == ""
     assert "usage:" in errors.getvalue()
+
+
+# Every character `str.splitlines()` breaks a line at, read from Python rather than typed, and the tab a fact line
+# splits its fields at.
+LINE_BREAKS = [chr(code) for code in range(0x3000) if len(f"a{chr(code)}b".splitlines()) == 2]
+FIELD_BREAKS = [*LINE_BREAKS, "\t"]
+
+
+def holdable_breaks(directory: Path) -> list[str]:
+    """The FIELD_BREAKS this file system lets a file name hold; Windows refuses control characters in a name."""
+    held: list[str] = []
+    for character in FIELD_BREAKS:
+        probe = directory / f"probe{character}.cs"
+        try:
+            probe.write_bytes(b"")
+        except OSError:
+            continue
+        probe.unlink()
+        held.append(character)
+    return held
+
+
+class OneLineFactTests(unittest.TestCase):
+    """A name or a reason holding a line break or a tab stays one fact on one line, through `fact_line`."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name).resolve()
+
+    def test_line_breaks_are_read_from_python(self) -> None:
+        self.assertTrue({"\n", "\r", "\x85", "\u2028", "\u2029"} <= set(LINE_BREAKS), LINE_BREAKS)
+
+    def test_a_refused_entry_holding_a_line_or_field_break_prints_one_refused_line(self) -> None:
+        for character in FIELD_BREAKS:
+            entry = str(self.directory / f"x{character}STOP\tthing.cs")
+            printed: list[str] = []
+            with self.subTest(character=character):
+                self.assertEqual([], targets.inside_root(self.directory, [entry], printed.append))
+                (line,) = "\n".join(printed).splitlines()
+                self.assertEqual(["REFUSED", flat_text(entry)], line.split("\t")[:2])
+                self.assertEqual(3, len(line.split("\t")))
+
+    def test_changed_files_and_a_root_holding_a_line_break_print_one_line_each(self) -> None:
+        held = holdable_breaks(self.directory)
+        self.assertIn("\u2028", held, "every supported file system holds a line separator in a name")
+        repository = Repository(self.directory / "repo\u2028STOP")
+        repository.root.mkdir()
+        repository.git("init", "--quiet", "--initial-branch=main")
+        repository.write("README.md", "fixture\n")
+        repository.commit("base")
+        repository.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        names = [f"x{character}STOP thing.cs" for character in held]
+        for name in names:
+            repository.write(name)
+        repository.commit("names")
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            status = targets.main(["resolve", "--cwd", str(repository.root)], Services())
+        self.assertEqual((0, ""), (status, errors.getvalue()))
+        lines = [line.split("\t") for line in output.getvalue().splitlines()]
+        # The fixture's fetch fails, so a FETCH_FAILED line comes before BASE.
+        self.assertEqual(
+            ["REPO_ROOT", "FETCH_FAILED", "BASE", *("FILE" for _ in names), "STOP"], [fields[0] for fields in lines]
+        )
+        self.assertEqual([2] * len(lines), [len(fields) for fields in lines])
+        self.assertEqual(flat_text(str(repository.root)), lines[0][1])
+        self.assertEqual(sorted(flat_text(name) for name in names), sorted(fields[1] for fields in lines[3:-1]))
+        self.assertEqual(f"no .sln or .slnx found under {flat_text(str(repository.root))}", lines[-1][1])
