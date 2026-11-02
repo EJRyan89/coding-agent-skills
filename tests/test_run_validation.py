@@ -360,14 +360,15 @@ class PullRequestOnlySelection(unittest.TestCase):
     PULL_REQUEST_CHECKS = frozenset(
         {
             "KnownFailurePullRequestPolicies",
+            "PullRequestBodyPolicies",
             "PullRequestTitlePolicies",
             "SilentRevertPolicies",
             "UpgradeNotesPolicies",
         }
     )
     LIMITED = (
-        "Pull request checks only: KnownFailurePullRequestPolicies, PullRequestTitlePolicies, SilentRevertPolicies, "
-        "UpgradeNotesPolicies, since"
+        "Pull request checks only: KnownFailurePullRequestPolicies, PullRequestBodyPolicies, PullRequestTitlePolicies, "
+        "SilentRevertPolicies, UpgradeNotesPolicies, since"
     )
     EVERY = (Job("tests/test_a.py", "tests/test_a.py", 1, print),)
 
