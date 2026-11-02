@@ -10,8 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
-from contextlib import redirect_stderr, redirect_stdout
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -3079,3 +3079,153 @@ def test_a_skill_folder_and_a_link_to_it_are_one_skill(tmp_path: Path) -> None:
     assert skill_inventory.identity(link) == skill_inventory.identity(target)
     assert skill_inventory.identity(tmp_path / "skills" / ".." / "linked") == skill_inventory.identity(target)
     assert skill_inventory.identity(tmp_path / "skills") != skill_inventory.identity(target)
+
+
+def denied_stat(target: Path) -> AbstractContextManager[object]:
+    """Path.stat refusing `target` alone, as it does for a path in a folder the user may not search."""
+    real = Path.stat
+
+    def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == target:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real(path, follow_symlinks=follow_symlinks)
+
+    return mock.patch.object(Path, "stat", autospec=True, side_effect=stat)
+
+
+PROMPT_BODY = (
+    "```bash\n"
+    'python -B "${CLAUDE_SKILL_DIR}/scripts/pipeline.py" prepare\n'
+    "```\n"
+    "Start one subagent with this prompt: `Read <prompt file> and follow it.`\n"
+)
+
+
+def source_skill(root: Path, body: str = "Body.\n", metadata: object = None) -> Path:
+    """The folder of a skill alpha in a source tree under root, with its metadata."""
+    write(root / "deploy-meta" / "alpha.json", json.dumps({} if metadata is None else metadata))
+    write(root / "skills" / "alpha" / "SKILL.md", f"---\ndescription: Run.\n---\n{body}")
+    return root / "skills" / "alpha"
+
+
+def plugin_in_cache(home: Path) -> Path:
+    """An installed plugin in Claude Code's plugin cache that carries the skill alpha."""
+    plugin = home / skill_inventory.PLUGIN_CACHE / "fixture"
+    write(plugin / ".claude-plugin" / "plugin.json", json.dumps({"name": "fixture"}))
+    write(plugin / "skills" / "alpha" / "SKILL.md", "plugin")
+    return plugin
+
+
+def locate_arguments(root: Path, name: str = "alpha") -> list[str]:
+    return ["locate", name, "--home", str(root / "home"), "--repo", str(root / "repo")]
+
+
+def user_skill_folder(root: Path) -> tuple[list[str], Path]:
+    write(root / "home" / ".claude" / "skills" / "alpha" / "SKILL.md", "x")
+    return locate_arguments(root), root / "home" / ".claude" / "skills" / "alpha"
+
+
+def user_skills_root(root: Path) -> tuple[list[str], Path]:
+    write(root / "home" / ".claude" / "skills" / "alpha" / "SKILL.md", "x")
+    return locate_arguments(root, "beta"), root / "home" / ".claude" / "skills"
+
+
+def located_source_metadata(root: Path) -> tuple[list[str], Path]:
+    source_skill(root / "repo")
+    return locate_arguments(root), root / "repo" / "deploy-meta" / "alpha.json"
+
+
+def plugin_cache_folder(root: Path) -> tuple[list[str], Path]:
+    plugin_in_cache(root / "home")
+    return locate_arguments(root), root / "home" / skill_inventory.PLUGIN_CACHE
+
+
+def plugin_manifest(root: Path) -> tuple[list[str], Path]:
+    plugin = plugin_in_cache(root / "home")
+    return locate_arguments(root), plugin / ".claude-plugin" / "plugin.json"
+
+
+def inventoried_metadata(root: Path) -> tuple[list[str], Path]:
+    return ["inventory", str(source_skill(root))], root / "deploy-meta" / "alpha.json"
+
+
+def runtime_prompt_samples(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root, PROMPT_BODY)
+    write(root / skill_inventory.RUNTIME_PROMPT_SAMPLES / "alpha" / "reviewer.txt", "Review.\n")
+    return ["scan", str(folder)], root / skill_inventory.RUNTIME_PROMPT_SAMPLES / "alpha"
+
+
+def scripts_folder(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root, PROMPT_BODY)
+    write(folder / "scripts" / "pipeline.py", 'print("RUN")\n')
+    return ["scan", str(folder)], folder / "scripts"
+
+
+def agents_folder(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(
+        root, "Start one fresh subagent of type `guarded` for each role.\n", {"agent_deps": ["guarded"]}
+    )
+    write(root / "agents" / "guarded.md", GUARDED_AGENT)
+    return ["scan", str(folder)], root / "agents"
+
+
+def declared_agent_definition(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root, "Start a general-purpose subagent for each role.\n", {"agent_deps": ["guarded"]})
+    write(root / "agents" / "guarded.md", GUARDED_AGENT)
+    return ["scan", str(folder)], root / "agents" / "guarded.md"
+
+
+def repository_code_script(root: Path) -> tuple[list[str], Path]:
+    folder = root / "skill"
+    write(folder / "scripts" / "start.py", 'RUNS_REPOSITORY_CODE = "starts configured servers"\n')
+    command = 'python -B "${CLAUDE_SKILL_DIR}/scripts/start.py"'
+    text = f'---\nallowed-tools: ["Bash(python -B *)"]\n---\n```bash\n{command}\n```\n'
+    return ["tools", str(write(folder / "SKILL.md", text))], folder / "scripts" / "start.py"
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        user_skill_folder,
+        user_skills_root,
+        located_source_metadata,
+        plugin_cache_folder,
+        plugin_manifest,
+        inventoried_metadata,
+        runtime_prompt_samples,
+        scripts_folder,
+        agents_folder,
+        declared_agent_definition,
+        repository_code_script,
+    ],
+)
+def test_a_file_or_folder_whose_stat_fails_fails_the_command_rather_than_reading_as_absent(
+    fixture: Callable[[Path], tuple[list[str], Path]], tmp_path: Path
+) -> None:
+    arguments, target = fixture(tmp_path)
+    with denied_stat(target):
+        code, lines, error = run(*arguments)
+    assert (code, lines, error) == (1, [f"FAILED cannot read {target.as_posix()}: Permission denied"], "")
+
+
+def test_a_marketplace_whose_stat_fails_is_unreadable_rather_than_absent(tmp_path: Path) -> None:
+    folder = source_skill(tmp_path)
+    marketplace = write(tmp_path / ".claude-plugin" / "marketplace.json", '{"plugins": []}')
+    with denied_stat(marketplace):
+        code, lines, error = run("inventory", str(folder))
+    assert (code, error) == (0, "")
+    assert [line for line in lines if line.startswith("PLUGINS_")] == [
+        f"PLUGINS_UNREADABLE {marketplace.as_posix()} cannot be read: Permission denied"
+    ]
+
+
+def test_a_dependency_s_metadata_whose_stat_fails_is_unreadable_rather_than_absent(tmp_path: Path) -> None:
+    folder = source_skill(tmp_path, metadata={"skill_deps": ["beta"]})
+    metadata = tmp_path / "deploy-meta" / "beta.json"
+    with denied_stat(metadata):
+        code, lines, error = run("inventory", str(folder))
+    assert (code, error) == (0, "")
+    assert [line for line in lines if line.startswith("DECLARED")] == [
+        f"DECLARED_UNREADABLE {metadata.as_posix()}",
+        "DECLARED skill beta",
+    ]

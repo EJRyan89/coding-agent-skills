@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -782,3 +784,29 @@ def test_a_hidden_file_is_compared_only_when_its_index_mode_and_its_worktree_ent
         edited = rc.hidden_edits(rc.Services(), str(tmp_path))
     assert edited == ["folder", "linked", "linked-folder"]
     assert hashed == [["plain"]]
+
+
+def test_a_hidden_file_whose_stat_fails_is_refused_rather_than_read_as_absent(tmp_path: Path) -> None:
+    # held_state reads the refusal as a reason to keep the worktree, as test_repo_cleanup_held_state shows.
+    locked = tmp_path / "locked"
+    locked.write_text("x", encoding="utf-8")
+    real_stat = Path.stat
+
+    def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == locked:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    def git_output(services: Any, path: str, *arguments: str) -> str:
+        return "S 100644 1111 0\tlocked" if arguments[0] == "ls-files" else "1111"
+
+    with (
+        mock.patch.object(rc, "git_output", side_effect=git_output),
+        mock.patch.object(Path, "stat", autospec=True, side_effect=denied),
+        pytest.raises(rc.CleanupError) as refused,
+    ):
+        rc.hidden_edits(rc.Services(), str(tmp_path))
+    assert str(refused.value) == (
+        f"cannot tell whether the marked file locked of worktree {tmp_path} is there: "
+        f"[Errno 13] Permission denied: {str(locked)!r}"
+    )

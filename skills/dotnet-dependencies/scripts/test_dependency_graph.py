@@ -248,6 +248,20 @@ class GraphTests(Fixture):
         )
         self.assertEqual([], self.lines(rows, "UNREADABLE"))
 
+    def test_a_package_lib_folder_whose_stat_fails_is_unreadable_rather_than_shipping_no_assembly(self) -> None:
+        root = self.mixed_solution()
+        lib = self.root / "packages" / "Lantern.Core.2.0.0" / "lib"
+        real_stat = Path.stat
+
+        def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == lib:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", autospec=True, side_effect=denied):
+            _, rows = self.run_main("conflicts", "--root", str(root))
+        self.assertEqual([["packages/Lantern.Core.2.0.0/lib", "Permission denied"]], self.lines(rows, "UNREADABLE"))
+
     def test_why_walks_the_graph_for_every_project_when_dotnet_is_absent(self) -> None:
         root = self.mixed_solution()
         code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))

@@ -519,6 +519,12 @@ def destination_files(repo: Path | None, instructions: list[Path], user_dir: Pat
     return list(unique.values())
 
 
+PRESENCE_ALLOWED = {
+    "audit": "parse_index has already settled the index's presence through file_presence.is_present, which raises "
+    "on a stat it cannot make, so is_file only sizes the index parse_index found",
+}
+
+
 def audit(
     memory_dir: Path,
     repo: Path | None = None,
@@ -1123,7 +1129,7 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
             repo = None
             unread = f"NOTE {flat_text(f'no project skill was looked for: git could not read the repository: {exc}')}"
         project = None if repo is None else repo / ".claude" / "skills" / args.name / "SKILL.md"
-        candidates += [project] if project is not None and project.is_file() else []
+        candidates += [project] if project is not None and is_present(project) else []
         missing = (
             f"no editable source of skill {args.name}: the deployer's manifest records none, and the repository has "
             "no project skill of that name; name its source file with --file"

@@ -488,7 +488,9 @@ def build_graph(root: Path, services: Services) -> Graph:
     unreadable: list[tuple[Path, str]] = []
     resolved, base, listed = resolve_root(root, unreadable)
     tree = examined_tree(base)
-    solution = resolved if resolved.is_file() else None
+    # resolve_root shows a solution's paths relative to its folder and a searched folder's relative to itself, so the
+    # root is a solution exactly when it is not the base; a second look at the disk could answer otherwise.
+    solution = None if resolved == base else resolved
     graph = Graph(resolved, base, tree, unreadable=unreadable, sources=Sources(tree, solution))
     load_projects(graph, listed)
     for project in graph.projects.values():

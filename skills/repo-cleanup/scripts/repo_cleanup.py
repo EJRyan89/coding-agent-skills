@@ -1328,7 +1328,8 @@ def hidden_edits(services: Services, path: str) -> list[str]:
     in the worktree differs from the index: edits removing the worktree would lose.
 
     A marked file that is absent, as a sparse checkout leaves each path outside it, holds nothing to lose. One that is
-    not a regular file, such as a link, counts as edited, since its content is not compared.
+    not a regular file, such as a link, counts as edited, since its content is not compared. One whose presence cannot
+    be told raises CleanupError, so the worktree is kept.
     """
     compared: list[tuple[str, str]] = []
     edited: list[str] = []
@@ -1339,8 +1340,13 @@ def hidden_edits(services: Services, path: str) -> list[str]:
         fields, _, name = rest.partition("\t")
         mode, sha, *_ = fields.split(" ")
         target = Path(path, name)
-        if not os.path.lexists(target):
-            continue
+        try:
+            if not file_presence.is_occupied(target):
+                continue
+        except OSError as exc:
+            raise CleanupError(
+                f"cannot tell whether the marked file {name} of worktree {path} is there: {exc}"
+            ) from exc
         if mode in REGULAR_MODES and is_plain_file(target):
             compared.append((name, sha))
         else:

@@ -2141,6 +2141,19 @@ class SkillSourceTests(unittest.TestCase):
             result,
         )
 
+    def test_a_project_skill_whose_stat_fails_is_a_failed_line_rather_than_no_project_skill(self) -> None:
+        self.manifest(main=str(self.checkout))
+        project = write(self.repo / ".claude" / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+        real_stat = Path.stat
+
+        def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == project:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", autospec=True, side_effect=denied):
+            self.assertEqual([f"FAILED Access is denied: {project}"], self.source("demo", code=1))
+
     def test_a_name_and_a_file_together_are_a_usage_error(self) -> None:
         code, output, error = run_main("skill-source", "demo", "--file", str(self.source_file))
         self.assertEqual((2, ""), (code, output))
