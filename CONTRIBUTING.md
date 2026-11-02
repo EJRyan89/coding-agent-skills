@@ -216,7 +216,7 @@ To open a pull request from the task's worktree:
 
 The maintainer merges; the repository squash-merges only, so the pull request lands as one commit.
 
-The template's sections ask for the problem and the chosen behavior, and the user-visible, compatibility, or security implications. Before requesting review, check each item of its Validation checklist:
+The template's sections ask for the problem and the chosen behavior, for a `fix` the forms it considered under `## Forms considered`, which validation refuses missing, empty, or left as the template's placeholder ([Pull requests](docs/implementing-changes.md#pull-requests)), and the user-visible, compatibility, or security implications. Before requesting review, check each item of its Validation checklist:
 
 - the local checks [Validation](#validation) names for the touched files pass, with no skipped prerequisites, and the `Validation` check runs every suite, or the subset the runner selects when the change is documentation-only;
 - regression coverage is added or updated for every behavior change;
