@@ -176,6 +176,8 @@ class InputRunner(Protocol):
 COMMANDS_ALLOWED = {
     "subprocess_runner": "GitClient's default runner, which runs the git commands GitClient builds; the policy "
     "reads every GitClient as running git",
+    "isolated_runner": "the isolated GitClient's real runner, which passes the git commands GitClient builds to "
+    "subprocess_runner with the isolated environment; the policy reads every GitClient as running git",
 }
 
 
