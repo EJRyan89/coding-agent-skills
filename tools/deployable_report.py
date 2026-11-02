@@ -97,6 +97,13 @@ Find = Callable[[str], "str | None"]
 RunVersion = Callable[[list[str]], "tuple[int, str]"]
 
 
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "_run_version": "runs the version command of each program the summary records",
+    "_pin": "runs the program the command line names, located with find_executable",
+}
+
+
 @dataclass(frozen=True)
 class RuntimeResult:
     runtime: str

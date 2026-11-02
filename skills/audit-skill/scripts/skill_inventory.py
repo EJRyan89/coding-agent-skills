@@ -152,6 +152,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import os
 import re
 import sys
@@ -169,7 +170,7 @@ import runtime_support
 import skill_menu
 import whole_number
 from console import run_main
-from file_presence import is_present
+from file_presence import NotAFile, is_present
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
@@ -1762,9 +1763,9 @@ def scan(given: list[Path]) -> list[str]:
             excerpt = text if len(text) <= 160 else text[:157] + "..."
             output.extend(f"CUE {posix(path)} {index + 1} {cue} {excerpt}" for cue in cues)
         if path.suffix.casefold() == ".md":
-            found = delegation_lines(path, lines, languages, start)
+            found, prompts = delegation_lines(path, lines, languages, start)
             output.extend(found)
-            runtime_prompts += [(path, int(line.split()[2])) for line in found if line.startswith("RUNTIME_PROMPT ")]
+            runtime_prompts += [(path, line) for line in prompts]
     return (
         output
         + [line for path in given if path.is_dir() for line in agent_lines(path)]
@@ -1773,9 +1774,14 @@ def scan(given: list[Path]) -> list[str]:
     )
 
 
-def delegation_lines(path: Path, lines: list[str], languages: list[str | None], start: int) -> list[str]:
-    """Delegations whose reply is never bounded, and subagent prompts that a script writes at runtime."""
+def delegation_lines(
+    path: Path, lines: list[str], languages: list[str | None], start: int
+) -> tuple[list[str], list[int]]:
+    """Delegations whose reply is never bounded, and subagent prompts that a script writes at runtime, with the line
+    number of each runtime prompt carried beside the printed lines, never read back from them: a path holding a space
+    would move every later field."""
     output: list[str] = []
+    prompts: list[int] = []
     prose = [index for index in range(start, len(lines)) if languages[index] is None]
     delegations = [
         index
@@ -1800,7 +1806,8 @@ def delegation_lines(path: Path, lines: list[str], languages: list[str | None], 
             "unknown",
         )
         output.append(f"RUNTIME_PROMPT {posix(path)} {index + 1} {writer}")
-    return output
+        prompts.append(index + 1)
+    return output, prompts
 
 
 def skill_folder(path: Path) -> Path | None:
@@ -2030,12 +2037,25 @@ def folder_scripts(folder: Path) -> list[Path]:
     ]
 
 
+def script_is_present(script: Path) -> bool:
+    """Whether a script a command names is there, a name the platform answers EINVAL for being one no file holds."""
+    try:
+        return is_present(script)
+    except NotAFile:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.EINVAL:
+            return False
+        raise
+
+
 def command_scripts(
     folder: Path, root: Path | None, markdown: list[tuple[Path, list[str]]]
 ) -> tuple[list[Path], list[str]]:
     """The scripts the Markdown's commands run, through the skill-directory variable or from the repository root, as a
     repository skill runs a tool: those that exist, and a SCRIPT_MISSING line for each command naming one that does
-    not. A directory in a script's place raises file_presence's NotAFile."""
+    not. A directory in a script's place raises file_presence's NotAFile, and a stat that fails raises its OSError; a
+    name the platform cannot hold, such as one with a `?` on Windows, names no file, so it is missing."""
     found: list[Path] = []
     missing: list[str] = []
     for path, lines in markdown:
@@ -2053,7 +2073,7 @@ def command_scripts(
                     script = root / text
                 else:
                     continue
-                if is_present(script):
+                if script_is_present(script):
                     found.append(script.resolve())
                 # A bare name from the repository root, such as a value a span gives, names no tool's path.
                 elif text.startswith(SKILL_DIR_PREFIX) or "/" in text:

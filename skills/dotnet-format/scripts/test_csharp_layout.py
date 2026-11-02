@@ -21,6 +21,7 @@ import atomic_file
 import csharp_layout as layout
 import dotnet_solution
 import whole_number
+from flat_text import flat_text
 from run_dotnet_format import Completed, Services
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
@@ -1505,3 +1506,77 @@ def test_a_numeric_range_reads_each_bound_with_its_sign(section: str, bounds: tu
 )
 def test_double_star_and_negated_bracket_globs(section: str, path: str, expected: bool) -> None:
     assert expected == layout.section_matches(section, path)
+
+
+# Every character `str.splitlines()` breaks a line at, read from Python rather than typed, and the tab a fact line
+# splits its fields at.
+LINE_BREAKS = [chr(code) for code in range(0x3000) if len(f"a{chr(code)}b".splitlines()) == 2]
+FIELD_BREAKS = [*LINE_BREAKS, "\t"]
+
+
+class OneLineFactTests(unittest.TestCase):
+    """A name or a path holding a line break or a tab stays one fact on one line, through `fact_line`."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+
+    def check(self, *names: str, fix: bool = False) -> tuple[int, list[str]]:
+        file_list = self.root / "files.txt"
+        file_list.write_text("".join(f"{name}\0" for name in names), encoding="utf-8")
+        output, errors = io.StringIO(), io.StringIO()
+        arguments = ["check", "--repo-root", str(self.root), "--file-list", str(file_list), *(["--fix"] if fix else [])]
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            status = layout.main(arguments)
+        self.assertEqual("", errors.getvalue())
+        return status, output.getvalue().splitlines()
+
+    def holdable(self) -> list[str]:
+        """Names, one for each FIELD_BREAKS character this file system lets a name hold, each with a fixable
+        violation; Windows refuses control characters in a name."""
+        names: list[str] = []
+        for character in FIELD_BREAKS:
+            name = f"x{character}STOP thing.cs"
+            try:
+                (self.root / name).write_bytes(b"#region A\n\n#endregion A\n")
+            except OSError:
+                continue
+            names.append(name)
+        self.assertIn("x\u2028STOP thing.cs", names, "every supported file system holds a line separator in a name")
+        return names
+
+    def test_line_breaks_are_read_from_python(self) -> None:
+        self.assertTrue({"\n", "\r", "\x85", "\u2028", "\u2029"} <= set(LINE_BREAKS), LINE_BREAKS)
+
+    def test_violations_and_fixes_in_a_name_holding_a_line_break_print_one_line_each(self) -> None:
+        names = self.holdable()
+        status, lines = self.check(*names)
+        self.assertEqual(1, status)
+        violations = [line.split("\t") for line in lines[:-1]]
+        self.assertEqual({"VIOLATION"}, {fields[0] for fields in violations})
+        self.assertEqual({6}, {len(fields) for fields in violations})
+        per_file, left = divmod(len(violations), len(names))
+        self.assertEqual(0, left)
+        self.assertEqual(
+            sorted(flat_text(name) for name in names for _ in range(per_file)), sorted(f[1] for f in violations)
+        )
+        self.assertEqual(["SUMMARY", str(len(violations)), str(len(names))], lines[-1].split("\t")[:3])
+        status, lines = self.check(*names, fix=True)
+        fixed = [line.split("\t") for line in lines if line.startswith("FIXED\t")]
+        self.assertEqual({4}, {len(fields) for fields in fixed})
+        self.assertEqual(sorted({flat_text(name) for name in names}), sorted({fields[1] for fields in fixed}))
+        self.assertEqual(0, len(fixed) % len(names))
+
+    def test_a_refused_entry_holding_a_line_or_field_break_prints_one_refused_line(self) -> None:
+        entries = [str(self.root / f"x{character}STOP\tthing.cs") for character in FIELD_BREAKS]
+        status, lines = self.check(*entries)
+        self.assertEqual(1, status)
+        self.assertEqual([*("REFUSED" for _ in entries), "SUMMARY"], [line.split("\t")[0] for line in lines])
+        self.assertEqual([flat_text(entry) for entry in entries], [line.split("\t")[1] for line in lines[:-1]])
+        self.assertEqual({3}, {len(line.split("\t")) for line in lines[:-1]})
+
+    def test_a_missing_file_holding_a_line_separator_fails_on_one_line(self) -> None:
+        missing = self.root / "gone\u2028STOP.cs"
+        status, lines = self.check(missing.name)
+        self.assertEqual((1, [f"FAILED {flat_text(str(missing))} does not exist"]), (status, lines))

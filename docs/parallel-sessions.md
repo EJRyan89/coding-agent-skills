@@ -116,9 +116,9 @@ It checks that a red run tested the pull request's
 current head before judging it, reruns a failure of the runner or a service once per head, and names every other
 failure for the session that owns the branch. Each worktree whose pull request merged is named for `repo-cleanup`,
 run from outside it, judged by the commit it has checked out and never by its branch's name, so a later task on a
-merged branch's name is not offered. It admits only pull requests whose head branch is in this repository: one from a fork or any
-other repository is named as not admitted and never armed, judged, updated, or rerun, so it merges only when the
-maintainer merges it. A script rather than a prompt repeats these steps, so neither session spends its context on
+merged branch's name is not offered. It admits only pull requests whose head branch is in this repository and that
+would merge into `main`: one from a fork or any other repository, or onto another branch, is named as not admitted
+and never armed, judged, updated, or rerun, so it merges only when the maintainer merges it. A script rather than a prompt repeats these steps, so neither session spends its context on
 them, and the orchestrator keeps its own for the decisions.
 
 Each tick also checks the pre-merge review, which is report-only. For each admitted pull request in step, not in
@@ -276,7 +276,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
   `typeset -x`, an assignment under `set -a`, `set -o allexport` in a bundle as in `set -eo allexport`,
-  `shopt -so allexport`, or a nested `bash -a` or `bash -o allexport`, or to a
+  `shopt -so allexport`, or a nested `bash -a`, `bash -o allexport`, or `bash` handed a `SHELLOPTS` listing
+  `allexport`, or to a
   variable already exported), and removed by `unset`,
   `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, `readarray`, and
   `wait -p` leave each variable they set unsettled, as an expansion that assigns does, `${NAME:=word}` or
@@ -291,7 +292,14 @@ refused while a guarded hub is in view, and what they do not see at all is named
   `[Environment]::SetEnvironmentVariable`, and the cmdlets that write the provider: `Set-Item`,
   `New-Item`, and `Set-Content` at their path, `Copy-Item` at its destination, `New-Item` on the provider's root
   with `-Name`, and `Rename-Item` with `-NewName`, while `Remove-Item` and `Clear-Item` remove one, and so does
-  assigning `$null`. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
+  assigning `$null`. `PSVariable.Set` is read on every receiver the resolver types as `PSVariableIntrinsics`,
+  quoted, parenthesized, scoped, through `$PSCmdlet`, or cast, and on one it does not type, which includes one typed
+  as `[object]` or any other type an engine object can be assigned to; `Invoke` and `DynamicInvoke` on a receiver it
+  does not type are read as either setter. `SetEnvironmentVariable` sets the session's variable unless its target
+  settles to another, as a string, a number, a cast, or a member of `EnvironmentVariableTarget`; neither is decided by
+  the text it is spelled in. A method reached without a call, as `[Environment]::SetEnvironmentVariable` kept or
+  handed to `.Invoke`, and a member called by its name, through `ForEach-Object -MemberName` or `.ForEach('Set')`,
+  are parts the guard cannot read. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
   `Environment::<name>` (also `\Environment::<name>` and `Microsoft.PowerShell.Core\Environment::<name>`); after
   `Environment::` a separator becomes part of the variable's name, which git never reads. On Windows git reads an
   environment name in any case, so `git_dir` is `GIT_DIR` there; elsewhere only the upper-case name counts. Bash
@@ -322,12 +330,17 @@ refused while a guarded hub is in view, and what they do not see at all is named
   guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
   directory unknown), `pushd`, `popd`, and `env -C`, whose last `-C` alone counts, read from where `env` starts, and
   runs a function's body where a command calls it.
-  Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, and `env`
-  are read as the commands they start, a short option's value read attached, as in `nice -n5`, `stdbuf -oL`, and
-  `env -C<dir>`, or as the next word; `env`'s after every word holding `=`, which it takes as an assignment whatever
-  the name; and `eval` of fixed words is read as part of the shell. `tests/tools/test_prefix_programs.py` runs `env`
-  and each of those programs where the system installs it, on the option forms its own `--help` lists, and holds the
-  guard, form by form, to reading the command the program starts or refusing the form. Every command or process
+  Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, `sudo`,
+  `doas`, and `env` are read as the commands they start, a short option's value read attached, as in `nice -n5`,
+  `stdbuf -oL`, and `env -C<dir>`, or as the next word, in a bundle too, as in `exec -ca <name>`; `env`'s after every word holding `=`, which it takes as an
+  assignment whatever the name; and `eval` of fixed words is read as part of the shell. `sudo` and `doas` run their
+  command as another user under a policy that decides which variables reach it, so each one the shell holds is
+  unsettled there, and `sudo` sets each `NAME=value` word before its command there as `env` does, where `doas`
+  takes such a word as its program; `-D` moves the command, a login shell (`-i`) starts in a home the text does not settle, an option
+  after which they start no command, such as `sudo -l`, starts none, and one the guard does not know is a part it
+  cannot read. `tests/tools/test_prefix_programs.py` runs `env` and each of those programs but `sudo` and `doas`,
+  which may prompt or raise privileges, where the system installs it, on the option forms its own `--help` lists, and
+  holds the guard, form by form, to reading the command the program starts or refusing the form. Every command or process
   substitution runs, as Bash runs it, in a subshell before the command that holds it, and so does one in an unquoted
   here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
@@ -358,7 +371,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   path or name the text does not settle may reach any variable, so every one is unsettled after it, as after Bash's
   `export "$v"=x` or `unset "$v"`; a path whose last part is literal text, as in `"$dir\out.txt"`, can name only the
   variable that part names, so it is passed over when git does not read that one. A command after the programs
-  `env`, `nohup`, `nice`, `timeout`, `stdbuf`, and `time` is read as in Bash, as the command it starts. A location
+  `env`, `nohup`, `nice`, `timeout`, `stdbuf`, `time`, `sudo`, and `doas` is read as in Bash, as the command it
+  starts. A location
   set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed
   string is read as part of the same session. A command that does not parse is allowed: PowerShell parses a whole
   script before it runs any of it, so none of it runs.
@@ -368,7 +382,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
   for a program it does not find, and afterwards the guard keeps only what every path agrees on: a directory or
   variable one path changes is unknown after it. A function one path defines, redefines, or removes keeps every body
   the paths give it, and no function where one leaves it undefined, and a call to it, a nested `bash` it is exported
-  to included, is read once with each, as the builtin or program its name names where it has none. A directory
+  to included, is read once with each, as the builtin or program its name names where it has none. `unset` removes a
+  function with `-f` in any bundle or word, `-n` beside it included, as in `unset -fn`, and a bare `unset NAME`
+  removes the function by the name where no variable by it is set, which the guard does not settle for every path
+  Bash may take, so after it the function keeps its bodies beside none; `-f` with `-v`, or an option Bash does not
+  know, removes nothing, and
+  an option word the text does not settle may be any of them, which the guard cannot read. A directory
   change whose target is not a directory fails and leaves the shell where it was, so it is unknown after it too,
   except along `&&`, which goes on only when it succeeded. The guard reads a loop's or script block's body twice, so
   it follows loops and
@@ -389,7 +408,18 @@ refused while a guarded hub is in view, and what they do not see at all is named
   environment hands it as `BASH_FUNC_<name>%%`, from Bash or from a PowerShell assignment such as
   `${env:BASH_FUNC_<name>%%}`, a declaration word the text does not settle exporting every function, in its parent's directory or the one the last
   `pwsh -WorkingDirectory` (`-wd`) names, read from there with a leading `~` as home; its directory and
-  what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is followed to four deep; deeper is
+  what it exports do not outlive it. A nested `bash` or `sh` turns allexport on, whatever its own options say, when
+  the `SHELLOPTS` its environment hands it lists `allexport` by that exact name: one `env` gives it, or the one Bash
+  keeps read-only and lists its options in, once `export` or `declare -x` exports it, never one a prefix assignment
+  names; `env -u` and `env -i` remove it, and `export -n` stops exporting it. A `SHELLOPTS` whose value the text does
+  not settle, or one listing `allexport` from a PowerShell session, which holds environment names folded where the
+  platform folds them, so that Bash may not read it, is a part the guard cannot read. `BASHOPTS` hands on `shopt`'s
+  options the same way. Of the options either hands on, the guard follows allexport alone, though `keyword`, `posix`,
+  `lastpipe`, and `cdable_vars` change where a command runs or what reaches git, as "What it does not see" says. An
+  `env` word the text does not settle, as in `env FOO=$(cmd)`, may assign any variable, so the guard cannot read it,
+  and every variable git or a nested bash reads is unsettled for the command after it. A shell the text does not settle may have exported any
+  variable, so a shell it starts is one the text does not settle either. Nesting of shells, `eval`, function calls,
+  and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
   the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the
@@ -480,6 +510,18 @@ The hook sees the command text. It does not see:
 - a variable an arithmetic expression assigns, in `(( ))`, `let`, or an arithmetic `for`, which holds a number,
   and a builtin `enable -f` loads from a shared object;
 - a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
+- an assignment word after a command's name under the `keyword` option, which Bash puts in the command's
+  environment, so `git switch -c x GIT_DIR=<dir>` hands `GIT_DIR` to git; it is turned on by `set -k`,
+  `set -o keyword`, `shopt -so keyword`, `bash -k`, `bash -o keyword`, or a `SHELLOPTS` listing it that a nested
+  bash's starter hands it;
+- in POSIX mode an assignment before a special builtin such as `:` or `eval`, which Bash keeps in the shell after the
+  builtin ends; it is turned on by `set -o posix`, `shopt -so posix`, `bash --posix`, `bash -o posix`, `sh`, a
+  `POSIXLY_CORRECT` assigned or in the environment, or a `SHELLOPTS` listing `posix`;
+- the last command of a pipeline under the `lastpipe` option, which Bash runs in the shell itself, so after
+  `true | cd <dir>` a git call runs at `<dir>`; it is turned on by `shopt -s lastpipe`, `bash -O lastpipe`, or a
+  `BASHOPTS` listing it that a nested bash's starter hands it, PowerShell's `$env:BASHOPTS` included;
+- a `cd` to a name that is no directory under the `cdable_vars` option, which Bash takes as a variable holding one;
+  it is turned on by `shopt -s cdable_vars`, `bash -O cdable_vars`, or a `BASHOPTS` listing it;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
 - text run as commands through an object of PowerShell's engine the text does not type, such as one a variable

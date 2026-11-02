@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import run_dotnet_format as formatter
+from flat_text import flat_text
 
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
 SDK_INSTALL_HINT = (
@@ -987,3 +988,88 @@ def test_a_timeout_that_is_no_limit_is_a_usage_error(value: str, capsys: pytest.
     refusal = capsys.readouterr().err.splitlines()[-1]
     assert "argument --timeout: " in refusal
     assert refusal.endswith(f" seconds, not {value}")
+
+
+# Every character `str.splitlines()` breaks a line at, read from Python rather than typed, and the tab a fact line
+# splits its fields at.
+LINE_BREAKS = [chr(code) for code in range(0x3000) if len(f"a{chr(code)}b".splitlines()) == 2]
+FIELD_BREAKS = [*LINE_BREAKS, "\t"]
+
+
+class OneLineFactTests(unittest.TestCase):
+    """A name or a path holding a line break or a tab stays one fact on one line, through `fact_line`."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+
+    def run_formatter(self, mode: str, file_list: Path, runner: FakeRunner) -> tuple[int, list[str]]:
+        services = formatter.Services(run=runner, which=lambda name: "dotnet-format")
+        output, errors = io.StringIO(), io.StringIO()
+        arguments = [mode, "--repo-root", str(self.root), "--solution", "App.sln", "--include-file", str(file_list)]
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            status = formatter.main(arguments, services)
+        self.assertEqual("", errors.getvalue())
+        lines = output.getvalue().splitlines()
+        for line in lines:
+            if line.startswith("LOG\t"):
+                self.addCleanup(os.remove, line.split("\t")[1])
+        return status, lines
+
+    def test_line_breaks_are_read_from_python(self) -> None:
+        self.assertTrue({"\n", "\r", "\x85", "\u2028", "\u2029"} <= set(LINE_BREAKS), LINE_BREAKS)
+
+    def test_listed_names_holding_a_line_or_field_break_print_one_line_each(self) -> None:
+        names = [f"src/x{character}STOP\tthing.cs" for character in FIELD_BREAKS]
+        refused = str(self.root / "abs\u2028STOP.cs")
+        file_list = self.root / "files.txt"
+        file_list.write_text("".join(f"{name}\0" for name in [refused, *names]), encoding="utf-8")
+        status, lines = self.run_formatter("fix", file_list, FakeRunner(1, ""))
+        self.assertEqual(1, status)
+        fields = [line.split("\t") for line in lines]
+        self.assertEqual(
+            ["REFUSED", "SUMMARY", *("UNFINISHED" for _ in names), "LOG"], [line[0] for line in fields[:-1]]
+        )
+        self.assertEqual("FAILED dotnet-format exited with code 1; see the log", lines[-1])
+        self.assertEqual([flat_text(refused)], fields[0][1:2])
+        self.assertEqual([[flat_text(name)] for name in names], [line[1:] for line in fields[2:-2]])
+
+    def test_a_saved_file_holding_a_line_separator_is_named_on_one_line(self) -> None:
+        names = ["src/x\u2028STOP.cs", "src/y\u2029STOP.cs", "src/z\x85STOP.cs"]
+        file_list = self.root / "files.txt"
+        file_list.write_text("".join(f"{name}\0" for name in names), encoding="utf-8")
+        log = "".join(f"{self.root / name}(1,1): warning IDE0055: Fix formatting\r\n" for name in names)
+        self.assertEqual(
+            [formatter.Diagnostic(name, 1, 1, "warning", "IDE0055") for name in names],
+            formatter.parse_diagnostics(log, self.root),
+        )
+        runs = formatter.Runs([names, ["src/Later.cs"]], [log.encode()], 1, "stopped")
+        self.assertEqual(
+            [*(f"SAVED\t{flat_text(name)}" for name in names), "UNFINISHED\tsrc/Later.cs"],
+            formatter.unfinished_fix_lines(runs, self.root),
+        )
+        status, lines = self.run_formatter("check", file_list, FakeRunner(2, log))
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [*(f"DIAGNOSTIC\t{flat_text(name)}\t1\t1\twarning\tIDE0055" for name in names), "SUMMARY\t3\t3\tIDE0055"],
+            lines[:-1],
+        )
+
+    def test_every_finished_run_names_the_files_it_saved_before_the_failed_run_names_its_own(self) -> None:
+        def found(name: str) -> bytes:
+            return f"{self.root / name}(1,1): warning IDE0055: Fix formatting\r\n".encode()
+
+        runs = formatter.Runs(
+            [["src/A.cs", "src/Clean.cs"], ["src/B.cs"], ["src/C.cs"]], [found("src/A.cs"), found("src/B.cs")], 2, "x"
+        )
+        self.assertEqual(
+            ["SAVED\tsrc/A.cs", "SAVED\tsrc/B.cs", "UNFINISHED\tsrc/C.cs"],
+            formatter.unfinished_fix_lines(runs, self.root),
+        )
+
+    def test_a_file_list_path_holding_a_line_separator_fails_on_one_line(self) -> None:
+        file_list = self.root / "files\u2028STOP.txt"
+        file_list.write_bytes(b"")
+        status, lines = self.run_formatter("check", file_list, FakeRunner(0, ""))
+        self.assertEqual((1, [f"FAILED {flat_text(str(file_list))} lists no files"]), (status, lines))

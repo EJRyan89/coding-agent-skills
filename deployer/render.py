@@ -58,6 +58,35 @@ UNSAFE_CHARACTERS = {
 SHELLCHECK_HEADER = "# shellcheck shell=bash\n# shellcheck disable=SC2034,SC2154\n"
 # One ShellCheck command line's length, kept a margin below the platform's limit; more units run as further batches.
 SHELLCHECK_COMMAND_BUDGET = platform_support.COMMAND_LINE_LIMIT - 1_024
+# ShellCheck reads options from SHELLCHECK_OPTS and from a .shellcheckrc above each file it checks or in the home, so a
+# setting outside the repository could turn its findings off. Every ShellCheck the repository runs is started by one of
+# the runners tests/validation/skill_scripts.py's CHECKER_RUNNERS names, run_shellcheck here or validation's job, which
+# builds it with shellcheck_command and starts it with SHELLCHECK_ENVIRONMENT over its environment.
+SHELLCHECK_ENVIRONMENT = {"SHELLCHECK_OPTS": ""}
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "shellcheck_command": "builds the ShellCheck line for the runners, which start the program a caller located",
+    "run_shellcheck": "the ShellCheck runner starts the program its caller located",
+    "run_bash_syntax_check": "the Bash syntax runner starts the Bash its caller located",
+    "validate_executables": "checks rendered content with the Bash, ShellCheck, and PowerShell _require_tools located",
+}
+
+
+def shellcheck_command(shellcheck: str, *arguments: str) -> list[str]:
+    """A ShellCheck command line that reads no rc file, with `arguments` after it."""
+    return [shellcheck, "--norc", *arguments]
+
+
+def run_shellcheck(shellcheck: str, *arguments: str) -> platform_support.ToolResult:
+    """Run ShellCheck on `arguments`, reading no rc file and no SHELLCHECK_OPTS."""
+    return platform_support.run_tool(shellcheck_command(shellcheck, *arguments), SHELLCHECK_ENVIRONMENT)
+
+
+def run_bash_syntax_check(bash: str, path: str) -> platform_support.ToolResult:
+    """Parse a Bash file with `bash -n`, running none of it."""
+    return platform_support.run_tool([bash, "-n", path])
+
+
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.TemporaryDirectory": "validate_executables checks rendered scripts in a throwaway directory under the "
@@ -393,7 +422,7 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
     with ThreadPoolExecutor(max_workers=min(8, len(units))) as pool:
         results = list(
             pool.map(
-                lambda unit: platform_support.run_tool([bash, "-n", platform_support.normalize(unit.path)]),
+                lambda unit: run_bash_syntax_check(bash, platform_support.normalize(unit.path)),
                 units,
             )
         )
@@ -423,13 +452,13 @@ def _shellcheck_batches(command: list[str], paths: list[str]) -> list[list[str]]
 
 def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
     """Lint every unit, in batches when one command line cannot hold them all, and report every finding once."""
-    command = [shellcheck, "--format=gcc"]
+    command = shellcheck_command(shellcheck, "--format=gcc")
     origins = {platform_support.normalize(unit.path): unit for unit in units}
     reported: dict[str, list[str]] = {}
     unattributed: list[str] = []
     failed = False
     for batch in _shellcheck_batches(command, list(origins)):
-        result = platform_support.run_tool([*command, *batch])
+        result = run_shellcheck(shellcheck, "--format=gcc", *batch)
         if result.returncode == 0:
             continue
         failed = True

@@ -8,13 +8,18 @@ tests/tools/test_hub_guard_bash.py hold the same readings without starting eithe
 
 from __future__ import annotations
 
+import collections
+import itertools
 import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -181,6 +186,108 @@ BASH_COMMANDS = (
     *ASSIGNING_EXPANSIONS,
 )
 UNSET = "<unset>"
+# The part the guard cannot read of a SHELLOPTS a PowerShell session hands bash, which holds names folded where the
+# platform folds environment names; None where it reads the name as Bash does.
+FOLDED_SHELLOPTS = "SHELLOPTS" if platform_support.ENVIRONMENT_NAMES_FOLD_CASE else None
+# Each spelling of unset's options: every bundle of -f, -n, and -v Bash reads, in one word or apart, and spellings it
+# refuses or reads as names.
+UNSET_OPTIONS = (
+    "",
+    "--",
+    "-",
+    "+f",
+    "-x",
+    "-fx",
+    "--f",
+    "other",
+    "-- -f",
+    *dict.fromkeys(
+        spelling
+        for count in (1, 2, 3)
+        for letters in itertools.product("fnv", repeat=count)
+        for spelling in ("-" + "".join(letters), " ".join(f"-{letter}" for letter in letters))
+    ),
+)
+# Each state a name may be in before unset: a function alone, beside a variable, or a name reference to a variable
+# that is set or is not.
+UNSET_BEFORE = ("", "NAME=1; ", "declare -n NAME=other; ", "other=1; declare -n NAME=other; ")
+# Each command before a bare unset after which a variable by the name may not be set on every path Bash takes.
+UNSET_BEFORE_BARE = (
+    "false && NAME=1; ",
+    'if [ -n "$z" ]; then NAME=1; fi; ',
+    "local NAME=1; ",
+    "f() { local NAME=1; }; f; ",
+    "f() { declare NAME=1; }; f; ",
+    "for NAME in; do :; done; ",
+    "read NAME < /dev/null; ",
+    "( NAME=1 ); ",
+    "NAME=1 true; ",
+    "NAME=1; unset -v NAME; ",
+)
+
+
+def persistent_environment() -> dict[str, object]:
+    """What outlives a process and reaches later ones on this machine: on Windows the user's and the machine's
+    environment in the registry, and elsewhere the shell profiles in the home, which .NET leaves alone, since it keeps
+    a user or machine target to the process there."""
+    if sys.platform == "win32":
+        import winreg
+
+        found: dict[str, object] = {}
+        for root, key in (
+            (winreg.HKEY_CURRENT_USER, "Environment"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        ):
+            with winreg.OpenKey(root, key) as opened:
+                for index in range(winreg.QueryInfoKey(opened)[1]):
+                    name, value, _ = winreg.EnumValue(opened, index)
+                    found[f"{key}\\{name}"] = value
+        return found
+    home = Path.home()
+    profiles = (".profile", ".bashrc", ".bash_profile", ".config/powershell/Microsoft.PowerShell_profile.ps1")
+    return {name: (home / name).read_bytes() for name in profiles if (home / name).is_file()}
+
+
+@pytest.fixture(autouse=True)
+def leaves_the_persistent_environment_alone() -> Iterator[None]:
+    """Every test here runs pwsh or Bash on generated forms, so each is held to leaving what outlives it as it was:
+    a form that sets a user or machine variable fails here, whatever spelling it takes."""
+    before = persistent_environment()
+    yield
+    changed = persistent_changes(before, persistent_environment())
+    assert not changed, f"a test changed the persistent environment: {changed}"
+
+
+def persistent_changes(before: Mapping[str, object], after: Mapping[str, object]) -> list[str]:
+    """Each entry of the persistent environment one snapshot holds that the other does not hold, or holds otherwise."""
+    return sorted(
+        name for name in before.keys() | after.keys() if before.get(name, _MISSING) != after.get(name, _MISSING)
+    )
+
+
+_MISSING = object()
+
+
+class PersistentEnvironmentTests(unittest.TestCase):
+    """The snapshot this suite takes around each test reads what outlives a process, and a change to it fails."""
+
+    def test_an_added_removed_or_changed_entry_is_a_change(self) -> None:
+        before = {"Environment\\PATH": "a", "Environment\\TEMP": "t", "Environment\\EMPTY": ""}
+        for after, expected in (
+            (dict(before), []),
+            ({**before, "Environment\\GIT_WORK_TREE": "after"}, ["Environment\\GIT_WORK_TREE"]),
+            ({**before, "Environment\\PATH": "b"}, ["Environment\\PATH"]),
+            ({"Environment\\PATH": "a", "Environment\\TEMP": "t"}, ["Environment\\EMPTY"]),
+        ):
+            with self.subTest(after=after):
+                self.assertEqual(expected, persistent_changes(before, after))
+
+    def test_the_snapshot_reads_what_outlives_a_process_here(self) -> None:
+        snapshot = persistent_environment()
+        if sys.platform == "win32":
+            # Every Windows profile holds a user TEMP and a machine Path.
+            self.assertTrue(any(name.startswith("Environment\\") for name in snapshot))
+            self.assertTrue(any(name.startswith("SYSTEM\\") for name in snapshot))
 
 
 def pwsh_runs(words: tuple[str, ...]) -> tuple[bool, bool]:
@@ -234,8 +341,7 @@ def guard_value(command: str, start: Path) -> Path | str | None:
     text = f"export GIT_DIR=before; {command}\ngit status"
     reading = hub_guard.Reading({}, text)
     hub_guard.read_bash(text, start, reading, 0, {})
-    place = reading.calls[-1].place
-    return place.repository if place.repository_named else UNSET
+    return guard_place(reading.calls[-1])
 
 
 class PwshDifferentialTests(unittest.TestCase):
@@ -737,6 +843,11 @@ class BashDefinitionDifferentialTests(unittest.TestCase):
             ("${Env:BASH_FUNC_f%%} = '() { BODY; }'; STARTS -c f", None),
             ("Set-Item 'env:BASH_FUNC_f%%' '() { BODY; }'; STARTS -c f", "BASH_FUNC_"),
             ("[Environment]::SetEnvironmentVariable('BASH_FUNC_f%%', '() { BODY; }'); STARTS -c f", "BASH_FUNC_"),
+            # A SHELLOPTS listing allexport exports the function the bash defines to the bash it starts; Bash reads it
+            # by its exact name, which the session holds folded where the platform folds environment names.
+            ("$env:SHELLOPTS = 'allexport'; STARTS -c 'f() { BODY; }; bash -c f'", FOLDED_SHELLOPTS),
+            ("${env:SHELLOPTS} = 'allexport'; STARTS -c 'f() { BODY; }; bash -c f'", FOLDED_SHELLOPTS),
+            ("Set-Item env:SHELLOPTS 'allexport'; STARTS -c 'f() { BODY; }; bash -c f'", "SHELLOPTS"),
         )
         for form, unread in forms:
             ran = form.replace("BODY", "echo MARKER-RAN").replace("STARTS", f"& '{bash}'")
@@ -751,6 +862,258 @@ class BashDefinitionDifferentialTests(unittest.TestCase):
                 else:
                     self.assertEqual([], reading.unread)
                     self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
+
+class ShellOptionsDifferentialTests(unittest.TestCase):
+    """A nested bash handed a SHELLOPTS that lists allexport exports the functions it defines and the variables it
+    assigns; the guard reads both where Bash runs them, by each way the variable reaches it."""
+
+    def test_the_guard_reads_allexport_where_the_shellopts_a_nested_bash_is_handed_turns_it_on(self) -> None:
+        bash = find_bash()
+        # Each start of a nested bash, with SCRIPT standing for its script.
+        starts = (
+            "env SHELLOPTS=allexport bash -c 'SCRIPT'",
+            "env SHELLOPTS=errexit:allexport bash -c 'SCRIPT'",
+            "env SHELLOPTS=allexport bash +a -c 'SCRIPT'",
+            "env SHELLOPTS=allexport env bash -c 'SCRIPT'",
+            "env SHELLOPTS=pipefail bash -c 'SCRIPT'",
+            "env SHELLOPTS=ALLEXPORT bash -c 'SCRIPT'",
+            "env shellopts=allexport bash -c 'SCRIPT'",
+            "env SHELLOPTS=allexport env -u SHELLOPTS bash -c 'SCRIPT'",
+            "SHELLOPTS=allexport bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; bash -c 'SCRIPT'",
+            "declare -x SHELLOPTS; set -o allexport; bash -c 'SCRIPT'",
+            "set -a; export SHELLOPTS; bash -c 'SCRIPT'",
+            "export SHELLOPTS=x; set -a; bash -c 'SCRIPT'",
+            "declare -x SHELLOPTS=x; set -a; bash -c 'SCRIPT'",
+            "declare -n ref=SHELLOPTS; export ref; set -a; bash -c 'SCRIPT'",
+            "set -a; bash -c 'SCRIPT'",
+            "set -a; export SHELLOPTS; set +a; bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; export -n SHELLOPTS; bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; unset SHELLOPTS; bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; env -u SHELLOPTS bash -c 'SCRIPT'",
+            "export SHELLOPTS; set -a; env -i PATH=/usr/bin:/bin bash -c 'SCRIPT'",
+            "env SHELLOPTS=allexport bash -c 'set +a; SCRIPT'",
+        )
+        # Each script, with PROGRAM standing for git, and the subcommand the guard reads where Bash runs PROGRAM:
+        # a function the nested bash exports to the next, and a variable it exports to the program.
+        scripts = (("f() { PROGRAM status; }; bash -c f", "status"), ("GIT_DIR=after; PROGRAM log", "log"))
+        with tempfile.TemporaryDirectory() as folder:
+            start = Path(folder).resolve()
+            program = start / "program"
+            # The program prints the GIT_DIR it sees, as git would act on it.
+            program.write_text('#!/bin/bash\necho "PROGRAM-RAN [$GIT_DIR]"\n', encoding="utf-8", newline="\n")
+            program.chmod(0o755)
+            forms = [(form, script, read) for form in starts for script, read in scripts]
+            texts = [form.replace("SCRIPT", script) for form, script, _ in forms]
+            # Each form runs in a subshell of its own, and a line `=== <index>` follows what it printed.
+            body = "".join(
+                f"( {text.replace('PROGRAM', platform_support.normalize(program))} ) 2>/dev/null; echo '=== {index}'\n"
+                for index, text in enumerate(texts)
+            )
+            path = start / "forms.sh"
+            path.write_text(body, encoding="utf-8", newline="\n")
+            output = platform_support.run_tool([bash, "--norc", "--noprofile", platform_support.normalize(path)]).output
+            printed: list[list[str]] = [[]]
+            for line in output.splitlines():
+                if line.startswith("=== "):
+                    printed.append([])
+                elif line.startswith("PROGRAM-RAN"):
+                    printed[-1].append(line)
+            self.assertEqual(len(texts) + 1, len(printed))
+            for (form, script, subcommand), text, lines in zip(forms, texts, printed, strict=False):
+                # A function that runs, or a GIT_DIR the program sees, shows allexport held in the nested bash.
+                exported = bool(lines) if "f()" in script else "PROGRAM-RAN [after]" in lines
+                guarded = text.replace("PROGRAM", "git")
+                reading = hub_guard.Reading({}, guarded)
+                hub_guard.read_bash(guarded, start, reading, 0, {})
+                calls = [call for call in reading.calls if call.subcommand == subcommand]
+                with self.subTest(form=form, script=script, exported=exported):
+                    self.assertEqual([], reading.unread)
+                    if "f()" in script:
+                        self.assertEqual(exported, bool(calls))
+                    else:
+                        [call] = calls
+                        self.assertEqual(start / "after" if exported else UNSET, guard_place(call))
+
+
+def guard_place(call: hub_guard.GitCall) -> Path | str | None:
+    """The repository GIT_DIR names for a git call, as the guard reads it, or UNSET when none reaches it."""
+    return call.place.repository if call.place.repository_named else UNSET
+
+
+class EnvironmentSetDifferentialTests(unittest.TestCase):
+    """Each spelling of PSVariable.Set and SetEnvironmentVariable that pwsh runs and that sets the session's
+    GIT_WORK_TREE leaves it unsettled in the guard's reading, or set to the value pwsh gives it."""
+
+    def test_the_guard_reads_each_method_that_sets_a_variable_pwsh_sets(self) -> None:
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if pwsh is None:
+            raise AssertionError("pwsh was not found on PATH; pwsh checks the guard's reading of PSVariable.Set")
+        receivers = (
+            "$ExecutionContext.SessionState.PSVariable",
+            "$ExecutionContext.SessionState.'PSVariable'",
+            '$ExecutionContext.SessionState."PSVariable"',
+            "$ExecutionContext.SessionState.('PSVariable')",
+            "$ExecutionContext.'SessionState'.PSVariable",
+            "$global:ExecutionContext.SessionState.'PSVariable'",
+            "($ExecutionContext.SessionState.PSVariable)",
+            "([Management.Automation.PSVariableIntrinsics]$p)",
+        )
+        forms = (
+            *(
+                f"{receiver}{member}('env:GIT_WORK_TREE', 'after')"
+                for receiver in receivers
+                for member in (".Set", ".'Set'")
+            ),
+            "function f { [CmdletBinding()] param()"
+            " $PSCmdlet.SessionState.'PSVariable'.Set('env:GIT_WORK_TREE', 'after') }; f",
+            *(
+                f"[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', {target})"
+                for target in ("'0'", "'process'", "0", "[EnvironmentVariableTarget]'0'")
+            ),
+            # Each setter reached another way than by calling it, by an [object] receiver, or by its name.
+            "[Environment]::SetEnvironmentVariable.Invoke('GIT_WORK_TREE', 'after')",
+            "$m = [Environment]::SetEnvironmentVariable; $m.Invoke('GIT_WORK_TREE', 'after')",
+            "([object]$v.SessionState.PSVariable).Set('env:GIT_WORK_TREE', 'after')",
+            "$v.SessionState.PSVariable.Set.Invoke('env:GIT_WORK_TREE', 'after')",
+            "$p | ForEach-Object -MemberName Set -ArgumentList 'env:GIT_WORK_TREE', 'after'",
+            "$p | % Set 'env:GIT_WORK_TREE' 'after'",
+            "$p.psobject.Methods['Set'].Invoke('env:GIT_WORK_TREE', 'after')",
+            "@($p).ForEach('Set', 'env:GIT_WORK_TREE', 'after')",
+        )
+        # Each form runs after GIT_WORK_TREE is removed, and a line `=== <index> [<value>]` follows it.
+        header = "$p = $ExecutionContext.SessionState.PSVariable\n$v = Get-Variable ExecutionContext -ValueOnly\n"
+        script = header + "".join(
+            "Remove-Item env:GIT_WORK_TREE -ErrorAction SilentlyContinue\n"
+            f"try {{ {form} }} catch {{ }}\n"
+            f'Write-Output "=== {index} [$env:GIT_WORK_TREE]"\n'
+            for index, form in enumerate(forms)
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            start = Path(folder).resolve()
+            path = start / "forms.ps1"
+            path.write_text(script, encoding="utf-8")
+            result = run_bounded(
+                [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(path)], 300, env=os.environ
+            )
+            values: dict[int, str] = {}
+            for line in result.stdout.decode("utf-8", "replace").splitlines():
+                if line.startswith("=== "):
+                    number, _, value = line[4:].partition(" ")
+                    values[int(number)] = value.strip("[]")
+            self.assertEqual(len(forms), len(values), result.stdout)
+            environment = {name: value for name, value in os.environ.items() if name.upper() != "GIT_WORK_TREE"}
+            for index, form in enumerate(forms):
+                text = f"{form}; git status"
+                reading = hub_guard.Reading(environment, text)
+                hub_guard.read_powershell(text, start, reading, 0, {})
+                tree = reading.calls[-1].place.tree
+                with self.subTest(form=form, pwsh=values[index], unread=reading.unread):
+                    # Where pwsh set the variable, the guard refuses the form as a part it cannot read, or leaves the
+                    # variable unsettled, or holds the value pwsh gave it.
+                    if values[index] and not reading.unread:
+                        self.assertIn(tree, (None, start / values[index]))
+                    # Every form here sets the variable in pwsh; a release that stops doing so leaves the row moot.
+                    self.assertEqual("after", values[index])
+
+
+# Lists each reference to a node's Extent in a PowerShell script, by PowerShell's own parser: the function that holds
+# it and the member read from it, or nothing when the extent itself is kept or handed on.
+EXTENT_REFERENCES = r"""
+param([string] $Path)
+$tokens = $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $errors)
+foreach ($node in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.MemberExpressionAst] -and
+            $n.Member -is [Management.Automation.Language.StringConstantExpressionAst] -and
+            $n.Member.Value -eq 'Extent' }, $true)) {
+    $function = $node.Parent
+    while ($null -ne $function -and $function -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+        $function = $function.Parent
+    }
+    $read = if ($node.Parent -is [Management.Automation.Language.MemberExpressionAst] -and
+        [object]::ReferenceEquals($node.Parent.Expression, $node)) { $node.Parent.Member.Extent.Text } else { '' }
+    "$(if ($function) { $function.Name })`t$read"
+}
+"""
+# Each reference to a node's Extent the reader may hold, by function and the member read, with how many and why. None
+# decides what a node does: that comes from the syntax tree and the resolver, so another spelling cannot change it.
+SANCTIONED_EXTENTS = {
+    # A switch parameter's word as written, and an expansion's token, which hub_guard.py replaces with its value.
+    ("Get-ElementWord", "Text"): 2,
+    # The member's text, named in the part the guard reports it cannot read.
+    ("Add-MemberEvent", "Text"): 1,
+    # Where a node stands, to place it in the region that runs it.
+    ("Get-Region", "StartOffset"): 1,
+    ("Get-Region", "EndOffset"): 1,
+    ("Read-CommandEvent", "StartOffset"): 2,
+    ("Read-CommandEvent", "EndOffset"): 2,
+}
+
+
+class ReaderSourceTests(unittest.TestCase):
+    """The PowerShell reader decides what a node does by its syntax tree and the resolver, never by its source text,
+    which another spelling of the same node does not match: every reference to a node's Extent, read by PowerShell's
+    own parser, is one SANCTIONED_EXTENTS names."""
+
+    def test_every_reference_to_a_nodes_extent_in_the_reader_is_sanctioned(self) -> None:
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if pwsh is None:
+            raise AssertionError("pwsh was not found on PATH; pwsh parses the PowerShell reader")
+        with tempfile.TemporaryDirectory() as folder:
+            script = Path(folder) / "extents.ps1"
+            script.write_text(EXTENT_REFERENCES, encoding="utf-8")
+            command = [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)]
+            result = run_bounded([*command, "-Path", str(hub_guard.POWERSHELL_READER)], 120, env=os.environ)
+        found = collections.Counter(
+            tuple(line.split("\t", 1)) for line in result.stdout.decode("utf-8", "replace").splitlines() if line
+        )
+        self.assertEqual(SANCTIONED_EXTENTS, dict(found))
+
+
+class UnsetDifferentialTests(unittest.TestCase):
+    """After each spelling of unset's options, the guard reads the function's body wherever Bash runs it, and the
+    program by its name wherever Bash runs that."""
+
+    def test_the_guard_reads_what_bash_runs_by_a_name_after_each_unset(self) -> None:
+        bash = find_bash()
+        # Each command, with NAME standing for the function's name and BODY for its body.
+        forms = tuple(
+            f"{before}NAME() {{ BODY; }}; unset {options} NAME; NAME status"
+            for before in UNSET_BEFORE
+            for options in UNSET_OPTIONS
+        ) + tuple(f"{before}NAME() {{ BODY; }}; unset NAME; NAME status" for before in UNSET_BEFORE_BARE)
+        with tempfile.TemporaryDirectory() as folder:
+            program = Path(folder) / "g"
+            program.write_text("#!/bin/bash\necho PROGRAM-RAN\n", encoding="utf-8", newline="\n")
+            program.chmod(0o755)
+            # Each form runs in a subshell of its own, and a line `=== <index>` follows what it printed.
+            script = f'PATH="{platform_support.to_shell_path(str(folder))}:$PATH"\n' + "".join(
+                f"( {form.replace('NAME', 'g').replace('BODY', 'echo BODY-RAN')} ) 2>/dev/null; echo '=== {index}'\n"
+                for index, form in enumerate(forms)
+            )
+            path = Path(folder) / "forms.sh"
+            path.write_text(script, encoding="utf-8", newline="\n")
+            output = platform_support.run_tool([bash, "--norc", "--noprofile", platform_support.normalize(path)]).output
+            ran: list[set[str]] = [set()]
+            for line in output.splitlines():
+                if line.startswith("=== "):
+                    ran.append(set())
+                elif line in ("BODY-RAN", "PROGRAM-RAN"):
+                    ran[-1].add(line)
+            for form, outputs in zip(forms, ran, strict=False):
+                text = form.replace("NAME", "git").replace("BODY", "command git log")
+                reading = hub_guard.Reading({}, text)
+                hub_guard.read_bash(text, Path(folder), reading, 0, {})
+                read = {call.subcommand for call in reading.calls}
+                with self.subTest(form=form, ran=outputs):
+                    self.assertEqual(len(forms) + 1, len(ran))
+                    self.assertTrue(outputs)
+                    self.assertEqual([], reading.unread)
+                    if "BODY-RAN" in outputs:
+                        self.assertIn("log", read)
+                    if "PROGRAM-RAN" in outputs:
+                        self.assertIn("status", read)
 
 
 class BashDifferentialTests(unittest.TestCase):

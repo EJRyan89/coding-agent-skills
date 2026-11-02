@@ -31,7 +31,17 @@ def _version_text(probe: tools.Probe) -> str:
     return f" {tools.format_version(probe.version)}" if probe.version else ""
 
 
-def _deploy_lines() -> list[ReportLine]:
+def _git_deploy_line() -> ReportLine:
+    """Git as a deployment needs it from a Git checkout, whose commit each deployment records and refuses to go on
+    without (source_commit.head_commit)."""
+    probe = tools.probe(tools.GIT)
+    detail = f"{NEEDED_TO_DEPLOY} from a Git checkout; used by every skill"
+    if probe.path is None:
+        return ReportLine(tools.GIT.label, "MISSING", detail)
+    return ReportLine(f"{tools.GIT.label}{_version_text(probe)}", "FOUND", detail)
+
+
+def _deploy_lines(checkout: bool) -> list[ReportLine]:
     python = tools.python_version()
     minimum = tools.format_version(tools.MINIMUM_PYTHON)
     label = f"Python {tools.format_version(python)}"
@@ -53,10 +63,12 @@ def _deploy_lines() -> list[ReportLine]:
             lines.append(ReportLine(f"{tool.label}{_version_text(probe)}", "FOUND", detail))
         else:
             lines.append(ReportLine(f"{tool.label}{_version_text(probe)}", "FOUND", NEEDED_TO_DEPLOY))
+    if checkout:
+        lines.append(_git_deploy_line())
     return lines
 
 
-def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLine]:
+def _skill_lines(src: source.Source, owned: manifest.Ownership, checkout: bool) -> list[ReportLine]:
     users = source.tool_users(src, sorted(src.bundles), source.root_names(src))
     required = source.required_tools(src, sorted(src.bundles), source.root_names(src))
     # The runtimes verify runs are reported even when no skill declares them.
@@ -77,7 +89,9 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLi
         optional = tool.optional or dormant == set(roots) or name not in required
         named = [f"opt-in {root}" if root in dormant else root for root in roots]
         lines.append(_tool_line(tool, optional, named))
-    lines.extend(_tool_line(tool, tool.optional, []) for tool in tools.REPORTED_TOOLS)
+    # From a Git checkout, Git is a deployment's tool and reported with them.
+    reported = [tool for tool in tools.REPORTED_TOOLS if not (checkout and tool is tools.GIT)]
+    lines.extend(_tool_line(tool, tool.optional, []) for tool in reported)
     return lines
 
 
@@ -184,8 +198,9 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
         owned = recorded.ownership(source_id)
         deployed = source_commit.describe(paths.source_dir, recorded.source_commit(source_id))
         pinned = recorded.source_ref(source_id)
-        deploy_lines = _deploy_lines()
-        skill_lines = [*_skill_lines(src, owned), *_setting_lines()]
+        checkout = source_commit.is_checkout(paths.source_dir)
+        deploy_lines = _deploy_lines(checkout)
+        skill_lines = [*_skill_lines(src, owned, checkout), *_setting_lines()]
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish the check")
     print("")

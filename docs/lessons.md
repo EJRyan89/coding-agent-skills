@@ -42,7 +42,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A reader that cannot tell whether something is there reports that it could not tell, never that it is
   absent or that nothing was wrong.
 - **Why:** An unreadable path, a failed command, or a git error read as "not found" otherwise reads as a clean pass.
-- **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart;
+- **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart, and lets a stat that
+  fails with anything but "not found" through as the error the stat raised;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
   `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read; and git's found,
   absent, and could-not-tell lookups, `git_client:GitClient.rev_parse_paths` for a path query,
@@ -58,18 +59,26 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
   `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
   `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
-  `tests/tools/test_hub_guard.py::PlaceLookupTests`
+  `tests/tools/test_hub_guard.py::PlaceLookupTests`,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::FilePresenceTests::test_a_stat_that_fails_with_anything_but_not_found_reaches_the_caller`,
+  `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`,
+  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
-  followed by a `return None`, `return []`, or `return False`, where `is_present` should probe; `if not result.stdout`
+  followed by a `return None`, `return []`, or `return False`, where `is_present` should probe, and its expression
+  form, `... if path.is_file() else None`; `exists()`, `is_file()`, `is_dir()`, `os.path.exists`, `os.path.lexists`,
+  `os.path.isfile`, or `os.path.isdir` anywhere a False must mean nothing is there, since from Python 3.14 each
+  returns False on every `OSError`, and `lexists` on a `ValueError` too; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
   that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
   callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
   another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
-  other than absence, such as a start inside a git directory, which has no work tree to show.
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133
+  other than absence, such as a start inside a git directory, which has no work tree to show; `.wait()` or a
+  `returncode` of a command that reports a per-file error on stderr and goes on, such as `git grep`, read as the whole
+  answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match".
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2205, #2236
 
 ### Evidence that was never produced is never a pass
 
@@ -116,12 +125,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   codes to its docstring is the mechanism in #1910.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
-  `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`
+  `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`,
+  `skills/repo-cleanup/scripts/test_repo_cleanup.py::SyncTests::test_each_stop_is_returned_as_the_state_it_stopped_in_never_read_back_from_the_lines`,
+  `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_a_branch_a_stopped_apply_never_offered_is_refused_and_the_stop_outlasts_later_commands`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
-  `FAILED AttributeError` expected by a test.
-- **Examples:** #1511, #1840, #1855, #1910, #2022
+  `FAILED AttributeError` expected by a test; a state decided from the lines a step printed, such as
+  `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2207, #2209
 
 ### A caller catches the whole error family its callee raises on content
 
@@ -214,14 +226,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   universal claim names its exceptions.
 - **Why:** A test that restates a document's wording pins the drift instead of the promise, and a claim of "never" or
   "every" with an unstated exception misleads the reader who relies on it.
-- **Use:** `tests.validation.skill_layout:runtime_page_problems`
+- **Use:** `tests.validation.skill_layout:runtime_page_problems`, `tests.validation.workflows:token_reach_problems`
 - **Guard:** `tests/validation/markdown_links.py::MarkdownLinksPolicies::test_every_test_a_document_cites_exists`,
-  `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`
+  `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`,
+  `tests/validation/workflows.py::WorkflowsPolicies::test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so`
 - **Search for:** an `assertEqual(` or `assertIn(` on a literal sentence a document states, where the test could read
   the document or the shared constant; `never`, `always`, `nothing`, `every`, or `only` in a `SKILL.md` or a
   docstring, each checked for a test of its exception; a docstring's exit codes against the function's `return` and
-  `sys.exit(` values.
-- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869
+  `sys.exit(` values; a statement of which code a credential or the run's token reaches, checked for the code a
+  pull request can change at those paths.
+- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2237
 
 ### A reader refuses a shape it does not know
 
@@ -233,15 +247,24 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a document type or entity declaration, `deployer.discovery:ListingError`, `skill_inventory:hooks_file_hooks`,
   which refuses a hooks file member of another kind at every level, by name, `msbuild_reader:mapping`, which reads an
   absent section as empty and refuses one of another kind, and the shepherd's `shepherd_pull_requests:objects` and
-  `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on.
+  `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on, and
+  `shepherd_pull_requests:reported` and `shepherd_pull_requests:present`, which refuse a member that decides a write
+  when the listing leaves it out, so an absent field is never read as the answer that permits the write.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
-  `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`
+  `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`,
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_pull_request_member_the_listing_leaves_out_or_nulls_is_malformed_never_a_default`,
+  which holds a written-out row for every member the shepherd lists, absent and null, and fails when the listing
+  gains a member without one, and
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_run_member_the_rollup_leaves_out_is_malformed_never_a_default`,
+  the same table for each check run in a rollup
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
-  without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match.
-- **Examples:** #1890, #1892
+  without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;
+  `member(` or `.get(` followed by `or "<default>"`, `is not None`, or `is None` where the member decides a write,
+  such as arming, holding, or a rerun, and an absent member would read as the answer that allows it.
+- **Examples:** #1890, #1892, #2235
 
 ### A reader of another program's language reads it as that program does
 
@@ -260,11 +283,18 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`,
   `tests/tools/test_hub_guard_shells.py::PowerShellDefinitionDifferentialTests`,
   `tests/tools/test_hub_guard.py::ContractTests::test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle`,
-  `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`
+  `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`,
+  `tests/tools/test_hub_guard_shells.py::ReaderSourceTests`,
+  `tests/tools/test_hub_guard_shells.py::EnvironmentSetDifferentialTests`,
+  `tests/tools/test_hub_guard_shells.py::UnsetDifferentialTests`,
+  `tests/tools/test_hub_guard_shells.py::ShellOptionsDifferentialTests`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
-  only the exact words of an option a bundle can hold, as `-o` in `-euo`; each way the shell defines a name a later
+  only the exact words of an option a bundle can hold, as `-o` in `-euo`, or tests a builtin's option by an exact
+  word's membership, as `"-f" in arguments` misses `unset -fn` and `-a` misses `exec -ca`; each way the shell defines a name a later
   word runs, an alias, a function, a `hash -p` or `BASH_CMDS` command name, a `command_not_found_handle`, or one
   handed to a child in its environment, through any shell between them, against the ways the guard reads; each
+  way a child's options or variables reach it from its starter, a `SHELLOPTS` or `BASHOPTS` the starter exported or
+  `env` gives, and a starter the text does not settle, against what a reader takes from the hook's own environment; each
   way a variable is assigned, an expansion's `${NAME:=word}` and `${NAME=word}` among them, and each way an
   attribute is given, allexport and an option's upper-case spelling such as `-F` among them, against the ways the
   guard reads; an option loop that ends at a word the text does not settle without saying it may be an option;
@@ -274,11 +304,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   guard follows, such as a working directory, read only as taking a value and never for what it changes; a list of
   member names where the receiver's type, read through parentheses and casts, settles what a member can run, and a
   `$Node.Member -isnot [StringConstantExpressionAst]` that passes over a member it cannot name rather than refusing
-  it; a parameter read from a command's arguments alone, where a cmdlet after the first in its pipeline takes it
+  it; a decision that matches a node's `Extent.Text` where the syntax tree and the resolver settle what it is; a parameter read from a command's arguments alone, where a cmdlet after the first in its pipeline takes it
   from there; a join of two paths' state that keeps one path's value, as `{**first.<field>, **second.<field>}` does,
   where the paths differ.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140
+  #2137, #2138, #2139, #2140, #2232, #2233, #2234
 
 ### A recursive parser of input has a depth bound
 
@@ -338,10 +368,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `atomic_file:replace_bytes`, `review_io:atomic_write_json`; the same check for each entry point under tools
   that writes an output is the mechanism in #1911.
 - **Guard:** `tests/deployer/test_invariants.py::RefusalBeforeMutationGuardTests::test_a_refusal_raised_after_the_deployment_changed_the_home_fails_the_test`,
-  `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`
+  `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
+  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
-  `raise` of the step's refusal class.
-- **Examples:** #1396, #1855, #1876, #1911
+  `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
+  as a destination judged in the step that creates it.
+- **Examples:** #1396, #1855, #1876, #1911, #2210
 
 ### What one step accepts, every later step can read and write
 
@@ -367,13 +399,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A record separator is one the data cannot hold
 
 - **Rule:** A listing of names or records another program writes is split on a separator the data cannot hold, NUL
-  for git.
+  for git, a script never splits a line it printed to recover a value it already holds, and a fact line a script
+  prints holds each value flattened, so no value adds a line or a field.
 - **Why:** A name holding the separator, or a path git quotes, is split or misread, and the listing names a file that
   is not there.
 - **Use:** `git_client:GitClient.names`, which runs a name listing with -z and splits it on NUL;
   `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
   joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
-  a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds.
+  a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds;
+  `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
+  `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason; and
+  `flat_text:fact_line`, which flattens every field of a tab-separated fact line.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
   split of git's output with splitlines() unless its module states why,
@@ -385,12 +421,20 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_mutation_gate.py::test_the_gate_reads_a_changed_module_whose_path_holds_a_non_ascii_character_or_a_newline`,
   `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
   `tests/tools/test_release_notes.py::RangeEntriesTests::test_a_message_holding_any_byte_but_nul_is_read_whole`,
-  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_every_name_reads_back_as_resolve_writes_it`
+  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_every_name_reads_back_as_resolve_writes_it`,
+  `skills/audit-skill/scripts/test_skill_inventory.py::ScanTests::test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line`,
+  `skills/ejryan89-skill-core/scripts/test_flat_text.py::FactLineTests::test_a_field_holding_any_line_or_field_break_stays_one_field_on_one_line`,
+  `skills/dotnet-format/scripts/test_run_dotnet_format.py::OneLineFactTests::test_a_saved_file_holding_a_line_separator_is_named_on_one_line`,
+  `skills/dotnet-format/scripts/test_csharp_layout.py::OneLineFactTests::test_violations_and_fixes_in_a_name_holding_a_line_break_print_one_line_each`;
+  a policy holding every result-line printer to one choke point is #2248's
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
-  output passed into a function that splits it.
-- **Examples:** #1816, #1848, #1862, #1908, #2034
+  output passed into a function that splits it; `.split()[` or `.partition(" ")` on a line the same module wrote,
+  beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space;
+  `emit(f"` and `print(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an
+  exception, or another program's output without `fact_line` or `flat_text`.
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2206, #2211
 
 ### Two spellings are compared as their consumer compares them
 
@@ -417,13 +461,30 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 - **Rule:** A child process starts from an environment built for it, never the one its parent inherited.
 - **Why:** A variable the parent carries, such as git's repository selection or a signed-in token, otherwise reaches
-  a child that must not see it.
+  a child that must not see it. A checker also finds settings on its own, in an options variable, a file above what
+  it checks, or the user's configuration folder, and one of them can turn its findings off.
 - **Use:** `bounded_process:run_bounded`, `bounded_process:without_repository_variables`,
-  `tools.mutation_gate:suite_environment`
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`
+  `tools.mutation_gate:suite_environment`, a checker's one runner: `deployer.render:run_shellcheck`,
+  `deployer.render:run_bash_syntax_check`, `tests.validation.toolchain:shellcheck_job`,
+  `tests.validation.toolchain:bash_syntax_job`, `tests.validation.toolchain:ruff_job`, and
+  `tests.validation.toolchain:mypy_job`, and for a git that reads content it did not write,
+  `bounded_process:isolated_git_environment` with `git_client:NO_REPOSITORY`, which a client its caller makes
+  isolated starts every command with, taking no runner that could leave the environment out, so no repository around
+  the content and no configuration shapes what git prints; a client that is not isolated refuses a search or
+  comparison any of whose arguments spells the no-index option or an abbreviation of it
+  (`git_client:reads_no_repository`), reading no option grammar, and takes a search's pattern apart from its arguments
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
+  `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`,
+  which reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
+  from pieces is outside what it reads; `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests`,
+  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SnapshotIsolationTests`
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
-  sandboxed child started with no `env=`.
-- **Examples:** #1366, #1396, #1598, #1777, #1861
+  sandboxed child started with no `env=`; a checker started anywhere but its runner, or run with no option that stops
+  it reading settings outside the repository: ShellCheck without `--norc` and an empty `SHELLCHECK_OPTS`,
+  `Invoke-ScriptAnalyzer` without `-Settings`, ruff given a folder without `--no-respect-gitignore`, and mypy with
+  `MYPYPATH` left set; a git command run with its working directory, or `-C`, inside content a pull request or a
+  reviewer wrote, such as a review snapshot, through a client that is not isolated.
+- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241
 
 ### An action on something not proven ours stops
 
@@ -432,10 +493,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** An action taken on a guess acts on another person's pull request, branch, or pin.
 - **Use:** `deployer.source_ref:is_release_pin`, `deployer.source_ref:replaceable_release_pin`
 - **Guard:** `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
-  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::AdmissionTest`
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::AdmissionTest`,
+  `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_no_planned_action_lets_a_deleting_command_act_without_the_offer_the_apply_wrote`
 - **Search for:** `"pr", "merge"`, `"--auto"`, `"pr", "edit"`, or `"pr", "close"` with no check of who owns the pull
-  request; an `is_<owner>` function that returns `False` from an `except`.
-- **Examples:** #1686, #1719, #1778
+  request; an `is_<owner>` function that returns `False` from an `except`; a confirmed deletion admitted by what a
+  plan planned to offer rather than by the offer it recorded, such as `branch["action"] ==` in an eligibility set.
+- **Examples:** #1686, #1719, #1778, #2209
 
 ### A decision about merged, retired, or owned is made by identity
 

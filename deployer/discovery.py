@@ -30,6 +30,12 @@ from bounded_process import ProcessTree, without_repository_variables
 from . import platform_support
 
 # Each runtime's listing names its field skills, a word the manifest also uses as a key; neither listing is a manifest.
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "converse": "starts the runtime command line its caller builds from the program deployer.tools located",
+}
+
+
 KINDS_ALLOWED = {
     "parse_copilot": "reads Copilot CLI's skill listing, whose field is named skills",
     "parse_codex": "reads the Codex app server's skills/list answer, whose field is named skills",
@@ -44,7 +50,9 @@ CODEX_LIST_ID = 1
 # The model-free view of the skills Codex offers the model, which leaves out a skill only the user may start.
 CODEX_CATALOG = ("debug", "prompt-input")
 CODEX_CATALOG_ROOT = re.compile(r"^- `(r\d+)` = `([^`]+)`$", re.MULTILINE)
-CODEX_CATALOG_SKILL = re.compile(r"^- ([\w.-]+): .*\(file: ([^)\s]+)\)$", re.MULTILINE)
+# A skill's file runs from its last "(file: " to the line's closing parenthesis, so an absolute path holding a space
+# or a parenthesis, as a home such as D:/Profiles/A Name (Work) does, is read whole.
+CODEX_CATALOG_SKILL = re.compile(r"^- ([\w.-]+): .*\(file: (\S.*)\)$", re.MULTILINE)
 # The heading of the skills message's list of skills, under which every list item is one skill.
 CODEX_CATALOG_SKILLS = "### Available skills"
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.

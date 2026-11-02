@@ -201,6 +201,7 @@ SHEPHERD_PULL = {
         }
     ],
     "body": "Closes #1",
+    "baseRefName": "main",
 }
 SHEPHERD_RUN = {
     "headSha": SHEPHERD_HEAD,
@@ -222,8 +223,8 @@ SHEPHERD_RUN = {
 
 
 SHEPHERD_UNREAD = (
-    "the shepherd reads a file's path, a check's name, workflow, state, start, and run, and whether auto-merge is "
-    "requested, never this field"
+    "the shepherd reads a file's path, a check's kind, name, workflow, state, start, and run, and whether auto-merge "
+    "is requested, never this field"
 )
 
 
@@ -261,7 +262,9 @@ def _shepherd_pull(path: Path) -> object:
 
 
 def _shepherd_pull_on(head: str) -> object:
-    return shepherd.Pull(12, "fix/example", head, "CLEAN", False, shepherd.Check("FAILURE", 7), (), False, False, None)
+    return shepherd.Pull(
+        12, "fix/example", head, "CLEAN", False, shepherd.Check("FAILURE", 7), (), False, False, None, "main"
+    )
 
 
 def _shepherd_judge(path: Path) -> object:
@@ -401,7 +404,6 @@ READERS = [
             for field in (
                 "files.0.additions",
                 "files.0.deletions",
-                "statusCheckRollup.0.__typename",
                 "autoMergeRequest.enabledAt",
                 "autoMergeRequest.mergeMethod",
             )

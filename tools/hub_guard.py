@@ -19,6 +19,7 @@ import contextlib
 import dataclasses
 import fnmatch
 import functools
+import itertools
 import json
 import math
 import os
@@ -133,6 +134,11 @@ LOCATION_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE")
 # The variables that carry command-line configuration, which git reads for core.worktree and alias.<name>.
 CONFIGURATION_VARIABLES = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
 CONFIGURATION_PAIR = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+")
+# The variables a bash takes its options from as it starts, set's from SHELLOPTS and shopt's from BASHOPTS, each by its
+# exact name; Bash keeps both read-only, listing the options it holds, and hands each on only once it is exported.
+SHELLOPTS, BASHOPTS = "SHELLOPTS", "BASHOPTS"
+SHELL_OPTION_VARIABLES = (SHELLOPTS, BASHOPTS)
+ALLEXPORT = "allexport"
 # A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry a
 # leading backslash or, without one, the provider's module. A variable may follow a separator on the drive only: after
 # Environment:: PowerShell keeps the separator as part of the variable's name.
@@ -190,6 +196,40 @@ PREFIX_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
         0,
     ),
 }
+# Programs that run the command after their options as another user: each one's options that take no value, those
+# that take the next word or, short, the rest of their word, and those after which they start no command. Their
+# policy, sudoers or doas.conf, decides which variables reach the command, so each the shell holds is unsettled there;
+# a login shell starts in the user's home. No test starts them, since they may prompt or raise privileges.
+ELEVATING_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], frozenset[str]]] = {
+    "sudo": (
+        frozenset(
+            {
+                *("-A", "--askpass", "-B", "--bell", "-b", "--background", "-E", "--preserve-env", "-H", "--set-home"),
+                *("-i", "--login", "-k", "--reset-timestamp", "-N", "--no-update", "-n", "--non-interactive"),
+                *("-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell"),
+                # sudo for Windows
+                *("--inline", "--new-window", "--disable-input"),
+            }
+        ),
+        frozenset(
+            {
+                *("-C", "--close-from", "-D", "--chdir", "-g", "--group", "-p", "--prompt", "-R", "--chroot"),
+                *("-r", "--role", "-T", "--command-timeout", "-t", "--type", "-U", "--other-user", "-u", "--user"),
+                "--host",
+            }
+        ),
+        frozenset({"-e", "--edit", "-K", "--remove-timestamp", "-l", "--list", "-V", "--version", "-v", "--validate"}),
+    ),
+    "doas": (frozenset({"-L", "-n", "-s"}), frozenset({"-u"}), frozenset({"-C"})),
+}
+GH_LIMIT_ALLOWED = {
+    "ELEVATING_PROGRAMS": "doas's own -L, which clears its remembered authentication; it is read from a command, and "
+    "no gh listing is made here"
+}
+# Those that take NAME=value words before their command, as env does.
+ASSIGNING_ELEVATORS = {"sudo"}
+LOGIN_OPTIONS = {"-i", "--login"}
+CHDIR_OPTIONS = {"-D", "--chdir"}
 # Bash's long options whose next word is their value, so it is not the script that -c runs; in a single-dash or
 # single-plus bundle each o and O takes the next word (bash_option_values).
 BASH_LONG_OPTIONS_WITH_VALUE = {"--rcfile", "--init-file"}
@@ -236,6 +276,12 @@ DENY_REASON = (
     "`python tools/worktrees.py new <kind> <name>`, enter it, and work there."
 )
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
+
+
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "powershell_events": "starts the pwsh platform_support.find_pwsh located on the session's PATH",
+}
 
 
 GIT_STATUS_ALLOWED = {
@@ -579,6 +625,12 @@ def is_tracked(name: str) -> bool:
     )
 
 
+def is_handed(name: str) -> bool:
+    """Whether a shell hands this variable on only as its starter passes it, never as the hook's environment holds it:
+    one git reads, or one a bash reads its options from as it starts."""
+    return is_tracked(name) or folded(name) in SHELL_OPTION_VARIABLES
+
+
 def tracked_variables(variables: Variables) -> dict[str, Word]:
     return {name: value for name, value in variables.items() if is_tracked(name)}
 
@@ -609,8 +661,14 @@ def git_variables(variables: Variables, notes: list[str]) -> dict[str, Word]:
 
 
 def inherited_variables(environment: Mapping[str, str]) -> dict[str, Word]:
-    """The tracked variables a shell starts with: those the guard's own process was given."""
-    return dict(tracked_variables(environment))
+    """The handed variables a shell starts with: those the guard's own process was given."""
+    return {name: value for name, value in environment.items() if is_handed(name)}
+
+
+def started_environment(reading: Reading, variables: Variables) -> dict[str, Word]:
+    """The environment a shell starts with: the one the hook was given, but for the handed variables, which are those
+    its starter passes on, so that one its starter removed stays removed."""
+    return {**{name: value for name, value in reading.environment.items() if not is_handed(name)}, **variables}
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1143,23 +1201,39 @@ class Shell:
         if target is None:
             self.opaque = True
             return
+        if target in SHELL_OPTION_VARIABLES:
+            return  # read-only: Bash refuses the assignment
         self.variables[target] = value
         if export or self.allexport:
             self.exported.add(target)
 
     def unset(self, name: str) -> None:
-        """unset NAME, through any name reference; one the text does not settle may unset any variable."""
+        """unset NAME, through any name reference; one the text does not settle may unset any variable. Bash refuses
+        to unset a read-only variable."""
         target = self.target(name)
         if target is None:
             self.opaque = True
+            return
+        if target in SHELL_OPTION_VARIABLES:
             return
         self.variables.pop(target, None)
         self.exported.discard(target)
 
     def program_variables(self, local: Mapping[str, Word]) -> dict[str, Word]:
-        """The variables a program the shell starts sees: those exported, and the command's own assignments. Each is
-        read by its own name, not through a reference: an exported reference gives a program its own value."""
-        return {**{name: self.variables.get(name) for name in self.exported if name in self.variables}, **local}
+        """The variables a program the shell starts sees: those exported, and the command's own assignments, but for a
+        read-only one, which Bash refuses to assign. Each is read by its own name, not through a reference: an
+        exported reference gives a program its own value.
+
+        SHELLOPTS, once exported, lists the options the shell holds when it starts the program, allexport among them
+        while it is on. A shell the text does not settle may have exported it by a name it does not settle, so
+        under allexport its value is not settled either."""
+        given = {name: self.variables.get(name) for name in self.exported if name in self.variables}
+        given.update((name, value) for name, value in local.items() if name not in SHELL_OPTION_VARIABLES)
+        if SHELLOPTS in self.exported:
+            given[SHELLOPTS] = ALLEXPORT if self.allexport else ""
+        elif self.opaque and self.allexport:
+            given[SHELLOPTS] = None
+        return given
 
 
 _ABSENT = object()
@@ -1501,22 +1575,33 @@ class BashReader:
         shell: Shell,
         variables: dict[str, Word],
     ) -> None:
-        """A program a Bash command starts, in the shell's directory and with these variables in its environment."""
+        """A program a Bash command starts, in the shell's directory and with these variables in its environment. A
+        shell the text does not settle may have exported any variable, so a shell it starts is one too."""
         if program in GIT_NAMES:
             read_git(arguments, shell.cwd, variables, self.reading, shell.opaque)
         elif program in BASH_NAMES:
             script = bash_script(arguments, redirects, shell)
             read = functools.partial(
-                read_bash, functions=exported_functions(shell), allexport=bash_allexport(arguments)
+                read_bash,
+                functions=exported_functions(shell),
+                allexport=bash_allexport(arguments),
+                opaque=shell.opaque,
             )
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read)
         elif program in POWERSHELL_NAMES:
             # A bash the pwsh starts defines the functions this shell exported, which pwsh hands on in its
             # environment.
             follow_powershell(
-                program, arguments, shell.cwd, variables, self.reading, self.depth, exported_functions(shell)
+                program,
+                arguments,
+                shell.cwd,
+                variables,
+                self.reading,
+                self.depth,
+                exported_functions(shell),
+                opaque=shell.opaque,
             )
-        elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
+        elif program in ENV_NAMES or program in PREFIX_PROGRAMS or program in ELEVATING_PROGRAMS:
             command = started_command(program, arguments, shell.cwd, variables, self.reading)
             if command is not None:
                 name, rest, cwd, given = command
@@ -1564,6 +1649,8 @@ def started_command(
 
     env starts its program with the environment it is given: emptied by -i, less each -u, plus each NAME=value, and in
     the directory -C names."""
+    if program in ELEVATING_PROGRAMS:
+        return elevated_command(program, arguments, cwd, variables, reading)
     if program not in ENV_NAMES:
         command = prefixed_command(program, arguments)
         if command is None:
@@ -1575,14 +1662,95 @@ def started_command(
         reading.cannot_read(f"could not read the option {first_unread_env_option(arguments)} passed to env")
         return None
     index, cwd, given = read
-    # env takes every word holding `=` before its command as NAME=value, whatever the name: a[1]=x and `x y=1` too.
-    while index < len(arguments) and "=" in (arguments[index] or ""):
-        name, _, assigned = (arguments[index] or "").partition("=")
-        given[name] = assigned
-        index += 1
+    index = read_assignments(program, arguments, index, given, reading)
     if index < len(arguments):
         return command_name(arguments[index]), arguments[index + 1 :], cwd, given
     return None
+
+
+def read_assignments(program: str, arguments: list[Word], index: int, given: dict[str, Word], reading: Reading) -> int:
+    """The NAME=value words env or sudo takes before its command, into given; returns the index of the command.
+
+    Each takes every word holding `=` there as NAME=value, whatever the name: a[1]=x and `x y=1` too. A word the text
+    does not settle, such as FOO=$(cmd), may be one for any name, git's variables among them, so the guard cannot read
+    it, and every handed variable is unsettled for the words after it, read as the command."""
+    while index < len(arguments) and ((word := arguments[index]) is None or "=" in word):
+        if word is None:
+            reading.cannot_read(f"could not read a word passed to {program}, which may assign any variable")
+            given.update((name, None) for name in list(given) if is_handed(name))
+            given.update(dict.fromkeys((*LOCATION_VARIABLES, *CONFIGURATION_VARIABLES, *SHELL_OPTION_VARIABLES)))
+        else:
+            name, _, assigned = word.partition("=")
+            given[name] = assigned
+        index += 1
+    return index
+
+
+def elevated_command(
+    program: str, arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading
+) -> tuple[str | None, list[Word], Path | None, dict[str, Word]] | None:
+    """The command sudo or doas starts as another user: its name, its arguments, its directory, and its environment,
+    in which each variable the shell holds is unsettled, since the program's policy decides which reach it; None when
+    it starts none, and when its options cannot be read, which is recorded as unread.
+
+    Short options bundle, a value taking the rest of its word or the next word; a long option takes its value after
+    = or as the next word. -D and --chdir move the command, and a login shell, -i, starts in a home the text does not
+    settle; -s and -i run the command through a shell, which runs it as written."""
+    flags, valued, no_command = ELEVATING_PROGRAMS[program]
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None:
+            reading.cannot_read(f"could not read the options passed to {program}")
+            return None
+        if word == "--":
+            index += 1
+            break
+        if not word.startswith("-") or word == "-":
+            break
+        options, index = elevated_options(arguments, index, valued)
+        for option, value in options:
+            if option in no_command:
+                return None
+            if option not in flags | valued:
+                reading.cannot_read(f"could not read the option {option} passed to {program}")
+                return None
+            if option in LOGIN_OPTIONS:
+                cwd = None
+            elif option in CHDIR_OPTIONS:
+                cwd = moved(cwd, value)
+        index += 1
+    given: dict[str, Word] = dict.fromkeys(variables)
+    if program in ASSIGNING_ELEVATORS:
+        # sudo sets each NAME=value before its command in the command's environment, as env does; doas takes none,
+        # so such a word is its program.
+        index = read_assignments(program, arguments, index, given, reading)
+    if index >= len(arguments):
+        return None
+    return command_name(arguments[index]), arguments[index + 1 :], cwd, given
+
+
+def elevated_options(arguments: list[Word], index: int, valued: frozenset[str]) -> tuple[list[tuple[str, Word]], int]:
+    """The options of the word at index, each with its value or None, and the index of the last word they take."""
+    word = arguments[index] or ""
+    if word.startswith("--"):
+        option, has_value, value = word.partition("=")
+        if option in valued and not has_value:
+            index += 1
+            return [(option, arguments[index] if index < len(arguments) else None)], index
+        return [(option, value if has_value else None)], index
+    options: list[tuple[str, Word]] = []
+    for position, letter in enumerate(word[1:], start=2):
+        option = f"-{letter}"
+        if option in valued:
+            attached: Word = word[position:]
+            if not attached:
+                index += 1
+                attached = arguments[index] if index < len(arguments) else None
+            options.append((option, attached))
+            break
+        options.append((option, None))
+    return options, index
 
 
 def read_env_options(
@@ -1746,6 +1914,11 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
         subject = declared_name(shell, name, value if has_value else None, referencing)
         if subject is None:
             continue
+        if has_value and subject in SHELL_OPTION_VARIABLES:
+            # Bash refuses a value for a read-only variable; export exports it all the same, and the others do not.
+            if builtin == "export" and not unexporting:
+                shell.exported.add(subject)
+            continue
         if has_value and not referencing:
             shell.variables[subject] = value
         if unexporting:
@@ -1829,17 +2002,25 @@ def builtin_operands(arguments: list[Word], with_value: str) -> tuple[list[tuple
             break
         if not word.startswith("-") or word == "-":
             break
-        for position, flag in enumerate(word[1:], start=2):
-            if flag in with_value:
-                value = word[position:]
-                if not value:
-                    index += 1
-                    value = words[index] if index < len(words) else ""
-                options.append((flag, value))
-                break
-            options.append((flag, ""))
+        flags, attached = bundle_flags(word, with_value)
+        if attached == "":
+            index += 1
+            attached = words[index] if index < len(words) else ""
+        options.extend((flag, "") for flag in flags)
+        if attached is not None:
+            options[-1] = (flags[-1], attached)
         index += 1
     return options, words[index:]
+
+
+def bundle_flags(word: str, with_value: str) -> tuple[str, str | None]:
+    """The flags of one option word, as Bash's option reader takes a bundle such as -ca: each letter in turn, up to
+    the first that takes a value, which is the rest of the word, "" when it is the next word, or None for no such
+    flag."""
+    for position, flag in enumerate(word[1:], start=2):
+        if flag in with_value:
+            return word[1:position], word[position:]
+    return word[1:], None
 
 
 def bash_read(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
@@ -1922,22 +2103,54 @@ def assign_unsettled(shell: Shell, names: Iterable[Word]) -> None:
 
 
 def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """unset NAME, through any name reference, -f NAME, a function, and -n NAME, a name reference itself."""
-    functions = "-f" in arguments
-    references = "-n" in arguments
-    for word in arguments:
+    """unset NAME, through any name reference, and the function NAME where no variable is set by it; -v NAME, the
+    variable alone; -f NAME, a function, which -n beside it does not change; and -n NAME, a name reference itself.
+
+    Its options are read as Bash's own option reader takes them, bundled in one word or apart (builtin_operands); -f
+    with -v, or an option Bash does not know, unsets nothing. An option word the text does not settle may be any of
+    them, which the guard cannot read; an operand the text does not settle may name any variable, or any function."""
+    settled = list(itertools.takewhile(lambda word: word is not None, arguments))
+    options, operands = builtin_operands(settled, "") or ([], [])
+    unsettled = len(settled) < len(arguments)
+    if unsettled and not operands and "--" not in settled:
+        reader.reading.cannot_read("could not read the options passed to unset")
+        shell.opaque = True
+        for name in shell.functions:
+            may_unset_function(shell, name)
+        return certain(shell)
+    flags = {flag for flag, _ in options}
+    if not flags <= set("fnv") or {"f", "v"} <= flags:
+        return certain(shell)
+    # -f comes first, so -n beside it changes nothing, as Bash ignores it for a function.
+    functions, references = "f" in flags, "n" in flags
+    # Without -f, -v, or -n, a name no variable is set by unsets the function by it, as POSIX says. Whether one is
+    # set on every path Bash may take is more than the guard settles: a variable one branch assigns, a local one, one
+    # a function declared, or one Bash sets itself, such as BASH, the guard holds or not as it may. So the function
+    # may be gone, and keeps every body beside none.
+    either = not flags
+    for word in [*operands, *([None] if unsettled else [])]:
         if word is None:
             shell.opaque = True
-        elif not word.startswith("-"):
-            if functions:
-                shell.functions.pop(word, None)
-            elif references and word in shell.references:
-                del shell.references[word]
-                shell.variables.pop(word, None)
-                shell.exported.discard(word)
-            else:
-                shell.unset(word)
+            for name in shell.functions if functions or either else ():
+                may_unset_function(shell, name)
+        elif functions:
+            shell.functions.pop(word, None)
+        elif references and word in shell.references:
+            del shell.references[word]
+            shell.variables.pop(word, None)
+            shell.exported.discard(word)
+        else:
+            if either:
+                may_unset_function(shell, word)
+            shell.unset(word)
     return certain(shell)
+
+
+def may_unset_function(shell: Shell, name: str) -> None:
+    """A function a path may have removed: every body it had, and none."""
+    bodies = shell.functions.get(name)
+    if bodies is not None and None not in bodies:
+        shell.functions[name] = (*bodies, None)
 
 
 def bash_set(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
@@ -2038,14 +2251,17 @@ def bash_exec(
     shell: Shell,
     local: dict[str, Word],
 ) -> Outcome:
-    """exec, command, and builtin run the command after their own options."""
+    """exec, command, and builtin run the command after their own options, read as Bash's option reader takes them:
+    exec's -a takes the rest of its word or the next word, in a bundle as in -ca NAME."""
     index = 0
     while index < len(arguments) and (word := arguments[index]) is not None and word.startswith("-"):
-        if reader.current_builtin == "command" and set(word[1:]) & {"v", "V"}:
-            return certain(shell)
-        index += 2 if word == "-a" else 1
         if word == "--":
+            index += 1
             break
+        flags, value = bundle_flags(word, "a" if reader.current_builtin == "exec" else "")
+        if reader.current_builtin == "command" and set(flags) & {"v", "V"}:
+            return certain(shell)
+        index += 2 if value == "" else 1
     rest = arguments[index:]
     if not rest:
         return certain(shell)
@@ -2313,13 +2529,28 @@ def follow_powershell(
     reading: Reading,
     depth: int,
     functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
+    opaque: bool = False,
 ) -> None:
     """Reads the script a pwsh or Windows PowerShell started in cwd runs, where -WorkingDirectory starts it, with the
-    Bash functions its environment hands a bash it starts."""
+    Bash functions its environment hands a bash it starts, from a starter the text may not settle."""
     arguments = powershell_arguments(program, arguments)
     script: list[Word] | None = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
-    read = functools.partial(read_powershell, functions=functions)
+    read = functools.partial(read_powershell, functions=functions, opaque=opaque)
     follow(program, script, powershell_directory(arguments, cwd), variables, reading, depth, read)
+
+
+def started_allexport(environment: Mapping[str, Word], names_folded: bool) -> Literal["on", "off", "unsettled"]:
+    """Whether a bash starts with allexport on by the SHELLOPTS its environment hands it, which Bash reads by its exact
+    name, whatever its own options say: on when it lists allexport, off without it, and unsettled when the text does
+    not settle its value, or its name, which a starter that holds names folded to one case does not keep.
+
+    BASHOPTS hands shopt's options the same way, none of which changes what the guard reads."""
+    value = environment.get(SHELLOPTS, "")
+    if value is None:
+        return "unsettled"
+    if ALLEXPORT not in value.split(":"):
+        return "off"
+    return "unsettled" if names_folded else "on"
 
 
 def read_bash(
@@ -2330,15 +2561,19 @@ def read_bash(
     variables: Variables,
     functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
     allexport: bool = False,
+    opaque: bool = False,
+    names_folded: bool = False,
 ) -> None:
     """Reads a Bash command, started with these variables exported, as Bash runs it, with the functions the shell
     that starts it exported, and those its environment hands it as BASH_FUNC_<name>%% variables, defined; with
-    allexport on when its own options turn it on, or its environment's SHELLOPTS does."""
-    allexport = allexport or "allexport" in reading.environment.get("SHELLOPTS", "").split(":")
-    # A shell inherits the environment the hook was given; the tracked variables are those its starter passes on.
-    untracked = {name: value for name, value in reading.environment.items() if not is_tracked(name)}
-    inherited: dict[str, Word] = {**untracked, **variables}
-    shell = Shell(cwd, dict(inherited), set(inherited), allexport=allexport, reading=reading)
+    allexport on when its own options turn it on, or the SHELLOPTS its environment hands it does (started_allexport).
+    A starter the text does not settle may have handed it any variable."""
+    inherited = started_environment(reading, variables)
+    started = started_allexport(inherited, names_folded)
+    if started == "unsettled":
+        reading.cannot_read(f"could not read the {SHELLOPTS} its environment hands bash, which may turn on allexport")
+    allexport = allexport or started == "on"
+    shell = Shell(cwd, dict(inherited), set(inherited), allexport=allexport, opaque=opaque, reading=reading)
     shell.functions.update(functions or {})
     reader = BashReader(reading, depth)
     for name, value in inherited.items():
@@ -2734,7 +2969,7 @@ class PowerShellReader:
             self.reading.cannot_read(f"a drive on the alias or function provider ({name})")
         if name in LOCATION_NAMES | PUSH_LOCATION_NAMES | POP_LOCATION_NAMES:
             return self.location(name, arguments, parameters, session)
-        if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS:
+        if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS or name in ELEVATING_PROGRAMS:
             self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
         elif name in POWERSHELL_NAMES:
             # The reader follows a pwsh the session starts with an inline script; one it reads from its standard
@@ -2743,7 +2978,14 @@ class PowerShellReader:
             started = powershell_arguments(name, arguments)
             if started is not arguments:
                 follow_powershell(
-                    name, arguments, session.cwd, session.variables, self.reading, self.depth, self.bash_functions
+                    name,
+                    arguments,
+                    session.cwd,
+                    session.variables,
+                    self.reading,
+                    self.depth,
+                    self.bash_functions,
+                    opaque=session.opaque,
                 )
             elif powershell_reads_input(arguments):
                 self.reading.cannot_read(f"could not read the command passed to {name}")
@@ -2755,16 +2997,28 @@ class PowerShellReader:
         self, name: str | None, arguments: list[Word], cwd: Path | None, variables: Variables, opaque: bool
     ) -> None:
         """A program a PowerShell command starts, in this directory and with these variables in its environment. A pwsh
-        the session starts itself is read by the PowerShell reader; one that env or a prefix program starts, here."""
+        the session starts itself is read by the PowerShell reader; one that env or a prefix program starts, here.
+
+        A bash reads the SHELLOPTS the session hands it by its exact name, which the session holds folded where the
+        platform folds environment names, and which a session the text does not settle may have set to anything."""
         if name in GIT_NAMES:
             read_git(arguments, cwd, variables, self.reading, opaque)
         elif name in BASH_NAMES:
             script = bash_script(arguments, [], Shell(None, {}, set()))
-            read = functools.partial(read_bash, functions=self.bash_functions, allexport=bash_allexport(arguments))
-            follow(name, script, cwd, variables, self.reading, self.depth, read)
+            read = functools.partial(
+                read_bash,
+                functions=self.bash_functions,
+                allexport=bash_allexport(arguments),
+                opaque=opaque,
+                names_folded=platform_support.ENVIRONMENT_NAMES_FOLD_CASE,
+            )
+            handed = {**variables, SHELLOPTS: None} if opaque else variables
+            follow(name, script, cwd, handed, self.reading, self.depth, read)
         elif name in POWERSHELL_NAMES:
-            follow_powershell(name, arguments, cwd, variables, self.reading, self.depth, self.bash_functions)
-        elif name in ENV_NAMES or name in PREFIX_PROGRAMS:
+            follow_powershell(
+                name, arguments, cwd, variables, self.reading, self.depth, self.bash_functions, opaque=opaque
+            )
+        elif name in ENV_NAMES or name in PREFIX_PROGRAMS or name in ELEVATING_PROGRAMS:
             command = started_command(name, arguments, cwd, variables, self.reading)
             if command is not None:
                 self.run_program(*command, opaque)
@@ -2889,9 +3143,11 @@ def read_powershell(
     depth: int,
     variables: Variables,
     functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
+    opaque: bool = False,
 ) -> None:
     """Reads a PowerShell command with PowerShell's own parser, started only for text it could refuse, with the Bash
-    functions the bash that starts it exported, which a bash it starts defines.
+    functions the bash that starts it exported, which a bash it starts defines. A starter the text does not settle
+    may have handed it any variable.
 
     Starting pwsh costs far more than the guard's git calls, so text may_refuse passes never pays for it, unless a
     Bash function reaches the session, whose body a bash the text starts may run. A location belongs to the session,
@@ -2903,10 +3159,10 @@ def read_powershell(
     events = powershell_events(command, reading, depth)
     if events is None:
         return
-    # A session inherits the environment the hook was given; the tracked variables are those its starter passes on.
-    inherited = {name: value for name, value in {**reading.environment, **variables}.items() if not is_tracked(name)}
+    # A session inherits the environment the hook was given; the handed variables are those its starter passes on.
+    inherited = {name: value for name, value in started_environment(reading, variables).items() if not is_tracked(name)}
     environment = {folded(name): value for name, value in inherited.items()}
-    session = Session(cwd, {**environment, **git_variables(variables, reading.notes)})
+    session = Session(cwd, {**environment, **git_variables(variables, reading.notes)}, opaque=opaque)
     PowerShellReader(reading, depth, functions).run(event_tree(events), session)
 
 

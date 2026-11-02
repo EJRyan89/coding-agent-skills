@@ -25,6 +25,14 @@ from . import platform_support
 MINIMUM_PYTHON = (3, 11, 4)
 
 
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "codex_sandbox_command": "builds the probe for the Codex CLI its caller located",
+    "codex_sandbox_mode": "runs the probe for the Codex CLI its caller located",
+    "probe": "runs the version probe of the program each tool's locator finds",
+}
+
+
 @dataclass(frozen=True)
 class Tool:
     """A tool by its deploy-meta name, how to locate it, and its version or provider support requirement, if any."""
@@ -179,12 +187,15 @@ SKILL_TOOLS = {
 # Codex CLI, so only this catalogue names it.
 VERIFY_TOOLS = {tool.name: tool for tool in (CODEX, COPILOT)}
 
-# Tools `deploy.py check` reports so that its output alone answers a bug report: Git, which every skill runs, and
-# Claude Code, which no deployment needs. Git has no floor. 2.1.295 is the first Claude Code that honors a hook's
+# Git, which every skill runs and a deployment from a Git checkout needs to record its commit. It has no floor.
+GIT = Tool("git", "Git", lambda: platform_support.find_executable("git"), other_uses=("every skill",))
+
+# Tools `deploy.py check` reports so that its output alone answers a bug report: Git, and Claude Code, which no
+# deployment needs. 2.1.295 is the first Claude Code that honors a hook's
 # `onFailure: block`, which the code-review reviewer's guard declares so that a guard that cannot start, times out, or
 # exits with an unexpected status denies the call; an older one ignores the setting and lets that call through.
 REPORTED_TOOLS = (
-    Tool("git", "Git", lambda: platform_support.find_executable("git"), other_uses=("every skill",)),
+    GIT,
     Tool(
         "claude",
         "Claude Code",

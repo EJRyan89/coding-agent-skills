@@ -1972,3 +1972,192 @@ class EntryPointRunnerTests(unittest.TestCase):
                     [[1, "FAILED LookupError: injected failure\n", ""], [130, "FAILED interrupted\n", ""]],
                     json.loads(result.stdout),
                 )
+
+
+STARTS_OUTSIDE = "outside its runner"
+UNREAD = "cannot read the program"
+
+# Each module that starts a checker some way the policy must see, the problem it must report, and the forms it passes.
+CHECKER_ROWS: dict[str, tuple[str, str | None]] = {
+    "tools/shell_string.py": (
+        "import subprocess\n\ndef run(p):\n    subprocess.run(f'shellcheck {p}', shell=True)\n",
+        f"starts shellcheck {STARTS_OUTSIDE}",
+    ),
+    "tools/split_string.py": (
+        "import shlex\nimport subprocess\n\ndef run(p):\n    subprocess.run(shlex.split('shellcheck -x') + [p])\n",
+        f"starts shellcheck {STARTS_OUTSIDE}",
+    ),
+    "tools/bash_c_fstring.py": (
+        "import subprocess\n\ndef run(p):\n    subprocess.run(['bash', '-c', f'shellcheck {p}'])\n",
+        f"starts shellcheck {STARTS_OUTSIDE}",
+    ),
+    "tools/neutral_program.py": (
+        "import subprocess\n\ndef run(program, p):\n    subprocess.run([program, '--format=gcc', p])\n",
+        UNREAD,
+    ),
+    "tools/attribute_program.py": (
+        "import subprocess\n\ndef run(lint, p):\n    subprocess.run([lint.binary, p])\n",
+        UNREAD,
+    ),
+    "tools/environment_unpassed.py": (
+        "from deployer import platform_support, render\n\n"
+        "def run(p):\n    environment = render.SHELLCHECK_ENVIRONMENT\n    platform_support.run_tool(['git', p])\n",
+        "names SHELLCHECK_ENVIRONMENT outside the shellcheck runner",
+    ),
+    "tools/module_level_builder.py": (
+        "from subprocess import run\n\nfrom deployer import render\n\n"
+        "run(render.shellcheck_command('shellcheck', 'x.sh'))\n",
+        UNREAD,
+    ),
+    "tools/run_tool_literal.py": (
+        "from deployer import platform_support\n\ndef run(p):\n    platform_support.run_tool(['shellcheck', p])\n",
+        f"starts shellcheck {STARTS_OUTSIDE}",
+    ),
+    "tools/located_shellcheck.py": (
+        "import shutil\nimport subprocess\n\ndef run(p):\n    subprocess.run([shutil.which('shellcheck'), p])\n",
+        f"starts shellcheck {STARTS_OUTSIDE}",
+    ),
+    "tests/validation/ruff_job.py": (
+        "from job_pool import run_process\n\ndef run():\n    run_process(['ruff', 'check', '.'])\n",
+        f"starts ruff {STARTS_OUTSIDE}",
+    ),
+    "tests/validation/ruff_module.py": (
+        "import subprocess\nimport sys\n\ndef run():\n    subprocess.run([sys.executable, '-m', 'ruff', 'check'])\n",
+        f"starts ruff {STARTS_OUTSIDE}",
+    ),
+    "tests/validation/ruff_options.py": (
+        "from toolchain import RUFF_OPTIONS\n\ndef options():\n    return [*RUFF_OPTIONS]\n",
+        "names RUFF_OPTIONS outside the ruff runner",
+    ),
+    "deployer/mypy_program.py": (
+        "import subprocess\n\ndef run():\n    subprocess.run(['mypy', '.'])\n",
+        f"starts mypy {STARTS_OUTSIDE}",
+    ),
+    "deployer/mypy_module.py": (
+        "import subprocess\nimport sys\n\ndef run():\n    subprocess.run([sys.executable, '-m', 'mypy', '.'])\n",
+        f"starts mypy {STARTS_OUTSIDE}",
+    ),
+    "tools/mypy_environment.py": (
+        "import os\n\nfrom toolchain import MYPY_ENVIRONMENT\n\n"
+        "def run():\n    return {**os.environ, **MYPY_ENVIRONMENT}\n",
+        "names MYPY_ENVIRONMENT outside the mypy runner",
+    ),
+    "tools/mypy_api.py": (
+        "from mypy import api\n\ndef run():\n    api.run(['.'])\n",
+        "imports mypy, which would run it in this process",
+    ),
+    "tools/mypy_module.py": (
+        "import mypy.api\n\ndef run():\n    mypy.api.run(['.'])\n",
+        "imports mypy, which would run it in this process",
+    ),
+    "tools/mypy_importlib.py": (
+        "import importlib\n\ndef run():\n    importlib.import_module('mypy.api').run(['.'])\n",
+        "imports mypy, which would run it in this process",
+    ),
+    "tools/ruff_dunder.py": (
+        "def run():\n    return __import__('ruff')\n",
+        "imports ruff, which would run it in this process",
+    ),
+    "tools/ruff_from_main.py": (
+        "from ruff.__main__ import find_ruff_bin\n\nPROGRAM = find_ruff_bin()\n",
+        "imports ruff, which would run it in this process",
+    ),
+    "tools/bash_syntax.py": (
+        "import subprocess\n\ndef run(p):\n    subprocess.run(['bash', '-n', p])\n",
+        f"starts bash -n {STARTS_OUTSIDE}",
+    ),
+    "tools/script_analyzer.py": (
+        "SCRIPT = 'Invoke-ScriptAnalyzer -Path $env:TARGET -Severity Warning'\n",
+        "runs PSScriptAnalyzer outside tests/validation/shell_targets.py:SCRIPT_ANALYZER_RUN",
+    ),
+    "skills/alpha/scripts/lint.py": (
+        "import subprocess\n\ndef run(p):\n    subprocess.run(['shellcheck', p])\n",
+        f"starts shellcheck {STARTS_OUTSIDE}",
+    ),
+    # The forms the policy passes: each checker's own runner, a command it reads that runs no checker, a command it
+    # cannot read whose module says why, the command's name alone, and a regression suite's expected command lines.
+    "deployer/render.py": (
+        "from . import platform_support\n\n"
+        "SHELLCHECK_ENVIRONMENT = {'SHELLCHECK_OPTS': ''}\n"
+        "COMMANDS_ALLOWED = {\n"
+        "    'shellcheck_command': 'builds the line for the runner',\n"
+        "    'run_shellcheck': 'starts the ShellCheck its caller located',\n"
+        "    'run_bash_syntax_check': 'starts the Bash its caller located',\n"
+        "}\n\n"
+        "def shellcheck_command(shellcheck, *arguments):\n    return [shellcheck, '--norc', *arguments]\n\n"
+        "def run_shellcheck(shellcheck, *arguments):\n"
+        "    return platform_support.run_tool(shellcheck_command(shellcheck, *arguments), SHELLCHECK_ENVIRONMENT)\n\n"
+        "def run_bash_syntax_check(bash, path):\n    return platform_support.run_tool([bash, '-n', path])\n",
+        None,
+    ),
+    "tests/validation/toolchain.py": (
+        "from job_pool import run_process\n\nfrom deployer import render\n\n"
+        "RUFF_OPTIONS = ('--no-respect-gitignore',)\nMYPY_ENVIRONMENT = {'MYPYPATH': ''}\n"
+        "COMMANDS_ALLOWED = {\n"
+        "    'shellcheck_job': 'starts the ShellCheck its caller located',\n"
+        "    'bash_syntax_job': 'starts the Bash its caller located',\n"
+        "    'ruff_job': 'starts the ruff its caller located',\n"
+        "    'mypy_job': 'starts the mypy its caller located',\n"
+        "}\n\n"
+        "def shellcheck_job(shellcheck, *arguments):\n"
+        "    run_process(render.shellcheck_command(shellcheck, *arguments), render.SHELLCHECK_ENVIRONMENT)\n\n"
+        "def bash_syntax_job(bash, path):\n    run_process([bash, '-n', path])\n\n"
+        "def ruff_job(ruff, subcommand, targets, cwd):\n"
+        "    run_process([ruff, *subcommand, *RUFF_OPTIONS, *targets], cwd=cwd)\n\n"
+        "def find_ruff():\n    from ruff.__main__ import find_ruff_bin\n\n    return find_ruff_bin()\n\n"
+        "def mypy_job(mypy, configuration, arguments, cwd):\n"
+        "    run_process([mypy, '--config-file', str(configuration), *arguments], MYPY_ENVIRONMENT, cwd=cwd)\n",
+        None,
+    ),
+    "tests/validation/shell_targets.py": (
+        "SCRIPT_ANALYZER_RUN = (\n    'foreach ($t in $targets) { '\n"
+        "    'Invoke-ScriptAnalyzer -Path $t -Settings @{} -Severity Warning, Error }'\n)\n",
+        None,
+    ),
+    "tools/readable.py": (
+        "import subprocess\n\nCOMMANDS_ALLOWED = {'run_located': 'starts the program its caller located'}\n\n"
+        "def run(p):\n    subprocess.run(['git', 'status', p])\n\n"
+        "def run_located(program):\n    subprocess.run([program, '--version'])\n\n"
+        "NAME = 'Invoke-ScriptAnalyzer'\n",
+        None,
+    ),
+    "tests/validation/test_expected.py": (
+        "import subprocess\n\ndef test_it():\n    subprocess.run(['shellcheck', 'x.sh'])\n",
+        None,
+    ),
+}
+
+
+class CheckerCommandFixtures(unittest.TestCase):
+    def problems(self, files: dict[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_fixture_tree(root, files)
+            return skill_scripts.checker_command_problems(root, [root / name for name in files])
+
+    def test_each_way_of_starting_a_checker_outside_its_runner_is_refused_and_each_runner_passes(self) -> None:
+        for name, (source, expected) in CHECKER_ROWS.items():
+            with self.subTest(module=name):
+                problems = self.problems({name: source})
+                if expected is None:
+                    self.assertEqual([], problems)
+                else:
+                    self.assertTrue(problems, "the policy reported nothing")
+                    self.assertTrue(all(problem.startswith(f"{name}:") for problem in problems), problems)
+                    self.assertIn(expected, " ".join(problems))
+
+    def test_a_script_analyzer_run_without_its_settings_is_refused(self) -> None:
+        runner = "SCRIPT_ANALYZER_RUN = 'Invoke-ScriptAnalyzer -Path $t -Severity Warning, Error'\n"
+        self.assertEqual(
+            [
+                "tests/validation/shell_targets.py: SCRIPT_ANALYZER_RUN runs PSScriptAnalyzer without -Settings @{}, "
+                "so a settings file beside a target or in the working folder is read"
+            ],
+            self.problems({"tests/validation/shell_targets.py": runner}),
+        )
+
+    def test_a_runner_reached_through_an_alias_the_reader_cannot_resolve_is_refused(self) -> None:
+        source = "import subprocess\n\nrunner = subprocess.run if True else None\n\ndef go():\n    runner(['git'])\n"
+        problems = self.problems({"tools/alias.py": source})
+        self.assertTrue(problems)
+        self.assertTrue(all(problem.startswith("tools/alias.py:") for problem in problems), problems)
