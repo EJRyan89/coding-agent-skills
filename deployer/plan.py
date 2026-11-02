@@ -529,8 +529,7 @@ def check_ownership(context: Context, wanted: Mapping[ItemKind, list[str]]) -> N
             )
     # Every root the run creates holds the .backups a replaced or changed copy is kept in, which the run reaches only
     # after the manifest commit, so its place is judged here, while nothing has changed.
-    for root in dict.fromkeys(kind.root for kind in KINDS):
-        journal.check_backup_root(paths, root)
+    journal.check_backup_roots(paths)
 
 
 def _replace(

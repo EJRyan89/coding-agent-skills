@@ -221,6 +221,12 @@ def check_backup_root(paths: Paths, root: str, run_id: str | None = None) -> Non
         )
 
 
+def check_backup_roots(paths: Paths, run_id: str | None = None) -> None:
+    """check_backup_root for every root a run writes."""
+    for root in ROOT_PREFIXES:
+        check_backup_root(paths, root, run_id)
+
+
 def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) -> Path:
     """Create the only directory a retained backup may move to, rejecting links and escapes."""
     base = root_directory(paths, root)

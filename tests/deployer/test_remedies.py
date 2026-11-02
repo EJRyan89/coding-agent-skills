@@ -503,15 +503,31 @@ class BackupRemedyTests(RemedyTestCase):
         outside = self.root / "outside-backups"
         outside.mkdir()
         make_directory_link(self.skills_dir / ".backups", outside)
-        result = self.deploy_fails(
-            "--all", "--force-item", "alpha", pattern="unsafe permanent backup", changes_home=FAILS_PARTWAY
-        )
+        reason = f"ERROR: Backup path contains a symlink or junction: {forward(self.skills_dir / '.backups')}"
+        remedy = "Replace it with a real directory after verifying its contents, then retry."
+        # Refused before the first change, so the home is unchanged and nothing reaches the link's target.
+        result = self.deploy_fails("--all", "--force-item", "alpha", pattern="Backup path contains a symlink")
+        self.assert_lines(result.output, reason, remedy)
+        self.assertNotIn("unsafe permanent backup destination", result.output)
+        self.assertEqual([], list(outside.iterdir()))
+
+    def test_a_backups_folder_that_becomes_a_link_during_the_run_names_the_item_it_could_not_keep(self) -> None:
+        self.fixture()
+        self.deploy_ok("--all")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "local change\n")
+        outside = self.root / "outside-backups"
+        outside.mkdir()
+        make_directory_link(self.skills_dir / ".backups", outside)
+        # The check before the first change passed, as it does when the link appears while the run is under way.
+        with mock.patch("deployer.journal.check_backup_root"):
+            result = self.deploy_fails(
+                "--all", "--force-item", "alpha", pattern="unsafe permanent backup", changes_home=FAILS_PARTWAY
+            )
         printed = result.output.splitlines()
         reason = f"ERROR: Backup path contains a symlink or junction: {forward(self.skills_dir / '.backups')}"
-        self.assert_lines(result.output, reason, "ERROR: Refusing unsafe permanent backup destination for alpha")
         self.assertEqual(
             "ERROR: Refusing unsafe permanent backup destination for alpha",
-            printed[printed.index(reason) + 1],
+            printed[printed.index(reason) + 2],
             result.output,
         )
         self.assertEqual([], list(outside.iterdir()))
