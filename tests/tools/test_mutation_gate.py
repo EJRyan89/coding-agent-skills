@@ -2819,6 +2819,35 @@ class SplitRunFixtures(unittest.TestCase):
         self.assertEqual(LegRun(WINDOWS_LEG, 5, 0.0, 0, {}, {}, []), nothing)
         self.assertIn("| `tools/calc.py` | Linux | 6 | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 50% (1 of 2) |", text)
 
+    def test_a_leg_at_another_commit_than_the_select_steps_or_without_one_stops_before_any_suite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            fixture_repository(root)
+            folder = Path(temporary) / "handed on"
+            mutation_gate.select_step(Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach), folder, {})
+            selected = read_selection(folder / "mutants.json")
+            tested = git(root, "rev-parse", "HEAD").strip()
+            self.assertEqual(tested, selected.head)
+            change_calc(root, CALC + "\n")
+            head = git(root, "rev-parse", "HEAD").strip()
+            gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach, measure=measured)
+            with (
+                mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    rf"^HEAD is {head}, not {tested}, the commit the select step made the mutants at, so this leg's "
+                    r"suites would judge them at another commit$",
+                ),
+            ):
+                gate.leg(selected)
+            with (
+                mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG),
+                self.assertRaisesRegex(
+                    RuntimeError, r"^mutants.json records no commit the select step made its mutants at$"
+                ),
+            ):
+                gate.leg(replace(selected, head=""))
+
     def test_the_select_step_selects_nothing_without_a_module_and_stops_on_a_failed_generator_canary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
@@ -3230,6 +3259,31 @@ def test_a_leg_whose_mutants_fit_what_its_cap_left_gives_no_warning() -> None:
             report = gate.mutate([tree], ["tools/a.py"], 0.0)
     assert (report.legs[0].needed, report.legs[0].available) == ({"tools/a.py": 1.0}, 60.0)
     assert "::warning" not in printed.getvalue()
+
+
+def test_a_whole_run_on_this_machine_counts_its_own_timeout_as_timed_out() -> None:
+    def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+        return TIMED_OUT
+
+    def reach(tree: Path, suite: str, measured: object, timeout: float) -> Reach:
+        return Reach(1.0, {"tools/a.py": frozenset({1})})
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        tree = root / "tree-1"
+        (tree / "tools").mkdir(parents=True)
+        (tree / "tools" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        git_client = mock.create_autospec(GitClient, instance=True)
+        git_client.output.return_value = "@@ -0,0 +1 @@\n+x = 1\n"
+        gate = Gate(root, "main", 1, 1, git_client, line_generator, reach, run, lambda: 0.0, measured)
+        with (
+            mock.patch.object(mutation_gate, "reached_suites", return_value=[root / "tests" / "test_x.py"]),
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            report = gate.mutate([tree], ["tools/a.py"], 0.0)
+    assert unfinished_line(report) is None
+    assert [outcome.status for outcome in report.modules[0].outcomes] == [TIMED_OUT]
+    assert "| `tools/a.py` | " + f"{HOST} | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 100% (1 of 1) |" in summary(report)
 
 
 def too_large_report(status: str) -> Report:

@@ -53,7 +53,9 @@ suite, or a test function name more than one collected class holds, which an inh
 suite pytest cannot list run whole as well. The mutant is killed, or timed out when a suite
 runs past three times its unmutated time. A timeout on a CI leg is read as timed out unconfirmed, which judges nothing,
 since a runner's load can stretch a suite past its limit as surely as a mutant that makes a loop endless; only a local
-run that times out on the mutant too confirms it, under that run's own measured limits. A mutant every one of those
+run that times out on the mutant too confirms it, under that run's own measured limits. A whole run in one process,
+without a step, runs on this machine, so its own timeouts stand as timed out. Each leg step refuses a HEAD that is not
+the commit the select step recorded. A mutant every one of those
 suites passes survived. A mutant in a statement no
 suite executed is not reached, and a suite that fails unmutated, or whose coverage data `coverage combine` or `coverage
 json` fails or times out on, or whose report holds no files object, is left out and named with the step and its
@@ -400,8 +402,9 @@ class LocalRun:
 class LegRun:
     """One leg's run: its cap, its seconds and workers, each module's outcomes in the order of its mutants, the
     suites that failed unmutated or whose reach its cap left unmeasured, each module's estimated worker-seconds of
-    mutant runs and the worker-seconds the cap left for them once the reach pass ended, and the local run that
-    completed it, if one did."""
+    mutant runs and the worker-seconds the cap left for them once the reach pass ended, the local run that
+    completed it, if one did, and whether the leg is itself a run on this machine, the whole gate in one process,
+    whose timeouts confirm themselves. Every leg the leg step writes is a CI leg's, and no record holds the flag."""
 
     name: str
     minutes: int
@@ -413,6 +416,7 @@ class LegRun:
     needed: dict[str, float] = field(default_factory=dict)
     available: float = 0.0
     local: LocalRun | None = None
+    confirms: bool = False
 
     @property
     def open_suites(self) -> list[str]:
@@ -422,8 +426,9 @@ class LegRun:
 
 
 def judged_outcomes(leg: LegRun) -> dict[str, list[Outcome]]:
-    """Each module's outcomes as the report reads a leg: the local run's at each place it ran, and the CI leg's at
-    every other, a CI timeout read as UNCONFIRMED, since only a local run's timeout confirms one."""
+    """Each module's outcomes as the report reads a leg: the local run's at each place it ran, and the leg's own at
+    every other, a CI leg's timeout read as UNCONFIRMED, since only a run on this machine confirms one: a local run
+    that completed the leg, or a leg that is itself such a run."""
     local = leg.local
     found = {}
     for module, outcomes in leg.outcomes.items():
@@ -432,7 +437,7 @@ def judged_outcomes(leg: LegRun) -> dict[str, list[Outcome]]:
             ran[place]
             if place in ran
             else replace(outcome, status=UNCONFIRMED)
-            if outcome.status == TIMED_OUT
+            if outcome.status == TIMED_OUT and not leg.confirms
             else outcome
             for place, outcome in enumerate(outcomes)
         ]
@@ -2061,7 +2066,9 @@ class Gate:
     def mutate(self, trees: Sequence[Path], modules: Sequence[str], started: float) -> Report:
         """Select the mutants of the changed lines, then run every module's mutants as one leg, this platform's."""
         selected = self.choose(trees[0], modules)
-        return joined(selected, [self.run_leg(platform_support.PLATFORM_NAME, trees, selected.modules, started)])
+        # The whole run in one process runs on this machine, so its timeouts confirm themselves, as a local run's do.
+        ran = self.run_leg(platform_support.PLATFORM_NAME, trees, selected.modules, started)
+        return joined(selected, [replace(ran, confirms=True)])
 
     def run_leg(self, name: str, trees: Sequence[Path], modules: Sequence[SelectedModule], started: float) -> LegRun:
         """Measure the reach of the suites that reach a module with a mutant, then test the mutants from one queue
@@ -2112,12 +2119,21 @@ class Gate:
         return replace(self.choose(self.root, modules), head=head)
 
     def leg(self, selected: Selected) -> LegRun:
-        """The leg step: this platform's leg of the mutants the select step made, run in worktrees of HEAD."""
+        """The leg step: this platform's leg of the mutants the select step made, run in worktrees of HEAD, which must
+        be the commit the select step's checkout held, as every job of the workflow checks out the same one."""
         name = platform_support.PLATFORM_NAME
         modules = leg_modules(name, selected)
         started = self.clock()
         if not modules:
             return LegRun(name, self.minutes, 0.0, 0, {}, {}, [])
+        if not selected.head:
+            raise RuntimeError(f"{MUTANTS_FILE} records no commit the select step made its mutants at")
+        head = self.git.output(["rev-parse", "HEAD"], directory=self.root).strip()
+        if head != selected.head:
+            raise RuntimeError(
+                f"HEAD is {head}, not {selected.head}, the commit the select step made the mutants at, so this leg's "
+                "suites would judge them at another commit"
+            )
         with (
             tempfile.TemporaryDirectory(prefix="mutation-gate-") as temporary,
             worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
