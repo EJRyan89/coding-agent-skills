@@ -19,6 +19,7 @@ import contextlib
 import dataclasses
 import fnmatch
 import functools
+import itertools
 import json
 import math
 import os
@@ -2001,17 +2002,25 @@ def builtin_operands(arguments: list[Word], with_value: str) -> tuple[list[tuple
             break
         if not word.startswith("-") or word == "-":
             break
-        for position, flag in enumerate(word[1:], start=2):
-            if flag in with_value:
-                value = word[position:]
-                if not value:
-                    index += 1
-                    value = words[index] if index < len(words) else ""
-                options.append((flag, value))
-                break
-            options.append((flag, ""))
+        flags, attached = bundle_flags(word, with_value)
+        if attached == "":
+            index += 1
+            attached = words[index] if index < len(words) else ""
+        options.extend((flag, "") for flag in flags)
+        if attached is not None:
+            options[-1] = (flags[-1], attached)
         index += 1
     return options, words[index:]
+
+
+def bundle_flags(word: str, with_value: str) -> tuple[str, str | None]:
+    """The flags of one option word, as Bash's option reader takes a bundle such as -ca: each letter in turn, up to
+    the first that takes a value, which is the rest of the word, "" when it is the next word, or None for no such
+    flag."""
+    for position, flag in enumerate(word[1:], start=2):
+        if flag in with_value:
+            return word[1:position], word[position:]
+    return word[1:], None
 
 
 def bash_read(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
@@ -2094,22 +2103,54 @@ def assign_unsettled(shell: Shell, names: Iterable[Word]) -> None:
 
 
 def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """unset NAME, through any name reference, -f NAME, a function, and -n NAME, a name reference itself."""
-    functions = "-f" in arguments
-    references = "-n" in arguments
-    for word in arguments:
+    """unset NAME, through any name reference, and the function NAME where no variable is set by it; -v NAME, the
+    variable alone; -f NAME, a function, which -n beside it does not change; and -n NAME, a name reference itself.
+
+    Its options are read as Bash's own option reader takes them, bundled in one word or apart (builtin_operands); -f
+    with -v, or an option Bash does not know, unsets nothing. An option word the text does not settle may be any of
+    them, which the guard cannot read; an operand the text does not settle may name any variable, or any function."""
+    settled = list(itertools.takewhile(lambda word: word is not None, arguments))
+    options, operands = builtin_operands(settled, "") or ([], [])
+    unsettled = len(settled) < len(arguments)
+    if unsettled and not operands and "--" not in settled:
+        reader.reading.cannot_read("could not read the options passed to unset")
+        shell.opaque = True
+        for name in shell.functions:
+            may_unset_function(shell, name)
+        return certain(shell)
+    flags = {flag for flag, _ in options}
+    if not flags <= set("fnv") or {"f", "v"} <= flags:
+        return certain(shell)
+    # -f comes first, so -n beside it changes nothing, as Bash ignores it for a function.
+    functions, references = "f" in flags, "n" in flags
+    # Without -f, -v, or -n, a name no variable is set by unsets the function by it, as POSIX says. Whether one is
+    # set on every path Bash may take is more than the guard settles: a variable one branch assigns, a local one, one
+    # a function declared, or one Bash sets itself, such as BASH, the guard holds or not as it may. So the function
+    # may be gone, and keeps every body beside none.
+    either = not flags
+    for word in [*operands, *([None] if unsettled else [])]:
         if word is None:
             shell.opaque = True
-        elif not word.startswith("-"):
-            if functions:
-                shell.functions.pop(word, None)
-            elif references and word in shell.references:
-                del shell.references[word]
-                shell.variables.pop(word, None)
-                shell.exported.discard(word)
-            else:
-                shell.unset(word)
+            for name in shell.functions if functions or either else ():
+                may_unset_function(shell, name)
+        elif functions:
+            shell.functions.pop(word, None)
+        elif references and word in shell.references:
+            del shell.references[word]
+            shell.variables.pop(word, None)
+            shell.exported.discard(word)
+        else:
+            if either:
+                may_unset_function(shell, word)
+            shell.unset(word)
     return certain(shell)
+
+
+def may_unset_function(shell: Shell, name: str) -> None:
+    """A function a path may have removed: every body it had, and none."""
+    bodies = shell.functions.get(name)
+    if bodies is not None and None not in bodies:
+        shell.functions[name] = (*bodies, None)
 
 
 def bash_set(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
@@ -2210,14 +2251,17 @@ def bash_exec(
     shell: Shell,
     local: dict[str, Word],
 ) -> Outcome:
-    """exec, command, and builtin run the command after their own options."""
+    """exec, command, and builtin run the command after their own options, read as Bash's option reader takes them:
+    exec's -a takes the rest of its word or the next word, in a bundle as in -ca NAME."""
     index = 0
     while index < len(arguments) and (word := arguments[index]) is not None and word.startswith("-"):
-        if reader.current_builtin == "command" and set(word[1:]) & {"v", "V"}:
-            return certain(shell)
-        index += 2 if word == "-a" else 1
         if word == "--":
+            index += 1
             break
+        flags, value = bundle_flags(word, "a" if reader.current_builtin == "exec" else "")
+        if reader.current_builtin == "command" and set(flags) & {"v", "V"}:
+            return certain(shell)
+        index += 2 if value == "" else 1
     rest = arguments[index:]
     if not rest:
         return certain(shell)

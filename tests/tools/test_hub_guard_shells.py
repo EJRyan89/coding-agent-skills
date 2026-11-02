@@ -8,6 +8,7 @@ tests/tools/test_hub_guard_bash.py hold the same readings without starting eithe
 
 from __future__ import annotations
 
+import itertools
 import os
 import sys
 import tempfile
@@ -184,6 +185,41 @@ UNSET = "<unset>"
 # The part the guard cannot read of a SHELLOPTS a PowerShell session hands bash, which holds names folded where the
 # platform folds environment names; None where it reads the name as Bash does.
 FOLDED_SHELLOPTS = "SHELLOPTS" if platform_support.ENVIRONMENT_NAMES_FOLD_CASE else None
+# Each spelling of unset's options: every bundle of -f, -n, and -v Bash reads, in one word or apart, and spellings it
+# refuses or reads as names.
+UNSET_OPTIONS = (
+    "",
+    "--",
+    "-",
+    "+f",
+    "-x",
+    "-fx",
+    "--f",
+    "other",
+    "-- -f",
+    *dict.fromkeys(
+        spelling
+        for count in (1, 2, 3)
+        for letters in itertools.product("fnv", repeat=count)
+        for spelling in ("-" + "".join(letters), " ".join(f"-{letter}" for letter in letters))
+    ),
+)
+# Each state a name may be in before unset: a function alone, beside a variable, or a name reference to a variable
+# that is set or is not.
+UNSET_BEFORE = ("", "NAME=1; ", "declare -n NAME=other; ", "other=1; declare -n NAME=other; ")
+# Each command before a bare unset after which a variable by the name may not be set on every path Bash takes.
+UNSET_BEFORE_BARE = (
+    "false && NAME=1; ",
+    'if [ -n "$z" ]; then NAME=1; fi; ',
+    "local NAME=1; ",
+    "f() { local NAME=1; }; f; ",
+    "f() { declare NAME=1; }; f; ",
+    "for NAME in; do :; done; ",
+    "read NAME < /dev/null; ",
+    "( NAME=1 ); ",
+    "NAME=1 true; ",
+    "NAME=1; unset -v NAME; ",
+)
 
 
 def pwsh_runs(words: tuple[str, ...]) -> tuple[bool, bool]:
@@ -836,6 +872,51 @@ class ShellOptionsDifferentialTests(unittest.TestCase):
 def guard_place(call: hub_guard.GitCall) -> Path | str | None:
     """The repository GIT_DIR names for a git call, as the guard reads it, or UNSET when none reaches it."""
     return call.place.repository if call.place.repository_named else UNSET
+
+
+class UnsetDifferentialTests(unittest.TestCase):
+    """After each spelling of unset's options, the guard reads the function's body wherever Bash runs it, and the
+    program by its name wherever Bash runs that."""
+
+    def test_the_guard_reads_what_bash_runs_by_a_name_after_each_unset(self) -> None:
+        bash = find_bash()
+        # Each command, with NAME standing for the function's name and BODY for its body.
+        forms = tuple(
+            f"{before}NAME() {{ BODY; }}; unset {options} NAME; NAME status"
+            for before in UNSET_BEFORE
+            for options in UNSET_OPTIONS
+        ) + tuple(f"{before}NAME() {{ BODY; }}; unset NAME; NAME status" for before in UNSET_BEFORE_BARE)
+        with tempfile.TemporaryDirectory() as folder:
+            program = Path(folder) / "g"
+            program.write_text("#!/bin/bash\necho PROGRAM-RAN\n", encoding="utf-8", newline="\n")
+            program.chmod(0o755)
+            # Each form runs in a subshell of its own, and a line `=== <index>` follows what it printed.
+            script = f'PATH="{platform_support.to_shell_path(str(folder))}:$PATH"\n' + "".join(
+                f"( {form.replace('NAME', 'g').replace('BODY', 'echo BODY-RAN')} ) 2>/dev/null; echo '=== {index}'\n"
+                for index, form in enumerate(forms)
+            )
+            path = Path(folder) / "forms.sh"
+            path.write_text(script, encoding="utf-8", newline="\n")
+            output = platform_support.run_tool([bash, "--norc", "--noprofile", platform_support.normalize(path)]).output
+            ran: list[set[str]] = [set()]
+            for line in output.splitlines():
+                if line.startswith("=== "):
+                    ran.append(set())
+                elif line in ("BODY-RAN", "PROGRAM-RAN"):
+                    ran[-1].add(line)
+            for form, outputs in zip(forms, ran, strict=False):
+                text = form.replace("NAME", "git").replace("BODY", "command git log")
+                reading = hub_guard.Reading({}, text)
+                hub_guard.read_bash(text, Path(folder), reading, 0, {})
+                read = {call.subcommand for call in reading.calls}
+                with self.subTest(form=form, ran=outputs):
+                    self.assertEqual(len(forms) + 1, len(ran))
+                    self.assertTrue(outputs)
+                    self.assertEqual([], reading.unread)
+                    if "BODY-RAN" in outputs:
+                        self.assertIn("log", read)
+                    if "PROGRAM-RAN" in outputs:
+                        self.assertIn("status", read)
 
 
 class BashDifferentialTests(unittest.TestCase):
