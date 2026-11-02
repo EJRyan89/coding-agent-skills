@@ -261,6 +261,14 @@ OUTCOMES_FILE = "outcomes-{leg}.json"
 STATUSES = (KILLED, TIMED_OUT, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED)
 
 
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "run_suite": "starts pytest as the runner does, through suite_discovery.pytest_command",
+    "coverage_reach": "starts pytest as the runner does, through suite_discovery.pytest_command",
+    "suite_tests": "starts pytest as the runner does, through suite_discovery.pytest_command",
+}
+
+
 class RecordError(RuntimeError):
     """A selection or a leg's run the join cannot read as the step that wrote it writes it, which stops the join."""
 

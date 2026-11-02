@@ -324,6 +324,10 @@ try:
 except Exception:
     pass
 '''
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "run_process": "starts the runtime command line its caller builds from a located runtime",
+}
 # Platform-specific names that tests/run_validation.py allows outside deployer/platform_support.py, with the reason.
 PLATFORM_ALLOWED = {
     "cygpath": "BASH_RECORDER runs it only where `command -v` finds it, and otherwise keeps the path it has",

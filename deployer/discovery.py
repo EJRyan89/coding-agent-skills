@@ -30,6 +30,12 @@ from bounded_process import ProcessTree, without_repository_variables
 from . import platform_support
 
 # Each runtime's listing names its field skills, a word the manifest also uses as a key; neither listing is a manifest.
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "converse": "starts the runtime command line its caller builds from the program deployer.tools located",
+}
+
+
 KINDS_ALLOWED = {
     "parse_copilot": "reads Copilot CLI's skill listing, whose field is named skills",
     "parse_codex": "reads the Codex app server's skills/list answer, whose field is named skills",

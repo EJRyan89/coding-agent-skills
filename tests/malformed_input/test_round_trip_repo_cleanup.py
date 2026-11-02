@@ -60,6 +60,7 @@ class SweepRecordRoundTripTests(cleanup_suite.CleanupTestCase):
                 "state": state,
                 "plan": None if index % 2 else f"/plans/{name}.json",
                 "lines": [f"REPO\t/repos/{name}\t{state}", *TEXT],
+                "refused": bool(index % 2),
             }
             for index, (name, state) in enumerate(zip(sized(NAMES, len(rc.SWEEP_STATES)), rc.SWEEP_STATES, strict=True))
         ]
