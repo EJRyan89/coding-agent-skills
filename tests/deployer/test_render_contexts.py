@@ -250,12 +250,12 @@ class ShellCheckBatchTests(unittest.TestCase):
 
         def shellcheck(arguments: list[str], _environment: object = None) -> platform_support.ToolResult:
             calls.append(arguments)
-            lines = [f"{path}:3:7: warning: Double quote to prevent globbing. [SC2086]" for path in arguments[2:]]
+            lines = [f"{path}:3:7: warning: Double quote to prevent globbing. [SC2086]" for path in arguments[3:]]
             found = [line for line in lines if line.split(":3:")[0] in failing]
             return platform_support.ToolResult(1 if found else 0, "".join(f"{line}\n" for line in found))
 
-        # Room for three unit paths besides the program and its option, so six units need two commands.
-        budget = len("shellcheck --format=gcc") + 3 * len(" C:/work/blocks/0.sh")
+        # Room for three unit paths besides the program and its options, so six units need two commands.
+        budget = len("shellcheck --norc --format=gcc") + 3 * len(" C:/work/blocks/0.sh")
         with (
             mock.patch.object(render, "SHELLCHECK_COMMAND_BUDGET", budget),
             mock.patch.object(platform_support, "run_tool", side_effect=shellcheck),
@@ -264,7 +264,7 @@ class ShellCheckBatchTests(unittest.TestCase):
             render._run_shellcheck(units, "shellcheck")
         self.assertEqual(2, len(calls))
         self.assertTrue(all(len(" ".join(call)) <= budget for call in calls), calls)
-        self.assertEqual([f"C:/work/blocks/{n}.sh" for n in range(6)], [path for call in calls for path in call[2:]])
+        self.assertEqual([f"C:/work/blocks/{n}.sh" for n in range(6)], [path for call in calls for path in call[3:]])
         self.assertEqual(
             (
                 "ERROR: ShellCheck failed for rendered Bash block: s/SKILL.md block 2",
