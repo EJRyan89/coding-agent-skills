@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import git_client
 import repo_cleanup as rc
 from git_client import GitClient, GitError, GitResult
-from test_repo_cleanup import GIT_CONFIG, REMOTE_URL, SweepFixture, build_template, facts, git
+from test_repo_cleanup import GIT_CONFIG, REMOTE_URL, SweepFixture, build_template, facts, git, refusing_branch_deletion
 
 # The settings conftest.py adds to the global configuration of every home this suite's git runs in.
 git_config = GIT_CONFIG
@@ -227,3 +227,56 @@ class StopAndRefusalTests(SweepFixture):
                     self.assertEqual(1, len(facts(lines, "PRESERVED")), lines)
                     self.assertTrue(facts(lines, "PRESERVED")[0][1].startswith("not "), lines)
                     self.assertIsNotNone(self.tip("scratch"))
+
+    def test_what_git_refuses_a_confirming_command_counts_as_an_error_until_a_later_one_carries_it_out(self) -> None:
+        git(self.clone, "branch", "scratch", "main")
+        git(self.clone, "switch", "--quiet", "-c", "work", "main")
+        self.commit(self.clone, "unpublished work")
+        git(self.clone, "switch", "--quiet", "main")
+        task = self.clone / ".claude" / "worktrees" / "old task"
+        task.mkdir(parents=True)
+        (task / "notes.md").write_text("notes\n", encoding="utf-8")
+        (self.clone / ".git" / "info").mkdir(exist_ok=True)
+        (self.clone / ".git" / "info" / "exclude").write_text(".claude/\n", encoding="utf-8")
+        _, swept = self.sweep(None, "my repo")
+        plan = (self.root / "plans" / "my repo.json").as_posix()
+        orphan = facts(swept, "ORPHAN")[0][0]
+        code, lines = self.invoke("delete-local", "--plan", plan, "--branch", "work")
+        self.assertEqual((0, [["work"]]), (code, [fields[:1] for fields in facts(lines, "UNMERGED")]), lines)
+
+        def refused(*arguments: str) -> tuple[int, list[str]]:
+            output = io.StringIO()
+            refusing = refusing_branch_deletion("scratch", "work")
+            failing = mock.patch.object(rc, "delete_tree", side_effect=PermissionError("in use"))
+            with failing, contextlib.redirect_stdout(output):
+                code = rc.main([*arguments, "--plan", plan], rc.Services(git=refusing, gh=self.github))
+            return code, output.getvalue().splitlines()
+
+        pending: list[str] = []
+        for command, named in (("delete-local", "scratch"), ("force-delete", "work"), ("remove-directory", orphan)):
+            with self.subTest(command=command):
+                code, lines = refused(command, "--path" if command == "remove-directory" else "--branch", named)
+                self.assertEqual(1, code, lines)
+                pending.append(named)
+                recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
+                self.assertEqual(pending, recorded["confirmation_refused"])
+                code, reported = self.report()
+                self.assertEqual(
+                    [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 1 with an error."]],
+                    facts(reported, "PROCESSED"),
+                    "what Git refused is not a completed cleanup",
+                )
+
+        for command, named in (("delete-local", "scratch"), ("force-delete", "work"), ("remove-directory", orphan)):
+            with self.subTest(retried=command):
+                flag = "--path" if command == "remove-directory" else "--branch"
+                code, lines = self.invoke(command, "--plan", plan, flag, named)
+                self.assertEqual(0, code, lines)
+                pending.remove(named)
+                recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
+                self.assertEqual(pending, recorded.get("confirmation_refused", []))
+        code, reported = self.report()
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error."]],
+            facts(reported, "PROCESSED"),
+        )

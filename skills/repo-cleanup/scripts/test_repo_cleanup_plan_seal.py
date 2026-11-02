@@ -450,7 +450,17 @@ class PlanFieldTests(CleanupTestCase):
     def test_stopped_and_the_default_branch_are_read_by_their_kinds(self) -> None:
         for marker in ("stopped", "confirmation_stopped"):
             self.assertEqual("git vanished", self.read(written_plan(**{marker: "git vanished"}))[marker])
+        refused = ["scratch", "/area/old task"]
+        self.assertEqual(refused, self.read(written_plan(confirmation_refused=refused))["confirmation_refused"])
         cases: dict[str, tuple[dict[str, Any], str]] = {
+            "a confirmation's refusals that are not a list": (
+                written_plan(confirmation_refused="scratch"),
+                "confirmation_refused must be",
+            ),
+            "a confirmation's refusal that is not a string": (
+                written_plan(confirmation_refused=[1]),
+                "confirmation_refused[0] must be",
+            ),
             "a stopped marker that is not a string": (written_plan(stopped=1), "stopped must be a non-empty string"),
             "an empty stopped marker": (written_plan(stopped=""), "stopped must be a non-empty string"),
             "a confirmation's stopped marker that is not a string": (

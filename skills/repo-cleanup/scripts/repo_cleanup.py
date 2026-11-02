@@ -107,7 +107,9 @@ PLAN_FIELDS = (
 APPLY_STOP = "stopped"
 CONFIRMATION_STOP = "confirmation_stopped"
 STOP_MARKERS = (APPLY_STOP, CONFIRMATION_STOP)
-OPTIONAL_PLAN_FIELDS = ("sync", *STOP_MARKERS)
+# The offered branches and paths a confirmation tried and did not carry out, as when Git refused, until one does.
+CONFIRMATION_REFUSED = "confirmation_refused"
+OPTIONAL_PLAN_FIELDS = ("sync", *STOP_MARKERS, CONFIRMATION_REFUSED)
 # How many fields after its kind each event a plan records carries, at least and at most.
 EVENT_FIELDS = {
     "DELETED": (1, 1),
@@ -975,6 +977,12 @@ def read_plan_fields(plan: object) -> None:
     for marker in STOP_MARKERS:
         if marker in document:
             fields.string(document[marker], marker)
+    if CONFIRMATION_REFUSED in document:
+        fields.array(
+            document[CONFIRMATION_REFUSED],
+            CONFIRMATION_REFUSED,
+            lambda value, path: read_branch_name(fields, value, path),
+        )
 
 
 def read_branch_name(fields: FieldReader, value: object, path: str) -> str:
@@ -1746,6 +1754,18 @@ def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
     return True
 
 
+def settle(plan: dict[str, Any], name: str, finished: bool) -> None:
+    """Keep under CONFIRMATION_REFUSED each offered branch or path a confirmation tried and did not carry out, as when
+    Git refused it, until a later confirmation does, so the report counts it as an error meanwhile."""
+    pending = [known for known in plan.get(CONFIRMATION_REFUSED, []) if known != name]
+    if not finished:
+        pending.append(name)
+    if pending:
+        plan[CONFIRMATION_REFUSED] = pending
+    else:
+        plan.pop(CONFIRMATION_REFUSED, None)
+
+
 def remove_directories(plan_path: str, paths: list[str], services: Services) -> bool:
     """Remove the confirmed detached worktrees and orphan directories the plan offered; False when any stayed."""
     plan = plan_in_scope(plan_path)
@@ -1762,12 +1782,16 @@ def remove_directories(plan_path: str, paths: list[str], services: Services) -> 
             if offered is None:
                 record(plan, "PRESERVED", path, "not a detached worktree or orphan directory offered by this plan")
                 succeeded = False
-            elif any(same_path(offered, gone) for gone in done):
+                continue
+            if any(same_path(offered, gone) for gone in done):
                 record(plan, "PRESERVED", path, "already removed by this plan")
+                finished = True
             elif offered in detached:
-                succeeded = remove_detached(services, plan, offered, detached[offered]) and succeeded
+                finished = remove_detached(services, plan, offered, detached[offered])
             else:
-                succeeded = delete_orphan(services, plan, offered) and succeeded
+                finished = delete_orphan(services, plan, offered)
+            settle(plan, offered, finished)
+            succeeded = finished and succeeded
         return succeeded
 
     return run_and_report(plan_path, plan, remove, CONFIRMATION_STOP)
@@ -1803,22 +1827,27 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
         located = checkouts(services, plan["repo_root"])
         succeeded = True
         for name in dict.fromkeys(names):
-            if name in deleted(plan):
-                record(plan, "PRESERVED", name, "already deleted by this plan")
-            elif name not in eligible:
+            if name not in deleted(plan) and name not in eligible:
                 record(plan, "PRESERVED", name, refusal)
                 succeeded = False
-            elif unchanged(services, plan, name, eligible[name], located, worktrees.get(name)):
-                if force:
-                    succeeded = force_delete(services, plan, name) and succeeded
-                elif name in worktrees:
-                    entry = {"path": worktrees[name], "branch": name}
-                    outcome = remove_worktree(services, plan, entry, eligible[name], states[name])
-                    if outcome.removed:
-                        prune_parents(plan, worktrees[name])
-                    succeeded = outcome.removed and not outcome.refused and succeeded
-                else:
-                    succeeded = delete_merged(services, plan, name, eligible[name], states[name]) and succeeded
+                continue
+            finished = True
+            if name in deleted(plan):
+                record(plan, "PRESERVED", name, "already deleted by this plan")
+            elif not unchanged(services, plan, name, eligible[name], located, worktrees.get(name)):
+                pass  # it moved: nothing is left to do, as its PRESERVED fact says
+            elif force:
+                finished = force_delete(services, plan, name)
+            elif name in worktrees:
+                entry = {"path": worktrees[name], "branch": name}
+                outcome = remove_worktree(services, plan, entry, eligible[name], states[name])
+                if outcome.removed:
+                    prune_parents(plan, worktrees[name])
+                finished = outcome.removed and not outcome.refused
+            else:
+                finished = delete_merged(services, plan, name, eligible[name], states[name])
+            settle(plan, name, finished)
+            succeeded = finished and succeeded
         return succeeded
 
     return run_and_report(plan_path, plan, delete, CONFIRMATION_STOP)
@@ -2218,7 +2247,8 @@ def report(directory: Path, aborted: list[str]) -> int:
 
     A plan's summary is its latest: every command saves it. A repository counts as one with an error when the sweep
     recorded it failing, whatever ran on its plan later, since a confirmation never runs what a stopped apply did not
-    reach; when Git refused a deletion or removal its apply tried; or while a run on its plan stands stopped. A hold,
+    reach; when Git refused a deletion or removal its apply tried; while a run on its plan stands stopped; or while a
+    branch or path a confirmation tried stands not carried out, until a later confirmation carries it out. A hold,
     such as a fast-forward kept from a worktree with changes, tried nothing and is not one: the summary names it
     with its reason. Quiet repositories share one line. The lines naming the lists the sweep used come first, once
     the record and the plans are read, so a report that fails prints only its FAILED line.
@@ -2238,7 +2268,7 @@ def report(directory: Path, aborted: list[str]) -> int:
         if (
             entry["state"] in FAILED_STATES
             or entry.get("refused", False)
-            or (plan is not None and stop_reason(plan) is not None)
+            or (plan is not None and (stop_reason(plan) is not None or bool(plan.get(CONFIRMATION_REFUSED))))
         ):
             failed += 1
         emit("REPO", entry["root"], "aborted" if entry in dropped else entry["state"])
