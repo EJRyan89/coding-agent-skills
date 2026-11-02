@@ -95,13 +95,14 @@ class PresenceReadTests(DeployerTestCase):
                     self.assertIn(f"{forward(path)}: Access is denied", "\n".join(failure.lines))
                 elif isinstance(failure, source_ref.TagsUnreadable):
                     self.assertEqual(f"{path}: Access is denied", str(failure))
-                else:
-                    self.assertIsInstance(failure, PermissionError)
+                elif isinstance(failure, PermissionError):
                     self.assertEqual(str(path), failure.filename)
+                else:
+                    self.fail(f"{name} raised {failure!r}, not the stat's PermissionError")
 
     def test_the_refusals_name_what_could_not_be_read(self) -> None:
         self.paths.agents_src.mkdir(parents=True, exist_ok=True)
-        cases = [
+        cases: list[tuple[Path, Callable[[], object], str]] = [
             (self.paths.agents_src, lambda: source._discover_agents(self.paths), "read the agents folder"),
             (self.source / ".git", lambda: source.is_linked_worktree(self.source), "read the source's .git file"),
         ]
