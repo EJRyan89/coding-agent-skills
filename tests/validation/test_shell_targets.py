@@ -407,43 +407,6 @@ class ShellTargetsFixtures(unittest.TestCase):
                     self.assertIn("docs/guide.md:2:1: warning:", str(raised.exception))
                     self.assertIn("[SC2164]", str(raised.exception))
 
-    def test_a_shellcheck_command_line_is_built_only_by_the_one_builder_and_run_with_its_environment(self) -> None:
-        files = {
-            "deployer/render.py": (
-                "SHELLCHECK_ENVIRONMENT = {}\n\n\n"
-                "def shellcheck_command(shellcheck, *options):\n    return [shellcheck, '--norc', *options]\n"
-            ),
-            "tools/by_hand.py": (
-                "def run(shellcheck, tools, path):\n"
-                "    a = [shellcheck, '--format=gcc', path]\n"
-                "    b = (tools['ShellCheck'], path)\n"
-                "    c = [find_shellcheck(), path]\n"
-                "    d = [find_executable('shellcheck'), path]\n"
-                "    e = ['shellcheck', path]\n"
-                "    f = ['C:\\\\tools\\\\shellcheck.exe', path]\n"
-                "    g = [self.found_shellcheck, path]\n"
-            ),
-            "tools/no_environment.py": (
-                "from deployer import render\n\n\ndef run(program):\n    run_tool(render.shellcheck_command(program))\n"
-            ),
-            "tools/conforming.py": (
-                "from deployer import render\n\n"
-                "LABELS = (('ShellCheck', 'shellcheck'),)\n\n\n"
-                "def run(program, pattern):\n"
-                "    run_tool(render.shellcheck_command(program, '-x'), render.SHELLCHECK_ENVIRONMENT)\n"
-                "    return [SHELLCHECK_DISABLE, pattern]\n"
-            ),
-            "tests/deployer/test_expected.py": "EXPECTED = [shellcheck, '--format=gcc']\n",
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            write_fixture_tree(root, files)
-            problems = shell_targets.shellcheck_command_problems(root, [root / name for name in files])
-        self.assertEqual(
-            [*(f"tools/by_hand.py:{line} builds" for line in range(2, 9)), "tools/no_environment.py:5 runs"],
-            [" ".join(problem.split(" ", 2)[:2]) for problem in problems],
-        )
-
     def test_script_analyzer_reads_no_settings_file_beside_a_target_or_in_the_working_folder(self) -> None:
         # Given no settings, PSScriptAnalyzer reads PSScriptAnalyzerSettings.psd1 beside a file and, for a fence's
         # text, in the folder it runs in; either turns the rule off when it is read.

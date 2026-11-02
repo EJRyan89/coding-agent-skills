@@ -40,9 +40,9 @@ from call_tables import (
     TextOpener,
 )
 from git_client import GLOBAL_VALUE_OPTIONS
-from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
+from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from path_containment import posix_within, within
-from toolchain import find_mypy, find_ruff
+from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
     REPOSITORY_ROOT,
@@ -68,6 +68,12 @@ from validation_support import (
 )
 
 from deployer import platform_support
+
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "_standard_class": "looks a standard-library class up by its name for the policy reading it, and starts nothing",
+}
+
 
 DUPLICATION_ALLOWED = {
     "SUITE_NAME_PATTERNS": (
@@ -2635,22 +2641,13 @@ def content_error_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-# Concise output names one file per line instead of printing each diff, and no cache is written into the tree. Given a
-# folder, ruff passes over each file a gitignore names, the home's and a .ignore above the repository included, so a
-# setting outside the repository could keep a file from being checked; ruff reads every file under its targets.
-RUFF_OPTIONS = ("--output-format", "concise", "--no-cache", "--no-respect-gitignore")
-# mypy resolves an import through MYPYPATH ahead of mypy_path, so a stub in a folder it names could stand in for a
-# module the repository checks; mypy reads only the paths pyproject.toml names.
-MYPY_ENVIRONMENT = {"MYPYPATH": ""}
-
-
 def ruff_format_check(root: Path, targets: list[str]) -> None:
     """Fail, naming each file, when ruff format would change any Python file under the targets in root."""
     ruff = find_ruff()
     if ruff is None:
         raise AssertionError(f"ruff was not found: {platform_support.install_hint('ruff')}")
     try:
-        run_process([ruff, "format", "--check", *RUFF_OPTIONS, *targets], cwd=root)
+        ruff_job(ruff, ["format", "--check"], targets, root)
     except AssertionError as exc:
         raise AssertionError(
             f"{exc}\nRun `python -m ruff format` on the files named above, using requirements-dev.txt's ruff."
@@ -2663,7 +2660,7 @@ def ruff_lint_check(root: Path, targets: list[str]) -> None:
     if ruff is None:
         raise AssertionError(f"ruff was not found: {platform_support.install_hint('ruff')}")
     try:
-        run_process([ruff, "check", *RUFF_OPTIONS, *targets], cwd=root)
+        ruff_job(ruff, ["check"], targets, root)
     except AssertionError as exc:
         raise AssertionError(
             f"{exc}\nFix the findings named above; `python -m ruff check --fix` applies the ones ruff marks safe."
@@ -2682,9 +2679,8 @@ def mypy_type_check(cwd: Path, targets: list[str], configuration: Path, *, stric
             cache = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="mypy-cache-")))
         else:
             cache = mypy_cache_directory(root, cwd, targets, strict=strict)
-        command = [mypy, "--config-file", str(configuration), "--cache-dir", str(cache)]
         try:
-            run_process([*command, *(["--strict"] if strict else []), *targets], MYPY_ENVIRONMENT, cwd=cwd)
+            mypy_job(mypy, configuration, ["--cache-dir", str(cache), *(["--strict"] if strict else []), *targets], cwd)
         except AssertionError as exc:
             raise AssertionError(
                 f"{exc}\nFix each error named above; a `# type: ignore[<code>]` that must stay states its reason in a "

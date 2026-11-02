@@ -33,6 +33,7 @@ import github_client
 import pdf_tool
 import python_checks
 import review_vocabularies
+import toolchain
 from call_tables import TEXT_OPENERS, TextOpener
 from job_selection import all_jobs
 from python_checks import (
@@ -279,7 +280,7 @@ class PythonChecksFixtures(unittest.TestCase):
         with (
             mock.patch.dict("os.environ", {"VALIDATION_MYPY_CACHE": ""}),
             mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
-            mock.patch.object(python_checks, "run_process", side_effect=record),
+            mock.patch.object(toolchain, "run_process", side_effect=record),
         ):
             for _ in range(2):
                 mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml")
@@ -298,7 +299,7 @@ class PythonChecksFixtures(unittest.TestCase):
                 mock.patch.dict("os.environ", {"VALIDATION_MYPY_CACHE": str(root)}),
                 mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
                 mock.patch.object(
-                    python_checks,
+                    toolchain,
                     "run_process",
                     side_effect=lambda arguments, environment, cwd: commands.append(arguments),
                 ),

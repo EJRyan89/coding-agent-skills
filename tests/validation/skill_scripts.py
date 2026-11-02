@@ -7,10 +7,12 @@ from __future__ import annotations
 import ast
 import contextlib
 import functools
+import itertools
 import re
 import shlex
 import unittest
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -44,6 +46,7 @@ from validation_support import (
     python_source,
     python_trees,
     qualified_name,
+    repository_files,
     scoped_nodes,
     skill_dependency_closure,
     skill_script_directories,
@@ -639,8 +642,10 @@ class CommandReader:
     command whose program it cannot read never passes unseen.
     """
 
-    def __init__(self, tree: ast.Module) -> None:
+    def __init__(self, tree: ast.Module, runners: Mapping[str, tuple[int, str]] = COMMAND_RUNNERS) -> None:
         self.tree = tree
+        self.runners = runners
+        self.runner_attributes = frozenset(runner.rpartition(".")[2] for runner in runners)
         self.resolver = CallableResolver(tree)
         self.bindings = _NameBindings(tree, self.resolver)
         self.scope_names = _scope_names(tree)
@@ -874,17 +879,17 @@ class CommandReader:
         subprocess.run, or an event loop's runner method called on any receiver."""
         original = self.resolver.original(function)
         for name in (self.resolver.name(function), _reached_name(original, self.resolver)):
-            if name in COMMAND_RUNNERS:
+            if name in self.runners:
                 return name
         method = f"{EVENT_LOOP}.{original.attr}" if isinstance(original, ast.Attribute) else ""
-        return method if method in COMMAND_RUNNERS else ""
+        return method if method in self.runners else ""
 
     def _command_arguments(self, call: ast.Call) -> list[ast.expr | Unreadable]:
         """The argument of a COMMAND_RUNNERS call that names the program it starts, its executable= when it gives one,
         since that replaces the program and leaves the command's first item only the name the program is told, and
         nothing for another call."""
         name = self._runner(call.func)
-        runner = COMMAND_RUNNERS.get(name)
+        runner = self.runners.get(name)
         if runner is None:
             return []
         executable = next((item.value for item in call.keywords if item.arg == "executable"), None)
@@ -933,18 +938,18 @@ class CommandReader:
                     isinstance(attribute, ast.Constant)
                     and isinstance(attribute.value, str)
                     and (
-                        f"{module}.{attribute.value}" in COMMAND_RUNNERS
-                        or (module == COMPUTED_NAME and attribute.value in RUNNER_ATTRIBUTES)
+                        f"{module}.{attribute.value}" in self.runners
+                        or (module == COMPUTED_NAME and attribute.value in self.runner_attributes)
                     )
                 )
                 dynamic = not isinstance(attribute, ast.Constant) and any(
-                    module == COMPUTED_NAME or runner.startswith(f"{module}.") for runner in COMMAND_RUNNERS
+                    module == COMPUTED_NAME or runner.startswith(f"{module}.") for runner in self.runners
                 )
                 if module and (named or dynamic):
                     found.append(Unreadable(node, f"the program `{ast.unparse(node)}` runs, which getattr takes"))
             elif (
                 isinstance(node, ast.Attribute)
-                and node.attr in RUNNER_ATTRIBUTES
+                and node.attr in self.runner_attributes
                 and _reached_name(node.value, self.resolver) == COMPUTED_NAME
             ):
                 found.append(
@@ -1043,7 +1048,7 @@ class CommandReader:
         function = self.parameter_functions.get(id(source.node))
         if function is None or isinstance(function, ast.Lambda) or id(function) not in self.public:
             return False
-        runner = COMMAND_RUNNERS.get(f"{module}.{function.name}")
+        runner = self.runners.get(f"{module}.{function.name}")
         positional = [*function.args.posonlyargs, *function.args.args]
         return runner is not None and positional[runner[0] : runner[0] + 1] == [source.node]
 
@@ -1957,6 +1962,170 @@ def client_command_problems(root: Path) -> list[str]:
     return problems
 
 
+# The repository's own process wrappers, each handed the whole command, by every name a module's imports give them: a
+# deployer module imports platform_support relatively, which the resolver names <local>.platform_support.
+REPOSITORY_RUNNERS: dict[str, tuple[int, str]] = {
+    **COMMAND_RUNNERS,
+    **{f"{prefix}platform_support.run_tool": (0, "arguments") for prefix in ("", "deployer.", "<local>.")},
+    "job_pool.run_process": (0, "arguments"),
+}
+# The one runner of each checker whose findings could be turned off by a setting outside the repository, by its file
+# and function: it alone starts the checker, with the options and the environment that keep those settings out. The
+# deployer's runners start it through platform_support.run_tool, and validation's as jobs, through run_process.
+CHECKER_RUNNERS = {
+    "shellcheck": frozenset(
+        {("deployer/render.py", "run_shellcheck"), ("tests/validation/toolchain.py", "shellcheck_job")}
+    ),
+    "bash -n": frozenset(
+        {("deployer/render.py", "run_bash_syntax_check"), ("tests/validation/toolchain.py", "bash_syntax_job")}
+    ),
+    "ruff": frozenset({("tests/validation/toolchain.py", "ruff_job")}),
+    "mypy": frozenset({("tests/validation/toolchain.py", "mypy_job")}),
+}
+# The settings each checker's runner starts it with, which no other function names, and where each is defined.
+CHECKER_SETTINGS = {
+    "SHELLCHECK_ENVIRONMENT": ("shellcheck", "deployer/render.py"),
+    "RUFF_OPTIONS": ("ruff", "tests/validation/toolchain.py"),
+    "MYPY_ENVIRONMENT": ("mypy", "tests/validation/toolchain.py"),
+}
+CHECKER_PROGRAMS = frozenset({"shellcheck", "ruff", "mypy"})
+SHELL_PROGRAMS = frozenset({"bash", "sh"})
+# The one place a PowerShell script may run PSScriptAnalyzer, and the settings it must pass so that no settings file
+# beside a target or in the working folder is read.
+SCRIPT_ANALYZER_RUNNER = ("tests/validation/shell_targets.py", "SCRIPT_ANALYZER_RUN")
+SCRIPT_ANALYZER_SETTINGS = "-Settings @{}"
+SCRIPT_ANALYZER_COMMAND = "Invoke-ScriptAnalyzer"
+# Where every command a module starts must name a program the reader can read, or say why in COMMANDS_ALLOWED: the
+# deployer, the tools, and validation. A skill's scripts are held to it by skill_command_problems.
+READABLE_COMMAND_ROOTS = ("deployer", "tools", "tests/validation", "deploy.py", "tests/run_validation.py")
+CHECKER_ROOTS = (*READABLE_COMMAND_ROOTS, "skills", ".claude/skills", "conftest.py")
+CHECKERS_DOC = '"Validation" in docs/adding-a-skill.md'
+# The reader's problem with a call through an alias it cannot resolve, and the alias.
+UNRESOLVED_ALIAS = re.compile(r" cannot resolve callable alias (\S+);")
+
+
+def _literal_words(node: ast.expr) -> list[str | None]:
+    """Each item of a command list or tuple as the string it holds, or None for an item that is not a literal."""
+    items = node.elts if isinstance(node, (ast.List, ast.Tuple)) else []
+    return [item.value if isinstance(item, ast.Constant) and isinstance(item.value, str) else None for item in items]
+
+
+def _shell_text(node: ast.expr) -> str | None:
+    """A shell script a command hands a shell: a literal, or an f-string read with each placeholder as one word."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(str(part.value) if isinstance(part, ast.Constant) else " placeholder " for part in node.values)
+    return None
+
+
+def started_checkers(reader: CommandReader, call: ast.Call) -> set[str]:
+    """Each checker of CHECKER_RUNNERS a runner call may start: by the program it names, as `python -m ruff` or `-m
+    mypy` names one, as `bash -n` or `sh -n`, or in a script a shell is handed with -c, an f-string's included."""
+    programs = {name for _, name in reader.started(call)}
+    found = programs & CHECKER_PROGRAMS
+    for argument in reader._command_arguments(call):
+        if isinstance(argument, Unreadable):
+            continue
+        words = _literal_words(argument)
+        if "-n" in words and (programs & SHELL_PROGRAMS or not programs):
+            found.add("bash -n")
+        found |= {module for word, module in itertools.pairwise(words) if word == "-m" and module in CHECKER_PROGRAMS}
+        if isinstance(argument, (ast.List, ast.Tuple)) and len(argument.elts) > 2 and words[1] == "-c":
+            script = _shell_text(argument.elts[2])
+            found |= shell_commands(script) & CHECKER_PROGRAMS if script is not None else set()
+    return found
+
+
+def _checker_files(root: Path, files: list[Path]) -> list[tuple[Path, str]]:
+    names = [(path, path.relative_to(root).as_posix()) for path in files if path.suffix == ".py"]
+    return sorted(
+        (path, name)
+        for path, name in names
+        if not is_test_script(path) and any(posix_within(name, top) for top in CHECKER_ROOTS)
+    )
+
+
+def checker_command_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each process start outside its checker's runner that may start ShellCheck, ruff, mypy, or a `bash -n`; each
+    function but a runner that names a runner's settings; each PSScriptAnalyzer run written outside
+    SCRIPT_ANALYZER_RUNNER, and that runner without SCRIPT_ANALYZER_SETTINGS; and, under READABLE_COMMAND_ROOTS, each
+    command whose program the reader cannot read where the module's COMMANDS_ALLOWED does not say why."""
+    problems: list[str] = []
+    for path, name in _checker_files(root, files):
+        try:
+            reader = CommandReader(parse_python(path), REPOSITORY_RUNNERS)
+        except UnreadablePython as error:
+            problems.append(f"{name} {error}")
+            continue
+        problems += _checker_start_problems(reader, name)
+        problems += _checker_setting_problems(reader, name)
+        problems += _script_analyzer_problems(reader, name)
+        if any(posix_within(name, top) for top in READABLE_COMMAND_ROOTS):
+            problems += _readable_command_problems(reader, name)
+    return problems
+
+
+def _readable_command_problems(reader: CommandReader, name: str) -> list[str]:
+    """The reader's problems with the module, leaving out an alias it cannot resolve that no runner has the name of,
+    such as importlib.import_module, which starts no command."""
+    return [
+        problem
+        for problem in reader.problems(name)
+        if not (alias := UNRESOLVED_ALIAS.search(problem))
+        or alias.group(1).rpartition(".")[2] in reader.runner_attributes
+    ]
+
+
+def _checker_start_problems(reader: CommandReader, name: str) -> list[str]:
+    problems: list[str] = []
+    for call in reader.calls:
+        scope = reader.scope_names.get(id(call), MODULE_SCOPE)
+        for checker in sorted(started_checkers(reader, call)):
+            if (name, scope) not in CHECKER_RUNNERS[checker]:
+                runners = " or ".join(f"{file}:{function}" for file, function in sorted(CHECKER_RUNNERS[checker]))
+                problems.append(
+                    f"{name}:{call.lineno} starts {checker} outside its runner; call {runners}, which keeps settings "
+                    f"outside the repository from turning its findings off; see {CHECKERS_DOC}"
+                )
+    return problems
+
+
+def _checker_setting_problems(reader: CommandReader, name: str) -> list[str]:
+    problems: list[str] = []
+    for node in ast.walk(reader.tree):
+        word = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+        if word not in CHECKER_SETTINGS:
+            continue
+        checker, home = CHECKER_SETTINGS[word]
+        scope = reader.scope_names.get(id(node), MODULE_SCOPE)
+        if (name, scope) in CHECKER_RUNNERS[checker] or (name == home and scope == word):
+            continue
+        problems.append(f"{name}:{getattr(node, 'lineno', 0)} names {word} outside the {checker} runner; call it")
+    return problems
+
+
+def _script_analyzer_problems(reader: CommandReader, name: str) -> list[str]:
+    problems: list[str] = []
+    texts: list[str] = []
+    for node in ast.walk(reader.tree):
+        text = node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else ""
+        # A string that is the command's name alone names it, as this policy does, and runs nothing.
+        if SCRIPT_ANALYZER_COMMAND not in text or text == SCRIPT_ANALYZER_COMMAND:
+            continue
+        if (name, reader.scope_names.get(id(node), MODULE_SCOPE)) == SCRIPT_ANALYZER_RUNNER:
+            texts.append(text)
+        else:
+            runner = ":".join(SCRIPT_ANALYZER_RUNNER)
+            problems.append(f"{name}:{getattr(node, 'lineno', 0)} runs PSScriptAnalyzer outside {runner}; run it there")
+    if texts and SCRIPT_ANALYZER_SETTINGS not in "".join(texts):
+        problems.append(
+            f"{name}: {SCRIPT_ANALYZER_RUNNER[1]} runs PSScriptAnalyzer without {SCRIPT_ANALYZER_SETTINGS}, so a "
+            "settings file beside a target or in the working folder is read"
+        )
+    return problems
+
+
 class SkillScriptsPolicies(unittest.TestCase):
     def test_skill_scripts_follow_the_script_results_contract(self) -> None:
         # An agent that learned one script's results can read every other's.
@@ -1971,6 +2140,9 @@ class SkillScriptsPolicies(unittest.TestCase):
         self.assertEqual(
             [], skill_command_problems(REPOSITORY_ROOT, set(tools.SKILL_TOOLS), set(tools.STANDARD_COMMANDS))
         )
+
+    def test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read(self) -> None:
+        self.assertEqual([], checker_command_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_skills_declare_a_tool_optional_for_every_skill_as_optional(self) -> None:
         from deployer import tools

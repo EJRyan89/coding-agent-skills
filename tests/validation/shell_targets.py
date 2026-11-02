@@ -13,7 +13,15 @@ from pathlib import Path
 
 import frontmatter
 from job_pool import refuse_termination, run_process
-from toolchain import VALIDATION_FLOORS, find_git_bash, find_psscriptanalyzer, find_shellcheck, powershell_json
+from toolchain import (
+    VALIDATION_FLOORS,
+    bash_syntax_job,
+    find_git_bash,
+    find_psscriptanalyzer,
+    find_shellcheck,
+    powershell_json,
+    shellcheck_job,
+)
 from validation_support import (
     REPOSITORY_ROOT,
     TEMPLATE_TOKEN,
@@ -47,6 +55,12 @@ INTERPRETER_DOC = '"Template values" in docs/adding-a-skill.md'
 LONE_OPTIONAL_TOKEN = re.compile(
     r"(?<![^ \t\n;|&()])([\"'])\{\{(" + "|".join(config.OPTIONAL_VARIABLES) + r")\}\}\1(?![^ \t\n;|&()])"
 )
+
+
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "run_bash_suite": "starts the Git Bash toolchain.find_git_bash located",
+}
 
 
 def _shell_units(path: Path) -> list[tuple[str, int, str]]:
@@ -332,11 +346,8 @@ def static_shell_check() -> None:
     # ended check passed. Started directly, each one's own status reaches the runner, which names a termination.
     bash = find_git_bash()
     for path in scripts:
-        run_process([bash, "-n", relative(path)])
-    run_process(
-        render.shellcheck_command(shellcheck, "--severity=warning", *(relative(path) for path in scripts)),
-        render.SHELLCHECK_ENVIRONMENT,
-    )
+        bash_syntax_job(bash, relative(path))
+    shellcheck_job(shellcheck, "--severity=warning", *(relative(path) for path in scripts))
 
 
 # PSScriptAnalyzer reads every .ps1 under these roots, and every PowerShell fence in Markdown outside tests/.
@@ -472,8 +483,9 @@ def markdown_shell_check(root: Path, files: list[Path]) -> None:
             path = Path(directory) / f"{index}.sh"
             path.write_text(f"{render.SHELLCHECK_HEADER}{target.text}\n", encoding="utf-8", newline="\n")
             fragments[platform_support.normalize(path)] = target
-        check = render.shellcheck_command(shellcheck, "--format=gcc", "--severity=warning", *fragments)
-        result = platform_support.run_tool(check, render.SHELLCHECK_ENVIRONMENT)
+        options = ("--format=gcc", "--severity=warning", *fragments)
+        check = render.shellcheck_command(shellcheck, *options)
+        result = render.run_shellcheck(shellcheck, *options)
     refuse_termination(check, result.returncode, result.output)
     if result.returncode == 0:
         return
@@ -532,76 +544,6 @@ def shell_suppression_problems(root: Path, files: list[Path]) -> list[str]:
     return [f"{problem}; fix the cause instead" for problem in found]
 
 
-# The one function that builds a ShellCheck command line, and the environment every ShellCheck run starts with.
-SHELLCHECK_COMMAND_BUILDER = ("deployer/render.py", "shellcheck_command")
-SHELLCHECK_PROGRAM_NAMES = frozenset({"shellcheck", "shellcheck.exe"})
-
-
-def _names_shellcheck(node: ast.expr) -> bool:
-    """Whether an expression names the ShellCheck program: a variable or attribute whose name ends with it, such as
-    shellcheck or self.shellcheck, a lookup by its name, a call that finds it, or its name or path written out."""
-    if isinstance(node, ast.Name | ast.Attribute):
-        return (node.id if isinstance(node, ast.Name) else node.attr).casefold().endswith("shellcheck")
-    if isinstance(node, ast.Subscript):
-        key = node.slice
-        return isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value.casefold() == "shellcheck"
-    if isinstance(node, ast.Call):
-        name = _called(node)
-        first = node.args[0] if node.args else None
-        return "shellcheck" in name.casefold() or (
-            isinstance(first, ast.Constant) and isinstance(first.value, str) and first.value.casefold() == "shellcheck"
-        )
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value.replace("\\", "/").rsplit("/", 1)[-1] in SHELLCHECK_PROGRAM_NAMES
-    return False
-
-
-def shellcheck_command_problems(root: Path, files: list[Path]) -> list[str]:
-    """Each list or tuple outside a regression suite whose first item names ShellCheck, built anywhere but
-    render.shellcheck_command, which adds --norc so that no rc file outside the repository is read; and each function
-    that calls shellcheck_command and never names render.SHELLCHECK_ENVIRONMENT, which empties SHELLCHECK_OPTS.
-
-    A regression suite's lists are the command lines it expects, so suites are not read. A program a variable holds
-    under a name that does not say ShellCheck is not seen.
-    """
-    problems: list[str] = []
-    sources = [path for path in files if path.suffix == ".py" and not is_test_script(path)]
-    for _, name, tree in python_trees(sorted(sources), root, problems):
-        builders = {
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and (name, node.name) == SHELLCHECK_COMMAND_BUILDER
-        }
-        excused = {id(inner) for builder in builders for inner in ast.walk(builder)}
-        problems += [
-            f"{name}:{node.lineno} builds a ShellCheck command line by hand; build it with render.shellcheck_command, "
-            "which reads no rc file"
-            for node in ast.walk(tree)
-            if isinstance(node, ast.List | ast.Tuple)
-            and node.elts
-            and _names_shellcheck(node.elts[0])
-            and id(node) not in excused
-        ]
-        for function in ast.walk(tree):
-            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef) or function in builders:
-                continue
-            nodes = list(ast.walk(function))
-            calls = [
-                node for node in nodes if isinstance(node, ast.Call) and _called(node) == SHELLCHECK_COMMAND_BUILDER[1]
-            ]
-            named = any(
-                isinstance(node, ast.Name | ast.Attribute)
-                and (node.id if isinstance(node, ast.Name) else node.attr) == "SHELLCHECK_ENVIRONMENT"
-                for node in nodes
-            )
-            if calls and not named:
-                problems.append(
-                    f"{name}:{calls[0].lineno} runs ShellCheck without render.SHELLCHECK_ENVIRONMENT, so "
-                    "SHELLCHECK_OPTS could turn its findings off"
-                )
-    return problems
-
-
 class ShellTargetsPolicies(unittest.TestCase):
     def test_every_markdown_fence_is_closed(self) -> None:
         self.assertEqual([], unclosed_fence_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
@@ -619,6 +561,3 @@ class ShellTargetsPolicies(unittest.TestCase):
 
     def test_repository_suppresses_no_shellcheck_or_psscriptanalyzer_rule(self) -> None:
         self.assertEqual([], shell_suppression_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
-
-    def test_every_shellcheck_command_reads_no_setting_from_outside_the_repository(self) -> None:
-        self.assertEqual([], shellcheck_command_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
