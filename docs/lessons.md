@@ -61,7 +61,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
   `tests/tools/test_hub_guard.py::PlaceLookupTests`,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::FilePresenceTests::test_a_stat_that_fails_with_anything_but_not_found_reaches_the_caller`,
-  `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`
+  `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`,
+  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
@@ -74,8 +75,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
   callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
   another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
-  other than absence, such as a start inside a git directory, which has no work tree to show.
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2205
+  other than absence, such as a start inside a git directory, which has no work tree to show; `.wait()` or a
+  `returncode` of a command that reports a per-file error on stderr and goes on, such as `git grep`, read as the whole
+  answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match".
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2205, #2236
 
 ### Evidence that was never produced is never a pass
 
@@ -454,20 +457,27 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a child that must not see it. A checker also finds settings on its own, in an options variable, a file above what
   it checks, or the user's configuration folder, and one of them can turn its findings off.
 - **Use:** `bounded_process:run_bounded`, `bounded_process:without_repository_variables`,
-  `tools.mutation_gate:suite_environment`, and a checker's one runner: `deployer.render:run_shellcheck`,
+  `tools.mutation_gate:suite_environment`, a checker's one runner: `deployer.render:run_shellcheck`,
   `deployer.render:run_bash_syntax_check`, `tests.validation.toolchain:shellcheck_job`,
   `tests.validation.toolchain:bash_syntax_job`, `tests.validation.toolchain:ruff_job`, and
-  `tests.validation.toolchain:mypy_job`
+  `tests.validation.toolchain:mypy_job`, and for a git that reads content it did not write,
+  `bounded_process:isolated_git_environment` with `git_client:NO_REPOSITORY`, which a client its caller makes
+  isolated starts every command with, taking no runner that could leave the environment out, so no repository around
+  the content and no configuration shapes what git prints; a client that is not isolated refuses a search or
+  comparison any of whose arguments spells the no-index option or an abbreviation of it
+  (`git_client:reads_no_repository`), reading no option grammar, and takes a search's pattern apart from its arguments
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
-  `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`;
-  it reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
-  from pieces is outside what it reads
+  `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`,
+  which reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
+  from pieces is outside what it reads; `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests`,
+  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SnapshotIsolationTests`
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
   sandboxed child started with no `env=`; a checker started anywhere but its runner, or run with no option that stops
   it reading settings outside the repository: ShellCheck without `--norc` and an empty `SHELLCHECK_OPTS`,
   `Invoke-ScriptAnalyzer` without `-Settings`, ruff given a folder without `--no-respect-gitignore`, and mypy with
-  `MYPYPATH` left set.
-- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208
+  `MYPYPATH` left set; a git command run with its working directory, or `-C`, inside content a pull request or a
+  reviewer wrote, such as a review snapshot, through a client that is not isolated.
+- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241
 
 ### An action on something not proven ours stops
 

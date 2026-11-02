@@ -22,6 +22,19 @@ client given a `runner` alone refuses a call with input rather than run real git
 `stream` runs a git command that answers requests while it runs, such as `cat-file --batch`, with the same
 environment; there the time limit bounds each wait for output rather than the whole command.
 
+An `isolated` client is for git run against content it did not write, such as `grep --no-index` over a review's
+snapshot. Each of its commands names the null device as its repository (`NO_REPOSITORY`), so git discovers none, in
+the folder or above it, and reads no repository's configuration, and runs with
+`bounded_process.isolated_git_environment`, so no system, global, or command-scope setting from the environment shapes
+what it prints. Only its arguments and the files it reads decide its output. Its caller asks for it; a client that
+is not isolated refuses a `grep` or `diff` any of whose arguments spells `--no-index` or an abbreviation git accepts
+for it (`reads_no_repository`), wherever it stands, since that form reads files rather than a repository, so a caller
+that forgets to ask fails instead of running git unisolated. The refusal reads no option grammar: a search pattern is
+never among the arguments but the client's own `pattern`, which it gives git as `-e <pattern>` right after the
+subcommand, so a pattern that reads `--no-index` is searched for, and a caller that needs one inside its own arguments
+uses an isolated client. An isolated client refuses a test's runner, which could not start git with the isolated
+environment.
+
 Both hold git in a process tree (`job_tree`), because git starts programs of its own: Git for Windows' launcher starts
 the real git, a fetch starts its transport and pack programs, and a command may run a credential helper, a hook, or an
 alias. So a call that times out, and a stream once closed, leave none of them running, and a tree that cannot be
@@ -38,16 +51,17 @@ command runs once, and `push` is never repeated. Tests inject the sleeper and th
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Literal, Protocol, TypeVar
 
-from bounded_process import Streaming, run_bounded, streaming
+from bounded_process import Streaming, isolated_git_environment, run_bounded, streaming
 from executable_locator import Found, located_command
 from flat_text import flat_text
 from job_tree import TreeNotEnded, process_tree
@@ -60,6 +74,16 @@ GitErrorKind = Literal["git", "prerequisite", "execution", "timeout", "not_repos
 DEFAULT_TIMEOUT_SECONDS = 300.0
 NOT_REPOSITORY_MARKERS = ("not a git repository",)
 MISSING_GIT = "Git executable 'git' was not found; install Git first"
+# The repository an isolated client's commands name: the null device is never a git directory, so git takes the
+# command as run outside any repository and neither discovers one nor reads a repository's configuration.
+NO_REPOSITORY = f"--git-dir={os.devnull}"
+# The subcommands that, given `--no-index`, read the files they are pointed at rather than a repository, which only an
+# isolated client runs. `check-ignore --no-index` still reads its repository's ignore rules, so it is not one.
+ISOLATED_SUBCOMMANDS = frozenset({"grep", "diff"})
+# Every spelling git may take for --no-index: the option and each abbreviation of it from `--no-i` upward. git refuses
+# the shorter ones it finds ambiguous, such as `--no-i` beside grep's `--no-ignore-case`, so refusing them too costs
+# nothing, and git takes no abbreviation shorter than `--no-`. A plain client refuses each wherever it stands.
+NO_INDEX_SPELLINGS = frozenset("--no-index"[:length] for length in range(len("--no-i"), len("--no-index") + 1))
 # A full object name, SHA-1 or SHA-256, as `rev-parse --verify` prints it.
 OBJECT_NAME = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -161,6 +185,8 @@ class InputRunner(Protocol):
 COMMANDS_ALLOWED = {
     "subprocess_runner": "GitClient's default runner, which runs the git commands GitClient builds; the policy "
     "reads every GitClient as running git",
+    "isolated_runner": "the isolated GitClient's real runner, which passes the git commands GitClient builds to "
+    "subprocess_runner with the isolated environment; the policy reads every GitClient as running git",
 }
 
 
@@ -168,19 +194,24 @@ COMMANDS_ALLOWED = {
 FOUND: Found = {}
 
 
-def subprocess_runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
+def subprocess_runner(
+    command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None, env: Mapping[str, str] | None = None
+) -> GitResult:
     """Run a command through the bounded, non-interactive layer, its program at the path the locator finds,
     classifying why it could not run or finish.
 
-    With `input_bytes`, the command's stdin is exactly those bytes and then closed. Every program the command
-    started is ended with it, once it has finished or been killed.
+    With `input_bytes`, the command's stdin is exactly those bytes and then closed. With `env`, that is its whole
+    environment, as `bounded_process.run_bounded` takes it. Every program the command started is ended with it, once
+    it has finished or been killed.
     """
     tree = process_tree(hidden_window=True)
     try:
         if input_bytes is None:
-            finished = run_bounded(located_command(command, kept=FOUND), timeout, tree=tree)
+            finished = run_bounded(located_command(command, kept=FOUND), timeout, env=env, tree=tree)
         else:
-            finished = run_bounded(located_command(command, kept=FOUND), timeout, input_bytes=input_bytes, tree=tree)
+            finished = run_bounded(
+                located_command(command, kept=FOUND), timeout, input_bytes=input_bytes, env=env, tree=tree
+            )
     except FileNotFoundError as exc:
         raise GitError(MISSING_GIT, kind="prerequisite") from exc
     except subprocess.TimeoutExpired as exc:
@@ -194,6 +225,11 @@ def subprocess_runner(command: Sequence[str], timeout: float, *, input_bytes: by
         finished.stdout.decode("utf-8", "surrogateescape"),
         finished.stderr.decode("utf-8", "replace"),
     )
+
+
+def isolated_runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
+    """`subprocess_runner` with `bounded_process.isolated_git_environment`, the real runner of an isolated client."""
+    return subprocess_runner(command, timeout, input_bytes=input_bytes, env=isolated_git_environment())
 
 
 def _not_ended(command: Sequence[str], error: TreeNotEnded) -> str:
@@ -263,8 +299,25 @@ def _gave_up(result: GitResult, retries: int, why: str = "") -> GitResult:
     return GitResult(result.returncode, result.stdout, f"{stderr}({note})\n")
 
 
-def _command(arguments: Sequence[str], directory: str | Path | None) -> list[str]:
-    return ["git", *(["-C", str(directory)] if directory is not None else []), *arguments]
+def reads_no_repository(arguments: Sequence[str]) -> bool:
+    """Whether `arguments` run a subcommand in `ISOLATED_SUBCOMMANDS` with any later argument in `NO_INDEX_SPELLINGS`,
+    wherever it stands: before or after a pattern, a revision, or `--`. No option grammar is read, so no spelling git
+    takes for the option is passed over."""
+    index = subcommand_index(arguments)
+    return (
+        index is not None
+        and arguments[index] in ISOLATED_SUBCOMMANDS
+        and any(argument in NO_INDEX_SPELLINGS for argument in arguments[index + 1 :])
+    )
+
+
+def _command(arguments: Sequence[str], directory: str | Path | None, *, isolated: bool) -> list[str]:
+    return [
+        "git",
+        *([NO_REPOSITORY] if isolated else []),
+        *(["-C", str(directory)] if directory is not None else []),
+        *arguments,
+    ]
 
 
 class GitStream:
@@ -312,6 +365,12 @@ class GitClient:
     `input_runner` runs the calls given `input_bytes`. It defaults to the real runner only while `runner` is the real
     runner too, so a client built on a test's runner never reaches real git through a call with input. `sleeper`
     makes the waits between retries, and `clock` measures what is left of a call's time limit.
+
+    With `isolated`, every command names `NO_REPOSITORY`, and the real runners and `stream` start it with
+    `bounded_process.isolated_git_environment`, as the module's docstring describes; such a client takes only the real
+    runners, and refuses another with a TypeError. Without it, a command `reads_no_repository` names is refused with a
+    ValueError before git starts. `run`, `output`, and `stream` take a search's `pattern` apart from its arguments and
+    give it to git as `-e <pattern>` right after the subcommand, where the refusal never reads it.
     """
 
     def __init__(
@@ -322,11 +381,17 @@ class GitClient:
         input_runner: InputRunner | None = None,
         sleeper: Callable[[float], None] | None = None,
         clock: Callable[[], float] | None = None,
+        isolated: bool = False,
     ) -> None:
-        self.runner = runner
+        if isolated and (runner is not subprocess_runner or input_runner not in {None, subprocess_runner}):
+            raise TypeError(
+                "an isolated GitClient starts git itself, with the isolated environment, so it takes no runner"
+            )
+        self.isolated = isolated
+        self.runner: Runner = isolated_runner if isolated else runner
         if input_runner is None:
             input_runner = subprocess_runner if runner is subprocess_runner else _refuse_input
-        self.input_runner = input_runner
+        self.input_runner: InputRunner = isolated_runner if isolated else input_runner
         self.timeout = timeout
         # Looked up per client, so a test that patches time.sleep reaches a client built deep inside a call.
         self.sleeper = sleeper or time.sleep
@@ -339,6 +404,7 @@ class GitClient:
         directory: str | Path | None = None,
         timeout: float | None = None,
         input_bytes: bytes | None = None,
+        pattern: str | None = None,
     ) -> GitResult:
         """Run `git <arguments>`, in `directory` when given (as `git -C`), and return its result whatever its exit.
 
@@ -347,7 +413,7 @@ class GitClient:
         when None). A subcommand in `RETRIED_SUBCOMMANDS` that fails transiently runs again within that limit: the
         result is the last attempt's, and one that outlasts the retries names them on its stderr.
         """
-        command = _command(arguments, directory)
+        command = self._command(arguments, directory, pattern)
         limit = self.timeout if timeout is None else timeout
 
         def attempt(seconds: float) -> GitResult:
@@ -358,6 +424,22 @@ class GitClient:
         if subcommand(arguments) not in RETRIED_SUBCOMMANDS:
             return attempt(limit)
         return self._retried(attempt, limit)
+
+    def _command(self, arguments: Sequence[str], directory: str | Path | None, pattern: str | None) -> list[str]:
+        """The command line of `git <arguments>` in `directory` on this client, with `-e <pattern>` right after the
+        subcommand when given, or a ValueError for a command only an isolated client runs or a pattern with no
+        subcommand to follow."""
+        if not self.isolated and reads_no_repository(arguments):
+            raise ValueError(
+                "git grep or diff --no-index reads files no repository holds; run it on GitClient(isolated=True)"
+            )
+        given = list(arguments)
+        if pattern is not None:
+            index = subcommand_index(given)
+            if index is None:
+                raise ValueError("a pattern needs a subcommand to follow")
+            given[index + 1 : index + 1] = ["-e", pattern]
+        return _command(given, directory, isolated=self.isolated)
 
     def _retried(self, attempt: Callable[[float], GitResult], limit: float) -> GitResult:
         """Run `attempt` with the whole limit, then retry a transient failure with what is left of it.
@@ -391,9 +473,10 @@ class GitClient:
         directory: str | Path | None = None,
         timeout: float | None = None,
         input_bytes: bytes | None = None,
+        pattern: str | None = None,
     ) -> str:
         """Run `git <arguments>` as `run` does and return its stdout; a nonzero exit raises a classified GitError."""
-        result = self.run(arguments, directory=directory, timeout=timeout, input_bytes=input_bytes)
+        result = self.run(arguments, directory=directory, timeout=timeout, input_bytes=input_bytes, pattern=pattern)
         if result.returncode != 0:
             message = (
                 result.stderr.strip() or f"git {' '.join(arguments[:1])} failed with exit code {result.returncode}"
@@ -499,16 +582,22 @@ class GitClient:
 
     @contextmanager
     def stream(
-        self, arguments: Sequence[str], *, directory: str | Path | None = None, idle_timeout: float | None = None
+        self,
+        arguments: Sequence[str],
+        *,
+        directory: str | Path | None = None,
+        idle_timeout: float | None = None,
+        pattern: str | None = None,
     ) -> Iterator[GitStream]:
-        """Start `git <arguments>` with a pipe for requests, and stop it on leaving the block.
+        """Start `git <arguments>` with a pipe for requests, and stop it on leaving the block; `pattern` as `run`
+        takes it.
 
         Each read fails as a `timeout` when no output arrives for `idle_timeout` seconds (the client's default when
         None), so a long answer that keeps arriving never times out. Leaving the block closes git's output, so git
         exits by itself; see `bounded_process.Streaming`. Every program git started is then ended with it, and a
         program that could not be ended fails the block as an `execution` GitError.
         """
-        command = _command(arguments, directory)
+        command = self._command(arguments, directory, pattern)
         try:
             with ExitStack() as stack:
                 try:
@@ -516,6 +605,7 @@ class GitClient:
                         streaming(
                             located_command(command, kept=FOUND),
                             idle_timeout=self.timeout if idle_timeout is None else idle_timeout,
+                            env=isolated_git_environment() if self.isolated else None,
                             tree=process_tree(hidden_window=True),
                         )
                     )
