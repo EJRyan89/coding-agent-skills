@@ -801,7 +801,10 @@ class RecordTests(unittest.TestCase):
                 "body_given": given,
             }
 
-        closing = {"total": 4, "issues": [issue(1, 30_000, 24_000), issue(2, 0, 0, same=False), issue(3, 9, 9)]}
+        closing: dict[str, Any] = {
+            "total": 4,
+            "issues": [issue(1, 30_000, 24_000), issue(2, 0, 0, same=False), issue(3, 9, 9)],
+        }
         request = {**valid_request(), "closing_issues": closing}
         record = build_record(request, valid_adapter_result(), version=1, policy={})
         validate_record(record)
