@@ -17,6 +17,11 @@ from .errors import DeployError
 COMMIT_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
+def is_checkout(source_dir: Path) -> bool:
+    """Whether source_dir is a Git checkout, whose commit a deployment from it records, so that deployment needs Git."""
+    return (source_dir / ".git").exists()
+
+
 def _client(git: str) -> GitClient:
     """GitClient over the deployer's run_tool, with stdout and stderr kept apart, so a warning git prints beside an
     answer is never part of it, and the client tells git's answer that a commit is not there from a failure."""
@@ -32,7 +37,7 @@ def _description(source_dir: Path, commit: str) -> str | None:
     """What git describe names the commit in source_dir, or None when there is no checkout or Git to ask, or git answers
     that the checkout holds no such commit. Any other failure, and an answer that is not one name, is refused with
     git's reason."""
-    if not (source_dir / ".git").exists():
+    if not is_checkout(source_dir):
         return None
     git = platform_support.find_executable("git")
     if git is None:
@@ -66,7 +71,7 @@ def head_commit(source_dir: Path) -> str | None:
     records the commit it deployed, and one that recorded none would drop the commit an earlier deployment recorded,
     while keeping that one would name a commit this deployment may not have deployed.
     """
-    if not (source_dir / ".git").exists():
+    if not is_checkout(source_dir):
         return None
     cannot = f"ERROR: Cannot read the commit checked out in {platform_support.normalize(source_dir)}"
     git = platform_support.find_executable("git")
