@@ -18,10 +18,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness import DeployerTestCase, backup_entry, forward, install_entry, journal_line
 
-from deployer import hashing, journal, platform_support, source, source_commit, source_ref
+from deployer import hashing, journal, pipeline, platform_support, source, source_commit, source_ref
 from deployer.errors import DeployError
 from deployer.kinds import AGENT_KIND, SKILL
-from deployer.names import BACKUP_SUFFIX
+from deployer.names import BACKUP_SUFFIX, transient_name
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -413,3 +413,37 @@ class RecoveryEdgeTests(DeployerTestCase):
         preserve = cast(Any, {"op": "preserve", "item": "alpha"})
         self.assertTrue(journal._undo_preserve(self.paths, self.RUN, preserve))
         self.assertFalse((self.skills_dir / f"alpha{BACKUP_SUFFIX}").exists())
+
+
+class TransientPresenceTests(DeployerTestCase):
+    """The transient backup beside an item, with its stat failing: before the plan, the deployment is refused; after
+    the commit, the copy is kept with a warning, never deleted or left unreported."""
+
+    def updated(self) -> Path:
+        """Deploy alpha, then change it in the source, so the next deployment replaces it and backs it up."""
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.make_skill("alpha", "Alpha, changed")
+        return self.skills_dir / transient_name("alpha")
+
+    def test_a_stale_backup_it_cannot_stat_refuses_the_plan(self) -> None:
+        transient = self.updated()
+        with stat_failing_at(transient):
+            self.deploy_fails("--all", pattern="Access is denied")
+
+    def test_a_backup_it_cannot_stat_after_the_commit_is_kept_with_a_warning(self) -> None:
+        transient = self.updated()
+        real = pipeline._finalize
+
+        def finalize(*arguments: Any) -> list[tuple[str, str]]:
+            with stat_failing_at(transient):
+                return real(*arguments)
+
+        with mock.patch.object(pipeline, "_finalize", side_effect=finalize):
+            result = self.deploy_ok("--all")
+        self.assertIn("WARNING: Could not tell whether alpha's previous copy changed", result.output)
+        kept = list((self.skills_dir / ".backups").glob("*/alpha"))
+        self.assertEqual(1, len(kept), result.output)
+        self.assertNotIn("changed", (kept[0] / "SKILL.md").read_text(encoding="utf-8"))

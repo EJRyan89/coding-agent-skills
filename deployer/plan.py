@@ -6,7 +6,6 @@ The dry run prints the plan and the deployment carries it out, so the two cannot
 from __future__ import annotations
 
 import difflib
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -460,7 +459,8 @@ def _retained(context: Context, kind: ItemKind, survivors: list[str], staged: li
 
 def _ensure_transient_available(item: str, base: Path) -> None:
     transient = base / transient_name(item)
-    if os.path.lexists(transient):
+    # A stale backup whose stat fails raises here, refusing the plan, since the run's move could replace it.
+    if file_presence.is_occupied(transient):
         raise DeployError(
             f"ERROR: Refusing to deploy '{item}': transient backup "
             f"already exists at {platform_support.normalize(transient)}",
