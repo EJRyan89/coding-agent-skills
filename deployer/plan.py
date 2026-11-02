@@ -520,7 +520,7 @@ def check_ownership(context: Context, wanted: Mapping[ItemKind, list[str]]) -> N
         for name in [*names, *owned.of(kind)]
     ]
     for destination in candidates:
-        link = hashing.find_link(destination) if os.path.lexists(destination) else None
+        link = hashing.find_link(destination)
         if link is not None:
             raise DeployError(
                 f"ERROR: Destination '{destination.name}' contains a "

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, TypeGuard, assert_never
 
+import file_presence
 import json_writer
 from path_containment import posix_within
 
@@ -303,8 +304,9 @@ UNSAFE_HASH = "unsafe"
 
 
 def _hash_existing(path: Path) -> str | None:
-    """Hash a recovery target; content containing a link never matches any journaled hash."""
-    if not os.path.lexists(path):
+    """Hash a recovery target; content containing a link never matches any journaled hash. A target whose metadata
+    cannot be read raises its OSError, which fails the run, rather than reading as absent."""
+    if not file_presence.is_occupied(path):
         return None
     try:
         return hashing.hash_path(path)
@@ -642,9 +644,9 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
 
     Changes nothing, for --dry-run. A run without journal entries is not listed, since recovery only deletes it.
     """
-    if not paths.staging_root.is_dir():
-        return []
     try:
+        if not file_presence.is_directory(paths.staging_root):
+            return []
         run_dirs = sorted(path for path in paths.staging_root.iterdir() if path.is_dir())
     except OSError as error:
         raise DeployError(
@@ -658,7 +660,12 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
             pending.append((run_dir.name, False))
             continue
         journal_file = run_dir / "journal.jsonl"
-        if not os.path.lexists(journal_file):
+        try:
+            journaled = file_presence.is_occupied(journal_file)
+        except OSError:
+            pending.append((run_dir.name, False))
+            continue
+        if not journaled:
             continue
         if not journal_file.is_file():
             pending.append((run_dir.name, False))
@@ -685,7 +692,7 @@ def journaled_runs(paths: Paths) -> list[tuple[str, bool]] | None:
     if committed is None:
         return None
     try:
-        if not paths.staging_root.is_dir():
+        if not file_presence.is_directory(paths.staging_root):
             return []
         run_dirs = sorted(path for path in paths.staging_root.iterdir() if os.path.lexists(path / "journal.jsonl"))
     except OSError:
