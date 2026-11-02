@@ -27,6 +27,7 @@ import dotnet_solution
 import msbuild_reader
 from dependency_graph import main
 from dotnet_solution import same_path
+from flat_text import flat_text
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, Completed, SdkPath, Services
 
 SCRIPT = Path(__file__).resolve().parent / "dependency_graph.py"
@@ -581,7 +582,7 @@ class GraphTests(Fixture):
                 self.assertEqual(1, code)
                 self.assertEqual(1, len(rows[-1]), rows[-1])
                 self.assertTrue(rows[-1][0].startswith("FAILED "), rows)
-                self.assertIn(dependency_graph.flat_text(project), rows[-1][0])
+                self.assertIn(flat_text(project), rows[-1][0])
                 self.assertFalse(any(row[0].startswith("STOP") for row in rows), rows)
 
     def test_unreadable_files_cost_their_own_facts_and_exit_1(self) -> None:
