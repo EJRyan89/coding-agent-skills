@@ -8,6 +8,8 @@ terminal, and each line separator `str.splitlines()` breaks on, so the text stay
 
 `flat_text` also makes each run of whitespace one space and trims both ends, for free text. `single_line` keeps the
 text's spaces as they are and trims only its end, for a line whose layout is its own, such as an aligned summary row.
+`fact_line` builds a tab-separated fact line whose every field goes through `flat_text`, so no field adds a line or a
+field of its own.
 """
 
 from __future__ import annotations
@@ -21,6 +23,12 @@ def flat_text(text: str) -> str:
     """`text` with each control character and line separator made a space, then each run of whitespace made one
     space, and none at either end."""
     return " ".join(LINE_UNSAFE.sub(" ", text).split())
+
+
+def fact_line(key: str, *fields: object) -> str:
+    """`key`, then each field as `flat_text` gives its text, joined by tabs: one fact on one line, whose fields a
+    reader splits on tabs."""
+    return "\t".join([key, *(flat_text(str(field)) for field in fields)])
 
 
 def single_line(text: str) -> str:

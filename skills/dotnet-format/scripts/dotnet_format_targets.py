@@ -30,7 +30,9 @@ in the older format, on which the SDK's command can fail. The global tool is not
 which SKIPPED_ASPNET names: the SDK's command formats them, so the skip holds only for the global tool. A FILE that
 SKIPPED_ASPNET or OUTSIDE_SOLUTION names still goes into FILE_LIST, for the layout checker. FILE_LIST ends each name
 with a NUL, the one character no path holds, so every name git lists reads back as written, a leading space or a line
-separator inside it included.
+separator inside it included. A printed line holds each value as ejryan89-skill-core's `fact_line` flattens it, so a
+tab, a control character, or a line break in a name or a reason prints as a space and one fact stays one line; the
+exact names are FILE_LIST's.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
@@ -70,7 +72,7 @@ from dotnet_solution import (
     solution_projects,
 )
 from executable_locator import find_executable
-from flat_text import flat_text
+from flat_text import fact_line, flat_text
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
 from folders_up import folders_up
 from git_client import GitClient, GitError, GitResult
@@ -207,7 +209,7 @@ def inside_root(root: Path, names: list[str], emit: Callable[[str], None]) -> li
     for name in names:
         refused = listed_refusal(root, name)
         if refused:
-            emit(f"REFUSED\t{name}\t{refused}")
+            emit(fact_line("REFUSED", name, refused))
         else:
             kept.append(name)
     return kept
@@ -301,7 +303,7 @@ def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str
     (origin/HEAD, which clone sets), origin/main, and origin/master, after fetching origin."""
     failure = fetch_failure(services, root)
     if failure:
-        emit(f"FETCH_FAILED\t{failure}")
+        emit(fact_line("FETCH_FAILED", failure))
     candidates: list[str] = []
     if services.which("gh"):
         name = pull_request_base(services, root)
@@ -458,27 +460,27 @@ def choose_solution(root: Path, cwd: Path, owners: list[list[Path]]) -> tuple[Pa
 
 def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
     root = repository_root(services, cwd)
-    emit(f"REPO_ROOT\t{root}")
+    emit(fact_line("REPO_ROOT", root))
     base = base_ref(services, root, emit)
-    emit(f"BASE\t{base}")
+    emit(fact_line("BASE", base))
     kept = changed_files(services, root, base)
     if not kept:
         raise Stop(f"no C# files changed vs {base}")
     owners = [owning_projects(root, root / name) for name in kept]
     for name in kept:
-        emit(f"FILE\t{name}")
+        emit(fact_line("FILE", name))
     solution, score = choose_solution(root, cwd.resolve(), owners)
     formatter = formatter_for(root, solution)
     skipped = formatter_skips(root, formatter, kept)
     for name, owned in zip(kept, owners, strict=True):
         if not owns(solution, owned):
-            emit(f"OUTSIDE_SOLUTION\t{name}")
+            emit(fact_line("OUTSIDE_SOLUTION", name))
         elif name in skipped:
-            emit(f"SKIPPED_ASPNET\t{name}\t{relative(skipped[name], root)}")
+            emit(fact_line("SKIPPED_ASPNET", name, relative(skipped[name], root)))
     if formatter == SDK_FORMATTER and not services.which("dotnet"):
         raise Stop(f"{relative(solution, root)} {SDK_SOLUTION}; install the .NET SDK 9.0.200 or newer")
-    emit(f"FILE_LIST\t{write_file_list(kept)}")
-    emit(f"SOLUTION\t{relative(solution, root)}\t{score}")
+    emit(fact_line("FILE_LIST", write_file_list(kept)))
+    emit(fact_line("SOLUTION", relative(solution, root), score))
 
 
 def main(argv: Sequence[str] | None = None, services: Services | None = None) -> int:
@@ -492,9 +494,9 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
     try:
         resolve(arguments.cwd or Path.cwd(), services or Services(), print)
     except Stop as stop:
-        print(f"STOP\t{stop}")
+        print(fact_line("STOP", stop))
     except (Failed, OSError) as error:
-        print(f"FAILED {error}")
+        print(f"FAILED {flat_text(str(error))}")
         return 1
     return 0
 
