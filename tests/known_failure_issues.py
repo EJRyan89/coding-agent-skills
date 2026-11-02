@@ -7,7 +7,9 @@ issue tests/malformed_input/known_failures.json or PENDING in tests/malformed_in
 prints a FAILED line for each that is not, is a pull request, or gh cannot answer about, and exits 1 when there is
 one; it asks nothing while both are empty. It imports tests/validation/known_failures.py and what that imports, and
 none of the policy checks or suites tests/run_validation.py runs, so the token validate.yml gives the one step that
-runs it reaches that query's own modules alone; tests/test_known_failure_issues.py pins the set it loads.
+runs it reaches this program and the modules it imports alone; tests/test_known_failure_issues.py pins the set it
+loads. On a pull request they are the pull request's own, from its merge commit, so the job's read-only permissions,
+not this file, bound what the token may do.
 """
 
 from __future__ import annotations
