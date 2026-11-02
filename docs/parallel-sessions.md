@@ -396,7 +396,10 @@ refused while a guarded hub is in view, and what they do not see at all is named
   names; `env -u` and `env -i` remove it, and `export -n` stops exporting it. A `SHELLOPTS` whose value the text does
   not settle, or one listing `allexport` from a PowerShell session, which holds environment names folded where the
   platform folds them, so that Bash may not read it, is a part the guard cannot read. `BASHOPTS` hands on `shopt`'s
-  options the same way, and the guard follows none of them. A shell the text does not settle may have exported any
+  options the same way. Of the options either hands on, the guard follows allexport alone, though `keyword`, `posix`,
+  `lastpipe`, and `cdable_vars` change where a command runs or what reaches git, as "What it does not see" says. An
+  `env` word the text does not settle, as in `env FOO=$(cmd)`, may assign any variable, so the guard cannot read it,
+  and every variable git or a nested bash reads is unsettled for the command after it. A shell the text does not settle may have exported any
   variable, so a shell it starts is one the text does not settle either. Nesting of shells, `eval`, function calls,
   and `Invoke-Expression` is followed to four deep; deeper is
   a command the guard cannot read.

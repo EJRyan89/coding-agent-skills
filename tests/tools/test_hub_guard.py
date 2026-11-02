@@ -2697,6 +2697,25 @@ class ContractTests(GuardTestCase):
         hub_guard.read_bash("shopt -so $o; git status", None, reading, 0, {})
         self.assertEqual(["could not read the options passed to shopt"], reading.unread)
 
+    def test_a_word_env_takes_that_the_text_does_not_settle_may_assign_any_variable(self) -> None:
+        # Each wrapper the guard follows, each of env's options before its assignments, and each unsettled word.
+        commands = [
+            f"{wrapper}env {options}{word} {command}"
+            for wrapper in ("", "exec ", "command ", "nohup ", "nice ", "timeout 5 ", "stdbuf -oL ")
+            for options in ("", "-i ", "-u X ", "--unset=X ", "-- ", "-C . ", "--chdir=. ", "-v ")
+            for word in ("FOO=$(printf x)", 'FOO="$(date)"', "$(printf FOO)=x", "$v", "A=1 FOO=$v")
+            for command in ("git switch -c x", "bash -c 'git switch -c x'")
+            if not wrapper or command.startswith("git ")
+        ]
+        commands.append("env SHELLOPTS=$(printf allexport) bash -c 'f() { git switch -c x; }; bash -c f'")
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("could not read a word passed to env", self.reason)
+        # A word the text settles is read as it is, and git's read-only command passes.
+        self.assertIsNone(self.bash("env FOO=x git status", self.hub))
+        self.assertIsNone(self.bash("env -i FOO=x git status", self.hub))
+
     def test_a_shellopts_the_starter_hands_a_nested_bash_turns_allexport_on_there(self) -> None:
         git_directory = (self.hub / ".git").as_posix()
         # Each start of a nested bash, with SCRIPT standing for its script, and whether allexport holds there.

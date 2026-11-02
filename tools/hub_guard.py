@@ -1619,10 +1619,17 @@ def started_command(
         reading.cannot_read(f"could not read the option {first_unread_env_option(arguments)} passed to env")
         return None
     index, cwd, given = read
-    # env takes every word holding `=` before its command as NAME=value, whatever the name: a[1]=x and `x y=1` too.
-    while index < len(arguments) and "=" in (arguments[index] or ""):
-        name, _, assigned = (arguments[index] or "").partition("=")
-        given[name] = assigned
+    # env takes every word holding `=` before its command as NAME=value, whatever the name: a[1]=x and `x y=1` too. A
+    # word the text does not settle, such as FOO=$(cmd), may be one for any name, git's variables among them, so the
+    # guard cannot read it, and every handed variable is unsettled for the words after it, read as the command.
+    while index < len(arguments) and ((word := arguments[index]) is None or "=" in word):
+        if word is None:
+            reading.cannot_read("could not read a word passed to env, which may assign any variable")
+            given = {name: None if is_handed(name) else value for name, value in given.items()}
+            given.update(dict.fromkeys((*LOCATION_VARIABLES, *CONFIGURATION_VARIABLES, *SHELL_OPTION_VARIABLES)))
+        else:
+            name, _, assigned = word.partition("=")
+            given[name] = assigned
         index += 1
     if index < len(arguments):
         return command_name(arguments[index]), arguments[index + 1 :], cwd, given
