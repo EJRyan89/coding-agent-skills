@@ -16,10 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from workflows import (
+    ACTION_INPUT_STATEMENT,
+    CREDENTIALS_ROW,
     DEFENDER_LINES,
     IMAGE_MODULE_LINES,
     IMAGE_MODULE_STEP,
     PINNED_TOOL_LINES,
+    PULL_REQUEST_CODE_STATEMENT,
+    SAME_REPOSITORY_STATEMENT,
     WorkflowSyntaxError,
     changelog_job_problems,
     codex_settings_problems,
@@ -39,6 +43,8 @@ from workflows import (
     pinned_tool_problems,
     read_workflow,
     required_check_problems,
+    token_claim_problems,
+    token_reach_problems,
     tool_cache_problems,
     uninstall_check_problems,
     unknown_workflow_problems,
@@ -1839,3 +1845,162 @@ def test_a_mutation_leg_checking_out_otherwise_than_validation_fails(
 ) -> None:
     problems = mutation_checkout_problems(mutation, validate)
     assert any(problem in found for found in problems), problems
+
+
+# The words the token-reach policy holds docs/design.md and the workflow to, typed here rather than read from the
+# constants under test.
+STATED = "on a pull request, the token reaches the code the pull request's merge commit holds at those paths"
+SAME_REPOSITORY = "a pull request from a branch of this repository can change the job itself, its permissions included"
+ACTIONS = "the pinned actions take the run's token as the default of their `token` input"
+REACH_STEP = {("query", "Ask"): "python -B tests/query.py"}
+
+
+def _wrapped(text: str, indent: str) -> str:
+    """`text` as comment lines of at most 60 characters, wrapped at spaces as a person would."""
+    lines: list[str] = []
+    for word in text.split():
+        if lines and len(lines[-1]) + len(word) < 60:
+            lines[-1] += f" {word}"
+        else:
+            lines.append(word)
+    return "".join(f"{indent}# {line}\n" for line in lines)
+
+
+def _reach_workflow(
+    trigger: str = "pull_request",
+    comment: str = f"The query job; so {STATED}, and {SAME_REPOSITORY}.",
+    checkout_with: str = "",
+    top_comment: str = "",
+) -> str:
+    return (
+        f"on:\n  {trigger}:\n\n{_wrapped(top_comment, '') if top_comment else ''}permissions:\n  contents: read\n\n"
+        f"jobs:\n{_wrapped(comment, '  ')}  query:\n    steps:\n"
+        f"      - name: Check out\n        uses: actions/checkout@{'a' * 40} # v7.0.1\n"
+        f"        with:\n          persist-credentials: false\n{checkout_with}"
+        "      - name: Ask\n        env:\n          GH_TOKEN: ${{ github.token }}\n"
+        "        run: python -B tests/query.py\n"
+    )
+
+
+REACH_DESIGN = (
+    "# Design\n\n| Development and CI gates need no model and no credentials: the token. On a pull request, the token "
+    f"reaches the code the pull request's merge commit holds at those paths, and {SAME_REPOSITORY}; {ACTIONS}. | x |\n"
+)
+
+
+def test_the_statements_are_pinned_to_their_words_and_the_row_to_its_opening() -> None:
+    assert (PULL_REQUEST_CODE_STATEMENT, SAME_REPOSITORY_STATEMENT, ACTION_INPUT_STATEMENT) == (
+        STATED,
+        SAME_REPOSITORY,
+        ACTIONS,
+    )
+    assert CREDENTIALS_ROW == "| Development and CI gates need no model and no credentials:"
+
+
+def test_a_token_job_running_the_pull_requests_code_and_saying_so_passes() -> None:
+    assert token_reach_problems(_reach_workflow(), REACH_STEP, REACH_DESIGN) == []
+
+
+@pytest.mark.parametrize(
+    ("workflow", "steps"),
+    [
+        pytest.param(_reach_workflow(trigger="push", comment="nothing"), REACH_STEP, id="no-pull-request-trigger"),
+        pytest.param(_reach_workflow(comment="nothing at all said here about what it reaches"), {}, id="no-token"),
+    ],
+)
+def test_a_workflow_that_gives_no_pull_request_the_token_needs_no_statement(
+    workflow: str, steps: dict[tuple[str, str], str]
+) -> None:
+    assert token_reach_problems(workflow, steps, "# Design\n") == []
+
+
+@pytest.mark.parametrize(
+    ("workflow", "design", "problem"),
+    [
+        pytest.param(
+            _reach_workflow(),
+            REACH_DESIGN.replace("merge commit", "base"),
+            f"docs/design.md's row {CREDENTIALS_ROW!r} does not say {STATED!r}",
+            id="row-silent-on-the-code",
+        ),
+        pytest.param(
+            _reach_workflow(),
+            REACH_DESIGN.replace("from a branch of this repository", "from a fork"),
+            "does not say 'a pull request from a branch of this repository",
+            id="row-silent-on-same-repository-branches",
+        ),
+        pytest.param(
+            _reach_workflow(comment=f"The query job; so {STATED}, and only forks are read-only."),
+            REACH_DESIGN,
+            "the comment directly above it does not say 'a pull request from a branch",
+            id="comment-silent-on-same-repository-branches",
+        ),
+        pytest.param(
+            _reach_workflow(comment=f"The query job; {SAME_REPOSITORY}, and the token reaches the query alone."),
+            REACH_DESIGN,
+            f"the comment directly above it does not say {STATED!r}",
+            id="comment-silent-on-the-code",
+        ),
+        pytest.param(
+            _reach_workflow(
+                comment="The query job, which reaches the query alone.",
+                top_comment=f"Read only; {STATED}, and {SAME_REPOSITORY}.",
+            ),
+            REACH_DESIGN,
+            "the comment directly above it does not say",
+            id="statements-in-another-comment-of-the-workflow",
+        ),
+        *(
+            pytest.param(
+                _reach_workflow(checkout_with=f"          {key}: {value}\n"),
+                REACH_DESIGN,
+                f"checks out with `{key}`, a form the token-reach policy does not read",
+                id=f"checkout-takes-{key}",
+            )
+            for key, value in (
+                ("ref", "main"),
+                ("repository", "someone/other"),
+                ("path", "elsewhere"),
+                ("sparse-checkout", "tests"),
+                ("fetch-depth", "0"),
+            )
+        ),
+    ],
+)
+def test_a_token_job_running_the_pull_requests_code_unstated_or_from_an_unread_tree_fails(
+    workflow: str, design: str, problem: str
+) -> None:
+    problems = token_reach_problems(workflow, REACH_STEP, design)
+    assert any(problem in found for found in problems), problems
+
+
+def test_a_row_naming_the_actions_default_input_and_no_retired_claim_passes() -> None:
+    assert token_claim_problems({"validate.yml": "no command a step runs is given the token"}, REACH_DESIGN) == []
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "no step here is given the token",
+        "no step is given the token",
+        "hold no token",
+        "the only job given the run's token",
+        "the one job given the run's read-only token",
+    ],
+)
+def test_a_retired_token_claim_anywhere_fails(claim: str) -> None:
+    # A claim wrapped across lines is still read, as `_comment_text` hands the comments over.
+    wrapped = claim.replace(" ", "\n", 1)
+    assert token_claim_problems({"validate.yml": f"The legs:\n{wrapped}."}, REACH_DESIGN) == [
+        f"validate.yml says {claim!r}, which the pinned actions' default `token` input makes untrue"
+    ]
+    row = REACH_DESIGN.replace("the token.", f"the legs {claim}.")
+    assert token_claim_problems({}, row) == [
+        f"docs/design.md's credentials row says {claim!r}, which the pinned actions' default `token` input makes untrue"
+    ]
+
+
+def test_a_row_silent_on_the_actions_default_input_fails() -> None:
+    assert token_claim_problems({}, REACH_DESIGN.replace(ACTIONS, "nothing else")) == [
+        f"docs/design.md's row {CREDENTIALS_ROW!r} does not say {ACTIONS!r}"
+    ]
