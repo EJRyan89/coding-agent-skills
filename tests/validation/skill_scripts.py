@@ -22,6 +22,7 @@ import whole_number
 from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
+from module_closure import MODULE_LOADERS
 from path_containment import posix_within
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
@@ -1993,7 +1994,6 @@ CHECKER_PROGRAMS = frozenset({"shellcheck", "ruff", "mypy"})
 # out, and the one import of either outside a regression suite: the locator of the ruff program, which runs nothing.
 CHECKER_PACKAGES = frozenset({"mypy", "ruff"})
 CHECKER_IMPORTS = frozenset({("tests/validation/toolchain.py", "find_ruff")})
-IMPORT_CALLS = frozenset({"import_module", "__import__"})
 SHELL_PROGRAMS = frozenset({"bash", "sh"})
 # The one place a PowerShell script may run PSScriptAnalyzer, and the settings it must pass so that no settings file
 # beside a target or in the working folder is read.
@@ -2107,7 +2107,7 @@ def _imported_modules(node: ast.AST) -> list[str]:
         return [alias.name for alias in node.names]
     if isinstance(node, ast.ImportFrom):
         return [node.module] if node.level == 0 and node.module else []
-    if isinstance(node, ast.Call) and _called_name(node) in IMPORT_CALLS and node.args:
+    if isinstance(node, ast.Call) and _called_name(node) in MODULE_LOADERS and node.args:
         first = node.args[0]
         return [first.value] if isinstance(first, ast.Constant) and isinstance(first.value, str) else []
     return []
