@@ -58,6 +58,17 @@ UNSAFE_CHARACTERS = {
 SHELLCHECK_HEADER = "# shellcheck shell=bash\n# shellcheck disable=SC2034,SC2154\n"
 # One ShellCheck command line's length, kept a margin below the platform's limit; more units run as further batches.
 SHELLCHECK_COMMAND_BUDGET = platform_support.COMMAND_LINE_LIMIT - 1_024
+# ShellCheck reads options from SHELLCHECK_OPTS and from a .shellcheckrc above each file it checks or in the home, so a
+# setting outside the repository could turn its findings off. Every ShellCheck the repository runs starts from
+# shellcheck_command, with SHELLCHECK_ENVIRONMENT over its environment.
+SHELLCHECK_ENVIRONMENT = {"SHELLCHECK_OPTS": ""}
+
+
+def shellcheck_command(shellcheck: str, *options: str) -> list[str]:
+    """A ShellCheck command line that reads no rc file, with `options` after it."""
+    return [shellcheck, "--norc", *options]
+
+
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.TemporaryDirectory": "validate_executables checks rendered scripts in a throwaway directory under the "
@@ -423,13 +434,13 @@ def _shellcheck_batches(command: list[str], paths: list[str]) -> list[list[str]]
 
 def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
     """Lint every unit, in batches when one command line cannot hold them all, and report every finding once."""
-    command = [shellcheck, "--format=gcc"]
+    command = shellcheck_command(shellcheck, "--format=gcc")
     origins = {platform_support.normalize(unit.path): unit for unit in units}
     reported: dict[str, list[str]] = {}
     unattributed: list[str] = []
     failed = False
     for batch in _shellcheck_batches(command, list(origins)):
-        result = platform_support.run_tool([*command, *batch])
+        result = platform_support.run_tool([*command, *batch], SHELLCHECK_ENVIRONMENT)
         if result.returncode == 0:
             continue
         failed = True

@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -413,6 +414,32 @@ class RenderedExecutableTests(DeployerTestCase):
         result = self.deploy_fails("--all", pattern="ShellCheck failed for rendered content: alpha/run.sh")
         self.assertIn("SC2086", result.output)
         self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_shellcheck_reads_no_setting_from_outside_the_source(self) -> None:
+        # Each place ShellCheck reads its settings from on its own: an rc file in a folder above the rendered units,
+        # one in the user's configuration folder, and SHELLCHECK_OPTS. Each turns the finding off when it is read.
+        self.make_source_json()
+        directory = self.make_skill("alpha", "ShellCheck fixture")
+        self.write(directory / "run.sh", "#!/usr/bin/env bash\ncd $1 || exit\n")
+        self.make_config()
+        above = self.root / "rc-above"
+        (above / "temporary").mkdir(parents=True)
+        self.write(above / ".shellcheckrc", "disable=all\n")
+        configuration = self.root / "rc-configuration"
+        self.write(configuration / "shellcheckrc", "disable=all\n")
+        cases = {
+            "rc file above": (above / "temporary", {}),
+            "configuration folder": (None, {"XDG_CONFIG_HOME": str(configuration)}),
+            "SHELLCHECK_OPTS": (None, {"SHELLCHECK_OPTS": "--exclude=SC2086"}),
+        }
+        for case, (temporary, environment) in cases.items():
+            with (
+                self.subTest(case=case),
+                mock.patch.object(tempfile, "tempdir", str(temporary) if temporary else tempfile.tempdir),
+                mock.patch.dict(os.environ, environment),
+            ):
+                result = self.deploy_fails("--all", pattern="ShellCheck failed for rendered content: alpha/run.sh")
+                self.assertIn("SC2086", result.output)
 
     def test_shellcheck_failure_in_markdown_block_names_the_block(self) -> None:
         self.make_source_json()
