@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -32,6 +33,7 @@ import github_client
 import pdf_tool
 import python_checks
 import review_vocabularies
+import toolchain
 from call_tables import TEXT_OPENERS, TextOpener
 from job_selection import all_jobs
 from python_checks import (
@@ -144,6 +146,51 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertEqual([], sorted(path.name for path in root.iterdir() if path.name.startswith(".")))
             self.assertIn("python -m ruff check --fix", message)
 
+    def test_ruff_checks_a_file_an_ignore_file_outside_the_repository_names(self) -> None:
+        # Given a folder, ruff passes over a file an ignore file names: a .ignore above the repository, or the global
+        # gitignore in the user's configuration folder, which ruff reads inside a git repository.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            write_fixture_tree(
+                root, {"pyproject.toml": '[tool.ruff.lint]\nselect = ["F"]\n', "pkg/module.py": "x = {  'a':1 }\n"}
+            )
+            (root / ".git").mkdir()
+            (root / "pkg" / "lint.py").write_text("import os\n", encoding="utf-8")
+            configuration = Path(directory) / "configuration"
+            write_fixture_tree(configuration, {"git/ignore": "module.py\nlint.py\n"})
+            cases = {
+                ".ignore above": (Path(directory) / ".ignore", {}),
+                "global gitignore": (None, {"XDG_CONFIG_HOME": str(configuration)}),
+            }
+            for case, (ignore, environment) in cases.items():
+                if ignore is not None:
+                    ignore.write_text("module.py\nlint.py\n", encoding="utf-8")
+                for check, named in ((ruff_format_check, "module.py"), (ruff_lint_check, "lint.py:1:8: F401")):
+                    with self.subTest(case=case, check=check.__name__):
+                        with mock.patch.dict(os.environ, environment), self.assertRaises(AssertionError) as raised:
+                            check(root, ["pkg"])
+                        self.assertIn(named, str(raised.exception).replace("\\", "/"))
+                if ignore is not None:
+                    ignore.unlink()
+
+    def test_type_check_resolves_no_import_through_mypypath(self) -> None:
+        # mypy resolves an import through MYPYPATH ahead of mypy_path, so a stub there would stand in for the module.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            write_fixture_tree(
+                root,
+                {
+                    "pyproject.toml": '[tool.mypy]\nmypy_path = ["$MYPY_CONFIG_FILE_DIR/lib"]\n',
+                    "lib/helper.py": "def answer() -> int:\n    return 42\n",
+                    "pkg/module.py": "import helper\n\nx: str = helper.answer()\n",
+                },
+            )
+            stubs = Path(directory) / "stubs"
+            write_fixture_tree(stubs, {"helper.pyi": "from typing import Any\n\ndef answer() -> Any: ...\n"})
+            with mock.patch.dict(os.environ, {"MYPYPATH": str(stubs)}), self.assertRaises(AssertionError) as raised:
+                mypy_type_check(root / "pkg", ["module.py"], root / "pyproject.toml")
+            self.assertIn("module.py:3: error: Incompatible types in assignment", str(raised.exception))
+
     def test_lint_lets_the_regression_suites_assert_and_no_shipped_module(self) -> None:
         refused = [
             "deploy.py",
@@ -226,14 +273,14 @@ class PythonChecksFixtures(unittest.TestCase):
     def test_type_check_caches_in_a_folder_of_its_own_that_ends_with_it(self) -> None:
         seen: list[tuple[Path, bool]] = []
 
-        def record(arguments: list[str], cwd: Path) -> None:
+        def record(arguments: list[str], environment: dict[str, str], cwd: Path) -> None:
             cache = Path(arguments[arguments.index("--cache-dir") + 1])
             seen.append((cache, cache.is_dir()))
 
         with (
             mock.patch.dict("os.environ", {"VALIDATION_MYPY_CACHE": ""}),
             mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
-            mock.patch.object(python_checks, "run_process", side_effect=record),
+            mock.patch.object(toolchain, "run_process", side_effect=record),
         ):
             for _ in range(2):
                 mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml")
@@ -252,7 +299,9 @@ class PythonChecksFixtures(unittest.TestCase):
                 mock.patch.dict("os.environ", {"VALIDATION_MYPY_CACHE": str(root)}),
                 mock.patch.object(python_checks, "find_mypy", return_value="mypy"),
                 mock.patch.object(
-                    python_checks, "run_process", side_effect=lambda arguments, cwd: commands.append(arguments)
+                    toolchain,
+                    "run_process",
+                    side_effect=lambda arguments, environment, cwd: commands.append(arguments),
                 ),
             ):
                 checks = [job for job in all_jobs() if job.name.startswith("static type check (mypy")]
