@@ -1213,7 +1213,7 @@ def contract_names(after: str, before: str) -> list[str]:
 def bash_prefix_programs() -> set[str]:
     """The programs and builtins whose command the Bash reader reads as the one it starts."""
     builtins = {name for name, reader in hub_guard.BASH_BUILTINS.items() if reader is hub_guard.bash_exec}
-    return builtins | set(hub_guard.PREFIX_PROGRAMS) | hub_guard.ENV_NAMES
+    return builtins | set(hub_guard.PREFIX_PROGRAMS) | set(hub_guard.ELEVATING_PROGRAMS) | hub_guard.ENV_NAMES
 
 
 class CommandGuardTests(GuardTestCase):
@@ -2716,6 +2716,56 @@ class ContractTests(GuardTestCase):
         self.assertIsNone(self.bash("env FOO=x git status", self.hub))
         self.assertIsNone(self.bash("env -i FOO=x git status", self.hub))
 
+    def test_sudo_and_doas_run_the_command_after_their_options_in_an_environment_their_policy_decides(self) -> None:
+        git_directory = (self.hub / ".git").as_posix()
+        # Each spelling of the program and its options, before the command it starts.
+        starts = (
+            *(
+                f"sudo {options}"
+                for options in (
+                    "",
+                    "-E ",
+                    "-u root ",
+                    "-uroot ",
+                    "-Eu root ",
+                    "--user=root ",
+                    "--user root ",
+                    "--preserve-env ",
+                    "--preserve-env=PATH ",
+                    "-n ",
+                    "-s ",
+                    "-H -P ",
+                    "-g wheel ",
+                    "-- ",
+                    "--inline ",
+                )
+            ),
+            *(f"doas {options}" for options in ("", "-u root ", "-uroot ", "-n ", "-s ", "-n -u root ", "-- ")),
+        )
+        for start in starts:
+            for command, cwd in (
+                (f"{start}env GIT_DIR='{git_directory}' git switch -c x", self.tree),
+                (f"{start}git switch -c x", self.hub),
+                (f"nohup {start}git switch -c x", self.hub),
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.bash(command, cwd))
+                    self.assertIn("git switch", self.reason)
+        # A variable the shell holds may reach the command or not, as the policy decides.
+        self.assertEqual("deny", self.bash(f"export GIT_DIR='{git_directory}'; sudo git switch -c x", self.tree))
+        self.assertIn(UNPLACED.format("switch"), self.reason)
+        self.assertEqual("deny", self.bash(f"sudo -D '{self.hub}' git switch -c x", self.tree))
+        self.assertEqual("deny", self.bash("sudo -i git switch -c x", self.tree))
+        self.assertIn(UNPLACED.format("switch"), self.reason)
+        self.assertEqual("deny", self.bash("sudo -X git switch -c x", self.hub))
+        self.assertIn("could not read the option -X passed to sudo", self.reason)
+        self.assertEqual("deny", self.powershell(f"sudo env GIT_DIR='{git_directory}' git switch -c x", self.tree))
+        # An option after which they start no command starts none, and a read-only command passes.
+        for command in ("sudo -l git switch -c x", "sudo -v", "doas -C /etc/doas.conf git switch -c x"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+        self.assertIsNone(self.bash("sudo git status", self.tree))
+
     def test_a_shellopts_the_starter_hands_a_nested_bash_turns_allexport_on_there(self) -> None:
         git_directory = (self.hub / ".git").as_posix()
         # Each start of a nested bash, with SCRIPT standing for its script, and whether allexport holds there.
@@ -3299,7 +3349,10 @@ class ContractListTests(unittest.TestCase):
         bash = contract_names("Commands after", "are read as the commands they start")
         powershell = contract_names("A command after the programs", "is read as in Bash")
         self.assertEqual(sorted(bash_prefix_programs()), sorted(bash))
-        self.assertEqual(sorted({*hub_guard.PREFIX_PROGRAMS, *hub_guard.ENV_NAMES}), sorted(powershell))
+        self.assertEqual(
+            sorted({*hub_guard.PREFIX_PROGRAMS, *hub_guard.ELEVATING_PROGRAMS, *hub_guard.ENV_NAMES}),
+            sorted(powershell),
+        )
 
     def test_the_powershell_location_commands_are_the_ones_the_reader_follows(self) -> None:
         named = contract_names("makes every decision. The guard follows", "(bare goes home")

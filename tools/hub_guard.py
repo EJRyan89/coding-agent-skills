@@ -195,6 +195,34 @@ PREFIX_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
         0,
     ),
 }
+# Programs that run the command after their options as another user: each one's options that take no value, those
+# that take the next word or, short, the rest of their word, and those after which they start no command. Their
+# policy, sudoers or doas.conf, decides which variables reach the command, so each the shell holds is unsettled there;
+# a login shell starts in the user's home. No test starts them, since they may prompt or raise privileges.
+ELEVATING_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], frozenset[str]]] = {
+    "sudo": (
+        frozenset(
+            {
+                *("-A", "--askpass", "-B", "--bell", "-b", "--background", "-E", "--preserve-env", "-H", "--set-home"),
+                *("-i", "--login", "-k", "--reset-timestamp", "-N", "--no-update", "-n", "--non-interactive"),
+                *("-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell"),
+                # sudo for Windows
+                *("--inline", "--new-window", "--disable-input"),
+            }
+        ),
+        frozenset(
+            {
+                *("-C", "--close-from", "-D", "--chdir", "-g", "--group", "-p", "--prompt", "-R", "--chroot"),
+                *("-r", "--role", "-T", "--command-timeout", "-t", "--type", "-U", "--other-user", "-u", "--user"),
+                "--host",
+            }
+        ),
+        frozenset({"-e", "--edit", "-K", "--remove-timestamp", "-l", "--list", "-V", "--version", "-v", "--validate"}),
+    ),
+    "doas": (frozenset({"-L", "-n", "-s"}), frozenset({"-u"}), frozenset({"-C"})),
+}
+LOGIN_OPTIONS = {"-i", "--login"}
+CHDIR_OPTIONS = {"-D", "--chdir"}
 # Bash's long options whose next word is their value, so it is not the script that -c runs; in a single-dash or
 # single-plus bundle each o and O takes the next word (bash_option_values).
 BASH_LONG_OPTIONS_WITH_VALUE = {"--rcfile", "--init-file"}
@@ -1560,7 +1588,7 @@ class BashReader:
                 exported_functions(shell),
                 opaque=shell.opaque,
             )
-        elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
+        elif program in ENV_NAMES or program in PREFIX_PROGRAMS or program in ELEVATING_PROGRAMS:
             command = started_command(program, arguments, shell.cwd, variables, self.reading)
             if command is not None:
                 name, rest, cwd, given = command
@@ -1608,6 +1636,8 @@ def started_command(
 
     env starts its program with the environment it is given: emptied by -i, less each -u, plus each NAME=value, and in
     the directory -C names."""
+    if program in ELEVATING_PROGRAMS:
+        return elevated_command(program, arguments, cwd, variables, reading)
     if program not in ENV_NAMES:
         command = prefixed_command(program, arguments)
         if command is None:
@@ -1634,6 +1664,68 @@ def started_command(
     if index < len(arguments):
         return command_name(arguments[index]), arguments[index + 1 :], cwd, given
     return None
+
+
+def elevated_command(
+    program: str, arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading
+) -> tuple[str | None, list[Word], Path | None, dict[str, Word]] | None:
+    """The command sudo or doas starts as another user: its name, its arguments, its directory, and its environment,
+    in which each variable the shell holds is unsettled, since the program's policy decides which reach it; None when
+    it starts none, and when its options cannot be read, which is recorded as unread.
+
+    Short options bundle, a value taking the rest of its word or the next word; a long option takes its value after
+    = or as the next word. -D and --chdir move the command, and a login shell, -i, starts in a home the text does not
+    settle; -s and -i run the command through a shell, which runs it as written."""
+    flags, valued, no_command = ELEVATING_PROGRAMS[program]
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None:
+            reading.cannot_read(f"could not read the options passed to {program}")
+            return None
+        if word == "--":
+            index += 1
+            break
+        if not word.startswith("-") or word == "-":
+            break
+        options, index = elevated_options(arguments, index, valued)
+        for option, value in options:
+            if option in no_command:
+                return None
+            if option not in flags | valued:
+                reading.cannot_read(f"could not read the option {option} passed to {program}")
+                return None
+            if option in LOGIN_OPTIONS:
+                cwd = None
+            elif option in CHDIR_OPTIONS:
+                cwd = moved(cwd, value)
+        index += 1
+    if index >= len(arguments):
+        return None
+    return command_name(arguments[index]), arguments[index + 1 :], cwd, dict.fromkeys(variables)
+
+
+def elevated_options(arguments: list[Word], index: int, valued: frozenset[str]) -> tuple[list[tuple[str, Word]], int]:
+    """The options of the word at index, each with its value or None, and the index of the last word they take."""
+    word = arguments[index] or ""
+    if word.startswith("--"):
+        option, has_value, value = word.partition("=")
+        if option in valued and not has_value:
+            index += 1
+            return [(option, arguments[index] if index < len(arguments) else None)], index
+        return [(option, value if has_value else None)], index
+    options: list[tuple[str, Word]] = []
+    for position, letter in enumerate(word[1:], start=2):
+        option = f"-{letter}"
+        if option in valued:
+            attached: Word = word[position:]
+            if not attached:
+                index += 1
+                attached = arguments[index] if index < len(arguments) else None
+            options.append((option, attached))
+            break
+        options.append((option, None))
+    return options, index
 
 
 def read_env_options(
@@ -2809,7 +2901,7 @@ class PowerShellReader:
             self.reading.cannot_read(f"a drive on the alias or function provider ({name})")
         if name in LOCATION_NAMES | PUSH_LOCATION_NAMES | POP_LOCATION_NAMES:
             return self.location(name, arguments, parameters, session)
-        if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS:
+        if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS or name in ELEVATING_PROGRAMS:
             self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
         elif name in POWERSHELL_NAMES:
             # The reader follows a pwsh the session starts with an inline script; one it reads from its standard
@@ -2858,7 +2950,7 @@ class PowerShellReader:
             follow_powershell(
                 name, arguments, cwd, variables, self.reading, self.depth, self.bash_functions, opaque=opaque
             )
-        elif name in ENV_NAMES or name in PREFIX_PROGRAMS:
+        elif name in ENV_NAMES or name in PREFIX_PROGRAMS or name in ELEVATING_PROGRAMS:
             command = started_command(name, arguments, cwd, variables, self.reading)
             if command is not None:
                 self.run_program(*command, opaque)
