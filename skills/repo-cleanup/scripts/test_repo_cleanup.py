@@ -1580,6 +1580,23 @@ class SweepTests(Fixture):
         self.assertEqual("could not run git: git vanished", recorded["confirmation_stopped"])
         self.assertNotIn("stopped", recorded, "the apply completed")
 
+        # remove-directory is a confirmation too: one that completes, even refusing a path never offered, clears it.
+        code, lines = self.invoke("remove-directory", "--plan", plan, "--path", self.clone.as_posix())
+        self.assertEqual(1, code, lines)
+        self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
+        self.assertNotIn("confirmation_stopped", json.loads(Path(plan).read_text(encoding="utf-8")))
+
+        # A failure with no message is recorded by its type.
+        output = io.StringIO()
+        with mock.patch.object(rc, "delete_merged", side_effect=ValueError()), contextlib.redirect_stdout(output):
+            code = rc.main(["delete-local", "--plan", plan, "--branch", "scratch"], rc.Services(gh=self.github))
+        lines = output.getvalue().splitlines()
+        self.assertEqual(1, code, lines)
+        self.assertEqual(
+            "my repo cleanup stopped partway (ValueError); done before it:", self.summary(lines).splitlines()[0]
+        )
+        self.assertEqual("ValueError", json.loads(Path(plan).read_text(encoding="utf-8"))["confirmation_stopped"])
+
         code, lines = self.invoke("delete-local", "--plan", plan, "--branch", "scratch")
         self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
         self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
