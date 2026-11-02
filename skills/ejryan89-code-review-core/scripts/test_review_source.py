@@ -523,7 +523,7 @@ class SearchErrorTests(LazySnapshotFixture):
                 clients.append(isolated)
 
             @contextlib.contextmanager
-            def stream(self, arguments: Sequence[str], *, directory: Path) -> Any:
+            def stream(self, arguments: Sequence[str], *, directory: Path, pattern: str) -> Any:
                 yield stream
 
         with mock.patch.object(review_runtime, "GitClient", Client):
@@ -644,9 +644,11 @@ class SnapshotIsolationTests(LazySnapshotFixture):
         started: list[tuple[bool, Path]] = []
 
         class Recording(git_client.GitClient):
-            def _command(self, arguments: Sequence[str], directory: str | Path | None) -> list[str]:
+            def _command(
+                self, arguments: Sequence[str], directory: str | Path | None, pattern: str | None
+            ) -> list[str]:
                 started.append((self.isolated, Path(directory or ".").resolve()))
-                return super()._command(arguments, directory)
+                return super()._command(arguments, directory, pattern)
 
         with mock.patch.object(review_runtime, "GitClient", Recording):
             verify_source_snapshot(whole, expected_repository=REPOSITORY, expected_commit=self.head)

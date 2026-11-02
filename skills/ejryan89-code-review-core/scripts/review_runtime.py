@@ -2109,15 +2109,17 @@ def search_source(
     # Every option that shapes the output is given, so no configuration git reads adds a column or a submodule's lines.
     arguments = ["grep", "--null", "--line-number", "-a", "-E", "--no-color", "--no-column", "--no-recurse-submodules"]
     if checkout is None:
-        arguments += ["--no-index", "-e", pattern]
+        arguments += ["--no-index"]
     else:
-        arguments += ["--full-name", "-e", pattern, commit]
+        arguments += ["--full-name", commit]
     # In the snapshot, git runs isolated: it finds no repository there or above it and reads no configuration.
     client = GitClient(isolated=checkout is None)
     matches: list[tuple[str, str, str]] = []
     try:
         with ExitStack() as processes:
-            stream = processes.enter_context(client.stream([*arguments, "--"], directory=checkout or root))
+            stream = processes.enter_context(
+                client.stream([*arguments, "--"], directory=checkout or root, pattern=pattern)
+            )
             stream.stdin.close()
             binary: Callable[[str], bool] | None = None
             while line := stream.readline(limit):

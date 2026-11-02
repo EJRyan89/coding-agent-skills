@@ -27,10 +27,13 @@ snapshot. Each of its commands names the null device as its repository (`NO_REPO
 the folder or above it, and reads no repository's configuration, and runs with
 `bounded_process.isolated_git_environment`, so no system, global, or command-scope setting from the environment shapes
 what it prints. Only its arguments and the files it reads decide its output. Its caller asks for it; a client that
-is not isolated refuses a `grep` or `diff` whose options, read as git reads them, give `--no-index`
-(`reads_no_repository`), since that form reads files rather than a repository, so a caller that forgets to ask fails
-instead of running git unisolated. An isolated client refuses a test's runner, which could not start git with the
-isolated environment.
+is not isolated refuses a `grep` or `diff` any of whose arguments spells `--no-index` or an abbreviation git accepts
+for it (`reads_no_repository`), wherever it stands, since that form reads files rather than a repository, so a caller
+that forgets to ask fails instead of running git unisolated. The refusal reads no option grammar: a search pattern is
+never among the arguments but the client's own `pattern`, which it gives git as `-e <pattern>` right after the
+subcommand, so a pattern that reads `--no-index` is searched for, and a caller that needs one inside its own arguments
+uses an isolated client. An isolated client refuses a test's runner, which could not start git with the isolated
+environment.
 
 Both hold git in a process tree (`job_tree`), because git starts programs of its own: Git for Windows' launcher starts
 the real git, a fetch starts its transport and pack programs, and a command may run a credential helper, a hook, or an
@@ -77,12 +80,10 @@ NO_REPOSITORY = f"--git-dir={os.devnull}"
 # The subcommands that, given `--no-index`, read the files they are pointed at rather than a repository, which only an
 # isolated client runs. `check-ignore --no-index` still reads its repository's ignore rules, so it is not one.
 ISOLATED_SUBCOMMANDS = frozenset({"grep", "diff"})
-# git grep's options that take their value as the next argument, other than -e and -f, whose value is a pattern or a
-# file of them and ends the options a refusal reads: every one builtin/grep.c declares that way.
-GREP_VALUE_OPTIONS = frozenset(
-    {"-A", "-B", "-C", "-m", "--after-context", "--before-context", "--context", "--max-count", "--max-depth"}
-    | {"--threads"}
-)
+# Every spelling git may take for --no-index: the option and each abbreviation of it from `--no-i` upward. git refuses
+# the shorter ones it finds ambiguous, such as `--no-i` beside grep's `--no-ignore-case`, so refusing them too costs
+# nothing, and git takes no abbreviation shorter than `--no-`. A plain client refuses each wherever it stands.
+NO_INDEX_SPELLINGS = frozenset("--no-index"[:length] for length in range(len("--no-i"), len("--no-index") + 1))
 # A full object name, SHA-1 or SHA-256, as `rev-parse --verify` prints it.
 OBJECT_NAME = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -299,22 +300,15 @@ def _gave_up(result: GitResult, retries: int, why: str = "") -> GitResult:
 
 
 def reads_no_repository(arguments: Sequence[str]) -> bool:
-    """Whether `arguments` run a subcommand in `ISOLATED_SUBCOMMANDS` with `--no-index` among its options, read as git
-    reads them: up to `--`, a pattern given by `-e` or `-f`, or the first argument that is not an option, so a pattern
-    or a path that reads `--no-index` is never taken for the option, and passing over the value of each option in
-    `GREP_VALUE_OPTIONS`."""
+    """Whether `arguments` run a subcommand in `ISOLATED_SUBCOMMANDS` with any later argument in `NO_INDEX_SPELLINGS`,
+    wherever it stands: before or after a pattern, a revision, or `--`. No option grammar is read, so no spelling git
+    takes for the option is passed over."""
     index = subcommand_index(arguments)
-    if index is None or arguments[index] not in ISOLATED_SUBCOMMANDS:
-        return False
-    rest = iter(arguments[index + 1 :])
-    for argument in rest:
-        if argument == "--no-index":
-            return True
-        if argument in {"--", "-e", "-f"} or not argument.startswith("-"):
-            return False
-        if argument in GREP_VALUE_OPTIONS:
-            next(rest, None)
-    return False
+    return (
+        index is not None
+        and arguments[index] in ISOLATED_SUBCOMMANDS
+        and any(argument in NO_INDEX_SPELLINGS for argument in arguments[index + 1 :])
+    )
 
 
 def _command(arguments: Sequence[str], directory: str | Path | None, *, isolated: bool = False) -> list[str]:
@@ -375,7 +369,8 @@ class GitClient:
     With `isolated`, every command names `NO_REPOSITORY`, and the real runners and `stream` start it with
     `bounded_process.isolated_git_environment`, as the module's docstring describes; such a client takes only the real
     runners, and refuses another with a TypeError. Without it, a command `reads_no_repository` names is refused with a
-    ValueError before git starts.
+    ValueError before git starts. `run`, `output`, and `stream` take a search's `pattern` apart from its arguments and
+    give it to git as `-e <pattern>` right after the subcommand, where the refusal never reads it.
     """
 
     def __init__(
@@ -409,6 +404,7 @@ class GitClient:
         directory: str | Path | None = None,
         timeout: float | None = None,
         input_bytes: bytes | None = None,
+        pattern: str | None = None,
     ) -> GitResult:
         """Run `git <arguments>`, in `directory` when given (as `git -C`), and return its result whatever its exit.
 
@@ -417,7 +413,7 @@ class GitClient:
         when None). A subcommand in `RETRIED_SUBCOMMANDS` that fails transiently runs again within that limit: the
         result is the last attempt's, and one that outlasts the retries names them on its stderr.
         """
-        command = self._command(arguments, directory)
+        command = self._command(arguments, directory, pattern)
         limit = self.timeout if timeout is None else timeout
 
         def attempt(seconds: float) -> GitResult:
@@ -429,14 +425,21 @@ class GitClient:
             return attempt(limit)
         return self._retried(attempt, limit)
 
-    def _command(self, arguments: Sequence[str], directory: str | Path | None) -> list[str]:
-        """The command line of `git <arguments>` in `directory` on this client, or a ValueError for a command only an
-        isolated client runs."""
+    def _command(self, arguments: Sequence[str], directory: str | Path | None, pattern: str | None) -> list[str]:
+        """The command line of `git <arguments>` in `directory` on this client, with `-e <pattern>` right after the
+        subcommand when given, or a ValueError for a command only an isolated client runs or a pattern with no
+        subcommand to follow."""
         if not self.isolated and reads_no_repository(arguments):
             raise ValueError(
                 "git grep or diff --no-index reads files no repository holds; run it on GitClient(isolated=True)"
             )
-        return _command(arguments, directory, isolated=self.isolated)
+        given = list(arguments)
+        if pattern is not None:
+            index = subcommand_index(given)
+            if index is None:
+                raise ValueError("a pattern needs a subcommand to follow")
+            given[index + 1 : index + 1] = ["-e", pattern]
+        return _command(given, directory, isolated=self.isolated)
 
     def _retried(self, attempt: Callable[[float], GitResult], limit: float) -> GitResult:
         """Run `attempt` with the whole limit, then retry a transient failure with what is left of it.
@@ -470,9 +473,10 @@ class GitClient:
         directory: str | Path | None = None,
         timeout: float | None = None,
         input_bytes: bytes | None = None,
+        pattern: str | None = None,
     ) -> str:
         """Run `git <arguments>` as `run` does and return its stdout; a nonzero exit raises a classified GitError."""
-        result = self.run(arguments, directory=directory, timeout=timeout, input_bytes=input_bytes)
+        result = self.run(arguments, directory=directory, timeout=timeout, input_bytes=input_bytes, pattern=pattern)
         if result.returncode != 0:
             message = (
                 result.stderr.strip() or f"git {' '.join(arguments[:1])} failed with exit code {result.returncode}"
@@ -578,16 +582,22 @@ class GitClient:
 
     @contextmanager
     def stream(
-        self, arguments: Sequence[str], *, directory: str | Path | None = None, idle_timeout: float | None = None
+        self,
+        arguments: Sequence[str],
+        *,
+        directory: str | Path | None = None,
+        idle_timeout: float | None = None,
+        pattern: str | None = None,
     ) -> Iterator[GitStream]:
-        """Start `git <arguments>` with a pipe for requests, and stop it on leaving the block.
+        """Start `git <arguments>` with a pipe for requests, and stop it on leaving the block; `pattern` as `run`
+        takes it.
 
         Each read fails as a `timeout` when no output arrives for `idle_timeout` seconds (the client's default when
         None), so a long answer that keeps arriving never times out. Leaving the block closes git's output, so git
         exits by itself; see `bounded_process.Streaming`. Every program git started is then ended with it, and a
         program that could not be ended fails the block as an `execution` GitError.
         """
-        command = self._command(arguments, directory)
+        command = self._command(arguments, directory, pattern)
         try:
             with ExitStack() as stack:
                 try:

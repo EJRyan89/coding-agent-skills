@@ -431,7 +431,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `bounded_process:isolated_git_environment` with `git_client:NO_REPOSITORY`, which a client its caller makes
   isolated starts every command with, taking no runner that could leave the environment out, so no repository around
   the content and no configuration shapes what git prints; a client that is not isolated refuses a search or
-  comparison whose options, read as git reads them, ask for no index (`git_client:reads_no_repository`)
+  comparison any of whose arguments spells the no-index option or an abbreviation of it
+  (`git_client:reads_no_repository`), reading no option grammar, and takes a search's pattern apart from its arguments
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests`,
   `skills/ejryan89-code-review-core/scripts/test_review_source.py::SnapshotIsolationTests`

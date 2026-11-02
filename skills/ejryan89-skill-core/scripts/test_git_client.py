@@ -1143,48 +1143,80 @@ class IsolatedClientTests(unittest.TestCase):
                 GitClient(isolated=True, **options)  # type: ignore[arg-type]  # each option is a runner
         GitClient(git_client.subprocess_runner, isolated=True, input_runner=git_client.subprocess_runner)
 
-    def test_a_plain_client_refuses_a_command_only_an_isolated_one_runs(self) -> None:
+    def test_a_plain_client_refuses_every_spelling_of_no_index_in_every_position(self) -> None:
         self.assertEqual(frozenset({"grep", "diff"}), git_client.ISOLATED_SUBCOMMANDS)
-        refused = {
-            ("grep", "--no-index", "-e", "x"),
-            ("-c", "a.b=c", "grep", "-n", "--no-index", "-e", "x"),
-            ("grep", "-A", "3", "--no-index", "-e", "x"),
-            ("grep", "--max-depth", "2", "--threads", "1", "--no-index", "x"),
-            ("diff", "--no-index", "a", "b"),
-            ("diff", "--stat", "--no-index", "a", "b"),
+        # Written out here rather than read from NO_INDEX_SPELLINGS: each abbreviation from --no-i to the whole option.
+        spellings = ["--no-i", "--no-in", "--no-ind", "--no-inde", "--no-index"]
+        self.assertEqual(frozenset(spellings), git_client.NO_INDEX_SPELLINGS)
+        shapes: dict[str, Callable[[str], list[str]]] = {
+            "first": lambda flag: ["grep", flag, "-n", "-e", "needle", "--"],
+            "among options": lambda flag: ["grep", "-n", flag, "-e", "needle", "--"],
+            "after a pattern": lambda flag: ["grep", "-n", "-e", "needle", flag, "--", "a.txt"],
+            "after a revision": lambda flag: ["grep", "-n", "-e", "needle", "HEAD", flag],
+            "after --": lambda flag: ["grep", "-n", "-e", "needle", "--", flag],
+            "behind git's options": lambda flag: ["-c", "a.b=c", "grep", flag, "-e", "needle"],
+            "diff": lambda flag: ["diff", "--stat", flag, "a", "b"],
         }
-        # A pattern, a path, or a revision that reads --no-index is no option, as git reads it.
-        allowed = {
-            ("grep", "-e", "x"),
-            ("grep", "--full-name", "-e", "--no-index", "HEAD", "--"),
-            ("grep", "-n", "-f", "--no-index", "HEAD"),
-            ("grep", "-n", "needle", "--no-index"),
-            ("grep", "-n", "-e", "x", "--", "--no-index"),
-            ("grep", "-C", "--no-index", "-e", "x"),
-            ("diff", "a", "b"),
-            ("diff", "--", "--no-index", "b"),
-            ("check-ignore", "-q", "--no-index", "a"),
-            ("--no-index", "status"),
-        }
-        for arguments in sorted(refused | allowed):
+        for spelling in spellings:
+            for shape, build in shapes.items():
+                arguments = build(spelling)
+                with self.subTest(spelling=spelling, shape=shape):
+                    runner, calls = scripted(GitResult(0, "", ""))
+                    with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
+                        GitClient(runner).run(arguments)
+                    with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
+                        GitClient(runner).stream(arguments).__enter__()
+                    self.assertEqual([], calls, "refused before git starts")
+        allowed = (
+            ["grep", "-n", "--no-ignore-case", "-e", "x"],
+            ["diff", "--no-indent-heuristic", "a", "b"],
+            ["check-ignore", "-q", "--no-index", "a"],
+            ["--no-index", "status"],
+            ["grep", "-n", "-e", "x", "--", "a.txt"],
+        )
+        for arguments in allowed:
             with self.subTest(arguments=arguments):
                 runner, calls = scripted(GitResult(0, "", ""))
-                if arguments in refused:
-                    with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
-                        GitClient(runner).run(list(arguments))
-                    with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
-                        GitClient(runner).stream(list(arguments)).__enter__()
-                    self.assertEqual([], calls, "refused before git starts")
-                else:
-                    GitClient(runner).run(list(arguments))
-                    self.assertEqual(["git", *arguments], calls[0][0])
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_a_pattern_goes_right_after_the_subcommand_and_any_spelling_of_no_index_is_searched_for(self) -> None:
+        for spelling in ("--no-i", "--no-index", "-e", "--"):
+            with self.subTest(pattern=spelling):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(["-c", "a.b=c", "grep", "-n", "HEAD", "--"], directory="d", pattern=spelling)
+                self.assertEqual(
+                    ["git", "-C", "d", "-c", "a.b=c", "grep", "-e", spelling, "-n", "HEAD", "--"], calls[0][0]
+                )
+        runner, _ = scripted(GitResult(0, "", ""))
+        with self.assertRaisesRegex(ValueError, "needs a subcommand"):
+            GitClient(runner).run([], pattern="x")
 
     def test_a_search_for_the_literal_no_index_runs_in_the_repository(self) -> None:
         (self.inner / "f.txt").write_bytes(b"--no-index\n")
         GitClient(timeout=60).output(["add", "f.txt"], directory=self.inner)
-        arguments = ["grep", "--null", "-n", "--full-name", "-e", "--no-index", "--cached", "--"]
-        found = GitClient(timeout=60).output(arguments, directory=self.inner)
+        arguments = ["grep", "--null", "-n", "--full-name", "--cached", "--"]
+        client = GitClient(timeout=60)
+        found = client.output(arguments, directory=self.inner, pattern="--no-index")
         self.assertEqual("content it did not write/f.txt\x001\x00--no-index\n", found)
+        with client.stream(arguments, directory=self.inner, pattern="--no-index") as stream:
+            stream.stdin.close()
+            self.assertEqual(found.encode(), stream.read(200))
+
+    def test_the_reviewed_forms_never_reach_git_unisolated(self) -> None:
+        # Each ran unisolated in a planted parent repository before the refusal read every argument.
+        (self.inner / "a.txt").write_bytes(b"needle\n")
+        with (self.repository / ".git" / "config").open("a", encoding="utf-8") as config:
+            config.write("[grep]\n\tcolumn = true\n")
+        for arguments in (
+            ["grep", "-n", "-e", "needle", "--no-index", "--", "a.txt"],
+            ["grep", "-n", "--no-inde", "-e", "needle", "--"],
+        ):
+            with self.subTest(arguments=arguments):
+                with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
+                    GitClient(timeout=60).run(arguments, directory=self.inner)
+                found = GitClient(timeout=60, isolated=True).output(arguments, directory=self.inner)
+                self.assertEqual("a.txt:1:needle\n", found)
 
     def test_an_isolated_grep_without_an_index_reads_no_repository_around_it(self) -> None:
         (self.inner / "f.txt").write_bytes(b"needle\n")
