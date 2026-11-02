@@ -2466,3 +2466,18 @@ def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_platfo
     # Windows folds the two names into one file; Linux keeps two files, and both are read.
     expected = [notes] if sys.platform == "win32" else [notes, lower]
     assert memory_audit.destination_files(None, [notes, lower]) == expected
+
+
+def test_a_destination_pattern_match_under_a_skipped_folder_below_the_top_is_passed_over(tmp_path: Path) -> None:
+    guide = write(tmp_path / "docs" / "guide.md", "rules\n")
+    write(tmp_path / "docs" / "node_modules" / "vendored.md", "rules\n")
+    write(tmp_path / "docs" / "notes" / "packages" / "deep.md", "rules\n")
+    assert memory_audit.destination_files(tmp_path, []) == [guide]
+
+
+def test_a_folder_a_destination_pattern_matches_is_passed_over(tmp_path: Path) -> None:
+    guide = write(tmp_path / "docs" / "guide.md", "rules\n")
+    (tmp_path / "docs" / "folder.md").mkdir()
+    (tmp_path / "AGENTS.md").mkdir()
+    (tmp_path / "README.md").mkdir()
+    assert memory_audit.destination_files(tmp_path, []) == [guide]
