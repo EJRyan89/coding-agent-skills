@@ -15,8 +15,6 @@ import time
 from pathlib import Path
 from typing import TextIO, assert_never
 
-import file_presence
-
 from . import (
     config,
     errors,
@@ -347,12 +345,7 @@ def _reject_other_checkout(paths: Paths, source_id: str, take_over: bool) -> Non
         return
     current = platform_support.normalize(paths.source_dir)
     if not take_over:
-        try:
-            gone = (
-                "" if file_presence.is_directory(Path(recorded), other_is_absent=True) else ", which no longer exists"
-            )
-        except OSError as exc:
-            gone = f", which could not be read ({exc.strerror or exc})"
+        gone = source.checkout_gone(Path(recorded))
         raise DeployError(
             f"ERROR: Source '{source_id}' is deployed from {recorded}{gone}, not from this checkout, {current}.",
             f"Deploy from {recorded}; or, if this checkout replaces it, rerun with {TAKE_OVER_SOURCE} to record this "

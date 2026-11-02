@@ -96,6 +96,15 @@ def load_source_id(paths: Paths) -> str:
     return source_id
 
 
+def checkout_gone(directory: Path) -> str:
+    """What a refusal adds after a checkout the manifest records: nothing while a folder is there, that it no longer
+    exists when nothing or something else is, and the reason when its stat fails, which is never read as gone."""
+    try:
+        return "" if file_presence.is_directory(directory, other_is_absent=True) else ", which no longer exists"
+    except OSError as exc:
+        return f", which could not be read ({exc.strerror or exc})"
+
+
 def is_linked_worktree(source_dir: Path) -> bool:
     """Whether source_dir is a linked git worktree: its .git file names a git directory holding a commondir file.
 
