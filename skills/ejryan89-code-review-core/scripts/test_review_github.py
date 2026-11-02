@@ -292,6 +292,27 @@ class GitHubTests(unittest.TestCase):
                 with self.assertRaisesRegex(GitHubError, message) as context:
                     GitHubClient(answering(response)).list_closing_issues("a/b", 12, first=1)
                 self.assertEqual(kind, context.exception.kind)
+        # Each refusal names the field it read, whole, so a reader can find it in GitHub's answer.
+        node = "graphql response.data.repository.pullRequest.closingIssuesReferences.nodes[0]"
+        named: list[tuple[list[Any], str]] = [
+            (["x"], f'{node} must be an object, found string "x"'),
+            ([{**issue, "repository": "a/b"}], f'{node}.repository must be an object, found string "a/b"'),
+            ([{**issue, "repository": {}}], f"{node}.repository.nameWithOwner must be a non-empty string, found null"),
+            ([{**issue, "body": 5}], f"{node}.body must be a string or null, found integer 5"),
+        ]
+        for nodes, message in named:
+            with self.subTest(message=message), self.assertRaises(GitHubError) as context:
+                GitHubClient(answering(answer(nodes))).list_closing_issues("a/b", 12, first=1)
+            self.assertEqual(message, str(context.exception))
+        # An empty body is a body, kept as it is.
+        issues, _ = GitHubClient(answering(answer([{**issue, "body": ""}]))).list_closing_issues("a/b", 12, first=1)
+        self.assertEqual([""], [item["body"] for item in issues])
+        for number in (0, -1):
+            with self.subTest(number=number), self.assertRaises(GitHubInputError) as refused:
+                GitHubClient(answering(answer([]))).list_closing_issues("a/b", number, first=1)
+            self.assertEqual(
+                f"pull number must be an integer of at least 1, found integer {number}", str(refused.exception)
+            )
 
     def test_graphql_failures_never_return_partial_nodes(self) -> None:
         connection = ("repository", "pullRequests")

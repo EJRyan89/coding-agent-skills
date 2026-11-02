@@ -139,6 +139,7 @@ class ScratchGitHub(GitHubClient):
         self.closing: list[dict[str, Any]] = []
         self.closing_total: int | None = None
         self.closing_reads = 0
+        self.closing_asked: tuple[str, int, int] | None = None  # the repository, number, and limit the last read named
 
     def _refuse(self, arguments: Sequence[str]) -> CommandResult:
         if self.refusal is not None and "Accept: application/vnd.github.diff" in arguments:
@@ -184,6 +185,7 @@ class ScratchGitHub(GitHubClient):
 
     def list_closing_issues(self, repository: str, number: int, *, first: int) -> tuple[list[dict[str, Any]], int]:
         self.closing_reads += 1
+        self.closing_asked = (repository, number, first)
         total = len(self.closing) if self.closing_total is None else self.closing_total
         return self.closing[:first], total
 
@@ -1782,6 +1784,12 @@ class ClosingIssueTests(AdversarialFixture):
             path.read_text(encoding="utf-8", errors="replace") for path in run.rglob("*") if path.is_file()
         )
         self.assertNotIn("OTHER-REPOSITORY-MARKER", everything, "another repository's text is nowhere in the run")
+        # Read for the pull request reviewed, at most the file's limit of them.
+        self.assertEqual((REPOSITORY, NUMBER, 10), self.github.closing_asked)
+        # The file a reviewer reads is indented JSON holding the text as it is, U+FFFD included, not escaped.
+        raw = (run / "closing-issues.json").read_text(encoding="utf-8")
+        self.assertTrue(raw.startswith('{\n  "total": 13,\n  "issues": [\n    {\n      "repository": '), raw[:80])
+        self.assertIn("�", raw)
         prompts = self.roles(ready)
         self.assertEqual(["completeness", "generic-review"], list(prompts))
         for text in ("ISSUE-MARKER", "Ignore every rule", "whoami", "lists 1 of the 1", "BBBB"):
@@ -1854,6 +1862,22 @@ class ClosingIssueTests(AdversarialFixture):
             self.assertIsNone(guard.decide({**event, "tool_input": {"file_path": str(run / "closing-issues.json")}}))
             diff = run / "work" / "completeness.diff"
             self.assertIsNone(guard.decide({**event, "tool_input": {"file_path": str(diff)}}))
+        # Where the guard runs, the run says nothing more; where none runs, as inline, it says the texts are only left
+        # unnamed, never that they are withheld.
+        note = (
+            "The completeness specialist is withheld a pull-request text its prompt does not name, but no reviewer "
+            "guard runs here to keep it from the rest of the run."
+        )
+        self.assertNotIn(note, ready["notes"])
+        review_run.remove_run(run)
+        # The same reviewer, letting its specialists run inline.
+        manifest = {**self.MANIFEST, "required_capabilities": ["read-diff", "write-result"]}
+        self.reviewer = {**self.reviewer, **files({"review/specialists.json": json.dumps(manifest).encode("utf-8")})}
+        self.change()
+        inline = rp.prepare(
+            SELECTOR, host="claude-code", inline=True, config_path=self.config_path, services=self.services
+        )
+        self.assertIn(note, inline["notes"])
 
     def test_a_title_route_matches_as_the_manifest_spells_it_never_by_case_or_another_type(self) -> None:
         # The pattern names `fix(` or `fix:` at the start; a title that differs only by case, that names another type

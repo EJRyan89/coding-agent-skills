@@ -346,7 +346,7 @@ def _write_roles(
     notes: list[str],
     lazy: bool = False,
     document_stage: str | None = None,
-    guarded: bool = True,
+    guarded: bool,
 ) -> tuple[list[RunRole], list[str]]:
     """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles
     and the changed files the plan leaves unreviewed. Every prompt names the `source-search` command, and a `lazy`
