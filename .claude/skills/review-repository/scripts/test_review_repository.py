@@ -967,9 +967,7 @@ class SiblingSpellingsTests(unittest.TestCase):
             "**A quoted line:**",
             "Report it as a SUGGESTION whose title starts `Question:`",
             "Anchor each finding on the added line of the fix",
-            "`OPEN <n>`",
-            "`QUESTIONS <n>`",
-            "`BLOCKED`",
+            "`blocked` when you report a reproduction, otherwise `clear`",
             "Categories: `Missed sibling`",
             "**MUST_FIX** for a reproduction. It blocks the merge",
         ):

@@ -84,9 +84,15 @@ def review_scenarios(*arguments: Any, **options: Any) -> list[Scenario]:
 REVIEW_REPOSITORY_ROLES = {
     "branch-name-command": "documentation-drift,sibling-search,skill-scripts,trust-boundary",
     "build-grant": "documentation-drift,generic-review,sibling-search,skill-contract,skill-scripts,upgrade-notes",
+    "closed-spellings": (
+        "documentation-drift,generic-review,sibling-search,sibling-spellings,skill-scripts,trust-boundary"
+    ),
     "drifted-guide": "documentation-drift,generic-review,sibling-search",
     "missed-sibling": "documentation-drift,generic-review,sibling-search",
     "misstated-exit-status": "documentation",
+    "open-spelling": (
+        "documentation-drift,generic-review,sibling-search,sibling-spellings,skill-scripts,trust-boundary"
+    ),
     "tested-change": "documentation-drift,generic-review,sibling-search",
     "text-read-policy": "documentation-drift,sibling-search,validation-policy",
     "undocumented-change": "documentation-drift,generic-review,sibling-search",
@@ -3492,9 +3498,11 @@ def test_a_document_scenario_runs_the_skill_on_its_staged_document(scenario: str
 REVIEW_REPOSITORY_EXPECTATIONS = {
     "branch-name-command": 1,
     "build-grant": 1,
+    "closed-spellings": 2,
     "drifted-guide": 2,
     "missed-sibling": 1,
     "misstated-exit-status": 1,
+    "open-spelling": 2,
     "tested-change": 2,
     "text-read-policy": 1,
     "undocumented-change": 2,
@@ -3574,10 +3582,10 @@ def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_hold
 
 def test_the_parametrized_sweeps_name_every_scenario_and_add_up_to_the_skills_whole_rows() -> None:
     # Each sweep's cases together are its skill's whole run: every scenario once, whose counts are the totals a full
-    # run's row gives, 25 for review-document and 14 for review-repository on each model.
+    # run's row gives, 25 for review-document and 18 for review-repository on each model.
     for skill, cases, total in (
         ("review-document", REVIEW_DOCUMENT_EXPECTATIONS, 25),
-        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 14),
+        ("review-repository", REVIEW_REPOSITORY_EXPECTATIONS, 18),
     ):
         assert [scenario.name for scenario in review_scenarios(skill)] == list(cases)
         assert sum(cases.values()) == total

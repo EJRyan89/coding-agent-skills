@@ -26,7 +26,7 @@ Do not report:
 - the fix's tests, wording, or style;
 - a gap outside the issue's scope: name it in your summary as one to file against the next milestone.
 
-End your summary with `OPEN <n>`, the reproduced and quoted findings; `QUESTIONS <n>`; and `BLOCKED` when you report a reproduction, otherwise `CLEAR`.
+End your summary with the number of open findings, reproduced or quoted, then the number of questions, then `blocked` when you report a reproduction, otherwise `clear`, as in `open 2, questions 1, blocked`.
 
 Categories: `Missed sibling` for each finding and question.
 
