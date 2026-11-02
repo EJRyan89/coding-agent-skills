@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
+import shutil
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from presence_denial import denied as stat_denied
 
 from tools import skill_shims
 
@@ -171,6 +175,67 @@ class SkillShimsTestCase(unittest.TestCase):
                     errors.getvalue(),
                 )
                 self.assertFalse((self.root / SHIM_PATH).exists())
+
+    def test_a_shim_path_misplaced_or_unexamined_ends_the_run_as_failed_never_as_a_missing_shim(self) -> None:
+        shims = self.root / ".agents/skills"
+        shim = self.root / SHIM_PATH
+        policy = shim.parent / "agents/openai.yaml"
+        user_only = SKILL.replace("---\n\n#", "disable-model-invocation: true\n---\n\n#")
+        not_a_file, not_a_folder = f"[Errno {errno.EISDIR}] not a file", f"[Errno {errno.ENOTDIR}] not a directory"
+        denied = f"[Errno {errno.EACCES}] Access is denied"
+        # Each row: the skill's SKILL.md, the shim files written first, the path given a folder, a file, or a refused
+        # stat, the arguments, and the error the FAILED line names it with.
+        rows = [
+            (SKILL, (), shim, "folder", (), not_a_file),
+            (SKILL, (), shim, "folder", ("--write",), not_a_file),
+            (user_only, (SHIM_PATH,), policy, "folder", (), not_a_file),
+            (SKILL, (), shims, "file", (), not_a_folder),
+            (SKILL, (SHIM_PATH,), shims, "denied", (), denied),
+            (SKILL, (SHIM_PATH,), shim, "denied", (), denied),
+            (SKILL, (SHIM_PATH,), shim, "denied", ("--write",), denied),
+        ]
+        for skill, written, path, place, arguments, error in rows:
+            with self.subTest(path=path.relative_to(self.root).as_posix(), place=place, arguments=arguments):
+                self.write(".claude/skills/widget-check/SKILL.md", skill)
+                for relative in written:
+                    self.write(relative.as_posix(), SHIM)
+                if place == "folder":
+                    path.mkdir(parents=True)
+                elif place == "file":
+                    self.write(path.relative_to(self.root).as_posix(), "../.claude/skills\n")
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), stat_denied(path) if place == "denied" else nullcontext():
+                    code, output = self.run_main(*arguments)
+                self.assertEqual((2, "", f"FAILED {error}: {str(path)!r}\n"), (code, output, errors.getvalue()))
+                if shims.is_dir():
+                    shutil.rmtree(shims)
+                else:
+                    shims.unlink()
+
+    def test_a_skill_shim_or_stray_entry_it_cannot_examine_or_list_fails_never_is_told_to_be_deleted(self) -> None:
+        denied = f"[Errno {errno.EACCES}] Access is denied"
+        # Each row: the files written, the path refused, whether its stat is refused too or only its listing.
+        rows: list[tuple[tuple[str, ...], str, bool]] = [
+            ((SHIM_PATH.as_posix(), ".agents/skills/stray/notes.md"), ".agents/skills/stray", True),
+            ((SHIM_PATH.as_posix(), ".agents/skills/gone/SKILL.md"), ".agents/skills/gone/SKILL.md", True),
+            ((SHIM_PATH.as_posix(),), ".claude/skills", False),
+            ((SHIM_PATH.as_posix(),), ".claude/skills/widget-check/SKILL.md", True),
+            (
+                (SHIM_PATH.as_posix(), ".agents/skills/widget-check/agents/extra.txt"),
+                ".agents/skills/widget-check/agents",
+                False,
+            ),
+        ]
+        for written, refused, stat in rows:
+            with self.subTest(refused=refused, stat=stat):
+                for relative in written:
+                    self.write(relative, SHIM)
+                path = self.root / refused
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), stat_denied(path, stat=stat):
+                    code, output = self.run_main()
+                self.assertEqual((2, "", f"FAILED {denied}: {str(path)!r}\n"), (code, output, errors.getvalue()))
+                shutil.rmtree(self.root / ".agents")
 
     def test_a_user_only_skill_gets_the_codex_policy_file_beside_its_shim(self) -> None:
         self.write(

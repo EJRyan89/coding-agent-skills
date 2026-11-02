@@ -19,6 +19,7 @@ The entrypoint sample replaces the fixture's generated commit IDs with <base-com
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import sys
@@ -35,6 +36,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 
+import file_presence
 import json_reader
 import json_writer
 import review_dispatch
@@ -77,7 +79,7 @@ def _prepared_prompts(fixture: Path, directory: Path) -> dict[str, str]:
         prepared = review_pipeline.prepare_fixture(fixture, host="claude-code", config_path=config, run_directory=run)
         return {role["id"]: Path(role["prompt_file"]).read_text(encoding="utf-8") for role in prepared["roles"]}
     finally:
-        if run.exists():
+        if run.exists():  # a throwaway folder's cleanup, which the folder's own removal after the render repeats
             review_run.remove_run(run)
 
 
@@ -156,7 +158,7 @@ def copilot_entrypoint(directory: Path) -> str:
         pull = request["pull_request"]
         return prompts[0].replace(pull["base_sha"], "<base-commit>").replace(pull["head_sha"], "<head-commit>")
     finally:
-        if run.exists():
+        if run.exists():  # a throwaway folder's cleanup, which the folder's own removal after the render repeats
             review_run.remove_run(run)
 
 
@@ -238,20 +240,50 @@ def _sample(root: Path, relative: Path) -> str | None:
         raise RenderError(f"cannot read {relative.as_posix()}: {exc}") from exc
 
 
+def _present(root: Path, relative: Path) -> bool:
+    """Whether a sample is there; one whose stat fails, or a folder in its place, is a RenderError, never missing."""
+    try:
+        return file_presence.is_present(root / relative)
+    except OSError as exc:
+        raise RenderError(f"cannot read {relative.as_posix()}: {exc}") from exc
+
+
+def _raise(error: OSError) -> None:
+    raise error
+
+
+def _listed(root: Path) -> tuple[list[Path], list[Path]]:
+    """The files, every entry that is not a folder, and the folders below the samples folder, each sorted, or none when
+    there is no such folder. One whose stat fails, a file in its place, or a folder below it that cannot be listed is
+    a RenderError, never an empty folder: os.walk raises there, where rglob would match nothing."""
+    samples = root / SAMPLES
+    files: list[Path] = []
+    folders: list[Path] = []
+    try:
+        if not file_presence.is_directory(samples):
+            return [], []
+        for folder, _, names in os.walk(samples, onerror=_raise):
+            if Path(folder) != samples:
+                folders.append(Path(folder))
+            files.extend(Path(folder, name) for name in names)
+    except OSError as exc:
+        raise RenderError(f"cannot read {SAMPLES.as_posix()}: {exc}") from exc
+    return sorted(files), sorted(folders)
+
+
 def problems(root: Path, renderers: Renderers | None = None) -> list[str]:
     """Every sample that is missing, differs from what renders now, or renders from nothing; empty when current."""
     expected = rendered(RENDERERS if renderers is None else renderers)
     found: list[str] = []
     for relative, text in sorted(expected.items()):
-        path = root / relative
-        if not path.is_file():
+        if not _present(root, relative):
             found.append(f"{relative.as_posix()} does not exist; {WRITE_HINT}")
         elif _sample(root, relative) != text:
             found.append(f"{relative.as_posix()} is stale; {WRITE_HINT}")
     found.extend(
         f"{path.relative_to(root).as_posix()} is no rendered prompt; {WRITE_HINT}"
-        for path in (sorted((root / SAMPLES).rglob("*")) if (root / SAMPLES).is_dir() else [])
-        if path.is_file() and path.relative_to(root) not in expected
+        for path in _listed(root)[0]
+        if path.relative_to(root) not in expected
     )
     return found
 
@@ -265,11 +297,13 @@ def write(root: Path, renderers: Renderers | None = None) -> None:
             path.write_text(text, encoding="utf-8", newline="\n")
         except OSError as exc:
             raise RenderError(f"cannot write {relative.as_posix()}: {exc}") from exc
-    for path in sorted((root / SAMPLES).rglob("*"), reverse=True) if (root / SAMPLES).is_dir() else []:
+    files, folders = _listed(root)
+    # Each extra file, then each folder left empty, the deepest first.
+    for path in [*(path for path in files if path.relative_to(root) not in expected), *reversed(folders)]:
         try:
-            if path.is_file() and path.relative_to(root) not in expected:
+            if path in files:
                 path.unlink()
-            elif path.is_dir() and not any(path.iterdir()):
+            elif not any(path.iterdir()):
                 path.rmdir()
         except OSError as exc:
             raise RenderError(f"cannot remove {path.relative_to(root).as_posix()}: {exc}") from exc

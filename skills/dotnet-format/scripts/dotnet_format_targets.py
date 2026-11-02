@@ -46,6 +46,7 @@ FILE_LIST cannot hold, or a file cannot be read or written, it prints
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import re
 import sys
@@ -72,6 +73,7 @@ from dotnet_solution import (
     solution_projects,
 )
 from executable_locator import find_executable
+from file_presence import ABSENT, NotAFile, is_present
 from flat_text import fact_line, flat_text
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
 from folders_up import folders_up
@@ -320,19 +322,59 @@ def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str
 
 
 def changed_files(services: Services, root: Path, base: str) -> list[str]:
-    """Committed, uncommitted, and untracked C# files changed on this branch that still exist."""
+    """Committed, uncommitted, and untracked C# files changed on this branch that still exist. Raises Failed for one
+    it cannot examine, or that is something other than a file, which it cannot tell from a deleted one."""
     names = set(
         git_paths(services, root, "diff", "-z", "--name-only", "--diff-filter=AMR", f"{base}...HEAD", "--", "*.cs")
     )
     names |= set(git_paths(services, root, "diff", "-z", "--name-only", "HEAD", "--", "*.cs"))
     names |= set(git_paths(services, root, "ls-files", "-z", "--others", "--exclude-standard", "--", "*.cs"))
-    return sorted(name for name in names if (root / name).is_file())
+    return sorted(name for name in names if still_there(root, name))
+
+
+def still_there(root: Path, name: str) -> bool:
+    """Whether a changed file is still a file: False only when nothing is at its path, as for one deleted."""
+    try:
+        return is_present(root / name)
+    except OSError as error:
+        raise Failed(f"the changed file {name} cannot be examined: {error}") from None
+
+
+def listed_files(folder: Path, wanted: Callable[[str], bool]) -> list[Path]:
+    """The files directly in `folder` whose names `wanted` accepts, sorted: a folder or anything else by such a name
+    is none, and so is every file of a folder that is not there. Raises Failed for a folder it cannot list, or such an
+    entry it cannot examine, which could be one; it lists with iterdir, which raises there, where glob matches nothing.
+    """
+    try:
+        entries = sorted(folder.iterdir())
+    except ABSENT:
+        return []
+    except OSError as error:
+        raise Failed(f"{folder} cannot be listed: {error}") from None
+    found = []
+    for path in entries:
+        if not wanted(path.name):
+            continue
+        try:
+            if is_present(path):
+                found.append(path)
+        except NotAFile:
+            continue
+        except OSError as error:
+            raise Failed(f"{path} cannot be examined: {error}") from None
+    return found
+
+
+def is_project_name(name: str) -> bool:
+    """Whether a name is a C# project's, as `glob("*.csproj")` matches one."""
+    return fnmatch.fnmatch(name, "*.csproj")
 
 
 def owning_projects(root: Path, file: Path) -> list[Path]:
-    """The .csproj files in the nearest directory at or above the file, up to and including the root."""
+    """The .csproj files in the nearest directory at or above the file, up to and including the root; a folder or
+    project file it cannot examine fails, since passing it by could miss the ASP.NET project that owns the file."""
     for folder in folders_up(file.parent, root):
-        projects = sorted(path for path in folder.glob("*.csproj") if path.is_file())
+        projects = listed_files(folder, is_project_name)
         if projects:
             return projects
     return []
@@ -390,7 +432,7 @@ def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
     """Solutions in the nearest directory from cwd up to the root, or none."""
     inside = any(same_path(folder) == same_path(root) for folder in folders_up(cwd))
     for folder in folders_up(cwd if inside else root, root):
-        found = sorted(path for path in folder.iterdir() if is_solution(path) and path.is_file())
+        found = listed_files(folder, lambda name: is_solution(Path(name)))
         if found:
             return found
     return []

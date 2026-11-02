@@ -56,6 +56,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import frontmatter
 import json_reader
 import json_writer
@@ -123,7 +124,11 @@ def load_source(directory: Path) -> deploy_source.Source:
 def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:
     """The source's marketplace entries by plugin name. A source tree holds no plugin manifest of its own, which
     would make the skills in its checkout read as a plugin's."""
-    if (directory / PLUGIN_MANIFEST).exists():
+    try:
+        manifest_there = file_presence.is_occupied(directory / PLUGIN_MANIFEST)
+    except OSError as exc:
+        raise BuildError(f"{directory / PLUGIN_MANIFEST} cannot be examined: {exc}") from exc
+    if manifest_there:
         raise BuildError(f"{directory / PLUGIN_MANIFEST} exists; a source tree is never a plugin itself")
     try:
         document = json_reader.read_file(directory / MARKETPLACE)
@@ -279,9 +284,13 @@ def assemble(
 
 
 def load_readme(directory: Path) -> bytes | None:
-    """The README every plugin of the source tree carries, or None when the tree has none."""
+    """The README every plugin of the source tree carries, or None when the tree has none; one whose stat or read
+    fails, or a folder in its place, is a BuildError, never a build without it."""
     path = directory / README
-    return path.read_bytes() if path.is_file() else None
+    try:
+        return path.read_bytes() if file_presence.is_present(path) else None
+    except OSError as exc:
+        raise BuildError(f"{path} cannot be read: {exc}") from exc
 
 
 def archive_bytes(files: Mapping[str, bytes]) -> bytes:
@@ -307,7 +316,13 @@ def output_directory(requested: Path | None, source_dir: Path) -> Path:
     holder = skills_directory_holding(target)
     if holder is not None:
         raise BuildError(f"--output {requested} lies inside the skills directory {holder}, which a plugin never enters")
-    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+    try:
+        empty = not file_presence.is_occupied(target) or (
+            file_presence.is_directory(target, other_is_absent=True) and not any(target.iterdir())
+        )
+    except OSError as exc:
+        raise BuildError(f"--output {requested} cannot be examined: {exc}") from exc
+    if not empty:
         raise BuildError(f"--output {requested} exists and is not an empty directory")
     target.mkdir(parents=True, exist_ok=True)
     return target
