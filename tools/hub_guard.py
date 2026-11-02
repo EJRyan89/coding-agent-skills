@@ -239,6 +239,12 @@ DENY_REASON = (
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
 
 
+# Commands whose program the commands reader cannot read, by the scope that starts them, and why.
+COMMANDS_ALLOWED = {
+    "powershell_events": "starts the pwsh platform_support.find_pwsh located on the session's PATH",
+}
+
+
 GIT_STATUS_ALLOWED = {
     "guard_enabled": (
         "reports git's reason to the user: exit 1 is git's answer that the opt-in is unset, and any other failure "

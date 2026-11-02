@@ -11,9 +11,9 @@ Run it from the hub on main. One tick:
 - holds each admitted pull request whose body has a line `Shepherd-hold: <reason>`: it neither arms it nor lets it
   merge, turning off an auto-merge already armed, and names it with the reason, while it still names, judges, and
   reruns for it as for any other; deleting the line releases it;
-- admits only the pull requests whose head branch is in this repository, and names every other one, such as one
-  opened from a fork, as not admitted: it arms, judges, updates, and reruns nothing for it, and it holds no other
-  pull request's update;
+- admits only the pull requests whose head branch is in this repository and that would merge into main, and names
+  every other one, such as one opened from a fork or onto another branch, as not admitted: it arms, judges, updates,
+  and reruns nothing for it, and it holds no other pull request's update;
 - arms squash auto-merge on each admitted one that has none and is not held;
 - names each pull request whose recorded head is not the commit its branch on origin holds, because GitHub missed a
   push, and neither judges nor updates it, since GitHub refuses to update a stale head;
@@ -64,9 +64,10 @@ Every line is one fact:
                                        list of armed, disarmed, updated, rerun (would-arm, would-disarm,
                                        would-update, and would-rerun with --dry-run), held, an update a HOLD line
                                        holds, and next-tick, a behind pull request left for a later tick
-    NOT_ADMITTED #<number> <branch> head <commit> from another repository
-                                       a pull request whose head branch is not in this repository, left to the
-                                       maintainer: never armed, judged, updated, or rerun
+    NOT_ADMITTED #<number> <branch> head <commit> from another repository|onto <base>
+                                       a pull request whose head branch is not in this repository, or that would
+                                       merge into a branch other than main, left to the maintainer: never armed,
+                                       judged, updated, or rerun
     OUT_OF_STEP #<number> <branch> head <commit> branch <commit>
                                        a pull request whose recorded head is not its branch's commit on origin,
                                        neither judged nor updated until its owner pushes again
@@ -149,7 +150,7 @@ OPEN_LISTED = 100
 MERGED_LISTED = 100
 PULL_FIELDS = (
     "number,headRefName,headRefOid,isCrossRepository,isDraft,mergeStateStatus,autoMergeRequest,files,statusCheckRollup,"
-    "body"
+    "body,baseRefName"
 )
 # The line in a pull request's body that holds it from arming and merging, with its reason; deleting it releases it.
 HOLD_LINE = re.compile(r"^Shepherd-hold:[ 	]*(.*?)[ 	]*$", re.MULTILINE)
@@ -163,6 +164,9 @@ UPDATABLE = frozenset({"SUCCESS", "NEUTRAL", "PENDING"})
 UNJUDGED = UPDATABLE | {"MISSING"}
 FAILED_LEG = frozenset({"failure", "cancelled", "timed_out", "startup_failure"})
 RUN_URL = re.compile(r"/actions/runs/(\d+)")
+# The kinds of entry gh lists in a check rollup: a check run, which a workflow's job reports, and a commit status.
+CHECK_RUN = "CheckRun"
+STATUS_CONTEXT = "StatusContext"
 # What GitHub puts before each log line: a timestamp, and with --log-failed the job's and step's names before it.
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?")
 ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -233,6 +237,7 @@ class Pull:
     cross_repository: bool
     draft: bool
     hold: str | None  # the reason a Shepherd-hold line gives, or None when none holds it
+    base: str  # the branch it would merge into
 
 
 @dataclass
@@ -364,6 +369,23 @@ def member(entry: dict[str, Any], key: str, kind: type, what: str) -> Any:
     return value
 
 
+def reported(entry: dict[str, Any], key: str, kind: type, what: str, *, empty: bool = True) -> Any:
+    """`entry`'s `key` as `member` reads it, or the malformed GitHubError naming `what` when it is absent or null, or,
+    without `empty`, empty text: a member whose value decides a write is read only as GitHub reported it, never as a
+    default."""
+    value = member(entry, key, kind, what)
+    if value is None or (not empty and value == ""):
+        raise malformed(f"{what} without its {key}")
+    return value
+
+
+def present(entry: dict[str, Any], key: str, what: str) -> None:
+    """Raise the malformed GitHubError naming `what` when the listing leaves `key` out: a member GitHub reports as null
+    for "none" is read as none only when the listing carries it."""
+    if key not in entry:
+        raise malformed(f"{what} without its {key}")
+
+
 def run_of(entry: dict[str, Any]) -> int | None:
     url = member(entry, "detailsUrl", str, "a check")
     match = RUN_URL.search(url) if url is not None else None
@@ -374,32 +396,50 @@ def run_of(entry: dict[str, Any]) -> int | None:
 def required_check(rollup: Any) -> Check:
     """The required check's state in the newest run on the head, PENDING while that run's legs run before it starts,
     and MISSING without it, with the share of that run's legs that finished. An older run on the same head, such as
-    one a newer run cancelled, is not read."""
+    one a newer run cancelled, is not read.
+
+    The state gates updating a branch and the pre-merge review, so each member it rests on is read only as GitHub
+    reported it: a check run without its name, workflow, status, conclusion, start, or URL, or a Validation one whose
+    URL names no run, is malformed, never a check of another workflow, an older run, or a pending one. A commit
+    status (a StatusContext) carries none of these and belongs to no workflow, so it is passed over by its kind."""
     # GitHub gives a head with no status at all a null rollup.
     listed = objects([] if rollup is None else rollup, "a check rollup")
+    runs: list[tuple[dict[str, Any], int]] = []
     for entry in listed:
-        # A check's URL is read, and checked, only where the run it names matters (run_of).
-        for key in ("name", "workflowName", "status", "conclusion", "startedAt"):
-            member(entry, key, str, "a check")
-    entries = [entry for entry in listed if entry.get("workflowName") == REQUIRED_CHECK]
-    newest = max((run_of(entry) or 0 for entry in entries), default=0)
-    entries = [entry for entry in entries if (run_of(entry) or 0) == newest]
-    named = [entry for entry in entries if entry.get("name") == REQUIRED_CHECK]
-    legs = [entry for entry in entries if entry.get("name") != REQUIRED_CHECK]
-    progress = sum(entry.get("status") == "COMPLETED" for entry in legs) / len(legs) if legs else 0.0
+        kind = reported(entry, "__typename", str, "a check", empty=False)
+        if kind == STATUS_CONTEXT:
+            continue
+        if kind != CHECK_RUN:
+            raise malformed(f"a check of a kind the shepherd does not know, {flat_text(kind)!r}")
+        for key in ("name", "workflowName", "status", "detailsUrl"):
+            reported(entry, key, str, "a check", empty=False)
+        # gh reports a run that has not finished with an empty conclusion, and one not started with a zero start.
+        for key in ("conclusion", "startedAt"):
+            reported(entry, key, str, "a check")
+        if entry["workflowName"] == REQUIRED_CHECK:
+            run = run_of(entry)
+            if run is None:
+                raise malformed(f"a {REQUIRED_CHECK} check whose URL names no run")
+            runs.append((entry, run))
+    if not runs:
+        return Check("MISSING", None)
+    newest = max(run for _, run in runs)
+    entries = [entry for entry, run in runs if run == newest]
+    named = [entry for entry in entries if entry["name"] == REQUIRED_CHECK]
+    legs = [entry for entry in entries if entry["name"] != REQUIRED_CHECK]
+    progress = sum(entry["status"] == "COMPLETED" for entry in legs) / len(legs) if legs else 0.0
     if named:
-        entry = max(named, key=lambda item: str(item.get("startedAt") or ""))
-        if entry.get("status") != "COMPLETED":
-            return Check("PENDING", run_of(entry), progress)
-        return Check(str(entry.get("conclusion") or "UNKNOWN").upper(), run_of(entry), 1.0)
-    if entries:
-        return Check("PENDING", run_of(entries[0]), progress)
-    return Check("MISSING", None)
+        # A rerun of the run adds another entry of the check; the one started last is the current one.
+        entry = max(named, key=lambda item: str(item["startedAt"]))
+        if entry["status"] != "COMPLETED":
+            return Check("PENDING", newest, progress)
+        return Check(entry["conclusion"].upper() or "UNKNOWN", newest, 1.0)
+    return Check("PENDING", newest, progress)
 
 
-def hold_of(body: Any) -> str | None:
+def hold_of(body: str) -> str | None:
     """The reason the first Shepherd-hold line in a pull request's body gives, or None when no line holds it."""
-    match = HOLD_LINE.search(body) if isinstance(body, str) else None
+    match = HOLD_LINE.search(body)
     if match is None:
         return None
     return flat_text(match.group(1)) or "no reason given"
@@ -411,30 +451,44 @@ def pull_of(item: Any) -> Pull:
     number = member(item, "number", int, "a pull request")
     branch = member(item, "headRefName", str, "a pull request")
     head = member(item, "headRefOid", str, "a pull request")
-    if number is None or branch is None or head is None:
+    # An empty branch or head would match no branch on origin, so out_of_step would read the pull request as in step.
+    if number is None or not branch or not head:
         raise malformed("a pull request without its number, branch, or head")
     listed_paths = [entry.get("path") for entry in objects(item.get("files"), "a pull request's files")]
     paths = tuple(path for path in listed_paths if isinstance(path, str) and path)
     if len(paths) != len(listed_paths):
         raise malformed("a pull request file without its path")
     what = "a pull request"
-    # Admission and arming read a false GitHub reported, never one an absent or null member defaults to.
+    # Admission, arming, holding, and the CONFLICT flag read only what GitHub reported, never a default an absent or
+    # null member falls back to: a body, a merge state, and the admission members are refused absent or null, and the
+    # two members GitHub reports as null for "none", autoMergeRequest (not armed) and statusCheckRollup (no checks), are
+    # refused absent and read null as none. An empty body is one GitHub reported, so it shows that no line holds it.
     cross_repository = member(item, "isCrossRepository", bool, what)
     draft = member(item, "isDraft", bool, what)
+    base = reported(item, "baseRefName", str, what, empty=False)
     if cross_repository is None or draft is None:
         raise malformed("a pull request without its isCrossRepository or isDraft")
+    for key in ("autoMergeRequest", "statusCheckRollup"):
+        present(item, key, what)
     return Pull(
         number,
         branch,
         head,
-        member(item, "mergeStateStatus", str, what) or "UNKNOWN",
+        # GitHub's merge states are an enumeration with no empty member, and an empty one would skip is_behind's probe.
+        reported(item, "mergeStateStatus", str, what, empty=False),
         member(item, "autoMergeRequest", dict, what) is not None,
-        required_check(item.get("statusCheckRollup")),
+        required_check(item["statusCheckRollup"]),
         paths,
         cross_repository,
         draft,
-        hold_of(member(item, "body", str, what)),
+        hold_of(reported(item, "body", str, what)),
+        base,
     )
+
+
+def admitted(pull: Pull) -> bool:
+    """Whether the tick acts on `pull`: its head branch is in this repository and it would merge into main."""
+    return not pull.cross_repository and pull.base == BASE
 
 
 def read_pulls(client: GitHubClient, repository: str) -> list[Pull]:
@@ -599,8 +653,8 @@ def judge(client: GitHubClient, repository: str, pull: Pull) -> Judgement:
     head = member(run, "headSha", str, "a workflow run")
     if not head:
         raise malformed("a workflow run without its head")
-    counted = member(run, "attempt", int, "a workflow run")
-    attempt = 1 if counted is None else counted
+    # The attempt decides whether a rerun is spent, so one the run does not report is never read as its first.
+    attempt = reported(run, "attempt", int, "a workflow run")
     if head != pull.head:
         return Judgement(pull.check.run, attempt, head, "superseded", "", "", "", short(pull.head))
     newest = newest_run(client, repository, head)
@@ -608,12 +662,14 @@ def judge(client: GitHubClient, repository: str, pull: Pull) -> Judgement:
         return Judgement(pull.check.run, attempt, head, "superseded", "", "", "", f"run {newest}")
     jobs = objects(run.get("jobs"), "a workflow run's jobs")
     for job in jobs:
-        for key in ("name", "conclusion"):
-            member(job, key, str, "a job")
+        member(job, "name", str, "a job")
+        # A leg's conclusion and the run's decide between a defect and a rerun, so one the listing leaves out is never
+        # read as a leg that passed or a run that was not cancelled; gh reports an unfinished one as empty text.
+        reported(job, "conclusion", str, "a job")
     if not jobs:
         # A finished run lists its jobs, so judging one that lists none would read no legs as legs that passed.
         raise malformed("a workflow run that lists no jobs")
-    member(run, "conclusion", str, "a workflow run")
+    reported(run, "conclusion", str, "a workflow run")
     legs = [job for job in jobs if job.get("name") != REQUIRED_CHECK and job.get("conclusion") in FAILED_LEG]
     if legs:
         judged = [judge_leg(client, repository, job) for job in legs]
@@ -854,8 +910,9 @@ def act(client: GitHubClient, repository: str, pull: Pull, outcome: Outcome, sta
     """Name `pull` when it is not admitted; otherwise arm it, and name it when it is out of step, where `stale` is its
     branch's commit on origin, or in conflict, and judge its red check."""
     named = f"{flat_text(pull.branch)} head {short(pull.head)}"
-    if pull.cross_repository:
-        outcome.lines.append(f"NOT_ADMITTED #{pull.number} {named} from another repository")
+    if not admitted(pull):
+        source = "from another repository" if pull.cross_repository else f"onto {flat_text(pull.base)}"
+        outcome.lines.append(f"NOT_ADMITTED #{pull.number} {named} {source}")
         outcome.flagged = True
         return
     arm(client, repository, pull, outcome, dry_run)
@@ -877,7 +934,7 @@ def premerge_reviews(
     ready = [
         Head(pull.number, pull.branch, pull.head)
         for pull in pulls
-        if not pull.cross_repository
+        if admitted(pull)
         and out_of_step(pull, heads) is None
         and pull.merge_state != CONFLICTED
         and pull.check.state in UPDATABLE
@@ -947,21 +1004,21 @@ def shepherd_pulls(
 ) -> bool:
     """Arm, hold, name, judge, and update the open pull requests that are not drafts, print their lines through
     `emit`, and return whether any line is for the shepherd's judgment."""
-    admitted = [pull for pull in pulls if not pull.cross_repository]
-    holds = {pull.number: path for pull in admitted if (path := holding_path(pull.files)) is not None}
+    acted_on = [pull for pull in pulls if admitted(pull)]
+    holds = {pull.number: path for pull in acted_on if (path := holding_path(pull.files)) is not None}
     for number, path in holds.items():
         emit(f"HOLD #{number} changes {flat_text(path)}")
     outcomes = {pull.number: Outcome() for pull in pulls}
     stale = {pull.number: branch for pull in pulls if (branch := out_of_step(pull, heads)) is not None}
     behind = {
         pull.number
-        for pull in admitted
+        for pull in acted_on
         if pull.number not in stale and is_behind(git, place.top, pull, heads.get(BASE))
     }
     blocked = set(stale) | {pull.number for pull in pulls if pull.merge_state == CONFLICTED}
     for pull in pulls:
         act(client, place.repository, pull, outcomes[pull.number], stale.get(pull.number), dry_run)
-    update(client, place.repository, admitted, (behind, blocked), holds, outcomes, dry_run)
+    update(client, place.repository, acted_on, (behind, blocked), holds, outcomes, dry_run)
     for pull in pulls:
         emit(pull_line(pull, outcomes[pull.number]))
         for line in outcomes[pull.number].lines:

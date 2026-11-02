@@ -5,11 +5,12 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -18,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import job_pool
 import shell_targets
 import toolchain
-from bounded_process import Finished
+from bounded_process import Finished, run_bounded
 from job_pool import Terminated
 from shell_targets import (
     PowerShellTarget,
@@ -377,6 +378,62 @@ class ShellTargetsFixtures(unittest.TestCase):
         self.assertNotIn("clean", message)
         self.assertIn("never suppress", message)
 
+    def test_markdown_shell_check_reads_no_shellcheck_setting_from_outside_the_repository(self) -> None:
+        # Each place ShellCheck reads its settings from on its own: an rc file above the folder the fragments are
+        # written to, one in the user's configuration folder, and SHELLCHECK_OPTS. Each turns the finding off when read.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            write_fixture_tree(root, {"docs/guide.md": "```bash\ncd somewhere\n```\n"})
+            above = Path(directory) / "rc-above"
+            configuration = Path(directory) / "rc-configuration"
+            (above / "temporary").mkdir(parents=True)
+            configuration.mkdir()
+            # ShellCheck refuses an rc file with a carriage return rather than reading it, so each is written with LF.
+            for rc in (above / ".shellcheckrc", configuration / "shellcheckrc"):
+                rc.write_text("disable=all\n", encoding="utf-8", newline="\n")
+            cases = {
+                "rc file above": (str(above / "temporary"), {}),
+                "configuration folder": (tempfile.gettempdir(), {"XDG_CONFIG_HOME": str(configuration)}),
+                "SHELLCHECK_OPTS": (tempfile.gettempdir(), {"SHELLCHECK_OPTS": "--exclude=SC2164"}),
+            }
+            for case, (temporary, environment) in cases.items():
+                with self.subTest(case=case):
+                    with (
+                        mock.patch.object(tempfile, "tempdir", temporary),
+                        mock.patch.dict(os.environ, environment),
+                        self.assertRaises(AssertionError) as raised,
+                    ):
+                        markdown_shell_check(root, [root / "docs" / "guide.md"])
+                    self.assertIn("docs/guide.md:2:1: warning:", str(raised.exception))
+                    self.assertIn("[SC2164]", str(raised.exception))
+
+    def test_script_analyzer_reads_no_settings_file_beside_a_target_or_in_the_working_folder(self) -> None:
+        # Given no settings, PSScriptAnalyzer reads PSScriptAnalyzerSettings.psd1 beside a file and, for a fence's
+        # text, in the folder it runs in; either turns the rule off when it is read.
+        unused = "function Get-Answer {\n    $unused = 1\n    'answer'\n}\n"
+        settings = "@{ ExcludeRules = @('PSUseDeclaredVarsMoreThanAssignments') }\n"
+        real = run_bounded
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            working = Path(directory) / "working"
+            write_fixture_tree(
+                root, {"tools/bad.ps1": unused, "tools/PSScriptAnalyzerSettings.psd1": settings, "docs/bad.md": ""}
+            )
+            (root / "docs" / "bad.md").write_text(f"```powershell\n{unused}```\n", encoding="utf-8")
+            write_fixture_tree(working, {"PSScriptAnalyzerSettings.psd1": settings})
+
+            def in_working(*arguments: Any, **options: Any) -> Finished:
+                return real(*arguments, **options, cwd=working)
+
+            for target, line in (("tools/bad.ps1", 2), ("docs/bad.md", 3)):
+                with self.subTest(target=target):
+                    with (
+                        mock.patch("deployer.platform_support.run_bounded", side_effect=in_working),
+                        self.assertRaises(AssertionError) as raised,
+                    ):
+                        script_analyzer_check(root, [root / target])
+                    self.assertIn(f"{target}:{line}: PSUseDeclaredVarsMoreThanAssignments", str(raised.exception))
+
     def test_script_analyzer_targets_scripts_and_powershell_fences(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -486,9 +543,11 @@ class ProgramEndingFixtures(unittest.TestCase):
     def static_shell_check(self, statuses: dict[int, Finished], shellcheck: str | None = SHELLCHECK) -> list[list[str]]:
         """Run the static shell checks over SCRIPTS, each start ending as statuses gives by its index, else with 0."""
         started: list[list[str]] = []
+        self.environments: list[Any] = []
 
-        def run(arguments: list[str], *_: object, **__: object) -> Finished:
+        def run(arguments: list[str], *_: object, **options: object) -> Finished:
             started.append(arguments)
+            self.environments.append(options.get("env"))
             return statuses.get(len(started) - 1, Finished(0, b"", b""))
 
         with (
@@ -506,11 +565,17 @@ class ProgramEndingFixtures(unittest.TestCase):
         self.assertEqual(
             [
                 *([self.BASH, "-n", name] for name in self.SCRIPTS),
-                [self.SHELLCHECK, "--severity=warning", *self.SCRIPTS],
+                [self.SHELLCHECK, "--norc", "--severity=warning", *self.SCRIPTS],
             ],
             self.static_shell_check({}),
             "no shell above a check, whose status a Bash above it would read as exit 0 when Windows ends it",
         )
+
+    def test_shellcheck_reads_no_rc_file_and_no_shellcheck_opts(self) -> None:
+        with mock.patch.dict(os.environ, {"SHELLCHECK_OPTS": "--exclude=SC2086"}):
+            started = self.static_shell_check({})
+        self.assertEqual("--norc", started[-1][1])
+        self.assertEqual("", self.environments[-1]["SHELLCHECK_OPTS"])
 
     # The status is the one Windows set on a Git Bash before it printed anything; the fixtures read it as Windows does,
     # on every platform, and test_platform_support holds how a signal ends a process elsewhere. A Bash above the check
