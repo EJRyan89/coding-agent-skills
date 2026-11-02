@@ -217,14 +217,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   universal claim names its exceptions.
 - **Why:** A test that restates a document's wording pins the drift instead of the promise, and a claim of "never" or
   "every" with an unstated exception misleads the reader who relies on it.
-- **Use:** `tests.validation.skill_layout:runtime_page_problems`
+- **Use:** `tests.validation.skill_layout:runtime_page_problems`, `tests.validation.workflows:token_reach_problems`
 - **Guard:** `tests/validation/markdown_links.py::MarkdownLinksPolicies::test_every_test_a_document_cites_exists`,
-  `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`
+  `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`,
+  `tests/validation/workflows.py::WorkflowsPolicies::test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so`
 - **Search for:** an `assertEqual(` or `assertIn(` on a literal sentence a document states, where the test could read
   the document or the shared constant; `never`, `always`, `nothing`, `every`, or `only` in a `SKILL.md` or a
   docstring, each checked for a test of its exception; a docstring's exit codes against the function's `return` and
-  `sys.exit(` values.
-- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869
+  `sys.exit(` values; a statement of which code a credential or the run's token reaches, checked for the code a
+  pull request can change at those paths.
+- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2237
 
 ### A reader refuses a shape it does not know
 
