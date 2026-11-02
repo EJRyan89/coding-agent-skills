@@ -291,7 +291,14 @@ refused while a guarded hub is in view, and what they do not see at all is named
   `[Environment]::SetEnvironmentVariable`, and the cmdlets that write the provider: `Set-Item`,
   `New-Item`, and `Set-Content` at their path, `Copy-Item` at its destination, `New-Item` on the provider's root
   with `-Name`, and `Rename-Item` with `-NewName`, while `Remove-Item` and `Clear-Item` remove one, and so does
-  assigning `$null`. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
+  assigning `$null`. `PSVariable.Set` is read on every receiver the resolver types as `PSVariableIntrinsics`,
+  quoted, parenthesized, scoped, through `$PSCmdlet`, or cast, and on one it does not type, which includes one typed
+  as `[object]` or any other type an engine object can be assigned to; `Invoke` and `DynamicInvoke` on a receiver it
+  does not type are read as either setter. `SetEnvironmentVariable` sets the session's variable unless its target
+  settles to another, as a string, a number, a cast, or a member of `EnvironmentVariableTarget`; neither is decided by
+  the text it is spelled in. A method reached without a call, as `[Environment]::SetEnvironmentVariable` kept or
+  handed to `.Invoke`, and a member called by its name, through `ForEach-Object -MemberName` or `.ForEach('Set')`,
+  are parts the guard cannot read. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
   `Environment::<name>` (also `\Environment::<name>` and `Microsoft.PowerShell.Core\Environment::<name>`); after
   `Environment::` a separator becomes part of the variable's name, which git never reads. On Windows git reads an
   environment name in any case, so `git_dir` is `GIT_DIR` there; elsewhere only the upper-case name counts. Bash
@@ -485,6 +492,18 @@ The hook sees the command text. It does not see:
 - a variable an arithmetic expression assigns, in `(( ))`, `let`, or an arithmetic `for`, which holds a number,
   and a builtin `enable -f` loads from a shared object;
 - a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
+- an assignment word after a command's name under the `keyword` option, which Bash puts in the command's
+  environment, so `git switch -c x GIT_DIR=<dir>` hands `GIT_DIR` to git; it is turned on by `set -k`,
+  `set -o keyword`, `shopt -so keyword`, `bash -k`, `bash -o keyword`, or a `SHELLOPTS` listing it that a nested
+  bash's starter hands it;
+- in POSIX mode an assignment before a special builtin such as `:` or `eval`, which Bash keeps in the shell after the
+  builtin ends; it is turned on by `set -o posix`, `shopt -so posix`, `bash --posix`, `bash -o posix`, `sh`, a
+  `POSIXLY_CORRECT` assigned or in the environment, or a `SHELLOPTS` listing `posix`;
+- the last command of a pipeline under the `lastpipe` option, which Bash runs in the shell itself, so after
+  `true | cd <dir>` a git call runs at `<dir>`; it is turned on by `shopt -s lastpipe`, `bash -O lastpipe`, or a
+  `BASHOPTS` listing it that a nested bash's starter hands it, PowerShell's `$env:BASHOPTS` included;
+- a `cd` to a name that is no directory under the `cdable_vars` option, which Bash takes as a variable holding one;
+  it is turned on by `shopt -s cdable_vars`, `bash -O cdable_vars`, or a `BASHOPTS` listing it;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
 - text run as commands through an object of PowerShell's engine the text does not type, such as one a variable

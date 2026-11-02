@@ -7,6 +7,7 @@ whose suites start git and pwsh; tests/tools/test_hub_guard_shells.py holds thes
 
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -315,3 +316,51 @@ class DefinitionTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertEqual(expected, hub_guard.function_name(name))
+
+
+# A call that sets an environment variable beyond the process, in the user's or the machine's environment, which
+# outlives the test: a target named User or Machine, or numbered 1 or 2, in any of the spellings PowerShell converts,
+# in the call or in a table of targets the call takes.
+PERSISTENT_TARGET = re.compile(
+    r"SetEnvironmentVariable\([^()]*,[^()]*,\s*(?:\[[\w.]*EnvironmentVariableTarget\](?:::)?)?['\"]?(?:User|Machine|1|2)\b"
+    r"|EnvironmentVariableTarget\]::(?:User|Machine)\b"
+    # A target a table of targets substitutes into the call, as a Python string holding a PowerShell string.
+    r"|[\"']'(?:User|Machine)'[\"']",
+    re.IGNORECASE,
+)
+# The suites that run PowerShell code, rather than hand it to the guard's reader, which only parses it.
+RUNS_POWERSHELL = (Path(__file__).with_name("test_hub_guard_shells.py"),)
+
+
+def persistent_targets(source: str) -> list[str]:
+    """Each line of a suite's source that may set a variable in the user's or the machine's environment."""
+    return [line.strip() for line in source.splitlines() if PERSISTENT_TARGET.search(line)]
+
+
+class PersistentTargetTests(unittest.TestCase):
+    """A suite that runs PowerShell sets an environment variable only in its own process, never in the user's or the
+    machine's environment, which would outlive the test and reach every later process on the machine."""
+
+    def test_no_suite_that_runs_powershell_sets_a_variable_beyond_its_process(self) -> None:
+        for path in RUNS_POWERSHELL:
+            with self.subTest(path=path.name):
+                self.assertEqual([], persistent_targets(path.read_text(encoding="utf-8")))
+
+    def test_a_persistent_target_is_found_in_each_spelling(self) -> None:
+        for line in (
+            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', 'User')",
+            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', \"machine\")",
+            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', 1)",
+            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', [EnvironmentVariableTarget]'2')",
+            "for target in (\"'0'\", \"'User'\")",
+            "[System.EnvironmentVariableTarget]::Machine",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual([line], persistent_targets(line))
+        for line in (
+            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', 'Process')",
+            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', '0')",
+            "[Environment]::SetEnvironmentVariable('BASH_FUNC_f%%', '() { BODY; }')",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual([], persistent_targets(line))

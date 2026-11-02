@@ -299,14 +299,21 @@ function Get-Region([Ast] $Ast) {
 }
 
 # The events of a method call that sets an environment variable: [Environment]::SetEnvironmentVariable in this
-# process, and PSVariable.Set on a provider path. $Member is the method's name, as Get-MemberName reads it.
-function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [string] $Member, [Collections.Generic.List[object]] $Events) {
-    $arguments = @($Node.Arguments)
+# process, and PSVariable.Set on a provider path. $Member is the method's name, as Get-MemberName reads it, and
+# $Receiver the type of its receiver, as Get-ReceiverType settles it, or $null where the text does not settle one.
+# Each is decided by what the syntax tree and the resolver settle, never by the text it is spelled in: Set is
+# PSVariable.Set on a receiver typed as PSVariableIntrinsics, and may be on one whose type the text does not settle,
+# so both set the variable its name argument names to a value the text does not settle, and any variable when that
+# name is not a constant; a target is the process unless it settles to another (Get-EnvironmentTarget).
+function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [string] $Member, [type] $Receiver,
+    [Collections.Generic.List[object]] $Events) {
+    # A call with no arguments has none, where @() of its empty Arguments would hold one $null.
+    $arguments = @($Node.Arguments | Where-Object { $null -ne $_ })
     $name = $arguments | Select-Object -First 1
     if ($Member -eq 'SetEnvironmentVariable') {
-        $target = if ($arguments.Count -ge 3) { $arguments[2] }
-        if ($null -ne $target -and $target.Extent.Text -notmatch 'Process') {
-            if ($target -is [StringConstantExpressionAst] -or $target -is [MemberExpressionAst]) {
+        if ($arguments.Count -ge 3) {
+            $target = Get-EnvironmentTarget $arguments[2]
+            if ($null -ne $target -and $target -ne [EnvironmentVariableTarget]::Process) {
                 return
             }
         }
@@ -314,12 +321,49 @@ function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [string] $Member, [C
         $arguments[1].VariablePath.UserPath -eq 'null'
         $settled = $name -is [StringConstantExpressionAst]
         $Events.Add([ordered]@{ kind = 'setVariable'; name = if ($settled) { $name.Value }; removed = $removed })
-    } elseif ($Member -eq 'Set' -and $Node.Expression.Extent.Text -match 'PSVariable$') {
+    } elseif ($Member -eq 'Set' -and ($null -eq $Receiver -or $Receiver -eq [Management.Automation.PSVariableIntrinsics])) {
+        $name = Get-Unwrapped $name
         if ($name -is [StringConstantExpressionAst]) {
             $Events.Add([ordered]@{ kind = 'assigned'; path = $name.Value; removed = $false })
         } else {
             $Events.Add([ordered]@{ kind = 'opaque' })
         }
+    } elseif ($Member -in 'Invoke', 'DynamicInvoke' -and $null -eq $Receiver -and $arguments.Count -ge 1) {
+        # A method group or delegate the text does not type may be either setter: a provider path names the variable
+        # PSVariable.Set sets, and any other name the one SetEnvironmentVariable sets. One argument that is not a
+        # constant may be an array holding both.
+        $name = Get-Unwrapped $name
+        if ($arguments.Count -eq 1) {
+            if ($name -isnot [ConstantExpressionAst]) {
+                $Events.Add([ordered]@{ kind = 'opaque' })
+            }
+        } elseif ($name -isnot [StringConstantExpressionAst]) {
+            $Events.Add([ordered]@{ kind = 'opaque' })
+        } elseif ($name.Value.Contains(':')) {
+            $Events.Add([ordered]@{ kind = 'assigned'; path = $name.Value; removed = $false })
+        } else {
+            $Events.Add([ordered]@{ kind = 'setVariable'; name = $name.Value; removed = $false })
+        }
+    }
+}
+
+# The target an argument of SetEnvironmentVariable settles, as PowerShell converts it to an EnvironmentVariableTarget:
+# a string or a number, cast to the type or not, or a static member of the type, through parentheses; $null when the
+# text does not settle it.
+function Get-EnvironmentTarget([Ast] $Argument) {
+    $Argument = Get-Unwrapped $Argument
+    if ($Argument -is [ConvertExpressionAst] -and
+        (Resolve-TypeName $Argument.Type.TypeName) -eq [EnvironmentVariableTarget]) {
+        $Argument = Get-Unwrapped $Argument.Child
+    }
+    $value = if ($Argument -is [ConstantExpressionAst]) {
+        $Argument.Value
+    } elseif ($Argument -is [MemberExpressionAst] -and $Argument.Static -and $Argument -isnot [InvokeMemberExpressionAst] -and
+        (Get-NamedType $Argument.Expression) -eq [EnvironmentVariableTarget]) {
+        Get-MemberName $Argument
+    }
+    if ($null -ne $value) {
+        $value -as [EnvironmentVariableTarget]
     }
 }
 
@@ -442,9 +486,29 @@ function Test-EngineType([type] $Type) {
     [type].IsAssignableFrom($Type) -or $Type -eq [Activator] -or $Type -eq [AppDomain]
 }
 
+# Whether a type is one an object of PowerShell's engine that can set a variable can be assigned to, as Object is,
+# without being such a type itself: a receiver of that type may hold one.
+function Test-MayHoldEngine([type] $Type) {
+    $held = @(
+        [Management.Automation.PSVariableIntrinsics], [Management.Automation.SessionState],
+        [Management.Automation.EngineIntrinsics], [Management.Automation.PSCmdlet]
+    )
+    -not (Test-EngineType $Type) -and @($held | Where-Object { $Type.IsAssignableFrom($_) }).Count -gt 0
+}
+
+# Whether the members a member expression reaches on its receiver's type are methods alone.
+function Test-MethodOnly([MemberExpressionAst] $Node, [type] $Receiver, [string] $Name) {
+    $members = Get-ReachedMember $Node $Receiver $Name
+    $members.Count -gt 0 -and @($members | Where-Object { $_ -isnot [Reflection.MethodInfo] }).Count -eq 0
+}
+
 # Whether an expression is the receiver of the member expression around it, as $ExecutionContext is in
-# $ExecutionContext.SessionState.
+# $ExecutionContext.SessionState, through the parentheses Get-Unwrapped takes off, as in ($ExecutionContext).SessionState.
 function Test-Receiver([Ast] $Expression) {
+    while ($Expression.Parent -is [CommandExpressionAst] -and $Expression.Parent.Parent -is [PipelineAst] -and
+        $Expression.Parent.Parent.PipelineElements.Count -eq 1 -and $Expression.Parent.Parent.Parent -is [ParenExpressionAst]) {
+        $Expression = $Expression.Parent.Parent.Parent
+    }
     $Expression.Parent -is [MemberExpressionAst] -and [object]::ReferenceEquals($Expression.Parent.Expression, $Expression)
 }
 
@@ -457,11 +521,25 @@ function Test-Receiver([Ast] $Expression) {
 # settle, are unread too. On a receiver the text does not type, as a variable's value, the members that build a
 # script block from a string or run a string as commands are unread by name. A method call on any other receiver
 # goes on to Add-MethodEvent.
+#
+# It fails closed on a method it reaches another way than by calling it: a member that resolves to methods alone on a
+# receiver it types is unread unless called, as [Environment]::SetEnvironmentVariable kept or handed to .Invoke is,
+# and ForEach given a member's name calls that member, which is unread too. A receiver typed as one an engine object
+# can be assigned to, as [object] is, is read as one the text does not type (Test-MayHoldEngine).
 function Add-MemberEvent([MemberExpressionAst] $Node, [Collections.Generic.List[object]] $Events) {
     $name = Get-MemberName $Node
     $receiver = Get-ReceiverType $Node
+    if ($null -ne $receiver -and (Test-MayHoldEngine $receiver)) {
+        $receiver = $null
+    }
     $unread = $null
-    if ($null -eq $name) {
+    $first = if ($Node -is [InvokeMemberExpressionAst]) { Get-Unwrapped (@($Node.Arguments) | Select-Object -First 1) }
+    if ($name -eq 'ForEach' -and $null -ne $first -and $first -isnot [ScriptBlockExpressionAst]) {
+        $unread = "a member ForEach calls by its name"
+    } elseif ($null -ne $receiver -and $null -ne $name -and $Node -isnot [InvokeMemberExpressionAst] -and
+        -not (Test-EngineType $receiver) -and (Test-MethodOnly $Node $receiver $name)) {
+        $unread = "a method reached without a call ($($receiver.Name).$name)"
+    } elseif ($null -eq $name) {
         if ($null -eq $receiver -or (Test-EngineType $receiver)) {
             $unread = "a member the text does not name ($($Node.Member.Extent.Text))"
         }
@@ -475,7 +553,7 @@ function Add-MemberEvent([MemberExpressionAst] $Node, [Collections.Generic.List[
         } elseif ($name -in $fromText) {
             $unread = "a script block built from a string ($name)"
         } elseif ($Node -is [InvokeMemberExpressionAst]) {
-            Add-MethodEvent $Node $name $Events
+            Add-MethodEvent $Node $name $receiver $Events
         }
     } elseif (Test-EngineType $receiver) {
         $members = Get-ReachedMember $Node $receiver $name
@@ -483,14 +561,14 @@ function Add-MemberEvent([MemberExpressionAst] $Node, [Collections.Generic.List[
         $kept = -not (Test-Receiver $Node) -and ($null -eq ($type = Get-ValueType $Node) -or (Test-EngineType $type))
         if ($receiver -eq [Management.Automation.PSVariableIntrinsics] -and $name -eq 'Set' -and
             $Node -is [InvokeMemberExpressionAst]) {
-            Add-MethodEvent $Node $name $Events
+            Add-MethodEvent $Node $name $receiver $Events
         } elseif ($Node -is [InvokeMemberExpressionAst] -or $data.Count -eq 0 -or $data.Count -ne $members.Count) {
             $unread = "a method of PowerShell's engine ($($receiver.Name).$name)"
         } elseif ($kept) {
             $unread = "an object of PowerShell's engine the command keeps ($($receiver.Name).$name)"
         }
     } elseif ($Node -is [InvokeMemberExpressionAst]) {
-        Add-MethodEvent $Node $name $Events
+        Add-MethodEvent $Node $name $receiver $Events
     }
     if ($null -ne $unread) {
         $Events.Add([ordered]@{ kind = 'unread'; text = $unread })
@@ -556,6 +634,11 @@ function Add-CommandEvent([CommandAst] $Node, [int] $Depth, [int] $Limit, [Colle
         })
     if ($binding.failed -or $binding.whatIf) {
         return
+    }
+    if ($binding.parameters.Contains('MemberName') -and $null -ne $leaf -and
+        (Get-ResolvedCommand $Node).Name -eq 'ForEach-Object') {
+        # ForEach-Object calls the member it is given by name on each object, a method the reader never sees called.
+        $Events.Add([ordered]@{ kind = 'unread'; text = "a member ForEach-Object calls by its name" })
     }
     if ($leaf -eq 'iex' -or $leaf -eq 'invoke-expression') {
         # Invoke-Expression runs its string in this session, so its location changes outlive it.

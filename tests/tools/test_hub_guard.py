@@ -2151,6 +2151,87 @@ class ContractTests(GuardTestCase):
                 self.assertEqual("deny", self.powershell(command, self.tree))
                 self.assertIn("The guard could not tell where `git reset` runs", self.reason)
 
+    def test_psvariable_set_is_read_by_its_receivers_type_in_each_spelling(self) -> None:
+        # Each receiver the resolver types as PSVariableIntrinsics, or does not type, and each spelling of the member.
+        receivers = (
+            "$ExecutionContext.SessionState.PSVariable",
+            "$ExecutionContext.SessionState.'PSVariable'",
+            '$ExecutionContext.SessionState."PSVariable"',
+            "$ExecutionContext.SessionState.('PSVariable')",
+            "$ExecutionContext.'SessionState'.PSVariable",
+            "$global:ExecutionContext.SessionState.'PSVariable'",
+            "$variable:ExecutionContext.SessionState.PSVariable",
+            "($ExecutionContext.SessionState.PSVariable)",
+            "([Management.Automation.PSVariableIntrinsics]$p)",
+            "$v",
+        )
+        commands = [
+            *(
+                f"{receiver}{member}('env:GIT_WORK_TREE', '{self.hub}'); git reset --hard"
+                for receiver in receivers
+                for member in (".Set", ".'Set'", ".('Set')", ".set")
+            ),
+            *(
+                f"$ExecutionContext.SessionState.'PSVariable'.Set('{path}', 'x'); git reset --hard"
+                for path in ("env:GIT_DIR", "Env:\\GIT_WORK_TREE", "env:GIT_CONFIG_PARAMETERS", "env:GIT_CONFIG_COUNT")
+            ),
+            "function f { [CmdletBinding()] param()"
+            " $PSCmdlet.SessionState.'PSVariable'.Set('env:GIT_WORK_TREE', 'x') }; f; git reset --hard",
+            "$ExecutionContext.SessionState.'PSVariable'.Set(('env:GIT_WORK_TREE'), 'x'); git reset --hard",
+            "$ExecutionContext.SessionState.'PSVariable'.Set($name, 'x'); git reset --hard",
+            # SetEnvironmentVariable sets the process's variable unless its target settles to another.
+            *(
+                f"[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'x', {target}); git reset --hard"
+                for target in (
+                    "'0'",
+                    "'process'",
+                    "0",
+                    "[EnvironmentVariableTarget]::Process",
+                    "[System.EnvironmentVariableTarget]::process",
+                    "([EnvironmentVariableTarget]::Process)",
+                    "[EnvironmentVariableTarget]'0'",
+                    "$o.Target",
+                    "[Foo]::Machine",
+                )
+            ),
+            # A setter reached another way than by calling it, by a receiver typed as one an engine object can be
+            # assigned to, or by its name.
+            *(
+                f"{form}; git reset --hard"
+                for form in (
+                    f"[Environment]::SetEnvironmentVariable.Invoke('GIT_WORK_TREE', '{self.hub}')",
+                    f"$m = [Environment]::SetEnvironmentVariable; $m.Invoke('GIT_WORK_TREE', '{self.hub}')",
+                    f"[System.Environment]::SetEnvironmentVariable.DynamicInvoke('GIT_WORK_TREE', '{self.hub}')",
+                    f"$m.Invoke('GIT_WORK_TREE', '{self.hub}')",
+                    f"$m.DynamicInvoke(@('GIT_WORK_TREE', '{self.hub}'))",
+                    "$v = Get-Variable ExecutionContext -ValueOnly;"
+                    f" ([object]$v.SessionState.PSVariable).Set('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"([object]$p).Set('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"([System.Object]$p).'Set'('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"$v.SessionState.PSVariable.Set.Invoke('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"$p.Set.Invoke('env:GIT_DIR', '{self.hub}')",
+                    f"$p | ForEach-Object -MemberName Set -ArgumentList 'env:GIT_WORK_TREE', '{self.hub}'",
+                    f"$p | % Set 'env:GIT_WORK_TREE' '{self.hub}'",
+                    f"$p | foreach -Member Set -Args 'env:GIT_WORK_TREE', '{self.hub}'",
+                    f"$p.psobject.Methods['Set'].Invoke('env:GIT_WORK_TREE', '{self.hub}')",
+                    f"@($p).ForEach('Set', 'env:GIT_WORK_TREE', '{self.hub}')",
+                    f"$p.ForEach('Set', 'env:GIT_WORK_TREE', '{self.hub}')",
+                )
+            ),
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+        # Another target leaves the process's variable alone.
+        for command in (
+            f"[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', '{self.hub}', 'Machine'); git reset --hard",
+            f"[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', '{self.hub}', 1); git reset --hard",
+            f"[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', '{self.hub}', [EnvironmentVariableTarget]::User);"
+            " git reset --hard",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.powershell(command, self.tree))
+
     def test_a_location_variable_counts_only_in_the_case_git_reads_it(self) -> None:
         command = f"$env:git_dir = '{self.hub / '.git'}'; git commit"
         reading = hub_guard.read_command("PowerShell", command, self.tree, self.environment)
