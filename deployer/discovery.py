@@ -44,7 +44,9 @@ CODEX_LIST_ID = 1
 # The model-free view of the skills Codex offers the model, which leaves out a skill only the user may start.
 CODEX_CATALOG = ("debug", "prompt-input")
 CODEX_CATALOG_ROOT = re.compile(r"^- `(r\d+)` = `([^`]+)`$", re.MULTILINE)
-CODEX_CATALOG_SKILL = re.compile(r"^- ([\w.-]+): .*\(file: ([^)\s]+)\)$", re.MULTILINE)
+# A skill's file runs from its last "(file: " to the line's closing parenthesis, so an absolute path holding a space
+# or a parenthesis, as a home such as C:/Users/A Name (Work) does, is read whole.
+CODEX_CATALOG_SKILL = re.compile(r"^- ([\w.-]+): .*\(file: (\S.*)\)$", re.MULTILINE)
 # The heading of the skills message's list of skills, under which every list item is one skill.
 CODEX_CATALOG_SKILLS = "### Available skills"
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
