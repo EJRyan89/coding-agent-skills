@@ -3156,6 +3156,30 @@ def test_a_leg_warns_before_its_mutants_run_when_they_need_more_than_its_cap_lef
     assert started[0].splitlines()[-1].startswith(warning)
 
 
+def test_a_leg_whose_mutants_fit_what_its_cap_left_gives_no_warning() -> None:
+    def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+        return PASSED
+
+    def reach(tree: Path, suite: str, measured: object, timeout: float) -> Reach:
+        return Reach(1.0, {"tools/a.py": frozenset({1})})
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        tree = root / "tree-1"
+        (tree / "tools").mkdir(parents=True)
+        (tree / "tools" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        git_client = mock.create_autospec(GitClient, instance=True)
+        git_client.output.return_value = "@@ -0,0 +1 @@\n+x = 1\n"
+        gate = Gate(root, "main", 1, 1, git_client, line_generator, reach, run, lambda: 0.0, measured)
+        with (
+            mock.patch.object(mutation_gate, "reached_suites", return_value=[root / "tests" / "test_x.py"]),
+            mock.patch("sys.stdout", io.StringIO()) as printed,
+        ):
+            report = gate.mutate([tree], ["tools/a.py"], 0.0)
+    assert (report.legs[0].needed, report.legs[0].available) == ({"tools/a.py": 1.0}, 60.0)
+    assert "::warning" not in printed.getvalue()
+
+
 def too_large_report(status: str) -> Report:
     selected = Selected(
         "origin/main", "3.8.0", (SelectedModule("tools/a.py", 1, (mutant(1, "tools/a.py"),), (), False),)
@@ -3199,6 +3223,25 @@ def test_a_local_run_runs_again_only_what_the_leg_left_without_a_verdict(
     left = status in (NOT_RUN, ERRORED) or (open_suites and status in (SURVIVED, NOT_REACHED))
     expected = {PATH_MODULE: [0]} if left and status not in killed and other not in killed else {}
     assert unjudged(report, linux) == expected
+
+
+def test_a_local_run_of_one_leg_passes_over_a_module_only_the_other_leg_runs() -> None:
+    platform = SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), True)
+    plain = SelectedModule("tools/calc.py", 1, (mutant(1),), (), False)
+    selected = Selected("origin/main", "3.8.0", (platform, plain))
+    linux = LegRun(
+        LINUX_LEG,
+        40,
+        1.0,
+        1,
+        {PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))], "tools/calc.py": [Outcome(mutant(1), NOT_RUN)]},
+        {},
+        [],
+    )
+    windows = LegRun(WINDOWS_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, NOT_RUN)]}, {}, [])
+    report = joined(selected, [linux, windows])
+    assert unjudged(report, windows) == {PATH_MODULE: [0]}
+    assert unjudged(report, linux) == {"tools/calc.py": [0]}
 
 
 def ci_run(
@@ -3308,18 +3351,28 @@ class UnrunFixtures(unittest.TestCase):
     def test_a_module_that_is_not_the_text_the_mutants_were_made_from_stops_the_run_before_any_suite(self) -> None:
         ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
         change_calc(self.root, CALC + "\n\ndef triple(a):\n    return a * 3\n")
-        with self.assertRaisesRegex(RuntimeError, r"^tools/calc.py at HEAD is not the text the run made its mutants"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"^tools/calc.py at HEAD is not the text the run made its mutants from: check out the commit the run "
+            r"tested$",
+        ):
             self.unrun()
         self.assertEqual([], self.seen)
 
     def test_a_completed_leg_another_platforms_leg_or_a_selection_without_digests_stops_the_run(self) -> None:
         ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
         self.unrun()
-        with self.assertRaisesRegex(RuntimeError, r"^outcomes-linux.json was already completed by a local run"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"^outcomes-linux.json was already completed by a local run: download the leg's outcomes again to run "
+            r"its mutants anew$",
+        ):
             self.unrun()
         with (
             mock.patch.object(platform_support, "PLATFORM_NAME", WINDOWS_LEG),
-            self.assertRaisesRegex(RuntimeError, r"^the Windows leg ran no mutant of this run, so none is left to run"),
+            self.assertRaisesRegex(
+                RuntimeError, r"^the Windows leg ran no mutant of this run, so none is left to run here: Linux did$"
+            ),
         ):
             self.unrun()
         ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
@@ -3329,6 +3382,37 @@ class UnrunFixtures(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"^mutants.json records no digest of tools/calc.py"):
             self.unrun()
         self.assertEqual(2, len(self.seen))
+
+    def test_a_run_whose_selection_holds_no_mutant_names_no_leg(self) -> None:
+        self.folder.mkdir()
+        (self.folder / "mutants.json").write_text(
+            json.dumps(selection_record(Selected("main", "3.8.0", ()))), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, r"^the Linux leg ran no mutant of this run, so none is left to run here: no leg did$"
+        ):
+            self.unrun()
+
+    def test_a_module_with_nothing_left_is_passed_over_and_a_later_ones_mutants_still_run(self) -> None:
+        # A module that sorts before calc.py, whose one mutant the leg killed, so only calc.py's run again.
+        (self.root / "tools" / "able.py").write_text("def inc(a):\n    return a + 1\n", encoding="utf-8")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "--quiet", "-m", "able")
+        mutation_gate.select_step(
+            Gate(self.root, "main", 5, 2, GitClient(), stub_generator, refuse_reach), self.folder, {}
+        )
+        able, calc = read_selection(self.folder / "mutants.json").modules
+        self.assertEqual(("tools/able.py", "tools/calc.py"), (able.module, calc.module))
+        outcomes = {
+            able.module: [Outcome(able.mutants[0], KILLED, ("t",))],
+            calc.module: [Outcome(mutant, NOT_RUN) for mutant in calc.mutants],
+        }
+        record = LegRun(LINUX_LEG, 40, 2400.0, 4, outcomes, {}, [])
+        (self.folder / "outcomes-linux.json").write_text(json.dumps(leg_record(record)), encoding="utf-8")
+        completed = self.unrun()
+        self.assertEqual(["return a * 3", "return a - b"], sorted(self.seen))
+        self.assertEqual({"tools/calc.py": [0, 1]}, completed.local.mutants if completed.local else None)
+        self.assertEqual(KILLED, completed.outcomes["tools/able.py"][0].status)
 
     def test_the_unrun_step_writes_the_completed_leg_and_reports_as_the_join_does(self) -> None:
         ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
