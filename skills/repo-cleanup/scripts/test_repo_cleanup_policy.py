@@ -201,7 +201,7 @@ class AddedProtectedTests(Fixture):
         tree = self.area / "Hotfix" / "topic wt"
         git(self.clone, "worktree", "add", "--quiet", str(tree), "topic")
         finished, lines = self.sync()
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         shipped = rc.build_plan(str(self.clone), str(self.repos), rc.Services(gh=self.github))
         self.assertEqual(
             {"hotfix/login": "delete", "topic": "remove-worktree"},

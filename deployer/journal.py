@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import sys
@@ -185,6 +186,84 @@ def valid_entry(entry: object, run_id: str) -> TypeGuard[JournalEntry]:
             return False
 
 
+BACKUP_PATH_REMEDY = "Replace it with a real directory after verifying its contents, then retry."
+
+
+def _reject_backup_links(components: tuple[Path, ...], verb: str) -> None:
+    for component in components:
+        if platform_support.is_link_or_junction(component):
+            raise DeployError(
+                f"ERROR: Backup path {verb} a symlink or junction: {platform_support.normalize(component)}",
+                BACKUP_PATH_REMEDY,
+            )
+
+
+def check_backup_root(paths: Paths, root: str, run_id: str | None = None) -> None:
+    """Refuse, creating nothing, a root's .backups that a retained backup could not move into: a symlink, a junction,
+    or anything but a directory, and, given the run's ID, a .backups/<run-id> that is already there. A root or a
+    .backups that does not exist yet passes, since the run creates it.
+
+    The plan runs it for every root before the first change, so the deployment, and the dry run, refuse such a path
+    while the home is unchanged, rather than after the manifest commit, when prepare_backup_destination meets it. Given
+    the run's ID, as the deployment gives it under its lock before its first write, it also proves the run can create
+    its own folder there; the dry run changes nothing, so it does not.
+    """
+    base = root_directory(paths, root)
+    backups = base / ".backups"
+    _reject_backup_links((base, backups), "contains")
+    if os.path.lexists(backups) and not backups.is_dir():
+        raise DeployError(
+            f"ERROR: Backup path is not a directory: {platform_support.normalize(backups)}", BACKUP_PATH_REMEDY
+        )
+    if run_id is None:
+        return
+    run_backups = backups / run_id
+    if os.path.lexists(run_backups):
+        raise DeployError(
+            f"ERROR: Permanent backup folder for this run already exists: {platform_support.normalize(run_backups)}",
+            "Move it out of the deployment root after checking its contents, then retry.",
+            see_recovery("Backups"),
+        )
+    if base.is_dir():
+        _probe_backup_folder(backups, run_backups)
+
+
+def _probe_backup_folder(backups: Path, run_backups: Path) -> None:
+    """Create this run's backup folder, a file and a folder in it, as a kept file or folder would be, then remove what
+    the probe made, .backups with it when the probe made that too, whether or not it succeeded, so a .backups the run
+    cannot write, by its permissions or its owner, is refused before the first change and the home is left as found.
+
+    What changes after the probe, before the run keeps a copy there, is met after the commit by keep_backup."""
+    made = [run_backups] if os.path.lexists(backups) else [run_backups, backups]
+    try:
+        fsops.make_directories(run_backups / PROBE_NAME)
+        fsops.write_file(run_backups / f"{PROBE_NAME}.file", b"")
+    except OSError as exc:
+        raise _not_writable(backups, exc) from exc
+    finally:
+        for path in made:
+            with contextlib.suppress(OSError):
+                fsops.remove(path)
+
+
+# The name of what the probe makes in this run's own backup folder, which no other run, and no item, shares.
+PROBE_NAME = ".probe"
+
+
+def _not_writable(backups: Path, error: OSError) -> DeployError:
+    return DeployError(
+        f"ERROR: Backup path is not writable: {platform_support.normalize(backups)}: {error.strerror or error}",
+        "Give your account write access to it, or replace it with a directory you own, then retry.",
+        see_recovery("Backups"),
+    )
+
+
+def check_backup_roots(paths: Paths, run_id: str | None = None) -> None:
+    """check_backup_root for every root a run writes."""
+    for root in ROOT_PREFIXES:
+        check_backup_root(paths, root, run_id)
+
+
 def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) -> Path:
     """Create the only directory a retained backup may move to, rejecting links and escapes."""
     base = root_directory(paths, root)
@@ -194,19 +273,19 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
             raise DeployError(problem)
     if not base.is_dir():
         raise DeployError(f"ERROR: Deployment destination is missing: {platform_support.normalize(base)}")
+    check_backup_root(paths, root)
     backups = base / ".backups"
     run_backups = backups / run_id
     components = (base, backups, run_backups)
 
     def reject_links(verb: str) -> None:
-        for component in components:
-            if platform_support.is_link_or_junction(component):
-                raise DeployError(
-                    f"ERROR: Backup path {verb} a symlink or junction: {platform_support.normalize(component)}"
-                )
+        _reject_backup_links(components, verb)
 
     reject_links("contains")
-    fsops.make_directories(run_backups)
+    try:
+        fsops.make_directories(run_backups)
+    except OSError as exc:
+        raise _not_writable(backups, exc) from exc
     reject_links("became")
     # Compared as the file system holding the root compares names: without regard to case only where it folds.
     base_canonical = platform_support.name_key(platform_support.canonical_directory(base), base)
@@ -283,9 +362,39 @@ def backup_unchanged(paths: Paths, entry: BackupEntry) -> bool:
     return _hash_existing(_item_path(paths, entry, BACKUP_SUFFIX)) in (None, entry["backup_hash"])
 
 
+def keep_backup(
+    paths: Paths, run_id: str, entry: BackupEntry, before_move: Callable[[], None] | None = None
+) -> str | None:
+    """Move a committed run's transient backup into .backups/<run-id>/ in its root and return where it went, as that
+    root names it, after running before_move, which journals the move. Should the folder not be made, the move fail, or
+    something already be there, the copy stays beside its item, a warning says why, and None is returned.
+
+    The run is committed, so its items stay, and no check before the commit covers what changes between it and this
+    move. Every one of these ends the same way, after the commit as in recovery: the copy is never deleted, the run
+    finishes, and the next deployment of the item refuses until the user moves the copy.
+    """
+    root, item = entry_root(entry), entry["item"]
+    transient = _item_path(paths, entry, BACKUP_SUFFIX)
+    kept_at = f".backups/{run_id}/{item}"
+    try:
+        destination = prepare_backup_destination(paths, run_id, item, root)
+        if os.path.lexists(destination):
+            raise DeployError(f"ERROR: Something is already at {platform_support.normalize(destination)}")
+        if before_move is not None:
+            before_move()
+        fsops.move(transient, destination)
+    except (DeployError, OSError) as exc:
+        reason = exc.lines[0].removeprefix("ERROR: ") if isinstance(exc, DeployError) else exc.strerror or str(exc)
+        _warn(
+            f"{item}'s previous copy is kept at {platform_support.normalize(transient)}, since it could not be moved "
+            f"to {kept_at}: {reason}. Move it out of the root after checking it. {see_recovery('Backups')}"
+        )
+        return None
+    return kept_at
+
+
 def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
-    """Delete an unchanged transient backup the committed run did not keep, or move it to permanent storage."""
-    root = entry_root(entry)
+    """Delete an unchanged transient backup the committed run did not keep, or keep it, through keep_backup."""
     item = entry["item"]
     transient = _item_path(paths, entry, BACKUP_SUFFIX)
     kept_at = f".backups/{run_id}/{item}"
@@ -297,22 +406,15 @@ def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
             f"{item} changed after run {run_id} planned it, so its previous copy is kept at {kept_at} "
             "instead of being deleted."
         )
-    try:
-        destination = prepare_backup_destination(paths, run_id, item, root)
-    except DeployError as exc:
-        _report(exc)
-        return False
     if os.path.lexists(transient):
-        if os.path.lexists(destination):
-            _warn(f"Both transient and permanent backups exist for {item}")
-            return False
         if entry["retain"] and _hash_existing(transient) != entry["backup_hash"]:
             _warn(f"Backup hash mismatch for {item}")
             return False
-        fsops.move(transient, destination)
-        print(f"  Preserved backup: {item} -> {kept_at}")
+        if keep_backup(paths, run_id, entry) is not None:
+            print(f"  Preserved backup: {item} -> {kept_at}")
         return True
-    # Only a kept backup gets here: one the run did not keep and that is gone returned above.
+    # Only a kept backup an earlier attempt moved gets here: one the run did not keep and that is gone returned above.
+    destination = root_directory(paths, entry_root(entry)) / ".backups" / run_id / item
     if os.path.lexists(destination):
         if _hash_existing(destination) != entry["backup_hash"]:
             _warn(f"Permanent backup hash mismatch for {item} at {kept_at}")
