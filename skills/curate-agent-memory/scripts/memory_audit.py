@@ -519,12 +519,6 @@ def destination_files(repo: Path | None, instructions: list[Path], user_dir: Pat
     return list(unique.values())
 
 
-PRESENCE_ALLOWED = {
-    "audit": "parse_index has already settled the index's presence through file_presence.is_present, which raises "
-    "on a stat it cannot make, so is_file only sizes the index parse_index found",
-}
-
-
 def audit(
     memory_dir: Path,
     repo: Path | None = None,
@@ -535,7 +529,8 @@ def audit(
     now = time.time() if now is None else now
     index_path = memory_dir / INDEX_NAME
     entries, index_lines = parse_index(index_path)
-    index_bytes = index_path.stat().st_size if index_path.is_file() else 0
+    index_exists = is_present(index_path)
+    index_bytes = index_path.stat().st_size if index_exists else 0
     indexed_files = Counter(target_identity(memory_dir, entry["target"]) for entry in entries)
     candidates, others = memory_entries(memory_dir)
     unreadable = {target_identity(memory_dir, name): (name, problem) for name, problem in others}
@@ -575,7 +570,7 @@ def audit(
         "memory_dir": str(memory_dir),
         "index": {
             "path": str(index_path),
-            "exists": index_path.is_file(),
+            "exists": index_exists,
             "entries": len(entries),
             "lines": len(index_lines),
             "line_limit": INDEX_LINE_LIMIT,
