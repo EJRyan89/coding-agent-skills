@@ -345,7 +345,10 @@ jobs:
   # The one check that reads GitHub, run alone: it asks gh whether each issue the malformed-input known failures and
   # pending readers name is open. It is the only job given the run's token, and its one step that runs anything runs
   # tests/known_failure_issues.py, which loads the query's own modules and none of the policy checks or suites, so the
-  # token reaches that query and the pinned actions before it, nothing else.
+  # token reaches that program, the modules it imports, and the pinned actions before it, nothing else. The checkout
+  # names no ref, so on a pull request, the token reaches the code the pull request's merge commit holds at those
+  # paths: a pull request can change the code that holds the token, never what the token may do, which this job's
+  # permissions bound to reading contents and issues.
   known-failures:
     name: Known-failure issues
     runs-on: ubuntu-latest

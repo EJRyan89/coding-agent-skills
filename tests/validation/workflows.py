@@ -519,6 +519,62 @@ TOKEN_STEPS: dict[str, dict[tuple[str, str], str]] = {
 }
 
 
+# What a token step's job runs when the workflow runs on a pull request and the job's checkout names no `ref`: the
+# pull request's merge commit, so the program the step starts and every module it imports are the pull request's own,
+# and the permissions alone bound what the token may do. docs/design.md's row on what validation may reach and the
+# comment above the job each state it, in these words. A pinned contract value of the 2026-11-01 refinement of that
+# row.
+PULL_REQUEST_CODE_STATEMENT = (
+    "on a pull request, the token reaches the code the pull request's merge commit holds at those paths"
+)
+# The row of docs/design.md that states what the token reaches, found by the words it opens with.
+CREDENTIALS_ROW = "| Development and CI gates need no model and no credentials:"
+
+
+def _comment_text(workflow: str) -> str:
+    """Every comment line of a workflow, with its `#` and indentation removed, joined by spaces, so a statement a
+    comment wraps across lines reads as one sentence."""
+    lines = (line.strip() for line in workflow.splitlines())
+    return " ".join(line.removeprefix("#").strip() for line in lines if line.startswith("#"))
+
+
+def token_reach_problems(workflow: str, token_steps: Mapping[tuple[str, str], str], design: str) -> list[str]:
+    """Report a token step, of a workflow that runs on pull requests, whose job runs code the pull request can change
+    without docs/design.md's CREDENTIALS_ROW and the workflow's comments saying so in PULL_REQUEST_CODE_STATEMENT's
+    words. A job's checkout that names no `ref` checks out the event's own commit, the pull request's merge commit; one
+    that names a `ref` is a form this policy does not read, so a job that starts from another tree is described here
+    before it is sanctioned."""
+    tree = read_workflow(workflow)
+    if "pull_request" not in _triggers(tree.get("on") if isinstance(tree, dict) else None) or not token_steps:
+        return []
+    rows = [line for line in design.splitlines() if line.startswith(CREDENTIALS_ROW)]
+    problems: list[str] = []
+    for job in sorted({job for job, _ in token_steps}):
+        checkouts = [
+            step
+            for step in _steps(_mapping(tree, "jobs", job))
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        ]
+        problems += [
+            f"job {job}'s step {step.get('name')!r} checks out a `ref`, a form the token-reach policy does not read; "
+            "state what the token reaches from that tree before sanctioning it"
+            for step in checkouts
+            if "ref" in _mapping(step, "with")
+        ]
+        if any("ref" not in _mapping(step, "with") for step in checkouts):
+            if len(rows) != 1 or PULL_REQUEST_CODE_STATEMENT not in rows[0]:
+                problems.append(
+                    f"job {job} runs the pull request's own code with the token, and docs/design.md's row "
+                    f"{CREDENTIALS_ROW!r} does not say {PULL_REQUEST_CODE_STATEMENT!r}"
+                )
+            if PULL_REQUEST_CODE_STATEMENT not in _comment_text(workflow):
+                problems.append(
+                    f"job {job} runs the pull request's own code with the token, and no comment of the workflow says "
+                    f"{PULL_REQUEST_CODE_STATEMENT!r}"
+                )
+    return problems
+
+
 def unknown_workflow_problems(directory: Path, known: Collection[str]) -> list[str]:
     """Every entry of the workflows directory the policy does not know by name, which GitHub may run unguarded, and
     every known workflow the directory lacks."""
@@ -1550,6 +1606,13 @@ class WorkflowsPolicies(unittest.TestCase):
                 workflow = (workflows / name).read_text(encoding="utf-8")
                 tokens = TOKEN_STEPS.get(name, {})
                 self.assertEqual([], workflow_guard_problems(workflow, triggers, actions, crons, tokens))
+
+    def test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so(self) -> None:
+        design = (REPOSITORY_ROOT / "docs" / "design.md").read_text(encoding="utf-8")
+        for name in WORKFLOW_GUARDS:
+            with self.subTest(workflow=name):
+                workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / name).read_text(encoding="utf-8")
+                self.assertEqual([], token_reach_problems(workflow, TOKEN_STEPS.get(name, {}), design))
 
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY

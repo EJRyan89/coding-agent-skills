@@ -16,10 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from workflows import (
+    CREDENTIALS_ROW,
     DEFENDER_LINES,
     IMAGE_MODULE_LINES,
     IMAGE_MODULE_STEP,
     PINNED_TOOL_LINES,
+    PULL_REQUEST_CODE_STATEMENT,
     WorkflowSyntaxError,
     changelog_job_problems,
     codex_settings_problems,
@@ -39,6 +41,7 @@ from workflows import (
     pinned_tool_problems,
     read_workflow,
     required_check_problems,
+    token_reach_problems,
     tool_cache_problems,
     uninstall_check_problems,
     unknown_workflow_problems,
@@ -1839,3 +1842,76 @@ def test_a_mutation_leg_checking_out_otherwise_than_validation_fails(
 ) -> None:
     problems = mutation_checkout_problems(mutation, validate)
     assert any(problem in found for found in problems), problems
+
+
+# The words the token-reach policy holds docs/design.md and the workflow to, typed here rather than read from the
+# constant under test.
+STATED = "on a pull request, the token reaches the code the pull request's merge commit holds at those paths"
+REACH_STEP = {("query", "Ask"): "python -B tests/query.py"}
+
+
+def _reach_workflow(trigger: str = "pull_request", comment: str = STATED, checkout_with: str = "") -> str:
+    return (
+        f"on:\n  {trigger}:\n\njobs:\n  # The query job; {comment[:40]}\n  # {comment[40:]}\n  query:\n    steps:\n"
+        f"      - name: Check out\n        uses: actions/checkout@{'a' * 40} # v7.0.1\n"
+        f"        with:\n          persist-credentials: false\n{checkout_with}"
+        "      - name: Ask\n        env:\n          GH_TOKEN: ${{ github.token }}\n"
+        "        run: python -B tests/query.py\n"
+    )
+
+
+REACH_DESIGN = (
+    f"# Design\n\n| Development and CI gates need no model and no credentials: the token, {STATED}, capped. | x |\n"
+)
+
+
+def test_the_statement_is_pinned_to_its_words_and_the_row_to_its_opening() -> None:
+    assert PULL_REQUEST_CODE_STATEMENT == STATED
+    assert CREDENTIALS_ROW == "| Development and CI gates need no model and no credentials:"
+
+
+def test_a_token_job_running_the_pull_requests_code_and_saying_so_passes() -> None:
+    assert token_reach_problems(_reach_workflow(), REACH_STEP, REACH_DESIGN) == []
+
+
+@pytest.mark.parametrize(
+    ("workflow", "steps"),
+    [
+        pytest.param(_reach_workflow(trigger="push", comment="nothing"), REACH_STEP, id="no-pull-request-trigger"),
+        pytest.param(_reach_workflow(comment="nothing at all said here about what it reaches"), {}, id="no-token"),
+    ],
+)
+def test_a_workflow_that_gives_no_pull_request_the_token_needs_no_statement(
+    workflow: str, steps: dict[tuple[str, str], str]
+) -> None:
+    assert token_reach_problems(workflow, steps, "# Design\n") == []
+
+
+@pytest.mark.parametrize(
+    ("workflow", "design", "problem"),
+    [
+        pytest.param(
+            _reach_workflow(), REACH_DESIGN.replace("merge commit", "base"), "docs/design.md's row", id="row-silent"
+        ),
+        pytest.param(_reach_workflow(), "# Design\n", "docs/design.md's row", id="row-missing"),
+        pytest.param(_reach_workflow(), REACH_DESIGN + REACH_DESIGN, "docs/design.md's row", id="row-twice"),
+        pytest.param(
+            _reach_workflow(comment="the token reaches the query's own modules, nothing else, as it was stated"),
+            REACH_DESIGN,
+            "no comment of the workflow says",
+            id="comment-silent",
+        ),
+        pytest.param(
+            _reach_workflow(checkout_with="          ref: main\n"),
+            REACH_DESIGN,
+            "checks out a `ref`, a form the token-reach policy does not read",
+            id="checkout-names-a-ref",
+        ),
+    ],
+)
+def test_a_token_job_running_the_pull_requests_code_unstated_or_from_an_unread_tree_fails(
+    workflow: str, design: str, problem: str
+) -> None:
+    problems = token_reach_problems(workflow, REACH_STEP, design)
+    assert len(problems) == 1, problems
+    assert problem in problems[0]
