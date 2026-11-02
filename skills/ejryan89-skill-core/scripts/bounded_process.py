@@ -8,6 +8,8 @@ on: a command names its repository by the directory it runs in or names, as `git
 do, and reads that repository, its index, and its objects, never one a variable points at. A program that is not git,
 such as Copilot CLI or an MCP server, may run git or read a repository's files itself, so no command keeps them.
 `without_repository_variables` is the one builder of such an environment, which a start outside this module uses too.
+`isolated_git_environment` builds a stricter one, for a git that reads content it did not write, that leaves out every
+git variable and switches off the system and global configuration.
 
 Output goes to temporary files, not pipes. A command that times out is killed, but a process it started, such as
 `git-remote-https` or a credential helper, can outlive it and hold a pipe open, and reading a pipe to its end would
@@ -47,6 +49,9 @@ CHUNK_BYTES = 64 * 1024
 QUEUED_CHUNKS = 16  # how far a streaming command's reader runs ahead of its caller
 POLL_SECONDS = 0.1
 NON_INTERACTIVE = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GH_PROMPT_DISABLED": "1"}
+# What `isolated_git_environment` sets: no system configuration, the null device as the global one, which also stands
+# in for the XDG file, and no system attributes.
+ISOLATED_GIT = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1"}
 # git's repository-selecting variables: each points a git command at a repository, work tree, index, object store,
 # configuration file, or set of refs other than those of the directory it runs in. They are the list git clears itself
 # before it works in another repository (`git rev-parse --local-env-vars`) and GIT_NAMESPACE, but not the command-scope
@@ -105,6 +110,18 @@ def without_repository_variables(environment: Mapping[str, str]) -> dict[str, st
 def non_interactive_environment() -> dict[str, str]:
     """This process's environment with every prompt turned off and git's repository-selecting variables removed."""
     return {**without_repository_variables(os.environ), **NON_INTERACTIVE}
+
+
+def isolated_git_environment() -> dict[str, str]:
+    """This process's environment for a git that reads content it did not write: every prompt turned off, every
+    variable git reads (each name starting `GIT_`, in any case) removed, so none selects a repository, a configuration,
+    a trace, or an attribute source, and the system and global configuration and the system attributes switched off.
+
+    Only the command's arguments and the files it is pointed at then decide what it prints; `git_client`'s isolated
+    client also names a repository that cannot exist, so git finds none and reads no repository's configuration.
+    """
+    kept = {name: value for name, value in os.environ.items() if not name.upper().startswith("GIT_")}
+    return {**kept, **NON_INTERACTIVE, **ISOLATED_GIT}
 
 
 def run_bounded(

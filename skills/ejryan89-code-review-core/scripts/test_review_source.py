@@ -7,13 +7,14 @@ import copy
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -491,6 +492,173 @@ class SearchTests(LazySnapshotFixture):
         self.assertEqual(3, len(expected[0]))
         self.assertEqual(expected, self.search("-?helper"))
         self.assertEqual(expected, search_source(None, whole, "-?helper", repository=REPOSITORY, commit=self.head))
+
+
+class ScriptedStream:
+    """A git grep that prints `lines`, writes `errors` on stderr, and exits with `status`."""
+
+    def __init__(self, lines: Sequence[bytes], status: int, errors: str) -> None:
+        self.lines, self.status, self.errors = list(lines), status, errors
+        self.stdin = io.BytesIO()
+
+    def readline(self, limit: int | None = None) -> bytes:
+        return self.lines.pop(0) if self.lines else b""
+
+    def wait(self) -> int:
+        return self.status
+
+    def stderr(self) -> str:
+        return self.errors
+
+
+class SearchErrorTests(LazySnapshotFixture):
+    """A git grep that could not read some of the files it was asked to search fails the search, on both routes."""
+
+    def scripted_search(self, checkout: Path | None, root: Path, stream: ScriptedStream) -> object:
+        clients: list[bool] = []
+
+        class Client:
+            def __init__(self, *, isolated: bool = False) -> None:
+                clients.append(isolated)
+
+            @contextlib.contextmanager
+            def stream(self, arguments: Sequence[str], *, directory: Path) -> Any:
+                yield stream
+
+        with mock.patch.object(review_runtime, "GitClient", Client):
+            found = search_source(checkout, root, "helper", repository=REPOSITORY, commit=self.head)
+        self.assertEqual([checkout is None], clients, "the snapshot route alone runs git isolated")
+        return found
+
+    def test_an_error_on_stderr_fails_the_search_whatever_the_status_and_none_reads_as_no_match(self) -> None:
+        whole = self.root / "whole"
+        materialize_source_snapshot(self.checkout, REPOSITORY, self.head, whole, changed_paths=["src/changed.py"])
+        error = "error: 'src/unchanged.py': short read: Permission denied"
+        for checkout, root, prefix in ((self.checkout, self.source, f"{self.head}:"), (None, whole, "")):
+            match = f"{prefix}src/changed.py\x002\x00    return helper(sum(items))\n".encode()
+            for status, lines in ((1, []), (0, [match])):
+                with self.subTest(route="checkout" if checkout else "snapshot", status=status):
+                    stream = ScriptedStream(lines, status, error + "\n")
+                    with self.assertRaisesRegex(
+                        RuntimeContractError, f"^git grep could not search every file: {error}$"
+                    ):
+                        self.scripted_search(checkout, root, stream)
+            with self.subTest(route="checkout" if checkout else "snapshot", status="no match"):
+                self.assertEqual(([], False), self.scripted_search(checkout, root, ScriptedStream([], 1, "")))
+
+    def test_an_error_printed_before_the_match_limit_fails_the_cut_search(self) -> None:
+        line = f"{self.head}:src/changed.py\x002\x00helper\n".encode()
+        stream = ScriptedStream([line, line, line], 0, "error: 'HEAD:a.txt': unable to read 0d77\n")
+        with (
+            mock.patch.object(review_runtime, "MAX_SEARCH_MATCHES", 2),
+            self.assertRaisesRegex(RuntimeContractError, "unable to read"),
+        ):
+            self.scripted_search(self.checkout, self.source, stream)
+
+    def test_a_blob_git_cannot_read_fails_the_search_whether_or_not_another_file_matches(self) -> None:
+        missing = blob(UNCHANGED.encode())
+        loose = self.checkout / ".git" / "objects" / missing[:2] / missing[2:]
+        loose.chmod(0o644)
+        loose.unlink()
+        for pattern in ("def helper", "helper"):  # only the unreadable file holds the first; others hold the second
+            with (
+                self.subTest(pattern=pattern),
+                self.assertRaisesRegex(RuntimeContractError, f"git grep could not search every file: .*{missing}"),
+            ):
+                search_source(self.checkout, self.source, pattern, repository=REPOSITORY, commit=self.head)
+
+
+class SnapshotIsolationTests(LazySnapshotFixture):
+    """A whole snapshot inside a repository, beside a .git folder or file, or under global or command-scope settings.
+    Each source is planted twice: setting grep.column, which adds a column field the match parser would fold into the
+    text, and holding a line git cannot parse, which ends any git that reads it with exit 128. Only a search that reads
+    none of them prints the snapshot's matches both times; the second holds whatever options the search passes."""
+
+    EXPECTED = (
+        [
+            ("src/changed.py", "2", "    return helper(sum(items))"),
+            ("src/unchanged.py", "1", "def helper(value):"),
+            ("src/with space.py", "1", "SPACED = 'helper'"),
+        ],
+        False,
+    )
+    KINDS: ClassVar[dict[str, str]] = {
+        "column": "[grep]\n\tcolumn = true\n",
+        "broken": "[grep]\n\tcolumn = true\n[unterminated\n",
+    }
+
+    def whole(self, destination: Path) -> Path:
+        materialize_source_snapshot(self.checkout, REPOSITORY, self.head, destination, changed_paths=["src/changed.py"])
+        return destination
+
+    def search(self, whole: Path) -> object:
+        return search_source(None, whole, "helper", repository=REPOSITORY, commit=self.head)
+
+    def planted_repository(self, path: Path, kind: str) -> Path:
+        git(self.root, "init", "--quiet", str(path))
+        with (path / ".git" / "config").open("a", encoding="utf-8") as config:
+            config.write(self.KINDS[kind])
+        return path
+
+    def plain(self, whole: Path) -> subprocess.CompletedProcess[bytes]:
+        """git grep as the search ran it before it was isolated, in the snapshot."""
+        arguments = ["grep", "--null", "-n", "--no-column", "--no-index", "-e", "helper", "--", "src/unchanged.py"]
+        return subprocess.run(["git", *arguments], cwd=whole, capture_output=True, check=False)
+
+    def test_a_repository_above_the_snapshot_shapes_nothing(self) -> None:
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                parent = self.planted_repository(self.root / f"parent {kind}", kind)
+                whole = self.whole(parent / "run" / "source")
+                if kind == "broken":
+                    self.assertEqual(128, self.plain(whole).returncode, "git reads the parent unisolated")
+                self.assertEqual(self.EXPECTED, self.search(whole))
+
+    def test_a_git_folder_or_file_at_the_snapshot_root_is_refused_and_shapes_nothing_written_after_the_check(
+        self,
+    ) -> None:
+        verify = review_runtime._verify_snapshot
+        for kind in self.KINDS:
+            elsewhere = self.planted_repository(self.root / f"elsewhere {kind}", kind)
+            for form in ("folder", "file"):
+                with self.subTest(kind=kind, form=form):
+                    whole = self.whole(self.root / f"whole with a git {form} {kind}")
+                    verified = verify(whole, expected_repository=REPOSITORY, expected_commit=self.head, contents=False)
+                    if form == "folder":
+                        self.planted_repository(whole, kind)
+                    else:
+                        (whole / ".git").write_text(f"gitdir: {(elsewhere / '.git').as_posix()}\n", encoding="utf-8")
+                    if kind == "broken":
+                        self.assertEqual(128, self.plain(whole).returncode, "git reads the planted one unisolated")
+                    with self.assertRaisesRegex(RuntimeContractError, r"extra=\['\.git['/]"):
+                        self.search(whole)
+                    # Written after the snapshot was verified, it still shapes nothing git prints.
+                    with mock.patch.object(review_runtime, "_verify_snapshot", return_value=verified):
+                        self.assertEqual(self.EXPECTED, self.search(whole))
+
+    def test_global_and_command_scope_settings_shape_nothing(self) -> None:
+        whole = self.whole(self.root / "whole")
+        for kind, text in self.KINDS.items():
+            global_file = self.root / f"global config {kind}"
+            global_file.write_text(text, encoding="utf-8")
+            with (
+                self.subTest(kind=kind, scope="global"),
+                mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_file)}),
+            ):
+                if kind == "broken":
+                    self.assertEqual(128, self.plain(whole).returncode, "git reads the global file unisolated")
+                self.assertEqual(self.EXPECTED, self.search(whole))
+        scopes = {
+            "count": {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "grep.column", "GIT_CONFIG_VALUE_0": "true"},
+            "parameters": {"GIT_CONFIG_PARAMETERS": "'grep.column=true'"},
+            "broken count": {"GIT_CONFIG_COUNT": "1"},
+            "broken parameters": {"GIT_CONFIG_PARAMETERS": "'unterminated"},
+        }
+        for scope, settings in scopes.items():
+            with self.subTest(scope=scope), mock.patch.dict(os.environ, settings):
+                if scope.startswith("broken"):
+                    self.assertEqual(128, self.plain(whole).returncode, "git reads the settings unisolated")
+                self.assertEqual(self.EXPECTED, self.search(whole))
 
 
 class CommandTests(LazySnapshotFixture):

@@ -168,7 +168,8 @@ class ClientTests(unittest.TestCase):
             ):
                 self.assertEqual("id\n", client.output(["hash-object", "--stdin"], input_bytes=b"blob"))
             self.assertEqual(
-                (([git(), "hash-object", "--stdin"], 300.0), {"input_bytes": b"blob"}), call_shape(run.call_args)
+                (([git(), "hash-object", "--stdin"], 300.0), {"input_bytes": b"blob", "env": None}),
+                call_shape(run.call_args),
             )
 
     def test_rev_parse_path_names_the_absolute_path_git_prints(self) -> None:
@@ -581,14 +582,16 @@ class SubprocessRunnerTests(unittest.TestCase):
         finished = bounded_process.Finished(2, b"out \xff", b"bad \xff")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
             result = git_client.subprocess_runner(["git", "status"], 12)
-        self.assertEqual((([git(), "status"], 12), {}), call_shape(run.call_args))
+        self.assertEqual((([git(), "status"], 12), {"env": None}), call_shape(run.call_args))
         self.assertEqual(GitResult(2, "out \udcff", "bad �"), result)
 
     def test_given_input_goes_through_the_bounded_layer(self) -> None:
         finished = bounded_process.Finished(0, b"id\n", b"")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
             result = git_client.subprocess_runner(["git", "hash-object", "--stdin"], 12, input_bytes=b"blob")
-        self.assertEqual((([git(), "hash-object", "--stdin"], 12), {"input_bytes": b"blob"}), call_shape(run.call_args))
+        self.assertEqual(
+            (([git(), "hash-object", "--stdin"], 12), {"input_bytes": b"blob", "env": None}), call_shape(run.call_args)
+        )
         self.assertEqual(GitResult(0, "id\n", ""), result)
 
     def test_missing_git_is_a_prerequisite_error(self) -> None:
@@ -844,9 +847,10 @@ class StreamTests(unittest.TestCase):
 
         @contextlib.contextmanager
         def recording(
-            command: Sequence[str], *, idle_timeout: float, tree: object
+            command: Sequence[str], *, idle_timeout: float, env: object, tree: object
         ) -> Iterator[bounded_process.Streaming]:
             bounded_call(command, idle_timeout, tree=tree)
+            self.assertIsNone(env)
             bounds.append(idle_timeout)
             self.assertEqual([git(), "-C", "here", "cat-file", "--batch"], list(command))
             with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=idle_timeout) as running:
@@ -1092,6 +1096,87 @@ class RepositoryVariableTests(unittest.TestCase):
                 }
             ),
             bounded_process.REPOSITORY_VARIABLES,
+        )
+
+
+class IsolatedClientTests(unittest.TestCase):
+    """An isolated client inside a repository whose configuration, the global one, and a command-scope setting each
+    set fixture.source, as content a review did not write can sit inside or below a repository."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.repository = root / "a repository"
+        self.inner = self.repository / "content it did not write"
+        self.inner.mkdir(parents=True)
+        GitClient(timeout=60).output(["init", "--quiet", str(self.repository)])
+        GitClient(timeout=60).output(["config", "fixture.source", "repository"], directory=self.repository)
+        global_file = root / "global config"
+        global_file.write_text("[fixture]\n\tglobal = yes\n", encoding="utf-8")
+        scope = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "command"}
+        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_file), **scope})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_an_isolated_command_names_the_null_device_as_its_repository(self) -> None:
+        null = "nul" if os.name == "nt" else "/dev/null"
+        runner, calls = scripted(GitResult(0, "", ""))
+        GitClient(runner, isolated=True).run(["grep", "-e", "x"], directory="d")
+        self.assertEqual(["git", f"--git-dir={null}", "-C", "d", "grep", "-e", "x"], calls[0][0])
+        runner, calls = scripted(GitResult(0, "", ""))
+        GitClient(runner).run(["grep", "-e", "x"], directory="d")
+        self.assertEqual(["git", "-C", "d", "grep", "-e", "x"], calls[0][0])
+
+    def test_every_client_runs_a_command_that_reads_files_rather_than_a_repository_isolated(self) -> None:
+        null = "nul" if os.name == "nt" else "/dev/null"
+        self.assertEqual(frozenset({"grep", "diff"}), git_client.ISOLATED_SUBCOMMANDS)
+        cases = {
+            ("grep", "--no-index", "-e", "x"): True,
+            ("-c", "a.b=c", "grep", "-n", "--no-index", "-e", "x"): True,
+            ("diff", "--no-index", "a", "b"): True,
+            ("grep", "-e", "x"): False,
+            ("diff", "a", "b"): False,
+            ("check-ignore", "-q", "--no-index", "a"): False,
+            ("--no-index", "status"): False,
+        }
+        for arguments, isolated in cases.items():
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(list(arguments))
+                self.assertEqual(isolated, f"--git-dir={null}" in calls[0][0])
+
+    def test_a_plain_clients_grep_without_an_index_reads_no_repository_around_it(self) -> None:
+        (self.inner / "f.txt").write_bytes(b"needle\n")
+        with (self.repository / ".git" / "config").open("a", encoding="utf-8") as config:
+            config.write("[grep]\n\tcolumn = true\n[unterminated\n")
+        arguments = ["grep", "--null", "-n", "--no-index", "-e", "needle", "--"]
+        self.assertEqual(128, GitClient(timeout=60).run(["status"], directory=self.inner).returncode)
+        self.assertEqual("f.txt\x001\x00needle\n", GitClient(timeout=60).output(arguments, directory=self.inner))
+        with GitClient(timeout=60).stream(arguments, directory=self.inner) as stream:
+            stream.stdin.close()
+            self.assertEqual((b"f.txt\x001\x00needle\n", 0), (stream.read(100), stream.wait()))
+
+    def test_a_plain_client_reads_each_setting_and_an_isolated_one_none_in_run_output_and_stream(self) -> None:
+        plain, isolated = GitClient(timeout=60), GitClient(timeout=60, isolated=True)
+        for key, value in (("fixture.source", "repository"), ("fixture.global", "yes"), ("fixture.scope", "command")):
+            with self.subTest(key=key):
+                arguments = ["config", "--get", key]
+                self.assertEqual(f"{value}\n", plain.output(arguments, directory=self.inner))
+                result = isolated.run(arguments, directory=self.inner)
+                self.assertEqual((1, ""), (result.returncode, result.stdout))
+                with isolated.stream(arguments, directory=self.inner) as stream:
+                    stream.stdin.close()
+                    self.assertEqual((b"", 1), (stream.read(1), stream.wait()))
+
+    def test_an_isolated_command_finds_no_repository_in_its_folder_or_above_it(self) -> None:
+        listing = GitClient(timeout=60, isolated=True).run(["rev-parse", "--git-dir"], directory=self.inner)
+        self.assertNotEqual(0, listing.returncode)
+        self.assertIn("not a git repository", listing.stderr)
+        found = GitClient(timeout=60).output(["rev-parse", "--absolute-git-dir"], directory=self.inner).strip()
+        self.assertEqual(
+            str((self.repository / ".git").resolve()),
+            str(Path(found).resolve()),
         )
 
 

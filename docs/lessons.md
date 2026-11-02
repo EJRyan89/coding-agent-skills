@@ -58,7 +58,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
   `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
   `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
-  `tests/tools/test_hub_guard.py::PlaceLookupTests`
+  `tests/tools/test_hub_guard.py::PlaceLookupTests`,
+  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
@@ -68,8 +69,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
   callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
   another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
-  other than absence, such as a start inside a git directory, which has no work tree to show.
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133
+  other than absence, such as a start inside a git directory, which has no work tree to show; `.wait()` or a
+  `returncode` of a command that reports a per-file error on stderr and goes on, such as `git grep`, read as the whole
+  answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match".
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2236
 
 ### Evidence that was never produced is never a pass
 
@@ -422,11 +425,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A variable the parent carries, such as git's repository selection or a signed-in token, otherwise reaches
   a child that must not see it.
 - **Use:** `bounded_process:run_bounded`, `bounded_process:without_repository_variables`,
-  `tools.mutation_gate:suite_environment`
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`
+  `tools.mutation_gate:suite_environment`, and for a git that reads content it did not write,
+  `bounded_process:isolated_git_environment` with `git_client:NO_REPOSITORY`, which an isolated client and every
+  client's search or comparison without an index (`git_client:reads_no_repository`) start with, so no repository
+  around the content and no configuration shapes what git prints
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests`,
+  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SnapshotIsolationTests`
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
-  sandboxed child started with no `env=`.
-- **Examples:** #1366, #1396, #1598, #1777, #1861
+  sandboxed child started with no `env=`; a git command run with its working directory, or `-C`, inside content a
+  pull request or a reviewer wrote, such as a review snapshot, through a client that is not isolated.
+- **Examples:** #1366, #1396, #1598, #1777, #1861, #2241
 
 ### An action on something not proven ours stops
 

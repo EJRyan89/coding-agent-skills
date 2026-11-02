@@ -2085,10 +2085,12 @@ def search_source(
     paths the snapshot at `root` can hold only, and whether more than MAX_SEARCH_MATCHES were found.
 
     `git grep` searches the commit's tree in `checkout`, so a lazy snapshot is searched whole. Without a checkout, the
-    snapshot holds every file, and `git grep --no-index` searches its files as written, each one the manifest hashes.
-    It treats every file as text, so no attribute the checkout sets decides what is binary; the snapshot's own test
-    does. A file the snapshot
-    holds passed it when it was written, and a file it lists to fetch later is read by its blob id from one
+    snapshot holds every file, and `git grep --no-index` searches its files as written, each one the manifest hashes,
+    through an isolated `GitClient`, so no repository in the snapshot or above it, and no configuration, shapes what it
+    prints. A search git reports an error in, such as a file or a blob it could not read, fails rather than answering
+    for fewer files than it covers. It treats every file as text, so no attribute the checkout sets decides what is
+    binary; the snapshot's own test does. A file the snapshot holds passed it when it was written, and a file it
+    lists to fetch later is read by its blob id from one
     `git cat-file --batch` and tested the first time it matches. No textconv applies. Each line is read only as far
     as a match can show, so a long line of a binary file is never held whole, and its text is read as UTF-8 with
     U+FFFD for any other byte, cut at MAX_MATCH_CHARACTERS. A path the snapshot excludes, such as an agent
@@ -2104,15 +2106,18 @@ def search_source(
     # MAX_MATCH_CHARACTERS however they decode.
     longest = max((len(path.encode("utf-8", "surrogateescape")) for path in [*text, *fetchable]), default=0)
     limit = len(prefix) + longest + 32 + 4 * (MAX_MATCH_CHARACTERS + 1)
-    arguments = ["grep", "--null", "--line-number", "-a", "-E", "--no-color"]
+    # Every option that shapes the output is given, so no configuration git reads adds a column or a submodule's lines.
+    arguments = ["grep", "--null", "--line-number", "-a", "-E", "--no-color", "--no-column", "--no-recurse-submodules"]
     if checkout is None:
         arguments += ["--no-index", "-e", pattern]
     else:
         arguments += ["--full-name", "-e", pattern, commit]
+    # In the snapshot, git runs isolated: it finds no repository there or above it and reads no configuration.
+    client = GitClient(isolated=checkout is None)
     matches: list[tuple[str, str, str]] = []
     try:
         with ExitStack() as processes:
-            stream = processes.enter_context(GitClient().stream([*arguments, "--"], directory=checkout or root))
+            stream = processes.enter_context(client.stream([*arguments, "--"], directory=checkout or root))
             stream.stdin.close()
             binary: Callable[[str], bool] | None = None
             while line := stream.readline(limit):
@@ -2129,14 +2134,26 @@ def search_source(
                 if not text[path]:
                     continue
                 if len(matches) == MAX_SEARCH_MATCHES:
+                    _require_whole_search(stream)
                     return matches, True
                 matches.append((path, number.decode("ascii", "replace"), _match_text(found)))
             status = stream.wait()
             if status not in {0, 1}:  # 1 is no match
                 raise RuntimeContractError(stream.stderr().strip() or f"git grep failed with exit code {status}")
+            _require_whole_search(stream)
     except GitError as exc:
         raise RuntimeContractError(str(exc)) from exc
     return matches, False
+
+
+def _require_whole_search(stream: GitStream) -> None:
+    """Fail a search git reported an error in. git grep prints `error: ...` for a file or blob it cannot read and goes
+    on, exiting 0 when another file matched and 1 when none did, so its status alone would report a result over fewer
+    files than it was asked to search. Its matches go to stdout, so any line on stderr fails the search, as one the
+    search cannot tell from such an error. Checked at the match limit too, for the errors printed by then."""
+    errors = stream.stderr().strip()
+    if errors:
+        raise RuntimeContractError(f"git grep could not search every file: {errors}")
 
 
 def _skip_line(stream: GitStream) -> None:
