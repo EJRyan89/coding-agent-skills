@@ -8,6 +8,8 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
+import file_presence
+
 from . import platform_support
 from .errors import DeployError
 
@@ -41,10 +43,14 @@ def _walk(root: Path) -> Iterator[tuple[str, list[str], list[str]]]:
 
 
 def find_link(path: Path) -> Path | None:
-    """Return the first symlink or junction at or beneath a path, without following any."""
+    """Return the first symlink or junction at or beneath a path, without following any. A path whose metadata cannot
+    be read raises its OSError, never read as holding no link."""
     if platform_support.is_link_or_junction(path):
         return path
-    if not path.is_dir():
+    try:
+        if not file_presence.is_directory(path):
+            return None
+    except file_presence.NotADirectory:
         return None
     for directory, subdirectories, names in _walk(path):
         base = Path(directory)
