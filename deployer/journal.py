@@ -185,6 +185,42 @@ def valid_entry(entry: object, run_id: str) -> TypeGuard[JournalEntry]:
             return False
 
 
+BACKUP_PATH_REMEDY = "Replace it with a real directory after verifying its contents, then retry."
+
+
+def _reject_backup_links(components: tuple[Path, ...], verb: str) -> None:
+    for component in components:
+        if platform_support.is_link_or_junction(component):
+            raise DeployError(
+                f"ERROR: Backup path {verb} a symlink or junction: {platform_support.normalize(component)}",
+                BACKUP_PATH_REMEDY,
+            )
+
+
+def check_backup_root(paths: Paths, root: str, run_id: str | None = None) -> None:
+    """Refuse, creating nothing, a root's .backups that a retained backup could not move into: a symlink, a junction,
+    or anything but a directory, and, given the run's ID, a .backups/<run-id> that is already there. A root or a
+    .backups that does not exist yet passes, since the run creates it.
+
+    The plan runs it for every root before the first change, so the deployment, and the dry run, refuse such a path
+    while the home is unchanged, rather than after the manifest commit, when prepare_backup_destination meets it.
+    """
+    base = root_directory(paths, root)
+    backups = base / ".backups"
+    _reject_backup_links((base, backups), "contains")
+    if os.path.lexists(backups) and not backups.is_dir():
+        raise DeployError(
+            f"ERROR: Backup path is not a directory: {platform_support.normalize(backups)}", BACKUP_PATH_REMEDY
+        )
+    run_backups = backups / run_id if run_id is not None else None
+    if run_backups is not None and os.path.lexists(run_backups):
+        raise DeployError(
+            f"ERROR: Permanent backup folder for this run already exists: {platform_support.normalize(run_backups)}",
+            "Move it out of the deployment root after checking its contents, then retry.",
+            see_recovery("Backups"),
+        )
+
+
 def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) -> Path:
     """Create the only directory a retained backup may move to, rejecting links and escapes."""
     base = root_directory(paths, root)
@@ -194,16 +230,13 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
             raise DeployError(problem)
     if not base.is_dir():
         raise DeployError(f"ERROR: Deployment destination is missing: {platform_support.normalize(base)}")
+    check_backup_root(paths, root)
     backups = base / ".backups"
     run_backups = backups / run_id
     components = (base, backups, run_backups)
 
     def reject_links(verb: str) -> None:
-        for component in components:
-            if platform_support.is_link_or_junction(component):
-                raise DeployError(
-                    f"ERROR: Backup path {verb} a symlink or junction: {platform_support.normalize(component)}"
-                )
+        _reject_backup_links(components, verb)
 
     reject_links("contains")
     fsops.make_directories(run_backups)

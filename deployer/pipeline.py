@@ -69,11 +69,15 @@ def _apply(
     context: Context, entries: list[PlanEntry], staged: render.Staged, run_id: str, replaced_pin: str | None
 ) -> None:
     paths = context.paths
+    roots = dict.fromkeys(kind.root for kind in KINDS)
+    # The plan judged each root's .backups; this run's own folder under it is known only now, before the first write.
+    for root in roots:
+        journal.check_backup_root(paths, root, run_id)
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
     record = journal.Journal(staging_dir / "journal.jsonl", run_id)
     record.create()
-    for root in dict.fromkeys(kind.root for kind in KINDS):
+    for root in roots:
         fsops.make_directories(journal.root_directory(paths, root))
     for entry in entries:
         plan.carry_out(record, paths, staging_dir, entry)

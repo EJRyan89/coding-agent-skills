@@ -7,16 +7,27 @@ tests here show each comparison failing on a deployment that breaks its invarian
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import pytest
-from harness import FAILS_PARTWAY, DeployerTestCase, Deployment, deployer, deployment, make_directory_link, tree_state
+from harness import (
+    FAILS_PARTWAY,
+    DeployerTestCase,
+    Deployment,
+    deployer,
+    deployment,
+    make_directory_link,
+    remove_directory_link,
+    tree_state,
+)
 
 from deployer import cli, pipeline, platform_support, render
 from deployer.errors import DeployError
+from deployer.names import transient_name
 from deployer.paths import Paths
 
 REFUSAL = "ERROR: synthetic refusal"
@@ -495,3 +506,75 @@ def test_a_failed_check_shows_both_sides_of_its_comparison() -> None:
         deployed.make_config()
         with pytest.raises(AssertionError, match=r"(?m)^assert 7 == 0$"):
             deployed.deploy_fails("--all", code=7, pattern="Found 0 skills")
+
+
+class RefusalBeforeTheFirstWriteTests(DeployerTestCase):
+    """Each path a deployment writes in each root, planted in a form the run must refuse, is refused before anything
+    changes: by the dry run, and by the deployment with the home unchanged, never after the manifest commit."""
+
+    RUN_ID = "20991231-000000-beef"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_agent("reviewer", "Review the change.")
+        self.make_skill("alpha", "Alpha at {{HOME}}", ["HOME"], agent_deps=["reviewer"])
+        self.make_config()
+        self.deploy_ok("--all")
+        # Each item edited, so the forced run replaces it and keeps its previous copy under .backups.
+        self.items = {
+            self.skills_dir: self.skills_dir / "alpha",
+            self.agents_dir: self.agents_dir / "alpha",
+            self.claude_agents_dir: self.claude_agents_dir / "reviewer.md",
+        }
+        for item in self.items.values():
+            self.append(item / "SKILL.md" if item.is_dir() else item, "# edit\n")
+
+    def name(self, root: Path) -> str:
+        return root.relative_to(self.home).as_posix()
+
+    def test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in(self) -> None:
+        for root in self.items:
+            backups = root / ".backups"
+            with self.subTest(root=self.name(root), form="a link"):
+                target = self.root / "elsewhere" / self.name(root)
+                target.mkdir(parents=True)
+                make_directory_link(backups, target)
+                for arguments in (("--dry-run",), ()):
+                    self.deploy_fails(
+                        "--all", "--force", *arguments, pattern="Backup path contains a symlink or junction"
+                    )
+                remove_directory_link(backups)
+            with self.subTest(root=self.name(root), form="a file"):
+                self.write(backups, "not a folder\n")
+                for arguments in (("--dry-run",), ()):
+                    self.deploy_fails("--all", "--force", *arguments, pattern="Backup path is not a directory")
+                backups.unlink()
+
+    def test_every_root_refuses_a_transient_backup_already_beside_its_item(self) -> None:
+        for root, item in self.items.items():
+            with self.subTest(root=self.name(root)):
+                transient = root / transient_name(item.name)
+                self.write(transient, "a stale copy\n")
+                for arguments in (("--dry-run",), ()):
+                    self.deploy_fails("--all", "--force", *arguments, pattern="transient backup already exists")
+                transient.unlink()
+
+    def test_every_root_refuses_this_runs_backups_folder_already_there(self) -> None:
+        real = time.strftime
+        stamp, suffix = self.RUN_ID.rsplit("-", 1)
+
+        def frozen(form: str, *rest: Any) -> str:
+            return stamp if form == "%Y%m%d-%H%M%S" else real(form, *rest)
+
+        for root in self.items:
+            with self.subTest(root=self.name(root)):
+                planted = root / ".backups" / self.RUN_ID
+                planted.mkdir(parents=True)
+                with (
+                    mock.patch("secrets.token_hex", return_value=suffix),
+                    mock.patch("time.strftime", side_effect=frozen),
+                ):
+                    self.deploy_fails("--all", "--force", pattern="Permanent backup folder for this run already exists")
+                planted.rmdir()
+                (root / ".backups").rmdir()

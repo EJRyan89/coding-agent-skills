@@ -58,7 +58,7 @@ A journal line that cannot be parsed stops recovery the same way, with `Malforme
 
 A transient backup, `<name>.deploying-bak`, exists only while a run is replacing or removing that item, and recovery resolves it. One left behind with no staging directory to explain it makes the next deployment of that item refuse. Compare it with the item beside it, keep whichever copy you want, move the other out of the root, and rerun.
 
-A permanent backup, `.backups/<run-id>/<name>`, is the copy a forced replacement overwrote. The deployer never deletes these. To restore one, move the current item out of the root and copy the backup into its place. The next deployment reports the restored item as modified and leaves it until you replace it with `--force-item <name>`. A run refuses to write a permanent backup over one that already exists; move the existing one out of the root after checking it, and rerun.
+A permanent backup, `.backups/<run-id>/<name>`, is the copy a forced replacement overwrote. The deployer never deletes these. To restore one, move the current item out of the root and copy the backup into its place. The next deployment reports the restored item as modified and leaves it until you replace it with `--force-item <name>`. A run refuses to write a permanent backup over one that already exists; move the existing one out of the root after checking it, and rerun. A `.backups` that is a symbolic link, a junction, or a file, in any root, and a `.backups/<run-id>` already there for the run's own ID, are refused the same way, by the dry run and the deployment, before anything changes: replace a link or file with a real directory after checking what it holds, and rerun.
 
 ## The deployment lock
 
