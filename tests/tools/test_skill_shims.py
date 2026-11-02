@@ -5,19 +5,18 @@ from __future__ import annotations
 import contextlib
 import errno
 import io
-import os
 import shutil
 import sys
 import tempfile
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from presence_denial import denied as stat_denied
 
 from tools import skill_shims
 
@@ -38,18 +37,6 @@ SHIM = (
     "`.agents` read-only.\n"
 )
 SHIM_PATH = Path(".agents/skills/widget-check/SKILL.md")
-
-
-def stat_denied(target: Path) -> contextlib.AbstractContextManager[object]:
-    """Path.stat refuses `target` alone, as a file system does a path the tool may not examine."""
-    real = Path.stat
-
-    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
-        if path == target:
-            raise PermissionError(errno.EACCES, "Access is denied", str(path))
-        return real(path, *args, **kwargs)
-
-    return mock.patch.object(Path, "stat", stat)
 
 
 class SkillShimsTestCase(unittest.TestCase):
@@ -224,6 +211,31 @@ class SkillShimsTestCase(unittest.TestCase):
                     shutil.rmtree(shims)
                 else:
                     shims.unlink()
+
+    def test_a_skill_shim_or_stray_entry_it_cannot_examine_or_list_fails_never_is_told_to_be_deleted(self) -> None:
+        denied = f"[Errno {errno.EACCES}] Access is denied"
+        # Each row: the files written, the path refused, whether its stat is refused too or only its listing.
+        rows: list[tuple[tuple[str, ...], str, bool]] = [
+            ((SHIM_PATH.as_posix(), ".agents/skills/stray/notes.md"), ".agents/skills/stray", True),
+            ((SHIM_PATH.as_posix(), ".agents/skills/gone/SKILL.md"), ".agents/skills/gone/SKILL.md", True),
+            ((SHIM_PATH.as_posix(),), ".claude/skills", False),
+            ((SHIM_PATH.as_posix(),), ".claude/skills/widget-check/SKILL.md", True),
+            (
+                (SHIM_PATH.as_posix(), ".agents/skills/widget-check/agents/extra.txt"),
+                ".agents/skills/widget-check/agents",
+                False,
+            ),
+        ]
+        for written, refused, stat in rows:
+            with self.subTest(refused=refused, stat=stat):
+                for relative in written:
+                    self.write(relative, SHIM)
+                path = self.root / refused
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), stat_denied(path, stat=stat):
+                    code, output = self.run_main()
+                self.assertEqual((2, "", f"FAILED {denied}: {str(path)!r}\n"), (code, output, errors.getvalue()))
+                shutil.rmtree(self.root / ".agents")
 
     def test_a_user_only_skill_gets_the_codex_policy_file_beside_its_shim(self) -> None:
         self.write(

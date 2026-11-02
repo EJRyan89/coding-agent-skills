@@ -124,7 +124,11 @@ def load_source(directory: Path) -> deploy_source.Source:
 def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:
     """The source's marketplace entries by plugin name. A source tree holds no plugin manifest of its own, which
     would make the skills in its checkout read as a plugin's."""
-    if (directory / PLUGIN_MANIFEST).exists():
+    try:
+        manifest_there = file_presence.is_occupied(directory / PLUGIN_MANIFEST)
+    except OSError as exc:
+        raise BuildError(f"{directory / PLUGIN_MANIFEST} cannot be examined: {exc}") from exc
+    if manifest_there:
         raise BuildError(f"{directory / PLUGIN_MANIFEST} exists; a source tree is never a plugin itself")
     try:
         document = json_reader.read_file(directory / MARKETPLACE)
@@ -312,7 +316,13 @@ def output_directory(requested: Path | None, source_dir: Path) -> Path:
     holder = skills_directory_holding(target)
     if holder is not None:
         raise BuildError(f"--output {requested} lies inside the skills directory {holder}, which a plugin never enters")
-    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+    try:
+        empty = not file_presence.is_occupied(target) or (
+            file_presence.is_directory(target, other_is_absent=True) and not any(target.iterdir())
+        )
+    except OSError as exc:
+        raise BuildError(f"--output {requested} cannot be examined: {exc}") from exc
+    if not empty:
         raise BuildError(f"--output {requested} exists and is not an empty directory")
     target.mkdir(parents=True, exist_ok=True)
     return target

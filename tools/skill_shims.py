@@ -24,6 +24,7 @@ UTF-8 included, ends the run with a FAILED line and exit 2.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -118,7 +119,11 @@ class ShimError(Exception):
 
 
 def _skills(root: Path) -> dict[str, Path]:
-    return {path.parent.name: path for path in (root / SKILLS).glob(f"*/{SKILL_FILE}")}
+    """Each repository skill's SKILL.md, by the skill's folder. Raises OSError for the skills folder, or a SKILL.md,
+    that cannot be examined or listed, which it lists with iterdir, where glob would match nothing."""
+    skills = root / SKILLS
+    folders = sorted(skills.iterdir()) if is_directory(skills) else []
+    return {folder.name: folder / SKILL_FILE for folder in folders if is_present(folder / SKILL_FILE)}
 
 
 def _expected(root: Path) -> dict[str, dict[str, str] | str | None]:
@@ -147,21 +152,32 @@ def _current(path: Path, text: str) -> bool:
         return False
 
 
+def _raise(error: OSError) -> None:
+    raise error
+
+
 def _folder_files(folder: Path) -> list[str]:
-    return sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*") if not path.is_dir())
+    """Every entry below a shim folder that is not a folder; os.walk raises for a folder below it it cannot list, where
+    rglob would match nothing."""
+    return sorted(
+        Path(base, name).relative_to(folder).as_posix()
+        for base, _, names in os.walk(folder, onerror=_raise)
+        for name in names
+    )
 
 
 def _stray_problems(root: Path, expected: dict[str, dict[str, str] | str | None]) -> list[str]:
     """Each entry under .agents/skills that is not a shim folder, and each shim folder whose skill is gone. Raises
-    OSError, NotADirectory for a file in its place, for an .agents/skills it cannot examine."""
+    OSError, NotADirectory for a file in its place, for an .agents/skills it cannot examine, and for an entry in it it
+    cannot examine, which it never tells to be deleted."""
     found = []
     shims = root / SHIMS
     for entry in sorted(shims.iterdir()) if is_directory(shims) else []:
         relative = (SHIMS / entry.name).as_posix()
-        if not entry.is_dir():
+        if not is_directory(entry, other_is_absent=True):
             found.append(f"{relative} is not a shim folder; delete it")
         elif entry.name not in expected:
-            shown = shim_path(entry.name) if (entry / SKILL_FILE).is_file() else SHIMS / entry.name
+            shown = shim_path(entry.name) if is_present(entry / SKILL_FILE) else SHIMS / entry.name
             found.append(f"{shown.as_posix()} has no {(SKILLS / entry.name / SKILL_FILE).as_posix()}; delete it")
     return found
 

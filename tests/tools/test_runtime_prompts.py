@@ -5,14 +5,12 @@ from __future__ import annotations
 import contextlib
 import errno
 import io
-import os
 import shutil
 import sys
 import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -24,6 +22,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import review_dispatch
 import review_hosts
+from presence_denial import denied as stat_denied
 from review_run import Services
 
 from tools import runtime_prompts
@@ -38,18 +37,6 @@ def renderer(prompts: dict[str, str]) -> Callable[[Path], dict[str, str]]:
         return {role: f"{text}\nRead {directory / 'run'} and {source}.\n" for role, text in prompts.items()}
 
     return render
-
-
-def stat_denied(target: Path) -> contextlib.AbstractContextManager[object]:
-    """Path.stat refuses `target` alone, as a file system does a path the tool may not examine."""
-    real = Path.stat
-
-    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
-        if path == target:
-            raise PermissionError(errno.EACCES, "Access is denied", str(path))
-        return real(path, *args, **kwargs)
-
-    return mock.patch.object(Path, "stat", stat)
 
 
 class RuntimePromptsTestCase(unittest.TestCase):
@@ -235,6 +222,28 @@ class RuntimePromptsTestCase(unittest.TestCase):
                 )
                 if (self.root / "docs").is_dir():
                     shutil.rmtree(self.root / "docs")
+
+    def test_an_extra_sample_it_cannot_examine_is_reported_and_removed_and_an_unlisted_folder_exits_2(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        runtime_prompts.write(self.root, renderers)
+        folder = self.root / "docs" / "runtime-prompts" / "gamma"
+        extra = folder / "old.txt"
+        folder.mkdir()
+        extra.write_text("Gone.\n", encoding="utf-8")
+        with stat_denied(extra):
+            self.assertEqual(
+                [f"docs/runtime-prompts/gamma/old.txt is no rendered prompt; {runtime_prompts.WRITE_HINT}"],
+                runtime_prompts.problems(self.root, renderers),
+            )
+            runtime_prompts.write(self.root, renderers)
+        self.assertEqual((False, False), (extra.exists(), folder.exists()), "the extra sample and its folder go")
+        # A folder below the samples it cannot list could hold an extra sample, which rglob would pass by.
+        folder.mkdir()
+        refused = f"[Errno {errno.EACCES}] Access is denied: {str(folder)!r}"
+        for arguments in ((), ("--write",)):
+            with self.subTest(arguments=arguments), stat_denied(folder, stat=False):
+                code, stdout, stderr = self.run_main(renderers, *arguments)
+            self.assertEqual((2, "", f"FAILED cannot read docs/runtime-prompts: {refused}\n"), (code, stdout, stderr))
 
     def test_each_skill_renders_its_prompts_without_a_model_and_bounds_their_replies(self) -> None:
         # The real renderers, into a throwaway root: every prompt the skills' scripts write today.

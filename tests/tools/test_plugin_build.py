@@ -7,13 +7,10 @@ import errno
 import hashlib
 import io
 import json
-import os
 import sys
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Any
-from unittest import mock
 
 import pytest
 
@@ -21,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import skill_menu
+from presence_denial import denied as stat_denied
 from skill_roots import SKILLS_ROOT, sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
@@ -389,6 +387,16 @@ def test_a_source_tree_holding_a_plugin_manifest_is_refused(source: Source) -> N
         plugin_build.load_catalogue(source.root)
 
 
+def test_a_plugin_manifest_it_cannot_examine_is_refused_never_taken_for_none(source: Source) -> None:
+    manifest = source.root / ".claude-plugin" / "plugin.json"
+    with stat_denied(manifest), pytest.raises(plugin_build.BuildError) as raised:
+        plugin_build.load_catalogue(source.root)
+    assert (
+        str(raised.value)
+        == f"{manifest} cannot be examined: [Errno {errno.EACCES}] Access is denied: {str(manifest)!r}"
+    )
+
+
 def test_a_source_the_deployer_refuses_is_a_build_error(source: Source) -> None:
     source.skill("alpha", skill_deps=["missing"])
     with pytest.raises(plugin_build.BuildError, match="missing"):
@@ -433,6 +441,19 @@ def test_an_output_that_is_a_file_or_holds_files_is_refused_and_an_absent_one_is
     assert (tmp_path / "full" / "kept.txt").read_text(encoding="utf-8") == "kept"
     made = plugin_build.output_directory(tmp_path / "new folder" / "plugins", source_root)
     assert made.is_dir()
+
+
+@pytest.mark.parametrize("stat", [True, False])
+def test_an_output_it_cannot_examine_or_list_is_refused_never_taken_for_an_empty_one(
+    tmp_path: Path, stat: bool
+) -> None:
+    target = (tmp_path / "out").resolve()
+    target.mkdir()
+    with stat_denied(target, stat=stat), pytest.raises(plugin_build.BuildError) as raised:
+        plugin_build.output_directory(target, tmp_path / "source")
+    assert str(raised.value).startswith(
+        f"--output {target} cannot be examined: [Errno {errno.EACCES}] Access is denied"
+    )
 
 
 def run(arguments: list[str]) -> tuple[int, list[str]]:
@@ -513,18 +534,6 @@ def test_the_sources_readme_is_each_plugins_readme_and_a_source_without_one_give
     catalogue = plugin_build.load_catalogue(source.root)
     plugins = plugin_build.assemble(plugin_build.load_source(source.root), catalogue, readme=readme).plugins
     assert [plugin.files["README.md"] for plugin in plugins] == [b"# Fixture\n", b"# Fixture\n"]
-
-
-def stat_denied(target: Path) -> contextlib.AbstractContextManager[object]:
-    """Path.stat refuses `target` alone, as a file system does a path the build may not examine."""
-    real = Path.stat
-
-    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
-        if path == target:
-            raise PermissionError(errno.EACCES, "Access is denied", str(path))
-        return real(path, *args, **kwargs)
-
-    return mock.patch.object(Path, "stat", stat)
 
 
 @pytest.mark.parametrize("place", ["folder", "unexamined"])
