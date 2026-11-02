@@ -237,7 +237,7 @@ class Pull:
     cross_repository: bool
     draft: bool
     hold: str | None  # the reason a Shepherd-hold line gives, or None when none holds it
-    base: str = BASE  # the branch it would merge into
+    base: str  # the branch it would merge into
 
 
 @dataclass
@@ -421,19 +421,20 @@ def required_check(rollup: Any) -> Check:
             if run is None:
                 raise malformed(f"a {REQUIRED_CHECK} check whose URL names no run")
             runs.append((entry, run))
-    newest = max((run for _, run in runs), default=0)
+    if not runs:
+        return Check("MISSING", None)
+    newest = max(run for _, run in runs)
     entries = [entry for entry, run in runs if run == newest]
     named = [entry for entry in entries if entry["name"] == REQUIRED_CHECK]
     legs = [entry for entry in entries if entry["name"] != REQUIRED_CHECK]
     progress = sum(entry["status"] == "COMPLETED" for entry in legs) / len(legs) if legs else 0.0
     if named:
+        # A rerun of the run adds another entry of the check; the one started last is the current one.
         entry = max(named, key=lambda item: str(item["startedAt"]))
         if entry["status"] != "COMPLETED":
             return Check("PENDING", newest, progress)
-        return Check(str(entry["conclusion"] or "UNKNOWN").upper(), newest, 1.0)
-    if entries:
-        return Check("PENDING", newest, progress)
-    return Check("MISSING", None)
+        return Check(entry["conclusion"].upper() or "UNKNOWN", newest, 1.0)
+    return Check("PENDING", newest, progress)
 
 
 def hold_of(body: str) -> str | None:

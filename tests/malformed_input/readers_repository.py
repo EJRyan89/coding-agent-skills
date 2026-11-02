@@ -262,7 +262,9 @@ def _shepherd_pull(path: Path) -> object:
 
 
 def _shepherd_pull_on(head: str) -> object:
-    return shepherd.Pull(12, "fix/example", head, "CLEAN", False, shepherd.Check("FAILURE", 7), (), False, False, None)
+    return shepherd.Pull(
+        12, "fix/example", head, "CLEAN", False, shepherd.Check("FAILURE", 7), (), False, False, None, "main"
+    )
 
 
 def _shepherd_judge(path: Path) -> object:

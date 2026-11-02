@@ -894,6 +894,23 @@ class UpdateTest(FixtureTestCase):
         self.assertEqual(shepherd.Check("PENDING", RUN, 0.0), shepherd.required_check([running]))
         ended = {**running, "status": "COMPLETED", "conclusion": ""}
         self.assertEqual(shepherd.Check("UNKNOWN", RUN, 1.0), shepherd.required_check([ended]))
+        self.assertEqual(
+            shepherd.Check("NEUTRAL", RUN, 1.0), shepherd.required_check([{**ended, "conclusion": "neutral"}])
+        )
+
+    def test_a_rerun_of_the_required_check_in_the_same_run_is_read_by_its_latest_start(self) -> None:
+        # The first attempt passed, the rerun after it failed, and gh may list either first.
+        passed = check_run("Validation", status="COMPLETED", conclusion="SUCCESS", startedAt="2026-10-16T05:00:00Z")
+        failed = check_run("Validation", status="COMPLETED", conclusion="FAILURE", startedAt="2026-10-16T07:00:00Z")
+        running = check_run("Validation", startedAt="2026-10-16T08:00:00Z")
+        for listed in ([passed, failed], [failed, passed]):
+            with self.subTest(first=listed[0]["conclusion"]):
+                self.assertEqual(shepherd.Check("FAILURE", RUN, 1.0), shepherd.required_check(listed))
+        for listed in ([failed, running], [running, failed]):
+            with self.subTest(first=listed[0]["status"]):
+                self.assertEqual("PENDING", shepherd.required_check(listed).state)
+        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check([]))
+        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(None))
 
     def test_nothing_is_updated_while_an_armed_current_pull_request_is_green_or_pending(self) -> None:
         for state in ("SUCCESS", "PENDING"):
