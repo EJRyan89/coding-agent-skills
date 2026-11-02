@@ -65,6 +65,7 @@ from closing_references import (
     reference_digits,
 )
 from console import run_main
+from file_presence import NotADirectory, is_directory
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -118,11 +119,18 @@ def blank_comments(text: str) -> str:
 
 
 def find_template(top: Path) -> Path | None:
-    """The pull request template GitHub reads for the repository at `top`, or None."""
+    """The pull request template GitHub reads for the repository at `top`, or None; a folder whose stat fails is a
+    PullRequestError, never a folder with no template."""
     for folder in TEMPLATE_FOLDERS:
         directory = top / folder
-        if not directory.is_dir():
+        try:
+            if not is_directory(directory):
+                continue
+        except NotADirectory:
+            # A file named like the folder, such as a docs file, holds no template, as GitHub reads it.
             continue
+        except OSError as exc:
+            raise PullRequestError(f'cannot read "{directory}": {flat_text(str(exc))}') from exc
         for entry in sorted(directory.iterdir()):
             if entry.name.casefold() == TEMPLATE_NAME and entry.is_file():
                 return entry

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import os
 import shutil
 import stat
 import subprocess
@@ -13,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
+from unittest import mock
 
 import pytest
 
@@ -217,6 +219,39 @@ class TemplateLookupTests(unittest.TestCase):
 
     def test_no_template_is_none(self) -> None:
         self.assertIsNone(pull_request.find_template(self.root))
+
+    def test_a_template_folder_that_is_not_there_is_passed_over_for_the_next(self) -> None:
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "pull_request_template.md").write_text("## Changes\n", encoding="utf-8")
+        self.assertEqual(self.root / "docs" / "pull_request_template.md", pull_request.find_template(self.root))
+
+    def test_a_file_named_like_a_template_folder_holds_no_template(self) -> None:
+        (self.root / ".github").write_text("not a folder\n", encoding="utf-8")
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "pull_request_template.md").write_text("## Changes\n", encoding="utf-8")
+        self.assertEqual(self.root / "docs" / "pull_request_template.md", pull_request.find_template(self.root))
+
+    def test_a_template_folder_whose_stat_fails_is_refused_rather_than_passed_over(self) -> None:
+        github = self.root / ".github"
+        github.mkdir()
+        (github / "pull_request_template.md").write_text("## Changes\n", encoding="utf-8")
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "pull_request_template.md").write_text("## Other\n", encoding="utf-8")
+        real_stat = Path.stat
+
+        def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == github:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with (
+            mock.patch.object(Path, "stat", autospec=True, side_effect=denied),
+            self.assertRaises(pull_request.PullRequestError) as refused,
+        ):
+            pull_request.find_template(self.root)
+        self.assertEqual(
+            f'cannot read "{github}": [Errno 13] Permission denied: {str(github)!r}', str(refused.exception)
+        )
 
 
 class Repository(unittest.TestCase):

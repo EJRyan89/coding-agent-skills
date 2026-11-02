@@ -21,7 +21,7 @@ from review_archive import (
     record_paths,
 )
 from review_config import validate_repository_identity
-from review_io import PersistenceError, read_json
+from review_io import FileUnreadable, PersistenceError, read_json, record_present
 from review_records import (
     LedgerEntry,
     ReviewRecord,
@@ -405,11 +405,14 @@ LEGACY_INDEX_KEYS = {
 def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, Any] | None:
     """The migrated legacy review index for a pull request, or None when absent or invalid.
 
-    An invalid index is treated as unreviewed so the pull request is offered for review again.
+    An index that is not there, or whose content is invalid, is treated as unreviewed, so the pull request is offered
+    for review again rather than passed over. One the file system will not let be stat'ed or read, or anything other
+    than a file in its place, is the FileUnreadable naming it and the reason: it may record a review, so the pull
+    request is neither offered again nor passed over.
     """
     repository = validate_repository_identity(repository)
     path = pull_directory(archive_root, repository, number) / "legacy-review.json"
-    if not path.is_file():
+    if not record_present(path):
         return None
     try:
         index = READ.json_object(read_json(path), "legacy-index", required=LEGACY_INDEX_KEYS)
@@ -419,6 +422,8 @@ def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, 
         pull_number = READ.integer(index["pull_number"], "legacy-index.pull_number")
         READ.hex_digest(index["reviewed_head_sha"], "legacy-index.reviewed_head_sha", 40, 64)
         READ.string(index["verdict"], "legacy-index.verdict", empty=True)
+    except FileUnreadable:
+        raise
     except (PersistenceError, FieldError):
         return None
     if version != 1 or indexed.lower() != repository or pull_number != number:
@@ -457,8 +462,9 @@ def reviewed_head(
     Also reports the review's verdict, finding counts, ledger summary, and report path for dashboards. A record
     written before ledgers is summarized from the ledger its pull request's records compute. A legacy review's
     findings were never converted, so its summary counts its report's findings as open and cannot say how many
-    were addressed (None); it is None when the report is unreadable. A caller that already holds the pull request's
-    validated records, oldest first as `pull_records` returns them, passes them as `records` so none is read again.
+    were addressed (None); it and the report's path are None when the report is unreadable, which is the one read
+    that tells. A caller that already holds the pull request's validated records, oldest first as `pull_records`
+    returns them, passes them as `records` so none is read again.
     """
     directory = pull_directory(archive_root, repository, number)
     record = records[-1] if records else None
@@ -497,7 +503,7 @@ def reviewed_head(
             "verdict": legacy["verdict"].replace(" ", "_"),
             "counts": counts,
             "ledger": summary,
-            "report": str(report) if report.is_file() else None,
+            "report": None if counts is None else str(report),
         }
     return None
 

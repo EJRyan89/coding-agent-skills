@@ -51,13 +51,14 @@ from review_config import (
 )
 from review_flags import FlagError, FlagFieldError, add_flag
 from review_github import GitHubClient, GitHubFieldError
-from review_hosts import ProcessResult
+from review_hosts import HOST_CLAIM, ProcessResult, host_state, new_claim, write_outcome
 from review_io import PersistenceError, atomic_write_json
 from review_operation import ReviewOperationError, archive_base
 from review_records import Coverage, ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
 from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree, ended
+from test_review_archive import unstatable
 from test_review_documents import (
     NOT_INSTALLED,
     StubPdftotext,
@@ -3066,6 +3067,17 @@ class InlineReviewTests(PipelineFixture):
         self.assertEqual((0, f"INLINE_DONE {SELECTOR}\n"), self.next_role(run))
         self.assertEqual(["generic-review", "python-reviewer"], sorted(review_run.load_run(run)["seal"]["results"]))
 
+    def test_next_role_refuses_a_result_it_cannot_stat_rather_than_hand_its_role_out_again_unsealed(self) -> None:
+        run = self.prepare_inline()
+        self.next_role(run)
+        result = Path(self.role(run, "python-reviewer")["result_file"])
+        self.write_role_result(self.role(run, "python-reviewer"))
+        before = (run / review_run.RUN_FILE).read_bytes()
+        with unstatable(result):
+            code, out = self.next_role(run)
+        self.assertEqual((1, f"FAILED [Errno 13] Permission denied: {str(result)!r}\n"), (code, out))
+        self.assertEqual(before, (run / review_run.RUN_FILE).read_bytes(), "no role is handed out")
+
     def test_a_later_role_that_rewrites_an_earlier_result_fails_the_pull_request(self) -> None:
         run = self.prepare_inline()
         self.next_role(run)
@@ -3168,6 +3180,45 @@ class InlineReviewTests(PipelineFixture):
         ):
             with self.subTest(runtime=runtime, kind=kind):
                 self.assertEqual(dispatch, review_run.run_dispatch({"runtime": runtime, "kind": kind}))
+
+
+class UnstatableRunStateTests(unittest.TestCase):
+    """A run's state file or folder whose stat fails is the OSError check, wait, and unfinalized report, never read as
+    missing: a read log as no reads, a run as recorded, a host's claim or outcome as no host or none yet."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.run_directory = Path(temporary.name).resolve() / f"{guard.RUN_PREFIX}unstatable"
+        self.run_directory.mkdir()
+
+    def test_each_run_state_it_cannot_stat_is_refused_naming_it(self) -> None:
+        run = self.run_directory
+        log = guard.read_log(run, "csharp-review")
+        log.parent.mkdir()
+        log.write_text("", encoding="utf-8")
+        (run / review_run.RECORDED_FILE).write_text("", encoding="utf-8")
+        claim = new_claim(run, generation=0, now=0.0)
+        write_outcome(run, claim, "dispatched", None)
+
+        state: Any = {"reads": {}}
+
+        def host() -> object:
+            return host_state(run, probe=lambda pid: ProcessStatus(False, None), now=0.0)
+
+        readers: dict[str, tuple[Path, Callable[[], object]]] = {
+            "read log": (log, lambda: review_dispatch.count_reads(run, state, ["csharp-review"])),
+            "run folder": (run, lambda: review_dispatch.unfinalized_selector(run)),
+            "recorded marker": (run / review_run.RECORDED_FILE, lambda: review_dispatch.unfinalized_selector(run)),
+            # Read as not yet recorded, finalize would archive the run a second time.
+            "recorded marker, finalize": (run / review_run.RECORDED_FILE, lambda: rp.finalize(run)),
+            "host claim": (run / HOST_CLAIM, host),
+            "host outcome": (run / f"copilot-outcome-{claim['attempt']}.json", host),
+        }
+        for name, (path, read) in readers.items():
+            with self.subTest(name), unstatable(path), self.assertRaises(PermissionError) as raised:
+                read()
+            self.assertEqual(str(path), raised.exception.filename)
 
 
 class FakeClock:

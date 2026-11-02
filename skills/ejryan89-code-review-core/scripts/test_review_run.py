@@ -5,6 +5,7 @@ refused by name, by load_run and in the FAILED line of every step that reads the
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import review_pipeline
 import review_run
+from test_review_archive import unlistable, unstatable
 
 
 def prepared_state(**fields: Any) -> dict[str, Any]:
@@ -102,6 +104,46 @@ def test_a_run_as_prepare_writes_it_loads_unchanged(tmp_path: Path) -> None:
     loaded = review_run.load_run(tmp_path)
     assert state == loaded
     assert json.dumps(state, sort_keys=True) == json.dumps(loaded, sort_keys=True)
+
+
+def test_the_inline_seal_passes_over_only_folders_so_a_file_it_cannot_stat_is_still_sealed(tmp_path: Path) -> None:
+    run = tmp_path.resolve()
+    work = run / "work"
+    (work / "nested").mkdir(parents=True)
+    (run / "source").mkdir()
+    for path in (run / "request.json", work / "plan.json", work / "generic.json", run / "source" / "app.py"):
+        path.write_text(path.name, encoding="utf-8")
+    role = {"id": "generic-review", "prompt_file": str(work / "generic.md"), "result_file": str(work / "generic.json")}
+    state: Any = prepared_state(roles=[role], result_path=str(run / "result.json"))
+    with unstatable(work / "plan.json"):
+        sealed = review_run.sealed_files(run, state)
+    digest = hashlib.sha256(b"plan.json").hexdigest()
+    assert {"request.json": hashlib.sha256(b"request.json").hexdigest(), "work/plan.json": digest} == sealed
+
+
+def test_the_inline_seal_refuses_a_folder_it_cannot_list_rather_than_leave_its_files_out(tmp_path: Path) -> None:
+    # rglob matches nothing in a folder it cannot list, so a seal from it would leave that folder's files unsealed.
+    run = tmp_path.resolve()
+    work = run / "work"
+    work.mkdir()
+    (work / "plan.json").write_text("plan", encoding="utf-8")
+    state: Any = prepared_state(roles=[], result_path=str(run / "result.json"))
+    with unlistable(work), pytest.raises(PermissionError) as raised:
+        review_run.sealed_files(run, state)
+    assert str(work) == raised.value.filename
+
+
+@pytest.mark.parametrize("name", ["source", review_run.SOURCE_REPOSITORY])
+def test_the_inline_seal_never_lists_the_snapshot_or_the_fixture_repository(tmp_path: Path, name: str) -> None:
+    # Their own manifest and blob ids hold them, so the seal prunes them unlisted and a refused listing there is moot.
+    run = tmp_path.resolve()
+    (run / name).mkdir()
+    (run / name / "app.py").write_text("app", encoding="utf-8")
+    (run / "request.json").write_text("request", encoding="utf-8")
+    state: Any = prepared_state(roles=[], result_path=str(run / "result.json"))
+    with unlistable(run / name):
+        sealed = review_run.sealed_files(run, state)
+    assert {"request.json": hashlib.sha256(b"request").hexdigest()} == sealed
 
 
 # Every field a run prepared before it was recorded may lack, named here apart from the shape the reader takes them

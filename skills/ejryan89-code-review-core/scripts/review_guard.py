@@ -62,6 +62,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 import json_writer
 from console import run_main
@@ -307,7 +308,8 @@ def _load_claim(agent: str) -> Claim | None:
 
 
 def _prune_claims() -> None:
-    """Remove each claim whose run is gone: finalize removes a run's folder, run.json with it."""
+    """Remove each claim whose run is gone: finalize removes a run's folder, run.json with it. A claim whose run.json
+    it cannot stat, or finds something else in place of, is kept: the error leaves it, as one it cannot read is."""
     for path in CLAIMS.glob("*.json"):
         with contextlib.suppress(OSError, ValueError, RecursionError):
             claim = json_reader.read_file(path)
@@ -315,7 +317,7 @@ def _prune_claims() -> None:
                 run: str | None = READ.string(READ.json_object(claim, "claim").get("run"), "claim.run", empty=True)
             except FieldError:
                 run = None
-            if run is None or not (Path(run) / RUN_FILE).is_file():
+            if run is None or not file_presence.is_present(Path(run) / RUN_FILE):
                 path.unlink()
 
 

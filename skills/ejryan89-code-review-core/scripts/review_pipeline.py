@@ -44,6 +44,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_writer
 from console import run_main
 from review_archive import archive_head, commit_record, pull_records
@@ -830,7 +831,8 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
     holds the version prepare judged the review against."""
     services = services or Services()
     run = run.resolve()
-    if (run / RECORDED_FILE).is_file():
+    # A marker it cannot stat is the stat's OSError, never a run not yet recorded, which would archive it twice.
+    if file_presence.is_present(run / RECORDED_FILE):
         raise PipelineError(f"{run} is already recorded")
     state = load_run(run)
     if run_dispatch(state) == "inline":
