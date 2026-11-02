@@ -220,10 +220,11 @@ INT_PARSE_ALLOWED = {
 
 def parse_diagnostics(log: str, root: Path) -> list[Diagnostic]:
     """Distinct issues in a dotnet-format log, in first-seen order. The log's lines end at a newline, never at the
-    other line breaks `str.splitlines()` reads, which a file name the log prints may hold."""
+    other line breaks `str.splitlines()` reads, which a file name the log prints may hold. ISSUE reads a line from its
+    start to the rule, so the `\r` a CRLF line keeps after the message is never read."""
     found: dict[Diagnostic, None] = {}
     for line in log.split("\n"):
-        match = ISSUE.match(line.removesuffix("\r"))
+        match = ISSUE.match(line)
         if match:
             found.setdefault(
                 Diagnostic(

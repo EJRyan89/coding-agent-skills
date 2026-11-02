@@ -1056,6 +1056,18 @@ class OneLineFactTests(unittest.TestCase):
             lines[:-1],
         )
 
+    def test_every_finished_run_names_the_files_it_saved_before_the_failed_run_names_its_own(self) -> None:
+        def found(name: str) -> bytes:
+            return f"{self.root / name}(1,1): warning IDE0055: Fix formatting\r\n".encode()
+
+        runs = formatter.Runs(
+            [["src/A.cs", "src/Clean.cs"], ["src/B.cs"], ["src/C.cs"]], [found("src/A.cs"), found("src/B.cs")], 2, "x"
+        )
+        self.assertEqual(
+            ["SAVED\tsrc/A.cs", "SAVED\tsrc/B.cs", "UNFINISHED\tsrc/C.cs"],
+            formatter.unfinished_fix_lines(runs, self.root),
+        )
+
     def test_a_file_list_path_holding_a_line_separator_fails_on_one_line(self) -> None:
         file_list = self.root / "files\u2028STOP.txt"
         file_list.write_bytes(b"")
