@@ -1467,6 +1467,36 @@ class SweepTests(Fixture):
             self.assertIsNotNone(self.tip(name), name)
         self.assertIn("Worktrees removed:       1 — ", summary)
         self.assertFalse(tree.exists(), "the worktree removal Git accepted still happens")
+        code, reported = self.report()
+        self.assertEqual(0, code, reported)
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "cleaned"]], facts(reported, "REPO"))
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 1 with an error."]],
+            facts(reported, "PROCESSED"),
+            "a deletion Git refused is not a completed cleanup",
+        )
+
+    def test_a_branch_that_moves_as_git_refuses_its_deletion_is_kept_as_moved(self) -> None:
+        # git branch -d refuses a branch whose tip moved to a commit the default branch lacks; the moved branch is
+        # kept, as a branch that moved before the deletion is, so nothing of the user's is lost.
+        self.finished_branch("done")
+
+        def moving(command: Sequence[str], timeout: float) -> GitResult:
+            if "branch" in command and "-d" in command and "done" in command:
+                moved = git(self.clone, "commit-tree", "done^{tree}", "-p", "done", "-m", "new work")
+                git(self.clone, "update-ref", "refs/heads/done", moved)
+                return GitResult(1, "", "error: the branch 'done' is not fully merged\n")
+            return git_client.subprocess_runner(command, timeout)
+
+        code, lines = self.sweep(rc.Services(git=GitClient(moving), gh=self.github))
+        self.assertEqual(0, code, lines)
+        self.assertIn("  Preserved:               1 — done: moved", self.summary(lines))
+        self.assertIsNotNone(self.tip("done"), "the moved branch is kept")
+        _, reported = self.report()
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error."]],
+            facts(reported, "PROCESSED"),
+        )
 
     def test_a_sweep_whose_only_refused_deletion_is_a_removed_worktrees_branch_exits_1(self) -> None:
         self.finished_branch("done-tree")
@@ -1579,6 +1609,13 @@ class SweepTests(Fixture):
         recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
         self.assertEqual("could not run git: git vanished", recorded["confirmation_stopped"])
         self.assertNotIn("stopped", recorded, "the apply completed")
+        code, reported = self.report()
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "cleaned"]], facts(reported, "REPO"))
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 1 with an error."]],
+            facts(reported, "PROCESSED"),
+            "a confirmation that stopped is outstanding until one completes",
+        )
 
         # remove-directory is a confirmation too: one that completes, even refusing a path never offered, clears it.
         code, lines = self.invoke("remove-directory", "--plan", plan, "--path", self.clone.as_posix())
@@ -1692,6 +1729,22 @@ class SweepTests(Fixture):
         )
         self.assertIn("Local-only (kept):       1 — kept", self.summary(blocks["continued repo"]))
 
+    def test_a_default_branch_held_by_its_changes_is_reported_with_its_reason_and_is_not_an_error(self) -> None:
+        # A designed hold, like a branch whose worktree has changes: nothing was tried, so nothing failed.
+        self.commit(self.other, "upstream work")
+        git(self.other, "push", "--quiet", "origin", "main")
+        (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
+        code, lines = self.sweep(None, "--skip-checkout", "my repo")
+        self.assertEqual(0, code, lines)
+        held = f"main (behind 1; worktree {self.clone.as_posix()} has 1 uncommitted change)"
+        self.assertIn(f"  Fast-forward skipped:    1 — {held}", self.summary(lines))
+        _, reported = self.report()
+        self.assertIn(f"  Fast-forward skipped:    1 — {held}", self.summary(reported))
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error."]],
+            facts(reported, "PROCESSED"),
+        )
+
     def test_a_continued_dirty_repository_whose_fetch_fails_is_recorded_fetch_failed_and_the_report_runs(self) -> None:
         (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
         code, lines = self.sweep(None, "my repo")
@@ -1775,9 +1828,20 @@ class SweepTests(Fixture):
                     facts(lines, "FAILED"),
                 )
         record = self.root / "plans" / rc.SWEEP_RECORD
-        rc.save_plan(record, {"schema_version": 1, "repositories": [{"root": 3}]})
+        entry: dict[str, Any] = {"root": "repo", "state": "cleaned", "plan": None, "lines": []}
+        for name, repositories in {
+            "a root that is not a string": [{"root": 3}],
+            "a refusal that is not true or false": [{**entry, "refused": "yes"}],
+        }.items():
+            with self.subTest(name):
+                rc.save_plan(record, {"schema_version": 1, "repositories": repositories, "policy": []})
+                code, lines = self.report()
+                self.assertEqual(
+                    (1, [[f"{record} is not a repo-cleanup sweep record"]]), (code, facts(lines, "FAILED")), lines
+                )
+        rc.save_plan(record, {"schema_version": 1, "repositories": [entry], "policy": []})
         code, lines = self.report()
-        self.assertEqual((1, [[f"{record} is not a repo-cleanup sweep record"]]), (code, facts(lines, "FAILED")), lines)
+        self.assertEqual(0, code, "a record a sweep wrote before it kept refusals reads as refusing nothing")
 
     def test_a_repository_is_quiet_only_when_nothing_changed(self) -> None:
         broken = self.make_clone("broken repo")

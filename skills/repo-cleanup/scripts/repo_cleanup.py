@@ -1110,7 +1110,10 @@ def delete_merged(services: Services, plan: dict[str, Any], name: str, sha: str,
 
     git branch -d judges a branch against its upstream, or against HEAD when that is gone or unset, and HEAD is not
     the default branch after --skip-checkout or a failed switch. So the default branch decides, and -D deletes a
-    branch -d refused only because HEAD lacks it. False when Git refused the deletion.
+    branch -d refused only because HEAD lacks it. False when Git refused the deletion. A branch that is no longer at
+    `sha` once -d refused it moved under the deletion, and -d refuses a branch whose new commits the default branch
+    lacks: it is kept and reported moved, as a branch that moved before the deletion is, since nothing was deleted
+    and what it holds now is not what the plan proved merged.
     """
     if not in_default(services, plan, sha):
         return unmerged(services, plan, name, sha, pr)
@@ -2130,13 +2133,15 @@ def write_record(
 ) -> None:
     """Record each swept repository's state and plan in the plans directory, replacing what an earlier sweep there
     recorded for it, as sweeping a dirty repository again does, and keeping every other repository in its place, with
-    the lines naming the lists the latest sweep used."""
+    the lines naming the lists the latest sweep used. `refused` keeps that Git refused a deletion or removal the apply
+    tried, which made the sweep exit 1 and which no later command retries."""
     for result in results:
         entry = {
             "root": result["root"],
             "state": result["state"],
             "plan": result["plan"],
             "lines": recorded_lines(result),
+            "refused": result["refused"],
         }
         index = next((i for i, known in enumerate(entries) if same_path(known["root"], entry["root"])), None)
         if index is None:
@@ -2157,6 +2162,7 @@ def is_entry(entry: Any) -> bool:
         and (entry.get("plan") is None or isinstance(entry.get("plan"), str))
         and isinstance(entry.get("lines"), list)
         and all(isinstance(line, str) for line in entry["lines"])
+        and isinstance(entry.get("refused", False), bool)
     )
 
 
@@ -2210,10 +2216,12 @@ def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[d
 def report(directory: Path, aborted: list[str]) -> int:
     """Print each repository's current summary, then the closing count, from what the sweeps there recorded.
 
-    A plan's summary is its latest: every command saves it. A repository the sweep recorded as failing counts as one
-    with an error whatever ran on its plan later, since a confirmation never runs what a stopped apply did not reach.
-    Quiet repositories share one line. The lines naming the lists the sweep used come
-    first, once the record and the plans are read, so a report that fails prints only its FAILED line.
+    A plan's summary is its latest: every command saves it. A repository counts as one with an error when the sweep
+    recorded it failing, whatever ran on its plan later, since a confirmation never runs what a stopped apply did not
+    reach; when Git refused a deletion or removal its apply tried; or while a run on its plan stands stopped. A hold,
+    such as a fast-forward kept from a worktree with changes, tried nothing and is not one: the summary names it
+    with its reason. Quiet repositories share one line. The lines naming the lists the sweep used come first, once
+    the record and the plans are read, so a report that fails prints only its FAILED line.
     """
     entries, policy = read_record(directory)
     dropped = aborted_entries(entries, aborted)
@@ -2227,7 +2235,11 @@ def report(directory: Path, aborted: list[str]) -> int:
         if entry["state"] == "quiet":
             quiet.append(entry["root"])
             continue
-        if entry["state"] in FAILED_STATES:
+        if (
+            entry["state"] in FAILED_STATES
+            or entry.get("refused", False)
+            or (plan is not None and stop_reason(plan) is not None)
+        ):
             failed += 1
         emit("REPO", entry["root"], "aborted" if entry in dropped else entry["state"])
         if plan is not None:
