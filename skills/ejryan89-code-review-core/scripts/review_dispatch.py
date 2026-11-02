@@ -129,6 +129,12 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
 UNGUARDED_REMEDY = "prepare the review again with --inline"
 
 
+def guard_runs(runtime: str, dispatch: str) -> bool:
+    """Whether the reviewer guard holds a run's roles: only on Claude Code, to a role dispatched as a native subagent,
+    one by one or by a Workflow. An inline role, the Copilot CLI host, and a Codex subagent run no guard."""
+    return runtime == "claude-code" and dispatch == "subagents"
+
+
 def unguarded_roles(run: Path, state: RunState, roles: Sequence[str]) -> dict[str, str]:
     """Each of these roles that its guard should have claimed and never did, with the reason its result is refused.
 
@@ -138,7 +144,7 @@ def unguarded_roles(run: Path, state: RunState, roles: Sequence[str]) -> dict[st
     by its prompt alone. An inline role, the Copilot CLI host, and a Codex subagent run no guard, so they are never
     held to a claim.
     """
-    if state["runtime"] != "claude-code" or run_dispatch(state) != "subagents":
+    if not guard_runs(state["runtime"], run_dispatch(state)):
         return {}
     counted = state.get("reads", {})
     reason = UNGUARDED.format(remedy=UNGUARDED_REMEDY)

@@ -508,6 +508,18 @@ COMMENTS: list[dict[str, Any]] = [
 ]
 
 
+# The account of the closing issues a specialist was given, as given_closing_issues writes it: this repository's issue
+# with its body cut, another repository's without its text, and one GitHub counts but no longer resolves.
+CLOSING_ISSUES: dict[str, Any] = review_runtime.given_closing_issues(
+    [
+        {"repository": "example/one", "number": 4, "state": "OPEN", "title": "Totals", "body": "B" * 30_000},
+        {"repository": "example/two", "number": 9, "state": "CLOSED", "title": "Other", "body": "Elsewhere."},
+    ],
+    3,
+    "example/one",
+)[1]
+
+
 def _record_request(mode: str, **extra: Any) -> dict[str, Any]:
     return {
         "repository": "example/one",
@@ -556,6 +568,7 @@ def record_fixtures() -> list[ReviewRecord]:
             head_ref="feature/boundary",
             body_characters=30_000,
             body_given=24_000,
+            closing_issues=CLOSING_ISSUES,
             unavailable_sources=["assets/large.txt"],
             uncovered_files=["build/settings.props"],
             unreviewed_files={"assets/setup.msi": ".msi"},
@@ -788,7 +801,7 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
         "resources": [".claude/skills/repository-review/references/rules.md"],
         "agent_profiles": [".claude/agents/repository-review.md"],
     }
-    specialists = {
+    specialists: dict[str, Any] = {
         "schema_version": 2,
         "id": "repository-specialists",
         "protocol_version": 1,
@@ -817,6 +830,8 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "resources": [],
                 "when": None,
                 "shares_files": True,
+                "title_pattern": "^fix[(:]",
+                "inputs": ["description", "closing-issues"],
             },
         ],
         "conditions": {
@@ -835,6 +850,8 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     del plain["fallback_finding_category"]
     # Without agent-delegation, its specialists may also run inline.
     plain["required_capabilities"] = ["read-diff", "write-result"]
+    # A sharing specialist with no title route and every default text, whose shares_files may then be null.
+    del plain["specialists"][1]["title_pattern"], plain["specialists"][1]["inputs"]
     return entrypoint, [specialists, plain]
 
 
@@ -913,6 +930,13 @@ def fixture_pull_fixtures() -> list[dict[str, Any]]:
         {**pull, "threads": []},
         {**pull, "manifest_path": "review/specialists.json", "body": "## Upgrade note\n\nNone\n"},
         {**pull, "threads": [], "manifest_path": "review/specialists.json", "document_stage": "draft"},
+        {
+            **pull,
+            "closing_issues": [
+                {"number": 4, "state": "OPEN", "title": "Totals", "body": "Totals fail on text."},
+                {"number": 9, "state": "CLOSED", "title": "", "body": "", "repository": "example/two"},
+            ],
+        },
     ]
 
 
@@ -1444,14 +1468,16 @@ def request_fixtures(scratch: Path, prior: list[dict[str, Any]]) -> list[dict[st
     }
     body = scratch / "pull-request-body.md"
     body.write_text("## Upgrade note\n\nNone\n", encoding="utf-8")
+    closing = scratch / "closing-issues.json"
+    closing.write_text("{}", encoding="utf-8")
     with mock.patch.object(review_runtime, "verify_source_snapshot", return_value=snapshot):
         full = build_adapter_request(
             mode="re-review",
             prior_findings=prior,
             github_comments=COMMENTS,
             head_ref="feature/boundary",
-            body_file=body,
-            body_characters=22,
+            body=(body, 22),
+            closing_issues=(closing, CLOSING_ISSUES),
             **common,
         )
     with mock.patch.object(review_runtime, "verify_source_snapshot", return_value={"excluded_paths": {}}):

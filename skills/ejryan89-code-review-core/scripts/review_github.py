@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import github_client
 from github_client import Clock, GitHubError, GitHubErrorKind, Runner, Sleeper, subprocess_runner
-from review_config import validate_repository_identity
+from review_config import ConfigurationError, validate_repository_identity
 from review_state import utc_date
 from typed_fields import FieldError, FieldReader
 
@@ -169,6 +169,41 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
   }
 }
 """.strip()
+
+
+CLOSING_ISSUES_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $first: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      closingIssuesReferences(first: $first) {
+        totalCount
+        nodes { number state title body repository { nameWithOwner } }
+      }
+    }
+  }
+}
+""".strip()
+
+
+def _closing_issue(value: Any, path: str) -> dict[str, Any] | None:
+    """One closing issue as a review keeps it, or None for a reference GitHub no longer resolves for the viewer."""
+    if value is None:
+        return None
+    issue = READ.json_object(value, path)
+    owner = READ.json_object(issue.get("repository"), f"{path}.repository")
+    name = READ.string(owner.get("nameWithOwner"), f"{path}.repository.nameWithOwner")
+    try:
+        # A prompt names the issue by its repository, so it must be the owner/repo form a configured one is.
+        repository = validate_repository_identity(name)
+    except ConfigurationError as exc:
+        raise GitHubError(f"{path}.repository.nameWithOwner is not a repository: {exc}", kind="malformed") from exc
+    return {
+        "repository": repository,
+        "number": READ.integer(issue.get("number"), f"{path}.number", minimum=1),
+        "state": READ.one_of(issue.get("state"), f"{path}.state", ("OPEN", "CLOSED")),
+        "title": READ.string(issue.get("title"), f"{path}.title", empty=True),
+        "body": READ.optional(READ.string, issue.get("body"), f"{path}.body", empty=True) or "",
+    }
 
 
 class GitHubClient:
@@ -329,6 +364,28 @@ class GitHubClient:
             if comment is not None:
                 comments.append({"id": f"C{len(comments) + 1}", **comment})
         return comments
+
+    def list_closing_issues(self, repository: str, number: int, *, first: int) -> tuple[list[dict[str, Any]], int]:
+        """The first `first` issues GitHub links as closing the pull request, each its `repository`, `number`, `state`,
+        `title`, and `body`, and how many it links in all. A reference the viewer can no longer resolve, such as a
+        deleted issue or one in a repository it cannot read, is left out, though `totalCount` still counts it."""
+        repository = validate_repository_identity(repository)
+        ARGUMENTS.integer(number, "pull number", minimum=1)
+        ARGUMENTS.integer(first, "closing issues", minimum=1)
+        owner, name = repository.split("/", 1)
+        arguments = ["api", "graphql", "-f", f"query={CLOSING_ISSUES_QUERY}", "-f", f"owner={owner}", "-f"]
+        arguments.extend([f"name={name}", "-F", f"number={number}", "-F", f"first={first}"])
+        path = "graphql response.data"
+        page: Any = READ.json_object(self.github.json(arguments, graphql=True), "graphql response").get("data")
+        for key in ("repository", "pullRequest", "closingIssuesReferences"):
+            page = READ.json_object(page, path).get(key)
+            path = f"{path}.{key}"
+            if page is None:
+                raise GitHubError(f"GraphQL {path} was not found", kind="not_found")
+        connection = READ.json_object(page, path)
+        nodes = READ.array(connection.get("nodes"), f"{path}.nodes", _closing_issue, maximum=first)
+        total = READ.integer(connection.get("totalCount"), f"{path}.totalCount", minimum=0)
+        return [issue for issue in nodes if issue is not None], total
 
     def list_pulls(self, repository: str, *, state: str) -> PullListing:
         """Every pull request in `state`, through every page; closed pull requests that were not merged are dropped."""

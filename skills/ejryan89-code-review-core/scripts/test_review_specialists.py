@@ -180,8 +180,85 @@ class ManifestTests(unittest.TestCase):
         ):
             validate_adapter_manifest(sharing("yes"))
 
+    def test_title_pattern_and_inputs_are_kept_only_when_given_and_inputs_in_their_one_order(self) -> None:
+        def specialist(**settings: object) -> dict[str, Any]:
+            given = manifest()
+            given["specialists"][2] = {**given["specialists"][2], "shares_files": True, **settings}
+            return validate_adapter_manifest(given)["specialists"][2]
+
+        plain = specialist()
+        self.assertNotIn("title_pattern", plain)
+        self.assertNotIn("inputs", plain)
+        self.assertEqual(("description", "comments"), rs.specialist_inputs(plain))
+        self.assertNotIn("title_pattern", specialist(title_pattern=None))
+        self.assertNotIn("inputs", specialist(inputs=None))
+        self.assertEqual("^fix[(:]", specialist(title_pattern="^fix[(:]")["title_pattern"])
+        self.assertEqual(
+            ["description", "closing-issues"], specialist(inputs=["closing-issues", "description"])["inputs"]
+        )
+        self.assertEqual([], specialist(inputs=[])["inputs"])
+        self.assertEqual(
+            (), rs.specialist_inputs(specialist(inputs=[])), "an empty list gives no text, not the default"
+        )
+
+    def test_a_title_route_or_withheld_comments_without_shared_files_and_a_malformed_setting_are_refused(self) -> None:
+        def refused(settings: dict[str, object], reason: str) -> None:
+            given = manifest()
+            given["specialists"][2] = {**given["specialists"][2], **settings}
+            with self.subTest(settings=settings), self.assertRaisesRegex(RuntimeContractError, re.escape(reason)):
+                validate_adapter_manifest(given)
+
+        where = "specialists-manifest.specialists[2]"
+        # Without shares_files, a title the author chose, or a comment no reviewer is given, would leave a file
+        # unreviewed or a comment without its disposition.
+        refused(
+            {"title_pattern": "^fix"}, f"{where}.title_pattern routes on the author's title, so it needs shares_files"
+        )
+        refused({"title_pattern": "^fix", "shares_files": False}, "so it needs shares_files")
+        refused({"inputs": ["description"]}, f"{where}.inputs leaves out comments, so it needs shares_files")
+        refused({"inputs": []}, "leaves out comments, so it needs shares_files")
+        sharing = {"shares_files": True}
+        refused({**sharing, "title_pattern": "(fix"}, f"{where}.title_pattern[0] is not a valid regular expression")
+        refused({**sharing, "title_pattern": 5}, f"{where}.title_pattern must be a non-empty string or null")
+        refused({**sharing, "title_pattern": ""}, f"{where}.title_pattern must be a non-empty string or null")
+        refused({**sharing, "inputs": "comments"}, f"{where}.inputs must be an array or null")
+        refused({**sharing, "inputs": ["body"]}, f"{where}.inputs[0] must be one of")
+        refused({**sharing, "inputs": ["Comments"]}, f"{where}.inputs[0] must be one of")
+        refused({**sharing, "inputs": [True]}, f"{where}.inputs[0] must be one of")
+        refused({**sharing, "inputs": ["comments", "comments"]}, f"{where}.inputs names an input twice")
+        refused({**sharing, "input": ["comments"]}, "input")
+
 
 class DiffAndRoutingTests(unittest.TestCase):
+    def test_a_title_pattern_routes_only_a_title_it_is_found_in_as_spelled(self) -> None:
+        value = manifest()
+        value["specialists"][2] = {
+            **value["specialists"][2],
+            "include": ["."],
+            "when": None,
+            "shares_files": True,
+            "title_pattern": "^fix[(:]",
+        }
+        routing = validate_adapter_manifest(value)
+        changed = ["src/A.cs"]
+        for title, routed in (
+            ("fix: x", True),
+            ("fix(core): x", True),
+            ("Fix: x", False),
+            ("FIX(core): x", False),
+            ("fixup: x", False),
+            ("feat: fix(core)", False),
+            (" fix: x", False),
+            ("", False),
+            (None, False),
+        ):
+            with self.subTest(title=title):
+                self.assertIs(routed, "compat-review" in rs.route(routing, changed, lambda name: True, title=title))
+                self.assertIs(routed, rs.title_routes(routing["specialists"][2], title))
+        self.assertTrue(rs.title_routes(routing["specialists"][0], None), "a specialist with no pattern always routes")
+        # The title route takes no file from another reviewer: a file it alone matches is still the generic reviewer's.
+        self.assertEqual(["README.md"], rs.uncovered(routing, ["README.md"]))
+
     def test_parse_paths_and_new_file_line_numbers(self) -> None:
         files = rs.parse_unified_diff(DIFF)
         self.assertEqual(["db/Procs.sql", "src dir/A Test.cs", "docs/café.md", "src dir/Old.cs"], list(files))

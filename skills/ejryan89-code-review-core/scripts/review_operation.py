@@ -190,6 +190,12 @@ def request_to_record_input(
         "head_ref": pull.get("head_ref"),
         "body_characters": pull.get("body_characters"),
         "body_given": pull.get("body_given"),
+        # The account of the closing issues without the run's file, which the record has no use for.
+        "closing_issues": (
+            None
+            if pull.get("closing_issues") is None
+            else {"total": pull["closing_issues"]["total"], "issues": pull["closing_issues"]["issues"]}
+        ),
         "repository": request["repository"],
         "pull_number": request["pull_number"],
         "pull_url": pull["url"],

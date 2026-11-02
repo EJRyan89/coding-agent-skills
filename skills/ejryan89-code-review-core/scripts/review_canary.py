@@ -27,7 +27,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -47,9 +47,12 @@ PULL_FILE = "pull.json"
 PULL_FIELDS = frozenset({"schema_version", "repository", "number", "title", "base_ref", "head_ref", "threads"})
 # A reviewer manifest in the base tree, so a fixture can exercise specialists as a configured repository does, and
 # the pull request's description, which reviewers are given as they are a real one's, and the stage of a design
-# document, one of review_runtime.DOCUMENT_STAGES, which the design-review specialist's prompt names.
-OPTIONAL_PULL_FIELDS = frozenset({"manifest_path", "body", "document_stage"})
+# document, one of review_runtime.DOCUMENT_STAGES, which the design-review specialist's prompt names, and the issues
+# the pull request closes, which a specialist whose `inputs` name `closing-issues` is given as GitHub's would be.
+OPTIONAL_PULL_FIELDS = frozenset({"manifest_path", "body", "document_stage", "closing_issues"})
 THREAD_FIELDS = frozenset({"author", "path", "line", "outdated", "body", "url"})
+# A closing issue's `repository` defaults to the fixture's own, so a fixture names another only to show one.
+CLOSING_ISSUE_FIELDS = frozenset({"number", "state", "title", "body"})
 # Who commits the fixture's trees; nothing reads it.
 IDENTITY = ("-c", "user.name=code-review fixture", "-c", "user.email=fixture@example.invalid")
 
@@ -77,6 +80,21 @@ class FixtureChange:
     comments: list[dict[str, Any]]  # as the request's github_comments
     manifest_path: str | None = None  # the reviewer manifest in the base tree, or None for the generic reviewer
     document_stage: str | None = None  # the stage pull.json names, or None
+    closing_issues: list[dict[str, Any]] = field(default_factory=list)  # as the GitHub client lists them
+
+
+def _closing_issue(value: Any, path: str) -> dict[str, Any]:
+    issue = READ.json_object(value, path, required=CLOSING_ISSUE_FIELDS, optional={"repository"})
+    READ.integer(issue["number"], f"{path}.number", minimum=1)
+    READ.one_of(issue["state"], f"{path}.state", ("OPEN", "CLOSED"))
+    READ.string(issue["title"], f"{path}.title", empty=True)
+    READ.string(issue["body"], f"{path}.body", empty=True)
+    if "repository" in issue:
+        try:
+            return {**issue, "repository": validate_repository_identity(READ.string(issue["repository"], path))}
+        except ConfigurationError as exc:
+            raise FixtureError(f"{PULL_FILE} {path}.repository: {exc}") from exc
+    return issue
 
 
 def _thread(value: Any, path: str) -> dict[str, Any]:
@@ -105,6 +123,9 @@ def validate_fixture_pull(value: Any) -> dict[str, Any]:
     if "document_stage" in given:
         READ.one_of(given["document_stage"], "fixture-pull.document_stage", tuple(DOCUMENT_STAGES))
     pull = {**given, "repository": repository, "threads": threads}
+    if "closing_issues" in given:
+        issues = READ.array(given["closing_issues"], "fixture-pull.closing_issues", _closing_issue)
+        pull["closing_issues"] = [{"repository": repository, **issue} for issue in issues]
     if "manifest_path" in given:
         try:
             pull["manifest_path"] = _safe_relative_path(given["manifest_path"], "fixture-pull.manifest_path", READ)
@@ -273,4 +294,5 @@ def fixture_change(directory: Path, runner: Runner, pull: dict[str, Any] | None 
             comments=_comments(pull["threads"]),
             manifest_path=pull.get("manifest_path"),
             document_stage=pull.get("document_stage"),
+            closing_issues=pull.get("closing_issues", []),
         )

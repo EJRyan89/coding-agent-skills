@@ -3964,6 +3964,35 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertEqual((1, ""), (code, err))
         self.assertIn("FAILED Declared reviewer file is missing: .claude/agents/missing.md", out)
 
+    def test_validation_shows_a_title_route_as_a_review_takes_it(self) -> None:
+        specialist = {
+            "id": "fix-reviewer",
+            "category": "Completeness",
+            "profile": ".claude/agents/python-reviewer.md",
+            "include": [r"\.py$"],
+            "exclude": [],
+            "resources": [],
+            "when": None,
+            "shares_files": True,
+            "title_pattern": "^fix[(:]",
+        }
+        manifest = self.local_manifest(specialists=[specialist])
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        for title, line, routed in (
+            ("fix: total", "TITLE fix-reviewer match", True),
+            ("Fix: total", "no-match", False),
+        ):
+            with self.subTest(title=title):
+                self.github.pulls[12]["title"] = title
+                code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+                self.assertEqual(0, code, err)
+                lines = out.splitlines()
+                self.assertIn(line if routed else f"TITLE fix-reviewer {line}", lines)
+                self.assertIs(routed, "ROUTE fix-reviewer files=1" in lines)
+                ready = self.prepare(force=True)
+                self.assertIs(routed, "fix-reviewer" in [role["id"] for role in ready["roles"]])
+                rp.remove_run(ready["run"])
+
     def test_a_condition_reads_the_diff_and_writes_its_file_where_validation_and_a_review_say(self) -> None:
         # It opens only on the pull request's own diff, which its environment names, and writes a file there too.
         reading = (
@@ -4921,6 +4950,73 @@ class FixtureCanaryTests(PipelineFixture):
         real = rp.finalize(ready["run"])
         real_record = json.loads(Path(real["json"]).read_text(encoding="utf-8"))
         self.assertEqual(record_structure(real_record), record_structure(record))
+
+    def test_a_fixture_s_closing_issues_reach_the_specialist_that_routes_on_a_fix_title_and_its_record(self) -> None:
+        manifest = {
+            "schema_version": 2,
+            "id": "fixture-team",
+            "protocol_version": 1,
+            "kind": "specialists",
+            "supports": ["initial", "re-review"],
+            "required_capabilities": ["agent-delegation", "read-diff", "write-result"],
+            "resources": [],
+            "specialists": [
+                {
+                    "id": "completeness",
+                    "category": "Completeness",
+                    "profile": "review/completeness.md",
+                    "include": [r"\.py$"],
+                    "exclude": [],
+                    "resources": [],
+                    "when": None,
+                    "shares_files": True,
+                    "title_pattern": "^fix[(:]",
+                    "inputs": ["closing-issues"],
+                }
+            ],
+            "conditions": {},
+        }
+        reviewer = {"review/specialists.json": json.dumps(manifest), "review/completeness.md": "Ask what is open.\n"}
+        issues = [{"number": 7, "state": "OPEN", "title": "Totals", "body": "Totals fail on text and on None."}]
+        directory = self.root / "fixtures" / "closing"
+        write_files(directory / "base", {**FIXTURE_BASE, **reviewer})
+        write_files(directory / "head", {**FIXTURE_HEAD, **reviewer})
+        pull = {
+            **FIXTURE_PULL,
+            "title": "fix(core): total the items",
+            "manifest_path": "review/specialists.json",
+            "closing_issues": issues,
+        }
+        (directory / "pull.json").write_text(json.dumps(pull), encoding="utf-8")
+
+        state = self.prepare_fixture_run("--fixture", str(directory))
+        run = Path(state["request_path"]).parent
+        self.assertEqual(["completeness", "generic-review"], [role["id"] for role in state["roles"]])
+        self.assertEqual(
+            {"total": 1, "issues": [{"repository": "example/fixture", **issues[0]}]},
+            json.loads((run / "closing-issues.json").read_text(encoding="utf-8")),
+        )
+        completeness = state["roles"][0]
+        self.assertIn(str(run / "closing-issues.json"), completeness["reads"])
+        self.assertNotIn("reads", state["roles"][1], "a role given every text keeps the whole run")
+        lines = self.finish(state)
+        _, record = self.canary_record(lines)
+        self.assertEqual(
+            {
+                "total": 1,
+                "issues": [
+                    {
+                        "repository": "example/fixture",
+                        "number": 7,
+                        "state": "OPEN",
+                        "same_repository": True,
+                        "body_characters": 32,
+                        "body_given": 32,
+                    }
+                ],
+            },
+            record["pull_request"]["closing_issues"],
+        )
 
     def test_a_changed_word_document_is_reviewed_as_extracted_text_and_its_findings_name_their_place(self) -> None:
         base = word_document(paragraph("Scope", style="Titre1"), paragraph("Keep one queue."), table(("a", "b")))

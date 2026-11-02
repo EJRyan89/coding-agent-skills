@@ -120,7 +120,7 @@ DUPLICATION_ALLOWED = {
     ),
 }
 
-Claim = tuple[Path, dict[str, str]]
+Claim = tuple[Path, dict[str, Any]]
 
 
 def _spellings(root: Path) -> tuple[Path, ...]:
@@ -260,7 +260,7 @@ def run_root(path: Path) -> Path | None:
     return runs[-1] if runs else None
 
 
-def _roles(run: Path) -> list[dict[str, str]]:
+def _roles(run: Path) -> list[dict[str, Any]]:
     """The roles a prepared run's `run.json` names, each with its ID, prompt file, and result file."""
     try:
         state = json_reader.read_file(run / RUN_FILE)
@@ -272,14 +272,17 @@ def _roles(run: Path) -> list[dict[str, str]]:
         raise Denied(f"the review run {run} could not be read") from exc
 
 
-def _role(value: Any, path: str) -> dict[str, str]:
-    """One role of a run: its ID, prompt file, and result file, each a non-empty string, and the self-check it
-    declares, when it declares one."""
+def _role(value: Any, path: str) -> dict[str, Any]:
+    """One role of a run: its ID, prompt file, and result file, each a non-empty string, the self-check it declares,
+    when it declares one, and the paths it may read, a non-empty list of them, when the run withholds a pull-request
+    text from it."""
     role = READ.json_object(value, path)
     for field in ("id", "prompt_file", "result_file"):
         READ.string(role.get(field), f"{path}.{field}")
     if "self_check" in role:
         READ.string(role["self_check"], f"{path}.self_check")
+    if "reads" in role:
+        READ.array(role["reads"], f"{path}.reads", READ.string, nonempty=True)
     return role
 
 
@@ -341,10 +344,19 @@ def _claim(agent: str, path: Path) -> None:
     _start_log(run, role["id"])
 
 
-def _check_in_run(tool: str, path: Path, run: Path) -> None:
-    if within(path, REFERENCES.resolve(strict=False)) or within(path, run.resolve(strict=False)):
+def _check_in_run(tool: str, path: Path, run: Path, reads: list[str] | None = None) -> None:
+    """The path lies in the suite's references or the run; for a role the run withholds a pull-request text from, in
+    the references or one of the paths its `reads` names, each of which lies in the run."""
+    if within(path, REFERENCES.resolve(strict=False)):
         return
-    raise Denied(f"{tool} may only look inside your own review run folder; {path} is outside it")
+    if reads is None:
+        if within(path, run.resolve(strict=False)):
+            return
+        raise Denied(f"{tool} may only look inside your own review run folder; {path} is outside it")
+    allowed = [Path(read).resolve(strict=False) for read in reads]
+    if within(path, run.resolve(strict=False)) and any(within(path, root) for root in allowed):
+        return
+    raise Denied(f"{tool} may only look at the inputs your prompt names; {path} is not one of them")
 
 
 def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path, claim: Claim | None) -> None:
@@ -359,7 +371,7 @@ def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path, claim: Claim |
             raise Denied("Glob patterns must be relative to the run folder path, without '..'")
     if claim is None:
         raise Denied(f"{FIRST}; {path} is not a reviewer prompt")
-    _check_in_run(tool, path, claim[0])
+    _check_in_run(tool, path, claim[0], claim[1].get("reads"))
     _log_read(tool, path, claim)
 
 

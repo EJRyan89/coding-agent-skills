@@ -787,6 +787,55 @@ class RecordTests(unittest.TestCase):
                 with self.assertRaisesRegex(RecordError, "body_"):
                     validate_record(broken)
 
+    def test_the_record_keeps_how_much_of_each_closing_issue_a_specialist_was_given_and_the_report_says_so(
+        self,
+    ) -> None:
+        def issue(number: int, characters: int, given: int, *, same: bool = True, state: str = "OPEN") -> Any:
+            repository = "example/one" if same else "other/two"
+            return {
+                "repository": repository,
+                "number": number,
+                "state": state,
+                "same_repository": same,
+                "body_characters": characters,
+                "body_given": given,
+            }
+
+        closing = {"total": 4, "issues": [issue(1, 30_000, 24_000), issue(2, 0, 0, same=False), issue(3, 9, 9)]}
+        request = {**valid_request(), "closing_issues": closing}
+        record = build_record(request, valid_adapter_result(), version=1, policy={})
+        validate_record(record)
+        self.assertEqual(closing, record["pull_request"].get("closing_issues"))
+        markdown = render_markdown(record, record_payload_hash="0" * 64)
+        self.assertEqual(
+            [
+                # Each issue's name and how much of it was given, with punctuation written as character entities so
+                # the cell renders as text, as the Title row's does.
+                "| **Closing issues** | example&#47;one&#35;1 &#40;open&#41;&#44; the first 24&#44;000 of 30&#44;000 "
+                "characters&#59; other&#47;two&#35;2 &#40;open&#41;&#44; another repository&#39;s&#44; not given&#59; "
+                "example&#47;one&#35;3 &#40;open&#41;&#44; 9 characters&#44; given whole&#59; 1 more not given |"
+            ],
+            [line for line in markdown.splitlines() if line.startswith("| **Closing issues**")],
+        )
+        older = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
+        self.assertNotIn("closing_issues", older["pull_request"])
+        self.assertNotIn("**Closing issues**", render_markdown(older, record_payload_hash="0" * 64))
+        faults: list[tuple[Any, str]] = [
+            ({"total": 1, "issues": [issue(1, 5, 5), issue(2, 5, 5)]}, "more issues than its total"),
+            ({"total": 1, "issues": [issue(1, 5, 6)]}, "body_given is more"),
+            ({"total": 1, "issues": [issue(1, 5, 5, same=False)]}, "body_given is more"),
+            ({"total": 1, "issues": [issue(1, 5, 5, state="MERGED")]}, "state"),
+            ({"total": -1, "issues": []}, "total"),
+            ({"total": 1, "issues": [{**issue(1, 5, 5), "body": "text"}]}, "body"),
+            ({"issues": []}, "total"),
+        ]
+        for value, message in faults:
+            with self.subTest(value=value):
+                broken = copy.deepcopy(older)
+                broken["pull_request"]["closing_issues"] = value
+                with self.assertRaisesRegex(RecordError, message):
+                    validate_record(broken)
+
 
 class CoveragePathTests(unittest.TestCase):
     """A file the review leaves uncovered or cannot reach, named as git names it."""

@@ -154,7 +154,14 @@ SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources
 # clear them without removing them; the configuration's own `reviewer_effort` takes null the same way.
 # `shares_files`, when true, has the specialist review its matched files beside whoever else reviews them: its matches
 # take no file from the generic reviewer, skip none when its condition is closed, and own no prior finding or comment.
-OPTIONAL_SPECIALIST_KEYS = {"model", "effort", "shares_files"}
+# `title_pattern`, a regular expression searched against the pull request's title, routes the specialist only to a
+# pull request whose title it matches. The author writes the title, so a specialist that uses it shares its files,
+# and a title that does not match takes no file's review away.
+# `inputs` names the pull-request texts the specialist is given, from PULL_REQUEST_INPUTS; without it the specialist
+# is given DEFAULT_PULL_REQUEST_INPUTS. One without `comments` shares its files, so it owns no comment to disposition.
+OPTIONAL_SPECIALIST_KEYS = {"model", "effort", "shares_files", "title_pattern", "inputs"}
+PULL_REQUEST_INPUTS = ("description", "comments", "closing-issues")
+DEFAULT_PULL_REQUEST_INPUTS = ("description", "comments")
 MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
 # The runtimes whose native delegation starts a subagent on one of MODEL_ALIASES. Codex's takes only its own model
 # identifiers, so there a reviewer starts on the session's model.
@@ -430,6 +437,38 @@ def _regex_list(value: Any, field: str, *, required: bool) -> list[str]:
     return patterns
 
 
+def _pull_request_inputs(specialist: dict[str, Any], path: str, *, shares: bool) -> dict[str, Any]:
+    """A specialist's `title_pattern` and `inputs`, each left out when the manifest leaves it out or null; `inputs` in
+    PULL_REQUEST_INPUTS order.
+
+    Either one that leaves a file or a comment to the author's say, a title route or withheld comments, needs
+    `shares_files`, so another reviewer still reviews every file and gives every comment its disposition."""
+    settings: dict[str, Any] = {}
+    title_pattern = READ.optional(READ.string, specialist.get("title_pattern"), f"{path}.title_pattern")
+    if title_pattern is not None:
+        settings["title_pattern"] = _regex_list([title_pattern], f"{path}.title_pattern", required=True)[0]
+        if not shares:
+            raise RuntimeContractError(f"{path}.title_pattern routes on the author's title, so it needs shares_files")
+    given = READ.optional(
+        READ.array,
+        specialist.get("inputs"),
+        f"{path}.inputs",
+        lambda value, where: READ.one_of(value, where, PULL_REQUEST_INPUTS),
+    )
+    if given is not None:
+        if len(set(given)) != len(given):
+            raise RuntimeContractError(f"{path}.inputs names an input twice")
+        if "comments" not in given and not shares:
+            raise RuntimeContractError(f"{path}.inputs leaves out comments, so it needs shares_files")
+        settings["inputs"] = [name for name in PULL_REQUEST_INPUTS if name in given]
+    return settings
+
+
+def specialist_inputs(specialist: dict[str, Any]) -> tuple[str, ...]:
+    """The pull-request texts a validated specialist, or a planned role, is given."""
+    return tuple(specialist.get("inputs", DEFAULT_PULL_REQUEST_INPUTS))
+
+
 def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
     root = MANIFEST_FORMATS[2]
     conditions = READ.json_object(value["conditions"], f"{root}.conditions")
@@ -479,6 +518,7 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
                 **({"model": model} if model is not None else {}),
                 **({"effort": effort} if effort is not None else {}),
                 **({"shares_files": True} if shares else {}),
+                **_pull_request_inputs(specialist, path, shares=bool(shares)),
             }
         )
     return {
@@ -2416,6 +2456,44 @@ def given_body(body: str) -> str:
     return LONE_SURROGATE.sub("�", body[:PULL_REQUEST_BODY_CHARACTERS])
 
 
+# The issues GitHub links as closing a pull request, which their authors write: a specialist whose `inputs` name
+# `closing-issues` is given the first this many, each body cut as a description is, in the run's file of them.
+CLOSING_ISSUES_MAXIMUM = 10
+CLOSING_ISSUES_FILE = "closing-issues.json"
+
+
+def given_closing_issues(
+    issues: Sequence[dict[str, Any]], total: int, repository: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The closing issues' file and the request's account of it, from `issues`, each a `repository`, `number`,
+    `state`, `title`, and `body`, of the `total` GitHub links.
+
+    The file holds the first CLOSING_ISSUES_MAXIMUM issues, each title whole and each body cut as `given_body` cuts a
+    description, with lone surrogates replaced. An issue of another repository keeps its repository, number, and
+    state but none of its text, which that repository's authors wrote and its permissions guard. The account names
+    each issue and how much of its body the file holds, so a prompt states it from the request, never from the file.
+    """
+    listed = list(issues[:CLOSING_ISSUES_MAXIMUM])
+    entries: list[dict[str, Any]] = []
+    account: list[dict[str, Any]] = []
+    for issue in listed:
+        name = {"repository": issue["repository"], "number": issue["number"], "state": issue["state"]}
+        same = issue["repository"].casefold() == repository.casefold()
+        body = issue["body"] if same else ""
+        given = min(len(body), PULL_REQUEST_BODY_CHARACTERS)
+        if same:
+            entries.append(
+                {**name, "title": LONE_SURROGATE.sub("�", issue["title"]), "body": given_body(issue["body"])}
+            )
+        else:
+            entries.append({**name, "text": "not given: the issue is in another repository"})
+        account.append({**name, "same_repository": same, "body_characters": len(body), "body_given": given})
+    return (
+        {"total": max(total, len(issues)), "issues": entries},
+        {"total": max(total, len(issues)), "issues": account},
+    )
+
+
 def build_adapter_request(
     *,
     mode: str,
@@ -2432,15 +2510,17 @@ def build_adapter_request(
     github_comments: list[dict[str, Any]] | None = None,
     head_ref: str | None = None,
     snapshot: dict[str, Any] | None = None,
-    body_file: Path | None = None,
-    body_characters: int | None = None,
+    body: tuple[Path, int] | None = None,
+    closing_issues: tuple[Path, dict[str, Any]] | None = None,
     unreviewed_suffixes: Iterable[str] = (),
 ) -> dict[str, Any]:
     """`snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
     materialization verified, which is only checked to name this request's repository and head. Without it the
-    snapshot is verified here, contents included. `body_file` and `body_characters`, given together, name the file
-    holding the description reviewers are given and the description's full length. `unreviewed_suffixes` are the
-    repository's own suffixes of binary file types the review does not read (see `review_coverage`)."""
+    snapshot is verified here, contents included. `body` names the file holding the description reviewers are given
+    and the description's full length. `closing_issues`, for a reviewer that gives some specialist the issues the pull
+    request closes, names the file of them and its account, as `given_closing_issues` writes them.
+    `unreviewed_suffixes` are the repository's own suffixes of binary file types the review does not read (see
+    `review_coverage`)."""
     READ.one_of(mode, "request.mode", ("initial", "re-review"))
     repository = validate_repository_identity(repository)
     READ.integer(pull_number, "request.pull_number", minimum=1)
@@ -2448,11 +2528,11 @@ def build_adapter_request(
         READ.hex_digest(value, f"request.pull_request.{name}", 40, 64)
     if not diff_path.is_absolute() or not diff_path.is_file():
         raise RuntimeContractError("diff_path must name an existing absolute file")
-    if (body_file is None) != (body_characters is None):
-        raise RuntimeContractError("body_file and body_characters are given together")
-    if body_file is not None and not (body_file.is_absolute() and body_file.is_file()):
-        raise RuntimeContractError("body_file must name an existing absolute file")
-    READ.optional(READ.integer, body_characters, "request.pull_request.body_characters", minimum=0)
+    for given, name in ((body, "body"), (closing_issues, "closing_issues")):
+        if given is not None and not (given[0].is_absolute() and given[0].is_file()):
+            raise RuntimeContractError(f"{name} must name an existing absolute file")
+    if body is not None:
+        READ.integer(body[1], "request.pull_request.body_characters", minimum=0)
     if snapshot is None:
         snapshot = verify_source_snapshot(
             source_snapshot_root, expected_repository=repository, expected_commit=head_sha, contents=True
@@ -2473,11 +2553,16 @@ def build_adapter_request(
             **({"head_ref": head_ref} if head_ref else {}),
             **(
                 {
-                    "body_file": str(body_file),
-                    "body_characters": body_characters,
-                    "body_given": min(body_characters, PULL_REQUEST_BODY_CHARACTERS),
+                    "body_file": str(body[0]),
+                    "body_characters": body[1],
+                    "body_given": min(body[1], PULL_REQUEST_BODY_CHARACTERS),
                 }
-                if body_file is not None and body_characters is not None
+                if body is not None
+                else {}
+            ),
+            **(
+                {"closing_issues": {"file": str(closing_issues[0]), **closing_issues[1]}}
+                if closing_issues is not None
                 else {}
             ),
         },

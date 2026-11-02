@@ -133,6 +133,19 @@ def test_an_uncovered_file_git_names_by_whitespace_alone_loads(tmp_path: Path, p
     assert review_run.load_run(tmp_path)["uncovered_files"] == [path]
 
 
+def test_a_withheld_role_s_reads_load_and_an_empty_or_malformed_list_is_refused(tmp_path: Path) -> None:
+    state = prepared_state()
+    reads = [str(tmp_path / "work" / "a.diff"), str(tmp_path / "source")]
+    state["roles"][0]["reads"] = reads
+    write_run(tmp_path, state)
+    assert reads == review_run.load_run(tmp_path)["roles"][0].get("reads")
+    for value in ([], None, "source", [5], [""]):
+        state["roles"][0]["reads"] = value
+        write_run(tmp_path, state)
+        with pytest.raises(ValueError, match=r"run\.roles\[0\]\.reads"):
+            review_run.load_run(tmp_path)
+
+
 def test_a_run_prepared_before_every_optional_field_loads_without_them(tmp_path: Path) -> None:
     state = {name: value for name, value in prepared_state().items() if name not in OPTIONAL_FIELDS}
     state["roles"] = [{key: role[key] for key in ("id", "prompt_file", "result_file")} for role in state["roles"]]
@@ -140,7 +153,7 @@ def test_a_run_prepared_before_every_optional_field_loads_without_them(tmp_path:
     write_run(tmp_path, state)
     assert state == review_run.load_run(tmp_path)
     assert set(OPTIONAL_FIELDS) == review_run.RUN_OPTIONAL_FIELDS
-    assert {"model", "effort"} == review_run.ROLE_OPTIONAL_FIELDS
+    assert {"model", "effort", "reads"} == review_run.ROLE_OPTIONAL_FIELDS
     assert {"source", "source_commit", "source_hashes"} == review_run.ADAPTER_OPTIONAL_FIELDS
     assert {"prior_record"} == review_run.FIXTURE_OPTIONAL_FIELDS
 

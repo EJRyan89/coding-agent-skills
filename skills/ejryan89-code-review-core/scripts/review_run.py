@@ -107,13 +107,15 @@ def self_check_command(run: Path, role: str) -> str:
 
 class RunRole(TypedDict):
     """One reviewer role of a run: its prompt, where its result goes, and, for a specialist, the model and effort it
-    starts on, either of which prepare may set to None."""
+    starts on, either of which prepare may set to None, and, for one withheld a pull-request text, every path the
+    reviewer guard lets it read."""
 
     id: str
     prompt_file: str
     result_file: str
     model: NotRequired[str | None]
     effort: NotRequired[str | None]
+    reads: NotRequired[list[str]]
 
 
 class ReadCount(TypedDict):
@@ -392,6 +394,8 @@ def _read_role(value: object, path: str) -> RunRole:
         role["model"] = READ.optional(READ.string, entry["model"], f"{path}.model")
     if "effort" in entry:
         role["effort"] = READ.optional(READ.string, entry["effort"], f"{path}.effort")
+    if "reads" in entry:
+        role["reads"] = READ.array(entry["reads"], f"{path}.reads", READ.string, nonempty=True)
     return role
 
 
