@@ -1989,6 +1989,11 @@ CHECKER_SETTINGS = {
     "MYPY_ENVIRONMENT": ("mypy", "tests/validation/toolchain.py"),
 }
 CHECKER_PROGRAMS = frozenset({"shellcheck", "ruff", "mypy"})
+# The checkers whose Python packages would run them in this process, past their runners and the settings they keep
+# out, and the one import of either outside a regression suite: the locator of the ruff program, which runs nothing.
+CHECKER_PACKAGES = frozenset({"mypy", "ruff"})
+CHECKER_IMPORTS = frozenset({("tests/validation/toolchain.py", "find_ruff")})
+IMPORT_CALLS = frozenset({"import_module", "__import__"})
 SHELL_PROGRAMS = frozenset({"bash", "sh"})
 # The one place a PowerShell script may run PSScriptAnalyzer, and the settings it must pass so that no settings file
 # beside a target or in the working folder is read.
@@ -2047,9 +2052,14 @@ def _checker_files(root: Path, files: list[Path]) -> list[tuple[Path, str]]:
 
 def checker_command_problems(root: Path, files: list[Path]) -> list[str]:
     """Each process start outside its checker's runner that may start ShellCheck, ruff, mypy, or a `bash -n`; each
-    function but a runner that names a runner's settings; each PSScriptAnalyzer run written outside
-    SCRIPT_ANALYZER_RUNNER, and that runner without SCRIPT_ANALYZER_SETTINGS; and, under READABLE_COMMAND_ROOTS, each
-    command whose program the reader cannot read where the module's COMMANDS_ALLOWED does not say why."""
+    import of mypy or ruff but CHECKER_IMPORTS, which would run it in this process; each function but a runner that
+    names a runner's settings; each PSScriptAnalyzer run written outside SCRIPT_ANALYZER_RUNNER, and that runner without
+    SCRIPT_ANALYZER_SETTINGS; and, under READABLE_COMMAND_ROOTS, each command whose program the reader cannot read where
+    the module's COMMANDS_ALLOWED does not say why.
+
+    It holds an honest new caller, not code written to pass it: a name built at run time from pieces, such as
+    "Invoke-Script" + "Analyzer", a `-c` script or a `-n` joined from strings, or `-m ruff` spread from a variable,
+    is outside what it reads."""
     problems: list[str] = []
     for path, name in _checker_files(root, files):
         try:
@@ -2058,6 +2068,7 @@ def checker_command_problems(root: Path, files: list[Path]) -> list[str]:
             problems.append(f"{name} {error}")
             continue
         problems += _checker_start_problems(reader, name)
+        problems += _checker_import_problems(reader, name)
         problems += _checker_setting_problems(reader, name)
         problems += _script_analyzer_problems(reader, name)
         if any(posix_within(name, top) for top in READABLE_COMMAND_ROOTS):
@@ -2087,6 +2098,38 @@ def _checker_start_problems(reader: CommandReader, name: str) -> list[str]:
                     f"{name}:{call.lineno} starts {checker} outside its runner; call {runners}, which keeps settings "
                     'outside the repository from turning its findings off; see "Validation" in docs/adding-a-skill.md'
                 )
+    return problems
+
+
+def _imported_modules(node: ast.AST) -> list[str]:
+    """The modules an import statement, importlib.import_module, or __import__ given a literal name imports."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if isinstance(node, ast.ImportFrom):
+        return [node.module] if node.level == 0 and node.module else []
+    if isinstance(node, ast.Call) and _called_name(node) in IMPORT_CALLS and node.args:
+        first = node.args[0]
+        return [first.value] if isinstance(first, ast.Constant) and isinstance(first.value, str) else []
+    return []
+
+
+def _called_name(call: ast.Call) -> str:
+    function = call.func
+    return (
+        function.attr if isinstance(function, ast.Attribute) else function.id if isinstance(function, ast.Name) else ""
+    )
+
+
+def _checker_import_problems(reader: CommandReader, name: str) -> list[str]:
+    problems: list[str] = []
+    for node in ast.walk(reader.tree):
+        packages = sorted({module.split(".")[0] for module in _imported_modules(node)} & CHECKER_PACKAGES)
+        if packages and (name, reader.scope_names.get(id(node), MODULE_SCOPE)) not in CHECKER_IMPORTS:
+            problems += [
+                f"{name}:{getattr(node, 'lineno', 0)} imports {package}, which would run it in this process past its "
+                "runner and the settings it keeps out; start it through its runner"
+                for package in packages
+            ]
     return problems
 
 

@@ -2042,6 +2042,26 @@ CHECKER_ROWS: dict[str, tuple[str, str | None]] = {
         "def run():\n    return {**os.environ, **MYPY_ENVIRONMENT}\n",
         "names MYPY_ENVIRONMENT outside the mypy runner",
     ),
+    "tools/mypy_api.py": (
+        "from mypy import api\n\ndef run():\n    api.run(['.'])\n",
+        "imports mypy, which would run it in this process",
+    ),
+    "tools/mypy_module.py": (
+        "import mypy.api\n\ndef run():\n    mypy.api.run(['.'])\n",
+        "imports mypy, which would run it in this process",
+    ),
+    "tools/mypy_importlib.py": (
+        "import importlib\n\ndef run():\n    importlib.import_module('mypy.api').run(['.'])\n",
+        "imports mypy, which would run it in this process",
+    ),
+    "tools/ruff_dunder.py": (
+        "def run():\n    return __import__('ruff')\n",
+        "imports ruff, which would run it in this process",
+    ),
+    "tools/ruff_from_main.py": (
+        "from ruff.__main__ import find_ruff_bin\n\nPROGRAM = find_ruff_bin()\n",
+        "imports ruff, which would run it in this process",
+    ),
     "tools/bash_syntax.py": (
         "import subprocess\n\ndef run(p):\n    subprocess.run(['bash', '-n', p])\n",
         f"starts bash -n {STARTS_OUTSIDE}",
@@ -2084,6 +2104,7 @@ CHECKER_ROWS: dict[str, tuple[str, str | None]] = {
         "def bash_syntax_job(bash, path):\n    run_process([bash, '-n', path])\n\n"
         "def ruff_job(ruff, subcommand, targets, cwd):\n"
         "    run_process([ruff, *subcommand, *RUFF_OPTIONS, *targets], cwd=cwd)\n\n"
+        "def find_ruff():\n    from ruff.__main__ import find_ruff_bin\n\n    return find_ruff_bin()\n\n"
         "def mypy_job(mypy, configuration, arguments, cwd):\n"
         "    run_process([mypy, '--config-file', str(configuration), *arguments], MYPY_ENVIRONMENT, cwd=cwd)\n",
         None,

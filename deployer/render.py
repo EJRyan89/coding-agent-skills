@@ -60,7 +60,7 @@ SHELLCHECK_HEADER = "# shellcheck shell=bash\n# shellcheck disable=SC2034,SC2154
 SHELLCHECK_COMMAND_BUDGET = platform_support.COMMAND_LINE_LIMIT - 1_024
 # ShellCheck reads options from SHELLCHECK_OPTS and from a .shellcheckrc above each file it checks or in the home, so a
 # setting outside the repository could turn its findings off. Every ShellCheck the repository runs is started by one of
-# the runners tests/validation/python_checks.py's CHECKER_RUNNERS names, run_shellcheck here or validation's job, which
+# the runners tests/validation/skill_scripts.py's CHECKER_RUNNERS names, run_shellcheck here or validation's job, which
 # builds it with shellcheck_command and starts it with SHELLCHECK_ENVIRONMENT over its environment.
 SHELLCHECK_ENVIRONMENT = {"SHELLCHECK_OPTS": ""}
 # Commands whose program the commands reader cannot read, by the scope that starts them, and why.

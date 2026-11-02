@@ -428,7 +428,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests.validation.toolchain:bash_syntax_job`, `tests.validation.toolchain:ruff_job`, and
   `tests.validation.toolchain:mypy_job`
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
-  `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`
+  `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`;
+  it reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
+  from pieces is outside what it reads
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
   sandboxed child started with no `env=`; a checker started anywhere but its runner, or run with no option that stops
   it reading settings outside the repository: ShellCheck without `--norc` and an empty `SHELLCHECK_OPTS`,
