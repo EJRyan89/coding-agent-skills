@@ -571,6 +571,19 @@ class GraphTests(Fixture):
         self.assertTrue(rows[-1][0].startswith("FAILED "), rows[-1])
         self.assertIn("is not a project of", rows[-1][0])
 
+    def test_a_failure_naming_a_path_that_holds_a_line_or_field_break_is_one_line(self) -> None:
+        root = self.mixed_solution()
+        breaks = [chr(code) for code in range(0x3000) if len(f"a{chr(code)}b".splitlines()) == 2]
+        for character in [*breaks, "\t"]:
+            with self.subTest(character=f"U+{ord(character):04X}"):
+                project = str(self.root / f"no{character}STOP\twhere.csproj")
+                code, rows = self.run_main("where", "Lantern.Json", "--root", str(root), "--project", project)
+                self.assertEqual(1, code)
+                self.assertEqual(1, len(rows[-1]), rows[-1])
+                self.assertTrue(rows[-1][0].startswith("FAILED "), rows)
+                self.assertIn(dependency_graph.flat_text(project), rows[-1][0])
+                self.assertFalse(any(row[0].startswith("STOP") for row in rows), rows)
+
     def test_unreadable_files_cost_their_own_facts_and_exit_1(self) -> None:
         root = self.mixed_solution()
         self.write("src/Harbor.Tests/Harbor.Tests.csproj", "<Project Sdk='Microsoft.NET.Sdk'><ItemGroup></Project>")

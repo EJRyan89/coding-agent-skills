@@ -13,7 +13,10 @@
 It prints `VIOLATION <file> <line> <severity> <rule> <message>` per violation, `FIXED <file> <line> <rule>` per fix with
 --fix (preserving line endings, BOM, and encoding), `UNREADABLE <file> <reason>` per file whose byte order mark names an
 encoding its bytes are not in, which it neither checks nor fixes, and `SUMMARY <violations> <files> <rules>`. It exits 1
-when a VIOLATION remains, a file was UNREADABLE, or a listed entry was REFUSED (findings), 0 otherwise.
+when a VIOLATION remains, a file was UNREADABLE, or a listed entry was REFUSED (findings), 0 otherwise. Every line of
+either command is tab separated, and each value it holds, and a FAILED line's reason, is flattened by
+ejryan89-skill-core's `fact_line` or `flat_text`, so a tab, a control character, or a line break in a file name prints
+as a space and one fact stays one line.
 
 `config` prints `PACKAGE Roslynator.Formatting.Analyzers present|missing`, or `... unknown <reason>`, and one `SETTING
 <key> <wanted> <state>` per analyzer setting (state: present, missing, or other:<value>), judged as the listed files see
@@ -78,6 +81,7 @@ from atomic_file import is_read_only, replace_bytes
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
+from flat_text import fact_line, flat_text
 from folders_up import folders_up
 from link_probe import is_link_or_junction
 from run_dotnet_format import Services
@@ -584,13 +588,13 @@ def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], 
         try:
             source = read_source(path)
         except Unreadable as error:
-            emit(f"UNREADABLE\t{name}\t{error}")
+            emit(fact_line("UNREADABLE", name, error))
             unreadable = True
             continue
         text, fixed = fix_text(source.text) if fix else (source.text, [])
         refused = write_refusal(root, path) if fixed else None
         if refused:
-            emit(f"REFUSED\t{name}\t{refused}")
+            emit(fact_line("REFUSED", name, refused))
             text = source.text
         elif fixed:
             pending.append((name, source, text, fixed))
@@ -598,16 +602,12 @@ def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], 
     for name, source, text, fixed in pending:
         write_source(root / name, source, text)
         for violation in fixed:
-            emit(f"FIXED\t{name}\t{violation.line + 1}\t{violation.rule}")
+            emit(fact_line("FIXED", name, violation.line + 1, violation.rule))
     remaining = [(name, violation) for name, text in checked for violation in check_text(text)]
     for name, violation in remaining:
-        emit(
-            "\t".join(
-                ("VIOLATION", name, str(violation.line + 1), violation.severity, violation.rule, violation.message)
-            )
-        )
+        emit(fact_line("VIOLATION", name, violation.line + 1, violation.severity, violation.rule, violation.message))
     rules = sorted({violation.rule for _, violation in remaining})
-    emit(f"SUMMARY\t{len(remaining)}\t{len({name for name, _ in remaining})}\t{','.join(rules) or '-'}")
+    emit(fact_line("SUMMARY", len(remaining), len({name for name, _ in remaining}), ",".join(rules) or "-"))
     return bool(remaining) or unreadable or len(names) < len(listed)
 
 
@@ -925,7 +925,7 @@ def listed_projects_inside(root: Path, solution: Path, emit: Callable[[str], Non
         project = project_path(solution.parent, entry)
         refused = refusal(project, root)
         if refused:
-            emit(f"REFUSED\t{entry}\t{refused}")
+            emit(fact_line("REFUSED", entry, refused))
         else:
             projects.setdefault(same_path(project), project)
     return projects
@@ -1009,7 +1009,7 @@ def configure(
     if not files:
         raise Failed("no listed file lies inside the repository root")
     state, reason = package_state(root, solution, files, services, emit)
-    emit("\t".join(("PACKAGE", PACKAGE, state, *([reason] if reason else []))))
+    emit(fact_line("PACKAGE", PACKAGE, state, *([reason] if reason else [])))
     configs = AnalyzerConfigs(root)
     effective = [(configs.apply_target(root / name), configs.settings(root / name)) for name in files]
     gaps: dict[Path, list[tuple[str, str]]] = {}
@@ -1027,7 +1027,7 @@ def configure(
             state = "other:" + ",".join(
                 sorted({value for value in values if value is not None and value not in ACCEPTED[wanted]})
             )
-        emit(f"SETTING\t{key}\t{wanted}\t{state}")
+        emit(fact_line("SETTING", key, wanted, state))
     left_out = len(files) < len(listed)
     if not apply:
         return bool(gaps) or left_out
@@ -1036,20 +1036,20 @@ def configure(
     for target, missing in gaps.items():
         refused = write_refusal(root, target)
         if refused:
-            emit(f"REFUSED\t{target.relative_to(root).as_posix()}\t{refused}")
+            emit(fact_line("REFUSED", target.relative_to(root).as_posix(), refused))
             still_missing = True
             continue
         try:
             source = read_source(target) if target.is_file() else Source("", b"", "utf-8")
         except Unreadable as error:
-            emit(f"UNREADABLE\t{target.relative_to(root).as_posix()}\t{error}")
+            emit(fact_line("UNREADABLE", target.relative_to(root).as_posix(), error))
             still_missing = True
             continue
         pending.append((target, source, missing))
     for target, source, missing in pending:
         write_source(target, source, insert_settings(source, missing))
         for key, value in missing:
-            emit(f"ADDED\t{target.relative_to(root).as_posix()}\t{key}\t{value}")
+            emit(fact_line("ADDED", target.relative_to(root).as_posix(), key, value))
     return still_missing or left_out
 
 
@@ -1083,7 +1083,7 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
                 raise Failed(refused_solution)
             findings = configure(root, root / arguments.solution, names, arguments.apply, services or Services(), print)
     except (Failed, OSError) as error:
-        print(f"FAILED {error}")
+        print(f"FAILED {flat_text(str(error))}")
         return 1
     return 1 if findings else 0
 

@@ -14,6 +14,10 @@ temporary file; standard output gets one fact per line, tab separated:
     UNFINISHED  <file>          a failed fix only: this file's run failed or never started, so its fixes are not saved
     LOG         <log file>
 
+Each value a line holds, and a FAILED line's reason, is flattened by ejryan89-skill-core's `fact_line` or `flat_text`,
+so a tab, a control character, or a line break in a file name prints as a space and one fact stays one line. The log
+is read a line at a time at each newline alone, so a file name holding another line break is still one DIAGNOSTIC.
+
 The formatter is the one dotnet_format_targets.py chooses: the .NET SDK's `dotnet format` for a .slnx solution and for a
 .sln whose projects are all SDK-style, and the dotnet-format global tool for any other .sln; both print diagnostics in
 one layout, and both exit 2 from a check that finds changes. The global tool is not run on a file of an ASP.NET project,
@@ -64,6 +68,7 @@ from dotnet_format_targets import (
     solution_refusal,
 )
 from executable_locator import find_executable, located_command
+from flat_text import fact_line, flat_text
 from seconds_option import positive_seconds
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
@@ -214,10 +219,11 @@ INT_PARSE_ALLOWED = {
 
 
 def parse_diagnostics(log: str, root: Path) -> list[Diagnostic]:
-    """Distinct issues in a dotnet-format log, in first-seen order."""
+    """Distinct issues in a dotnet-format log, in first-seen order. The log's lines end at a newline, never at the
+    other line breaks `str.splitlines()` reads, which a file name the log prints may hold."""
     found: dict[Diagnostic, None] = {}
-    for line in log.splitlines():
-        match = ISSUE.match(line)
+    for line in log.split("\n"):
+        match = ISSUE.match(line.removesuffix("\r"))
         if match:
             found.setdefault(
                 Diagnostic(
@@ -294,9 +300,9 @@ def unfinished_fix_lines(runs: Runs, root: Path) -> list[str]:
     lines: list[str] = []
     for run_files, output in zip(runs.batches[: runs.finished], runs.outputs, strict=False):
         found = {diagnostic.path for diagnostic in parse_diagnostics(output.decode("utf-8", errors="replace"), root)}
-        lines += [f"SAVED\t{name}" for name in run_files if Path(name).as_posix() in found]
+        lines += [fact_line("SAVED", name) for name in run_files if Path(name).as_posix() in found]
     for run_files in runs.batches[runs.finished :]:
-        lines += [f"UNFINISHED\t{name}" for name in run_files]
+        lines += [fact_line("UNFINISHED", name) for name in run_files]
     return lines
 
 
@@ -331,7 +337,7 @@ def run(
     skipped = formatter_skips(root, formatter, inside)
     files = [name for name in inside if name not in skipped]
     if not files:
-        emit("SUMMARY\t0\t0\t-")
+        emit(fact_line("SUMMARY", 0, 0, "-"))
         return refused
     runs = run_batches(formatter, mode, root, solution, files, severity, timeout, services)
     descriptor, log_path = tempfile.mkstemp(prefix=f"dotnet-format-{mode}-", suffix=".log")
@@ -340,24 +346,17 @@ def run(
     diagnostics = parse_diagnostics(runs.log.decode("utf-8", errors="replace"), root)
     for diagnostic in diagnostics:
         emit(
-            "\t".join(
-                (
-                    "DIAGNOSTIC",
-                    diagnostic.path,
-                    str(diagnostic.line),
-                    str(diagnostic.column),
-                    diagnostic.severity,
-                    diagnostic.rule,
-                )
+            fact_line(
+                "DIAGNOSTIC", diagnostic.path, diagnostic.line, diagnostic.column, diagnostic.severity, diagnostic.rule
             )
         )
     rules = sorted({diagnostic.rule for diagnostic in diagnostics})
     file_count = len({diagnostic.path for diagnostic in diagnostics})
-    emit(f"SUMMARY\t{len(diagnostics)}\t{file_count}\t{','.join(rules) or '-'}")
+    emit(fact_line("SUMMARY", len(diagnostics), file_count, ",".join(rules) or "-"))
     if runs.failure and mode == "fix":
         for line in unfinished_fix_lines(runs, root):
             emit(line)
-    emit(f"LOG\t{log_path}")
+    emit(fact_line("LOG", log_path))
     if runs.failure:
         raise Failed(runs.failure)
     # A fix run's log lists what it found before fixing, not what is left; the check rerun reports that.
@@ -395,7 +394,7 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
             print,
         )
     except (Failed, OSError) as error:
-        print(f"FAILED {error}")
+        print(f"FAILED {flat_text(str(error))}")
         return 1
     return 1 if findings else 0
 
