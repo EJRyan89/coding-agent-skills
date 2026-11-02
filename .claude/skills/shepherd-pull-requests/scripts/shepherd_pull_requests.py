@@ -364,6 +364,22 @@ def member(entry: dict[str, Any], key: str, kind: type, what: str) -> Any:
     return value
 
 
+def reported(entry: dict[str, Any], key: str, kind: type, what: str) -> Any:
+    """`entry`'s `key` as `member` reads it, or the malformed GitHubError naming `what` when it is absent or null: a
+    member whose value decides a write is read only as GitHub reported it, never as a default."""
+    value = member(entry, key, kind, what)
+    if value is None:
+        raise malformed(f"{what} without its {key}")
+    return value
+
+
+def present(entry: dict[str, Any], key: str, what: str) -> None:
+    """Raise the malformed GitHubError naming `what` when the listing leaves `key` out: a member GitHub reports as null
+    for "none" is read as none only when the listing carries it."""
+    if key not in entry:
+        raise malformed(f"{what} without its {key}")
+
+
 def run_of(entry: dict[str, Any]) -> int | None:
     url = member(entry, "detailsUrl", str, "a check")
     match = RUN_URL.search(url) if url is not None else None
@@ -397,9 +413,9 @@ def required_check(rollup: Any) -> Check:
     return Check("MISSING", None)
 
 
-def hold_of(body: Any) -> str | None:
+def hold_of(body: str) -> str | None:
     """The reason the first Shepherd-hold line in a pull request's body gives, or None when no line holds it."""
-    match = HOLD_LINE.search(body) if isinstance(body, str) else None
+    match = HOLD_LINE.search(body)
     if match is None:
         return None
     return flat_text(match.group(1)) or "no reason given"
@@ -418,22 +434,27 @@ def pull_of(item: Any) -> Pull:
     if len(paths) != len(listed_paths):
         raise malformed("a pull request file without its path")
     what = "a pull request"
-    # Admission and arming read a false GitHub reported, never one an absent or null member defaults to.
+    # Admission, arming, holding, and the CONFLICT flag read only what GitHub reported, never a default an absent or
+    # null member falls back to: a body, a merge state, and the admission members are refused absent or null, and the
+    # two members GitHub reports as null for "none", autoMergeRequest (not armed) and statusCheckRollup (no checks), are
+    # refused absent and read null as none. An empty body is one GitHub reported, so it shows that no line holds it.
     cross_repository = member(item, "isCrossRepository", bool, what)
     draft = member(item, "isDraft", bool, what)
     if cross_repository is None or draft is None:
         raise malformed("a pull request without its isCrossRepository or isDraft")
+    for key in ("autoMergeRequest", "statusCheckRollup"):
+        present(item, key, what)
     return Pull(
         number,
         branch,
         head,
-        member(item, "mergeStateStatus", str, what) or "UNKNOWN",
+        reported(item, "mergeStateStatus", str, what),
         member(item, "autoMergeRequest", dict, what) is not None,
-        required_check(item.get("statusCheckRollup")),
+        required_check(item["statusCheckRollup"]),
         paths,
         cross_repository,
         draft,
-        hold_of(member(item, "body", str, what)),
+        hold_of(reported(item, "body", str, what)),
     )
 
 
@@ -599,8 +620,8 @@ def judge(client: GitHubClient, repository: str, pull: Pull) -> Judgement:
     head = member(run, "headSha", str, "a workflow run")
     if not head:
         raise malformed("a workflow run without its head")
-    counted = member(run, "attempt", int, "a workflow run")
-    attempt = 1 if counted is None else counted
+    # The attempt decides whether a rerun is spent, so one the run does not report is never read as its first.
+    attempt = reported(run, "attempt", int, "a workflow run")
     if head != pull.head:
         return Judgement(pull.check.run, attempt, head, "superseded", "", "", "", short(pull.head))
     newest = newest_run(client, repository, head)
@@ -608,12 +629,14 @@ def judge(client: GitHubClient, repository: str, pull: Pull) -> Judgement:
         return Judgement(pull.check.run, attempt, head, "superseded", "", "", "", f"run {newest}")
     jobs = objects(run.get("jobs"), "a workflow run's jobs")
     for job in jobs:
-        for key in ("name", "conclusion"):
-            member(job, key, str, "a job")
+        member(job, "name", str, "a job")
+        # A leg's conclusion and the run's decide between a defect and a rerun, so one the listing leaves out is never
+        # read as a leg that passed or a run that was not cancelled; gh reports an unfinished one as empty text.
+        reported(job, "conclusion", str, "a job")
     if not jobs:
         # A finished run lists its jobs, so judging one that lists none would read no legs as legs that passed.
         raise malformed("a workflow run that lists no jobs")
-    member(run, "conclusion", str, "a workflow run")
+    reported(run, "conclusion", str, "a workflow run")
     legs = [job for job in jobs if job.get("name") != REQUIRED_CHECK and job.get("conclusion") in FAILED_LEG]
     if legs:
         judged = [judge_leg(client, repository, job) for job in legs]

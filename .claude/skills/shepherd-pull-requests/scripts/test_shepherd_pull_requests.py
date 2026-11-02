@@ -187,6 +187,7 @@ def pull(
         "autoMergeRequest": {"mergeMethod": "SQUASH"} if armed else None,
         "files": [{"path": path} for path in files],
         "statusCheckRollup": rollup(state, run),
+        "body": "",
     }
 
 
@@ -752,9 +753,25 @@ class HoldTest(FixtureTestCase):
         self.assertEqual(1, status)
         self.assertEqual("PR_FAILED #20 disarm pr merge refused (HTTP 422)", self.line(lines, "PR_FAILED "))
 
+    def test_a_listing_whose_pull_request_has_no_body_ends_the_tick_and_arms_nothing(self) -> None:
+        for body in ("absent", None):
+            with self.subTest(body=body):
+                listed = pull(20, armed=False)
+                if body == "absent":
+                    del listed["body"]
+                else:
+                    listed["body"] = body
+                gh = StubGh([listed])
+                status, lines = self.tick(gh)
+                self.assertEqual(1, status)
+                self.assertEqual(
+                    "FAILED cannot list the open pull requests: GitHub returned a pull request without its body",
+                    lines[-1],
+                )
+                self.assertEqual([], gh.writes())
+
     def test_only_a_line_of_its_own_holds_and_its_reason_is_flattened(self) -> None:
         self.assertIsNone(shepherd.hold_of("Do not add a Shepherd-hold: line yet"))
-        self.assertIsNone(shepherd.hold_of(None))
         self.assertEqual("no reason given", shepherd.hold_of("Text\nShepherd-hold:\n"))
         self.assertEqual("waits on #1 then #2", shepherd.hold_of("Shepherd-hold:  waits on #1\x85then #2  "))
         # A pull request from another repository is not admitted, held or not.
@@ -1037,21 +1054,75 @@ class ShapeTest(unittest.TestCase):
         found = shepherd.pull_of(pull(20, cross=True, draft=True))
         self.assertEqual((True, True), (found.cross_repository, found.draft))
 
-    def test_a_pull_request_without_auto_merge_status_checks_or_body_still_reads(self) -> None:
-        found = shepherd.pull_of({**pull(20, armed=False), "statusCheckRollup": None, "body": None})
+    def test_null_auto_merge_and_status_checks_and_an_empty_body_read_as_none(self) -> None:
+        found = shepherd.pull_of({**pull(20, armed=False), "statusCheckRollup": None, "body": ""})
         self.assertEqual((False, shepherd.Check("MISSING", None), None), (found.armed, found.check, found.hold))
-        listed = pull(20)
-        del listed["mergeStateStatus"]
-        self.assertEqual("UNKNOWN", shepherd.pull_of(listed).merge_state)
 
-    def test_a_run_with_no_attempt_is_its_first_and_a_nameless_leg_is_named_so(self) -> None:
+    def test_a_pull_request_member_the_listing_leaves_out_or_nulls_is_malformed_never_a_default(self) -> None:
+        # Each member pull_of reads, written out here rather than read from PULL_FIELDS, with what an absent member
+        # and a null one are refused as, or None where GitHub reports null for "none" and null reads as none.
+        unpinned = "a pull request without its number, branch, or head"
+        admission = "a pull request without its isCrossRepository or isDraft"
+        files = "a pull request's files that is not a list of objects"
+        catalogue: dict[str, tuple[str, str | None]] = {
+            "number": (unpinned, unpinned),
+            "headRefName": (unpinned, unpinned),
+            "headRefOid": (unpinned, unpinned),
+            "isCrossRepository": (admission, admission),
+            "isDraft": (admission, admission),
+            "mergeStateStatus": (
+                "a pull request without its mergeStateStatus",
+                "a pull request without its mergeStateStatus",
+            ),
+            "autoMergeRequest": ("a pull request without its autoMergeRequest", None),
+            "files": (files, files),
+            "statusCheckRollup": ("a pull request without its statusCheckRollup", None),
+            "body": ("a pull request without its body", "a pull request without its body"),
+        }
+        self.assertEqual(set(catalogue), set(shepherd.PULL_FIELDS.split(",")))
+        for key, (absent, null) in catalogue.items():
+            with self.subTest(member=key, value="absent"):
+                listed = pull(20, armed=False)
+                del listed[key]
+                self.malformed(absent, shepherd.pull_of, listed)
+            with self.subTest(member=key, value=None):
+                if null is None:
+                    shepherd.pull_of({**pull(20, armed=False), key: None})
+                else:
+                    self.malformed(null, shepherd.pull_of, {**pull(20, armed=False), key: None})
+
+    def test_a_nameless_leg_is_named_so(self) -> None:
         nameless = {
             key: value for key, value in job("unused", "failure", failed_step="Set up job").items() if key != "name"
         }
-        run = {key: value for key, value in run_view([nameless]).items() if key != "attempt"}
         found = shepherd.pull_of(pull(20, state="FAILURE"))
-        judged = shepherd.judge(self.client(run, [{"databaseId": RUN}]), "owner/repo", found)
+        judged = shepherd.judge(self.client(run_view([nameless]), [{"databaseId": RUN}]), "owner/repo", found)
         self.assertEqual((1, "unnamed leg", "service"), (judged.attempt, judged.leg, judged.reason))
+
+    def test_a_run_or_leg_member_that_decides_a_rerun_is_malformed_absent_or_null(self) -> None:
+        failed = job("Linux shard 1/4", "failure", failed_step="Set up job")
+        found = shepherd.pull_of(pull(20, state="FAILURE"))
+        for value in ("absent", None):
+            with self.subTest(member="attempt", value=value):
+                run = run_view([failed])
+                if value == "absent":
+                    del run["attempt"]
+                else:
+                    run["attempt"] = value
+                client = self.client(run, [{"databaseId": RUN}])
+                self.malformed("a workflow run without its attempt", shepherd.judge, client, "owner/repo", found)
+            with self.subTest(member="conclusion", value=value):
+                run = run_view([failed])
+                leg = dict(failed)
+                if value == "absent":
+                    del run["conclusion"]
+                    del leg["conclusion"]
+                else:
+                    run["conclusion"] = leg["conclusion"] = value
+                client = self.client(run, [{"databaseId": RUN}])
+                self.malformed("a workflow run without its conclusion", shepherd.judge, client, "owner/repo", found)
+                client = self.client(run_view([leg]), [{"databaseId": RUN}])
+                self.malformed("a job without its conclusion", shepherd.judge, client, "owner/repo", found)
 
     def test_a_failed_validation_leg_reads_its_log_by_the_job_id(self) -> None:
         failed = job("Linux shard 1/4", "failure", number=8)
