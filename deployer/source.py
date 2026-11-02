@@ -6,6 +6,7 @@ reads a source's plugins through too; they are imported here for the deployer's 
 
 from __future__ import annotations
 
+import fnmatch
 import graphlib
 import json
 import os
@@ -456,11 +457,21 @@ def discover(paths: Paths, source_id: str) -> Source:
         ) from exc
 
 
+def _metadata_files(meta_dir: Path) -> list[Path]:
+    """deploy-meta's *.json entries, sorted, matched as a glob of them matches, or none when there is no deploy-meta.
+    It is listed with iterdir, whose listing error raises, where Path.glob answers a folder it cannot list with no
+    entries, which would drop every skill from the source and remove each deployed one. The skills folder's rglob needs
+    no such listing: _reject_links lists every folder under it first and refuses one it cannot list."""
+    if not file_presence.is_directory(meta_dir):
+        return []
+    return sorted(entry for entry in meta_dir.iterdir() if fnmatch.fnmatch(entry.name, "*.json"))
+
+
 def _discover(paths: Paths, source_id: str) -> Source:
     _reject_links(paths.skills_src)
     directories = _discover_directories(paths)
     source = Source(source_id)
-    for meta_file in sorted(paths.meta_dir.glob("*.json")):
+    for meta_file in _metadata_files(paths.meta_dir):
         if _is_file(meta_file):
             source.skills[meta_file.stem] = _load_skill(paths, meta_file.stem, directories)
     document = _load_source_document(paths)

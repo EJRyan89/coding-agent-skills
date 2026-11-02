@@ -8,7 +8,7 @@ from pdf_tool import skipped_text
 
 from . import manifest, platform_support, source, source_commit, tools
 from .arguments import CHECK_COMMAND, parse_command
-from .errors import DeployError, debug_requested, fail
+from .errors import DeployError, debug_requested, fail, os_error
 from .paths import Paths
 from .report import ReportLine, currently_chosen, print_report, warn_ignored_home
 
@@ -23,6 +23,8 @@ BLOCKED_LEADS = {
     (False, True): "Update the outdated tools",
     (True, True): "Install the missing tools and update the outdated ones",
 }
+# What check asks for when a tool needed to deploy could not be located, and none is missing or outdated.
+UNUSABLE_LEAD = "Put right what each unusable tool's line names"
 
 
 def _version_text(probe: tools.Probe) -> str:
@@ -50,7 +52,15 @@ def _deploy_lines(checkout: bool) -> list[ReportLine]:
     else:
         lines = [ReportLine(label, "FOUND", f"{NEEDED_TO_DEPLOY}; {minimum} or newer")]
     for tool in tools.DEPLOY_TOOLS:
-        probe = tools.probe(tool)
+        try:
+            probe = tools.probe(tool)
+        except (DeployError, OSError) as exc:
+            # A tool that cannot be located, such as Git Bash beside a git whose exec path fails, is reported, and the
+            # check goes on to the others.
+            failure = exc if isinstance(exc, DeployError) else os_error(exc, f"locate {tool.label}")
+            reason = failure.lines[0].removeprefix("ERROR: ")
+            lines.append(ReportLine(tool.label, "UNUSABLE", f"{NEEDED_TO_DEPLOY}; {reason}"))
+            continue
         if probe.path is None:
             hint = platform_support.install_hint(tool.label)
             lines.append(ReportLine(tool.label, "MISSING", f"{NEEDED_TO_DEPLOY}; {hint}"))
@@ -211,6 +221,8 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
     print_report("CHECK", CHECK_ACTIONS, [*deploy_lines, *skill_lines])
     actions = {line.action for line in deploy_lines}
     lead = BLOCKED_LEADS.get(("MISSING" in actions, "OUTDATED" in actions))
+    if lead is None and "UNUSABLE" in actions:
+        lead = UNUSABLE_LEAD
     if lead is not None:
         print(f'{lead} before deploying; see "Installing the tools" in')
         print("docs/installation.md. Open a new terminal afterwards so the tools are on PATH.")

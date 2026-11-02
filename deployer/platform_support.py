@@ -24,7 +24,7 @@ from bounded_process import ProcessTree, run_bounded, without_repository_variabl
 from flat_text import flat_text
 from job_tree import JobRefused
 
-from .errors import DeployError, see_recovery
+from .errors import DeployError, os_error, see_recovery
 
 # The platforms the deployer runs on, by sys.platform. macOS is not yet one of them.
 SUPPORTED_PLATFORMS = {"win32": "Windows", "linux": "Linux"}
@@ -428,17 +428,29 @@ def find_bash() -> str | None:
     """Find the Bash that checks rendered scripts: on Windows Git for Windows' Bash, never another bash on PATH, such
     as WSL's, and elsewhere the system's, the first bash on PATH. On Windows GIT_BASH, then Git under the Program Files
     folder, each only when its variable names an absolute path, so no Bash is found relative to the working directory,
-    then the Bash beside the git the locator finds."""
+    then the Bash beside the git the locator finds. Nothing at a place, or something other than a file, passes to the
+    next; one whose stat fails is refused, never passed over for another Bash."""
     if not WINDOWS:
         return find_executable("bash")
     configured = executable_locator.environment_path("GIT_BASH")
-    if configured is not None and configured.is_file():
+    if configured is not None and _is_bash(configured, "GIT_BASH"):
         return str(configured)
     program_files = executable_locator.environment_path("PROGRAMFILES")
     candidate = None if program_files is None else program_files / "Git" / "bin" / "bash.exe"
-    if candidate is not None and candidate.is_file():
+    if candidate is not None and _is_bash(candidate, "PROGRAMFILES"):
         return str(candidate)
     return _bash_beside_git()
+
+
+def _is_bash(candidate: Path, named_by: str) -> bool:
+    """Whether a file is at the place `named_by` names for Bash: False for nothing or something else there, and the
+    deployer's refusal naming the path and the reason for a stat that fails."""
+    try:
+        return file_presence.is_present(candidate)
+    except file_presence.NotAFile:
+        return False
+    except OSError as exc:
+        raise os_error(exc, f"read the Bash {named_by} names") from exc
 
 
 def _bash_beside_git() -> str | None:

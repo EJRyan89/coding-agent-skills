@@ -7,6 +7,7 @@ import contextlib
 import functools
 import io
 import os
+import shutil
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -16,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import file_presence
 from harness import SOURCE_ID, DeployerTestCase, backup_entry, forward, install_entry, journal_line
 
 from deployer import (
@@ -490,6 +492,51 @@ class DeployerPresenceTests(DeployerTestCase):
         with stat_failing_at(orphan):
             result = self.deploy_fails("--all", pattern="Could not read the skill source")
         self.assertIn(f"ERROR: Could not read the skill source: {forward(orphan)}: Access is denied\n", result.output)
+
+    def test_a_metadata_folder_it_cannot_list_is_refused_never_read_as_no_skills(self) -> None:
+        # The listing fails as a denied one does: iterdir raises, and Path.glob answers with no entries, which read as
+        # the source's skills would remove every deployed one.
+        self.deployed()
+        meta = self.source / "deploy-meta"
+        real_iterdir, real_glob = Path.iterdir, Path.glob
+
+        def iterdir(self: Path) -> Iterator[Path]:
+            if self == meta:
+                raise denied(meta)
+            return real_iterdir(self)
+
+        def glob(self: Path, *arguments: Any, **options: Any) -> Iterator[Path]:
+            return iter([]) if self == meta else real_glob(self, *arguments, **options)
+
+        with mock.patch.object(Path, "iterdir", iterdir), mock.patch.object(Path, "glob", glob):
+            result = self.deploy_fails("--all", pattern="Could not read the skill source")
+        self.assertIn(f"ERROR: Could not read the skill source: {forward(meta)}: Access is denied\n", result.output)
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+        # The folder's *.json entries are listed in order, a file where the folder stands is refused, and no folder at
+        # all is no metadata.
+        (meta / "notes.txt").write_text("", encoding="utf-8")
+        self.assertEqual([meta / "alpha.json", meta / "beta.json"], source._metadata_files(meta))
+        shutil.rmtree(meta)
+        self.assertEqual([], source._metadata_files(meta))
+        meta.write_text("", encoding="utf-8")
+        with self.assertRaises(file_presence.NotADirectory):
+            source._metadata_files(meta)
+
+    def test_a_managed_root_component_it_cannot_stat_is_refused_not_passed(self) -> None:
+        component = self.home / ".claude"
+        component.mkdir()
+        with stat_failing_at(component), self.assertRaises(PermissionError) as raised:
+            paths.validate_managed_roots(self.paths)
+        self.assertEqual(str(component), raised.exception.filename)
+        # A file there is still refused by name, and a missing one passes.
+        component.rmdir()
+        paths.validate_managed_roots(self.paths)
+        component.write_text("", encoding="utf-8")
+        with self.assertRaises(DeployError) as refused:
+            paths.validate_managed_roots(self.paths)
+        self.assertEqual(
+            f"ERROR: Deployment path component is not a directory: {forward(component)}", refused.exception.lines[0]
+        )
 
     def test_a_copilot_personal_skill_whose_stat_fails_is_warned_of_not_read_as_no_shadow(self) -> None:
         personal = self.paths.copilot_skills_dir

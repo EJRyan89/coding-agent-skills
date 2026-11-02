@@ -13,7 +13,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from harness import DeployerTestCase, make_directory_link
+from harness import DeployerTestCase, forward, make_directory_link
+from test_presence_reads import stat_failing_at
 
 from deployer import platform_support
 from deployer.errors import DeployError
@@ -263,6 +264,24 @@ class GitBashVariableTests(DeployerTestCase):
         self.assertEqual(
             str(self.planted / "Git" / "bin" / "bash.exe"),
             self.find(GIT_BASH="bash.exe", PROGRAMFILES=str(self.planted)),
+        )
+
+    def test_a_bash_it_cannot_stat_is_refused_never_passed_over_for_another(self) -> None:
+        program_files = self.planted / "Git" / "bin" / "bash.exe"
+        for variable, bash in (("GIT_BASH", self.planted / "bash.exe"), ("PROGRAMFILES", program_files)):
+            named = str(self.planted) if variable == "PROGRAMFILES" else str(bash)
+            # GIT_BASH falls through to the Program Files Bash, and that to none, were a failed stat passed over.
+            with self.subTest(variable=variable):
+                with stat_failing_at(bash), self.assertRaises(DeployError) as raised:
+                    self.find(**{variable: named, "PROGRAMFILES": str(self.planted)})
+                self.assertEqual(
+                    f"ERROR: Could not read the Bash {variable} names: {forward(bash)}: Access is denied",
+                    raised.exception.lines[0],
+                )
+        # Something other than a file there still passes to the next place.
+        (self.planted / "folder.exe").mkdir()
+        self.assertEqual(
+            str(program_files), self.find(GIT_BASH=str(self.planted / "folder.exe"), PROGRAMFILES=str(self.planted))
         )
 
 
