@@ -204,6 +204,19 @@ UNSET_OPTIONS = (
 # Each state a name may be in before unset: a function alone, beside a variable, or a name reference to a variable
 # that is set or is not.
 UNSET_BEFORE = ("", "NAME=1; ", "declare -n NAME=other; ", "other=1; declare -n NAME=other; ")
+# Each command before a bare unset after which a variable by the name may not be set on every path Bash takes.
+UNSET_BEFORE_BARE = (
+    "false && NAME=1; ",
+    'if [ -n "$z" ]; then NAME=1; fi; ',
+    "local NAME=1; ",
+    "f() { local NAME=1; }; f; ",
+    "f() { declare NAME=1; }; f; ",
+    "for NAME in; do :; done; ",
+    "read NAME < /dev/null; ",
+    "( NAME=1 ); ",
+    "NAME=1 true; ",
+    "NAME=1; unset -v NAME; ",
+)
 
 
 def pwsh_runs(words: tuple[str, ...]) -> tuple[bool, bool]:
@@ -787,7 +800,7 @@ class UnsetDifferentialTests(unittest.TestCase):
             f"{before}NAME() {{ BODY; }}; unset {options} NAME; NAME status"
             for before in UNSET_BEFORE
             for options in UNSET_OPTIONS
-        )
+        ) + tuple(f"{before}NAME() {{ BODY; }}; unset NAME; NAME status" for before in UNSET_BEFORE_BARE)
         with tempfile.TemporaryDirectory() as folder:
             program = Path(folder) / "g"
             program.write_text("#!/bin/bash\necho PROGRAM-RAN\n", encoding="utf-8", newline="\n")

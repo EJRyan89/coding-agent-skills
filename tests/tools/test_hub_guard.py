@@ -1165,6 +1165,25 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
 
 UNPLACED = "could not tell where `git {}` runs"
 WRITES = "`git {}` would move the hub's HEAD or write its index or tree."
+# Each command before a bare unset after which a variable by the function's name may not be set on every path Bash
+# takes: one branch assigns it, local fails outside a function, a function's own local or declare ends with it, an
+# empty for or a failed read assigns nothing, a subshell's or a command's own assignment does not outlive it, or it
+# is unset first.
+UNSET_NOT_CERTAINLY_SET = (
+    "false && git=1",
+    '[ -n "$z" ] && git=1',
+    'if [ -n "$z" ]; then git=1; fi',
+    'case "$z" in y) git=1 ;; esac',
+    "local git=1",
+    "f() { local git=1; }; f",
+    "f() { declare git=1; }; f",
+    "f() { typeset git=1; }; f",
+    "for git in; do :; done",
+    "read git < /dev/null",
+    "( git=1 )",
+    "git=1 true",
+    "git=1; unset -v git",
+)
 # Each spelling of unset's options that removes a function: -f, with any -n beside it, in one word or apart, with
 # -- before the names or not.
 UNSET_FUNCTION_OPTIONS = tuple(
@@ -2803,6 +2822,10 @@ class ContractTests(GuardTestCase):
             "git() { :; }; unset other git; git switch -c x",
             "declare -n git=other; git() { :; }; unset git; git switch -c x",
             "o=-fn; git() { :; }; unset $o git; git switch -c x",
+            # A bare unset removes the function wherever no variable by its name is set, which no path settles.
+            *(f"git() {{ :; }}; {before}; unset git; git switch -c x" for before in UNSET_NOT_CERTAINLY_SET),
+            # The guard does not settle a variable as set on every path, so the function may be gone after it.
+            "git=1; git() { :; }; unset git; git switch -c x",
             # exec's -a takes the next word in a bundle too, so git is the program it runs.
             "exec -ca name git switch -c x",
             "exec -la name git switch -c x",
@@ -2828,8 +2851,7 @@ class ContractTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual([], reading.unread)
                 self.assertEqual(["status"], [call.subcommand for call in reading.calls])
-        # -f with -v, or an option Bash does not know, unsets nothing; -v and -n leave the function, as does a bare
-        # unset of a name a variable is set by.
+        # -f with -v, or an option Bash does not know, unsets nothing; -v and -n leave the function.
         for command in (
             "git() { :; }; unset -fv git; git switch -c x",
             "git() { :; }; unset -vf git; git switch -c x",
@@ -2839,7 +2861,6 @@ class ContractTests(GuardTestCase):
             "git() { :; }; unset -v git; git switch -c x",
             "git() { :; }; unset -nv git; git switch -c x",
             "git() { :; }; unset -n git; git switch -c x",
-            "git=1; git() { :; }; unset git; git switch -c x",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.hub))

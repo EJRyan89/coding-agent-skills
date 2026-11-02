@@ -1950,7 +1950,10 @@ def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shel
     if not flags <= set("fnv") or {"f", "v"} <= flags:
         return certain(shell)
     functions, references = "f" in flags, "n" in flags and "f" not in flags
-    # Without -f, -v, or -n, a name no variable is set by unsets the function by it, as POSIX says.
+    # Without -f, -v, or -n, a name no variable is set by unsets the function by it, as POSIX says. Whether one is
+    # set on every path Bash may take is more than the guard settles: a variable one branch assigns, a local one, one
+    # a function declared, or one Bash sets itself, such as BASH, the guard holds or not as it may. So the function
+    # may be gone, and keeps every body beside none.
     either = not flags
     for word in [*operands, *([None] if unsettled else [])]:
         if word is None:
@@ -1965,18 +1968,9 @@ def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shel
             shell.exported.discard(word)
         else:
             if either:
-                unset_function_unless_variable(shell, word)
+                may_unset_function(shell, word)
             shell.unset(word)
     return certain(shell)
-
-
-def unset_function_unless_variable(shell: Shell, name: str) -> None:
-    """The function a bare unset NAME removes, where no variable the name reaches is set. Bash sets variables of its
-    own that the guard does not hold, such as BASH, so only a variable the guard holds keeps the function; otherwise
-    the function may be gone, and keeps its bodies beside none."""
-    target = None if shell.opaque else shell.target(name)
-    if target is None or target not in shell.variables:
-        may_unset_function(shell, name)
 
 
 def may_unset_function(shell: Shell, name: str) -> None:

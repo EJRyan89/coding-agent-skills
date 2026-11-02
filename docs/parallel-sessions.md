@@ -370,8 +370,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   the paths give it, and no function where one leaves it undefined, and a call to it, a nested `bash` it is exported
   to included, is read once with each, as the builtin or program its name names where it has none. `unset` removes a
   function with `-f` in any bundle or word, `-n` beside it included, as in `unset -fn`, and a bare `unset NAME`
-  removes the function by the name unless the guard holds a variable by it, which Bash may set itself, so the
-  function there keeps its bodies beside none; `-f` with `-v`, or an option Bash does not know, removes nothing, and
+  removes the function by the name where no variable by it is set, which the guard does not settle for every path
+  Bash may take, so after it the function keeps its bodies beside none; `-f` with `-v`, or an option Bash does not
+  know, removes nothing, and
   an option word the text does not settle may be any of them, which the guard cannot read. A directory
   change whose target is not a directory fails and leaves the shell where it was, so it is unknown after it too,
   except along `&&`, which goes on only when it succeeded. The guard reads a loop's or script block's body twice, so
