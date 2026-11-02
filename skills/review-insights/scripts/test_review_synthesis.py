@@ -1014,6 +1014,16 @@ class StageTests(unittest.TestCase):
                 rs.previous_period(set_root, date(2026, 1, 1), load)
             self.assertEqual(str(path), raised.exception.filename)
 
+    def test_a_set_root_that_does_not_exist_has_no_previous_period(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        set_root = Path(temporary.name) / "never-created"
+
+        def load(path: Path) -> dict[str, Any]:
+            self.fail(f"read {path} under a set root that does not exist")
+
+        self.assertIsNone(rs.previous_period(set_root, date(2026, 1, 1), load))
+
     def test_a_context_larger_than_synthesize_reads_is_never_written(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
