@@ -15,6 +15,7 @@ from typing import TypedDict
 
 import device_names
 import executable_locator
+import file_presence
 import job_tree
 import link_probe
 import path_keys
@@ -439,7 +440,8 @@ def find_bash() -> str | None:
 
 
 def _bash_beside_git() -> str | None:
-    """Locate the Bash shipped with the git the locator finds, as Scoop and per-user Git installs place it."""
+    """Locate the Bash shipped with the git the locator finds, as Scoop and per-user Git installs place it. Something
+    other than a file there is no Bash, and a path whose metadata cannot be read raises its OSError."""
     git = find_executable("git")
     if git is None:
         return None
@@ -451,7 +453,11 @@ def _bash_beside_git() -> str | None:
     if len(parents) < 3:
         return None
     candidate = parents[2] / "bin" / "bash.exe"
-    return str(candidate) if candidate.is_file() else None
+    try:
+        found = file_presence.is_present(candidate)
+    except file_presence.NotAFile:
+        return None
+    return str(candidate) if found else None
 
 
 def find_powershell() -> str | None:
