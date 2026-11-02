@@ -483,6 +483,12 @@ The hook sees the command text. It does not see:
 - a variable an arithmetic expression assigns, in `(( ))`, `let`, or an arithmetic `for`, which holds a number,
   and a builtin `enable -f` loads from a shared object;
 - a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
+- an assignment word after a command's name under `set -k`, which Bash puts in the command's environment;
+- in POSIX mode, as under `set -o posix`, `bash --posix`, or `sh`, an assignment before a special builtin such as `:`
+  or `eval`, which Bash keeps in the shell after the builtin ends;
+- the last command of a pipeline under `shopt -s lastpipe`, which Bash runs in the shell itself, so a `cd` there moves
+  it;
+- a `cd` to a name that is no directory under `shopt -s cdable_vars`, which Bash takes as a variable holding one;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
 - text run as commands through an object of PowerShell's engine the text does not type, such as one a variable
