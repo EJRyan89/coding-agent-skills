@@ -73,7 +73,7 @@ from dotnet_solution import (
     solution_projects,
 )
 from executable_locator import find_executable
-from file_presence import NotAFile, is_present
+from file_presence import ABSENT, NotAFile, is_present
 from flat_text import fact_line, flat_text
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
 from folders_up import folders_up
@@ -342,10 +342,13 @@ def still_there(root: Path, name: str) -> bool:
 
 def listed_files(folder: Path, wanted: Callable[[str], bool]) -> list[Path]:
     """The files directly in `folder` whose names `wanted` accepts, sorted: a folder or anything else by such a name
-    is none. Raises Failed for a folder it cannot list, or such an entry it cannot examine, which could be one; it
-    lists with iterdir, which raises there, where glob matches nothing."""
+    is none, and so is every file of a folder that is not there. Raises Failed for a folder it cannot list, or such an
+    entry it cannot examine, which could be one; it lists with iterdir, which raises there, where glob matches nothing.
+    """
     try:
         entries = sorted(folder.iterdir())
+    except ABSENT:
+        return []
     except OSError as error:
         raise Failed(f"{folder} cannot be listed: {error}") from None
     found = []
