@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+import file_presence
 
 from . import manifest, platform_support, source
 from .arguments import VERIFY_COMMAND_LINE
@@ -175,19 +176,37 @@ def warn_ignored_home(home: Path) -> None:
 
 def warn_copilot(paths: Paths, adapters: list[str]) -> None:
     """Warn on stderr when Copilot CLI will not use the adapters: COPILOT_HOME moves its personal skills elsewhere, or a
-    same-named personal skill takes precedence."""
+    same-named personal skill takes precedence. A personal skill's path whose stat fails is warned of with its reason,
+    never read as no skill there."""
     if adapters and not paths.copilot_reads_adapters and paths.copilot_home is not None:
         print("", file=sys.stderr)
         note = copilot_home_note(paths.copilot_home, paths.adapter_dest_dir, paths.default_copilot_dir)
         print(paragraph(f"WARNING: {note}"), file=sys.stderr)
-    shadowed = [name for name in adapters if os.path.lexists(paths.copilot_skills_dir / name)]
-    if not shadowed:
+    shadowed: list[str] = []
+    unreadable: list[str] = []
+    for name in adapters:
+        path = paths.copilot_skills_dir / name
+        try:
+            if file_presence.is_occupied(path):
+                shadowed.append(f"  - {name} ({platform_support.normalize(path)})")
+        except OSError as exc:
+            unreadable.append(f"  - {name} ({platform_support.normalize(path)}: {exc.strerror or exc})")
+    if not shadowed and not unreadable:
         return
     skills_dir = platform_support.normalize(paths.copilot_skills_dir)
     print("", file=sys.stderr)
-    print("WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:", file=sys.stderr)
-    for name in shadowed:
-        print(f"  - {name} ({platform_support.normalize(paths.copilot_skills_dir / name)})", file=sys.stderr)
+    if shadowed:
+        print(
+            "WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:",
+            file=sys.stderr,
+        )
+        print(*shadowed, sep="\n", file=sys.stderr)
+    if unreadable:
+        print(
+            "WARNING: Could not tell whether GitHub Copilot personal skills shadow generated runtime adapters:",
+            file=sys.stderr,
+        )
+        print(*unreadable, sep="\n", file=sys.stderr)
     print(
         f"The deployer will not modify {skills_dir}. Resolve these paths manually, then check "
         f"which copy Copilot uses with '{VERIFY_COMMAND_LINE}'.",

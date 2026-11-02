@@ -21,6 +21,7 @@ import link_probe
 import path_keys
 import process_identity
 from bounded_process import ProcessTree, run_bounded, without_repository_variables
+from flat_text import flat_text
 from job_tree import JobRefused
 
 from .errors import DeployError, see_recovery
@@ -339,9 +340,10 @@ def refuse_existing_destination(destination: Path) -> None:
 
     Windows' rename refuses an existing destination itself, atomically, so nothing is checked there. Elsewhere any
     existing destination, a broken link included, is refused before the rename, which holds against everything but a
-    destination created between the check and the rename.
+    destination created between the check and the rename. A destination whose stat fails raises that OSError, so the
+    rename never replaces what it could not see.
     """
-    if RENAME_REPLACES and os.path.lexists(destination):
+    if RENAME_REPLACES and file_presence.is_occupied(destination):
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), os.fspath(destination))
 
 
@@ -441,13 +443,20 @@ def find_bash() -> str | None:
 
 def _bash_beside_git() -> str | None:
     """Locate the Bash shipped with the git the locator finds, as Scoop and per-user Git installs place it. Something
-    other than a file there is no Bash, and a path whose metadata cannot be read raises its OSError."""
+    other than a file there is no Bash, and a path whose metadata cannot be read raises its OSError. A git that cannot
+    name its exec path is refused with its reason, never read as no Bash beside it; only no git at all is none."""
     git = find_executable("git")
     if git is None:
         return None
-    result = run_tool([git, "--exec-path"])
+    # stderr apart, so a warning git prints is never read as the path, and a failure's reason is git's own.
+    result = run_tool([git, "--exec-path"], separate_errors=True)
     if result.returncode != 0:
-        return None
+        reason = flat_text(result.errors) or "it printed no reason"
+        raise DeployError(
+            f"ERROR: Could not find the Bash beside {normalize(git)}: git --exec-path failed with exit status "
+            f"{result.returncode}: {reason}",
+            "Put right what Git reports, or set GIT_BASH to the absolute path of Git Bash, then retry.",
+        )
     # Git for Windows reports <root>/mingw64/libexec/git-core; its Bash is <root>/bin/bash.exe.
     parents = Path(result.output.strip()).parents
     if len(parents) < 3:

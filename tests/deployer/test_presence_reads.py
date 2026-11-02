@@ -16,12 +16,25 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import DeployerTestCase, backup_entry, forward, install_entry, journal_line
+from harness import FAILS_PARTWAY, SOURCE_ID, DeployerTestCase, backup_entry, forward, install_entry, journal_line
 
-from deployer import hashing, journal, platform_support, source, source_commit, source_ref
+from deployer import (
+    fsops,
+    hashing,
+    journal,
+    paths,
+    pipeline,
+    platform_support,
+    report,
+    source,
+    source_commit,
+    source_ref,
+    verify,
+)
 from deployer.errors import DeployError
 from deployer.kinds import AGENT_KIND, SKILL
-from deployer.names import BACKUP_SUFFIX
+from deployer.names import BACKUP_SUFFIX, transient_name
+from deployer.render import CODEX_METADATA
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -31,22 +44,22 @@ def denied(path: Path) -> PermissionError:
 
 
 @contextlib.contextmanager
-def stat_failing_at(path: Path) -> Iterator[None]:
-    """A stat of one path that fails, as a denied one does: Path.stat raises PermissionError, through links or not,
-    and each presence predicate answers False for it, as every one does for a failed stat from Python 3.14 on, so a
-    reader that still asks one reads the path as absent. Every other path is answered as it is."""
+def stat_failing_at(*failing: Path) -> Iterator[None]:
+    """A stat of each given path that fails, as a denied one does: Path.stat raises PermissionError, through links or
+    not, and each presence predicate answers False for it, as every one does for a failed stat from Python 3.14 on, so
+    a reader that still asks one reads the path as absent. Every other path is answered as it is."""
     real_stat = Path.stat
 
     def stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-        if self == path:
-            raise denied(path)
+        if self in failing:
+            raise denied(self)
         return real_stat(self, follow_symlinks=follow_symlinks)
 
     def method(real: Callable[..., bool]) -> Callable[..., bool]:
-        return lambda self, *rest, **options: False if self == path else real(self, *rest, **options)
+        return lambda self, *rest, **options: False if self in failing else real(self, *rest, **options)
 
     def function(real: Callable[..., bool]) -> Callable[..., bool]:
-        return lambda name, *rest: False if Path(name) == path else real(name, *rest)
+        return lambda name, *rest: False if Path(name) in failing else real(name, *rest)
 
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(Path, "stat", autospec=True, side_effect=stat))
@@ -369,3 +382,143 @@ class PlanPresenceTests(DeployerTestCase):
         with contextlib.redirect_stderr(io.StringIO()) as printed, contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(journal.recover_incomplete(self.paths))
         self.assertIn("Cannot list the staging runs", printed.getvalue())
+
+
+class DeployerPresenceTests(DeployerTestCase):
+    """The deployer's other readers of whether a path is there: the source's skills, fsops' deletion and moves, the
+    canary home's marker, verify's user-only markers, the Copilot shadow warning, the checkout a source records, and
+    the backups a committed run keeps. A stat that fails is refused or named, and nothing is deleted, moved over,
+    written over, or left unrecorded on a reading of absence."""
+
+    def readers(self) -> list[tuple[str, Path, Callable[[], object]]]:
+        """Each reader, the path whose stat the row fails, and the call that reads it, after making what it reads."""
+        doomed = self.root / "doomed"
+        taken = self.root / "taken"
+        marker = self.root / "adapters" / "alpha" / CODEX_METADATA
+        canary = self.root / "canary"
+        marker.parent.mkdir(parents=True)
+        canary.mkdir()
+        for path in (doomed, taken, marker, canary / paths.CANARY_MARKER):
+            path.write_text("kept", encoding="utf-8")
+
+        def refuse_existing() -> None:
+            with mock.patch.object(platform_support, "RENAME_REPLACES", True):
+                platform_support.refuse_existing_destination(taken)
+
+        return [
+            ("fsops.remove", doomed, lambda: fsops.remove(doomed)),
+            ("platform_support.refuse_existing_destination", taken, refuse_existing),
+            ("verify.user_only", marker, lambda: verify.user_only(["alpha"], self.root / "adapters")),
+            ("paths.claim_canary_home", canary / paths.CANARY_MARKER, lambda: paths.claim_canary_home(canary)),
+        ]
+
+    def test_a_path_whose_stat_fails_is_never_deleted_moved_over_or_written_over(self) -> None:
+        for name, path, read in self.readers():
+            with self.subTest(reader=name):
+                with stat_failing_at(path), self.assertRaises(Exception) as raised:
+                    read()
+                failure = raised.exception
+                if isinstance(failure, DeployError):
+                    self.assertEqual(
+                        f"ERROR: Could not read the --canary-home marker: {forward(path)}: Access is denied",
+                        failure.lines[0],
+                    )
+                else:
+                    self.assertIsInstance(failure, PermissionError)
+                    self.assertEqual(str(path), cast(PermissionError, failure).filename)
+                self.assertEqual("kept", path.read_text(encoding="utf-8"))
+
+    def test_a_missing_path_is_still_nothing_there(self) -> None:
+        missing = self.root / "missing"
+        fsops.remove(missing)
+        with mock.patch.object(platform_support, "RENAME_REPLACES", True):
+            platform_support.refuse_existing_destination(missing)
+        self.assertEqual([], verify.user_only(["alpha"], self.root / "adapters"))
+        canary = self.root / "canary"
+        canary.mkdir()
+        paths.claim_canary_home(canary)
+        self.assertEqual(paths.CANARY_MARKER_TEXT, (canary / paths.CANARY_MARKER).read_bytes())
+
+    def deployed(self) -> None:
+        self.make_source_json()
+        for name in ("alpha", "beta"):
+            self.make_skill(name, name.title())
+        self.make_config()
+        self.deploy_ok("--all")
+
+    def test_a_skill_whose_files_cannot_be_stat_ed_is_refused_never_dropped_from_the_source(self) -> None:
+        # Were both passed over, beta would leave the source unnoticed, and the deployment would remove it.
+        self.deployed()
+        skill_md = self.source / "skills" / "beta" / "SKILL.md"
+        metadata = self.source / "deploy-meta" / "beta.json"
+        for failing in ((skill_md,), (skill_md, metadata)):
+            with self.subTest(failing=[path.name for path in failing]):
+                with stat_failing_at(*failing):
+                    result = self.deploy_fails("--all", pattern="Could not read the skill source")
+                self.assertIn(
+                    f"ERROR: Could not read the skill source: {forward(skill_md)}: Access is denied\n", result.output
+                )
+                self.assertTrue((self.skills_dir / "beta" / "SKILL.md").is_file())
+
+    def test_metadata_whose_stat_fails_is_refused_not_passed_over(self) -> None:
+        self.deployed()
+        orphan = self.source / "deploy-meta" / "gamma.json"
+        orphan.write_text("{}", encoding="utf-8")
+        self.deploy_fails("--all", pattern=r"deploy-meta/gamma\.json has no matching skill directory")
+        with stat_failing_at(orphan):
+            result = self.deploy_fails("--all", pattern="Could not read the skill source")
+        self.assertIn(f"ERROR: Could not read the skill source: {forward(orphan)}: Access is denied\n", result.output)
+
+    def test_a_copilot_personal_skill_whose_stat_fails_is_warned_of_not_read_as_no_shadow(self) -> None:
+        personal = self.paths.copilot_skills_dir
+        (personal / "alpha").mkdir(parents=True)
+        (personal / "beta").mkdir()
+        with stat_failing_at(personal / "alpha"), contextlib.redirect_stderr(io.StringIO()) as warned:
+            report.warn_copilot(self.paths, ["alpha", "beta", "gamma"])
+        self.assertEqual(
+            [
+                "",
+                "WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:",
+                f"  - beta ({forward(personal / 'beta')})",
+                "WARNING: Could not tell whether GitHub Copilot personal skills shadow generated runtime adapters:",
+                f"  - alpha ({forward(personal / 'alpha')}: Access is denied)",
+            ],
+            warned.getvalue().splitlines()[:5],
+        )
+
+    def test_the_checkout_a_source_was_deployed_from_is_named_unreadable_not_gone(self) -> None:
+        self.deployed()
+        other = self.root / "other checkout"
+        other.mkdir()
+        data = self.manifest()
+        data["sources"][SOURCE_ID]["source_dir"] = forward(other)
+        self.write_manifest(data)
+        with stat_failing_at(other):
+            result = self.deploy_fails("--all", pattern="not from this checkout")
+        self.assertIn(
+            f"ERROR: Source '{SOURCE_ID}' is deployed from {forward(other)}, which could not be read (Access is "
+            f"denied), not from this checkout, {forward(self.source)}.\n",
+            result.output,
+        )
+        other.rmdir()
+        self.deploy_fails("--all", pattern="which no longer exists, not from this checkout")
+
+    def test_a_kept_backup_whose_stat_fails_after_the_commit_fails_the_run_rather_than_going_unrecorded(self) -> None:
+        # Read as gone, the previous copy would stay beside its item with no record, and the run would report success.
+        self.deployed()
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "# user modification\n")
+        self.make_skill("alpha", "Alpha v2")
+        transient = self.skills_dir / transient_name("alpha")
+        real_commit = pipeline._commit_manifest
+        with contextlib.ExitStack() as stack:
+
+            def commit(*arguments: Any) -> None:
+                real_commit(*arguments)
+                stack.enter_context(stat_failing_at(transient))
+
+            stack.enter_context(mock.patch.object(pipeline, "_commit_manifest", side_effect=commit))
+            result = self.deploy_fails(
+                "--all", "--force", pattern="Could not finish the deployment", changes_home=FAILS_PARTWAY
+            )
+        self.assertIn(f"{forward(transient)}: Access is denied", result.output)
+        self.assertIn("user modification", (transient / "SKILL.md").read_text(encoding="utf-8"))

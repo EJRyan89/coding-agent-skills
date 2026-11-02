@@ -10,6 +10,8 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
+import file_presence
+
 from . import discovery, manifest, platform_support, tools
 from .arguments import PROG, VERIFY_COMMAND, parse_command
 from .discovery import Listed, Listing, ListingError, Refused
@@ -41,6 +43,9 @@ FAILED_FOR = "Verification failed for "
 LISTING_FAILED = "Cannot list its skills: "
 CATALOG_FAILED = (
     f"Listed its skills, but cannot read which ones it offers the model (codex {' '.join(discovery.CODEX_CATALOG)}): "
+)
+METADATA_FAILED = (
+    f"Listed its skills, but cannot read which adapters only the user starts, from their {CODEX_METADATA}: "
 )
 
 
@@ -94,8 +99,16 @@ def runtime_lines(
 
 def user_only(names: list[str], adapters: Path) -> list[str]:
     """The adapters whose agents/openai.yaml, which the deployer writes only for a skill the user alone starts, keeps
-    Codex from offering the skill to the model."""
-    return [name for name in names if (adapters / name / CODEX_METADATA).is_file()]
+    Codex from offering the skill to the model. Something other than a file there is no such file, and a stat that
+    fails raises its OSError, never reading the adapter as one the model may start."""
+    hidden: list[str] = []
+    for name in names:
+        try:
+            if file_presence.is_present(adapters / name / CODEX_METADATA):
+                hidden.append(name)
+        except file_presence.NotAFile:
+            continue
+    return hidden
 
 
 def catalogued(lines: list[ReportLine], hidden: list[str], catalog: Listing, adapters: Path) -> list[ReportLine]:
@@ -143,7 +156,12 @@ def runtime_report(
         catalog = discovery.codex_catalog(executable, cwd, environment)
     except ListingError as exc:
         return f"{CATALOG_FAILED}{exc}"
-    return catalogued(lines, user_only(names, adapters), catalog, adapters)
+    try:
+        hidden = user_only(names, adapters)
+    except OSError as exc:
+        where = platform_support.normalize(exc.filename) if isinstance(exc.filename, str) else exc.filename
+        return f"{METADATA_FAILED}{where}: {exc.strerror or exc}"
+    return catalogued(lines, hidden, catalog, adapters)
 
 
 def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | None = None) -> int:

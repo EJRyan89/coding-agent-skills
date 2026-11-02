@@ -9,12 +9,13 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import functools
-import os
 import secrets
 import sys
 import time
 from pathlib import Path
 from typing import TextIO, assert_never
+
+import file_presence
 
 from . import (
     config,
@@ -149,7 +150,9 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
         root = journal.entry_root(entry)
         item = entry["item"]
         transient = journal.root_directory(context.paths, root) / transient_name(item)
-        if os.path.lexists(transient):
+        # A transient backup whose stat fails raises, as backup_unchanged's read of it does, so recovery finishes the
+        # run, rather than its copy being left beside its item with no record.
+        if file_presence.is_occupied(transient):
             # After the commit nothing refuses: a copy that cannot be kept under .backups stays beside its item.
             preserve = functools.partial(record.preserve, root, item)
             kept_at = journal.keep_backup(context.paths, run_id, entry, preserve)
@@ -343,7 +346,12 @@ def _reject_other_checkout(paths: Paths, source_id: str, take_over: bool) -> Non
         return
     current = platform_support.normalize(paths.source_dir)
     if not take_over:
-        gone = "" if Path(recorded).is_dir() else ", which no longer exists"
+        try:
+            gone = (
+                "" if file_presence.is_directory(Path(recorded), other_is_absent=True) else ", which no longer exists"
+            )
+        except OSError as exc:
+            gone = f", which could not be read ({exc.strerror or exc})"
         raise DeployError(
             f"ERROR: Source '{source_id}' is deployed from {recorded}{gone}, not from this checkout, {current}.",
             f"Deploy from {recorded}; or, if this checkout replaces it, rerun with {TAKE_OVER_SOURCE} to record this "
