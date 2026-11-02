@@ -5444,15 +5444,32 @@ class OwnershipFindingTests(unittest.TestCase):
 
 @contextlib.contextmanager
 def stat_denied(target: Path) -> Iterator[None]:
-    """Path.stat refuses `target` alone, as a file system does a path the audit may not examine."""
+    """Path.stat refuses `target` alone, as a file system does a path the audit may not examine, and so do
+    Path.exists, is_file, and is_dir, which raise that error before Python 3.14, so every Python the suite runs on
+    meets a predicate left on the path as the oldest supported one does."""
     real = Path.stat
 
-    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+    def refuse(path: Path) -> None:
         if path == target:
             raise PermissionError(errno.EACCES, "Access is denied", str(path))
+
+    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        refuse(path)
         return real(path, *args, **kwargs)
 
-    with mock.patch.object(Path, "stat", stat):
+    predicates = {name: getattr(Path, name) for name in ("exists", "is_file", "is_dir")}
+
+    def predicate(name: str) -> Callable[..., bool]:
+        def answer(path: Path, *args: Any, **kwargs: Any) -> bool:
+            refuse(path)
+            return bool(predicates[name](path, *args, **kwargs))
+
+        return answer
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", stat))
+        for name in predicates:
+            stack.enter_context(mock.patch.object(Path, name, predicate(name)))
         yield
 
 

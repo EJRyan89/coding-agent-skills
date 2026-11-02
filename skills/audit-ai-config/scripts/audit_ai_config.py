@@ -222,6 +222,26 @@ def _refuse_outside_link(root: Path, path: Path) -> None:
         )
 
 
+def found_file(path: Path) -> bool:
+    """Whether a regular file is at `path`, for a check that only names or counts what it finds. One whose stat fails,
+    or something else in its place, is not found here: the inventory, or the check that reads the file, reports it as
+    an ERROR, so the audit never passes by it, and Path.is_file, which raises the stat's error before Python 3.14 and
+    answers False from it, is not asked."""
+    try:
+        return is_present(path)
+    except OSError:
+        return False
+
+
+def found_folder(path: Path) -> bool:
+    """Whether a folder is at `path`, for a check that only names or counts what it finds, as found_file answers for a
+    file: the inventory or check_copilot_configuration reports a folder that cannot be examined as an ERROR."""
+    try:
+        return is_directory(path)
+    except OSError:
+        return False
+
+
 def read_text_or_none(root: Path, path: Path) -> str | None:
     """The file's text, or None when it cannot be read or decoded; the caller has reported that, or ignores it."""
     try:
@@ -549,7 +569,7 @@ def _fixed_files(root: Path, rel_paths: list[str], found: str) -> list[Finding]:
         link = outside_link(root, root / rel_path)
         if link is not None:
             findings.append(outside_link_finding(root, link))
-        elif (root / rel_path).is_file():
+        elif found_file(root / rel_path):
             findings.append(_inventory_finding(rel_path, found.format(rel_path)))
     return findings
 
@@ -585,7 +605,7 @@ def _inventory_skill_directories(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for skill_dir in (".claude/skills", ".agents/skills", ".github/skills"):
         d = root / skill_dir
-        if d.is_dir():
+        if found_folder(d):
             listing = skill_files(root, d)
             skills = [p.parent.name for p in listing.paths]
             if skills:
@@ -598,7 +618,7 @@ def _inventory_agent_directories(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for agent_dir in (".github/agents", ".claude/agents"):
         d = root / agent_dir
-        if d.is_dir():
+        if found_folder(d):
             try:
                 listing = list_directory(root, d)
             except OSError:
@@ -1913,9 +1933,9 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
     agents_dir = root / ".agents/skills"
     claude_dir = root / ".claude/skills"
     orphan_shims: set[str] = set()
-    if agents_dir.is_dir():
+    if found_folder(agents_dir):
         canonical_names = set()
-        if claude_dir.is_dir():  # the inventory reports a link either skill listing skips
+        if found_folder(claude_dir):  # the inventory reports a link either skill listing skips
             canonical_names = {p.parent.name for p in skill_files(root, claude_dir).paths}
         for shim in skill_files(root, agents_dir).paths:
             if shim.parent.name not in canonical_names:
@@ -1937,7 +1957,7 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
         candidates = [
             root / pattern for pattern in MANIFEST_ALLOWED_PATHS if "*" not in pattern and not pattern.endswith(".json")
         ]
-        if agents_dir.is_dir():
+        if found_folder(agents_dir):
             candidates.extend(skill_files(root, agents_dir).paths)
         for path in candidates:
             rel = path.relative_to(root).as_posix()
@@ -2301,7 +2321,7 @@ class InstructionSources:
 
 
 def _instruction_sources(root: Path) -> InstructionSources:
-    agents_md = (root / "AGENTS.md").is_file()
+    agents_md = found_file(root / "AGENTS.md")
     agents_redirects = False
     if agents_md:
         with contextlib.suppress(OSError, UnicodeError):
@@ -2309,15 +2329,16 @@ def _instruction_sources(root: Path) -> InstructionSources:
     instructions = root / ".github/instructions"
     rules = root / CLAUDE_RULES
     return InstructionSources(
-        claude_md=(root / "CLAUDE.md").is_file(),
-        dot_claude_md=(root / ".claude/CLAUDE.md").is_file(),
+        claude_md=found_file(root / "CLAUDE.md"),
+        dot_claude_md=found_file(root / ".claude/CLAUDE.md"),
         agents_md=agents_md,
         agents_redirects=agents_redirects,
-        copilot_instructions=(root / ".github/copilot-instructions.md").is_file(),
-        gemini_md=(root / "GEMINI.md").is_file(),
+        copilot_instructions=found_file(root / ".github/copilot-instructions.md"),
+        gemini_md=found_file(root / "GEMINI.md"),
         # The inventory reports a link this walk skips.
-        path_instructions=instructions.is_dir() and bool(walk_files(root, instructions, _is_path_instructions).paths),
-        claude_rules=rules.is_dir() and bool(walk_files(root, rules, _is_markdown).paths),
+        path_instructions=found_folder(instructions)
+        and bool(walk_files(root, instructions, _is_path_instructions).paths),
+        claude_rules=found_folder(rules) and bool(walk_files(root, rules, _is_markdown).paths),
     )
 
 
@@ -2661,7 +2682,7 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
             "this is advisory context, not a trusted-base or trusted-ref review contract",
         ),
     ]
-    if (root / ".github/skills").is_dir():
+    if found_folder(root / ".github/skills"):
         findings.append(
             Finding(
                 severity="INFO",
