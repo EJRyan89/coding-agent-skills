@@ -21,6 +21,41 @@ A pull request whose change no user meets writes `None` under its `## Upgrade no
 
 Level: minor.
 
+### The deploy-time ShellCheck reads no settings of yours
+
+- Level: patch. The check now judges the rendered content as the repository's rules say; a user's settings no longer narrow it.
+- Contract: none
+- User action: none. A ShellCheck too old to accept `--norc` fails the deployment's check: update ShellCheck.
+- Pull request: #2249
+
+### A stopped cleanup stays reported, and only offered branches are deleted
+
+- Level: patch, a defect fix that brings repo-cleanup back to its documented behavior.
+- Contract: none.
+- User action: none.
+- Pull request: #2250
+
+### A `.backups` that is not a real folder is refused before the deployment changes anything
+
+- Level: patch. The refusal enforces the order `docs/design.md` already promises ("before it changes anything"), and the action it asks is the one it names.
+- Contract: none
+- User action: none, unless a deployment refuses with `Backup path contains a symlink or junction` or `Backup path is not a directory`: replace that `.backups` with a real directory after checking what it holds, and rerun. On `Backup path is not writable`, give your account write access to that `.backups`, or replace it with a directory you own, and rerun. A recovery that warns it kept a previous copy as `<name>.deploying-bak` leaves that copy for you to check and move out of the root.
+- Pull request: #2254
+
+### A file the deployer or a skill cannot stat is unreadable, not absent
+
+- Level: patch, a defect fix: the helper now does what its docstring and `docs/lessons.md` promise.
+- Contract: none
+- User action: none. If `deploy.py` now stops with `ERROR: Could not tell whether the manifest is there`, or the same for the configuration or `source.json`, fix the permissions on the path it names and rerun.
+- Pull request: #2252
+
+### Names on dotnet-format's lines stay on one line
+
+- Level: patch, a fix to what the status lines print for a name holding a line break, a tab, or a control character; no line is added, renamed, or removed.
+- Contract: `dotnet-format` `FILE`, `dotnet-format` `REFUSED`, `dotnet-format` `SAVED`, `dotnet-format` `UNFINISHED`, `dotnet-format` `DIAGNOSTIC`, `dotnet-format` `VIOLATION`, `dotnet-format` `FIXED`, `dotnet-format` `FAILED`, `dotnet-dependencies` `FAILED`. Each value these and the skills' other lines print is flattened: a tab, a control character, or a line break in it prints as a space, so one fact is one line. `dotnet-format` now also names as `SAVED` a fixed file whose name holds a line separator.
+- User action: none.
+- Pull request: #2253
+
 ### check names Git as needed to deploy from a Git checkout
 
 - Level: patch, a defect fix: `check` reported ready to deploy where the deployment refuses.
