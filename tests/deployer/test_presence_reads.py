@@ -369,3 +369,47 @@ class PlanPresenceTests(DeployerTestCase):
         with contextlib.redirect_stderr(io.StringIO()) as printed, contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(journal.recover_incomplete(self.paths))
         self.assertIn("Cannot list the staging runs", printed.getvalue())
+
+
+class RecoveryEdgeTests(DeployerTestCase):
+    """The answers the presence reads give when nothing failed, held so a narrowed or widened test is caught."""
+
+    RUN = "20260101-000000-held"
+
+    def test_a_file_where_a_root_or_a_run_folder_stands_is_no_folder_rather_than_an_error(self) -> None:
+        self.skills_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.skills_dir.write_text("", encoding="utf-8")
+        # No probe is made in a root that is no folder, and the destination is refused by name.
+        journal.check_backup_root(self.paths, "claude", self.RUN)
+        with self.assertRaises(DeployError) as raised:
+            journal.prepare_backup_destination(self.paths, self.RUN, "alpha", "claude")
+        self.assertEqual(
+            f"ERROR: Deployment destination is missing: {forward(self.skills_dir)}", raised.exception.lines[0]
+        )
+        # A stray file among the runs is no run.
+        self.paths.staging_root.mkdir(parents=True)
+        (self.paths.staging_root / "stray.txt").write_text("", encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(journal.recover_incomplete(self.paths))
+        self.assertEqual([], journal.pending_runs(self.paths))
+
+    def test_undoing_an_install_reads_an_earlier_restore_only_when_the_backup_is_gone(self) -> None:
+        self.skills_dir.mkdir(parents=True)
+        target = self.skills_dir / "alpha"
+        target.mkdir()
+        (target / "SKILL.md").write_text("restored", encoding="utf-8")
+        restored = hashing.hash_path(target)
+        installed = cast(Any, install_entry("alpha", "0" * 64))
+        with contextlib.redirect_stderr(io.StringIO()):
+            # The target holds neither the staged copy nor the replaced one, and no backup is beside it.
+            self.assertFalse(journal._undo_install(self.paths, installed, "1" * 64))
+            self.assertTrue(journal._undo_install(self.paths, installed, restored))
+            # The replaced copy is back, but its backup is still beside it: not a finished restore.
+            (self.skills_dir / f"alpha{BACKUP_SUFFIX}").mkdir()
+            self.assertFalse(journal._undo_install(self.paths, installed, restored))
+
+    def test_undoing_a_preserve_with_no_kept_copy_moves_nothing(self) -> None:
+        self.skills_dir.mkdir(parents=True)
+        preserve = cast(Any, {"op": "preserve", "item": "alpha"})
+        self.assertTrue(journal._undo_preserve(self.paths, self.RUN, preserve))
+        self.assertFalse((self.skills_dir / f"alpha{BACKUP_SUFFIX}").exists())
