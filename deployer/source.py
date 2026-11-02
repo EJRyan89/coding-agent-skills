@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import file_presence
 import frontmatter
 import runtime_support
 from agent_skills import MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
@@ -98,21 +99,33 @@ def load_source_id(paths: Paths) -> str:
 def is_linked_worktree(source_dir: Path) -> bool:
     """Whether source_dir is a linked git worktree: its .git file names a git directory holding a commondir file.
 
-    A submodule also has a .git file, but its git directory has no commondir, so it is not mistaken for one.
+    A submodule also has a .git file, but its git directory has no commondir, so it is not mistaken for one. A .git
+    file, or a commondir, that cannot be read is refused, never read as no worktree, since the answer opens a guard.
     """
     marker = source_dir / ".git"
-    if not marker.is_file():
-        return False
     try:
+        if not file_presence.is_present(marker):
+            return False
         text = marker.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
+    except file_presence.NotAFile:
+        # A .git folder is a main checkout's.
         return False
+    except OSError as exc:
+        raise os_error(exc, "read the source's .git file") from exc
+    except UnicodeError:
+        raise DeployError(
+            f"ERROR: Could not read the source's .git file: {platform_support.normalize(marker)}: it is not UTF-8 text"
+        ) from None
     if not text.startswith("gitdir:"):
         return False
     git_dir = Path(text[len("gitdir:") :].strip())
     if not git_dir.is_absolute():
         git_dir = source_dir / git_dir
-    return (git_dir / "commondir").is_file()
+    commondir = git_dir / "commondir"
+    try:
+        return file_presence.is_present(commondir)
+    except OSError as exc:
+        raise os_error(exc, "read the git directory the source's .git file names") from exc
 
 
 def reject_linked_worktree(paths: Paths) -> None:
@@ -390,10 +403,13 @@ def _validate_dependencies(source: Source) -> None:
 def _discover_agents(paths: Paths) -> dict[str, Path]:
     """Claude Code subagent definitions: one `agents/<name>.md` file each, whose frontmatter names it."""
     root = paths.agents_src
-    if not os.path.lexists(root):
-        return {}
-    if not root.is_dir():
-        raise DeployError(f"ERROR: agents is not a directory: {platform_support.normalize(root)}")
+    try:
+        if not file_presence.is_directory(root):
+            return {}
+    except file_presence.NotADirectory:
+        raise DeployError(f"ERROR: agents is not a directory: {platform_support.normalize(root)}") from None
+    except OSError as exc:
+        raise os_error(exc, "read the agents folder") from exc
     _reject_links(root)
     agents: dict[str, Path] = {}
     for entry in sorted(root.iterdir(), key=lambda path: path.name):

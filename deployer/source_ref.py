@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from release_tags import TAGS, last_release
@@ -122,9 +123,16 @@ def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> boo
     The release channel pins each release by its tag's full name, so a pin with a short name, another tag, or a tag a
     later release on the same commit has overtaken is the user's. The last release is the one release_tags names, the
     definition every reader of a release asks. Raises TagsUnreadable with Git's reason when Git cannot read the tags
-    reaching the commit, so no owner is guessed for a pin whose evidence was never produced.
+    reaching the commit, or the checkout's .git when it cannot tell whether one is there, so no owner is guessed for a
+    pin whose evidence was never produced.
     """
-    if ref is None or commit is None or not ref.startswith(TAGS) or not (source_dir / ".git").exists():
+    if ref is None or commit is None or not ref.startswith(TAGS):
+        return False
+    try:
+        checkout = file_presence.is_occupied(source_dir / ".git")
+    except OSError as error:
+        raise TagsUnreadable(flat_text(f"{error.filename}: {error.strerror or error}")) from error
+    if not checkout:
         return False
     try:
         release = last_release(_client(), source_dir, commit)
