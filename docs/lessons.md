@@ -612,7 +612,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A fix that reaches only the reported instance leaves the rest to be found again; the twin sweep before each
   tag searches every fix since the last one again, for the twins its own search missed.
 - **Guard:** `.claude/skills/implement-change/SKILL.md#3-bug-class`,
-  `.claude/skills/audit-repository/SKILL.md#4-confirm-before-filing`
+  `.claude/skills/audit-repository/SKILL.md#4-confirm-before-filing`,
+  `.claude/skills/review-repository/scripts/test_review_repository.py::SiblingSpellingsTests`
 - **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
   and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the **Search for** of the
   pattern above that the defect is an instance of.

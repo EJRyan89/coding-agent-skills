@@ -47,12 +47,13 @@ from console import run_main
 from executable_locator import PYTHON
 from git_client import GitClient
 
-from tools import skill_evals_runs
+from tools import skill_evals_runs, skill_evals_scenarios
 from tools.checkout import checkout_root
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = Path("docs") / "runtime-prompts"
 SCENARIOS = REPOSITORY_ROOT / "tests" / "fixtures" / "skill-evals" / "review-prs"
+REVIEWER_SCENARIOS = REPOSITORY_ROOT / "tests" / "fixtures" / "skill-evals" / "review-repository"
 # The pull request review-prs samples, which its generic reviewer reviews.
 PULL_FIXTURE = SCENARIOS / "clean-change"
 # The design document review-document samples, reviewed whole by the design-review specialist.
@@ -169,6 +170,15 @@ def review_document_prompts(directory: Path) -> dict[str, str]:
     return _prepared_prompts(Path(fixture), directory)
 
 
+def review_repository(directory: Path) -> dict[str, str]:
+    """The sibling-spellings specialist's prompt, which a fix's title routes and which is given the closing issue, from
+    the scenario that plants a fix closing only the reproduced spelling, with the reviewer placed as a run places it."""
+    scenario = skill_evals_scenarios.load_scenario("review-repository", REVIEWER_SCENARIOS / "open-spelling")
+    with skill_evals_scenarios.reviewed_fixture(scenario) as fixture:
+        prompts = _prepared_prompts(fixture, directory)
+    return {"sibling-spellings": prompts["sibling-spellings"]}
+
+
 def review_insights(directory: Path) -> dict[str, str]:
     # The prompt Staged.stage_run writes into a synthesis run, with the throwaway folder as the run.
     prompt = review_synthesis.prompt_text(
@@ -188,6 +198,7 @@ RENDERERS: Renderers = {
     "review-document": review_document_prompts,
     "review-insights": review_insights,
     "review-prs": review_prs,
+    "review-repository": review_repository,
 }
 
 
