@@ -406,7 +406,8 @@ READERS = [
         "json",
         b'{"schema_version": 1, "pulls": []}',
         dashboard_pipeline.read_tracker_record,
-        (PersistenceError, update_pr_dashboard.TrackerError),
+        # A directory in the record's place is file_presence's NotAFile, an OSError the dashboard's FAILED line names.
+        (PersistenceError, update_pr_dashboard.TrackerError, OSError),
         filename="tracker.json",
         accepts={"bom": UTF8_SIG},
     ),

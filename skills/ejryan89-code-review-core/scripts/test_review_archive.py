@@ -7,7 +7,7 @@ import errno
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -149,7 +149,7 @@ class ArchiveTests(unittest.TestCase):
             folder = pull_directory(root, "example/one", 7)
             folder.mkdir(parents=True)
             (folder / "review.json").write_text("{}", encoding="utf-8")
-            readers = {
+            readers: dict[str, tuple[Path, Callable[[], object]]] = {
                 "record_files": (folder.parent, lambda: record_files(root, "example/one")),
                 "list_versions": (folder, lambda: list_versions(folder)),
             }
@@ -165,10 +165,11 @@ class ArchiveTests(unittest.TestCase):
             pulls = pull_directory(other, "example/one", 7).parent
             pulls.parent.mkdir(parents=True)
             pulls.write_text("", encoding="utf-8")
-            for name, read in (
+            stand_ins: tuple[tuple[str, Callable[[], object]], ...] = (
                 ("record_files", lambda: record_files(other, "example/one")),
                 ("list_versions", lambda: list_versions(pulls)),
-            ):
+            )
+            for name, read in stand_ins:
                 with self.subTest(name, file_in_place=True), self.assertRaises(NotADirectory) as refused:
                     read()
                 self.assertEqual(str(pulls), refused.exception.filename)
