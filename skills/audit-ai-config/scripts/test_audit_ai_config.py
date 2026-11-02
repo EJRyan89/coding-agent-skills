@@ -3682,7 +3682,7 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
     },
     "claude_rules_without_markdown": {".claude/rules/notes.txt": "x"},
     "claude_rules_is_a_file": {".claude/rules": "x"},
-    "codex_agents_is_a_file": {".codex/agents": "x"},
+    "codex_agents_is_a_file": {".codex/agents": "x", ".codex/rules/default.rules": "x"},
     "codex_files": {
         ".codex/hooks.json": "{}",
         ".codex/agents/reviewer.toml": "x",
@@ -3781,6 +3781,7 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     ],
     "codex_agents_is_a_file": [
         ("ERROR", "inventory", ".codex/agents", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+        ("INFO", "inventory", ".codex/rules", "Rules found: default.rules"),
     ],
     "codex_files": [
         ("INFO", "inventory", ".codex/hooks.json", "Found .codex/hooks.json"),
@@ -5601,6 +5602,67 @@ class UnexaminedPathTests(unittest.TestCase):
         (self.root / "AGENTS.md").unlink()
         (self.root / "AGENTS.md").mkdir()
         self.assertEqual(("CLAUDE.md", True), audit._codex_choice(self.root, self.root, ["CLAUDE.md"]))
+
+
+class PresenceAnswerTests(unittest.TestCase):
+    """What each check that asks whether a configuration file or folder is there answers, found or not, and that one
+    path it cannot examine leaves the rest of its loop to run."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_found_file_and_found_folder_answer_false_for_a_path_they_cannot_examine(self) -> None:
+        _write_fixture(self.root, {"CLAUDE.md": "x", ".claude/rules/a.md": "x"})
+        file, folder = self.root / "CLAUDE.md", self.root / ".claude/rules"
+        self.assertEqual(
+            (True, True, False, False),
+            (audit.found_file(file), audit.found_folder(folder), audit.found_file(folder), audit.found_folder(file)),
+        )
+        for older in (True, False):
+            with self.subTest(older=older):
+                with stat_denied(file, older=older):
+                    self.assertFalse(audit.found_file(file))
+                with stat_denied(folder, older=older):
+                    self.assertFalse(audit.found_folder(folder))
+
+    def test_the_ci_parity_signal_reads_workflow_files_alone_and_none_in_a_folder_it_cannot_examine(self) -> None:
+        _write_fixture(self.root, {".github/workflows/notes.txt": "run: ai_config --check"})
+        self.assertFalse(audit._has_ci_parity_workflow(self.root))
+        _write_fixture(self.root, {".github/workflows/parity.yaml": "run: ai_config --check"})
+        self.assertTrue(audit._has_ci_parity_workflow(self.root))
+        with stat_denied(self.root / ".github/workflows", older=False):
+            self.assertFalse(audit._has_ci_parity_workflow(self.root))
+
+    def test_an_orphan_candidate_it_cannot_examine_leaves_the_next_one_checked(self) -> None:
+        _setup_conforming_repo(self.root)
+        with stat_denied(self.root / ".github/copilot-instructions.md", older=False):
+            rows = _finding_rows(audit.check_orphans(self.root, {"artifacts": []}))
+        self.assertIn(("WARNING", "orphan", "AGENTS.md", "Generated file is no longer listed in the manifest"), rows)
+        self.assertNotIn(".github/copilot-instructions.md", [row[2] for row in rows])
+
+    def test_the_instruction_sources_name_each_file_and_folder_where_it_is(self) -> None:
+        _write_fixture(self.root, {".claude/CLAUDE.md": "x", ".github/instructions/notes.md": "x"})
+        sources = audit._instruction_sources(self.root)
+        self.assertEqual((False, True, False), (sources.claude_md, sources.dot_claude_md, sources.path_instructions))
+        _write_fixture(self.root, {".github/instructions/a.instructions.md": "x"})
+        self.assertTrue(audit._instruction_sources(self.root).path_instructions)
+
+    def test_the_codex_rules_check_reads_rules_files_alone(self) -> None:
+        _write_fixture(self.root, {".codex/rules/README.md": "Not Starlark (\n"})
+        self.assertEqual([], audit._codex_rules(self.root))
+
+    def test_a_projection_folder_absent_or_unexamined_leaves_the_other_folders_notes(self) -> None:
+        _write_fixture(self.root, {".github/agents/reviewer.md": f"<!-- {OWNERSHIP} -->\n"})
+        note = ("INFO", "limitation", ".github/agents/reviewer.md")
+        self.assertIn(note, [row[:3] for row in _finding_rows(audit.check_limitations(self.root, {}))])
+        (self.root / ".github/skills").mkdir()
+        with stat_denied(self.root / ".github/skills", older=False):
+            rows = _finding_rows(audit.check_limitations(self.root, {}))
+        self.assertIn(note, [row[:3] for row in rows])
 
 
 class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
