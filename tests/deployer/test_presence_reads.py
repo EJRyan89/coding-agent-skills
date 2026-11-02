@@ -16,7 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import FAILS_PARTWAY, SOURCE_ID, DeployerTestCase, backup_entry, forward, install_entry, journal_line
+from harness import SOURCE_ID, DeployerTestCase, backup_entry, forward, install_entry, journal_line
 
 from deployer import (
     fsops,
@@ -531,22 +531,98 @@ class DeployerPresenceTests(DeployerTestCase):
         other.write_text("", encoding="utf-8")
         self.deploy_fails("--all", pattern="which no longer exists, not from this checkout")
 
-    def test_a_kept_backup_whose_stat_fails_after_the_commit_fails_the_run_rather_than_going_unrecorded(self) -> None:
-        # Read as gone, the previous copy would stay beside its item with no record, and the run would report success.
-        self.deployed()
-        self.append(self.skills_dir / "alpha" / "SKILL.md", "# user modification\n")
-        self.make_skill("alpha", "Alpha v2")
+
+class RecoveryEdgeTests(DeployerTestCase):
+    """The answers the presence reads give when nothing failed, held so a narrowed or widened test is caught."""
+
+    RUN = "20260101-000000-held"
+
+    def test_a_file_where_a_root_or_a_run_folder_stands_is_no_folder_rather_than_an_error(self) -> None:
+        self.skills_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.skills_dir.write_text("", encoding="utf-8")
+        # No probe is made in a root that is no folder, and the destination is refused by name.
+        journal.check_backup_root(self.paths, "claude", self.RUN)
+        with self.assertRaises(DeployError) as raised:
+            journal.prepare_backup_destination(self.paths, self.RUN, "alpha", "claude")
+        self.assertEqual(
+            f"ERROR: Deployment destination is missing: {forward(self.skills_dir)}", raised.exception.lines[0]
+        )
+        # A stray file among the runs is no run.
+        self.paths.staging_root.mkdir(parents=True)
+        (self.paths.staging_root / "stray.txt").write_text("", encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(journal.recover_incomplete(self.paths))
+        self.assertEqual([], journal.pending_runs(self.paths))
+
+    def test_undoing_an_install_reads_an_earlier_restore_only_when_the_backup_is_gone(self) -> None:
+        self.skills_dir.mkdir(parents=True)
+        target = self.skills_dir / "alpha"
+        target.mkdir()
+        (target / "SKILL.md").write_text("restored", encoding="utf-8")
+        restored = hashing.hash_path(target)
+        installed = cast(Any, install_entry("alpha", "0" * 64))
+        with contextlib.redirect_stderr(io.StringIO()):
+            # The target holds neither the staged copy nor the replaced one, and no backup is beside it.
+            self.assertFalse(journal._undo_install(self.paths, installed, "1" * 64))
+            self.assertTrue(journal._undo_install(self.paths, installed, restored))
+            # The replaced copy is back, but its backup is still beside it: not a finished restore.
+            (self.skills_dir / f"alpha{BACKUP_SUFFIX}").mkdir()
+            self.assertFalse(journal._undo_install(self.paths, installed, restored))
+
+    def test_undoing_a_preserve_with_no_kept_copy_moves_nothing(self) -> None:
+        self.skills_dir.mkdir(parents=True)
+        preserve = cast(Any, {"op": "preserve", "item": "alpha"})
+        self.assertTrue(journal._undo_preserve(self.paths, self.RUN, preserve))
+        self.assertFalse((self.skills_dir / f"alpha{BACKUP_SUFFIX}").exists())
+
+
+class TransientPresenceTests(DeployerTestCase):
+    """The transient backup beside an item, with its stat failing: before the plan, the deployment is refused; after
+    the commit, the copy is kept with a warning, never deleted or left unreported."""
+
+    def updated(self) -> Path:
+        """Deploy alpha, then change it in the source, so the next deployment replaces it and backs it up."""
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.make_skill("alpha", "Alpha, changed")
+        return self.skills_dir / transient_name("alpha")
+
+    def test_a_stale_backup_it_cannot_stat_refuses_the_plan(self) -> None:
+        transient = self.updated()
+        with stat_failing_at(transient):
+            self.deploy_fails("--all", pattern="Access is denied")
+
+    def test_a_backup_it_cannot_stat_after_the_commit_is_kept_with_a_warning(self) -> None:
+        transient = self.updated()
+        real = pipeline._finalize
+
+        def finalize(*arguments: Any) -> list[tuple[str, str]]:
+            with stat_failing_at(transient):
+                return real(*arguments)
+
+        with mock.patch.object(pipeline, "_finalize", side_effect=finalize):
+            result = self.deploy_ok("--all")
+        kept = list((self.skills_dir / ".backups").glob("*/alpha"))
+        self.assertEqual(1, len(kept), result.output)
+        self.assertNotIn("changed", (kept[0] / "SKILL.md").read_text(encoding="utf-8"))
+        kept_at = kept[0].relative_to(self.skills_dir).as_posix()
+        self.assertIn(
+            "WARNING: Could not tell whether alpha's previous copy changed after this deployment planned it "
+            f"(Access is denied), so it was kept at {kept_at}.",
+            result.stderr,
+        )
+
+    def test_a_committed_backup_is_deleted_kept_or_gone_with_the_reason_a_stat_failed(self) -> None:
+        self.skills_dir.mkdir(parents=True)
         transient = self.skills_dir / transient_name("alpha")
-        real_commit = pipeline._commit_manifest
-        with contextlib.ExitStack() as stack:
-
-            def commit(*arguments: Any) -> None:
-                real_commit(*arguments)
-                stack.enter_context(stat_failing_at(transient))
-
-            stack.enter_context(mock.patch.object(pipeline, "_commit_manifest", side_effect=commit))
-            result = self.deploy_fails(
-                "--all", "--force", pattern="Could not finish the deployment", changes_home=FAILS_PARTWAY
-            )
-        self.assertIn(f"{forward(transient)}: Access is denied", result.output)
-        self.assertIn("user modification", (transient / "SKILL.md").read_text(encoding="utf-8"))
+        kept = cast(Any, backup_entry("alpha", "0" * 64, retain=True, run_id="20260101-000000-done"))
+        unkept = cast(Any, backup_entry("alpha", "0" * 64))
+        self.assertEqual(("gone", ""), journal.backup_disposition(self.paths, kept))
+        self.assertEqual(("delete", ""), journal.backup_disposition(self.paths, unkept))
+        transient.mkdir()
+        self.assertEqual(("keep", ""), journal.backup_disposition(self.paths, kept))
+        # An error with no reason of its own is named by its text.
+        with mock.patch.object(journal, "backup_unchanged", side_effect=OSError("held")):
+            self.assertEqual(("keep", "held"), journal.backup_disposition(self.paths, unkept))

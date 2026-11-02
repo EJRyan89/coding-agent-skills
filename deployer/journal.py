@@ -364,6 +364,18 @@ def backup_unchanged(paths: Paths, entry: BackupEntry) -> bool:
     return _hash_existing(_item_path(paths, entry, BACKUP_SUFFIX)) in (None, entry["backup_hash"])
 
 
+def backup_disposition(paths: Paths, entry: BackupEntry) -> tuple[Literal["delete", "keep", "gone"], str]:
+    """What a committed run's finalization does with an entry's transient backup, with the reason a stat failed or "":
+    delete one the run does not keep while it is unchanged, keep one that is still there, or nothing when it is gone.
+    A copy whose stat fails is kept, never deleted or left unreported."""
+    try:
+        if not entry["retain"] and backup_unchanged(paths, entry):
+            return "delete", ""
+        return ("keep" if file_presence.is_occupied(_item_path(paths, entry, BACKUP_SUFFIX)) else "gone"), ""
+    except OSError as error:
+        return "keep", error.strerror or str(error)
+
+
 def keep_backup(
     paths: Paths, run_id: str, entry: BackupEntry, before_move: Callable[[], None] | None = None
 ) -> str | None:
