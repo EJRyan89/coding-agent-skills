@@ -1987,6 +1987,24 @@ class LegFixtures(unittest.TestCase):
         self.assertIn("killed on Windows by `tests/b.py`, not reached on Linux\n", text)
         self.assertNotIn("mutant not reached", text)
 
+    def test_a_mutant_one_leg_killed_names_the_other_legs_unconfirmed_timeout(self) -> None:
+        folded = Mutant(PATH_MODULE, 7, "name_key(name, folder)", "name_key(name, None)", "source")
+        text = summary(two_legs([Outcome(folded, KILLED, ("tests/a.py",))], [Outcome(folded, TIMED_OUT, ("t",))]))
+        self.assertIn("killed on Linux by `tests/a.py`, timed out unconfirmed on Windows\n", text)
+
+    def test_ci_timeouts_of_two_modules_are_each_named_on_the_first_line(self) -> None:
+        modules = ("tools/a.py", "tools/b.py")
+        selected = Selected(
+            "origin/main", "3.8.0", tuple(SelectedModule(name, 1, (mutant(1, name),), (), False) for name in modules)
+        )
+        outcomes = {name: [Outcome(mutant(1, name), TIMED_OUT, ("t",))] for name in modules}
+        text = summary(joined(selected, [LegRun(LINUX_LEG, 40, 1.0, 1, outcomes, {}, [])]))
+        self.assertIn(
+            "confirms it: 1 of the 1 mutants of `tools/a.py` timed out on Linux; 1 of the 1 mutants of `tools/b.py` "
+            "timed out on Linux. Run",
+            text,
+        )
+
     def test_a_ci_timeout_judges_nothing_until_a_local_run_times_out_on_the_mutant_too(self) -> None:
         folded = Mutant(PATH_MODULE, 7, "name_key(name, folder)", "name_key(name, None)", "source")
         timed_out = Outcome(folded, TIMED_OUT, ("tests/a.py",))
@@ -3507,6 +3525,10 @@ class UnrunFixtures(unittest.TestCase):
         self.assertEqual(["return a * 3", "return a - b"], sorted(self.seen))
         self.assertEqual({"tools/calc.py": [0, 1]}, completed.local.mutants if completed.local else None)
         self.assertEqual(KILLED, completed.outcomes["tools/able.py"][0].status)
+        # The report reads the module the local run passed over from the leg's own outcomes.
+        judged = mutation_gate.judged_outcomes(completed)
+        self.assertEqual([KILLED], [outcome.status for outcome in judged["tools/able.py"]])
+        self.assertEqual([SURVIVED, SURVIVED], [outcome.status for outcome in judged["tools/calc.py"]])
 
     def test_the_unrun_step_writes_the_completed_leg_and_reports_as_the_join_does(self) -> None:
         ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
@@ -3756,6 +3778,22 @@ def test_a_local_run_naming_a_place_that_holds_no_outcome_of_its_own_stops_the_j
 def ci_outcome(status: str) -> Outcome:
     """The CI leg's outcome of READ_MUTANT in the shape a leg writes `status`."""
     return Outcome(READ_MUTANT, status, () if status in (NOT_RUN, NOT_REACHED) else ("t",))
+
+
+def test_a_local_run_naming_two_judged_places_names_each_ci_outcome() -> None:
+    selected = Selected("origin/main", "3.8.0", (SelectedModule(PATH_MODULE, 1, (READ_MUTANT, READ_MUTANT), (), True),))
+    ci = LegRun(WINDOWS_LEG, 40, 1.5, 2, {PATH_MODULE: [ci_outcome(KILLED), ci_outcome(SURVIVED)]}, {}, [])
+    outcome = {"status": KILLED, "suites": ["t"], "tests": []}
+    local = {**LOCAL_RECORD, "mutants": {PATH_MODULE: [0, 1]}, "outcomes": {PATH_MODULE: [outcome, outcome]}}
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "record.json"
+        path.write_text(json.dumps(local_leg_record(local, ci)), encoding="utf-8")
+        with pytest.raises(RecordError) as refused:
+            read_leg(path, selected, WINDOWS_LEG)
+    assert str(refused.value) == (
+        "record.json.local.mutants.tools/paths.py names [0, 1], whose CI outcomes (killed, survived) left no mutant "
+        "without a verdict"
+    )
 
 
 @pytest.mark.parametrize(("status", "unmeasured"), list(itertools.product(LEG_STATUSES, (False, True))))

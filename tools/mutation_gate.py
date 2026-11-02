@@ -2281,7 +2281,8 @@ def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) 
         (
             "unrun",
             "run here the mutants this platform's leg of a CI run left without a verdict, from the run's mutants and "
-            "outcomes in the folder, write the completed outcomes over the leg's, and report as the join does",
+            "outcomes in the folder, at the commit the run tested, write its outcomes beside the leg's in the leg's "
+            "file, and report as the join does",
         ),
     ):
         steps.add_parser(name, help=text).add_argument("folder", type=Path, help="the folder the steps hand on")
