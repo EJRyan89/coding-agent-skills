@@ -1440,7 +1440,8 @@ class JudgementTest(FixtureTestCase):
         self.assertEqual([], gh.writes())
 
     def test_a_validation_check_naming_no_run_ends_the_tick_and_a_red_check_without_one_is_a_defect(self) -> None:
-        # Its run cannot be ordered against the head's other runs, so the listing is malformed, as #2235's review found.
+        # Its run cannot be ordered against the head's other runs, so the listing is malformed: read as run 0, it hid a
+        # newer run and fed the update gate.
         entry = pull(20, state="FAILURE", armed=False)
         for check in entry["statusCheckRollup"]:
             check["detailsUrl"] = "https://github.com/owner/repo/runs/5"
