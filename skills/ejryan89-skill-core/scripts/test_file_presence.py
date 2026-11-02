@@ -56,6 +56,22 @@ class FilePresenceTests(unittest.TestCase):
         self.assertEqual("not a file", raised.exception.strerror)
         self.assertEqual(EISDIR, raised.exception.errno)
 
+    def test_a_caller_choosing_files_among_entries_reads_something_else_as_no_file_and_a_failed_stat_still_raises(
+        self,
+    ) -> None:
+        folder = self.root / "notes.md"
+        folder.mkdir()
+        self.assertFalse(is_present(folder, other_is_absent=True))
+        self.assertFalse(is_present(self.root / "missing.md", other_is_absent=True))
+        (self.root / "file.md").write_text("", encoding="utf-8")
+        self.assertTrue(is_present(self.root / "file.md", other_is_absent=True))
+        with self.assertRaises(NotAFile):
+            is_present(folder, other_is_absent=False)
+        failure = PermissionError(errno.EACCES, "denied")
+        with mock.patch.object(Path, "stat", side_effect=failure), self.assertRaises(OSError) as raised:
+            is_present(folder, other_is_absent=True)
+        self.assertIs(failure, raised.exception)
+
     def test_a_missing_folder_above_the_file_is_absent(self) -> None:
         self.assertFalse(is_present(self.root / "missing" / "settings.json"))
 
