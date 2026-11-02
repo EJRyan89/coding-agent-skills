@@ -34,7 +34,8 @@ jobs:
     name: Windows shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}
     runs-on: windows-latest
     timeout-minutes: 30
-    # The legs read the checkout and nothing else: no step here is given the token, so no suite holds it.
+    # The legs read the checkout and nothing else: no command a step here runs is given the token, so no suite
+    # holds it; the pinned actions take the run's token as the default of their `token` input, as every job's do.
     permissions:
       contents: read
     strategy:
@@ -203,7 +204,7 @@ jobs:
     name: Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # As the Windows legs: the checkout and nothing else, and no step is given the token.
+    # As the Windows legs: the checkout and nothing else, and no command a step runs is given the token.
     permissions:
       contents: read
     strategy:
@@ -343,12 +344,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # The one check that reads GitHub, run alone: it asks gh whether each issue the malformed-input known failures and
-  # pending readers name is open. It is the only job given the run's token, and its one step that runs anything runs
-  # tests/known_failure_issues.py, which loads the query's own modules and none of the policy checks or suites, so the
-  # token reaches that program, the modules it imports, and the pinned actions before it, nothing else. The checkout
-  # names no ref, so on a pull request, the token reaches the code the pull request's merge commit holds at those
-  # paths: a pull request can change the code that holds the token, never what the token may do, which this job's
-  # permissions bound to reading contents and issues.
+  # pending readers name is open. It is the only job whose command is given the run's token, as GH_TOKEN in its one
+  # step that runs anything, tests/known_failure_issues.py, which loads the query's own modules and none of the policy
+  # checks or suites. The token reaches that program, the modules it imports, the Python actions/setup-python
+  # installs, gh, which sends it, and this job's pinned actions, which take it as the default of their `token` input,
+  # the checkout's post step running after the query; nothing else. The checkout takes no input but
+  # persist-credentials, so on a pull request, the token reaches the code the pull request's merge commit holds at
+  # those paths. GitHub reads this workflow from that commit too, so a pull request from a branch of this repository
+  # can change the job itself, its permissions included, which the workflow policy refuses beside this job, not before
+  # it; a fork's pull request is given a read-only token whatever it changes.
   known-failures:
     name: Known-failure issues
     runs-on: ubuntu-latest

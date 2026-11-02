@@ -433,7 +433,8 @@ def workflow_guard_problems(
     TOKEN_JOB_PERMISSIONS, whose keys are TOKEN_JOB_KEYS on a runner GitHub hosts, and whose other steps run no command,
     in a workflow with no defaults and no env but TOKEN_WORKFLOW_ENV's. Every checkout stores no credential. The pinned
     actions that run before the token step in its job, such as actions/setup-python, which puts Python on its PATH,
-    may set its environment, and are trusted at their pins.
+    may set its environment, the checkout's post step runs after it, and every job's pinned actions take the token as
+    the default of their `token` input; they are trusted at their pins.
     """
     try:
         tree = read_workflow(workflow)
@@ -519,30 +520,70 @@ TOKEN_STEPS: dict[str, dict[tuple[str, str], str]] = {
 }
 
 
-# What a token step's job runs when the workflow runs on a pull request and the job's checkout names no `ref`: the
-# pull request's merge commit, so the program the step starts and every module it imports are the pull request's own,
-# and the permissions alone bound what the token may do. docs/design.md's row on what validation may reach and the
-# comment above the job each state it, in these words. A pinned contract value of the 2026-11-01 refinement of that
-# row.
+# What a token step's job runs when the workflow runs on a pull request and the job's checkout takes no input but
+# NO_STORED_CREDENTIAL's: the pull request's merge commit, from which GitHub also reads the workflow, so the program the
+# step starts, every module it imports, and the job itself are the pull request's own, and only a fork's pull request is
+# held to a read-only token. docs/design.md's row on what validation may reach and the comment directly above the job
+# each state both, in these words. Pinned contract values of the 2026-11-01 refinement of that row.
 PULL_REQUEST_CODE_STATEMENT = (
     "on a pull request, the token reaches the code the pull request's merge commit holds at those paths"
+)
+SAME_REPOSITORY_STATEMENT = (
+    "a pull request from a branch of this repository can change the job itself, its permissions included"
+)
+REACH_STATEMENTS = (PULL_REQUEST_CODE_STATEMENT, SAME_REPOSITORY_STATEMENT)
+# What every job's pinned actions do with the run's token, which docs/design.md's row states in these words:
+# actions/checkout and actions/setup-python take it as the default of their `token` input, so "no step is given the
+# token" is true only of the steps that run a command.
+ACTION_INPUT_STATEMENT = "the pinned actions take the run's token as the default of their `token` input"
+# Claims a workflow comment, the row, or the runner's docstring made before the actions' default input was counted,
+# each false while ACTION_INPUT_STATEMENT holds; a claim about a step's command says "command".
+RETIRED_TOKEN_CLAIMS = (
+    "no step here is given the token",
+    "no step is given the token",
+    "hold no token",
+    "the only job given the run's token",
+    "the one job given the run's read-only token",
+)
+# The files besides the workflows that state which job holds the token, which token_claim_problems reads whole.
+TOKEN_CLAIM_FILES = (
+    "tests/run_validation.py",
+    "tests/known_failure_issues.py",
+    "tests/validation/credentials.py",
+    "docs/implementing-changes.md",
+    "CONTRIBUTING.md",
 )
 # The row of docs/design.md that states what the token reaches, found by the words it opens with.
 CREDENTIALS_ROW = "| Development and CI gates need no model and no credentials:"
 
 
+def _job_comment(workflow: str, job: str) -> str:
+    """The comment lines directly above a job's key in the workflow's text, with each `#` and indentation removed,
+    joined by spaces, so a statement wrapped across them reads as one sentence; empty when the job has none."""
+    lines = workflow.splitlines()
+    key = next((index for index, line in enumerate(lines) if line.startswith(" ") and line.strip() == f"{job}:"), None)
+    if key is None:
+        return ""
+    comment: list[str] = []
+    for line in reversed(lines[:key]):
+        if not line.strip().startswith("#"):
+            break
+        comment.insert(0, line.strip().removeprefix("#").strip())
+    return " ".join(comment)
+
+
 def _comment_text(workflow: str) -> str:
-    """Every comment line of a workflow, with its `#` and indentation removed, joined by spaces, so a statement a
-    comment wraps across lines reads as one sentence."""
+    """Every comment line of a workflow, each `#` and indentation removed, joined by spaces."""
     lines = (line.strip() for line in workflow.splitlines())
     return " ".join(line.removeprefix("#").strip() for line in lines if line.startswith("#"))
 
 
 def token_reach_problems(workflow: str, token_steps: Mapping[tuple[str, str], str], design: str) -> list[str]:
     """Report a token step, of a workflow that runs on pull requests, whose job runs code the pull request can change
-    without docs/design.md's CREDENTIALS_ROW and the workflow's comments saying so in PULL_REQUEST_CODE_STATEMENT's
-    words. A job's checkout that names no `ref` checks out the event's own commit, the pull request's merge commit; one
-    that names a `ref` is a form this policy does not read, so a job that starts from another tree is described here
+    without docs/design.md's CREDENTIALS_ROW and the comment directly above the job each stating REACH_STATEMENTS in
+    their words. A token job's checkout may take only NO_STORED_CREDENTIAL's input, so it checks out the event's own
+    commit, the pull request's merge commit, into the workspace; any other input, such as `ref`, `repository`, `path`,
+    or `sparse-checkout`, is a form this policy does not read, so a job that starts from another tree is described here
     before it is sanctioned."""
     tree = read_workflow(workflow)
     if "pull_request" not in _triggers(tree.get("on") if isinstance(tree, dict) else None) or not token_steps:
@@ -556,22 +597,42 @@ def token_reach_problems(workflow: str, token_steps: Mapping[tuple[str, str], st
             if str(step.get("uses", "")).startswith("actions/checkout@")
         ]
         problems += [
-            f"job {job}'s step {step.get('name')!r} checks out a `ref`, a form the token-reach policy does not read; "
-            "state what the token reaches from that tree before sanctioning it"
+            f"job {job}'s step {step.get('name')!r} checks out with `{key}`, a form the token-reach policy does not "
+            "read; state what the token reaches from that tree before sanctioning it"
             for step in checkouts
-            if "ref" in _mapping(step, "with")
+            for key in sorted(set(_mapping(step, "with")) - set(NO_STORED_CREDENTIAL))
         ]
-        if any("ref" not in _mapping(step, "with") for step in checkouts):
-            if len(rows) != 1 or PULL_REQUEST_CODE_STATEMENT not in rows[0]:
+        if not checkouts:
+            continue
+        comment = _job_comment(workflow, job)
+        for statement in REACH_STATEMENTS:
+            if len(rows) != 1 or statement not in rows[0].casefold():
                 problems.append(
                     f"job {job} runs the pull request's own code with the token, and docs/design.md's row "
-                    f"{CREDENTIALS_ROW!r} does not say {PULL_REQUEST_CODE_STATEMENT!r}"
+                    f"{CREDENTIALS_ROW!r} does not say {statement!r}"
                 )
-            if PULL_REQUEST_CODE_STATEMENT not in _comment_text(workflow):
+            if statement not in comment.casefold():
                 problems.append(
-                    f"job {job} runs the pull request's own code with the token, and no comment of the workflow says "
-                    f"{PULL_REQUEST_CODE_STATEMENT!r}"
+                    f"job {job} runs the pull request's own code with the token, and the comment directly above it "
+                    f"does not say {statement!r}"
                 )
+    return problems
+
+
+def token_claim_problems(texts: Mapping[str, str], design: str) -> list[str]:
+    """Report docs/design.md's CREDENTIALS_ROW not stating ACTION_INPUT_STATEMENT, and each of RETIRED_TOKEN_CLAIMS in
+    that row or in any of `texts`, a name mapped to a text, such as a workflow's comments or a module's docstring."""
+    rows = [line for line in design.splitlines() if line.startswith(CREDENTIALS_ROW)]
+    problems = []
+    if len(rows) != 1 or ACTION_INPUT_STATEMENT not in rows[0]:
+        problems.append(f"docs/design.md's row {CREDENTIALS_ROW!r} does not say {ACTION_INPUT_STATEMENT!r}")
+    for name, text in {**texts, "docs/design.md's credentials row": " ".join(rows)}.items():
+        flat = " ".join(text.split())
+        problems += [
+            f"{name} says {claim!r}, which the pinned actions' default `token` input makes untrue"
+            for claim in RETIRED_TOKEN_CLAIMS
+            if claim in flat
+        ]
     return problems
 
 
@@ -1613,6 +1674,17 @@ class WorkflowsPolicies(unittest.TestCase):
             with self.subTest(workflow=name):
                 workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / name).read_text(encoding="utf-8")
                 self.assertEqual([], token_reach_problems(workflow, TOKEN_STEPS.get(name, {}), design))
+
+    def test_no_document_says_a_job_holds_no_token_while_its_actions_take_it_by_default(self) -> None:
+        design = (REPOSITORY_ROOT / "docs" / "design.md").read_text(encoding="utf-8")
+        texts = {
+            f"{WORKFLOWS_DIRECTORY}/{name}": _comment_text(
+                (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / name).read_text(encoding="utf-8")
+            )
+            for name in WORKFLOW_GUARDS
+        }
+        texts |= {path: (REPOSITORY_ROOT / path).read_text(encoding="utf-8") for path in TOKEN_CLAIM_FILES}
+        self.assertEqual([], token_claim_problems(texts, design))
 
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
