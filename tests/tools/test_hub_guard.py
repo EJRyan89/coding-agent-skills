@@ -2654,7 +2654,6 @@ class ContractTests(GuardTestCase):
             ("Bash", f"{body}; declare -Fx f; bash -c f"),
             ("Bash", f"{body}; typeset -xF f; bash -c f"),
             ("Bash", f"{body}; declare -F -x f; bash -c f"),
-            ("Bash", f"{body}; declare $o f; bash -c f"),
             ("Bash", f"{body}; export -f f; pwsh -c 'bash -c f'"),
             ("Bash", f"set -a; {body}; pwsh -c 'bash -c f'"),
             ("Bash", f"{body}; export -f f; pwsh -c 'pwsh -c \"bash -c f\"'"),
@@ -2679,6 +2678,10 @@ class ContractTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.hub))
                 self.assertIn("BASH_FUNC_", self.reason)
+        # A declaration word the text does not settle may be -fx, and may export any variable, so the bash it
+        # starts is one the text does not settle either.
+        self.assertEqual("deny", self.bash(f"{body}; declare $o f; bash -c f", self.hub))
+        self.assertIn(UNPLACED.format("switch"), self.reason)
         # A function defined before allexport is turned on, or listed by -F alone, is not exported.
         self.assertIsNone(self.bash(f"{body}; set -a; bash -c f", self.hub))
         self.assertIsNone(self.bash(f"{body}; declare -F f; bash -c f", self.hub))
