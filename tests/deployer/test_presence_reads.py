@@ -439,6 +439,18 @@ class DeployerPresenceTests(DeployerTestCase):
         paths.claim_canary_home(canary)
         self.assertEqual(paths.CANARY_MARKER_TEXT, (canary / paths.CANARY_MARKER).read_bytes())
 
+    def test_something_other_than_a_file_where_a_file_is_read_is_passed_over(self) -> None:
+        # A folder at alpha's marker makes no user-only adapter, and the next adapter is still read.
+        adapters = self.root / "adapters"
+        (adapters / "alpha" / CODEX_METADATA).mkdir(parents=True)
+        (adapters / "beta" / CODEX_METADATA).parent.mkdir(parents=True)
+        (adapters / "beta" / CODEX_METADATA).write_text("", encoding="utf-8")
+        self.assertEqual(["beta"], verify.user_only(["alpha", "beta"], adapters))
+        # A folder named SKILL.md is no skill.
+        self.make_skill("alpha", "Alpha")
+        (self.source / "skills" / "gamma" / "SKILL.md").mkdir(parents=True)
+        self.assertEqual(["alpha"], sorted(source._discover_directories(self.paths)))
+
     def deployed(self) -> None:
         self.make_source_json()
         for name in ("alpha", "beta"):
@@ -481,19 +493,22 @@ class DeployerPresenceTests(DeployerTestCase):
 
     def test_a_copilot_personal_skill_whose_stat_fails_is_warned_of_not_read_as_no_shadow(self) -> None:
         personal = self.paths.copilot_skills_dir
-        (personal / "alpha").mkdir(parents=True)
-        (personal / "beta").mkdir()
-        with stat_failing_at(personal / "alpha"), contextlib.redirect_stderr(io.StringIO()) as warned:
-            report.warn_copilot(self.paths, ["alpha", "beta", "gamma"])
+        for name in ("alpha", "beta", "delta", "epsilon"):
+            (personal / name).mkdir(parents=True, exist_ok=True)
+        unreadable = (personal / "alpha", personal / "delta")
+        with stat_failing_at(*unreadable), contextlib.redirect_stderr(io.StringIO()) as warned:
+            report.warn_copilot(self.paths, ["alpha", "beta", "gamma", "delta", "epsilon"])
         self.assertEqual(
             [
                 "",
                 "WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:",
                 f"  - beta ({forward(personal / 'beta')})",
+                f"  - epsilon ({forward(personal / 'epsilon')})",
                 "WARNING: Could not tell whether GitHub Copilot personal skills shadow generated runtime adapters:",
                 f"  - alpha ({forward(personal / 'alpha')}: Access is denied)",
+                f"  - delta ({forward(personal / 'delta')}: Access is denied)",
             ],
-            warned.getvalue().splitlines()[:5],
+            warned.getvalue().splitlines()[:7],
         )
 
     def test_the_checkout_a_source_was_deployed_from_is_named_unreadable_not_gone(self) -> None:
@@ -511,6 +526,9 @@ class DeployerPresenceTests(DeployerTestCase):
             result.output,
         )
         other.rmdir()
+        self.deploy_fails("--all", pattern="which no longer exists, not from this checkout")
+        # A file where the checkout was is no checkout either.
+        other.write_text("", encoding="utf-8")
         self.deploy_fails("--all", pattern="which no longer exists, not from this checkout")
 
     def test_a_kept_backup_whose_stat_fails_after_the_commit_fails_the_run_rather_than_going_unrecorded(self) -> None:

@@ -159,8 +159,8 @@ def runtime_report(
     try:
         hidden = user_only(names, adapters)
     except OSError as exc:
-        where = platform_support.normalize(exc.filename) if isinstance(exc.filename, str) else exc.filename
-        return f"{METADATA_FAILED}{where}: {exc.strerror or exc}"
+        # file_presence names the path in every OSError it raises or lets through.
+        return f"{METADATA_FAILED}{platform_support.normalize(exc.filename)}: {exc.strerror or exc}"
     return catalogued(lines, hidden, catalog, adapters)
 
 
