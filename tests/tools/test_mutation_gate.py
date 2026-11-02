@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from collections.abc import Callable, Sequence
@@ -31,6 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validati
 
 from fsops_platform import PLATFORM_TOKENS
 from git_client import GitClient
+from job_selection import importers, python_imports, reached_suites, repository_files
+from suite_names import is_suite_name
 
 from deployer import platform_support
 from tools import mutation_gate
@@ -66,6 +69,7 @@ from tools.mutation_gate import (
     counts,
     coverage_settings,
     describe,
+    estimated_seconds,
     executed_lines,
     executed_tests,
     generator_problem,
@@ -75,6 +79,7 @@ from tools.mutation_gate import (
     leg_modules,
     leg_record,
     module_mutants,
+    modules_to_split,
     named_in,
     needed_legs,
     no_module_line,
@@ -89,9 +94,11 @@ from tools.mutation_gate import (
     suite_plan,
     suite_selection,
     summary,
+    too_large_line,
     try_mutant,
     try_mutants,
     unfinished_line,
+    unjudged,
     verdict,
 )
 
@@ -107,7 +114,16 @@ from tools.mutation_gate import (
         (".claude/skills/implement-change/scripts/pull_request.py", True),
         ("skills/ejryan89-skill-core/scripts/test_console.py", False),
         ("tools/conftest.py", False),
-        ("tests/validation/job_selection.py", False),
+        ("tests/validation/job_selection.py", True),
+        ("tests/validation/test_job_selection.py", False),
+        ("tests/validation/conftest.py", False),
+        ("tests/validation/fixtures/policy.py", False),
+        ("tests/run_validation.py", True),
+        ("tests/known_failure_issues.py", True),
+        ("tests/test_run_validation.py", False),
+        ("tests/conftest.py", False),
+        ("tests/deployer/harness.py", False),
+        ("tests/malformed_input/corpus.py", False),
         ("tests/fixtures/repo/tools/calc.py", False),
         ("skills/ejryan89-skill-core/SKILL.md", False),
         ("skills/ejryan89-skill-core/helper.py", False),
@@ -2910,3 +2926,544 @@ def test_the_base_defaults_to_the_pull_requests_base_branch() -> None:
     assert mutation_gate.parse_arguments([], {}).minutes == 40
     with pytest.raises(SystemExit):
         mutation_gate.parse_arguments(["--minutes", "0"], {})
+
+
+# A policy whose suites reached_suites is asked for itself.
+POLICY_PROBE = "tests/validation/upgrade_notes.py"
+
+
+def validation_modules(folder: Path) -> list[str]:
+    """The names of a folder's Python modules that are not suites or a conftest.py."""
+    return sorted(
+        path.name for path in folder.glob("*.py") if not is_suite_name(path.name) and path.name != "conftest.py"
+    )
+
+
+def test_every_validation_program_is_mutated_and_its_own_suite_reaches_it() -> None:
+    # The catalogue is the programs directly under tests/, read from the folder, so a program added later is held too.
+    programs = validation_modules(REPOSITORY / "tests")
+    assert {"run_validation.py", "known_failure_issues.py"} <= set(programs)
+    for program in programs:
+        module = f"tests/{program}"
+        assert is_gate_module(module), module
+        reached = {suite.relative_to(REPOSITORY).as_posix() for suite in reached_suites(REPOSITORY, [module])}
+        assert f"tests/test_{program}" in reached, module
+
+
+def test_every_validation_policy_is_mutated_and_its_fixture_suite_reaches_it() -> None:
+    # The catalogue is the repository's own policies, read from the folder, so a policy added later is held too.
+    policies = validation_modules(REPOSITORY / "tests" / "validation")
+    assert "job_selection.py" in policies
+    # reached_suites selects every suite that imports a changed module, directly or through others, from the import
+    # graph of the checkout, which is read once here rather than once for each policy.
+    files = [path.relative_to(REPOSITORY).as_posix() for path in repository_files(REPOSITORY)]
+    graph = python_imports(REPOSITORY, files)
+    for policy in policies:
+        module = f"tests/validation/{policy}"
+        assert is_gate_module(module), module
+        assert f"tests/validation/test_{policy}" in importers([module], graph), module
+    # One policy goes through reached_suites itself, so the shortcut above stays the selection the gate makes.
+    reached = {suite.relative_to(REPOSITORY).as_posix() for suite in reached_suites(REPOSITORY, [POLICY_PROBE])}
+    assert "tests/validation/test_upgrade_notes.py" in reached
+
+
+POLICY_SOURCE = "def problems(a, b):\n    return a + b\n"
+POLICY_SUITE = """import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import policy
+
+
+def test_problems() -> None:
+    assert policy.problems(2, 3) == 5
+"""
+
+
+def test_a_changed_validation_policy_is_mutated_and_its_fixture_suite_kills_the_mutant() -> None:
+    asked: list[str] = []
+
+    def reach(tree: Path, suite: str, modules: object, timeout: float) -> Reach:
+        asked.append(suite)
+        return Reach(1.0, {"tests/validation/policy.py": frozenset({1, 2})})
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary) / "repository"
+        (root / "tests" / "validation").mkdir(parents=True)
+        (root / "README.md").write_text("fixture\n", encoding="utf-8")
+        git(root, "init", "--quiet", "--initial-branch=main")
+        git(root, "add", ".")
+        git(root, "commit", "--quiet", "-m", "base")
+        git(root, "switch", "--quiet", "-c", "feature")
+        (root / "tests" / "validation" / "policy.py").write_text(POLICY_SOURCE, encoding="utf-8")
+        (root / "tests" / "validation" / "test_policy.py").write_text(POLICY_SUITE, encoding="utf-8")
+        git(root, "add", ".")
+        git(root, "commit", "--quiet", "-m", "policy")
+        result = Gate(root, "main", 5, 2, GitClient(), stub_generator, reach, measure=measured).report()
+    assert result.finished
+    assert asked == ["tests/validation/test_policy.py"]
+    assert f"| `tests/validation/policy.py` | {HOST} | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 100% (1 of 1) |" in result.text
+
+
+def test_a_change_with_no_module_names_the_policies_among_the_folders_it_mutates() -> None:
+    assert no_module_line("origin/main") == (
+        "**Mutation gate:** no Python module under `deployer/`, `tools/`, a skill's `scripts/`, or "
+        "`tests/validation/`, and no validation program directly under `tests/`, changed since `origin/main`, so no "
+        "mutant ran.\n"
+    )
+
+
+def test_a_mutants_estimate_is_its_first_suites_time_shared_by_the_tests_it_runs() -> None:
+    lines = {"tools/calc.py": frozenset({3})}
+    named = {"tools/calc.py": {3: frozenset({"tests/fast.py::a", "tests/fast.py::b"})}}
+    reach = {"tests/fast.py": Reach(4.0, lines, named, 8), "tests/slow.py": Reach(100.0, lines)}
+    # The fastest suite runs first, and two of its eight tests run against the mutant.
+    assert estimated_seconds(mutant(3), reach) == 1.0
+    # A suite that runs whole counts whole, and so does one pytest could not list, which runs whole.
+    assert estimated_seconds(mutant(3), {"tests/fast.py": Reach(4.0, lines)}) == 4.0
+    assert estimated_seconds(mutant(3), {"tests/fast.py": Reach(4.0, lines, named, 0)}) == 4.0
+    # A mutant no suite reached runs nothing.
+    assert estimated_seconds(mutant(9), reach) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("needed", "available", "moved"),
+    [
+        ({"a": 10.0, "b": 20.0}, 30.0, []),
+        ({"a": 40.0, "b": 30.0, "c": 5.0}, 50.0, ["a"]),
+        ({"a": 40.0, "b": 30.0, "c": 25.0}, 30.0, ["a", "b"]),
+        ({"b": 20.0, "a": 20.0}, 25.0, ["a"]),
+        ({"a": 100.0}, 50.0, ["a"]),
+        ({}, 0.0, []),
+    ],
+)
+def test_the_modules_to_split_are_the_costliest_until_the_rest_fit(
+    needed: dict[str, float], available: float, moved: list[str]
+) -> None:
+    assert modules_to_split(needed, available) == moved
+
+
+@pytest.mark.parametrize(
+    ("needed", "available", "advice"),
+    [
+        (
+            {"tools/a.py": 3000.0, "tools/b.py": 1200.0, "tools/c.py": 600.0},
+            2400.0,
+            "need 80 worker-minutes once its reach was measured, each at its first suite's unmutated time, and its cap "
+            "left 40 worker-minutes, so split the change to `tools/a.py` (50 worker-minutes), whose changed lines "
+            "alone need more than that.",
+        ),
+        (
+            {"tools/a.py": 1800.0, "tools/b.py": 1200.0},
+            2400.0,
+            "need 50 worker-minutes once its reach was measured, each at its first suite's unmutated time, and its cap "
+            "left 40 worker-minutes, so move `tools/a.py` (30 worker-minutes) into a pull request of its own.",
+        ),
+        (
+            {"tools/a.py": 3000.0, "tools/b.py": 800.0, "tools/c.py": 700.0},
+            1000.0,
+            "need 75 worker-minutes once its reach was measured, each at its first suite's unmutated time, and its "
+            "cap left 17 worker-minutes, so move `tools/b.py` (13 worker-minutes) into a pull request of its own and "
+            "split the change to `tools/a.py` (50 worker-minutes), whose changed lines alone need more than that.",
+        ),
+    ],
+)
+def test_a_leg_too_large_for_its_cap_names_the_modules_to_move_and_those_to_split(
+    needed: dict[str, float], available: float, advice: str
+) -> None:
+    leg = LegRun(WINDOWS_LEG, 40, 0.0, 4, {}, {}, [], needed, available)
+    assert too_large_line(leg) == f"Too large for the Windows leg's cap: its mutants were estimated to {advice}"
+
+
+def test_a_leg_whose_mutants_fit_its_cap_gives_no_advice() -> None:
+    assert too_large_line(LegRun(LINUX_LEG, 40, 0.0, 4, {}, {}, [], {"tools/a.py": 2400.0}, 2400.0)) is None
+    assert too_large_line(LegRun(LINUX_LEG, 40, 0.0, 0, {}, {}, [])) is None
+
+
+def test_worker_minutes_are_rounded_and_one_is_singular() -> None:
+    assert [mutation_gate.worker_minutes(seconds) for seconds in (60.0, 89.0, 90.0, 0.0)] == [
+        "1 worker-minute",
+        "1 worker-minute",
+        "2 worker-minutes",
+        "0 worker-minutes",
+    ]
+
+
+def test_a_leg_warns_before_its_mutants_run_when_they_need_more_than_its_cap_left() -> None:
+    source = "x = 1\ny = 2\nz = 3\n"
+    started: list[str] = []
+
+    def run(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+        started.append(printed.getvalue())
+        return PASSED
+
+    def reach(tree: Path, suite: str, measured: object, timeout: float) -> Reach:
+        return Reach(100.0, {"tools/a.py": frozenset({1, 2, 3})})
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        tree = root / "tree-1"
+        (tree / "tools").mkdir(parents=True)
+        (tree / "tools" / "a.py").write_text(source, encoding="utf-8")
+        git_client = mock.create_autospec(GitClient, instance=True)
+        git_client.output.return_value = "@@ -0,0 +1,3 @@\n+x = 1\n+y = 2\n+z = 3\n"
+        gate = Gate(root, "main", 1, 1, git_client, line_generator, reach, run, lambda: 0.0, measured)
+        with (
+            mock.patch.object(mutation_gate, "reached_suites", return_value=[root / "tests" / "test_x.py"]),
+            mock.patch("sys.stdout", io.StringIO()) as printed,
+        ):
+            report = gate.mutate([tree], ["tools/a.py"], 0.0)
+    (leg,) = report.legs
+    assert leg.needed == {"tools/a.py": 300.0}
+    assert leg.available == 60.0
+    warning = (
+        f"::warning title=Mutation gate too large::Too large for the {HOST} leg's cap: its mutants were estimated to "
+        "need 5 worker-minutes"
+    )
+    # The warning is in the log, after the reach pass's lines, before the first mutant runs.
+    assert started
+    assert started[0].splitlines()[-1].startswith(warning)
+
+
+def too_large_report(status: str) -> Report:
+    selected = Selected(
+        "origin/main", "3.8.0", (SelectedModule("tools/a.py", 1, (mutant(1, "tools/a.py"),), (), False),)
+    )
+    outcome = Outcome(mutant(1, "tools/a.py"), status, () if status == NOT_RUN else ("t",))
+    leg = LegRun(LINUX_LEG, 40, 2400.0, 4, {"tools/a.py": [outcome]}, {}, [], {"tools/a.py": 6000.0}, 4800.0)
+    return joined(selected, [leg])
+
+
+def test_an_unfinished_runs_summary_gives_the_advice_under_its_first_line_and_a_finished_ones_does_not() -> None:
+    lines = summary(too_large_report(NOT_RUN)).splitlines()
+    assert lines[0].startswith("**Unfinished, so not a verdict:**")
+    assert lines[1:4] == ["", too_large_line(too_large_report(NOT_RUN).legs[0]), ""]
+    assert lines[4] == "## Mutation gate"
+    assert "Too large" not in summary(too_large_report(KILLED))
+
+
+LEG_STATUSES = (KILLED, TIMED_OUT, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED)
+
+
+def unjudged_report(status: str, other: str | None, open_suites: bool) -> tuple[Report, LegRun]:
+    """A run whose Linux leg left the one mutant `status`, the Windows leg `other` when it ran the module too, and the
+    Linux leg's reach of a suite unmeasured when `open_suites`."""
+    selected = Selected("origin/main", "3.8.0", (SelectedModule(PATH_MODULE, 1, (TEXTUAL,), (), other is not None),))
+    linux = LegRun(LINUX_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, status)]}, {}, ["u"] if open_suites else [])
+    legs = [linux]
+    if other is not None:
+        legs.append(LegRun(WINDOWS_LEG, 40, 1.0, 1, {PATH_MODULE: [Outcome(TEXTUAL, other)]}, {}, []))
+    return joined(selected, legs), linux
+
+
+@pytest.mark.parametrize(
+    ("status", "other", "open_suites"),
+    list(itertools.product(LEG_STATUSES, (*LEG_STATUSES, None), (False, True))),
+)
+def test_a_local_run_runs_again_only_what_the_leg_left_without_a_verdict(
+    status: str, other: str | None, open_suites: bool
+) -> None:
+    report, linux = unjudged_report(status, other, open_suites)
+    killed = {KILLED, TIMED_OUT}
+    left = status in (NOT_RUN, ERRORED) or (open_suites and status in (SURVIVED, NOT_REACHED))
+    expected = {PATH_MODULE: [0]} if left and status not in killed and other not in killed else {}
+    assert unjudged(report, linux) == expected
+
+
+def ci_run(
+    root: Path, folder: Path, outcomes: Callable[[tuple[Mutant, ...]], list[Outcome]], unmeasured: Sequence[str] = ()
+) -> None:
+    """The select step of a CI run over the fixture repository, and its Linux leg's record holding `outcomes` of the
+    module's mutants, with the reach of `unmeasured` left unmeasured."""
+    mutation_gate.select_step(Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach), folder, {})
+    (chosen,) = read_selection(folder / "mutants.json").modules
+    record = LegRun(LINUX_LEG, 40, 2400.0, 4, {"tools/calc.py": outcomes(chosen.mutants)}, {}, list(unmeasured))
+    (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(record)), encoding="utf-8")
+
+
+class UnrunFixtures(unittest.TestCase):
+    """A local run of the mutants a CI run's Linux leg left without a verdict, over the fixture repository, with the
+    reach stubbed and the suite runner recording which mutant it ran against."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "repository"
+        self.folder = Path(temporary.name) / "run artifacts"
+        fixture_repository(self.root)
+        self.seen: list[str] = []
+        platform = mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG)
+        platform.start()
+        self.addCleanup(platform.stop)
+
+    def run_suite(self, tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
+        """Pass every suite, recording the mutation of the module the suite ran against."""
+        text = (tree / "tools" / "calc.py").read_text(encoding="utf-8")
+        self.seen.append(next(line.strip() for line in text.splitlines() if " - " in line or " * 3" in line))
+        return PASSED
+
+    def gate(self, clock: Callable[[], float] = time.monotonic) -> Gate:
+        return Gate(self.root, "main", 5, 2, GitClient(), stub_generator, stub_reach, self.run_suite, clock, measured)
+
+    def unrun(self, gate: Gate | None = None) -> LegRun:
+        with mock.patch("sys.stdout", io.StringIO()):
+            completed = (gate or self.gate()).unrun(self.folder)
+        (self.folder / "outcomes-linux.json").write_text(json.dumps(leg_record(completed)), encoding="utf-8")
+        return completed
+
+    def test_only_the_mutant_the_leg_left_not_run_runs_and_the_kill_the_leg_made_is_kept(self) -> None:
+        ci_run(
+            self.root,
+            self.folder,
+            lambda mutants: [Outcome(mutants[0], KILLED, ("tests/elsewhere.py",), (1,)), Outcome(mutants[1], NOT_RUN)],
+        )
+        completed = self.unrun()
+        result = mutation_gate.join(self.folder)
+        self.assertEqual(["return a * 3"], self.seen)
+        first, second = completed.outcomes["tools/calc.py"]
+        self.assertEqual((KILLED, ("tests/elsewhere.py",), (1,)), (first.status, first.suites, first.tests))
+        self.assertEqual((SURVIVED, ("tests/tools/test_calc.py",)), (second.status, second.suites))
+        self.assertEqual({"tools/calc.py": [1]}, completed.local.mutants if completed.local else None)
+        # The CI leg's own figures stay its own, and the local run is named beside them.
+        self.assertEqual((40, 2400.0, 4), (completed.minutes, completed.seconds, completed.workers))
+        self.assertTrue(result.finished)
+        self.assertIn(
+            "- On Linux, 4 workers ran for 40 of its 40 minutes, and a local run on Linux then ran the 1 mutant it "
+            "left without a verdict, 2 workers for 0 of its 5 minutes; a mutant ran",
+            result.text,
+        )
+        self.assertIn("| `tools/calc.py` | Linux | 6 | 2 | 1 | 0 | 1 | 0 | 0 | 0 | 50% (1 of 2) |", result.text)
+
+    def test_a_mutant_the_local_run_leaves_untested_is_still_not_run_and_the_run_unfinished(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        times = itertools.chain([0.0], itertools.repeat(10_000.0))
+        completed = self.unrun(self.gate(lambda: next(times)))
+        result = mutation_gate.join(self.folder)
+        self.assertEqual([], self.seen)
+        self.assertEqual([NOT_RUN, NOT_RUN], [outcome.status for outcome in completed.outcomes["tools/calc.py"]])
+        self.assertFalse(result.finished)
+        self.assertTrue(result.text.startswith("**Unfinished, so not a verdict:**"))
+        self.assertIn("The cap left these suites' reach unmeasured on the local run on Linux", result.text)
+
+    def test_suites_the_leg_left_unmeasured_run_its_survivors_again_and_close_once_the_local_run_measured_them(
+        self,
+    ) -> None:
+        ci_run(
+            self.root,
+            self.folder,
+            lambda mutants: [
+                Outcome(mutants[0], KILLED, ("tests/tools/test_calc.py",)),
+                Outcome(mutants[1], SURVIVED, ("tests/tools/test_calc.py",)),
+            ],
+            ["tests/tools/test_other.py"],
+        )
+        self.assertFalse(mutation_gate.join(self.folder).finished)
+        completed = self.unrun()
+        result = mutation_gate.join(self.folder)
+        self.assertEqual(["return a * 3"], self.seen)
+        self.assertEqual(["tests/tools/test_other.py"], completed.unmeasured_suites)
+        self.assertEqual([], completed.open_suites)
+        self.assertTrue(result.finished)
+        self.assertNotIn("unmeasured", result.text)
+
+    def test_a_leg_with_nothing_left_runs_nothing_and_is_written_back_as_it_was(self) -> None:
+        ci_run(
+            self.root, self.folder, lambda mutants: [Outcome(mutant, SURVIVED, ("tests/x.py",)) for mutant in mutants]
+        )
+        before = read_leg(self.folder / "outcomes-linux.json", read_selection(self.folder / "mutants.json"), LINUX_LEG)
+        self.assertEqual(before, self.unrun())
+        self.assertEqual([], self.seen)
+
+    def test_a_module_that_is_not_the_text_the_mutants_were_made_from_stops_the_run_before_any_suite(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        change_calc(self.root, CALC + "\n\ndef triple(a):\n    return a * 3\n")
+        with self.assertRaisesRegex(RuntimeError, r"^tools/calc.py at HEAD is not the text the run made its mutants"):
+            self.unrun()
+        self.assertEqual([], self.seen)
+
+    def test_a_completed_leg_another_platforms_leg_or_a_selection_without_digests_stops_the_run(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        self.unrun()
+        with self.assertRaisesRegex(RuntimeError, r"^outcomes-linux.json was already completed by a local run"):
+            self.unrun()
+        with (
+            mock.patch.object(platform_support, "PLATFORM_NAME", WINDOWS_LEG),
+            self.assertRaisesRegex(RuntimeError, r"^the Windows leg ran no mutant of this run, so none is left to run"),
+        ):
+            self.unrun()
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        record = json.loads((self.folder / "mutants.json").read_text(encoding="utf-8"))
+        record["modules"][0]["digest"] = ""
+        (self.folder / "mutants.json").write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, r"^mutants.json records no digest of tools/calc.py"):
+            self.unrun()
+        self.assertEqual(2, len(self.seen))
+
+    def test_the_unrun_step_writes_the_completed_leg_and_reports_as_the_join_does(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        selected = read_selection(self.folder / "mutants.json")
+        mutants = selected.modules[0].mutants
+        completed = LegRun(
+            LINUX_LEG,
+            40,
+            2400.0,
+            4,
+            {"tools/calc.py": [Outcome(mutants[0], KILLED, ("t",)), Outcome(mutants[1], NOT_RUN)]},
+            {},
+            [],
+            local=mutation_gate.LocalRun(5, 1.0, 2, {"tools/calc.py": [0, 1]}, {}, []),
+        )
+        summary_file = self.folder / "summary.md"
+        with (
+            mock.patch.object(Gate, "unrun", return_value=completed) as unrun,
+            mock.patch("sys.stdout", io.StringIO()) as printed,
+        ):
+            code = mutation_gate.main(["unrun", str(self.folder)], {"GITHUB_STEP_SUMMARY": str(summary_file)})
+        unrun.assert_called_once_with(self.folder)
+        self.assertEqual(1, code)
+        self.assertEqual(completed, read_leg(self.folder / "outcomes-linux.json", selected, LINUX_LEG))
+        self.assertEqual(mutation_gate.join(self.folder).text, summary_file.read_text(encoding="utf-8"))
+        self.assertIn("::error title=Mutation gate unfinished::", printed.getvalue())
+
+
+def test_a_selection_records_each_modules_digest_and_a_leg_its_estimate_and_local_run() -> None:
+    chosen = SelectedModule(PATH_MODULE, 1, (READ_MUTANT,), (), True, "ab" * 32)
+    selected = Selected("origin/main", "3.8.0", (chosen,))
+    local = mutation_gate.LocalRun(60, 12.0, 2, {PATH_MODULE: [0]}, {"tests/f.py": "failed"}, ["tests/g.py"])
+    leg = LegRun(
+        WINDOWS_LEG,
+        40,
+        1.5,
+        2,
+        {PATH_MODULE: [Outcome(READ_MUTANT, KILLED, ("t",), (1,))]},
+        {"u": "v"},
+        [],
+        {PATH_MODULE: 12.5},
+        30.0,
+        local,
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        mutants, outcomes = Path(temporary) / "mutants.json", Path(temporary) / "outcomes.json"
+        mutants.write_text(json.dumps(selection_record(selected)), encoding="utf-8")
+        outcomes.write_text(json.dumps(leg_record(leg)), encoding="utf-8")
+        assert read_selection(mutants) == selected
+        assert read_leg(outcomes, selected, WINDOWS_LEG) == leg
+
+
+LOCAL_AT = ("local",)
+LOCAL_RECORD = {
+    "minutes": 60,
+    "seconds": 1.0,
+    "workers": 2,
+    "mutants": {PATH_MODULE: [0]},
+    "failed_suites": {},
+    "unmeasured_suites": [],
+}
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("modules", 0, "digest"), "AB" * 32, "record.json.modules[0].digest must be a lowercase hexadecimal digest"),
+        (("modules", 0, "digest"), "ab", "record.json.modules[0].digest must be a lowercase hexadecimal digest"),
+    ],
+)
+def test_a_selections_digest_that_is_not_a_sha_256_is_refused(
+    path: Sequence[str | int], value: str, message: str
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        record = Path(temporary) / "record.json"
+        record.write_text(json.dumps(set_field(selection_record(READ_SELECTED), path, value)), encoding="utf-8")
+        with pytest.raises(RecordFieldError) as refused:
+            read_selection(record)
+    assert str(refused.value).startswith(message)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("needed",), 1, "record.json.needed must be an object, found integer 1"),
+        (
+            ("needed",),
+            {PATH_MODULE: "1"},
+            'record.json.needed.tools/paths.py must be a finite number, found string "1"',
+        ),
+        (("available",), None, "record.json.available must be a finite number, found null"),
+        (LOCAL_AT, 1, "record.json.local must be an object or null, found integer 1"),
+        ((*LOCAL_AT,), {**LOCAL_RECORD, "minutes": 0}, "record.json.local.minutes must be an integer of at least 1"),
+        ((*LOCAL_AT,), {**LOCAL_RECORD, "workers": 0}, "record.json.local.workers must be an integer of at least 1"),
+        ((*LOCAL_AT,), {**LOCAL_RECORD, "mutants": []}, "record.json.local.mutants must be an object, found an array"),
+        (
+            (*LOCAL_AT,),
+            {**LOCAL_RECORD, "mutants": {PATH_MODULE: [-1]}},
+            "record.json.local.mutants.tools/paths.py[0] must be an integer of at least 0",
+        ),
+        (
+            (*LOCAL_AT,),
+            {**LOCAL_RECORD, "unmeasured_suites": 1},
+            "record.json.local.unmeasured_suites must be an array, found integer 1",
+        ),
+    ],
+)
+def test_a_legs_estimate_or_local_run_of_another_kind_is_refused_by_its_path(
+    path: Sequence[str | int], value: object, message: str
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        record = Path(temporary) / "record.json"
+        record.write_text(json.dumps(set_field(leg_record(READ_LEG), path, value)), encoding="utf-8")
+        with pytest.raises(RecordFieldError) as refused:
+            read_leg(record, READ_SELECTED, WINDOWS_LEG)
+    assert str(refused.value).startswith(message)
+
+
+@pytest.mark.parametrize(
+    ("mutants", "message"),
+    [
+        ({"tools/other.py": [0]}, "record.json.local.mutants names tools/other.py, whose mutants the leg does not run"),
+        ({PATH_MODULE: [1]}, "record.json.local.mutants.tools/paths.py names [1], not distinct places among its 1"),
+        ({PATH_MODULE: [0, 0]}, "record.json.local.mutants.tools/paths.py names [0, 0], not distinct places among"),
+    ],
+)
+def test_a_local_run_naming_a_place_that_holds_no_outcome_of_its_own_stops_the_join(
+    mutants: dict[str, list[int]], message: str
+) -> None:
+    record = set_field(leg_record(READ_LEG), LOCAL_AT, {**LOCAL_RECORD, "mutants": mutants})
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "record.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(RecordError) as refused:
+            read_leg(path, READ_SELECTED, WINDOWS_LEG)
+    assert str(refused.value).startswith(message)
+
+
+@pytest.mark.parametrize(
+    ("places", "listed", "refused"),
+    [
+        # An outcome the local run wrote that names a suite the local run judged nothing with is refused.
+        ([0], "failed_suites", True),
+        ([0], "unmeasured_suites", True),
+        # An outcome the CI leg wrote is held to the CI leg's suites, not the local run's.
+        ([], "failed_suites", False),
+        ([], "unmeasured_suites", False),
+    ],
+)
+def test_an_outcome_is_held_to_the_suites_of_the_run_that_wrote_it(
+    places: list[int], listed: str, refused: bool
+) -> None:
+    suites: dict[str, Any] = {"failed_suites": {}, "unmeasured_suites": []}
+    suites[listed] = {"t": "failed unmutated"} if listed == "failed_suites" else ["t"]
+    local = {**LOCAL_RECORD, "mutants": {PATH_MODULE: places}, **suites}
+    record = set_field(leg_record(READ_LEG), LOCAL_AT, local)
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "record.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        if not refused:
+            assert read_leg(path, READ_SELECTED, WINDOWS_LEG).outcomes[PATH_MODULE][0].status == KILLED
+            return
+        with pytest.raises(RecordFieldError) as error:
+            read_leg(path, READ_SELECTED, WINDOWS_LEG)
+    assert str(error.value) == (
+        f"record.json.outcomes.tools/paths.py[0].suites must be suites the local run ran, none of them in its "
+        f"local.{listed}, found t, which record.json.local.{listed} lists"
+    )

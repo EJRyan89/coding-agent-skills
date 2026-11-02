@@ -122,7 +122,9 @@ the rules validation enforces.
 
 The `Mutation gate` job of the `Mutation` workflow runs on every pull request and is not a required check. It mutates
 the lines the pull request adds or changes in each Python module under `deployer/`, `tools/`, a skill's `scripts/`, or a
-repository skill's `scripts/`, suites and `conftest.py` left out, with mutmut's operators, and runs each mutant against
+repository skill's `scripts/`, and in each validation policy directly under `tests/validation/`, whose fixture suite
+`tests/validation/test_<module>.py` reaches it, and in each validation program directly under `tests/`, such as
+`tests/run_validation.py`, beside its own suite, suites, `conftest.py`, and the suites' own fixtures left out, with mutmut's operators, and runs each mutant against
 the suites that executed the statement holding its line unmutated, as coverage.py measured them, until one fails, so a
 mutant on a continuation line of a multi-line statement is reached when that statement ran. Of each such suite it runs
 only the tests that ran the statement, as coverage.py's test-function contexts recorded them, or that started, while
@@ -148,8 +150,19 @@ short, leaving a mutant not run, or a suite's reach unmeasured on a leg where a 
 unreached, is unfinished: its summary's first line says so, naming each module's mutants not run and how many lie on
 lines that run at import, and the job fails. A suite left unmeasured beside only mutants killed on either leg opens no
 verdict, since nothing it could do changes a kill, so the run finishes and the summary says so beside the suite's name. An unfinished gate is not
-a verdict, whatever its table shows. Split the pull request, or move the module-level tables its changed lines hold into
-the functions that use them, until its gate finishes. The summary of a finished run is the record: read it, and for a
+a verdict, whatever its table shows. Once a leg has measured its reach, before its mutants run, it estimates what they
+need, each at its first suite's unmutated time, and when that is more than its cap left, its log warns, naming the
+modules to move into pull requests of their own and each whose change alone needs more; an unfinished run's summary
+repeats the advice. A fix the gate cannot finish is split, as that advice names, or its module-level tables moved into
+the functions that use them, until its gate finishes: it is not judged by hand. Where a split cannot help, as for a
+change that must land in one piece, run the mutants left without a verdict on your machine with the gate's own step,
+never by applying them by hand. Download the run's mutants and every leg's outcomes into one folder, with
+`gh run download <run> --name mutation-mutants --dir '<folder>'` and the same for `mutation-linux` and
+`mutation-windows`, check out the commit the run tested, and run `python -B tools/mutation_gate.py --minutes <cap> unrun
+'<folder>'` on the platform of each leg that left mutants without a verdict. It runs those mutants alone, keeps every
+outcome CI gave the others, refuses a module whose text is not the one the mutants were made from, writes the completed
+leg back over its outcomes, and prints the join's summary, naming the local run beside the leg, which the pull
+request's "Mutation survivors" comment then rules on as it would a CI run's. The summary of a finished run is the record: read it, and for a
 surviving mutant on a line the pull request changed that alters behavior a caller relies on, such as a refusal or a line
 a document or test treats as a contract, add the test that kills it, or name it in the pull request with why it is
 equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere.

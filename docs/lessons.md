@@ -717,11 +717,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   pull request that touches it.
 - **Use:** `tools.mutation_gate:sanction_table`, `tools.mutation_gate:policy_tables`, which find a module-level
   sanction table and the validation policy that reads it.
-- **Guard:** `tests/tools/test_mutation_gate.py::SanctionTableFixtures`
+- **Guard:** `tests/tools/test_mutation_gate.py::SanctionTableFixtures`,
+  `tests/tools/test_mutation_gate.py::test_every_validation_policy_is_mutated_and_its_fixture_suite_reaches_it`,
+  `tests/tools/test_mutation_gate.py::test_every_validation_program_is_mutated_and_its_own_suite_reaches_it`
 - **Search for:** a mutant of a module-level `*_ALLOWED` table in the `Mutation gate` step summary; a gate or audit
   that runs a module's suites on what only a policy under `tests/validation/` reads; a new `*_ALLOWED` name with no
-  `*_ALLOWANCE` constant naming it in a policy.
-- **Examples:** #1933, #1938
+  `*_ALLOWANCE` constant naming it in a policy; a folder of checked code, such as the policies under
+  `tests/validation/`, that `is_gate_module` leaves out; a "Mutation survivors" comment that applied mutants by hand
+  rather than through the gate's `unrun` step.
+- **Examples:** #1933, #1938, #2174
 
 ### A gate runs where the behavior it judges differs
 
