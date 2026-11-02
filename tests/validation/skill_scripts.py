@@ -1999,7 +1999,6 @@ SCRIPT_ANALYZER_COMMAND = "Invoke-ScriptAnalyzer"
 # deployer, the tools, and validation. A skill's scripts are held to it by skill_command_problems.
 READABLE_COMMAND_ROOTS = ("deployer", "tools", "tests/validation", "deploy.py", "tests/run_validation.py")
 CHECKER_ROOTS = (*READABLE_COMMAND_ROOTS, "skills", ".claude/skills", "conftest.py")
-CHECKERS_DOC = '"Validation" in docs/adding-a-skill.md'
 # The reader's problem with a call through an alias it cannot resolve, and the alias.
 UNRESOLVED_ALIAS = re.compile(r" cannot resolve callable alias (\S+);")
 
@@ -2086,7 +2085,7 @@ def _checker_start_problems(reader: CommandReader, name: str) -> list[str]:
                 runners = " or ".join(f"{file}:{function}" for file, function in sorted(CHECKER_RUNNERS[checker]))
                 problems.append(
                     f"{name}:{call.lineno} starts {checker} outside its runner; call {runners}, which keeps settings "
-                    f"outside the repository from turning its findings off; see {CHECKERS_DOC}"
+                    'outside the repository from turning its findings off; see "Validation" in docs/adding-a-skill.md'
                 )
     return problems
 
