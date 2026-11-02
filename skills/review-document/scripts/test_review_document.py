@@ -17,8 +17,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
-from contextlib import redirect_stderr, redirect_stdout
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -84,6 +84,50 @@ def run_main(*arguments: str, github: GitHubClient | None = None) -> tuple[int, 
     with redirect_stdout(output):
         code = review_document.main(list(arguments), github=github)
     return code, output.getvalue().splitlines()
+
+
+@contextmanager
+def stat_failing_at(path: Path) -> Iterator[None]:
+    """A stat of one path that fails, as a denied one does: Path.stat, os.stat, and os.lstat raise PermissionError
+    for it, through links or not, and each presence predicate answers False for it, as every one does for a failed
+    stat from Python 3.14 on, on Windows without calling a stat. Every other path is answered as it is."""
+    real_stat = Path.stat
+
+    def denied() -> PermissionError:
+        return PermissionError(13, "Permission denied", str(path))
+
+    def is_path(name: object) -> bool:
+        return isinstance(name, (str, os.PathLike)) and Path(name) == path
+
+    def path_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == path:
+            raise denied()
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    def stat_function(real: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
+        def answer(name: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if is_path(name):
+                raise denied()
+            return real(name, *rest, **options)
+
+        return answer
+
+    def method(real: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda self, *rest, **options: False if self == path else real(self, *rest, **options)
+
+    def function(real: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda name, *rest: False if is_path(name) else real(name, *rest)
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", autospec=True, side_effect=path_stat))
+        for name in ("stat", "lstat"):
+            stack.enter_context(mock.patch.object(os, name, side_effect=stat_function(getattr(os, name))))
+        for name in ("exists", "is_file", "is_dir"):
+            real = getattr(Path, name)
+            stack.enter_context(mock.patch.object(Path, name, autospec=True, side_effect=method(real)))
+        for name in ("exists", "lexists", "isfile", "isdir"):
+            stack.enter_context(mock.patch.object(os.path, name, side_effect=function(getattr(os.path, name))))
+        yield
 
 
 def facts(lines: list[str]) -> dict[str, str]:
@@ -1820,6 +1864,18 @@ class OutputTests(DocumentTestCase):
         self.assertEqual(b"mine\n", a_file.read_bytes())
         code, lines = run_main("build", str(document), "--output", str(self.root / "empty folder"))
         self.assertEqual((0, str(self.root / "empty folder")), (code, facts(lines)["OUTPUT"]))
+
+    def test_an_output_whose_stat_fails_is_refused_rather_than_taken_for_new(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        kept = self.root.resolve() / "kept"
+        kept.mkdir()
+        (kept / "notes.txt").write_bytes(b"mine\n")
+        with stat_failing_at(kept):
+            code, lines = run_main("build", str(document), "--output", str(kept))
+        reason = "is a new or empty directory: Permission denied"
+        self.assertEqual((1, [f"FAILED cannot tell whether {kept} {reason}"]), (code, lines))
+        self.assertEqual(["notes.txt"], [entry.name for entry in kept.iterdir()])
 
     def test_an_output_whose_path_a_quoted_argument_does_not_keep_is_refused_before_anything_is_written(self) -> None:
         document = self.root / "plan.md"

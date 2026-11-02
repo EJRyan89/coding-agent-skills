@@ -10,8 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable, Sequence
-from contextlib import AbstractContextManager, redirect_stderr, redirect_stdout
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -3081,8 +3081,12 @@ def test_a_skill_folder_and_a_link_to_it_are_one_skill(tmp_path: Path) -> None:
     assert skill_inventory.identity(tmp_path / "skills") != skill_inventory.identity(target)
 
 
-def denied_stat(target: Path) -> AbstractContextManager[object]:
-    """Path.stat refusing `target` alone, as it does for a path in a folder the user may not search."""
+@contextmanager
+def denied_stat(target: Path) -> Iterator[None]:
+    """A stat of `target` alone that fails, as one in a folder the user may not search does: Path.stat raises
+    PermissionError for it, through links or not, and each presence predicate answers False for it, as every one does
+    for a failed stat from Python 3.14 on, on Windows without calling Path.stat. Every other path is answered as it is.
+    """
     real = Path.stat
 
     def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
@@ -3090,7 +3094,20 @@ def denied_stat(target: Path) -> AbstractContextManager[object]:
             raise PermissionError(errno.EACCES, "Permission denied", str(path))
         return real(path, follow_symlinks=follow_symlinks)
 
-    return mock.patch.object(Path, "stat", autospec=True, side_effect=stat)
+    def method(predicate: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda path, *rest, **options: False if path == target else predicate(path, *rest, **options)
+
+    def function(predicate: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda name, *rest: False if Path(name) == target else predicate(name, *rest)
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", autospec=True, side_effect=stat))
+        for name in ("exists", "is_file", "is_dir"):
+            real_method = getattr(Path, name)
+            stack.enter_context(mock.patch.object(Path, name, autospec=True, side_effect=method(real_method)))
+        for name in ("exists", "lexists", "isfile", "isdir"):
+            stack.enter_context(mock.patch.object(os.path, name, side_effect=function(getattr(os.path, name))))
+        yield
 
 
 PROMPT_BODY = (
@@ -3175,6 +3192,60 @@ def declared_agent_definition(root: Path) -> tuple[list[str], Path]:
     return ["scan", str(folder)], root / "agents" / "guarded.md"
 
 
+def located_main_file(root: Path) -> tuple[list[str], Path]:
+    arguments, folder = user_skill_folder(root)
+    return arguments, folder / "SKILL.md"
+
+
+def listed_skill_folder(root: Path) -> tuple[list[str], Path]:
+    _, folder = user_skill_folder(root)
+    return locate_arguments(root, "beta"), folder
+
+
+def cached_plugin_folder(root: Path) -> tuple[list[str], Path]:
+    return locate_arguments(root), plugin_in_cache(root / "home")
+
+
+def plugin_sibling_skill(root: Path) -> tuple[list[str], Path]:
+    plugin = plugin_in_cache(root / "home")
+    write(plugin / "skills" / "beta" / "SKILL.md", "plugin")
+    return ["inventory", str(plugin / "skills" / "alpha")], plugin / "skills" / "beta"
+
+
+def inventoried_doc(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root)
+    return ["inventory", str(folder)], write(folder / "guide.md", "Guide.\n")
+
+
+def core_script(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root, PROMPT_BODY)
+    write(folder / "scripts" / "pipeline.py", 'print("RUN")\n')
+    return ["scan", str(folder)], write(root / "skills" / "ejryan89-skill-core" / "scripts" / "core.py", 'print("X")\n')
+
+
+def prompt_skill_main_file(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root)
+    return ["scan", str(write(folder / "guide.md", PROMPT_BODY))], folder / "SKILL.md"
+
+
+def sample_named_source(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root, PROMPT_BODY)
+    write(root / skill_inventory.RUNTIME_PROMPT_SAMPLES / "alpha" / "reviewer.txt", "Read <source>/docs/guide.md.\n")
+    return ["scan", str(folder)], write(root / "docs" / "guide.md", "Guide.\n")
+
+
+def repository_git_entry(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root)
+    return ["scan", str(folder)], folder.resolve().parent.parent / ".git"
+
+
+def dependency_skill_folder(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root, metadata={"skill_deps": ["beta"]})
+    write(root / "deploy-meta" / "beta.json", "{}")
+    write(root / "skills" / "beta" / "SKILL.md", "---\ndescription: Help.\n---\nBody.\n")
+    return ["tools", str(folder / "SKILL.md")], root / "skills" / "beta"
+
+
 def repository_code_script(root: Path) -> tuple[list[str], Path]:
     folder = root / "skill"
     write(folder / "scripts" / "start.py", 'RUNS_REPOSITORY_CODE = "starts configured servers"\n')
@@ -3197,6 +3268,16 @@ def repository_code_script(root: Path) -> tuple[list[str], Path]:
         agents_folder,
         declared_agent_definition,
         repository_code_script,
+        located_main_file,
+        listed_skill_folder,
+        cached_plugin_folder,
+        plugin_sibling_skill,
+        inventoried_doc,
+        core_script,
+        prompt_skill_main_file,
+        sample_named_source,
+        repository_git_entry,
+        dependency_skill_folder,
     ],
 )
 def test_a_file_or_folder_whose_stat_fails_fails_the_command_rather_than_reading_as_absent(
@@ -3206,6 +3287,17 @@ def test_a_file_or_folder_whose_stat_fails_fails_the_command_rather_than_reading
     with denied_stat(target):
         code, lines, error = run(*arguments)
     assert (code, lines, error) == (1, [f"FAILED cannot read {target.as_posix()}: Permission denied"], "")
+
+
+def test_an_outside_file_whose_stat_fails_is_unreadable_rather_than_missing(tmp_path: Path) -> None:
+    folder = source_skill(tmp_path, "Read ../shared.md.\n")
+    shared = write(tmp_path / "skills" / "shared.md", "Shared.\n")
+    with denied_stat(shared):
+        code, lines, error = run("inventory", str(folder))
+    assert (code, error) == (1, "")
+    assert [line for line in lines if line.startswith(("OUTSIDE_", "UNREADABLE "))] == [
+        "UNREADABLE ../shared.md Permission denied"
+    ]
 
 
 def test_a_marketplace_whose_stat_fails_is_unreadable_rather_than_absent(tmp_path: Path) -> None:

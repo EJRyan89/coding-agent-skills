@@ -9,8 +9,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
-from contextlib import redirect_stderr, redirect_stdout
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -99,6 +99,50 @@ def directory_link(link: Path, target: Path) -> Path:
 
 def memory(name: str, body: str, kind: str = "feedback") -> str:
     return f"---\nname: {name}\ndescription: {name} description\nmetadata:\n  type: {kind}\n---\n\n{body}\n"
+
+
+@contextmanager
+def stat_failing_at(path: Path) -> Iterator[None]:
+    """A stat of one path that fails, as a denied one does: Path.stat, os.stat, and os.lstat raise PermissionError
+    for it, through links or not, and each presence predicate answers False for it, as every one does for a failed
+    stat from Python 3.14 on, on Windows without calling a stat. Every other path is answered as it is."""
+    real_stat = Path.stat
+
+    def denied() -> PermissionError:
+        return PermissionError(13, "Permission denied", str(path))
+
+    def is_path(name: object) -> bool:
+        return isinstance(name, (str, os.PathLike)) and Path(name) == path
+
+    def path_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == path:
+            raise denied()
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    def stat_function(real: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
+        def answer(name: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if is_path(name):
+                raise denied()
+            return real(name, *rest, **options)
+
+        return answer
+
+    def method(real: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda self, *rest, **options: False if self == path else real(self, *rest, **options)
+
+    def function(real: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda name, *rest: False if is_path(name) else real(name, *rest)
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", autospec=True, side_effect=path_stat))
+        for name in ("stat", "lstat"):
+            stack.enter_context(mock.patch.object(os, name, side_effect=stat_function(getattr(os, name))))
+        for name in ("exists", "is_file", "is_dir"):
+            real = getattr(Path, name)
+            stack.enter_context(mock.patch.object(Path, name, autospec=True, side_effect=method(real)))
+        for name in ("exists", "lexists", "isfile", "isdir"):
+            stack.enter_context(mock.patch.object(os.path, name, side_effect=function(getattr(os.path, name))))
+        yield
 
 
 def run_main(*arguments: str) -> tuple[int, str, str]:
@@ -1456,6 +1500,45 @@ class ResolveTests(unittest.TestCase):
             result = self.resolve()
             self.assertTrue(result["exists"])
             self.assertNotIn("candidates", result)
+
+    def test_a_memory_directory_whose_stat_fails_is_refused_with_the_candidates_rather_than_missing(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        settings = self.home / ".claude" / "settings.json"
+        write(settings, json.dumps({"autoMemoryDirectory": "~/memory-user"}))
+        for source, directory in (("settings", self.home / "memory-user"), ("derived", self.derived())):
+            with self.subTest(source=source):
+                if source == "derived":
+                    settings.unlink()
+                self.store(directory)
+                with stat_failing_at(directory):
+                    result = self.resolve()
+                self.assertEqual(str(directory), result["memory_dir"])
+                self.assertEqual(
+                    (True, f"{directory} cannot be looked at: Permission denied", [str(other)]),
+                    (result["exists"], result.get("refused"), result.get("candidates")),
+                )
+
+    def test_a_candidate_whose_stat_fails_is_left_out_with_a_note(self) -> None:
+        projects = self.home / ".claude" / "projects"
+        other = projects / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        locked = projects / "C--locked" / "memory"
+        locked.mkdir(parents=True)
+        with stat_failing_at(locked):
+            result = self.resolve()
+        self.assertEqual([str(other)], result["candidates"])
+        self.assertIn(
+            f"Left out a memory directory that cannot be looked at: {str(locked)!r}: Permission denied",
+            result["notes"],
+        )
+        with stat_failing_at(projects):
+            result = self.resolve()
+        self.assertEqual([], result["candidates"])
+        self.assertIn(
+            f"Left out the memory directories under {str(projects)!r}, which cannot be read: Permission denied",
+            result["notes"],
+        )
 
     def test_an_unusable_settings_value_lists_candidates(self) -> None:
         other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"

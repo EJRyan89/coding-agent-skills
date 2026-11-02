@@ -17,10 +17,11 @@ resolve and audit are read-only. They never decide what to keep or delete; the c
 every candidate. resolve locates the memory directory for --repo, else for the current directory, and
 prints `REPO <root>`, the top level of the Git worktree holding that folder, or the folder itself when
 --repo names one in no Git repository; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`,
-`EXISTS yes|no`, and `REFUSED <reason>` when the directory exists but is no memory store, or
-`NO_MEMORY_DIR` when no usable directory resolves; one `CANDIDATE <dir>` per memory directory under the
-configuration directory's projects folder when no memory store resolved, whether settings named a
-missing one, the default one is missing or refused, or none is usable; and one `NOTE <text>` per caveat.
+`EXISTS yes|no`, and `REFUSED <reason>` when the directory exists but is no memory store, or cannot be
+looked at, which counts as existing, or `NO_MEMORY_DIR` when no usable directory resolves; one
+`CANDIDATE <dir>` per memory directory under the configuration directory's projects folder when no memory
+store resolved, whether settings named a missing one, the default one is missing or refused, or none is
+usable; and one `NOTE <text>` per caveat, among them each memory directory there that cannot be looked at.
 No directory is a result, not a failure. A directory a repository's settings choose is not used while
 permissions.blockReadsOutsideWorkingDirectories is on in any scope, since Claude Code then loads no
 memory from it and saves none to it. Without settings, the directory is derived from the top level of
@@ -103,7 +104,7 @@ import json_writer
 from atomic_file import replace_text
 from console import run_main
 from executable_locator import environment_path
-from file_presence import is_present
+from file_presence import is_directory, is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
@@ -809,7 +810,7 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path |
         if refused:
             result["refused"] = refused
     if not result["exists"] or result.get("refused"):
-        found = sorted(str(path) for path in (config_dir / "projects").glob("*/memory") if path.is_dir())
+        found, unreadable = candidate_directories(config_dir / "projects")
         refused_dir = result["memory_dir"] if result.get("refused") else None
         result["candidates"] = [path for path in found if not holds_line_break(path) and path != refused_dir]
         result["notes"] += [
@@ -817,7 +818,35 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path |
             for path in found
             if holds_line_break(path)
         ]
+        result["notes"] += unreadable
     return result
+
+
+def candidate_directories(projects: Path) -> tuple[list[str], list[str]]:
+    """The memory directory of each project under `projects`, in order, and a note for each one, or for `projects`
+    itself, that cannot be looked at, which is left out rather than taken for missing."""
+    try:
+        entries = list(projects.iterdir()) if is_directory(projects, other_is_absent=True) else []
+    except OSError as exc:
+        return [], [f"Left out the memory directories under {str(projects)!r}, which cannot be read: {reason(exc)}"]
+    found: list[str] = []
+    unreadable: list[str] = []
+    for memory in sorted(str(entry / "memory") for entry in entries):
+        try:
+            if is_directory(Path(memory), other_is_absent=True):
+                found.append(memory)
+        except OSError as exc:
+            unreadable.append(f"Left out a memory directory that cannot be looked at: {memory!r}: {reason(exc)}")
+    return found, unreadable
+
+
+def directory_state(directory: Path) -> dict[str, Any]:
+    """Whether the memory directory exists, as `exists`. One whose presence cannot be told is never reported as
+    missing: it counts as there, and `refused` says why the later steps refuse it."""
+    try:
+        return {"exists": is_directory(directory, other_is_absent=True)}
+    except OSError as exc:
+        return {"exists": True, "refused": f"{directory} cannot be looked at: {reason(exc)}"}
 
 
 class UnreadableSettings(Exception):
@@ -924,7 +953,7 @@ def locate(
             source = f"derived from the repository's main worktree ({root})"
         directory = projects / encode_project(str(root)) / "memory"
         notes.append("The directory name is derived by convention; confirm it before changing anything.")
-    return {"memory_dir": str(directory), "source": source, "exists": directory.is_dir(), "notes": notes}
+    return {"memory_dir": str(directory), "source": source, **directory_state(directory), "notes": notes}
 
 
 def chosen_directory(
@@ -958,7 +987,7 @@ def chosen_directory(
     return {
         "memory_dir": str(directory),
         "source": f"autoMemoryDirectory in {scope} settings ({path})",
-        "exists": directory.is_dir(),
+        **directory_state(directory),
         "notes": notes,
     }
 

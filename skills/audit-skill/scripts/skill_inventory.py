@@ -941,10 +941,20 @@ def shown_commands(body: list[str], start: int) -> list[str]:
 # --- locate ---------------------------------------------------------------------------------------
 
 
+def is_listed_file(path: Path) -> bool:
+    """Whether a regular file is at a path a listing found or the skill names, following links: False when nothing or
+    something else is there, and the stat's OSError when it cannot tell, so a file the audit cannot look at fails the
+    command rather than being left out of what it measures."""
+    try:
+        return is_present(path)
+    except NotAFile:
+        return False
+
+
 def main_files(directory: Path) -> list[Path]:
     if not is_directory(directory):
         return []
-    return sorted(path for path in directory.iterdir() if path.is_file() and path.name.casefold() == MAIN_NAME)
+    return sorted(path for path in directory.iterdir() if path.name.casefold() == MAIN_NAME and is_listed_file(path))
 
 
 def skill_roots(home: Path, repo: Path | None) -> list[tuple[str, Path]]:
@@ -975,7 +985,10 @@ def plugin_roots(folder: Path, depth: int = PLUGIN_DEPTH) -> list[Path]:
         return [folder]
     if depth == 0 or not is_directory(folder):
         return []
-    children = sorted((child for child in folder.iterdir() if child.is_dir()), key=lambda path: path.name.casefold())
+    children = sorted(
+        (child for child in folder.iterdir() if is_directory(child, other_is_absent=True)),
+        key=lambda path: path.name.casefold(),
+    )
     return [root for child in children for root in plugin_roots(child, depth - 1)]
 
 
@@ -1057,7 +1070,11 @@ def available_lines(name: str, roots: list[tuple[str, Path]]) -> list[str]:
         if not is_directory(root):
             continue
         for directory in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
-            if directory.is_dir() and skill_files(scope, directory) and identity(directory) not in listed:
+            if (
+                is_directory(directory, other_is_absent=True)
+                and skill_files(scope, directory)
+                and identity(directory) not in listed
+            ):
                 listed.add(identity(directory))
                 lines.append(f"AVAILABLE {scope} {shown_name(scope, directory)}")
                 available.setdefault(scope, []).append(shown_name(scope, directory))
@@ -1151,7 +1168,7 @@ def folder_files(directory: Path) -> list[Path]:
         (
             path
             for path in directory.rglob("*")
-            if path.is_file() and not SKIPPED_DIRECTORIES.intersection(path.relative_to(directory).parts[:-1])
+            if not SKIPPED_DIRECTORIES.intersection(path.relative_to(directory).parts[:-1]) and is_listed_file(path)
         ),
         key=lambda path: posix(path.relative_to(directory)).casefold(),
     )
@@ -1265,11 +1282,16 @@ def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[st
                 if target == root or root in target.parents:
                     continue
                 where = f"{relative}:{number + 1}"
-                if not target.is_file():
-                    lines.append(f"OUTSIDE_MISSING {where} {reference}")
-                    continue
                 key = identity(target)
                 if key in unreadable:
+                    continue
+                try:
+                    present = is_listed_file(target)
+                except OSError as exc:
+                    unreadable[key] = f"UNREADABLE {outside_path(root, target)} {exc.strerror or exc}"
+                    continue
+                if not present:
+                    lines.append(f"OUTSIDE_MISSING {where} {reference}")
                     continue
                 if key not in counted:
                     outside = read_text(target)
@@ -1404,7 +1426,7 @@ def plugin_lines(directory: Path) -> list[str]:
         skills = [
             child.name
             for child in sorted((plugin_root / SKILLS_FOLDER).iterdir(), key=lambda path: path.name.casefold())
-            if child.is_dir() and child.name != directory.name and main_files(child)
+            if is_directory(child, other_is_absent=True) and child.name != directory.name and main_files(child)
         ]
         return [
             f"CARRIED_BY {name}",
@@ -1826,7 +1848,7 @@ def skill_folder(path: Path) -> Path | None:
     file is, so a relative path stays relative."""
     for folder in path.parents:
         folder = folder if folder.name else folder.resolve()
-        if any(child.name.casefold() == MAIN_NAME for child in folder.iterdir() if child.is_file()):
+        if any(child.name.casefold() == MAIN_NAME and is_listed_file(child) for child in folder.iterdir()):
             return folder
     return None
 
@@ -1859,7 +1881,7 @@ def measure_sample(root: Path, sample: Path) -> list[str]:
     named = {match.group(1).replace("\\", "/").rstrip(".,;:)") for match in SAMPLE_SOURCE_PATH.finditer(text)}
     for relative in sorted(named):
         target = root / relative
-        if target.suffix.casefold() not in HELPER_SUFFIXES and target.is_file():
+        if target.suffix.casefold() not in HELPER_SUFFIXES and is_listed_file(target):
             tokens = estimate_tokens(require_text(target), "doc")
             output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {tokens}")
     output.append(f"REPLY_BOUNDED {posix(sample)} {'yes' if REPLY_BOUND.search(text) else 'no'}")
@@ -2033,8 +2055,9 @@ def script_facts(path: Path) -> ScriptFacts:
 
 
 def repository_root(folder: Path) -> Path | None:
-    """The nearest folder above a skill that holds a .git entry, where its commands run tools from, or None."""
-    return next((parent for parent in folder.resolve().parents if (parent / ".git").exists()), None)
+    """The nearest folder above a skill that holds a .git entry, where its commands run tools from, or None; a .git
+    entry it cannot look at raises the stat's OSError rather than passing to the folder above."""
+    return next((parent for parent in folder.resolve().parents if is_occupied(parent / ".git")), None)
 
 
 def folder_scripts(folder: Path) -> list[Path]:
@@ -2044,7 +2067,7 @@ def folder_scripts(folder: Path) -> list[Path]:
     return [
         path.resolve()
         for path in sorted(folder.iterdir())
-        if path.is_file() and path.suffix.casefold() in STATUS_SCRIPT_SUFFIXES and not is_suite_name(path.name)
+        if path.suffix.casefold() in STATUS_SCRIPT_SUFFIXES and not is_suite_name(path.name) and is_listed_file(path)
     ]
 
 
@@ -2590,7 +2613,9 @@ def dependency_folders(folder: Path, markdown: list[tuple[Path, list[str]]]) -> 
     found = skill_closure(root, folder.name)[1:] if root is not None else []
     found += [name for _, lines in markdown for line in lines for name in SIBLING_SKILL.findall(line)]
     return [
-        folder.parent / name for name in dict.fromkeys(found) if name != folder.name and (folder.parent / name).is_dir()
+        folder.parent / name
+        for name in dict.fromkeys(found)
+        if name != folder.name and is_directory(folder.parent / name, other_is_absent=True)
     ]
 
 

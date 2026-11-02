@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TypeVar
@@ -80,6 +80,51 @@ def remove_tree(path: Path) -> None:
         shutil.rmtree(path, onexc=writable)
     else:
         shutil.rmtree(path, onerror=writable)
+
+
+def denied(path: Path) -> PermissionError:
+    return PermissionError(13, "Permission denied", str(path))
+
+
+@contextlib.contextmanager
+def stat_failing_at(path: Path) -> Iterator[None]:
+    """A stat of one path that fails, as a denied one does: Path.stat, os.stat, and os.lstat raise PermissionError
+    for it, through links or not, and each presence predicate answers False for it, as every one does for a failed
+    stat from Python 3.14 on, on Windows without calling a stat. Every other path is answered as it is."""
+    real_stat = Path.stat
+
+    def is_path(name: object) -> bool:
+        return isinstance(name, (str, os.PathLike)) and Path(name) == path
+
+    def path_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == path:
+            raise denied(path)
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    def stat_function(real: Callable[..., os.stat_result]) -> Callable[..., os.stat_result]:
+        def answer(name: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if is_path(name):
+                raise denied(path)
+            return real(name, *rest, **options)
+
+        return answer
+
+    def method(real: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda self, *rest, **options: False if self == path else real(self, *rest, **options)
+
+    def function(real: Callable[..., bool]) -> Callable[..., bool]:
+        return lambda name, *rest: False if is_path(name) else real(name, *rest)
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", autospec=True, side_effect=path_stat))
+        for name in ("stat", "lstat"):
+            stack.enter_context(mock.patch.object(os, name, side_effect=stat_function(getattr(os, name))))
+        for name in ("exists", "is_file", "is_dir"):
+            real = getattr(Path, name)
+            stack.enter_context(mock.patch.object(Path, name, autospec=True, side_effect=method(real)))
+        for name in ("exists", "lexists", "isfile", "isdir"):
+            stack.enter_context(mock.patch.object(os.path, name, side_effect=function(getattr(os.path, name))))
+        yield
 
 
 def git(directory: Path, *arguments: str) -> str:

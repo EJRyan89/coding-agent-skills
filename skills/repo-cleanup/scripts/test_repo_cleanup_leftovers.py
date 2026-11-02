@@ -30,6 +30,7 @@ from test_repo_cleanup import (
     git,
     is_regenerable,
     refusing_branch_deletion,
+    stat_failing_at,
 )
 
 # The settings conftest.py adds to the global configuration of every home this suite's git runs in.
@@ -514,6 +515,40 @@ class LeftoverTests(Fixture):
         self.assertTrue(why.startswith(f"could not ask Git whether {holder.as_posix()} tracks files in it: "), why)
         self.assertTrue(stale.is_dir())
 
+    def test_an_orphan_is_kept_when_whether_a_directory_holding_it_is_a_repository_cannot_be_told(self) -> None:
+        stale = self.area / "stale wt"
+        stale.mkdir(parents=True)
+        _, applied = self.clean()
+        self.assertEqual(1, len(facts(applied, "ORPHAN")), applied)
+        entry = self.repos / "Worktrees" / ".git"
+        with stat_failing_at(entry):
+            code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(stale))
+        self.assertEqual(1, code, lines)
+        why = "could not tell which directories holding it are repositories: "
+        self.preserved(lines, (stale, f"{why}[Errno 13] Permission denied: {str(entry)!r}"))
+        self.assertEqual([], facts(lines, "DELETED_DIR"))
+        self.assertTrue(stale.is_dir())
+
+    def test_a_directory_whose_git_entry_cannot_be_told_about_is_never_offered(self) -> None:
+        stale = self.area / "stale wt"
+        stale.mkdir(parents=True)
+        with stat_failing_at(stale / ".git"):
+            _, applied = self.clean()
+        self.assertEqual([], facts(applied, "ORPHAN"), applied)
+        self.assertTrue(stale.is_dir())
+
+    def test_an_offered_orphan_whose_stat_fails_is_kept_rather_than_read_as_gone(self) -> None:
+        stale = self.area / "stale wt"
+        stale.mkdir(parents=True)
+        _, applied = self.clean()
+        self.assertEqual(1, len(facts(applied, "ORPHAN")), applied)
+        with stat_failing_at(stale):
+            code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(stale))
+        self.assertEqual(1, code, lines)
+        why = f"could not tell whether it is still there: [Errno 13] Permission denied: {str(stale)!r}"
+        self.preserved(lines, (stale, why))
+        self.assertTrue(stale.is_dir())
+
     def outside_area(self, name: str, *inner: str) -> Path:
         """A directory outside the repository and the worktree area, holding `inner` and a victim directory in it."""
         target = self.root / name
@@ -790,19 +825,13 @@ def test_a_hidden_file_whose_stat_fails_is_refused_rather_than_read_as_absent(tm
     # held_state reads the refusal as a reason to keep the worktree, as test_repo_cleanup_held_state shows.
     locked = tmp_path / "locked"
     locked.write_text("x", encoding="utf-8")
-    real_stat = Path.stat
-
-    def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-        if path == locked:
-            raise PermissionError(13, "Permission denied", str(path))
-        return real_stat(path, follow_symlinks=follow_symlinks)
 
     def git_output(services: Any, path: str, *arguments: str) -> str:
         return "S 100644 1111 0\tlocked" if arguments[0] == "ls-files" else "1111"
 
     with (
         mock.patch.object(rc, "git_output", side_effect=git_output),
-        mock.patch.object(Path, "stat", autospec=True, side_effect=denied),
+        stat_failing_at(locked),
         pytest.raises(rc.CleanupError) as refused,
     ):
         rc.hidden_edits(rc.Services(), str(tmp_path))
