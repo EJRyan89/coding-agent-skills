@@ -58,14 +58,17 @@ def _mode(path: Path) -> int | None:
             return None
 
 
-def is_present(path: Path) -> bool:
+def is_present(path: Path, *, other_is_absent: bool = False) -> bool:
     """Whether a regular file is at `path`, following links: False when nothing is, not even a link to nothing,
-    `NotAFile` when something else is, and the stat's `OSError` when it cannot tell."""
+    `NotAFile` when something else is, or False then too for a caller that passes `other_is_absent`, such as one
+    choosing the files among a listing's entries, and the stat's `OSError` when it cannot tell."""
     mode = _mode(path)
     if mode is None:
         return False
     if stat.S_ISREG(mode):
         return True
+    if other_is_absent:
+        return False
     raise NotAFile(path, directory=stat.S_ISDIR(mode))
 
 
