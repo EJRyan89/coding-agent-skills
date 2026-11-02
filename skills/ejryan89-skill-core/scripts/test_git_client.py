@@ -1123,8 +1123,9 @@ class IsolatedClientTests(unittest.TestCase):
         null = "nul" if os.name == "nt" else "/dev/null"
         finished = bounded_process.Finished(0, b"", b"")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
-            GitClient(isolated=True).run(["grep", "-e", "x"], directory="d")
-            GitClient(isolated=True).run(["hash-object", "--stdin"], input_bytes=b"blob")
+            GitClient(isolated=True, timeout=7).run(["grep", "-e", "x"], directory="d")
+            GitClient(isolated=True, timeout=7).run(["hash-object", "--stdin"], input_bytes=b"blob")
+        self.assertEqual([7, 7], [call_shape(call)[0][1] for call in run.call_args_list], "the client's time limit")
         (command, _), options = call_shape(run.call_args_list[0])
         self.assertEqual([git(), f"--git-dir={null}", "-C", "d", "grep", "-e", "x"], command)
         environment = options["env"]
@@ -1139,7 +1140,13 @@ class IsolatedClientTests(unittest.TestCase):
     def test_an_isolated_client_refuses_a_runner_that_could_not_start_git_isolated(self) -> None:
         runner, _ = scripted(GitResult(0, "", ""))
         for options in ({"runner": runner}, {"input_runner": runner}):
-            with self.subTest(options=sorted(options)), self.assertRaisesRegex(TypeError, "takes no runner"):
+            with (
+                self.subTest(options=sorted(options)),
+                self.assertRaisesRegex(
+                    TypeError,
+                    "^an isolated GitClient starts git itself, with the isolated environment, so it takes no runner$",
+                ),
+            ):
                 GitClient(isolated=True, **options)  # type: ignore[arg-type]  # each option is a runner
         GitClient(git_client.subprocess_runner, isolated=True, input_runner=git_client.subprocess_runner)
 
@@ -1157,14 +1164,15 @@ class IsolatedClientTests(unittest.TestCase):
             "behind git's options": lambda flag: ["-c", "a.b=c", "grep", flag, "-e", "needle"],
             "diff": lambda flag: ["diff", "--stat", flag, "a", "b"],
         }
+        refusal = r"^git grep or diff --no-index reads files no repository holds; run it on GitClient\(isolated=True\)$"
         for spelling in spellings:
             for shape, build in shapes.items():
                 arguments = build(spelling)
                 with self.subTest(spelling=spelling, shape=shape):
                     runner, calls = scripted(GitResult(0, "", ""))
-                    with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
+                    with self.assertRaisesRegex(ValueError, refusal):
                         GitClient(runner).run(arguments)
-                    with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
+                    with self.assertRaisesRegex(ValueError, refusal):
                         GitClient(runner).stream(arguments).__enter__()
                     self.assertEqual([], calls, "refused before git starts")
         allowed = (
@@ -1189,7 +1197,7 @@ class IsolatedClientTests(unittest.TestCase):
                     ["git", "-C", "d", "-c", "a.b=c", "grep", "-e", spelling, "-n", "HEAD", "--"], calls[0][0]
                 )
         runner, _ = scripted(GitResult(0, "", ""))
-        with self.assertRaisesRegex(ValueError, "needs a subcommand"):
+        with self.assertRaisesRegex(ValueError, "^a pattern needs a subcommand to follow$"):
             GitClient(runner).run([], pattern="x")
 
     def test_a_search_for_the_literal_no_index_runs_in_the_repository(self) -> None:

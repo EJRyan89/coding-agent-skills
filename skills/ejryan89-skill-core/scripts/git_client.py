@@ -311,7 +311,7 @@ def reads_no_repository(arguments: Sequence[str]) -> bool:
     )
 
 
-def _command(arguments: Sequence[str], directory: str | Path | None, *, isolated: bool = False) -> list[str]:
+def _command(arguments: Sequence[str], directory: str | Path | None, *, isolated: bool) -> list[str]:
     return [
         "git",
         *([NO_REPOSITORY] if isolated else []),
