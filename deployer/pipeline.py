@@ -15,8 +15,6 @@ import time
 from pathlib import Path
 from typing import TextIO, assert_never
 
-import file_presence
-
 from . import (
     config,
     errors,
@@ -146,17 +144,10 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
             continue
         root = journal.entry_root(entry)
         item = entry["item"]
-        transient = journal.root_directory(context.paths, root) / transient_name(item)
-        unreadable = ""
-        try:
-            if not entry["retain"] and journal.backup_unchanged(context.paths, entry):
-                unkept.append(entry)
-                continue
-            present = file_presence.is_occupied(transient)
-        except OSError as error:
-            # A copy whose stat fails is offered to keep_backup like any other, never deleted or left unreported.
-            present, unreadable = True, error.strerror or str(error)
-        if present:
+        disposition, unreadable = journal.backup_disposition(context.paths, entry)
+        if disposition == "delete":
+            unkept.append(entry)
+        elif disposition == "keep":
             # After the commit nothing refuses: a copy that cannot be kept under .backups stays beside its item.
             preserve = functools.partial(record.preserve, root, item)
             kept_at = journal.keep_backup(context.paths, run_id, entry, preserve)
@@ -164,11 +155,9 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
                 continue
             backups.append((item, kept_at))
             if unreadable:
-                print(
-                    f"WARNING: Could not tell whether {item}'s previous copy changed after this deployment planned it "
-                    f"({unreadable}), so it was kept at {kept_at}.",
-                    file=sys.stderr,
-                )
+                why = f"Could not tell whether {item}'s previous copy changed after this deployment planned it"
+                why = f"{why} ({unreadable})"
+                print(f"WARNING: {why}, so it was kept at {kept_at}.", file=sys.stderr)
             elif not entry["retain"]:
                 print(
                     f"WARNING: {item} changed after this deployment planned it, so its previous copy was kept at "
