@@ -81,6 +81,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/diff_paths.py",
     f"{SKILL_CORE}/dotnet_solution.py",
     f"{SKILL_CORE}/executable_locator.py",
+    f"{SKILL_CORE}/file_presence.py",
     f"{SKILL_CORE}/flat_text.py",
     f"{SKILL_CORE}/git_client.py",
     f"{SKILL_CORE}/git_worktrees.py",

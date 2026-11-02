@@ -61,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import frontmatter
 import json_reader
 from console import run_main
+from file_presence import NotAFile, is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from markdown_sections import find_fences
@@ -210,9 +211,15 @@ class Tree:
 
     def head(self, path: str) -> str | None:
         """The working tree's text, each byte that is not UTF-8 kept as git's output keeps it at the base, so a file
-        no reader can read is compared rather than ending the run."""
+        no reader can read is compared rather than ending the run. None when no file is there, a folder in its place
+        included, which compares as a change from a base that held the file; a stat that fails raises its OSError,
+        which ends the run as FAILED rather than reading the file as removed."""
         file = self.root / path
-        return file.read_bytes().decode("utf-8-sig", "surrogateescape") if file.is_file() else None
+        try:
+            present = is_present(file)
+        except NotAFile:
+            return None
+        return file.read_bytes().decode("utf-8-sig", "surrogateescape") if present else None
 
 
 def frontmatter_block(text: str | None) -> list[str] | None:

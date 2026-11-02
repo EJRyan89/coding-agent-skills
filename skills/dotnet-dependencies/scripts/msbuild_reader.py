@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dotnet_solution
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
+from file_presence import is_directory
 from folders_up import folders_up
 from msbuild_xml import local_name
 from xml_reader import XmlRefused, read_xml
@@ -296,10 +297,14 @@ def read_nuspec(path: Path, assemblies: tuple[str, ...] = ()) -> PackageNode:
 
 
 def package_assemblies(package_dir: Path) -> tuple[str, ...]:
-    """The stems of the assemblies a package folder ships under lib/, each once, in name order."""
+    """The stems of the assemblies a package folder ships under lib/, each once, in name order, or `Unreadable` when
+    something other than a folder stands at lib/ or whether one is there cannot be told."""
     lib = package_dir / "lib"
-    if not lib.is_dir():
-        return ()
+    try:
+        if not is_directory(lib):
+            return ()
+    except OSError as error:
+        raise Unreadable(lib, error.strerror or str(error)) from None
     return tuple(sorted({path.stem for path in lib.rglob("*.dll")}, key=str.casefold))
 
 
