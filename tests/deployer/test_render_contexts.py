@@ -274,6 +274,24 @@ class ShellCheckBatchTests(unittest.TestCase):
             raised.exception.lines,
         )
 
+    def test_each_batch_counts_the_whole_command_line_its_paths_join(self) -> None:
+        # Paths shorter than any option the command carries, so a batch measured without one would take a path too many.
+        units = [render.ShellUnit(Path(f"C:/{n}.sh"), f"s/SKILL.md block {n + 1}", True) for n in range(6)]
+        calls: list[list[str]] = []
+
+        def shellcheck(arguments: list[str], _environment: object = None) -> platform_support.ToolResult:
+            calls.append(arguments)
+            return platform_support.ToolResult(0, "")
+
+        budget = len("shellcheck --norc --format=gcc") + 3 * len(" C:/0.sh")
+        with (
+            mock.patch.object(render, "SHELLCHECK_COMMAND_BUDGET", budget),
+            mock.patch.object(platform_support, "run_tool", side_effect=shellcheck),
+        ):
+            render._run_shellcheck(units, "shellcheck")
+        self.assertEqual([3, 3], [len(call) - 3 for call in calls])
+        self.assertTrue(all(len(" ".join(call)) <= budget for call in calls), calls)
+
     def test_one_failing_unit_keeps_its_message(self) -> None:
         units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
         result = platform_support.ToolResult(1, "C:/work/files/run.sh:2:1: error: Parsing stopped. [SC1073]\n")
