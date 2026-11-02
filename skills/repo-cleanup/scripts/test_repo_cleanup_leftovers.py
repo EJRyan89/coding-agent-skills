@@ -821,6 +821,18 @@ def test_a_hidden_file_is_compared_only_when_its_index_mode_and_its_worktree_ent
     assert hashed == [["plain"]]
 
 
+def test_a_hidden_file_after_an_absent_one_is_still_compared(tmp_path: Path) -> None:
+    # A sparse checkout leaves "absent" out, holding nothing to lose; "edited" after it differs from its index entry.
+    (tmp_path / "edited").write_text("x", encoding="utf-8")
+    listing = ["S 100644 1111 0\tabsent", "S 100644 2222 0\tedited"]
+
+    def git_output(services: Any, path: str, *arguments: str) -> str:
+        return "\0".join(listing) if arguments[0] == "ls-files" else "3333"
+
+    with mock.patch.object(rc, "git_output", side_effect=git_output):
+        assert rc.hidden_edits(rc.Services(), str(tmp_path)) == ["edited"]
+
+
 def test_a_hidden_file_whose_stat_fails_is_refused_rather_than_read_as_absent(tmp_path: Path) -> None:
     # held_state reads the refusal as a reason to keep the worktree, as test_repo_cleanup_held_state shows.
     locked = tmp_path / "locked"

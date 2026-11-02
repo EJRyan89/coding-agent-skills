@@ -1540,6 +1540,21 @@ class ResolveTests(unittest.TestCase):
             result["notes"],
         )
 
+    def test_a_file_in_the_place_of_a_memory_directory_is_no_directory_and_no_note(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        write(self.derived(), "notes\n")
+        result = self.resolve()
+        self.assertEqual((False, None), (result["exists"], result.get("refused")))
+        self.assertEqual([str(other)], result["candidates"])
+        self.assertEqual([], [note for note in result["notes"] if note.startswith("Left out")])
+
+    def test_a_file_in_the_place_of_the_projects_folder_lists_no_candidates_and_no_note(self) -> None:
+        write(self.home / ".claude" / "projects", "notes\n")
+        result = self.resolve()
+        self.assertEqual((False, []), (result["exists"], result["candidates"]))
+        self.assertEqual([], [note for note in result["notes"] if note.startswith("Left out")])
+
     def test_an_unusable_settings_value_lists_candidates(self) -> None:
         other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
         other.mkdir(parents=True)

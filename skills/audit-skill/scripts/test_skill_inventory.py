@@ -3321,3 +3321,58 @@ def test_a_dependency_s_metadata_whose_stat_fails_is_unreadable_rather_than_abse
         f"DECLARED_UNREADABLE {metadata.as_posix()}",
         "DECLARED skill beta",
     ]
+
+
+def stray_in_plugin_cache(root: Path) -> tuple[list[str], Path]:
+    plugin_in_cache(root / "home")
+    return locate_arguments(root), root / "home" / skill_inventory.PLUGIN_CACHE / "notes.txt"
+
+
+def stray_in_skills_root(root: Path) -> tuple[list[str], Path]:
+    _, folder = user_skill_folder(root)
+    return locate_arguments(root, "beta"), folder.parent / "notes.txt"
+
+
+def stray_beside_a_plugin_skill(root: Path) -> tuple[list[str], Path]:
+    plugin = plugin_in_cache(root / "home")
+    return ["inventory", str(plugin / "skills" / "alpha")], plugin / "skills" / "notes.txt"
+
+
+def stray_named_as_a_sibling_skill(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root, "Run `${CLAUDE_SKILL_DIR}/../beta/scripts/run.py`.\n")
+    return ["tools", str(folder / "SKILL.md")], root / "skills" / "beta"
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [stray_in_plugin_cache, stray_in_skills_root, stray_beside_a_plugin_skill, stray_named_as_a_sibling_skill],
+)
+def test_a_file_among_the_folders_a_command_lists_is_passed_over_as_no_folder_never_refused(
+    fixture: Callable[[Path], tuple[list[str], Path]], tmp_path: Path
+) -> None:
+    arguments, stray = fixture(tmp_path)
+    without = run(*arguments)
+    write(stray, "notes\n")
+    assert run(*arguments) == without
+    assert not any(line.startswith("FAILED") for line in without[1])
+
+
+def test_plugin_roots_are_found_in_the_order_of_their_folder_names_without_regard_to_case(tmp_path: Path) -> None:
+    # Casefolded, "ß" reads as "ss" and sorts before "st"; by code point, or lower-cased as Windows compares, after.
+    for name in ("st", "ß"):
+        write(tmp_path / name / ".claude-plugin" / "plugin.json", json.dumps({"name": "fixture"}))
+    assert skill_inventory.plugin_roots(tmp_path) == [tmp_path / "ß", tmp_path / "st"]
+
+
+def test_each_outside_reference_on_a_line_is_judged_after_a_missing_or_unreadable_one(tmp_path: Path) -> None:
+    folder = source_skill(tmp_path, "See ../missing.md, ../denied.md, and ../shared.md.\n")
+    denied = write(tmp_path / "skills" / "denied.md", "Denied.\n")
+    write(tmp_path / "skills" / "shared.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
+    with denied_stat(denied):
+        code, lines, error = run("inventory", str(folder))
+    assert (code, error) == (1, "")
+    assert [line for line in lines if line.startswith(("OUTSIDE_", "UNREADABLE "))] == [
+        "OUTSIDE_MISSING SKILL.md:4 ../missing.md",
+        "OUTSIDE_READ SKILL.md:4 9 3 ../shared.md",
+        "UNREADABLE ../denied.md Permission denied",
+    ]
