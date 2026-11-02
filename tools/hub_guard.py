@@ -1949,7 +1949,8 @@ def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shel
     flags = {flag for flag, _ in options}
     if not flags <= set("fnv") or {"f", "v"} <= flags:
         return certain(shell)
-    functions, references = "f" in flags, "n" in flags and "f" not in flags
+    # -f comes first, so -n beside it changes nothing, as Bash ignores it for a function.
+    functions, references = "f" in flags, "n" in flags
     # Without -f, -v, or -n, a name no variable is set by unsets the function by it, as POSIX says. Whether one is
     # set on every path Bash may take is more than the guard settles: a variable one branch assigns, a local one, one
     # a function declared, or one Bash sets itself, such as BASH, the guard holds or not as it may. So the function

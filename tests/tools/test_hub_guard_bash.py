@@ -510,3 +510,73 @@ class ExportedFunctionTests(unittest.TestCase):
         for environment in ({"BASH_FUNC_f%%": "(){ git commit -m x; }"}, {"BASH_FUNC_f": value}):
             with self.subTest(environment=environment):
                 self.assertEqual([], self.subcommands("f", environment))
+
+
+def subcommands(command: str) -> list[str | None]:
+    """The subcommand of each git call the Bash reader reads in the command, started outside any repository."""
+    reading = hub_guard.Reading({}, command)
+    hub_guard.read_bash(command, START, reading, 0, {})
+    return [call.subcommand for call in reading.calls]
+
+
+class OptionReaderTests(unittest.TestCase):
+    """Bash's option reader, as unset, exec, command, and the builtins read through builtin_operands take it: a bundle
+    letter by letter, a value attached or the next word, and -- ending the options."""
+
+    def test_a_bundle_takes_its_value_from_the_rest_of_its_word_or_the_next_word(self) -> None:
+        for arguments, with_value, expected in (
+            (["-ab", "x"], "", ([("a", ""), ("b", "")], ["x"])),
+            (["-ap", "name", "x"], "p", ([("a", ""), ("p", "name")], ["x"])),
+            (["-apname", "x"], "p", ([("a", ""), ("p", "name")], ["x"])),
+            (["-p"], "p", ([("p", "")], [])),
+            (["--", "-a"], "", ([], ["-a"])),
+            (["-", "-a"], "", ([], ["-", "-a"])),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(expected, hub_guard.builtin_operands(list(arguments), with_value))
+        self.assertIsNone(hub_guard.builtin_operands(["-a", None], ""))
+        self.assertEqual(("ca", "name"), hub_guard.bundle_flags("-caname", "a"))
+        self.assertEqual(("ca", ""), hub_guard.bundle_flags("-ca", "a"))
+        self.assertEqual(("ac", None), hub_guard.bundle_flags("-ac", ""))
+
+    def test_unset_reads_an_option_bash_does_not_know_as_unsetting_nothing(self) -> None:
+        for command, expected in (
+            ("unset -X GIT_DIR", Path("before")),
+            ("unset -fv GIT_DIR", Path("before")),
+            ("unset -v GIT_DIR", UNSET),
+            ("unset -vn GIT_DIR", UNSET),
+            ("unset -- $o", UNSETTLED),
+            ("unset other $o", UNSETTLED),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    expected if expected in (UNSET, UNSETTLED) else START / expected, git_dir_reaching_git(command)
+                )
+
+    def test_an_option_word_of_unset_the_text_does_not_settle_is_unread_and_an_operand_is_not(self) -> None:
+        for command, unread in (
+            ("unset $o git; git status", True),
+            ("unset -f $o; git status", True),
+            ("unset -- $o; git status", False),
+            ("unset other $o; git status", False),
+            ("unset -f other $o; git status", False),
+        ):
+            reading = bash_reading(command)
+            with self.subTest(command=command):
+                self.assertEqual(["could not read the options passed to unset"] if unread else [], reading.unread)
+
+    def test_exec_takes_a_value_for_a_in_a_bundle_and_command_v_runs_nothing(self) -> None:
+        for command, expected in (
+            ("exec -ca name git status", ["status"]),
+            ("exec -a name git status", ["status"]),
+            ("exec -c -- git status", ["status"]),
+            ("exec -- git status", ["status"]),
+            ("command git status", ["status"]),
+            ("command -p git status", ["status"]),
+            ("command -v git status", []),
+            ("command -V git status", []),
+            ("command -pv git status", []),
+            ("command -v git; git status", ["status"]),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(expected, subcommands(command))
