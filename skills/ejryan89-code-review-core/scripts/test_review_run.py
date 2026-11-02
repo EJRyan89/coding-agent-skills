@@ -132,6 +132,19 @@ def test_the_inline_seal_refuses_a_folder_it_cannot_list_rather_than_leave_its_f
     assert str(work) == raised.value.filename
 
 
+@pytest.mark.parametrize("name", ["source", review_run.SOURCE_REPOSITORY])
+def test_the_inline_seal_never_lists_the_snapshot_or_the_fixture_repository(tmp_path: Path, name: str) -> None:
+    # Their own manifest and blob ids hold them, so the seal prunes them unlisted and a refused listing there is moot.
+    run = tmp_path.resolve()
+    (run / name).mkdir()
+    (run / name / "app.py").write_text("app", encoding="utf-8")
+    (run / "request.json").write_text("request", encoding="utf-8")
+    state: Any = prepared_state(roles=[], result_path=str(run / "result.json"))
+    with unlistable(run / name):
+        sealed = review_run.sealed_files(run, state)
+    assert {"request.json": hashlib.sha256(b"request").hexdigest()} == sealed
+
+
 # Every field a run prepared before it was recorded may lack, named here apart from the shape the reader takes them
 # from, and a role's model and effort, which an entrypoint's role never has.
 OPTIONAL_FIELDS = (

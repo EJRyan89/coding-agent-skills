@@ -427,3 +427,14 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual(str(folder), raised.exception.filename)
         listed = [relative for relative, _ in doc_passages.documents(self.root)]
         self.assertEqual(["README.md", "docs/guide.md"], listed)
+
+    @unittest.skipIf(sys.platform == "win32", "creating a symbolic link on Windows needs a privilege a run may lack")
+    def test_a_link_to_a_folder_is_not_followed_into_its_documents(self) -> None:
+        # A `**` step reaches the folders below, as a glob does, but never through a link out of the snapshot.
+        self.document("docs/guide.md", "# Guide\n")
+        outside = self.root.parent / "outside"
+        outside.mkdir()
+        (outside / "note.md").write_bytes(b"# Note\n")
+        (self.root / "docs" / "linked").symlink_to(outside, target_is_directory=True)
+        listed = [relative for relative, _ in doc_passages.documents(self.root)]
+        self.assertEqual(["docs/guide.md"], listed)

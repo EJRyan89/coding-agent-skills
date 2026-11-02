@@ -158,6 +158,16 @@ class ArchiveTests(unittest.TestCase):
             )
             self.assertEqual([1, 2], list_versions(pulls / "7"), "the chain leaves the imported pair out")
 
+    def test_a_stray_file_in_the_pulls_folder_is_passed_over_not_refused(self) -> None:
+        # Only a pull request's folder holds records, so a file beside them is not one and not a reason to fail.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = pull_directory(root, "example/one", 7)
+            folder.mkdir(parents=True)
+            (folder / "review.json").write_text("{}", encoding="utf-8")
+            (folder.parent / "notes.txt").write_text("", encoding="utf-8")
+            self.assertEqual([folder / "review.json"], record_files(root, "example/one"))
+
     def test_eleventh_review_follows_the_tenth(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
