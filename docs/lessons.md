@@ -244,15 +244,24 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a document type or entity declaration, `deployer.discovery:ListingError`, `skill_inventory:hooks_file_hooks`,
   which refuses a hooks file member of another kind at every level, by name, `msbuild_reader:mapping`, which reads an
   absent section as empty and refuses one of another kind, and the shepherd's `shepherd_pull_requests:objects` and
-  `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on.
+  `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on, and
+  `shepherd_pull_requests:reported` and `shepherd_pull_requests:present`, which refuse a member that decides a write
+  when the listing leaves it out, so an absent field is never read as the answer that permits the write.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
-  `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`
+  `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`,
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_pull_request_member_the_listing_leaves_out_or_nulls_is_malformed_never_a_default`,
+  which holds a written-out row for every member the shepherd lists, absent and null, and fails when the listing
+  gains a member without one, and
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_run_member_the_rollup_leaves_out_is_malformed_never_a_default`,
+  the same table for each check run in a rollup
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
-  without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match.
-- **Examples:** #1890, #1892
+  without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;
+  `member(` or `.get(` followed by `or "<default>"`, `is not None`, or `is None` where the member decides a write,
+  such as arming, holding, or a rerun, and an absent member would read as the answer that allows it.
+- **Examples:** #1890, #1892, #2235
 
 ### A reader of another program's language reads it as that program does
 
