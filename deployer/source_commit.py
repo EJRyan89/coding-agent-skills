@@ -6,11 +6,12 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, output_lines
 
 from . import platform_support
-from .errors import DeployError
+from .errors import DeployError, os_error
 
 # A full object name in a SHA-1 or a SHA-256 repository. Nothing else is recorded or read back, so a manifest value
 # passed to git can never be taken for an option.
@@ -18,8 +19,12 @@ COMMIT_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 
 def is_checkout(source_dir: Path) -> bool:
-    """Whether source_dir is a Git checkout, whose commit a deployment from it records, so that deployment needs Git."""
-    return (source_dir / ".git").exists()
+    """Whether source_dir is a Git checkout, whose commit a deployment from it records, so that deployment needs Git. A
+    .git whose stat fails is refused, never read as no checkout, which would record no commit."""
+    try:
+        return file_presence.is_occupied(source_dir / ".git")
+    except OSError as exc:
+        raise os_error(exc, "tell whether the source is a Git checkout") from exc
 
 
 def _client(git: str) -> GitClient:

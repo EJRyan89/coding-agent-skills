@@ -167,6 +167,14 @@ class DirectoryTests(unittest.TestCase):
         # A NotADirectoryError is what the stat raises for a file above the path, which reads as absent.
         self.assertNotIsInstance(raised.exception, NotADirectoryError)
         self.assertFalse(is_directory(path / "below"))
+        # A caller choosing folders among other entries reads the file as no folder, and a failed stat still raises.
+        self.assertFalse(is_directory(path, other_is_absent=True))
+        (self.root / "folder").mkdir()
+        self.assertTrue(is_directory(self.root / "folder", other_is_absent=True))
+        failure = PermissionError(errno.EACCES, "denied")
+        with mock.patch.object(Path, "stat", side_effect=failure), self.assertRaises(OSError) as raised_stat:
+            is_directory(path, other_is_absent=True)
+        self.assertIs(failure, raised_stat.exception)
 
     def test_a_link_to_nothing_is_refused_by_the_folder_test_and_occupies_its_place(self) -> None:
         path = self.root / "rules"
