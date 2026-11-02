@@ -122,12 +122,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   codes to its docstring is the mechanism in #1910.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
-  `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`
+  `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`,
+  `skills/repo-cleanup/scripts/test_repo_cleanup.py::SyncTests::test_each_stop_is_returned_as_the_state_it_stopped_in_never_read_back_from_the_lines`,
+  `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_a_branch_a_stopped_apply_never_offered_is_refused_and_the_stop_outlasts_later_commands`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
-  `FAILED AttributeError` expected by a test.
-- **Examples:** #1511, #1840, #1855, #1910, #2022
+  `FAILED AttributeError` expected by a test; a state decided from the lines a step printed, such as
+  `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2207, #2209
 
 ### A caller catches the whole error family its callee raises on content
 
@@ -355,10 +358,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `atomic_file:replace_bytes`, `review_io:atomic_write_json`; the same check for each entry point under tools
   that writes an output is the mechanism in #1911.
 - **Guard:** `tests/deployer/test_invariants.py::RefusalBeforeMutationGuardTests::test_a_refusal_raised_after_the_deployment_changed_the_home_fails_the_test`,
-  `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`
+  `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
+  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
-  `raise` of the step's refusal class.
-- **Examples:** #1396, #1855, #1876, #1911
+  `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
+  as a destination judged in the step that creates it.
+- **Examples:** #1396, #1855, #1876, #1911, #2210
 
 ### What one step accepts, every later step can read and write
 
@@ -446,13 +451,23 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 - **Rule:** A child process starts from an environment built for it, never the one its parent inherited.
 - **Why:** A variable the parent carries, such as git's repository selection or a signed-in token, otherwise reaches
-  a child that must not see it.
+  a child that must not see it. A checker also finds settings on its own, in an options variable, a file above what
+  it checks, or the user's configuration folder, and one of them can turn its findings off.
 - **Use:** `bounded_process:run_bounded`, `bounded_process:without_repository_variables`,
-  `tools.mutation_gate:suite_environment`
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`
+  `tools.mutation_gate:suite_environment`, and a checker's one runner: `deployer.render:run_shellcheck`,
+  `deployer.render:run_bash_syntax_check`, `tests.validation.toolchain:shellcheck_job`,
+  `tests.validation.toolchain:bash_syntax_job`, `tests.validation.toolchain:ruff_job`, and
+  `tests.validation.toolchain:mypy_job`
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
+  `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`;
+  it reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
+  from pieces is outside what it reads
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
-  sandboxed child started with no `env=`.
-- **Examples:** #1366, #1396, #1598, #1777, #1861
+  sandboxed child started with no `env=`; a checker started anywhere but its runner, or run with no option that stops
+  it reading settings outside the repository: ShellCheck without `--norc` and an empty `SHELLCHECK_OPTS`,
+  `Invoke-ScriptAnalyzer` without `-Settings`, ruff given a folder without `--no-respect-gitignore`, and mypy with
+  `MYPYPATH` left set.
+- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208
 
 ### An action on something not proven ours stops
 
@@ -461,10 +476,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** An action taken on a guess acts on another person's pull request, branch, or pin.
 - **Use:** `deployer.source_ref:is_release_pin`, `deployer.source_ref:replaceable_release_pin`
 - **Guard:** `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
-  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::AdmissionTest`
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::AdmissionTest`,
+  `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_no_planned_action_lets_a_deleting_command_act_without_the_offer_the_apply_wrote`
 - **Search for:** `"pr", "merge"`, `"--auto"`, `"pr", "edit"`, or `"pr", "close"` with no check of who owns the pull
-  request; an `is_<owner>` function that returns `False` from an `except`.
-- **Examples:** #1686, #1719, #1778
+  request; an `is_<owner>` function that returns `False` from an `except`; a confirmed deletion admitted by what a
+  plan planned to offer rather than by the offer it recorded, such as `branch["action"] ==` in an eligibility set.
+- **Examples:** #1686, #1719, #1778, #2209
 
 ### A decision about merged, retired, or owned is made by identity
 
