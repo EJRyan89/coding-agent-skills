@@ -3370,10 +3370,26 @@ class UnrunFixtures(unittest.TestCase):
             written,
         )
         self.assertIn(
-            "\n`tests/tools/test_other.py` failed unmutated with exit code 2 in the local run on Linux, so no mutant "
+            "\n\n`tests/tools/test_other.py` failed unmutated with exit code 2 in the local run on Linux, so no mutant "
             "ran against it there.\n",
             written,
         )
+
+
+def test_a_suite_that_failed_on_the_leg_and_one_that_failed_in_its_local_run_are_each_named() -> None:
+    selected = Selected(
+        "origin/main", "3.8.0", (SelectedModule("tools/a.py", 1, (mutant(1, "tools/a.py"),), (), False),)
+    )
+    local = mutation_gate.LocalRun(5, 1.0, 1, {"tools/a.py": [0]}, {"tests/local.py": "timed out unmutated"}, [])
+    outcome = Outcome(mutant(1, "tools/a.py"), KILLED, ("t",))
+    leg = LegRun(
+        LINUX_LEG, 40, 1.0, 1, {"tools/a.py": [outcome]}, {"tests/ci.py": "timed out unmutated"}, [], local=local
+    )
+    text = summary(joined(selected, [leg]))
+    assert "\n\n`tests/ci.py` timed out unmutated on Linux, so no mutant ran against it there.\n" in text
+    assert (
+        "\n\n`tests/local.py` timed out unmutated in the local run on Linux, so no mutant ran against it there.\n"
+    ) in text
 
 
 def test_a_selection_records_each_modules_digest_and_a_leg_its_estimate_and_local_run() -> None:
