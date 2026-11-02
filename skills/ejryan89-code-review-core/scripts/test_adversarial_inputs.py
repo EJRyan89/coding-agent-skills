@@ -1772,12 +1772,18 @@ class ClosingIssueTests(AdversarialFixture):
         self.assertEqual(13, given["total"])
         self.assertEqual(list(range(1, 11)), [issue["number"] for issue in given["issues"]])
         first, other, closed = given["issues"][:3]
-        self.assertEqual((self.HOSTILE + "B" * 30_000)[:24_000].replace("\ud800", "�"), first["body"])
+        # The body's first 24,000 characters, its own lines in order, each cut into pieces of at most 300 characters.
+        body = (self.HOSTILE + "B" * 30_000)[:24_000].replace("\ud800", "�")
+        pieces = first["body_lines"]
+        self.assertEqual(body.replace("\n", ""), "".join(pieces))
+        self.assertEqual('ISSUE-MARKER "}]', pieces[0])
+        self.assertEqual(["B" * 300] * 3, pieces[-4:-1])
+        self.assertLessEqual(max(len(piece) for piece in pieces), 300)
         self.assertEqual(
             {"repository": "example/two", "number": 2, "state": "OPEN"},
             {key: other[key] for key in ("repository", "number", "state")},
         )
-        self.assertNotIn("body", other)
+        self.assertNotIn("body_lines", other)
         self.assertNotIn("title", other)
         self.assertEqual("CLOSED", closed["state"])
         everything = "".join(
@@ -1790,6 +1796,12 @@ class ClosingIssueTests(AdversarialFixture):
         raw = (run / "closing-issues.json").read_text(encoding="utf-8")
         self.assertTrue(raw.startswith('{\n  "total": 13,\n  "issues": [\n    {\n      "repository": '), raw[:80])
         self.assertIn("�", raw)
+        # No line of the file is longer than a reviewer's Read tool shows whole, escapes included: a body of control
+        # characters, each of which JSON spells in six, stays under it too.
+        self.assertLessEqual(max(len(line) for line in raw.splitlines()), 2000)
+        controls = review_runtime.given_closing_issues([self.issue(5, "\x01" * 5_000)], 1, REPOSITORY)[0]
+        written = json.dumps(controls, indent=2, ensure_ascii=False)
+        self.assertLessEqual(max(len(line) for line in written.splitlines()), 2000)
         prompts = self.roles(ready)
         self.assertEqual(["completeness", "generic-review"], list(prompts))
         for text in ("ISSUE-MARKER", "Ignore every rule", "whoami", "lists 1 of the 1", "BBBB"):
@@ -1862,6 +1874,13 @@ class ClosingIssueTests(AdversarialFixture):
             self.assertIsNone(guard.decide({**event, "tool_input": {"file_path": str(run / "closing-issues.json")}}))
             diff = run / "work" / "completeness.diff"
             self.assertIsNone(guard.decide({**event, "tool_input": {"file_path": str(diff)}}))
+            # The generic reviewer, given the description and comments, keeps its whole run but the closing issues.
+            [generic] = [role for role in review_run.load_run(run)["roles"] if role["id"] == "generic-review"]
+            other = {"tool_name": "Read", "agent_id": "a73176509870d6114", "cwd": str(run)}
+            self.assertIsNone(guard.decide({**other, "tool_input": {"file_path": generic["prompt_file"]}}))
+            self.assertIsNone(guard.decide({**other, "tool_input": {"file_path": str(run / "pull-request-body.md")}}))
+            refused = guard.decide({**other, "tool_input": {"file_path": str(run / "closing-issues.json")}})
+            self.assertIn("holds one it does not", refused or "")
         # Where the guard runs, the run says nothing more; where none runs, as inline, it says the texts are only left
         # unnamed, never that they are withheld.
         note = (

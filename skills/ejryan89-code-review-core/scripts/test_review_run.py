@@ -75,6 +75,7 @@ def prepared_state(**fields: Any) -> dict[str, Any]:
         "uncovered_files": ["assets/logo.png"],
         "archive_base": {"version": 1, "ledger_sha256": "d" * 64},
         "documents": {"docs/spec.pdf": ["page 1, line 1", ""]},
+        "restricted": {"/runs/one/closing-issues.json": ["completeness"]},
         "seal": {
             "files": {"request.json": "a" * 64, "work/plan.json": "b" * 64},
             "results": {"generic-review": "e" * 64},
@@ -114,6 +115,7 @@ OPTIONAL_FIELDS = (
     "reads",
     "archive_base",
     "documents",
+    "restricted",
     "seal",
 )
 

@@ -11,7 +11,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, ClassVar, get_args
 from unittest import mock
 
 import pytest
@@ -229,6 +229,53 @@ class BackoffTests(unittest.TestCase):
 
 BAD_GATEWAY = "gh: Bad Gateway (HTTP 502)"
 UNKNOWN_OUTCOME = "GitHub may have applied it, so check before repeating it"
+
+
+class PartialGraphqlTests(unittest.TestCase):
+    """A GraphQL answer whose only errors the caller accepts, as a node the viewer may not read, is a result, with its
+    data, whether gh exited 0 or 1 with it; any other error, an answer without data, or another failure still fails."""
+
+    FORBIDDEN: ClassVar[dict[str, Any]] = {
+        "type": "FORBIDDEN",
+        "path": ["node", 0],
+        "message": "Resource not accessible",
+    }
+    DATA: ClassVar[dict[str, Any]] = {"node": [None, {"id": 1}]}
+
+    @staticmethod
+    def accept(error: Any) -> bool:
+        return isinstance(error, dict) and error.get("type") == "FORBIDDEN"
+
+    def test_an_accepted_error_keeps_the_data_whether_gh_exits_0_or_1(self) -> None:
+        body = json.dumps({"data": self.DATA, "errors": [self.FORBIDDEN]})
+        for answer in (ok(body), failed("gh: Resource not accessible", body)):
+            with self.subTest(code=answer.returncode):
+                run, calls = scripted(answer)
+                client, _sleeper = client_for(run)
+                self.assertEqual(self.DATA, client.partial_graphql(["api", "graphql"], self.accept)["data"])
+                self.assertEqual([["gh", "api", "graphql"]], calls)
+
+    def test_an_error_the_caller_refuses_or_no_data_fails_as_a_graphql_error_does(self) -> None:
+        other = {"type": "INTERNAL", "message": "boom"}
+        cases = [
+            (ok(json.dumps({"data": self.DATA, "errors": [self.FORBIDDEN, other]})), "INTERNAL"),
+            (failed("gh: boom", json.dumps({"data": self.DATA, "errors": [other]})), "boom"),
+            (ok(json.dumps({"data": None, "errors": [self.FORBIDDEN]})), "FORBIDDEN"),
+            (failed("gh: Resource not accessible", json.dumps({"errors": [self.FORBIDDEN]})), "not accessible"),
+            (failed("gh: Resource not accessible", "not json"), "not accessible"),
+            (CommandResult(2, json.dumps({"data": self.DATA, "errors": [self.FORBIDDEN]}), "gh: crashed"), "crashed"),
+        ]
+        for answer, message in cases:
+            with self.subTest(message=message):
+                run, _calls = scripted(answer)
+                client, _sleeper = client_for(run)
+                with self.assertRaisesRegex(GitHubError, message):
+                    client.partial_graphql(["api", "graphql"], self.accept, retry=False)
+
+    def test_an_answer_without_errors_is_returned_as_it_is(self) -> None:
+        run, _calls = scripted(ok(json.dumps({"data": self.DATA})))
+        client, _sleeper = client_for(run)
+        self.assertEqual({"data": self.DATA}, client.partial_graphql(["api", "graphql"], self.accept))
 
 
 class CappedListTests(unittest.TestCase):

@@ -437,6 +437,24 @@ def _regex_list(value: Any, field: str, *, required: bool) -> list[str]:
     return patterns
 
 
+# What a title route's pattern may not hold: a backreference, by number or by name, and a group repeated by `*`, `+`,
+# or a `{...}` count, the shape of nested repetition; an optional group, `(...)?`, is kept.
+TITLE_PATTERN_BACKREFERENCE = re.compile(r"\\[1-9]|\(\?P=")
+TITLE_PATTERN_REPEATED_GROUP = re.compile(r"(?<!\\)\)[*+{]")
+
+
+def title_pattern_problem(pattern: str) -> str | None:
+    """Why a title route's pattern is refused, or None: it must start at the title's start, `^`, so a word later in
+    the title never routes it, and hold no backreference and no repeated group, so its matching stays linear."""
+    if not pattern.startswith("^"):
+        return "must start with ^, so it matches only at the start of the title"
+    if TITLE_PATTERN_BACKREFERENCE.search(pattern):
+        return "may not hold a backreference"
+    if TITLE_PATTERN_REPEATED_GROUP.search(pattern):
+        return "may not repeat a group with *, +, or a {} count"
+    return None
+
+
 def _pull_request_inputs(specialist: dict[str, Any], path: str, *, shares: bool) -> dict[str, Any]:
     """A specialist's `title_pattern` and `inputs`, each left out when the manifest leaves it out or null; `inputs` in
     PULL_REQUEST_INPUTS order.
@@ -447,6 +465,9 @@ def _pull_request_inputs(specialist: dict[str, Any], path: str, *, shares: bool)
     title_pattern = READ.optional(READ.string, specialist.get("title_pattern"), f"{path}.title_pattern")
     if title_pattern is not None:
         settings["title_pattern"] = _regex_list([title_pattern], f"{path}.title_pattern", required=True)[0]
+        problem = title_pattern_problem(title_pattern)
+        if problem:
+            raise RuntimeContractError(f"{path}.title_pattern {problem}")
         if not shares:
             raise RuntimeContractError(f"{path}.title_pattern routes on the author's title, so it needs shares_files")
     given = READ.optional(
@@ -2460,6 +2481,24 @@ def given_body(body: str) -> str:
 # `closing-issues` is given the first this many, each body cut as a description is, in the run's file of them.
 CLOSING_ISSUES_MAXIMUM = 10
 CLOSING_ISSUES_FILE = "closing-issues.json"
+# Characters of a body in each item of the file's `body_lines`. Claude Code's Read tool cuts a line past 2,000
+# characters, and JSON may spell a character in six, so a piece this long stays one whole line of the indented file.
+CLOSING_ISSUE_LINE_CHARACTERS = 300
+
+
+def body_lines(body: str) -> list[str]:
+    """A body as the file holds it: its lines, each split into pieces of at most CLOSING_ISSUE_LINE_CHARACTERS, so
+    the body reads whole a line at a time and none of it lies past where a reader cuts a line."""
+    pieces: list[str] = []
+    for line in body.replace("\r\n", "\n").split("\n"):
+        pieces.extend(
+            [
+                line[start : start + CLOSING_ISSUE_LINE_CHARACTERS]
+                for start in range(0, len(line), CLOSING_ISSUE_LINE_CHARACTERS)
+            ]
+            or [""]
+        )
+    return pieces
 
 
 def given_closing_issues(
@@ -2482,9 +2521,8 @@ def given_closing_issues(
         body = issue["body"] if same else ""
         given = min(len(body), PULL_REQUEST_BODY_CHARACTERS)
         if same:
-            entries.append(
-                {**name, "title": LONE_SURROGATE.sub("�", issue["title"]), "body": given_body(issue["body"])}
-            )
+            title = LONE_SURROGATE.sub("�", issue["title"])
+            entries.append({**name, "title": title, "body_lines": body_lines(given_body(issue["body"]))})
         else:
             entries.append({**name, "text": "not given: the issue is in another repository"})
         account.append({**name, "same_repository": same, "body_characters": len(body), "body_given": given})

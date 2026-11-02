@@ -337,7 +337,8 @@ def _claim(agent: str, path: Path) -> None:
         claimed = _load_claim(agent)
         if claimed is None:
             raise Denied("this reviewer's claim could not be read") from None
-        _check_in_run("Read", path, claimed[0])
+        # Judged as any later read of the claimed role is, its `reads` and the run's restricted paths included.
+        _check_allowed("Read", path, claimed)
         return
     with os.fdopen(handle, "w", encoding="utf-8") as stream:
         stream.write(claim)
@@ -359,6 +360,31 @@ def _check_in_run(tool: str, path: Path, run: Path, reads: list[str] | None = No
     raise Denied(f"{tool} may only look at the inputs your prompt names; {path} is not one of them")
 
 
+def _restricted(run: Path) -> dict[str, list[str]]:
+    """The run's restricted paths, each with the roles that may read it: a file of the run that only the roles given
+    the text it holds may read, such as the closing issues."""
+    try:
+        state = READ.json_object(json_reader.read_file(run / RUN_FILE), "run")
+        restricted = READ.json_object(state.get("restricted", {}), "run.restricted")
+        return {
+            READ.string(path, "a key of run.restricted"): READ.array(roles, f"run.restricted.{path}", READ.string)
+            for path, roles in restricted.items()
+        }
+    except (OSError, ValueError, RecursionError, FieldError) as exc:
+        raise Denied(f"the review run {run} could not be read") from exc
+
+
+def _check_allowed(tool: str, path: Path, claim: Claim) -> None:
+    """A read the claimed role may make: inside its run, or its `reads` when it has them, and never into a restricted
+    path, or a folder holding one, that the run does not give the role."""
+    run, role = claim
+    _check_in_run(tool, path, run, role.get("reads"))
+    for restricted, roles in _restricted(run).items():
+        target = Path(restricted).resolve(strict=False)
+        if role["id"] not in roles and (within(path, target) or within(target, path)):
+            raise Denied(f"{tool} may only look at the inputs your prompt names; {path} holds one it does not")
+
+
 def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path, claim: Claim | None) -> None:
     key = "file_path" if tool == "Read" else "path"
     path = _path(tool_input.get(key), cwd)
@@ -371,7 +397,7 @@ def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path, claim: Claim |
             raise Denied("Glob patterns must be relative to the run folder path, without '..'")
     if claim is None:
         raise Denied(f"{FIRST}; {path} is not a reviewer prompt")
-    _check_in_run(tool, path, claim[0], claim[1].get("reads"))
+    _check_allowed(tool, path, claim)
     _log_read(tool, path, claim)
 
 

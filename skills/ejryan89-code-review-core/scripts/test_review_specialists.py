@@ -227,6 +227,21 @@ class ManifestTests(unittest.TestCase):
         refused({**sharing, "inputs": [True]}, f"{where}.inputs[0] must be one of")
         refused({**sharing, "inputs": ["comments", "comments"]}, f"{where}.inputs names an input twice")
         refused({**sharing, "input": ["comments"]}, "input")
+        # A title pattern starts at the title's start, so `fix` later in a title never routes it, and its matching
+        # stays linear: no backreference and no repeated group.
+        anchored = f"{where}.title_pattern must start with ^, so it matches only at the start of the title"
+        for unanchored in ("fix", "fix:", "(?:^fix)", "\\^fix", "[\\^]fix"):
+            refused({**sharing, "title_pattern": unanchored}, anchored)
+        for backreference in ("^(fix)\\1", "^(?P<t>fix)(?P=t)"):
+            refused({**sharing, "title_pattern": backreference}, f"{where}.title_pattern may not hold a backreference")
+        repeated = f"{where}.title_pattern may not repeat a group with *, +, or a {{}} count"
+        for nested in ("^(a+)+$", "^(?:fix|feat)*:", "^(x){2,}"):
+            refused({**sharing, "title_pattern": nested}, repeated)
+        for kept in ("^fix(?:\\([^)]*\\))?: ", "^fix[(:]", "^(?:fix|feat)\\b", "^fix\\)+"):
+            given = manifest()
+            given["specialists"][2] = {**given["specialists"][2], **sharing, "title_pattern": kept}
+            with self.subTest(kept=kept):
+                self.assertEqual(kept, validate_adapter_manifest(given)["specialists"][2]["title_pattern"])
 
 
 class DiffAndRoutingTests(unittest.TestCase):

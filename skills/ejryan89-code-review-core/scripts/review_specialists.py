@@ -54,6 +54,7 @@ from review_records import (
 )
 from review_reviewers import frontmatter_value
 from review_runtime import (
+    CLOSING_ISSUE_LINE_CHARACTERS,
     DESIGN_REVIEW_PROFILE,
     DOCUMENT_STAGES,
     GENERIC_SPECIALIST,
@@ -582,7 +583,8 @@ def untrusted_rule(inputs: Sequence[str]) -> str:
 CLOSING_ISSUES_RULE = """- CLOSING_ISSUES_FILE holds, as JSON, the issues GitHub links as closed by this pull
   request: each one's repository, number, and state, and an issue of this repository's title
   and body as their authors wrote them, which say what they asked for, not what the code does.
-  {closing_state}"""
+  Each body is `body_lines`, its lines in order, a line longer than {piece} characters split
+  across consecutive items. {closing_state}"""
 # Each pull-request text a specialist may be given (review_runtime.PULL_REQUEST_INPUTS): the input line it adds and
 # the variable the untrusted-data rule names. A role not given one has neither in its prompt.
 INPUT_VARIABLES = {
@@ -991,6 +993,7 @@ def render_prompt(
                 condition_rule=condition_rule,
                 body_state=body_state,
                 closing_state=closing_state,
+                piece=CLOSING_ISSUE_LINE_CHARACTERS,
             ),
             "",
             OUTPUT.format(
@@ -1592,6 +1595,15 @@ def role_reads(role: dict[str, Any], work: Path, request: dict[str, Any], review
     return [str(path) for path in paths]
 
 
+def closing_restriction(request: dict[str, Any], roles: Sequence[dict[str, Any]]) -> dict[str, list[str]]:
+    """The run's file of the closing issues with the roles given it, which the reviewer guard keeps every other role
+    from; nothing when the run has no such file."""
+    closing = request["pull_request"].get("closing_issues")
+    if closing is None:
+        return {}
+    return {closing["file"]: [role["id"] for role in roles if "closing-issues" in specialist_inputs(role)]}
+
+
 def build_plan(
     request_path: Path,
     reviewer_root: Path | None,
@@ -1696,6 +1708,8 @@ def build_plan(
         "roles": roles,
         "notes": notes,
         "uncovered_files": ignored,
+        # Only a plan with a file some roles are not given names it.
+        **({"restricted": restricted} if (restricted := closing_restriction(request, roles)) else {}),
     }
     atomic_write_json(work / "plan.json", plan)
     return plan

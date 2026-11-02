@@ -347,12 +347,13 @@ def _write_roles(
     lazy: bool = False,
     document_stage: str | None = None,
     guarded: bool,
-) -> tuple[list[RunRole], list[str]]:
-    """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles
-    and the changed files the plan leaves unreviewed. Every prompt names the `source-search` command, and a `lazy`
-    snapshot's its `source-file` command too; a `document_stage` reaches the design-review specialist's. A role
-    withheld a pull-request text keeps the paths it may read, which the reviewer guard holds it to when it is
-    `guarded`; when it is not, a note says so."""
+) -> tuple[list[RunRole], list[str], dict[str, list[str]]]:
+    """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles,
+    the changed files the plan leaves unreviewed, and the run's restricted paths, each with the roles that may read it.
+    Every prompt names the `source-search` command, and a `lazy` snapshot's its `source-file` command too; a
+    `document_stage` reaches the design-review specialist's. A role withheld a pull-request text keeps the paths it may
+    read, and the closing issues' file is restricted to the roles given it, which the reviewer guard holds them to
+    when it is `guarded`; when it is not, a note says so."""
     script = command_script("review_source.py")
     if kind == "entrypoint":
         if reviewer_root is None or entrypoint is None:
@@ -373,7 +374,7 @@ def _write_roles(
                 source_commands=_source_commands(run, adapter["name"], script, lazy),
             ),
         )
-        return [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}], []
+        return [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}], [], {}
     plan = build_plan(
         request_path,
         reviewer_root,
@@ -403,8 +404,14 @@ def _write_roles(
             f"The {', '.join(unheld)} specialist{'s are' if len(unheld) != 1 else ' is'} withheld a pull-request text "
             "its prompt does not name, but no reviewer guard runs here to keep it from the rest of the run."
         )
+    restricted: dict[str, list[str]] = plan.get("restricted", {})
+    if restricted and not guarded:
+        notes.append(
+            "Only the specialists given the closing issues are told of their file, but no reviewer guard runs here to "
+            "keep it from the other reviewers."
+        )
     notes.extend(plan["notes"])
-    return roles, plan["uncovered_files"]
+    return roles, plan["uncovered_files"], restricted
 
 
 @dataclass
@@ -714,7 +721,7 @@ def _prepare_run(
                 fixture["prior_record"] = str(run / FIXTURE_PRIOR_FILE)
                 atomic_write_json(run / FIXTURE_PRIOR_FILE, review.prior_record)
         result_path = run / "result.json"
-        roles, uncovered_files = _write_roles(
+        roles, uncovered_files, restricted = _write_roles(
             kind,
             run,
             request_path,
@@ -766,6 +773,8 @@ def _prepare_run(
             "archive_base": review.base,
             # Each line's place in each changed document whose extracted text the reviewers read.
             "documents": documents,
+            # Each file only some roles are given, with those roles, which the reviewer guard holds the others from.
+            "restricted": restricted,
         }
         _write_run(run, state)
     except BaseException:
