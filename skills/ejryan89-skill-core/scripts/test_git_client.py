@@ -1119,41 +1119,82 @@ class IsolatedClientTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_an_isolated_command_names_the_null_device_as_its_repository(self) -> None:
+    def test_an_isolated_command_names_the_null_device_and_starts_with_the_isolated_environment(self) -> None:
         null = "nul" if os.name == "nt" else "/dev/null"
-        runner, calls = scripted(GitResult(0, "", ""))
-        GitClient(runner, isolated=True).run(["grep", "-e", "x"], directory="d")
-        self.assertEqual(["git", f"--git-dir={null}", "-C", "d", "grep", "-e", "x"], calls[0][0])
-        runner, calls = scripted(GitResult(0, "", ""))
-        GitClient(runner).run(["grep", "-e", "x"], directory="d")
-        self.assertEqual(["git", "-C", "d", "grep", "-e", "x"], calls[0][0])
+        finished = bounded_process.Finished(0, b"", b"")
+        with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
+            GitClient(isolated=True).run(["grep", "-e", "x"], directory="d")
+            GitClient(isolated=True).run(["hash-object", "--stdin"], input_bytes=b"blob")
+        (command, _), options = call_shape(run.call_args_list[0])
+        self.assertEqual([git(), f"--git-dir={null}", "-C", "d", "grep", "-e", "x"], command)
+        environment = options["env"]
+        self.assertIsInstance(environment, dict)
+        assert isinstance(environment, dict)
+        self.assertEqual(null, environment["GIT_CONFIG_GLOBAL"])
+        self.assertNotIn("GIT_CONFIG_COUNT", environment)
+        (command, _), options = call_shape(run.call_args_list[1])
+        self.assertEqual([git(), f"--git-dir={null}", "hash-object", "--stdin"], command)
+        self.assertEqual((b"blob", null), (options["input_bytes"], options["env"]["GIT_CONFIG_GLOBAL"]))  # type: ignore[index]  # env is the dict asserted above
 
-    def test_every_client_runs_a_command_that_reads_files_rather_than_a_repository_isolated(self) -> None:
-        null = "nul" if os.name == "nt" else "/dev/null"
+    def test_an_isolated_client_refuses_a_runner_that_could_not_start_git_isolated(self) -> None:
+        runner, _ = scripted(GitResult(0, "", ""))
+        for options in ({"runner": runner}, {"input_runner": runner}):
+            with self.subTest(options=sorted(options)), self.assertRaisesRegex(TypeError, "takes no runner"):
+                GitClient(isolated=True, **options)  # type: ignore[arg-type]  # each option is a runner
+        GitClient(git_client.subprocess_runner, isolated=True, input_runner=git_client.subprocess_runner)
+
+    def test_a_plain_client_refuses_a_command_only_an_isolated_one_runs(self) -> None:
         self.assertEqual(frozenset({"grep", "diff"}), git_client.ISOLATED_SUBCOMMANDS)
-        cases = {
-            ("grep", "--no-index", "-e", "x"): True,
-            ("-c", "a.b=c", "grep", "-n", "--no-index", "-e", "x"): True,
-            ("diff", "--no-index", "a", "b"): True,
-            ("grep", "-e", "x"): False,
-            ("diff", "a", "b"): False,
-            ("check-ignore", "-q", "--no-index", "a"): False,
-            ("--no-index", "status"): False,
+        refused = {
+            ("grep", "--no-index", "-e", "x"),
+            ("-c", "a.b=c", "grep", "-n", "--no-index", "-e", "x"),
+            ("grep", "-A", "3", "--no-index", "-e", "x"),
+            ("grep", "--max-depth", "2", "--threads", "1", "--no-index", "x"),
+            ("diff", "--no-index", "a", "b"),
+            ("diff", "--stat", "--no-index", "a", "b"),
         }
-        for arguments, isolated in cases.items():
+        # A pattern, a path, or a revision that reads --no-index is no option, as git reads it.
+        allowed = {
+            ("grep", "-e", "x"),
+            ("grep", "--full-name", "-e", "--no-index", "HEAD", "--"),
+            ("grep", "-n", "-f", "--no-index", "HEAD"),
+            ("grep", "-n", "needle", "--no-index"),
+            ("grep", "-n", "-e", "x", "--", "--no-index"),
+            ("grep", "-C", "--no-index", "-e", "x"),
+            ("diff", "a", "b"),
+            ("diff", "--", "--no-index", "b"),
+            ("check-ignore", "-q", "--no-index", "a"),
+            ("--no-index", "status"),
+        }
+        for arguments in sorted(refused | allowed):
             with self.subTest(arguments=arguments):
                 runner, calls = scripted(GitResult(0, "", ""))
-                GitClient(runner).run(list(arguments))
-                self.assertEqual(isolated, f"--git-dir={null}" in calls[0][0])
+                if arguments in refused:
+                    with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
+                        GitClient(runner).run(list(arguments))
+                    with self.assertRaisesRegex(ValueError, r"GitClient\(isolated=True\)"):
+                        GitClient(runner).stream(list(arguments)).__enter__()
+                    self.assertEqual([], calls, "refused before git starts")
+                else:
+                    GitClient(runner).run(list(arguments))
+                    self.assertEqual(["git", *arguments], calls[0][0])
 
-    def test_a_plain_clients_grep_without_an_index_reads_no_repository_around_it(self) -> None:
+    def test_a_search_for_the_literal_no_index_runs_in_the_repository(self) -> None:
+        (self.inner / "f.txt").write_bytes(b"--no-index\n")
+        GitClient(timeout=60).output(["add", "f.txt"], directory=self.inner)
+        arguments = ["grep", "--null", "-n", "--full-name", "-e", "--no-index", "--cached", "--"]
+        found = GitClient(timeout=60).output(arguments, directory=self.inner)
+        self.assertEqual("content it did not write/f.txt\x001\x00--no-index\n", found)
+
+    def test_an_isolated_grep_without_an_index_reads_no_repository_around_it(self) -> None:
         (self.inner / "f.txt").write_bytes(b"needle\n")
         with (self.repository / ".git" / "config").open("a", encoding="utf-8") as config:
             config.write("[grep]\n\tcolumn = true\n[unterminated\n")
         arguments = ["grep", "--null", "-n", "--no-index", "-e", "needle", "--"]
         self.assertEqual(128, GitClient(timeout=60).run(["status"], directory=self.inner).returncode)
-        self.assertEqual("f.txt\x001\x00needle\n", GitClient(timeout=60).output(arguments, directory=self.inner))
-        with GitClient(timeout=60).stream(arguments, directory=self.inner) as stream:
+        isolated = GitClient(timeout=60, isolated=True)
+        self.assertEqual("f.txt\x001\x00needle\n", isolated.output(arguments, directory=self.inner))
+        with isolated.stream(arguments, directory=self.inner) as stream:
             stream.stdin.close()
             self.assertEqual((b"f.txt\x001\x00needle\n", 0), (stream.read(100), stream.wait()))
 

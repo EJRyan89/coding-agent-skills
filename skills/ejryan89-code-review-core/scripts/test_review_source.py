@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import git_client
 import json_writer
 import review_guard
 import review_runtime
@@ -635,6 +636,27 @@ class SnapshotIsolationTests(LazySnapshotFixture):
                     # Written after the snapshot was verified, it still shapes nothing git prints.
                     with mock.patch.object(review_runtime, "_verify_snapshot", return_value=verified):
                         self.assertEqual(self.EXPECTED, self.search(whole))
+
+    def test_every_git_the_runtime_starts_inside_a_snapshot_is_isolated(self) -> None:
+        # The invariant over the module: whatever reads a snapshot, git started with its folder inside one runs on an
+        # isolated client, while git in the review's own checkout does not need to.
+        whole = self.whole(self.root / "whole")
+        started: list[tuple[bool, Path]] = []
+
+        class Recording(git_client.GitClient):
+            def _command(self, arguments: Sequence[str], directory: str | Path | None) -> list[str]:
+                started.append((self.isolated, Path(directory or ".").resolve()))
+                return super()._command(arguments, directory)
+
+        with mock.patch.object(review_runtime, "GitClient", Recording):
+            verify_source_snapshot(whole, expected_repository=REPOSITORY, expected_commit=self.head)
+            self.assertEqual(self.EXPECTED, self.search(whole))
+            lazy = search_source(self.checkout, self.source, "helper", repository=REPOSITORY, commit=self.head)
+            self.assertEqual(self.EXPECTED, lazy)
+        inside = [isolated for isolated, folder in started if folder.is_relative_to(whole.resolve())]
+        outside = [isolated for isolated, folder in started if not folder.is_relative_to(whole.resolve())]
+        self.assertTrue(inside and all(inside), started)
+        self.assertTrue(outside and not any(outside), started)
 
     def test_global_and_command_scope_settings_shape_nothing(self) -> None:
         whole = self.whole(self.root / "whole")
