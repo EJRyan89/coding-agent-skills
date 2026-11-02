@@ -328,7 +328,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   `stdbuf -oL`, and `env -C<dir>`, or as the next word; `env`'s after every word holding `=`, which it takes as an
   assignment whatever the name; and `eval` of fixed words is read as part of the shell. `sudo` and `doas` run their
   command as another user under a policy that decides which variables reach it, so each one the shell holds is
-  unsettled there; `-D` moves the command, a login shell (`-i`) starts in a home the text does not settle, an option
+  unsettled there, and `sudo` sets each `NAME=value` word before its command there as `env` does, where `doas`
+  takes such a word as its program; `-D` moves the command, a login shell (`-i`) starts in a home the text does not settle, an option
   after which they start no command, such as `sudo -l`, starts none, and one the guard does not know is a part it
   cannot read. `tests/tools/test_prefix_programs.py` runs `env` and each of those programs but `sudo` and `doas`,
   which may prompt or raise privileges, where the system installs it, on the option forms its own `--help` lists, and

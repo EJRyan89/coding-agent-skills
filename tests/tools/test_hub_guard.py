@@ -2753,6 +2753,23 @@ class ContractTests(GuardTestCase):
                 with self.subTest(command=command):
                     self.assertEqual("deny", self.bash(command, cwd))
                     self.assertIn("git switch", self.reason)
+        # sudo sets each NAME=value before its command in the command's environment, after any of its options; an
+        # unsettled one may be any, and doas takes such a word as its program.
+        for options in ("", "-u root ", "-E ", "-Eu root ", "--preserve-env ", "-n -H ", "-- ", "--user=root -s "):
+            for assignments in (
+                "GIT_DIR='{0}'",
+                "A=1 GIT_DIR='{0}'",
+                "GIT_DIR='{0}' B=2",
+                "GIT_WORK_TREE=. GIT_DIR='{0}'",
+            ):
+                command = f"sudo {options}{assignments.format(git_directory)} git switch -c x"
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.bash(command, self.tree))
+                    self.assertIn(WRITES.format("switch"), self.reason)
+        for command in ("sudo GIT_DIR=$(cat f) git switch -c x", "sudo -u root A=$v git switch -c x"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+        self.assertIsNone(self.bash(f"doas GIT_DIR='{git_directory}' git switch -c x", self.tree))
         # A variable the shell holds may reach the command or not, as the policy decides.
         self.assertEqual("deny", self.bash(f"export GIT_DIR='{git_directory}'; sudo git switch -c x", self.tree))
         self.assertIn(UNPLACED.format("switch"), self.reason)

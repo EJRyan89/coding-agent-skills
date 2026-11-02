@@ -225,6 +225,8 @@ GH_LIMIT_ALLOWED = {
     "ELEVATING_PROGRAMS": "doas's own -L, which clears its remembered authentication; it is read from a command, and "
     "no gh listing is made here"
 }
+# Those that take NAME=value words before their command, as env does.
+ASSIGNING_ELEVATORS = {"sudo"}
 LOGIN_OPTIONS = {"-i", "--login"}
 CHDIR_OPTIONS = {"-D", "--chdir"}
 # Bash's long options whose next word is their value, so it is not the script that -c runs; in a single-dash or
@@ -1659,21 +1661,28 @@ def started_command(
         reading.cannot_read(f"could not read the option {first_unread_env_option(arguments)} passed to env")
         return None
     index, cwd, given = read
-    # env takes every word holding `=` before its command as NAME=value, whatever the name: a[1]=x and `x y=1` too. A
-    # word the text does not settle, such as FOO=$(cmd), may be one for any name, git's variables among them, so the
-    # guard cannot read it, and every handed variable is unsettled for the words after it, read as the command.
+    index = read_assignments(program, arguments, index, given, reading)
+    if index < len(arguments):
+        return command_name(arguments[index]), arguments[index + 1 :], cwd, given
+    return None
+
+
+def read_assignments(program: str, arguments: list[Word], index: int, given: dict[str, Word], reading: Reading) -> int:
+    """The NAME=value words env or sudo takes before its command, into given; returns the index of the command.
+
+    Each takes every word holding `=` there as NAME=value, whatever the name: a[1]=x and `x y=1` too. A word the text
+    does not settle, such as FOO=$(cmd), may be one for any name, git's variables among them, so the guard cannot read
+    it, and every handed variable is unsettled for the words after it, read as the command."""
     while index < len(arguments) and ((word := arguments[index]) is None or "=" in word):
         if word is None:
-            reading.cannot_read("could not read a word passed to env, which may assign any variable")
-            given = {name: None if is_handed(name) else value for name, value in given.items()}
+            reading.cannot_read(f"could not read a word passed to {program}, which may assign any variable")
+            given.update((name, None) for name in list(given) if is_handed(name))
             given.update(dict.fromkeys((*LOCATION_VARIABLES, *CONFIGURATION_VARIABLES, *SHELL_OPTION_VARIABLES)))
         else:
             name, _, assigned = word.partition("=")
             given[name] = assigned
         index += 1
-    if index < len(arguments):
-        return command_name(arguments[index]), arguments[index + 1 :], cwd, given
-    return None
+    return index
 
 
 def elevated_command(
@@ -1710,9 +1719,14 @@ def elevated_command(
             elif option in CHDIR_OPTIONS:
                 cwd = moved(cwd, value)
         index += 1
+    given: dict[str, Word] = dict.fromkeys(variables)
+    if program in ASSIGNING_ELEVATORS:
+        # sudo sets each NAME=value before its command in the command's environment, as env does; doas takes none,
+        # so such a word is its program.
+        index = read_assignments(program, arguments, index, given, reading)
     if index >= len(arguments):
         return None
-    return command_name(arguments[index]), arguments[index + 1 :], cwd, dict.fromkeys(variables)
+    return command_name(arguments[index]), arguments[index + 1 :], cwd, given
 
 
 def elevated_options(arguments: list[Word], index: int, valued: frozenset[str]) -> tuple[list[tuple[str, Word]], int]:
