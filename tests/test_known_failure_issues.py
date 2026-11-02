@@ -35,6 +35,7 @@ LOADED = sorted(
                 "console",
                 "device_names",
                 "executable_locator",
+                "file_presence",
                 "flat_text",
                 "git_client",
                 "github_client",
