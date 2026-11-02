@@ -1238,8 +1238,14 @@ def estimated_seconds(mutant: Mutant, reach: Mapping[str, Reach]) -> float:
         return 0.0
     suite, tests = plan[0]
     measured = reach[suite]
-    share = len(tests) / measured.collected if tests and measured.collected else 1.0
-    return measured.seconds * min(share, 1.0)
+    # The tests a mutant runs are among those pytest listed, so their share is at most the whole suite.
+    return measured.seconds * len(tests) / measured.collected if tests and measured.collected else measured.seconds
+
+
+def left_worker_seconds(deadline: float, now: float, workers: int) -> float:
+    """The worker-seconds a leg's cap leaves from `now`: its time left, none once the cap is past, times its
+    workers."""
+    return max(0.0, deadline - now) * workers
 
 
 def modules_to_split(needed: Mapping[str, float], available: float) -> list[str]:
@@ -1981,7 +1987,7 @@ class Gate:
             for chosen in modules
             if chosen.mutants
         }
-        available = max(0.0, deadline - self.clock()) * len(trees)
+        available = left_worker_seconds(deadline, self.clock(), len(trees))
         too_large = too_large_line(LegRun(name, self.minutes, 0.0, len(trees), {}, {}, [], needed, available))
         if too_large:
             # A workflow command, which puts the estimate on the run's annotations while the mutants still run.

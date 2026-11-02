@@ -3035,6 +3035,8 @@ def test_a_mutants_estimate_is_its_first_suites_time_shared_by_the_tests_it_runs
         ({"a": 40.0, "b": 30.0, "c": 5.0}, 50.0, ["a"]),
         ({"a": 40.0, "b": 30.0, "c": 25.0}, 30.0, ["a", "b"]),
         ({"b": 20.0, "a": 20.0}, 25.0, ["a"]),
+        # The costliest goes first even when its name sorts last.
+        ({"a": 5.0, "b": 40.0}, 10.0, ["b"]),
         ({"a": 100.0}, 50.0, ["a"]),
         ({}, 0.0, []),
     ],
@@ -3068,6 +3070,27 @@ def test_the_modules_to_split_are_the_costliest_until_the_rest_fit(
             "cap left 17 worker-minutes, so move `tools/b.py` (13 worker-minutes) into a pull request of its own and "
             "split the change to `tools/a.py` (50 worker-minutes), whose changed lines alone need more than that.",
         ),
+        # A module that needs exactly what the leg had fits alone, so it moves rather than splits.
+        (
+            {"tools/a.py": 2400.0, "tools/b.py": 600.0},
+            2400.0,
+            "need 50 worker-minutes once its reach was measured, each at its first suite's unmutated time, and its cap "
+            "left 40 worker-minutes, so move `tools/a.py` (40 worker-minutes) into a pull request of its own.",
+        ),
+        (
+            {"tools/a.py": 1000.0, "tools/b.py": 900.0, "tools/c.py": 800.0},
+            1000.0,
+            "need 45 worker-minutes once its reach was measured, each at its first suite's unmutated time, and its cap "
+            "left 17 worker-minutes, so move `tools/a.py` (17 worker-minutes), `tools/b.py` (15 worker-minutes) into "
+            "pull requests of their own.",
+        ),
+        (
+            {"tools/a.py": 2000.0, "tools/b.py": 1500.0, "tools/c.py": 100.0},
+            1000.0,
+            "need 60 worker-minutes once its reach was measured, each at its first suite's unmutated time, and its cap "
+            "left 17 worker-minutes, so split the change to `tools/a.py` (33 worker-minutes), `tools/b.py` (25 "
+            "worker-minutes), whose changed lines alone need more than that.",
+        ),
     ],
 )
 def test_a_leg_too_large_for_its_cap_names_the_modules_to_move_and_those_to_split(
@@ -3080,6 +3103,12 @@ def test_a_leg_too_large_for_its_cap_names_the_modules_to_move_and_those_to_spli
 def test_a_leg_whose_mutants_fit_its_cap_gives_no_advice() -> None:
     assert too_large_line(LegRun(LINUX_LEG, 40, 0.0, 4, {}, {}, [], {"tools/a.py": 2400.0}, 2400.0)) is None
     assert too_large_line(LegRun(LINUX_LEG, 40, 0.0, 0, {}, {}, [])) is None
+
+
+def test_a_cap_leaves_its_time_left_times_its_workers_and_none_once_it_is_past() -> None:
+    assert mutation_gate.left_worker_seconds(120.0, 30.0, 2) == 180.0
+    assert mutation_gate.left_worker_seconds(60.0, 90.0, 2) == 0.0
+    assert mutation_gate.left_worker_seconds(60.0, 60.0, 4) == 0.0
 
 
 def test_worker_minutes_are_rounded_and_one_is_singular() -> None:
@@ -3313,7 +3342,14 @@ class UnrunFixtures(unittest.TestCase):
             {"tools/calc.py": [Outcome(mutants[0], KILLED, ("t",)), Outcome(mutants[1], NOT_RUN)]},
             {},
             [],
-            local=mutation_gate.LocalRun(5, 1.0, 2, {"tools/calc.py": [0, 1]}, {}, []),
+            local=mutation_gate.LocalRun(
+                5,
+                90.0,
+                2,
+                {"tools/calc.py": [0, 1]},
+                {"tests/tools/test_other.py": "failed unmutated with exit code 2"},
+                [],
+            ),
         )
         summary_file = self.folder / "summary.md"
         with (
@@ -3324,8 +3360,20 @@ class UnrunFixtures(unittest.TestCase):
         unrun.assert_called_once_with(self.folder)
         self.assertEqual(1, code)
         self.assertEqual(completed, read_leg(self.folder / "outcomes-linux.json", selected, LINUX_LEG))
-        self.assertEqual(mutation_gate.join(self.folder).text, summary_file.read_text(encoding="utf-8"))
+        written = summary_file.read_text(encoding="utf-8")
+        self.assertEqual(mutation_gate.join(self.folder).text, written)
         self.assertIn("::error title=Mutation gate unfinished::", printed.getvalue())
+        # The local run is named beside the leg with its own count, time, and the suites that failed in it.
+        self.assertIn(
+            "- On Linux, 4 workers ran for 40 of its 40 minutes, and a local run on Linux then ran the 2 mutants it "
+            "left without a verdict, 2 workers for 2 of its 5 minutes; a mutant ran",
+            written,
+        )
+        self.assertIn(
+            "\n`tests/tools/test_other.py` failed unmutated with exit code 2 in the local run on Linux, so no mutant "
+            "ran against it there.\n",
+            written,
+        )
 
 
 def test_a_selection_records_each_modules_digest_and_a_leg_its_estimate_and_local_run() -> None:
@@ -3404,6 +3452,21 @@ def test_a_selections_digest_that_is_not_a_sha_256_is_refused(
             (*LOCAL_AT,),
             {**LOCAL_RECORD, "unmeasured_suites": 1},
             "record.json.local.unmeasured_suites must be an array, found integer 1",
+        ),
+        (
+            (*LOCAL_AT,),
+            {**LOCAL_RECORD, "seconds": "1"},
+            'record.json.local.seconds must be a finite number, found string "1"',
+        ),
+        (
+            (*LOCAL_AT,),
+            {**LOCAL_RECORD, "failed_suites": 1},
+            "record.json.local.failed_suites must be an object, found integer 1",
+        ),
+        (
+            (*LOCAL_AT,),
+            {**LOCAL_RECORD, "failed_suites": {"t": 1}},
+            "record.json.local.failed_suites.t must be a non-empty string, found integer 1",
         ),
     ],
 )
