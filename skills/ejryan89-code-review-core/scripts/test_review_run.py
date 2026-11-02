@@ -5,6 +5,7 @@ refused by name, by load_run and in the FAILED line of every step that reads the
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import sys
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import review_pipeline
 import review_run
+from test_review_archive import unstatable
 
 
 def prepared_state(**fields: Any) -> dict[str, Any]:
@@ -101,6 +103,21 @@ def test_a_run_as_prepare_writes_it_loads_unchanged(tmp_path: Path) -> None:
     loaded = review_run.load_run(tmp_path)
     assert state == loaded
     assert json.dumps(state, sort_keys=True) == json.dumps(loaded, sort_keys=True)
+
+
+def test_the_inline_seal_passes_over_only_folders_so_a_file_it_cannot_stat_is_still_sealed(tmp_path: Path) -> None:
+    run = tmp_path.resolve()
+    work = run / "work"
+    (work / "nested").mkdir(parents=True)
+    (run / "source").mkdir()
+    for path in (run / "request.json", work / "plan.json", work / "generic.json", run / "source" / "app.py"):
+        path.write_text(path.name, encoding="utf-8")
+    role = {"id": "generic-review", "prompt_file": str(work / "generic.md"), "result_file": str(work / "generic.json")}
+    state: Any = prepared_state(roles=[role], result_path=str(run / "result.json"))
+    with unstatable(work / "plan.json"):
+        sealed = review_run.sealed_files(run, state)
+    digest = hashlib.sha256(b"plan.json").hexdigest()
+    assert {"request.json": hashlib.sha256(b"request.json").hexdigest(), "work/plan.json": digest} == sealed
 
 
 # Every field a run prepared before it was recorded may lack, named here apart from the shape the reader takes them

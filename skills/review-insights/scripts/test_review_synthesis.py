@@ -29,6 +29,7 @@ from review_archive import commit_record, current_ledger
 from review_flags import add_flag, load_store, resolve_flag
 from review_io import PersistenceError
 from review_records import build_record, write_record_pair
+from test_review_archive import unstatable
 from test_review_insights import DECIDED_AT, LINE_BREAKS, InsightFixture, covered, record
 
 # The command name the skills' scripts write for Python into the commands they hand an agent.
@@ -1007,6 +1008,11 @@ class StageTests(unittest.TestCase):
         week = period("2025-12-01--2025-12-25")
         found = rs.previous_period(set_root, date(2026, 1, 1), load)
         self.assertEqual((week, "2025-12-25"), (found[0], found[1]["end"]) if found else None)
+        # A set folder or report it cannot stat is refused, never read as no earlier period.
+        for path in (set_root, week):
+            with self.subTest(path=path.name), unstatable(path), self.assertRaises(PermissionError) as raised:
+                rs.previous_period(set_root, date(2026, 1, 1), load)
+            self.assertEqual(str(path), raised.exception.filename)
 
     def test_a_context_larger_than_synthesize_reads_is_never_written(self) -> None:
         temporary = tempfile.TemporaryDirectory()

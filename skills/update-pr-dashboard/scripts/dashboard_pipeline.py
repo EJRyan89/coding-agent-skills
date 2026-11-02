@@ -40,6 +40,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import file_presence
 from console import run_main
 from flat_text import flat_text
 from github_client import GitHubError
@@ -470,8 +471,9 @@ def tracker_record_path(config_path: Path) -> Path:
 
 
 def read_tracker_record(record: Path) -> dict[str, Any] | None:
-    """The validated tracker record at `record`, or None before any update has written it."""
-    if not record.exists():
+    """The validated tracker record at `record`, or None before any update has written it. A record it cannot stat is
+    the OSError file_presence raises, never one no update has written."""
+    if not file_presence.is_present(record):
         return None
     return validate_tracker_record(read_json(record))
 

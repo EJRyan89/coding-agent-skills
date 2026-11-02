@@ -11,6 +11,7 @@ from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 import json_writer
 from path_keys import path_key
@@ -103,7 +104,7 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     counted = False
     for role in roles:
         log = read_log(run, role)
-        if not log.is_file():
+        if not file_presence.is_present(log):
             continue
         sizes: dict[str, int] = {}
         searches = 0
@@ -522,9 +523,10 @@ def unfinalized_selector(run: Path) -> str | None:
 
     finalize is the only step that removes a published run, and prepare never prints RUN for a directory it removed,
     so a run directory that is gone was recorded, and so is one finalize marked recorded because it could not remove
-    it. One that remains otherwise, after a failure or with nobody finalizing it, is its pull request's failure.
+    it. One that remains otherwise, after a failure or with nobody finalizing it, is its pull request's failure, and
+    one it cannot stat is the OSError file_presence raises, never a recorded run.
     """
     run = run.resolve()
-    if not run.exists() or (run / RECORDED_FILE).is_file():
+    if not file_presence.is_directory(run) or file_presence.is_present(run / RECORDED_FILE):
         return None
     return load_run(run)["selector"]

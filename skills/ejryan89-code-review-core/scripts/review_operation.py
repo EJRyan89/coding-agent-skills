@@ -399,12 +399,11 @@ LEGACY_INDEX_KEYS = {
 def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, Any] | None:
     """The migrated legacy review index for a pull request, or None when absent or invalid.
 
-    An invalid index is treated as unreviewed so the pull request is offered for review again.
+    An index that is invalid or cannot be read, a missing one included, is treated as unreviewed, so the pull request
+    is offered for review again rather than passed over.
     """
     repository = validate_repository_identity(repository)
     path = pull_directory(archive_root, repository, number) / "legacy-review.json"
-    if not path.is_file():
-        return None
     try:
         index = READ.json_object(read_json(path), "legacy-index", required=LEGACY_INDEX_KEYS)
         version = READ.integer(index["schema_version"], "legacy-index.schema_version")
@@ -451,8 +450,9 @@ def reviewed_head(
     Also reports the review's verdict, finding counts, ledger summary, and report path for dashboards. A record
     written before ledgers is summarized from the ledger its pull request's records compute. A legacy review's
     findings were never converted, so its summary counts its report's findings as open and cannot say how many
-    were addressed (None); it is None when the report is unreadable. A caller that already holds the pull request's
-    validated records, oldest first as `pull_records` returns them, passes them as `records` so none is read again.
+    were addressed (None); it and the report's path are None when the report is unreadable, which is the one read
+    that tells. A caller that already holds the pull request's validated records, oldest first as `pull_records`
+    returns them, passes them as `records` so none is read again.
     """
     directory = pull_directory(archive_root, repository, number)
     record = records[-1] if records else None
@@ -491,7 +491,7 @@ def reviewed_head(
             "verdict": legacy["verdict"].replace(" ", "_"),
             "counts": counts,
             "ledger": summary,
-            "report": str(report) if report.is_file() else None,
+            "report": None if counts is None else str(report),
         }
     return None
 

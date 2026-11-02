@@ -2,17 +2,60 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+from file_presence import NotADirectory
 from review_archive import ArchiveError, commit_record, latest_record, list_versions, pull_directory, record_files
 from review_records import ReviewRecord, build_record, validate_adapter_result
 from test_review_records import valid_adapter_result, valid_request
+
+# The predicates Python 3.14 and later answer False for a path whose stat fails with any OSError.
+SWALLOWING_PREDICATES = ("exists", "is_file", "is_dir")
+
+
+@contextlib.contextmanager
+def unstatable(path: Path, *, times: int | None = None) -> Iterator[None]:
+    """`path` as one whose stat is refused looks to Python 3.14 and later: Path.stat raises a permission error naming
+    it, and exists, is_file, and is_dir answer False. With `times`, only that many of these calls are refused and
+    the rest read the path as it is, as for a file another process holds for a moment. Every other path is read as it
+    is."""
+    stat = Path.stat
+    predicates = {name: getattr(Path, name) for name in SWALLOWING_PREDICATES}
+    refusals = [0]
+
+    def refusing(candidate: Path) -> bool:
+        if candidate != path or (times is not None and refusals[0] >= times):
+            return False
+        refusals[0] += 1
+        return True
+
+    def refused(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if refusing(self):
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return stat(self, *args, **kwargs)
+
+    def answering(name: str) -> Any:
+        def predicate(self: Path, *args: Any, **kwargs: Any) -> bool:
+            return False if refusing(self) else bool(predicates[name](self, *args, **kwargs))
+
+        return predicate
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", refused))
+        for name in SWALLOWING_PREDICATES:
+            stack.enter_context(mock.patch.object(Path, name, answering(name)))
+        yield
 
 
 class ArchiveTests(unittest.TestCase):
@@ -99,3 +142,33 @@ class ArchiveTests(unittest.TestCase):
             if latest is None:
                 self.fail("eleven versions are archived")
             self.assertEqual(11, latest["review"]["version"])
+
+    def test_a_pulls_folder_it_cannot_stat_or_a_file_in_its_place_is_refused_not_read_as_no_reviews(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = pull_directory(root, "example/one", 7)
+            folder.mkdir(parents=True)
+            (folder / "review.json").write_text("{}", encoding="utf-8")
+            readers = {
+                "record_files": (folder.parent, lambda: record_files(root, "example/one")),
+                "list_versions": (folder, lambda: list_versions(folder)),
+            }
+            for name, (path, read) in readers.items():
+                with (
+                    self.subTest(name, unstatable=True),
+                    unstatable(path),
+                    self.assertRaises(PermissionError) as raised,
+                ):
+                    read()
+                self.assertEqual(str(path), raised.exception.filename)
+            other = Path(temporary) / "other"
+            pulls = pull_directory(other, "example/one", 7).parent
+            pulls.parent.mkdir(parents=True)
+            pulls.write_text("", encoding="utf-8")
+            for name, read in (
+                ("record_files", lambda: record_files(other, "example/one")),
+                ("list_versions", lambda: list_versions(pulls)),
+            ):
+                with self.subTest(name, file_in_place=True), self.assertRaises(NotADirectory) as refused:
+                    read()
+                self.assertEqual(str(pulls), refused.exception.filename)

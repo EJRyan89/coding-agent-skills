@@ -495,7 +495,9 @@ def sealed_files(run: Path, state: RunState) -> dict[str, str]:
     digests = {}
     for path in sorted(run.rglob("*")):
         relative = path.relative_to(run)
-        if relative.parts[0] in {"source", SOURCE_REPOSITORY, RUN_FILE, RECORDED_FILE} or not path.is_file():
+        # A folder is passed over; anything else is hashed, so an entry it cannot stat fails at its read, never
+        # leaving the seal.
+        if relative.parts[0] in {"source", SOURCE_REPOSITORY, RUN_FILE, RECORDED_FILE} or path.is_dir():
             continue
         if (path.parent, path.name) in skipped or any(
             path.parent == parent and path.name.startswith(prefix) for parent, prefix in rejected

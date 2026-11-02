@@ -537,6 +537,28 @@ class ReviewedHeadTests(unittest.TestCase):
         )
         self.assertEqual(str(self.directory / "legacy-review.md"), reviewed["report"])
 
+    def test_a_legacy_report_it_cannot_read_is_neither_counted_nor_linked(self) -> None:
+        self.write_legacy()
+        report = self.directory / "legacy-review.md"
+        heading = "<summary><strong>MUST FIX ({})</strong></summary>\n"
+        read_text = Path.read_text
+
+        def refused(path: Path, *args: Any, **kwargs: Any) -> str:
+            if path == report:
+                raise PermissionError(13, "Permission denied", str(path))
+            return read_text(path, *args, **kwargs)
+
+        for name, content, reader in (
+            ("a count past the digit limit", heading.format("1" + "0" * 5000), read_text),
+            ("a read refused", heading.format(1), refused),
+        ):
+            with self.subTest(name), mock.patch.object(Path, "read_text", reader):
+                report.write_text(content, encoding="utf-8")
+                reviewed = review_operation.reviewed_head(self.root, "owner/repo", 5)
+                if reviewed is None:
+                    self.fail("the legacy review still counts as reviewed")
+                self.assertEqual((None, None, None), (reviewed["counts"], reviewed["ledger"], reviewed["report"]))
+
     def test_a_legacy_count_past_the_digit_limit_or_in_other_digits_makes_the_report_unreadable(self) -> None:
         report = self.directory / "counted.md"
         self.directory.mkdir(parents=True, exist_ok=True)

@@ -65,6 +65,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import file_presence
 import json_writer
 import review_guidance
 import review_signals
@@ -900,7 +901,8 @@ def create_report(
     pairs = RecordPairs()
     records = collect_records(archive_root, repositories, start, end, pairs)
     with services.report_lock(json_path):
-        earlier = load_report(json_path) if json_path.exists() else None
+        # A report it cannot stat fails here, never read as no report and its decisions written over.
+        earlier = load_report(json_path) if file_presence.is_present(json_path) else None
         previous = {subject_key(item): item for item in earlier["recommendations"]} if earlier else {}
         # A superseded recommendation keeps its ID, so no later subject is given it.
         prior_synthesis = earlier["synthesis"] if earlier else None
