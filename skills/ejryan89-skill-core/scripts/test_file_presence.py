@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -20,7 +21,7 @@ EISDIR = 21
 EINVAL = 22
 
 
-def stat_answers(failure: OSError, *, failed_follow: bool):
+def stat_answers(failure: OSError, *, failed_follow: bool) -> Callable[..., os.stat_result]:
     """A stand-in for Path.stat that raises `failure` from the stat through links when `failed_follow`, and otherwise
     answers that stat "not found" and raises `failure` from the stat of the link itself."""
 

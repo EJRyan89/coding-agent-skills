@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import check_provenance
 import skill_inventory
+from file_presence import NotAFile
 from git_client import GitClient, GitError, GitResult
 
 SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
@@ -1670,8 +1671,8 @@ class StatusLineTests(TemporaryTestCase):
                     with self.assertRaises(PermissionError):
                         skill_inventory.script_is_present(folder / "scripts" / "tool.py")
         with (
-            mock.patch.object(skill_inventory, "is_present", side_effect=skill_inventory.NotAFile(folder)),
-            self.assertRaises(skill_inventory.NotAFile),
+            mock.patch.object(skill_inventory, "is_present", side_effect=NotAFile(folder)),
+            self.assertRaises(NotAFile),
         ):
             skill_inventory.script_is_present(folder)
 
