@@ -42,7 +42,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A reader that cannot tell whether something is there reports that it could not tell, never that it is
   absent or that nothing was wrong.
 - **Why:** An unreadable path, a failed command, or a git error read as "not found" otherwise reads as a clean pass.
-- **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart;
+- **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart, and lets a stat that
+  fails with anything but "not found" through as the error the stat raised;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
   `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read; and git's found,
   absent, and could-not-tell lookups, `git_client:GitClient.rev_parse_paths` for a path query,
@@ -58,18 +59,23 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
   `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
   `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
-  `tests/tools/test_hub_guard.py::PlaceLookupTests`
+  `tests/tools/test_hub_guard.py::PlaceLookupTests`,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::FilePresenceTests::test_a_stat_that_fails_with_anything_but_not_found_reaches_the_caller`,
+  `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
-  followed by a `return None`, `return []`, or `return False`, where `is_present` should probe; `if not result.stdout`
+  followed by a `return None`, `return []`, or `return False`, where `is_present` should probe, and its expression
+  form, `... if path.is_file() else None`; `exists()`, `is_file()`, `is_dir()`, `os.path.exists`, `os.path.lexists`,
+  `os.path.isfile`, or `os.path.isdir` anywhere a False must mean nothing is there, since from Python 3.14 each
+  returns False on every `OSError`, and `lexists` on a `ValueError` too; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
   that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
   callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
   another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
   other than absence, such as a start inside a git directory, which has no work tree to show.
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2205
 
 ### Evidence that was never produced is never a pass
 
@@ -378,14 +384,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A record separator is one the data cannot hold
 
 - **Rule:** A listing of names or records another program writes is split on a separator the data cannot hold, NUL
-  for git, and a script never splits a line it printed to recover a value it already holds.
+  for git, a script never splits a line it printed to recover a value it already holds, and a fact line a script
+  prints holds each value flattened, so no value adds a line or a field.
 - **Why:** A name holding the separator, or a path git quotes, is split or misread, and the listing names a file that
   is not there.
 - **Use:** `git_client:GitClient.names`, which runs a name listing with -z and splits it on NUL;
   `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
   joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
   a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds;
-  and `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints.
+  `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
+  `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason; and
+  `flat_text:fact_line`, which flattens every field of a tab-separated fact line.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
   split of git's output with splitlines() unless its module states why,
@@ -398,13 +407,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
   `tests/tools/test_release_notes.py::RangeEntriesTests::test_a_message_holding_any_byte_but_nul_is_read_whole`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_every_name_reads_back_as_resolve_writes_it`,
-  `skills/audit-skill/scripts/test_skill_inventory.py::ScanTests::test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line`
+  `skills/audit-skill/scripts/test_skill_inventory.py::ScanTests::test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line`,
+  `skills/ejryan89-skill-core/scripts/test_flat_text.py::FactLineTests::test_a_field_holding_any_line_or_field_break_stays_one_field_on_one_line`,
+  `skills/dotnet-format/scripts/test_run_dotnet_format.py::OneLineFactTests::test_a_saved_file_holding_a_line_separator_is_named_on_one_line`,
+  `skills/dotnet-format/scripts/test_csharp_layout.py::OneLineFactTests::test_violations_and_fixes_in_a_name_holding_a_line_break_print_one_line_each`;
+  a policy holding every result-line printer to one choke point is #2248's
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
   output passed into a function that splits it; `.split()[` or `.partition(" ")` on a line the same module wrote,
-  beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2206
+  beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space;
+  `emit(f"` and `print(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an
+  exception, or another program's output without `fact_line` or `flat_text`.
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2206, #2211
 
 ### Two spellings are compared as their consumer compares them
 
