@@ -2315,6 +2315,31 @@ class KeptBesideItsItemTests(DeployerTestCase):
                 self.assertIn("# edit", kept.read_text(encoding="utf-8"))
         self.deploy_fails("--all", pattern="transient backup already exists")
 
+    def test_the_warning_gives_the_reason_the_copy_could_not_be_moved(self) -> None:
+        transient = self.skills_dir / transient_name("alpha")
+        start = self.root / "home-before-each-reason"
+        shutil.copytree(self.home, start, symlinks=True)
+        real_move = fsops.move
+        # An OSError is named by its own message where it has one, and by its whole text where it has none.
+        for error, reason in (
+            (denied(transient), "Access is denied"),
+            (OSError("synthetic move failure"), "synthetic move failure"),
+        ):
+            with self.subTest(reason=reason):
+
+                def failing_move(source: Path, destination: Path, error: OSError = error) -> None:
+                    if source == transient:
+                        raise error
+                    real_move(source, destination)
+
+                with self.frozen_run_id(), mock.patch("deployer.fsops.move", side_effect=failing_move):
+                    result = self.deploy_ok("--all", "--force")
+                self.assertIn(
+                    f"since it could not be moved to .backups/{self.RUN_ID}/alpha: {reason}. Move it out of the root",
+                    result.output,
+                )
+            self.reset(start)
+
     def test_each_step_after_the_commit_keeps_the_copy_beside_its_item_in_finalization_and_in_recovery(self) -> None:
         start = self.root / "home-before-each-row"
         shutil.copytree(self.home, start, symlinks=True)
@@ -2364,6 +2389,25 @@ class BackupProbeTests(DeployerTestCase):
 
         with mock.patch("deployer.fsops.write_file", side_effect=refuse_files):
             self.deploy_fails("--all", "--force-item", "reviewer", pattern="Backup path is not writable")
+
+    def test_a_probe_whose_cleanup_fails_lets_the_deployment_go_on(self) -> None:
+        # What the probe made is removed when it can be; a removal that fails changes nothing the run relies on, so the
+        # deployment goes on and keeps its copy in the folder the probe already made.
+        run_folder = self.claude_agents_dir / ".backups"
+        real_remove = fsops.remove
+        state = {"failed": False}
+
+        def failing_remove(path: Path) -> None:
+            if path.parent == run_folder and not state["failed"]:
+                state["failed"] = True
+                raise denied(path)
+            real_remove(path)
+
+        with mock.patch("deployer.fsops.remove", side_effect=failing_remove):
+            self.deploy_ok("--all", "--force-item", "reviewer")
+        self.assertTrue(state["failed"])
+        [kept] = list(run_folder.glob("*/reviewer.md"))
+        self.assertIn("# edit", kept.read_text(encoding="utf-8"))
 
     def test_a_refused_probe_removes_the_backups_folder_it_made(self) -> None:
         backups = self.skills_dir / ".backups"
