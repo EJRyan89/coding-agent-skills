@@ -424,7 +424,9 @@ class RecoveryTests(RecoveryTestCase):
         self.assertEqual("precious data\n", sentinel.read_text(encoding="utf-8"))
         self.assertTrue(journal.is_file())
 
-    def test_junction_backed_permanent_backup_is_blocked(self) -> None:
+    def test_a_committed_run_whose_permanent_backup_folder_is_a_junction_keeps_the_copy_beside_its_item(
+        self,
+    ) -> None:
         self.deployed(("alpha", "Alpha content"))
         run_id = "20260101-000000-junction"
         sentinel = self.sentinel()
@@ -449,9 +451,19 @@ class RecoveryTests(RecoveryTestCase):
                 }
             ),
         )
-        self.deploy_fails("--all", pattern="Backup path contains a symlink or junction")
+        # Recovery finishes the committed run without moving anything through the junction, and the copy the run
+        # replaced stays beside its item, so the deployment then refuses alpha until the user moves it.
+        result = self.deploy_fails(
+            "--all",
+            pattern="transient backup already exists",
+            changes_home="recovery completes the committed run and removes its journal",
+        )
+        self.assertIn("Backup path contains a symlink or junction", result.output)
+        self.assertIn("alpha's previous copy is kept at", result.output)
+        self.assertIn("Recovery complete.", result.output)
         self.assertEqual("precious data\n", sentinel.read_text(encoding="utf-8"))
         self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
+        self.assertFalse((self.home / ".claude" / "deployer" / "staging" / run_id / "journal.jsonl").exists())
 
 
 def denied(path: Path) -> PermissionError:
@@ -561,14 +573,18 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assert_recovery_failed(result.output, transient, committed=True)
         self.assertTrue((transient / "SKILL.md").is_file())
 
-    def test_a_backup_directory_that_cannot_be_created_fails_finalization_of_a_committed_run(self) -> None:
+    def test_a_backup_directory_that_cannot_be_created_keeps_the_copy_and_finishes_a_committed_run(self) -> None:
         self.committed_fixture(retain=True)
         self.later_run()
         backups = self.skills_dir / ".backups" / self.HELD
+        # The run is committed, so its items stay; the copy it replaced stays beside its item rather than holding
+        # the journal and the lock until the folder can be made.
         with failing_at("make_directories", backups):
-            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
-        self.assert_recovery_failed(result.output, backups, committed=True)
-        self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
+            result = self.deploy_fails("--all", pattern="transient backup already exists", changes_home=RECOVERS)
+        self.assertIn(f"ERROR: Backup path is not writable: {forward(backups.parent)}: Access is denied", result.output)
+        self.assertIn("alpha's previous copy is kept at", result.output)
+        self.assertFalse((self.home / ".claude" / "deployer" / "staging" / self.HELD / "journal.jsonl").exists())
+        self.assertEqual("previous alpha\n", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text("utf-8"))
 
     def test_an_unreadable_journal_fails_its_run_only(self) -> None:
         journal_file = self.rolled_back_fixture()

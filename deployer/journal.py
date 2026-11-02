@@ -203,7 +203,9 @@ def check_backup_root(paths: Paths, root: str, run_id: str | None = None) -> Non
     .backups that does not exist yet passes, since the run creates it.
 
     The plan runs it for every root before the first change, so the deployment, and the dry run, refuse such a path
-    while the home is unchanged, rather than after the manifest commit, when prepare_backup_destination meets it.
+    while the home is unchanged, rather than after the manifest commit, when prepare_backup_destination meets it. Given
+    the run's ID, as the deployment gives it under its lock before its first write, it also proves the run can create
+    its own folder there; the dry run changes nothing, so it does not.
     """
     base = root_directory(paths, root)
     backups = base / ".backups"
@@ -212,13 +214,38 @@ def check_backup_root(paths: Paths, root: str, run_id: str | None = None) -> Non
         raise DeployError(
             f"ERROR: Backup path is not a directory: {platform_support.normalize(backups)}", BACKUP_PATH_REMEDY
         )
-    run_backups = backups / run_id if run_id is not None else None
-    if run_backups is not None and os.path.lexists(run_backups):
+    if run_id is None:
+        return
+    run_backups = backups / run_id
+    if os.path.lexists(run_backups):
         raise DeployError(
             f"ERROR: Permanent backup folder for this run already exists: {platform_support.normalize(run_backups)}",
             "Move it out of the deployment root after checking its contents, then retry.",
             see_recovery("Backups"),
         )
+    if base.is_dir():
+        _probe_backup_folder(backups, run_backups)
+
+
+def _probe_backup_folder(backups: Path, run_backups: Path) -> None:
+    """Create this run's backup folder and remove it again, and .backups with it when the probe made it, so a .backups
+    the run cannot write, by its permissions or its owner, is refused before the first change."""
+    existed = os.path.lexists(backups)
+    try:
+        fsops.make_directories(run_backups)
+        fsops.remove(run_backups)
+        if not existed:
+            fsops.remove(backups)
+    except OSError as exc:
+        raise _not_writable(backups, exc) from exc
+
+
+def _not_writable(backups: Path, error: OSError) -> DeployError:
+    return DeployError(
+        f"ERROR: Backup path is not writable: {platform_support.normalize(backups)}: {error.strerror or error}",
+        "Give your account write access to it, or replace it with a directory you own, then retry.",
+        see_recovery("Backups"),
+    )
 
 
 def check_backup_roots(paths: Paths, run_id: str | None = None) -> None:
@@ -245,7 +272,10 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
         _reject_backup_links(components, verb)
 
     reject_links("contains")
-    fsops.make_directories(run_backups)
+    try:
+        fsops.make_directories(run_backups)
+    except OSError as exc:
+        raise _not_writable(backups, exc) from exc
     reject_links("became")
     # Compared as the file system holding the root compares names: without regard to case only where it folds.
     base_canonical = platform_support.name_key(platform_support.canonical_directory(base), base)
@@ -338,9 +368,20 @@ def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
         )
     try:
         destination = prepare_backup_destination(paths, run_id, item, root)
-    except DeployError as exc:
-        _report(exc)
-        return False
+    except (DeployError, OSError) as exc:
+        if isinstance(exc, DeployError):
+            _report(exc)
+        else:
+            _warn(f"Cannot make {kept_at}: {exc.strerror or exc}")
+        if not os.path.lexists(transient):
+            return False
+        # The run is committed, so its items stay; the copy it displaced stays beside its item, never deleted, and the
+        # next deployment of the item refuses until the user moves it.
+        _warn(
+            f"{item}'s previous copy is kept at {platform_support.normalize(transient)}, since {kept_at} cannot be "
+            f"made. Move it out of the root after checking it. {see_recovery('Backups')}"
+        )
+        return True
     if os.path.lexists(transient):
         if os.path.lexists(destination):
             _warn(f"Both transient and permanent backups exist for {item}")

@@ -7,6 +7,8 @@ tests here show each comparison failing on a deployment that breaks its invarian
 from __future__ import annotations
 
 import os
+import re
+import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -20,6 +22,7 @@ from harness import (
     Deployment,
     deployer,
     deployment,
+    forward,
     make_directory_link,
     remove_directory_link,
     tree_state,
@@ -31,6 +34,8 @@ from deployer.names import transient_name
 from deployer.paths import Paths
 
 REFUSAL = "ERROR: synthetic refusal"
+# The Everyone group, by its well-known SID.
+EVERYONE = "*S-1-1-0"
 
 
 class TreeStateTests(DeployerTestCase):
@@ -513,6 +518,8 @@ class RefusalBeforeTheFirstWriteTests(DeployerTestCase):
     changes: by the dry run, and by the deployment with the home unchanged, never after the manifest commit."""
 
     RUN_ID = "20991231-000000-beef"
+    REPLACE = "Replace it with a real directory after verifying its contents, then retry."
+    SEE_BACKUPS = 'See "Backups" in docs/recovery.md.'
 
     def setUp(self) -> None:
         super().setUp()
@@ -533,23 +540,66 @@ class RefusalBeforeTheFirstWriteTests(DeployerTestCase):
     def name(self, root: Path) -> str:
         return root.relative_to(self.home).as_posix()
 
+    def refused(self, *arguments: str, lines: tuple[str, ...]) -> None:
+        """The forced deployment, with arguments, is refused with each of lines, the home unchanged."""
+        result = self.deploy_fails("--all", "--force", *arguments, pattern=re.escape(lines[0]))
+        for line in lines:
+            self.assertIn(line, result.output.splitlines())
+
+    def deny_writes(self, folder: Path) -> Callable[[], None]:
+        """Take away the right to create anything in folder, as an access control or an owner that is not this account
+        would, and return what gives it back, which the test's end runs too while the folder is there."""
+
+        def restore() -> None:
+            if not folder.is_dir():
+                return
+            if platform_support.WINDOWS:
+                subprocess.run(["icacls", str(folder), "/remove:d", EVERYONE], check=True, capture_output=True)
+            else:
+                folder.chmod(0o755)
+
+        if platform_support.WINDOWS:
+            subprocess.run(["icacls", str(folder), "/deny", f"{EVERYONE}:(AD,WD)"], check=True, capture_output=True)
+        else:
+            folder.chmod(0o555)
+        self.addCleanup(restore)
+        return restore
+
     def test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in(self) -> None:
         for root in self.items:
             backups = root / ".backups"
+            shown = forward(backups)
             with self.subTest(root=self.name(root), form="a link"):
                 target = self.root / "elsewhere" / self.name(root)
                 target.mkdir(parents=True)
                 make_directory_link(backups, target)
                 for arguments in (("--dry-run",), ()):
-                    self.deploy_fails(
-                        "--all", "--force", *arguments, pattern="Backup path contains a symlink or junction"
+                    self.refused(
+                        *arguments, lines=(f"ERROR: Backup path contains a symlink or junction: {shown}", self.REPLACE)
                     )
                 remove_directory_link(backups)
             with self.subTest(root=self.name(root), form="a file"):
                 self.write(backups, "not a folder\n")
                 for arguments in (("--dry-run",), ()):
-                    self.deploy_fails("--all", "--force", *arguments, pattern="Backup path is not a directory")
+                    self.refused(*arguments, lines=(f"ERROR: Backup path is not a directory: {shown}", self.REPLACE))
                 backups.unlink()
+
+    def test_every_root_refuses_a_backups_folder_it_cannot_write_before_the_first_change(self) -> None:
+        for root in self.items:
+            with self.subTest(root=self.name(root)):
+                backups = root / ".backups"
+                backups.mkdir()
+                restore = self.deny_writes(backups)
+                # The dry run changes nothing, so it cannot try a write; the deployment does, under its lock.
+                self.deploy_ok("--all", "--force", "--dry-run")
+                result = self.deploy_fails("--all", "--force", pattern="Backup path is not writable")
+                self.assertIn(
+                    "Give your account write access to it, or replace it with a directory you own, then retry.",
+                    result.output.splitlines(),
+                )
+                self.assertIn(self.SEE_BACKUPS, result.output.splitlines())
+                restore()
+                backups.rmdir()
 
     def test_every_root_refuses_a_transient_backup_already_beside_its_item(self) -> None:
         for root, item in self.items.items():
@@ -575,6 +625,34 @@ class RefusalBeforeTheFirstWriteTests(DeployerTestCase):
                     mock.patch("secrets.token_hex", return_value=suffix),
                     mock.patch("time.strftime", side_effect=frozen),
                 ):
-                    self.deploy_fails("--all", "--force", pattern="Permanent backup folder for this run already exists")
+                    self.refused(
+                        lines=(
+                            f"ERROR: Permanent backup folder for this run already exists: {forward(planted)}",
+                            "Move it out of the deployment root after checking its contents, then retry.",
+                            self.SEE_BACKUPS,
+                        )
+                    )
                 planted.rmdir()
                 (root / ".backups").rmdir()
+
+    def test_a_committed_run_whose_backups_folder_turns_unusable_recovers_and_keeps_the_copy_beside_its_item(
+        self,
+    ) -> None:
+        backups = self.skills_dir / ".backups"
+        backups.mkdir()
+        restore = self.deny_writes(backups)
+        # The checks before the first change passed, as they do when the folder changes while the run is under way.
+        with mock.patch("deployer.journal.check_backup_root"):
+            result = self.deploy_fails(
+                "--all", "--force-item", "alpha", pattern="Backup path is not writable", changes_home=FAILS_PARTWAY
+            )
+        transient = self.skills_dir / transient_name("alpha")
+        self.assertIn(f"alpha's previous copy is kept at {forward(transient)}", result.output)
+        # Recovery finished the committed run: the new copy stays, the displaced one is beside it, and neither the
+        # journal nor the lock is left for the next run to stop on.
+        self.assertNotIn("# edit", self.skill_text("alpha"))
+        self.assertIn("# edit", (transient / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertEqual([], list(self.paths.staging_root.iterdir()) if self.paths.staging_root.exists() else [])
+        self.assertFalse(self.lock_dir.exists())
+        restore()
+        self.deploy_fails("--all", pattern="transient backup already exists")
