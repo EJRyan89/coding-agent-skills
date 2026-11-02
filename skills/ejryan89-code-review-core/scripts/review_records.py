@@ -253,6 +253,7 @@ class ClosingIssue(TypedDict):
     same_repository: bool
     body_characters: int
     body_given: int
+    unreadable: NotRequired[bool]  # true for one GitHub did not let the reviewer's account read, given no text
 
 
 class ClosingIssues(TypedDict):
@@ -1561,14 +1562,16 @@ def _validate_closing_issues(value: Any) -> None:
     fields = {"repository", "number", "state", "same_repository", "body_characters", "body_given"}
     for index, issue in enumerate(issues):
         where = f"{path}.issues[{index}]"
-        READ.json_object(issue, where, required=fields)
+        READ.json_object(issue, where, required=fields, optional={"unreadable"})
         READ.string(issue["repository"], f"{where}.repository")
         READ.integer(issue["number"], f"{where}.number", minimum=1)
         READ.one_of(issue["state"], f"{where}.state", ("OPEN", "CLOSED"))
         same = READ.boolean(issue["same_repository"], f"{where}.same_repository")
         characters = READ.integer(issue["body_characters"], f"{where}.body_characters", minimum=0)
         given = READ.integer(issue["body_given"], f"{where}.body_given", minimum=0)
-        if given > characters or (given and not same):
+        if "unreadable" in issue:
+            READ.one_of(issue["unreadable"], f"{where}.unreadable", (True,))
+        if given > characters or (given and (not same or "unreadable" in issue)):
             raise RecordError(f"Review {where}.body_given is more than the issue's body it could be given")
 
 
@@ -1887,6 +1890,8 @@ def _closing_issues_row(pull: PullRequest) -> list[str]:
         name = f"{issue['repository']}#{issue['number']} ({issue['state'].lower()})"
         if not issue["same_repository"]:
             named.append(f"{name}, another repository's, not given")
+        elif issue.get("unreadable"):
+            named.append(f"{name}, unreadable to the reviewer's account, not given")
         elif issue["body_given"] == issue["body_characters"]:
             named.append(f"{name}, {issue['body_characters']:,} characters, given whole")
         else:

@@ -67,6 +67,7 @@ from review_runtime import (
     specialist_inputs,
     suite_profile_path,
     suite_profiles,
+    title_type,
     validate_adapter_manifest,
     verify_source_snapshot,
 )
@@ -508,12 +509,12 @@ def condition_reads(
 
 
 def title_routes(specialist: dict[str, Any], title: str | None) -> bool:
-    """Whether a specialist's `title_pattern` lets it route to a pull request with `title`: always without one, never
-    without a title, and otherwise when a search for the pattern finds it in the title, as the manifest spells it."""
-    pattern = specialist.get("title_pattern")
-    if pattern is None:
+    """Whether a specialist's `title_types` let it route to a pull request with `title`: always without them, never
+    without a title, and otherwise when the type the title opens with, as `title_type` reads it, is one of them."""
+    types = specialist.get("title_types")
+    if types is None:
         return True
-    return title is not None and re.search(pattern, title) is not None
+    return title is not None and title_type(title) in types
 
 
 def route(
@@ -525,8 +526,9 @@ def route(
     title: str | None = None,
 ) -> dict[str, list[str]]:
     """Each specialist's changed files, by any of their paths (see `_matched`), for each specialist that matched one,
-    whose `title_pattern`, if it has one, is found in the pull request's `title`, and whose `when` condition, run once
-    on first use, is open or absent. With no `title`, no specialist that routes on one is routed."""
+    whose `title_types`, if it has them, hold the type the pull request's `title` opens with, and whose `when`
+    condition, run once on first use, is open or absent. With no `title`, no specialist that routes on one is
+    routed."""
     routes: dict[str, list[str]] = {}
     results: dict[str, bool] = {}
     for specialist in manifest["specialists"]:
@@ -893,6 +895,8 @@ def closing_issues_input(pull: dict[str, Any]) -> tuple[str, str]:
         characters, given = issue["body_characters"], issue["body_given"]
         if not issue["same_repository"]:
             named.append(f"{name}, in another repository, without its title or body")
+        elif issue.get("unreadable"):
+            named.append(f"{name}, without its title or body, which GitHub did not let the reviewer's account read")
         elif characters == given:
             named.append(f"{name}, with all {characters:,} characters of its body")
         else:

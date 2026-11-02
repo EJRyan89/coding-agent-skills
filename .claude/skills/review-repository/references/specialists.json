@@ -173,7 +173,7 @@
       "resources": ["docs/lessons.md", "docs/code-review-operations-contract.md", "CLAUDE.md"],
       "when": null,
       "shares_files": true,
-      "title_pattern": "^fix(?:\\([^)]*\\))?: ",
+      "title_types": ["fix"],
       "inputs": ["closing-issues"]
     },
     {

@@ -84,11 +84,14 @@ class FixtureChange:
 
 
 def _closing_issue(value: Any, path: str) -> dict[str, Any]:
-    issue = READ.json_object(value, path, required=CLOSING_ISSUE_FIELDS, optional={"repository"})
+    issue = READ.json_object(value, path, required=CLOSING_ISSUE_FIELDS, optional={"repository", "unreadable"})
     READ.integer(issue["number"], f"{path}.number", minimum=1)
     READ.one_of(issue["state"], f"{path}.state", ("OPEN", "CLOSED"))
     READ.string(issue["title"], f"{path}.title", empty=True)
     READ.string(issue["body"], f"{path}.body", empty=True)
+    if "unreadable" in issue:
+        # One whose text GitHub did not let the viewer read, as the GitHub client marks it.
+        READ.one_of(issue["unreadable"], f"{path}.unreadable", (True,))
     if "repository" in issue:
         try:
             return {**issue, "repository": validate_repository_identity(READ.string(issue["repository"], path))}

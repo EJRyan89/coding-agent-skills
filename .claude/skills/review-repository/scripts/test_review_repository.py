@@ -929,7 +929,7 @@ class SiblingSpellingsTests(unittest.TestCase):
                 "resources": ["docs/lessons.md", "docs/code-review-operations-contract.md", "CLAUDE.md"],
                 "when": None,
                 "shares_files": True,
-                "title_pattern": "^fix(?:\\([^)]*\\))?: ",
+                "title_types": ["fix"],
                 # Neither the description nor the comments, so it reads the change without its author's account.
                 "inputs": ["closing-issues"],
             },

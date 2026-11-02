@@ -205,11 +205,26 @@ def _unreadable_closing_issue(error: Any) -> bool:
     )
 
 
-def _closing_issue(value: Any, path: str) -> dict[str, Any] | None:
-    """One closing issue as a review keeps it, or None for a reference GitHub no longer resolves for the viewer."""
+def _refused_nodes(answer: Any) -> set[int]:
+    """The closing issues, by their place in the nodes, a field of which GitHub refused the viewer: each error that
+    `_unreadable_closing_issue` takes whose path runs past the node into one of its fields."""
+    errors = answer.get("errors") if isinstance(answer, dict) else None
+    return {
+        error["path"][len(CLOSING_NODE_PATH)]
+        for error in errors or []
+        if _unreadable_closing_issue(error) and len(error["path"]) > len(CLOSING_NODE_PATH) + 1
+    }
+
+
+def _closing_issue(value: Any, path: str, *, refused: bool = False) -> dict[str, Any] | None:
+    """One closing issue as a review keeps it, or None for a reference GitHub no longer resolves for the viewer. One a
+    field of which GitHub `refused` the viewer keeps its repository, number, and state, and is marked `unreadable`, its
+    title and body empty, never read as a title or a body its author left empty."""
     if value is None:
         return None
     issue = READ.json_object(value, path)
+    if refused:
+        issue = {**issue, "title": "", "body": ""}
     owner = READ.json_object(issue.get("repository"), f"{path}.repository")
     name = READ.string(owner.get("nameWithOwner"), f"{path}.repository.nameWithOwner")
     try:
@@ -223,6 +238,7 @@ def _closing_issue(value: Any, path: str) -> dict[str, Any] | None:
         "state": READ.one_of(issue.get("state"), f"{path}.state", ("OPEN", "CLOSED")),
         "title": READ.string(issue.get("title"), f"{path}.title", empty=True),
         "body": READ.optional(READ.string, issue.get("body"), f"{path}.body", empty=True) or "",
+        **({"unreadable": True} if refused else {}),
     }
 
 
@@ -404,7 +420,12 @@ class GitHubClient:
             if page is None:
                 raise GitHubError(f"GraphQL {path} was not found", kind="not_found")
         connection = READ.json_object(page, path)
-        nodes = READ.array(connection.get("nodes"), f"{path}.nodes", _closing_issue, maximum=first)
+        listed = READ.array(connection.get("nodes"), f"{path}.nodes", maximum=first)
+        refused = _refused_nodes(answer)
+        nodes = [
+            _closing_issue(node, f"{path}.nodes[{index}]", refused=index in refused)
+            for index, node in enumerate(listed)
+        ]
         total = READ.integer(connection.get("totalCount"), f"{path}.totalCount", minimum=0)
         return [issue for issue in nodes if issue is not None], total
 

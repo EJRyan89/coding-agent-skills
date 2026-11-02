@@ -154,12 +154,12 @@ SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources
 # clear them without removing them; the configuration's own `reviewer_effort` takes null the same way.
 # `shares_files`, when true, has the specialist review its matched files beside whoever else reviews them: its matches
 # take no file from the generic reviewer, skip none when its condition is closed, and own no prior finding or comment.
-# `title_pattern`, a regular expression searched against the pull request's title, routes the specialist only to a
-# pull request whose title it matches. The author writes the title, so a specialist that uses it shares its files,
-# and a title that does not match takes no file's review away.
+# `title_types`, conventional-commit types from TITLE_TYPES, routes the specialist only to a pull request whose title
+# opens with one of them, as `title_type` reads it. The author writes the title, so a specialist that uses it shares
+# its files, and a title of another type takes no file's review away.
 # `inputs` names the pull-request texts the specialist is given, from PULL_REQUEST_INPUTS; without it the specialist
 # is given DEFAULT_PULL_REQUEST_INPUTS. One without `comments` shares its files, so it owns no comment to disposition.
-OPTIONAL_SPECIALIST_KEYS = {"model", "effort", "shares_files", "title_pattern", "inputs"}
+OPTIONAL_SPECIALIST_KEYS = {"model", "effort", "shares_files", "title_types", "inputs"}
 PULL_REQUEST_INPUTS = ("description", "comments", "closing-issues")
 DEFAULT_PULL_REQUEST_INPUTS = ("description", "comments")
 MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
@@ -437,39 +437,48 @@ def _regex_list(value: Any, field: str, *, required: bool) -> list[str]:
     return patterns
 
 
-# What a title route's pattern may not hold: a backreference, by number or by name, and a group repeated by `*`, `+`,
-# or a `{...}` count, the shape of nested repetition; an optional group, `(...)?`, is kept.
-TITLE_PATTERN_BACKREFERENCE = re.compile(r"\\[1-9]|\(\?P=")
-TITLE_PATTERN_REPEATED_GROUP = re.compile(r"(?<!\\)\)[*+{]")
+# The conventional-commit types a title route may name: those of the Conventional Commits specification and the
+# convention it grew from, which a pull request's title opens with, as in `fix(scope): ...`.
+TITLE_TYPES = ("build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test")
 
 
-def title_pattern_problem(pattern: str) -> str | None:
-    """Why a title route's pattern is refused, or None: it must start at the title's start, `^`, so a word later in
-    the title never routes it, and hold no backreference and no repeated group, so its matching stays linear."""
-    if not pattern.startswith("^"):
-        return "must start with ^, so it matches only at the start of the title"
-    if TITLE_PATTERN_BACKREFERENCE.search(pattern):
-        return "may not hold a backreference"
-    if TITLE_PATTERN_REPEATED_GROUP.search(pattern):
-        return "may not repeat a group with *, +, or a {} count"
-    return None
+def title_type(title: str) -> str | None:
+    """The conventional-commit type a pull request's title opens with: the lowercase letters before an optional
+    `(scope)`, an optional `!`, a colon, and a space, as in `fix(code-review): ...`; None for a title with none. Read
+    by position, one character at a time, with no regular expression, so a title of any length is read in one pass."""
+    letters = len(title) - len(title.lstrip("abcdefghijklmnopqrstuvwxyz"))
+    kind, rest = title[:letters], title[letters:]
+    if not kind:
+        return None
+    if rest.startswith("("):
+        close = rest.find(")")
+        if close <= 1 or "(" in rest[1:close]:
+            return None
+        rest = rest[close + 1 :]
+    rest = rest.removeprefix("!")
+    return kind if rest.startswith(": ") else None
 
 
 def _pull_request_inputs(specialist: dict[str, Any], path: str, *, shares: bool) -> dict[str, Any]:
-    """A specialist's `title_pattern` and `inputs`, each left out when the manifest leaves it out or null; `inputs` in
-    PULL_REQUEST_INPUTS order.
+    """A specialist's `title_types` and `inputs`, each left out when the manifest leaves it out or null; each in its
+    catalogue's order.
 
     Either one that leaves a file or a comment to the author's say, a title route or withheld comments, needs
     `shares_files`, so another reviewer still reviews every file and gives every comment its disposition."""
     settings: dict[str, Any] = {}
-    title_pattern = READ.optional(READ.string, specialist.get("title_pattern"), f"{path}.title_pattern")
-    if title_pattern is not None:
-        settings["title_pattern"] = _regex_list([title_pattern], f"{path}.title_pattern", required=True)[0]
-        problem = title_pattern_problem(title_pattern)
-        if problem:
-            raise RuntimeContractError(f"{path}.title_pattern {problem}")
+    types = READ.optional(
+        READ.array,
+        specialist.get("title_types"),
+        f"{path}.title_types",
+        lambda value, where: READ.one_of(value, where, TITLE_TYPES),
+        nonempty=True,
+    )
+    if types is not None:
+        if len(set(types)) != len(types):
+            raise RuntimeContractError(f"{path}.title_types names a type twice")
         if not shares:
-            raise RuntimeContractError(f"{path}.title_pattern routes on the author's title, so it needs shares_files")
+            raise RuntimeContractError(f"{path}.title_types routes on the author's title, so it needs shares_files")
+        settings["title_types"] = [kind for kind in TITLE_TYPES if kind in types]
     given = READ.optional(
         READ.array,
         specialist.get("inputs"),
@@ -2518,14 +2527,25 @@ def given_closing_issues(
     for issue in listed:
         name = {"repository": issue["repository"], "number": issue["number"], "state": issue["state"]}
         same = issue["repository"].casefold() == repository.casefold()
-        body = issue["body"] if same else ""
+        unreadable = bool(issue.get("unreadable"))
+        body = issue["body"] if same and not unreadable else ""
         given = min(len(body), PULL_REQUEST_BODY_CHARACTERS)
-        if same:
+        if not same:
+            entries.append({**name, "text": "not given: the issue is in another repository"})
+        elif unreadable:
+            entries.append({**name, "text": "not given: GitHub did not let the viewer read it"})
+        else:
             title = LONE_SURROGATE.sub("�", issue["title"])
             entries.append({**name, "title": title, "body_lines": body_lines(given_body(issue["body"]))})
-        else:
-            entries.append({**name, "text": "not given: the issue is in another repository"})
-        account.append({**name, "same_repository": same, "body_characters": len(body), "body_given": given})
+        account.append(
+            {
+                **name,
+                "same_repository": same,
+                "body_characters": len(body),
+                "body_given": given,
+                **({"unreadable": True} if unreadable else {}),
+            }
+        )
     return (
         {"total": max(total, len(issues)), "issues": entries},
         {"total": max(total, len(issues)), "issues": account},

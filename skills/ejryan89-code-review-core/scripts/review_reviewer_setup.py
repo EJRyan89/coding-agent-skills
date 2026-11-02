@@ -558,7 +558,7 @@ class _Routing(NamedTuple):
     services: Services
     exclude: Sequence[str]
     default_effort: str | None  # the configuration's reviewer_effort, which a specialist without its own effort gets
-    title: str  # the pull request's title, in which a specialist's title_pattern is searched
+    title: str  # the pull request's title, whose type a specialist's title_types are held to
 
 
 def _routing_lines(
@@ -588,7 +588,7 @@ def _routing_lines(
     lines = [
         f"TITLE {specialist['id']} {'match' if title_routes(specialist, routing.title) else 'no-match'}"
         for specialist in manifest["specialists"]
-        if "title_pattern" in specialist
+        if "title_types" in specialist
     ]
     lines.extend(f"CONDITION {name} {'open' if value else 'closed'}" for name, value in results.items())
     specialists = {specialist["id"]: specialist for specialist in manifest["specialists"]}
