@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import shutil
 import stat
 import sys
@@ -481,6 +482,22 @@ def _inline_only(state: RunState) -> PipelineError:
     return PipelineError(f"{state['selector']} is reviewed inline; work its roles with next-role")
 
 
+def _raise(error: OSError) -> None:
+    raise error
+
+
+def _files_below(run: Path) -> list[Path]:
+    """Every entry below a run folder that is not a folder, outside its source snapshot and fixture repository, which
+    the seal leaves out. A folder it cannot list raises, where rglob would leave its files out of the seal, and an
+    entry it cannot stat is given, so it fails at its read rather than leaving the seal."""
+    found: list[Path] = []
+    for folder, folders, files in os.walk(run, onerror=_raise):
+        if Path(folder) == run:
+            folders[:] = [name for name in folders if name not in {"source", SOURCE_REPOSITORY}]
+        found.extend(Path(folder, name) for name in files)
+    return found
+
+
 def sealed_files(run: Path, state: RunState) -> dict[str, str]:
     """The SHA-256 of each file of an inline run its reviewers must not change, by path relative to the run.
 
@@ -493,9 +510,9 @@ def sealed_files(run: Path, state: RunState) -> dict[str, str]:
     skipped = {(result.parent, result.name) for result in results}
     rejected = {(result.parent, f"{result.name}.rejected-") for result in results}
     digests = {}
-    for path in sorted(run.rglob("*")):
+    for path in sorted(_files_below(run)):
         relative = path.relative_to(run)
-        if relative.parts[0] in {"source", SOURCE_REPOSITORY, RUN_FILE, RECORDED_FILE} or not path.is_file():
+        if relative.parts[0] in {"source", SOURCE_REPOSITORY, RUN_FILE, RECORDED_FILE}:
             continue
         if (path.parent, path.name) in skipped or any(
             path.parent == parent and path.name.startswith(prefix) for parent, prefix in rejected
