@@ -12,6 +12,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import assert_never
 
+import file_presence
+
 from . import fsops, hashing, journal, platform_support, render, source
 from .arguments import PROG, usage_error
 from .context import Context
@@ -105,7 +107,7 @@ def _plan_selected(
 ) -> PlanEntry:
     """Plan an item this run installs, with --force and --force-item applied."""
     destination = journal.root_directory(context.paths, kind.root) / name
-    if not os.path.lexists(destination):
+    if not file_presence.is_occupied(destination):
         return PlanEntry(name, kind, "absent", "INSTALL", staged=staged_hash)
     if not kind.has_expected_type(destination):
         return PlanEntry(name, kind, "wrong type", "SKIP", f"destination is not {kind.type_name}", staged=staged_hash)
@@ -159,7 +161,7 @@ def _plan_unselected(context: Context, kind: ItemKind, name: str, owned_hash: st
         renamed = context.source.renamed.get(name)
         reason = f"{MODIFIED}, renamed '{renamed}' in the source" if renamed else MODIFIED
         return PlanEntry(name, kind, "modified", "PRESERVE", reason, existing)
-    if os.path.lexists(destination):
+    if file_presence.is_occupied(destination):
         return PlanEntry(name, kind, "wrong type", "PRESERVE", f"destination is not {kind.type_name}")
     return PlanEntry(name, kind, "absent", "DROP", "already absent")
 

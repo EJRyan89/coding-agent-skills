@@ -723,7 +723,8 @@ def recover_incomplete(paths: Paths) -> bool:
     so one held file neither hides the state of the others nor prints a traceback in place of the guidance.
     """
     try:
-        if not file_presence.is_directory(paths.staging_root, other_is_absent=True):
+        # Anything but a folder at the staging root is unexpected state, refused as one it cannot list.
+        if not file_presence.is_directory(paths.staging_root):
             return True
         run_dirs = _run_folders(paths)
     except OSError as error:
