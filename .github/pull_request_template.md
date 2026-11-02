@@ -14,6 +14,20 @@ Closes #
 
 -
 
+## Forms considered
+
+<!-- For a pull request titled `fix`, replace "None" with the forms the fix weighed, in the author's own words:
+     - the construct the fix corrects, and the catalogue its spellings come from, such as builtins, options, binding
+       modes, import forms, keywords, exit codes, or keys, with a decision for each entry: read, refused, or out of
+       scope and why, an out-of-scope entry also named in the contract's or policy's limits;
+     - the other callers of the helper it changes, and the other skills, shells, or modules holding the same
+       construct, each checked;
+     - the pattern of docs/lessons.md the defect violated and what its Search for forms found;
+     - the regression test that fails with the fix reverted.
+     Validation fails a fix whose section is missing, empty, or still this placeholder. Any other type keeps "None". -->
+
+None
+
 ## Implications
 
 <!-- User-visible, compatibility, or security implications, such as a new configuration value, a changed
