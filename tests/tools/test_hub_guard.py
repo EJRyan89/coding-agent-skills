@@ -1165,6 +1165,33 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
 
 UNPLACED = "could not tell where `git {}` runs"
 WRITES = "`git {}` would move the hub's HEAD or write its index or tree."
+# Each way a nested bash, with SCRIPT standing for its script, may be handed a SHELLOPTS, and whether it lists allexport
+# there: Bash reads it by its exact name whatever the nested bash's own options say, keeps it read-only, lists in it
+# the options it holds, and hands it on only once it is exported.
+SHELLOPTS_STARTS = (
+    ("env SHELLOPTS=allexport bash -c 'SCRIPT'", True),
+    ("env SHELLOPTS=errexit:allexport bash -c 'SCRIPT'", True),
+    ("env SHELLOPTS=allexport bash +a -c 'SCRIPT'", True),
+    ("env SHELLOPTS=allexport env bash -c 'SCRIPT'", True),
+    ("export SHELLOPTS; set -a; bash -c 'SCRIPT'", True),
+    ("declare -x SHELLOPTS; set -o allexport; bash -c 'SCRIPT'", True),
+    ("set -a; export SHELLOPTS; bash -c 'SCRIPT'", True),
+    ("export SHELLOPTS=x; set -a; bash -c 'SCRIPT'", True),
+    ("declare -n ref=SHELLOPTS; export ref; set -a; bash -c 'SCRIPT'", True),
+    ("env SHELLOPTS=pipefail bash -c 'SCRIPT'", False),
+    ("env SHELLOPTS=ALLEXPORT bash -c 'SCRIPT'", False),
+    ("env shellopts=allexport bash -c 'SCRIPT'", False),
+    ("SHELLOPTS=allexport bash -c 'SCRIPT'", False),
+    ("set -a; bash -c 'SCRIPT'", False),
+    ("set -a; export SHELLOPTS; set +a; bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; set -a; export -n SHELLOPTS; bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; set -a; unset SHELLOPTS; export -n SHELLOPTS; bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; set -a; env -u SHELLOPTS bash -c 'SCRIPT'", False),
+    ("env SHELLOPTS=allexport env -u SHELLOPTS bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; set -a; env -i PATH=/usr/bin:/bin bash -c 'SCRIPT'", False),
+    ("declare -x SHELLOPTS=x; set -a; bash -c 'SCRIPT'", False),
+    ("export SHELLOPTS; SHELLOPTS=allexport; bash -c 'SCRIPT'", False),
+)
 # Each command before a bare unset after which a variable by the function's name may not be set on every path Bash
 # takes: one branch assigns it, local fails outside a function, a function's own local or declare ends with it, an
 # empty for or a failed read assigns nothing, a subshell's or a command's own assignment does not outlive it, or it
@@ -1215,7 +1242,7 @@ def contract_names(after: str, before: str) -> list[str]:
 def bash_prefix_programs() -> set[str]:
     """The programs and builtins whose command the Bash reader reads as the one it starts."""
     builtins = {name for name, reader in hub_guard.BASH_BUILTINS.items() if reader is hub_guard.bash_exec}
-    return builtins | set(hub_guard.PREFIX_PROGRAMS) | hub_guard.ENV_NAMES
+    return builtins | set(hub_guard.PREFIX_PROGRAMS) | set(hub_guard.ELEVATING_PROGRAMS) | hub_guard.ENV_NAMES
 
 
 class CommandGuardTests(GuardTestCase):
@@ -2324,6 +2351,8 @@ class ContractTests(GuardTestCase):
             "stdbuf": "stdbuf -oL git commit -m x",
             "time": "time -p git commit -m x",
             "env": "env git commit -m x",
+            "sudo": "sudo git commit -m x",
+            "doas": "doas git commit -m x",
         }
         # In Bash `time` as a command's first word is the reserved word; after an assignment it is the program.
         bash_cases = {**cases, "time": "x=1 time -p git commit -m x"}
@@ -2737,7 +2766,6 @@ class ContractTests(GuardTestCase):
             ("Bash", f"{body}; declare -Fx f; bash -c f"),
             ("Bash", f"{body}; typeset -xF f; bash -c f"),
             ("Bash", f"{body}; declare -F -x f; bash -c f"),
-            ("Bash", f"{body}; declare $o f; bash -c f"),
             ("Bash", f"{body}; export -f f; pwsh -c 'bash -c f'"),
             ("Bash", f"set -a; {body}; pwsh -c 'bash -c f'"),
             ("Bash", f"{body}; export -f f; pwsh -c 'pwsh -c \"bash -c f\"'"),
@@ -2762,6 +2790,10 @@ class ContractTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.hub))
                 self.assertIn("BASH_FUNC_", self.reason)
+        # A declaration word the text does not settle may be -fx, and may export any variable, so the bash it
+        # starts is one the text does not settle either.
+        self.assertEqual("deny", self.bash(f"{body}; declare $o f; bash -c f", self.hub))
+        self.assertIn(UNPLACED.format("switch"), self.reason)
         # A function defined before allexport is turned on, or listed by -F alone, is not exported.
         self.assertIsNone(self.bash(f"{body}; set -a; bash -c f", self.hub))
         self.assertIsNone(self.bash(f"{body}; declare -F f; bash -c f", self.hub))
@@ -2776,6 +2808,129 @@ class ContractTests(GuardTestCase):
         reading = hub_guard.Reading({}, "shopt -so $o; git status")
         hub_guard.read_bash("shopt -so $o; git status", None, reading, 0, {})
         self.assertEqual(["could not read the options passed to shopt"], reading.unread)
+
+    def test_a_word_env_takes_that_the_text_does_not_settle_may_assign_any_variable(self) -> None:
+        # Each wrapper the guard follows, each of env's options before its assignments, and each unsettled word.
+        commands = [
+            f"{wrapper}env {options}{word} {command}"
+            for wrapper in ("", "exec ", "command ", "nohup ", "nice ", "timeout 5 ", "stdbuf -oL ")
+            for options in ("", "-i ", "-u X ", "--unset=X ", "-- ", "-C . ", "--chdir=. ", "-v ")
+            for word in ("FOO=$(printf x)", 'FOO="$(date)"', "$(printf FOO)=x", "$v", "A=1 FOO=$v")
+            for command in ("git switch -c x", "bash -c 'git switch -c x'")
+            if not wrapper or command.startswith("git ")
+        ]
+        commands.append("env SHELLOPTS=$(printf allexport) bash -c 'f() { git switch -c x; }; bash -c f'")
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("could not read a word passed to env", self.reason)
+        # A word the text settles is read as it is, and git's read-only command passes.
+        self.assertIsNone(self.bash("env FOO=x git status", self.hub))
+        self.assertIsNone(self.bash("env -i FOO=x git status", self.hub))
+
+    def test_sudo_and_doas_run_the_command_after_their_options_in_an_environment_their_policy_decides(self) -> None:
+        git_directory = (self.hub / ".git").as_posix()
+        # Each spelling of the program and its options, before the command it starts.
+        starts = (
+            *(
+                f"sudo {options}"
+                for options in (
+                    "",
+                    "-E ",
+                    "-u root ",
+                    "-uroot ",
+                    "-Eu root ",
+                    "--user=root ",
+                    "--user root ",
+                    "--preserve-env ",
+                    "--preserve-env=PATH ",
+                    "-n ",
+                    "-s ",
+                    "-H -P ",
+                    "-g wheel ",
+                    "-- ",
+                    "--inline ",
+                )
+            ),
+            *(f"doas {options}" for options in ("", "-u root ", "-uroot ", "-n ", "-s ", "-n -u root ", "-- ")),
+        )
+        for start in starts:
+            for command, cwd in (
+                (f"{start}env GIT_DIR='{git_directory}' git switch -c x", self.tree),
+                (f"{start}git switch -c x", self.hub),
+                (f"nohup {start}git switch -c x", self.hub),
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.bash(command, cwd))
+                    self.assertIn("git switch", self.reason)
+        # sudo sets each NAME=value before its command in the command's environment, after any of its options; an
+        # unsettled one may be any, and doas takes such a word as its program.
+        for options in ("", "-u root ", "-E ", "-Eu root ", "--preserve-env ", "-n -H ", "-- ", "--user=root -s "):
+            for assignments in (
+                "GIT_DIR='{0}'",
+                "A=1 GIT_DIR='{0}'",
+                "GIT_DIR='{0}' B=2",
+                "GIT_WORK_TREE=. GIT_DIR='{0}'",
+            ):
+                command = f"sudo {options}{assignments.format(git_directory)} git switch -c x"
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.bash(command, self.tree))
+                    self.assertIn(WRITES.format("switch"), self.reason)
+        for command in ("sudo GIT_DIR=$(cat f) git switch -c x", "sudo -u root A=$v git switch -c x"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+        self.assertIsNone(self.bash(f"doas GIT_DIR='{git_directory}' git switch -c x", self.tree))
+        # A variable the shell holds may reach the command or not, as the policy decides.
+        self.assertEqual("deny", self.bash(f"export GIT_DIR='{git_directory}'; sudo git switch -c x", self.tree))
+        self.assertIn(UNPLACED.format("switch"), self.reason)
+        self.assertEqual("deny", self.bash(f"sudo -D '{self.hub}' git switch -c x", self.tree))
+        self.assertEqual("deny", self.bash("sudo -i git switch -c x", self.tree))
+        self.assertIn(UNPLACED.format("switch"), self.reason)
+        self.assertEqual("deny", self.bash("sudo -X git switch -c x", self.hub))
+        self.assertIn("could not read the option -X passed to sudo", self.reason)
+        self.assertEqual("deny", self.powershell(f"sudo env GIT_DIR='{git_directory}' git switch -c x", self.tree))
+        # An option after which they start no command starts none, and a read-only command passes.
+        for command in ("sudo -l git switch -c x", "sudo -v", "doas -C /etc/doas.conf git switch -c x"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+        self.assertIsNone(self.bash("sudo git status", self.tree))
+
+    def test_a_shellopts_the_starter_hands_a_nested_bash_turns_allexport_on_there(self) -> None:
+        git_directory = (self.hub / ".git").as_posix()
+        # Each start of a nested bash, with SCRIPT standing for its script, and whether allexport holds there.
+        for start, on in SHELLOPTS_STARTS:
+            for script, cwd in (
+                ("f() { git switch -c x; }; bash -c f", self.hub),
+                (f'GIT_DIR="{git_directory}"; git switch -c x', self.tree),
+            ):
+                command = start.replace("SCRIPT", script)
+                with self.subTest(command=command, on=on):
+                    if on:
+                        self.assertEqual("deny", self.bash(command, cwd))
+                        self.assertIn(WRITES.format("switch"), self.reason)
+                    else:
+                        self.assertIsNone(self.bash(command, cwd))
+        # PowerShell holds environment names folded where the platform folds them, so a SHELLOPTS listing allexport
+        # may be one Bash reads, by its exact name, or not.
+        unread = "could not read the SHELLOPTS its environment hands bash"
+        for command in (
+            "$env:SHELLOPTS = 'allexport'; bash -c 'f() { git switch -c x; }; bash -c f'",
+            "${env:SHELLOPTS} = 'allexport'; bash -c 'f() { git switch -c x; }; bash -c f'",
+            "Set-Item env:SHELLOPTS 'allexport'; bash -c 'f() { git switch -c x; }; bash -c f'",
+            "$env:SHELLOPTS = 'allexport'; pwsh -c \"bash -c 'f() { git switch -c x; }; bash -c f'\"",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertTrue(WRITES.format("switch") in self.reason or unread in self.reason, self.reason)
+        self.assertIsNone(
+            self.powershell("$env:SHELLOPTS = 'pipefail'; bash -c 'f() { git switch -c x; }; bash -c f'", self.hub)
+        )
+        # A shell the text does not settle may have exported SHELLOPTS, by a name it does not settle, and its own
+        # variables to the shell it starts.
+        command = "export \"$v\"; set -a; bash -c 'f() { git switch -c x; }; bash -c f'"
+        self.assertEqual("deny", self.bash(command, self.hub))
+        self.assertIn(unread, self.reason)
+        self.assertEqual("deny", self.bash(f"export \"$v\"='{git_directory}'; bash -c 'git switch -c x'", self.tree))
 
     def test_an_expansion_that_assigns_sets_its_variable(self) -> None:
         git_directory = (self.hub / ".git").as_posix()
@@ -3375,7 +3530,10 @@ class ContractListTests(unittest.TestCase):
         bash = contract_names("Commands after", "are read as the commands they start")
         powershell = contract_names("A command after the programs", "is read as in Bash")
         self.assertEqual(sorted(bash_prefix_programs()), sorted(bash))
-        self.assertEqual(sorted({*hub_guard.PREFIX_PROGRAMS, *hub_guard.ENV_NAMES}), sorted(powershell))
+        self.assertEqual(
+            sorted({*hub_guard.PREFIX_PROGRAMS, *hub_guard.ELEVATING_PROGRAMS, *hub_guard.ENV_NAMES}),
+            sorted(powershell),
+        )
 
     def test_the_powershell_location_commands_are_the_ones_the_reader_follows(self) -> None:
         named = contract_names("makes every decision. The guard follows", "(bare goes home")

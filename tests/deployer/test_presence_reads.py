@@ -443,7 +443,25 @@ class TransientPresenceTests(DeployerTestCase):
 
         with mock.patch.object(pipeline, "_finalize", side_effect=finalize):
             result = self.deploy_ok("--all")
-        self.assertIn("WARNING: Could not tell whether alpha's previous copy changed", result.output)
         kept = list((self.skills_dir / ".backups").glob("*/alpha"))
         self.assertEqual(1, len(kept), result.output)
         self.assertNotIn("changed", (kept[0] / "SKILL.md").read_text(encoding="utf-8"))
+        kept_at = kept[0].relative_to(self.skills_dir).as_posix()
+        self.assertIn(
+            "WARNING: Could not tell whether alpha's previous copy changed after this deployment planned it "
+            f"(Access is denied), so it was kept at {kept_at}.",
+            result.stderr,
+        )
+
+    def test_a_committed_backup_is_deleted_kept_or_gone_with_the_reason_a_stat_failed(self) -> None:
+        self.skills_dir.mkdir(parents=True)
+        transient = self.skills_dir / transient_name("alpha")
+        kept = cast(Any, backup_entry("alpha", "0" * 64, retain=True, run_id="20260101-000000-done"))
+        unkept = cast(Any, backup_entry("alpha", "0" * 64))
+        self.assertEqual(("gone", ""), journal.backup_disposition(self.paths, kept))
+        self.assertEqual(("delete", ""), journal.backup_disposition(self.paths, unkept))
+        transient.mkdir()
+        self.assertEqual(("keep", ""), journal.backup_disposition(self.paths, kept))
+        # An error with no reason of its own is named by its text.
+        with mock.patch.object(journal, "backup_unchanged", side_effect=OSError("held")):
+            self.assertEqual(("keep", "held"), journal.backup_disposition(self.paths, unkept))
