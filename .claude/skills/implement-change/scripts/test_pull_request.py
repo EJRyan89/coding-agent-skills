@@ -220,6 +220,11 @@ class TemplateLookupTests(unittest.TestCase):
     def test_no_template_is_none(self) -> None:
         self.assertIsNone(pull_request.find_template(self.root))
 
+    def test_a_template_folder_that_is_not_there_is_passed_over_for_the_next(self) -> None:
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "pull_request_template.md").write_text("## Changes\n", encoding="utf-8")
+        self.assertEqual(self.root / "docs" / "pull_request_template.md", pull_request.find_template(self.root))
+
     def test_a_file_named_like_a_template_folder_holds_no_template(self) -> None:
         (self.root / ".github").write_text("not a folder\n", encoding="utf-8")
         (self.root / "docs").mkdir()

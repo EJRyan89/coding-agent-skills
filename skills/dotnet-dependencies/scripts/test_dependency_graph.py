@@ -262,6 +262,27 @@ class GraphTests(Fixture):
             _, rows = self.run_main("conflicts", "--root", str(root))
         self.assertEqual([["packages/Lantern.Core.2.0.0/lib", "Permission denied"]], self.lines(rows, "UNREADABLE"))
 
+    def test_the_solution_properties_are_set_for_a_solution_root_alone(self) -> None:
+        # Built by a solution, $(SolutionPath) is set and the reference is left out; searched from a folder, it may
+        # come from anywhere, so the reference may apply.
+        self.write(
+            "src/App/App.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n"
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="Lantern.Json" Version="13.0.1" Condition="\'$(SolutionPath)\' == \'\'" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+        )
+        with_solution = self.write("App.sln", solution("src\\App\\App.csproj"))
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(with_solution))
+        self.assertEqual(([], [["Lantern.Json"]]), (self.lines(rows, "PATH"), self.lines(rows, "MISSING")))
+        with_solution.unlink()
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root))
+        self.assertEqual(
+            [["src/App/App.csproj", "-", "Lantern.Json", "graph", "Lantern.Json (v13.0.1)"]], self.lines(rows, "PATH")
+        )
+
     def test_why_walks_the_graph_for_every_project_when_dotnet_is_absent(self) -> None:
         root = self.mixed_solution()
         code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))

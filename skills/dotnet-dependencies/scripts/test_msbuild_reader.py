@@ -266,18 +266,24 @@ class ReaderTests(unittest.TestCase):
         locked = self.root / "locked" / "lib"
         self.write("locked/lib/net45/Lantern.Json.dll", "")
         real_stat = Path.stat
-
-        def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-            if path == locked:
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_stat(path, follow_symlinks=follow_symlinks)
-
-        with (
-            mock.patch.object(Path, "stat", autospec=True, side_effect=denied),
-            self.assertRaises(Unreadable) as refused,
+        # An error with its reason as strerror, and one with no strerror, whose message is the reason.
+        for failure, reason in (
+            (PermissionError(13, "Permission denied", str(locked)), "Permission denied"),
+            (OSError("the stat gave up"), "the stat gave up"),
         ):
-            package_assemblies(self.root / "locked")
-        self.assertEqual((locked, "Permission denied"), (refused.exception.file, refused.exception.reason))
+
+            def denied(path: Path, *, follow_symlinks: bool = True, failure: OSError = failure) -> os.stat_result:
+                if path == locked:
+                    raise failure
+                return real_stat(path, follow_symlinks=follow_symlinks)
+
+            with (
+                self.subTest(reason=reason),
+                mock.patch.object(Path, "stat", autospec=True, side_effect=denied),
+                self.assertRaises(Unreadable) as refused,
+            ):
+                package_assemblies(self.root / "locked")
+            self.assertEqual((locked, reason), (refused.exception.file, refused.exception.reason))
 
     def test_assets_give_each_frameworks_packages_and_direct_dependencies(self) -> None:
         assets = read_assets(self.write("obj/project.assets.json", json.dumps(ASSETS)))

@@ -206,6 +206,12 @@ class MemoryAuditTests(unittest.TestCase):
             self.assertEqual(["memory.md"], list(self.by_file(result)))
             self.assertEqual(["memory.md"], result["unindexed_files"])
 
+    def test_a_store_without_an_index_reports_an_absent_empty_index(self) -> None:
+        write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
+        (self.memory_dir / memory_audit.INDEX_NAME).unlink(missing_ok=True)
+        index = self.run_audit()["index"]
+        self.assertEqual((False, 0, 0, 0), (index["exists"], index["entries"], index["lines"], index["bytes"]))
+
     def test_a_dot_prefixed_index_target_marks_the_memory_as_indexed(self) -> None:
         write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
         write(self.memory_dir / "MEMORY.md", "- [Rule](./rule.md) — hook\n")
