@@ -220,14 +220,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   universal claim names its exceptions.
 - **Why:** A test that restates a document's wording pins the drift instead of the promise, and a claim of "never" or
   "every" with an unstated exception misleads the reader who relies on it.
-- **Use:** `tests.validation.skill_layout:runtime_page_problems`
+- **Use:** `tests.validation.skill_layout:runtime_page_problems`, `tests.validation.workflows:token_reach_problems`
 - **Guard:** `tests/validation/markdown_links.py::MarkdownLinksPolicies::test_every_test_a_document_cites_exists`,
-  `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`
+  `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`,
+  `tests/validation/workflows.py::WorkflowsPolicies::test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so`
 - **Search for:** an `assertEqual(` or `assertIn(` on a literal sentence a document states, where the test could read
   the document or the shared constant; `never`, `always`, `nothing`, `every`, or `only` in a `SKILL.md` or a
   docstring, each checked for a test of its exception; a docstring's exit codes against the function's `return` and
-  `sys.exit(` values.
-- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869
+  `sys.exit(` values; a statement of which code a credential or the run's token reaches, checked for the code a
+  pull request can change at those paths.
+- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2237
 
 ### A reader refuses a shape it does not know
 
@@ -373,14 +375,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A record separator is one the data cannot hold
 
 - **Rule:** A listing of names or records another program writes is split on a separator the data cannot hold, NUL
-  for git, and a script never splits a line it printed to recover a value it already holds.
+  for git, a script never splits a line it printed to recover a value it already holds, and a fact line a script
+  prints holds each value flattened, so no value adds a line or a field.
 - **Why:** A name holding the separator, or a path git quotes, is split or misread, and the listing names a file that
   is not there.
 - **Use:** `git_client:GitClient.names`, which runs a name listing with -z and splits it on NUL;
   `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
   joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
   a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds;
-  and `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints.
+  `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
+  `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason; and
+  `flat_text:fact_line`, which flattens every field of a tab-separated fact line.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
   split of git's output with splitlines() unless its module states why,
@@ -393,13 +398,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
   `tests/tools/test_release_notes.py::RangeEntriesTests::test_a_message_holding_any_byte_but_nul_is_read_whole`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_every_name_reads_back_as_resolve_writes_it`,
-  `skills/audit-skill/scripts/test_skill_inventory.py::ScanTests::test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line`
+  `skills/audit-skill/scripts/test_skill_inventory.py::ScanTests::test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line`,
+  `skills/ejryan89-skill-core/scripts/test_flat_text.py::FactLineTests::test_a_field_holding_any_line_or_field_break_stays_one_field_on_one_line`,
+  `skills/dotnet-format/scripts/test_run_dotnet_format.py::OneLineFactTests::test_a_saved_file_holding_a_line_separator_is_named_on_one_line`,
+  `skills/dotnet-format/scripts/test_csharp_layout.py::OneLineFactTests::test_violations_and_fixes_in_a_name_holding_a_line_break_print_one_line_each`;
+  a policy holding every result-line printer to one choke point is #2248's
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
   output passed into a function that splits it; `.split()[` or `.partition(" ")` on a line the same module wrote,
-  beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2206
+  beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space;
+  `emit(f"` and `print(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an
+  exception, or another program's output without `fact_line` or `flat_text`.
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2206, #2211
 
 ### Two spellings are compared as their consumer compares them
 
