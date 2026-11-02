@@ -547,6 +547,7 @@ class OptionReaderTests(unittest.TestCase):
             ("unset -vn GIT_DIR", UNSET),
             ("unset -- $o", UNSETTLED),
             ("unset other $o", UNSETTLED),
+            ("unset $o", UNSETTLED),
         ):
             with self.subTest(command=command):
                 self.assertEqual(
@@ -570,6 +571,13 @@ class OptionReaderTests(unittest.TestCase):
             ("exec -ca name git status", ["status"]),
             ("exec -a name git status", ["status"]),
             ("exec -c -- git status", ["status"]),
+            ("exec -c -a name git status", ["status"]),
+            # A function unset may have removed is read both as its body and as the program by its name.
+            ("git() { :; }; unset $o git; git status", ["status"]),
+            ("git() { :; }; unset -- $o; git status", ["status"]),
+            ("git() { :; }; unset -f other $o; git status", ["status"]),
+            ("git() { :; }; unset -v -- $o; git status", []),
+            ("git() { :; }; unset -n -- $o; git status", []),
             ("exec -- git status", ["status"]),
             ("command git status", ["status"]),
             ("command -p git status", ["status"]),
