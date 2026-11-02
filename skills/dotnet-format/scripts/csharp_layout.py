@@ -81,6 +81,7 @@ from atomic_file import is_read_only, replace_bytes
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
+from file_presence import is_present
 from flat_text import fact_line, flat_text
 from folders_up import folders_up
 from link_probe import is_link_or_junction
@@ -866,8 +867,10 @@ class AnalyzerConfigs:
         self.read: dict[Path, AnalyzerConfig | None] = {}
 
     def config(self, path: Path) -> AnalyzerConfig | None:
+        """The configuration file at `path`, or None when nothing is there; one whose stat fails, or a folder in its
+        place, raises OSError, which ends the run as FAILED before any file is written."""
         if path not in self.read:
-            self.read[path] = read_analyzer_config(path) if path.is_file() else None
+            self.read[path] = read_analyzer_config(path) if is_present(path) else None
         return self.read[path]
 
     def above(self, directory: Path, name: str) -> list[AnalyzerConfig]:
@@ -1040,7 +1043,7 @@ def configure(
             still_missing = True
             continue
         try:
-            source = read_source(target) if target.is_file() else Source("", b"", "utf-8")
+            source = read_source(target) if is_present(target) else Source("", b"", "utf-8")
         except Unreadable as error:
             emit(fact_line("UNREADABLE", target.relative_to(root).as_posix(), error))
             still_missing = True

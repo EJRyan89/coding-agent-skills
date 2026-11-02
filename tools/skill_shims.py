@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 from console import run_main
-from file_presence import is_present
+from file_presence import is_directory, is_present
 
 from deployer.render import CODEX_METADATA, CODEX_USER_ONLY
 from tools.checkout import ROOT_HELP, checkout_root
@@ -152,10 +152,11 @@ def _folder_files(folder: Path) -> list[str]:
 
 
 def _stray_problems(root: Path, expected: dict[str, dict[str, str] | str | None]) -> list[str]:
-    """Each entry under .agents/skills that is not a shim folder, and each shim folder whose skill is gone."""
+    """Each entry under .agents/skills that is not a shim folder, and each shim folder whose skill is gone. Raises
+    OSError, NotADirectory for a file in its place, for an .agents/skills it cannot examine."""
     found = []
     shims = root / SHIMS
-    for entry in sorted(shims.iterdir()) if shims.is_dir() else []:
+    for entry in sorted(shims.iterdir()) if is_directory(shims) else []:
         relative = (SHIMS / entry.name).as_posix()
         if not entry.is_dir():
             found.append(f"{relative} is not a shim folder; delete it")
@@ -180,12 +181,14 @@ def problems(root: Path) -> list[str]:
         if isinstance(files, str):
             found.append(f"{skill} has frontmatter its shim cannot carry: {files}")
             continue
-        if not (folder / SKILL_FILE).is_file():
+        # A shim file whose stat fails, or a folder in its place, raises OSError, ending the run as FAILED, since
+        # --write could not write it either.
+        if not is_present(folder / SKILL_FILE):
             found.append(f"{skill} has no {shim_path(name).as_posix()} shim; run {WRITE_COMMAND}")
             continue
         for relative, text in sorted(files.items()):
             path = (SHIMS / name / relative).as_posix()
-            if not (folder / relative).is_file():
+            if not is_present(folder / relative):
                 found.append(f"{path} is missing from the shim; run {WRITE_COMMAND}")
             elif not _current(folder / relative, text):
                 found.append(f"{path} differs from what {WRITE_COMMAND} writes; run it")
@@ -203,7 +206,7 @@ def write(root: Path, names: list[str] | None = None) -> list[Path]:
             continue
         for relative, text in sorted(files.items()):
             path = root / SHIMS / name / relative
-            if path.is_file() and _current(path, text):
+            if is_present(path) and _current(path, text):
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8", newline="\n")

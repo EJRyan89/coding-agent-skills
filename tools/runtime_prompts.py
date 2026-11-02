@@ -35,6 +35,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 
+import file_presence
 import json_reader
 import json_writer
 import review_dispatch
@@ -238,19 +239,35 @@ def _sample(root: Path, relative: Path) -> str | None:
         raise RenderError(f"cannot read {relative.as_posix()}: {exc}") from exc
 
 
+def _present(root: Path, relative: Path) -> bool:
+    """Whether a sample is there; one whose stat fails, or a folder in its place, is a RenderError, never missing."""
+    try:
+        return file_presence.is_present(root / relative)
+    except OSError as exc:
+        raise RenderError(f"cannot read {relative.as_posix()}: {exc}") from exc
+
+
+def _listed(root: Path) -> list[Path]:
+    """Everything under the samples folder, deepest last, or nothing when there is no such folder; one whose stat
+    fails, or a file in its place, is a RenderError, never an empty folder."""
+    try:
+        return sorted((root / SAMPLES).rglob("*")) if file_presence.is_directory(root / SAMPLES) else []
+    except OSError as exc:
+        raise RenderError(f"cannot read {SAMPLES.as_posix()}: {exc}") from exc
+
+
 def problems(root: Path, renderers: Renderers | None = None) -> list[str]:
     """Every sample that is missing, differs from what renders now, or renders from nothing; empty when current."""
     expected = rendered(RENDERERS if renderers is None else renderers)
     found: list[str] = []
     for relative, text in sorted(expected.items()):
-        path = root / relative
-        if not path.is_file():
+        if not _present(root, relative):
             found.append(f"{relative.as_posix()} does not exist; {WRITE_HINT}")
         elif _sample(root, relative) != text:
             found.append(f"{relative.as_posix()} is stale; {WRITE_HINT}")
     found.extend(
         f"{path.relative_to(root).as_posix()} is no rendered prompt; {WRITE_HINT}"
-        for path in (sorted((root / SAMPLES).rglob("*")) if (root / SAMPLES).is_dir() else [])
+        for path in _listed(root)
         if path.is_file() and path.relative_to(root) not in expected
     )
     return found
@@ -265,7 +282,7 @@ def write(root: Path, renderers: Renderers | None = None) -> None:
             path.write_text(text, encoding="utf-8", newline="\n")
         except OSError as exc:
             raise RenderError(f"cannot write {relative.as_posix()}: {exc}") from exc
-    for path in sorted((root / SAMPLES).rglob("*"), reverse=True) if (root / SAMPLES).is_dir() else []:
+    for path in reversed(_listed(root)):
         try:
             if path.is_file() and path.relative_to(root) not in expected:
                 path.unlink()

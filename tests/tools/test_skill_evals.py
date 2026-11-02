@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import datetime
+import errno
 import hashlib
 import io
 import json
@@ -373,6 +374,31 @@ class LoaderTests(unittest.TestCase):
             skill_evals_scenarios.load_scenarios("demo", ["one", "one", "three"], root=self.root)
         with self.assertRaisesRegex(ScenarioError, "no scenarios for other"):
             skill_evals_scenarios.load_scenarios("other", root=self.root)
+
+    def test_a_skill_folder_misplaced_or_unexamined_is_refused_by_its_reason_never_as_no_scenarios(self) -> None:
+        write_scenario(self.root, "one", scenario_spec())
+        folder = self.root / "demo"
+        real = Path.stat
+
+        def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+            if path == folder:
+                raise PermissionError(errno.EACCES, "Access is denied", str(path))
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", stat), self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertEqual(
+            f"cannot read the scenarios for demo at {folder}: [Errno {errno.EACCES}] Access is denied: {str(folder)!r}",
+            str(raised.exception),
+        )
+        (self.root / "other").write_text("not a folder\n", encoding="utf-8")
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("other", root=self.root)
+        other = self.root / "other"
+        self.assertEqual(
+            f"cannot read the scenarios for other at {other}: [Errno {errno.ENOTDIR}] not a directory: {str(other)!r}",
+            str(raised.exception),
+        )
 
     def test_a_skill_with_no_scenario_fails_and_nothing_runs(self) -> None:
         (self.root / "empty-skill" / "not-a-scenario").mkdir(parents=True)

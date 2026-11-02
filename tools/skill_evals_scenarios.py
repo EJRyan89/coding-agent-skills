@@ -21,6 +21,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 
+import file_presence
 import json_reader
 import whole_number
 from git_client import GitClient
@@ -716,7 +717,11 @@ def load_scenarios(
     """Each named scenario once in first-occurrence order, or every scenario in name order; a repository reviewer's
     files come from the checkout."""
     folder = root / skill
-    found = sorted(path.parent.name for path in folder.glob("*/scenario.json")) if folder.is_dir() else []
+    try:
+        there = file_presence.is_directory(folder)
+    except OSError as exc:
+        raise ScenarioError(f"cannot read the scenarios for {skill} at {folder}: {exc}") from exc
+    found = sorted(path.parent.name for path in folder.glob("*/scenario.json")) if there else []
     if not found:
         raise ScenarioError(f"no scenarios for {skill}: each is a <scenario>/scenario.json under {folder}")
     unknown = [name for name in names if name not in found]

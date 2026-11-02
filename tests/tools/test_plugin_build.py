@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import io
 import json
+import os
 import sys
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -508,6 +513,36 @@ def test_the_sources_readme_is_each_plugins_readme_and_a_source_without_one_give
     catalogue = plugin_build.load_catalogue(source.root)
     plugins = plugin_build.assemble(plugin_build.load_source(source.root), catalogue, readme=readme).plugins
     assert [plugin.files["README.md"] for plugin in plugins] == [b"# Fixture\n", b"# Fixture\n"]
+
+
+def stat_denied(target: Path) -> contextlib.AbstractContextManager[object]:
+    """Path.stat refuses `target` alone, as a file system does a path the build may not examine."""
+    real = Path.stat
+
+    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == target:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real(path, *args, **kwargs)
+
+    return mock.patch.object(Path, "stat", stat)
+
+
+@pytest.mark.parametrize("place", ["folder", "unexamined"])
+def test_a_readme_that_is_a_folder_or_cannot_be_examined_fails_the_build_never_builds_without_it(
+    source: Source, tmp_path: Path, place: str
+) -> None:
+    source.skill("alpha")
+    readme = source.root / ".claude-plugin" / "README.md"
+    if place == "folder":
+        readme.mkdir()
+    else:
+        readme.write_bytes(b"# Fixture\n")
+    with stat_denied(readme) if place == "unexamined" else contextlib.nullcontext():
+        code, lines = run(["--source", str(source.root), "--output", str(tmp_path / "out")])
+    assert (code, len(lines)) == (1, 1)
+    assert lines[0].startswith(f"FAILED {readme} cannot be read: ")
+    assert ("Access is denied" if place == "unexamined" else "not a file") in lines[0]
+    assert not (tmp_path / "out").exists()
 
 
 def test_audit_skill_locates_each_skill_a_built_plugin_carries_and_measures_its_hooks(

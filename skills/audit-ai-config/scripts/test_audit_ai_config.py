@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import dataclasses
+import errno
 import hashlib
 import io
 import json
@@ -3653,6 +3654,7 @@ SCHEMA_AUTHORITY_ROWS: list[tuple[str, str, str | None, str]] = [
 ]
 
 DIRECTORY = "<directory>"
+UNREAD = "Could not read, so the checks that read it did not run:"
 
 INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
     "nothing": {},
@@ -3679,6 +3681,7 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         ".claude/rules/notes.txt": "x",
     },
     "claude_rules_without_markdown": {".claude/rules/notes.txt": "x"},
+    "claude_rules_is_a_file": {".claude/rules": "x"},
     "codex_files": {
         ".codex/hooks.json": "{}",
         ".codex/agents/reviewer.toml": "x",
@@ -3718,7 +3721,9 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         ".github/instructions/c.md": "x",
     },
     "instructions_without_matches": {".github/instructions/notes.md": "x"},
+    "instructions_is_a_file": {".github/instructions": "x"},
     "generator_scripts": {"scripts/ai_config.py": "x", ".github/scripts/ai_config.py": "x"},
+    "generator_is_a_directory": {"scripts/ai_config.py": DIRECTORY},
     "parity_workflows": {
         ".github/workflows/check.yaml": "run: python scripts/AI_CONFIG.py",
         ".github/workflows/parity.yml": "run: ai-config --check",
@@ -3760,7 +3765,9 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
         ("INFO", "inventory", ".github/ai-config-manifest.json", "Found .github/ai-config-manifest.json"),
     ],
-    "fixed_file_is_a_directory": [],
+    "fixed_file_is_a_directory": [
+        ("ERROR", "inventory", "CLAUDE.md", f"{UNREAD} [Errno {errno.EISDIR}] not a file: <path>"),
+    ],
     "claude_code_files": [
         ("INFO", "inventory", ".claude/CLAUDE.md", "Found .claude/CLAUDE.md"),
         ("INFO", "inventory", "CLAUDE.local.md", "Found CLAUDE.local.md"),
@@ -3768,6 +3775,9 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ("INFO", "inventory", ".claude/rules", "Rules found: frontend/ui.md, testing.md"),
     ],
     "claude_rules_without_markdown": [],
+    "claude_rules_is_a_file": [
+        ("ERROR", "inventory", ".claude/rules", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
     "codex_files": [
         ("INFO", "inventory", ".codex/hooks.json", "Found .codex/hooks.json"),
         ("INFO", "inventory", ".codex/agents", "Custom agents found: explorer.toml, reviewer.toml"),
@@ -3793,9 +3803,15 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ("INFO", "inventory", ".github/instructions", "2 path-specific instruction file(s)"),
     ],
     "instructions_without_matches": [],
+    "instructions_is_a_file": [
+        ("ERROR", "inventory", ".github/instructions", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
     "generator_scripts": [
         ("INFO", "inventory", ".github/scripts/ai_config.py", "Generator script found: .github/scripts/ai_config.py"),
         ("INFO", "inventory", "scripts/ai_config.py", "Generator script found: scripts/ai_config.py"),
+    ],
+    "generator_is_a_directory": [
+        ("ERROR", "inventory", "scripts/ai_config.py", f"{UNREAD} [Errno {errno.EISDIR}] not a file: <path>"),
     ],
     "parity_workflows": [
         ("INFO", "inventory", ".github/workflows/parity.yml", "AI config parity workflow found"),
@@ -3812,7 +3828,9 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
         ("INFO", "inventory", ".github/workflows/parity.yaml", "AI config parity workflow found"),
     ],
-    "workflows_is_a_file": [],
+    "workflows_is_a_file": [
+        ("ERROR", "inventory", ".github/workflows", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
     "one_of_each_group": [
         ("INFO", "inventory", "CLAUDE.md", "Found CLAUDE.md"),
         (
@@ -3838,7 +3856,11 @@ def inventory_rows(files: dict[str, str | bytes]) -> list[tuple[str, str, str | 
         for relative in (path for path, content in files.items() if content == DIRECTORY):
             (root / relative).mkdir(parents=True)
         _write_fixture(root, {path: content for path, content in files.items() if content != DIRECTORY})
-        return _finding_rows(audit.check_inventory(root))
+        # An error names its path as the temporary folder spells it; a row names it <path>.
+        return [
+            (severity, check, path, message.replace(repr(str(root / path)), "<path>") if path else message)
+            for severity, check, path, message in _finding_rows(audit.check_inventory(root))
+        ]
 
 
 class ManifestSchemaAndInventorySequenceTests(unittest.TestCase):
@@ -5418,6 +5440,135 @@ class OwnershipFindingTests(unittest.TestCase):
     def test_a_json_artifacts_hash_is_left_to_the_manifest_schema(self) -> None:
         _write_fixture(self.root, {".mcp.json": "{}"})
         self.assertEqual([], audit.check_ownership(self.root, {"artifacts": [{"path": ".mcp.json"}]}))
+
+
+@contextlib.contextmanager
+def stat_denied(target: Path) -> Iterator[None]:
+    """Path.stat refuses `target` alone, as a file system does a path the audit may not examine."""
+    real = Path.stat
+
+    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == target:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real(path, *args, **kwargs)
+
+    with mock.patch.object(Path, "stat", stat):
+        yield
+
+
+class UnexaminedPathTests(unittest.TestCase):
+    """A configuration file or folder whose stat fails, or with something else in its place, is a finding at its
+    path, never read as no such file or folder."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        # The audit resolves its root, so a path the stat refuses is spelled as the resolved root spells it.
+        self.root = Path(self.temp.name).resolve()
+        _setup_conforming_repo(self.root)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    # Each path the inventory reports when its stat fails, with what makes it there, which the stat then hides.
+    INVENTORY_DENIED: ClassVar[dict[str, dict[str, str | bytes]]] = {
+        "CLAUDE.md": {},
+        ".github/ai-config-manifest.json": {},
+        "scripts/ai_config.py": {"scripts/ai_config.py": "x"},
+        ".claude/rules": {".claude/rules/testing.md": "x"},
+        ".github/instructions": {".github/instructions/a.instructions.md": "x"},
+        ".github/workflows": {".github/workflows/parity.yml": "run: ai_config --check"},
+    }
+
+    def test_a_path_the_inventory_reads_that_cannot_be_examined_is_an_inventory_error(self) -> None:
+        for rel, files in self.INVENTORY_DENIED.items():
+            with self.subTest(rel=rel):
+                _write_fixture(self.root, files)
+                with stat_denied(self.root / rel):
+                    errors = [row for row in _finding_rows(audit.check_inventory(self.root)) if row[0] == "ERROR"]
+                self.assertEqual(
+                    [("ERROR", "inventory", rel, f"{UNREAD} [Errno {errno.EACCES}] Access is denied: ")],
+                    [(*row[:3], row[3].replace(repr(str(self.root / rel)), "")) for row in errors],
+                )
+
+    def test_each_folder_a_check_reads_that_cannot_be_examined_is_one_error_and_the_audit_ends(self) -> None:
+        rows: list[tuple[str, str, dict[str, str | bytes]]] = [
+            (".claude/rules", "inventory", {".claude/rules/testing.md": "x"}),
+            (".github/workflows", "inventory", {".github/workflows/parity.yml": "run: ai_config --check"}),
+            (".github/skills", "copilot-config", {".github/skills/demo/SKILL.md": "x"}),
+            (".github/agents", "copilot-config", {".github/agents/reviewer.md": "x"}),
+            (".claude/skills", "copilot-config", {}),
+        ]
+        for rel, check, files in rows:
+            with self.subTest(rel=rel):
+                _write_fixture(self.root, files)
+                with stat_denied(self.root / rel):
+                    findings = audit.audit(self.root).findings
+                self.assertEqual(
+                    [check], [f.check for f in findings if f.path == rel and f.severity == "ERROR"], findings
+                )
+
+    def test_a_file_in_a_skill_or_agent_folders_place_is_an_error_never_no_folder(self) -> None:
+        for rel in (".github/skills", ".github/agents", ".claude/agents"):
+            with self.subTest(rel=rel):
+                _write_fixture(self.root, {rel: "../.claude/skills\n"})
+                self.assertEqual(
+                    [("ERROR", "copilot-config", rel, "Could not list the directory: not a directory")],
+                    [row for row in _finding_rows(audit.check_copilot_configuration(self.root, {})) if row[2] == rel],
+                )
+                (self.root / rel).unlink()
+
+    def test_a_skill_folder_that_cannot_be_examined_is_an_error_never_no_folder(self) -> None:
+        with stat_denied(self.root / ".agents/skills"):
+            rows = _finding_rows(audit.check_copilot_configuration(self.root, {}))
+        self.assertIn(
+            ("ERROR", "copilot-config", ".agents/skills", "Could not list the directory: Access is denied"), rows
+        )
+
+    def test_a_generator_that_is_a_folder_or_cannot_be_examined_is_unreadable_scope(self) -> None:
+        generator = self.root / ".github/scripts/ai_config.py"
+        generator.mkdir(parents=True)
+        self.assertEqual((None, "generator-scope-unreadable"), audit.derive_generator_scope(self.root))
+        generator.rmdir()
+        _write_fixture(self.root, {".github/scripts/ai_config.py": "TARGET_RUNTIMES = []\n"})
+        with stat_denied(generator):
+            self.assertEqual((None, "generator-scope-unreadable"), audit.derive_generator_scope(self.root))
+
+    def test_an_invocation_policy_that_is_a_folder_or_cannot_be_examined_is_a_problem_never_no_policy(self) -> None:
+        policy = self.root / ".agents/skills/demo/agents/openai.yaml"
+        problem = "Could not read agents/openai.yaml, so the skill's invocation policy was not checked"
+        policy.mkdir(parents=True)
+        self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
+        policy.rmdir()
+        _write_fixture(
+            self.root, {".agents/skills/demo/agents/openai.yaml": "policy:\n  allow_implicit_invocation: false\n"}
+        )
+        with stat_denied(policy):
+            self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
+
+    def test_a_manifest_that_is_a_folder_or_cannot_be_examined_is_there_to_the_scope_check(self) -> None:
+        manifest = self.root / MANIFEST_PATH
+        with stat_denied(manifest):
+            self.assertEqual("manifest-declared-only", audit.check_scope_and_roles(self.root, {})[0])
+        manifest.unlink()
+        manifest.mkdir()
+        self.assertEqual("manifest-declared-only", audit.check_scope_and_roles(self.root, {})[0])
+
+    def test_an_artifact_that_is_a_folder_or_cannot_be_examined_could_not_be_read_never_is_missing(self) -> None:
+        unread = (None, "Generated artifact exists but could not be read")
+        with stat_denied(self.root / "AGENTS.md"):
+            self.assertEqual(unread, audit._read_artifact(self.root, "AGENTS.md"))
+        (self.root / "AGENTS.md").unlink()
+        (self.root / "AGENTS.md").mkdir()
+        self.assertEqual(unread, audit._read_artifact(self.root, "AGENTS.md"))
+
+    def test_codex_chooses_an_instruction_file_it_cannot_examine_as_holding_text_and_passes_a_folder_by(self) -> None:
+        (self.root / "AGENTS.md").write_text("  \n", encoding="utf-8")
+        self.assertEqual(("AGENTS.md", False), audit._codex_choice(self.root, self.root, []))
+        with stat_denied(self.root / "AGENTS.md"):
+            self.assertEqual(("AGENTS.md", True), audit._codex_choice(self.root, self.root, []))
+        (self.root / "AGENTS.md").unlink()
+        (self.root / "AGENTS.md").mkdir()
+        self.assertEqual(("CLAUDE.md", True), audit._codex_choice(self.root, self.root, ["CLAUDE.md"]))
 
 
 class UnlistableDirectoryTests(unittest.TestCase):

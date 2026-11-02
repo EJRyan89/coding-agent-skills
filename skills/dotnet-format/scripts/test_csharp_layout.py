@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -1101,6 +1103,40 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(reason.startswith("it starts with a UTF-8 byte order mark, but byte 8 "), reason)
         self.assertNotIn("ADDED", grouped)
         self.assertEqual(undecodable, editorconfig.read_bytes())
+
+    def test_an_editorconfig_misplaced_or_unexamined_fails_before_any_file_is_written(self) -> None:
+        # src/.editorconfig ends Program.cs's chain and is written first; the root's is Tool.cs's apply target.
+        nested = self.root / "src" / ".editorconfig"
+        editorconfig = self.root / ".editorconfig"
+        self.changed("src/App/Program.cs", "Tool.cs")
+        real = Path.stat
+
+        def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+            if path == editorconfig:
+                raise PermissionError(errno.EACCES, "Access is denied", str(path))
+            return real(path, *args, **kwargs)
+
+        for place, error in (
+            ("folder", f"[Errno {errno.EISDIR}] not a file"),
+            ("denied", "[Errno 13] Access is denied"),
+        ):
+            with self.subTest(place=place):
+                nested.write_text("root = true\n", encoding="utf-8")
+                if place == "folder":
+                    editorconfig.mkdir()
+                else:
+                    editorconfig.write_text("# shared\n", encoding="utf-8")
+                with mock.patch.object(Path, "stat", stat) if place == "denied" else contextlib.nullcontext():
+                    status, grouped = self.run_config("--apply")
+                self.assertEqual(1, status)
+                self.assertEqual(f"FAILED {error}: {str(editorconfig)!r}", list(grouped)[-1])
+                self.assertNotIn("ADDED", grouped)
+                self.assertEqual("root = true\n", nested.read_text(encoding="utf-8"))
+                if place == "folder":
+                    editorconfig.rmdir()
+                else:
+                    self.assertEqual("# shared\n", editorconfig.read_text(encoding="utf-8"))
+                    editorconfig.unlink()
 
     def test_a_solution_it_cannot_read_fails_instead_of_searching_only_its_folder(self) -> None:
         (self.root / "App.slnx").write_text(

@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import errno
 import hashlib
 import re
 import sys
@@ -50,7 +51,7 @@ import json_writer
 from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from check_provenance import Source
 from console import run_main
-from file_presence import is_present
+from file_presence import NotAFile, is_directory, is_present
 from folder_walk import LINKED, SKIPPED_FOLDERS
 from frontmatter import (
     COMMENT,
@@ -517,18 +518,23 @@ def _inventory_finding(path: str, message: str) -> Finding:
 
 
 def _inventory_unreadable(root: Path, paths: list[Path]) -> list[Finding]:
-    """An ERROR for each of these files that exists but cannot be read or decoded."""
+    """An ERROR for each of these files that is there but cannot be read or decoded: one whose stat fails, or a folder
+    or anything else in a file's place, is not taken for no file."""
     findings: list[Finding] = []
     for path in paths:
-        if not path.is_file():
-            continue
         try:
+            if not is_present(path):
+                continue
             read_text(root, path)
         except (OSError, UnicodeError) as error:
-            rel = path.relative_to(root).as_posix()
-            message = f"Could not read, so the checks that read it did not run: {error}"
-            findings.append(Finding("ERROR", "inventory", rel, message=message))
+            findings.append(_unreadable_finding(root, path, error))
     return findings
+
+
+def _unreadable_finding(root: Path, path: Path, error: Exception) -> Finding:
+    """The inventory ERROR for a file or folder a check reads that is there but cannot be read."""
+    message = f"Could not read, so the checks that read it did not run: {error}"
+    return Finding("ERROR", "inventory", path.relative_to(root).as_posix(), message=message)
 
 
 def _inventory_fixed_files(root: Path) -> list[Finding]:
@@ -607,8 +613,11 @@ def _inventory_agent_directories(root: Path) -> list[Finding]:
 def _inventory_claude_rules(root: Path) -> list[Finding]:
     """Claude Code's rules, every Markdown file below .claude/rules; the rule check reports a link this walk skips."""
     base = root / ".claude/rules"
-    if not base.is_dir():
-        return []
+    try:
+        if not is_directory(base):
+            return []
+    except OSError as error:
+        return [_unreadable_finding(root, base, error)]  # _claude_rules leaves a folder it cannot read to this ERROR
     rules = sorted(path.relative_to(base).as_posix() for path in walk_files(root, base, _is_markdown).paths)
     return [_inventory_finding(".claude/rules", f"Rules found: {', '.join(rules)}")] if rules else []
 
@@ -631,8 +640,11 @@ def _is_markdown(name: str) -> bool:
 def _inventory_path_instructions(root: Path) -> list[Finding]:
     """Path-specific Copilot instructions."""
     instructions_dir = root / ".github/instructions"
-    if not instructions_dir.is_dir():
-        return []
+    try:
+        if not is_directory(instructions_dir):
+            return []
+    except OSError as error:
+        return [_unreadable_finding(root, instructions_dir, error)]
     walk = walk_files(root, instructions_dir, _is_path_instructions)
     findings = outside_link_findings(root, walk)
     if walk.paths:
@@ -654,12 +666,16 @@ def _inventory_parity_workflows(root: Path) -> list[Finding]:
     """Workflows under .github/workflows that name ai-config or ai_config, and an ERROR for each one that cannot be
     read, which the CI parity signal cannot read either."""
     workflows_dir = root / ".github/workflows"
-    if not workflows_dir.is_dir():
-        return []
+    try:
+        if not is_directory(workflows_dir):
+            return []
+        listings = [list_directory(root, workflows_dir, pattern) for pattern in ("*.yml", "*.yaml")]
+    except OSError as error:
+        return [_unreadable_finding(root, workflows_dir, error)]  # _has_ci_parity_workflow leaves it to this ERROR
     findings: list[Finding] = []
-    for pattern in ("*.yml", "*.yaml"):
-        listing = list_directory(root, workflows_dir, pattern)
-        findings.extend(_inventory_unreadable(root, listing.paths))
+    for listing in listings:
+        # A folder the listing found by a workflow's name is no workflow; an entry it cannot examine is reported.
+        findings.extend(_inventory_unreadable(root, [path for path in listing.paths if not path.is_dir()]))
         for wf in listing.paths:
             wf_content = read_text_or_none(root, wf)
             if wf_content is not None and ("ai-config" in wf_content.lower() or "ai_config" in wf_content.lower()):
@@ -1018,7 +1034,11 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
     }
     for skill_dir in (".github/skills", ".claude/skills", ".agents/skills"):
         directory = root / skill_dir
-        if not directory.is_dir():
+        try:
+            if not is_directory(directory):
+                continue
+        except OSError as error:
+            findings.append(_unlistable_finding(skill_dir, error))
             continue
         walk = walk_files(root, directory, lambda name: name == "SKILL.md")
         findings.extend(outside_link_findings(root, walk))
@@ -1030,14 +1050,12 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
                 findings.extend(_agent_skill_rules(path, root, skill_dir))
     for agent_dir in (".github/agents", ".claude/agents"):
         directory = root / agent_dir
-        if not directory.is_dir():
-            continue
         try:
+            if not is_directory(directory):
+                continue
             listing = list_directory(root, directory)
         except OSError as error:
-            findings.append(
-                Finding("ERROR", "copilot-config", agent_dir, message=f"Could not list the directory: {error.strerror}")
-            )
+            findings.append(_unlistable_finding(agent_dir, error))
             continue
         findings.extend(outside_link_findings(root, listing))
         for path in (p for p in listing.paths if p.is_file()):
@@ -1051,6 +1069,11 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
                 findings.extend(_validate_agent(path, root))
             findings.extend(_provenance(root, path, path.relative_to(root).as_posix(), "agent", manifest_paths))
     return findings
+
+
+def _unlistable_finding(directory: str, error: OSError) -> Finding:
+    """The ERROR for a skill or agent folder that is there but cannot be listed, or a file in a folder's place."""
+    return Finding("ERROR", "copilot-config", directory, message=f"Could not list the directory: {error.strerror}")
 
 
 def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
@@ -1180,10 +1203,11 @@ IMPLICIT_FALSE = re.compile(r"(?:^|[\s,{])allow_implicit_invocation:[ \t]*false\
 def _codex_implicit_invocation(root: Path, policy: Path) -> tuple[bool, str | None]:
     """Whether Codex may invoke the skill on its own, which its skills page makes the default unless
     agents/openai.yaml sets policy.allow_implicit_invocation to false, and a problem reading that file."""
-    if not policy.is_file():
-        return True, None
-    text = read_text_or_none(root, policy)
-    if text is None:
+    try:
+        if not is_present(policy):
+            return True, None
+        text = read_text(root, policy)
+    except (OSError, UnicodeError):
         return True, f"Could not read {CODEX_METADATA}, so the skill's invocation policy was not checked"
     blocks = [match.group(1) for match in (*POLICY_BLOCK.finditer(text), *POLICY_FLOW.finditer(text))]
     return not any(IMPLICIT_FALSE.search(block) for block in blocks), None
@@ -1247,9 +1271,9 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
     """Safely extract literal TARGET_* declarations from the local generator."""
     for candidate in GENERATOR_CANDIDATES:
         path = root / candidate
-        if not path.is_file():
-            continue
         try:
+            if not is_present(path):
+                continue
             tree = ast.parse(read_text(root, path), filename=candidate)
         # ValueError covers UnicodeError and, before 3.12, a null byte; MemoryError and RecursionError, source nested
         # past the parser's limits
@@ -1336,10 +1360,19 @@ def _file_scope_finding(scope: dict[str, list[str]]) -> tuple[str, Finding]:
     )
 
 
+def _manifest_is_there(root: Path) -> bool:
+    """Whether a manifest is at its path: one that cannot be examined, or a folder in its place, is there, as
+    _manifest_signal reports it malformed, never missing."""
+    try:
+        return is_present(root / ".github/ai-config-manifest.json")
+    except OSError:
+        return True
+
+
 def check_scope_and_roles(root: Path, manifest: dict[str, Any]) -> tuple[str, list[Finding]]:
     findings: list[Finding] = []
     derived, status = derive_generator_scope(root)
-    manifest_exists = (root / ".github/ai-config-manifest.json").is_file()
+    manifest_exists = _manifest_is_there(root)
     if derived is None and not manifest_exists:
         # With no manifest there is no editable scope that could narrow checks: the repository's files show the
         # runtimes and surfaces it serves, or, when they show none, say what was skipped.
@@ -1627,23 +1660,25 @@ def _has_generator_script(root: Path) -> bool:
     """True when a generator candidate references CLAUDE.md."""
     for candidate in GENERATOR_CANDIDATES:
         gen_path = root / candidate
-        if not gen_path.is_file():
-            continue
         try:
-            if "CLAUDE.md" in read_text(root, gen_path):
+            if is_present(gen_path) and "CLAUDE.md" in read_text(root, gen_path):
                 return True
         except (OSError, UnicodeError):
-            pass
+            pass  # the inventory reports a generator it cannot read as an ERROR
     return False
 
 
 def _has_ci_parity_workflow(root: Path) -> bool:
     """True when a workflow runs the generator's parity check."""
     workflows_dir = root / ".github/workflows"
-    if not workflows_dir.is_dir():
-        return False
-    for pattern in ("*.yml", "*.yaml"):
-        for wf in list_directory(root, workflows_dir, pattern).paths:  # the inventory reports a link it skips
+    try:
+        if not is_directory(workflows_dir):
+            return False
+        listings = [list_directory(root, workflows_dir, pattern) for pattern in ("*.yml", "*.yaml")]
+    except OSError:
+        return False  # the inventory reports a workflows folder it cannot read as an ERROR
+    for listing in listings:
+        for wf in listing.paths:  # the inventory reports a link it skips
             try:
                 wf_content = read_text(root, wf)
             except (OSError, UnicodeError):
@@ -1750,12 +1785,12 @@ def _expected_skill_shim(
 ) -> str | None:
     """Reconstruct the deterministic shim content for a skill, or None."""
     canonical = root / f".claude/skills/{skill_name}/SKILL.md"
-    if not canonical.is_file():
-        return None
     try:
+        if not is_present(canonical):
+            return None
         lines = read_text(root, canonical).splitlines()
     except (OSError, UnicodeError):
-        return None
+        return None  # the .claude/skills checks report a canonical skill they cannot read
     if not lines or lines[0] != "---":
         return None
     try:
@@ -1785,9 +1820,9 @@ def _expected_skill_shim(
 def _read_artifact(root: Path, path_str: str) -> tuple[str | None, str | None]:
     """Return (content, None) for a readable artifact, or (None, why it cannot be compared)."""
     full_path = root / path_str
-    if not full_path.is_file():
-        return None, f"Generated artifact missing: {path_str}"
     try:
+        if not is_present(full_path):
+            return None, f"Generated artifact missing: {path_str}"
         return read_text(root, full_path), None
     except (OSError, UnicodeError):
         return None, "Generated artifact exists but could not be read"
@@ -1906,12 +1941,14 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
             candidates.extend(skill_files(root, agents_dir).paths)
         for path in candidates:
             rel = path.relative_to(root).as_posix()
-            if rel in listed or rel in orphan_shims or not path.is_file():
+            if rel in listed or rel in orphan_shims:
                 continue
             try:
+                if not is_present(path):
+                    continue
                 generated = has_ownership_marker(read_text(root, path))
             except (OSError, UnicodeError):
-                continue
+                continue  # the check that reads the candidate reports one it cannot read
             if generated:
                 findings.append(
                     Finding(
@@ -2341,10 +2378,14 @@ def _codex_choice(root: Path, directory: Path, fallbacks: list[str]) -> tuple[st
     """
     for name in (*CODEX_INSTRUCTION_FILES, *fallbacks):
         candidate = directory / name
-        if not candidate.is_file():
-            continue
         try:
+            if not is_present(candidate):
+                continue
             return name, bool(read_bytes(root, candidate).decode("utf-8", "replace").strip())
+        except NotAFile as error:
+            if error.errno == errno.EISDIR:
+                continue  # a folder by the name holds no instructions, so the next name is tried
+            return name, True
         except OSError:
             return name, True
     return None
@@ -3024,8 +3065,11 @@ def _claude_rules(root: Path) -> list[Finding]:
     """Each rule under .claude/rules, found recursively as the memory page says: unconditional, or scoped by the
     globs its paths frontmatter lists."""
     base = root / CLAUDE_RULES
-    if not base.is_dir():
-        return []
+    try:
+        if not is_directory(base):
+            return []
+    except OSError:
+        return []  # the inventory reports a rules folder it cannot read as an ERROR
     walk = walk_files(root, base, _is_markdown)
     findings = outside_link_findings(root, walk)
     for path in sorted(walk.paths):
@@ -3424,8 +3468,11 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
         )
     for directory in (".github/skills", ".github/agents"):
         base = root / directory
-        if not base.is_dir():
-            continue
+        try:
+            if not is_directory(base):
+                continue
+        except OSError:
+            continue  # check_copilot_configuration reports a folder it cannot list as an ERROR
         for path in sorted(p for p in walk_files(root, base, lambda name: name.endswith(".md")).paths if p.is_file()):
             rel = path.relative_to(root).as_posix()
             try:

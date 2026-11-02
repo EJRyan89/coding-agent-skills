@@ -56,6 +56,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import frontmatter
 import json_reader
 import json_writer
@@ -279,9 +280,13 @@ def assemble(
 
 
 def load_readme(directory: Path) -> bytes | None:
-    """The README every plugin of the source tree carries, or None when the tree has none."""
+    """The README every plugin of the source tree carries, or None when the tree has none; one whose stat or read
+    fails, or a folder in its place, is a BuildError, never a build without it."""
     path = directory / README
-    return path.read_bytes() if path.is_file() else None
+    try:
+        return path.read_bytes() if file_presence.is_present(path) else None
+    except OSError as exc:
+        raise BuildError(f"{path} cannot be read: {exc}") from exc
 
 
 def archive_bytes(files: Mapping[str, bytes]) -> bytes:
