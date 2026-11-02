@@ -9,12 +9,13 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import functools
-import os
 import secrets
 import sys
 import time
 from pathlib import Path
 from typing import TextIO, assert_never
+
+import file_presence
 
 from . import (
     config,
@@ -143,20 +144,32 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
     for entry in list(record.entries):
         if entry["op"] != "backup":
             continue
-        if not entry["retain"] and journal.backup_unchanged(context.paths, entry):
-            unkept.append(entry)
-            continue
         root = journal.entry_root(entry)
         item = entry["item"]
         transient = journal.root_directory(context.paths, root) / transient_name(item)
-        if os.path.lexists(transient):
+        unreadable = ""
+        try:
+            if not entry["retain"] and journal.backup_unchanged(context.paths, entry):
+                unkept.append(entry)
+                continue
+            present = file_presence.is_occupied(transient)
+        except OSError as error:
+            # A copy whose stat fails is offered to keep_backup like any other, never deleted or left unreported.
+            present, unreadable = True, error.strerror or str(error)
+        if present:
             # After the commit nothing refuses: a copy that cannot be kept under .backups stays beside its item.
             preserve = functools.partial(record.preserve, root, item)
             kept_at = journal.keep_backup(context.paths, run_id, entry, preserve)
             if kept_at is None:
                 continue
             backups.append((item, kept_at))
-            if not entry["retain"]:
+            if unreadable:
+                print(
+                    f"WARNING: Could not tell whether {item}'s previous copy changed after this deployment planned it "
+                    f"({unreadable}), so it was kept at {kept_at}.",
+                    file=sys.stderr,
+                )
+            elif not entry["retain"]:
                 print(
                     f"WARNING: {item} changed after this deployment planned it, so its previous copy was kept at "
                     f"{kept_at} instead of being deleted.",

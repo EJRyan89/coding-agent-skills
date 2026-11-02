@@ -69,14 +69,17 @@ def is_present(path: Path) -> bool:
     raise NotAFile(path, directory=stat.S_ISDIR(mode))
 
 
-def is_directory(path: Path) -> bool:
+def is_directory(path: Path, *, other_is_absent: bool = False) -> bool:
     """Whether a folder is at `path`, following links: False when nothing is, not even a link to nothing,
-    `NotADirectory` when something else is, and the stat's `OSError` when it cannot tell."""
+    `NotADirectory` when something else is, or False then too for a caller that passes `other_is_absent`, such as one
+    choosing the folders among a listing's entries, and the stat's `OSError` when it cannot tell."""
     mode = _mode(path)
     if mode is None:
         return False
     if stat.S_ISDIR(mode):
         return True
+    if other_is_absent:
+        return False
     raise NotADirectory(path)
 
 
