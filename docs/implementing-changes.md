@@ -158,11 +158,16 @@ the functions that use them, until its gate finishes: it is not judged by hand. 
 change that must land in one piece, run the mutants left without a verdict on your machine with the gate's own step,
 never by applying them by hand. Download the run's mutants and every leg's outcomes into one folder, with
 `gh run download <run> --name mutation-mutants --dir '<folder>'` and the same for `mutation-linux` and
-`mutation-windows`, check out the commit the run tested, and run `python -B tools/mutation_gate.py --minutes <cap> unrun
-'<folder>'` on the platform of each leg that left mutants without a verdict. It runs those mutants alone, keeps every
-outcome CI gave the others, refuses a module whose text is not the one the mutants were made from, writes the completed
-leg back over its outcomes, and prints the join's summary, naming the local run beside the leg, which the pull
-request's "Mutation survivors" comment then rules on as it would a CI run's. The summary of a finished run is the record: read it, and for a
+`mutation-windows`. Check out the commit the run tested, which the selection records as its `head` (the merge commit
+of a pull request's run, fetched with `git fetch origin '<head>'`), since its suites judged every other mutant, and run
+`python -B tools/mutation_gate.py --minutes <cap> unrun '<folder>'` on the platform of each leg that left mutants
+without a verdict, on a machine with nothing else heavy running, since a timeout it records is taken as confirmed. It
+runs those mutants alone, keeps every outcome CI gave the others, refuses any other HEAD and a module whose text is not
+the one the mutants were made from, writes its outcomes beside the leg's, and prints the join's summary, naming the
+local run beside the leg, which the pull request's "Mutation survivors" comment then rules on as it would a CI run's.
+A CI leg's timeout judges nothing until such a run confirms it: a runner's load can stretch a suite past its limit as
+surely as a mutant that makes a loop endless, so a run with one is unfinished, its summary counts confirmed and
+unconfirmed timeouts apart, and `unrun` runs each again, counting it as timed out only when it times out there too. The summary of a finished run is the record: read it, and for a
 surviving mutant on a line the pull request changed that alters behavior a caller relies on, such as a refusal or a line
 a document or test treats as a contract, add the test that kills it, or name it in the pull request with why it is
 equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere.

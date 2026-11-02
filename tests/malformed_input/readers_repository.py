@@ -82,6 +82,7 @@ MUTATION_MUTANT = {"line": 4, "before": "a", "after": "b", "source": "b\n", "at_
 MUTATION_SELECTION = {
     "base": "origin/main",
     "mutmut": "3.8.0",
+    "head": "cd" * 20,
     "modules": [
         {
             "module": "tools/paths.py",
@@ -109,8 +110,10 @@ MUTATION_LEG = {
         "mutants": {"tools/paths.py": [0]},
         "failed_suites": {"tests/d.py": "failed unmutated with exit code 1"},
         "unmeasured_suites": ["tests/e.py"],
+        "outcomes": {"tools/paths.py": [{"status": mutation_gate.KILLED, "suites": ["tests/c.py"], "tests": [1]}]},
     },
-    "outcomes": {"tools/paths.py": [{"status": mutation_gate.KILLED, "suites": ["tests/c.py"], "tests": [1]}]},
+    # The CI leg timed out on the mutant, which the local run then killed.
+    "outcomes": {"tools/paths.py": [{"status": mutation_gate.TIMED_OUT, "suites": ["tests/c.py"], "tests": [1]}]},
 }
 
 
