@@ -702,6 +702,39 @@ class MSBuild:
         return [(cwd / arguments[2]).resolve().relative_to(self.root).as_posix() for arguments, cwd, _ in self.calls]
 
 
+def stat_failing_at(target: Path) -> contextlib.ExitStack:
+    """A stat of `target` alone fails, as on a path the script may not examine, and every presence predicate answers
+    False for it, as Python 3.14 and later do there, so a predicate left on the path reads it as absent."""
+    real_stat, real_os_stat = Path.stat, os.stat
+
+    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == target:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    def os_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if Path(path) == target:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real_os_stat(path, *args, **kwargs)
+
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.object(Path, "stat", stat))
+    stack.enter_context(mock.patch.object(os, "stat", os_stat))
+    for name in ("exists", "is_file", "is_dir"):
+        real = getattr(Path, name)
+        stack.enter_context(
+            mock.patch.object(
+                Path, name, lambda path, *a, real=real, **k: False if path == target else real(path, *a, **k)
+            )
+        )
+    for name in ("exists", "lexists", "isfile", "isdir"):
+        real = getattr(os.path, name)
+        stack.enter_context(
+            mock.patch.object(os.path, name, lambda path, real=real: False if Path(path) == target else real(path))
+        )
+    return stack
+
+
 PACKAGE_REFERENCE = {"PackageReference": [{"Identity": "Roslynator.Formatting.Analyzers", "Version": "4.12.0"}]}
 
 
@@ -1105,38 +1138,31 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(undecodable, editorconfig.read_bytes())
 
     def test_an_editorconfig_misplaced_or_unexamined_fails_before_any_file_is_written(self) -> None:
-        # src/.editorconfig ends Program.cs's chain and is written first; the root's is Tool.cs's apply target.
+        # src/.editorconfig ends Program.cs's chain and is written first; the root's is Tool.cs's apply target, and
+        # src/App's is read for Program.cs's settings alone, never written.
         nested = self.root / "src" / ".editorconfig"
-        editorconfig = self.root / ".editorconfig"
         self.changed("src/App/Program.cs", "Tool.cs")
-        real = Path.stat
-
-        def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
-            if path == editorconfig:
-                raise PermissionError(errno.EACCES, "Access is denied", str(path))
-            return real(path, *args, **kwargs)
-
-        for place, error in (
-            ("folder", f"[Errno {errno.EISDIR}] not a file"),
-            ("denied", "[Errno 13] Access is denied"),
-        ):
-            with self.subTest(place=place):
-                nested.write_text("root = true\n", encoding="utf-8")
-                if place == "folder":
-                    editorconfig.mkdir()
-                else:
-                    editorconfig.write_text("# shared\n", encoding="utf-8")
-                with mock.patch.object(Path, "stat", stat) if place == "denied" else contextlib.nullcontext():
-                    status, grouped = self.run_config("--apply")
-                self.assertEqual(1, status)
-                self.assertEqual(f"FAILED {error}: {str(editorconfig)!r}", list(grouped)[-1])
-                self.assertNotIn("ADDED", grouped)
-                self.assertEqual("root = true\n", nested.read_text(encoding="utf-8"))
-                if place == "folder":
-                    editorconfig.rmdir()
-                else:
-                    self.assertEqual("# shared\n", editorconfig.read_text(encoding="utf-8"))
-                    editorconfig.unlink()
+        not_a_file, denied = f"[Errno {errno.EISDIR}] not a file", f"[Errno {errno.EACCES}] Access is denied"
+        for relative in (".editorconfig", "src/App/.editorconfig"):
+            for place, error in (("folder", not_a_file), ("denied", denied)):
+                with self.subTest(path=relative, place=place):
+                    editorconfig = self.root / relative
+                    nested.write_text("root = true\n", encoding="utf-8")
+                    if place == "folder":
+                        editorconfig.mkdir()
+                    else:
+                        editorconfig.write_text("# shared\n", encoding="utf-8")
+                    with stat_failing_at(editorconfig) if place == "denied" else contextlib.nullcontext():
+                        status, grouped = self.run_config("--apply")
+                    self.assertEqual(1, status)
+                    self.assertEqual(f"FAILED {error}: {str(editorconfig)!r}", list(grouped)[-1])
+                    self.assertNotIn("ADDED", grouped)
+                    self.assertEqual("root = true\n", nested.read_text(encoding="utf-8"))
+                    if place == "folder":
+                        editorconfig.rmdir()
+                    else:
+                        self.assertEqual("# shared\n", editorconfig.read_text(encoding="utf-8"))
+                        editorconfig.unlink()
 
     def test_a_solution_it_cannot_read_fails_instead_of_searching_only_its_folder(self) -> None:
         (self.root / "App.slnx").write_text(

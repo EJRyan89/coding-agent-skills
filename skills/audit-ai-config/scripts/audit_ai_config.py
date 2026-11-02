@@ -643,11 +643,16 @@ def _inventory_claude_rules(root: Path) -> list[Finding]:
 
 
 def _inventory_codex_folders(root: Path) -> list[Finding]:
-    """Codex's custom agents and rules, the files directly in .codex/agents and .codex/rules its pages describe; the
-    Codex checks report a link either listing skips."""
+    """Codex's custom agents and rules, the files directly in .codex/agents and .codex/rules its pages describe, and
+    an ERROR for either folder that cannot be examined or listed, or has a file in its place, which the Codex checks
+    leave to it; the Codex checks report a link either listing skips."""
     findings: list[Finding] = []
     for folder, pattern, kind in ((".codex/agents", "*.toml", "Custom agents"), (".codex/rules", "*.rules", "Rules")):
-        names = [path.name for path in _codex_files(root, folder, pattern).paths]
+        try:
+            names = [path.name for path in _codex_files(root, folder, pattern).paths]
+        except OSError as error:
+            findings.append(_unreadable_finding(root, root / folder, error))
+            continue
         if names:
             findings.append(_inventory_finding(folder, f"{kind} found: {', '.join(names)}"))
     return findings
@@ -3219,21 +3224,22 @@ def _codex_hooks(root: Path) -> list[Finding]:
 
 
 def _codex_files(root: Path, folder: str, pattern: str) -> Listing:
-    """The files directly in one of Codex's folders that match `pattern`, or none when it cannot be listed."""
+    """The files directly in one of Codex's folders that match `pattern`, or none when there is no such folder.
+    Raises OSError for one that cannot be examined or listed, or a file in its place, which the inventory reports."""
     directory = root / folder
-    if not directory.is_dir():
+    if not is_directory(directory):
         return Listing()
-    try:
-        listing = list_directory(root, directory, pattern)
-    except OSError:
-        return Listing()
+    listing = list_directory(root, directory, pattern)
     return Listing([path for path in listing.paths if path.is_file()], listing.outside)
 
 
 def _codex_agents(root: Path) -> list[Finding]:
     """Each custom agent TOML file: one that does not parse, a required field it lacks, and a session setting it
     sets that Codex ignores there."""
-    listing = _codex_files(root, CODEX_AGENTS, "*.toml")
+    try:
+        listing = _codex_files(root, CODEX_AGENTS, "*.toml")
+    except OSError:
+        return []  # the inventory reports a Codex folder it cannot read as an ERROR
     findings = outside_link_findings(root, listing)
     for path in listing.paths:
         rel = path.relative_to(root).as_posix()
@@ -3264,7 +3270,10 @@ def _codex_agents(root: Path) -> list[Finding]:
 def _codex_rules(root: Path) -> list[Finding]:
     """Each rules file, read as the Starlark it is with Python's parser, which never runs it: one that does not parse,
     and each prefix_rule, whose decision defaults to allow, that lets a command run outside the sandbox."""
-    listing = _codex_files(root, CODEX_RULES, "*.rules")
+    try:
+        listing = _codex_files(root, CODEX_RULES, "*.rules")
+    except OSError:
+        return []  # the inventory reports a Codex folder it cannot read as an ERROR
     findings = outside_link_findings(root, listing)
     for path in listing.paths:
         rel = path.relative_to(root).as_posix()

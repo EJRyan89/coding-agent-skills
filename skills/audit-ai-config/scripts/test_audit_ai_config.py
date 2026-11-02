@@ -3682,6 +3682,7 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
     },
     "claude_rules_without_markdown": {".claude/rules/notes.txt": "x"},
     "claude_rules_is_a_file": {".claude/rules": "x"},
+    "codex_agents_is_a_file": {".codex/agents": "x"},
     "codex_files": {
         ".codex/hooks.json": "{}",
         ".codex/agents/reviewer.toml": "x",
@@ -3777,6 +3778,9 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     "claude_rules_without_markdown": [],
     "claude_rules_is_a_file": [
         ("ERROR", "inventory", ".claude/rules", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
+    "codex_agents_is_a_file": [
+        ("ERROR", "inventory", ".codex/agents", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
     ],
     "codex_files": [
         ("INFO", "inventory", ".codex/hooks.json", "Found .codex/hooks.json"),
@@ -5443,10 +5447,10 @@ class OwnershipFindingTests(unittest.TestCase):
 
 
 @contextlib.contextmanager
-def stat_denied(target: Path) -> Iterator[None]:
-    """Path.stat refuses `target` alone, as a file system does a path the audit may not examine, and so do
-    Path.exists, is_file, and is_dir, which raise that error before Python 3.14, so every Python the suite runs on
-    meets a predicate left on the path as the oldest supported one does."""
+def stat_denied(target: Path, *, older: bool) -> Iterator[None]:
+    """Path.stat refuses `target` alone, as a file system does a path the audit may not examine. Path.exists, is_file,
+    and is_dir raise that error for it, as before Python 3.14, when `older`, and answer False, as from 3.14 on, when
+    not, so every Python the suite runs on meets a predicate left on the path as either does."""
     real = Path.stat
 
     def refuse(path: Path) -> None:
@@ -5461,6 +5465,8 @@ def stat_denied(target: Path) -> Iterator[None]:
 
     def predicate(name: str) -> Callable[..., bool]:
         def answer(path: Path, *args: Any, **kwargs: Any) -> bool:
+            if path == target and not older:
+                return False
             refuse(path)
             return bool(predicates[name](path, *args, **kwargs))
 
@@ -5486,6 +5492,12 @@ class UnexaminedPathTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    # Whether a predicate left on a refused path raises, as before Python 3.14, or answers False, as from 3.14 on.
+    OLDER = True
+
+    def denied(self, target: Path) -> contextlib.AbstractContextManager[None]:
+        return stat_denied(target, older=self.OLDER)
+
     # Each path the inventory reports when its stat fails, with what makes it there, which the stat then hides.
     INVENTORY_DENIED: ClassVar[dict[str, dict[str, str | bytes]]] = {
         "CLAUDE.md": {},
@@ -5494,13 +5506,14 @@ class UnexaminedPathTests(unittest.TestCase):
         ".claude/rules": {".claude/rules/testing.md": "x"},
         ".github/instructions": {".github/instructions/a.instructions.md": "x"},
         ".github/workflows": {".github/workflows/parity.yml": "run: ai_config --check"},
+        ".codex/rules": {".codex/rules/default.rules": "x"},
     }
 
     def test_a_path_the_inventory_reads_that_cannot_be_examined_is_an_inventory_error(self) -> None:
         for rel, files in self.INVENTORY_DENIED.items():
             with self.subTest(rel=rel):
                 _write_fixture(self.root, files)
-                with stat_denied(self.root / rel):
+                with self.denied(self.root / rel):
                     errors = [row for row in _finding_rows(audit.check_inventory(self.root)) if row[0] == "ERROR"]
                 self.assertEqual(
                     [("ERROR", "inventory", rel, f"{UNREAD} [Errno {errno.EACCES}] Access is denied: ")],
@@ -5514,11 +5527,13 @@ class UnexaminedPathTests(unittest.TestCase):
             (".github/skills", "copilot-config", {".github/skills/demo/SKILL.md": "x"}),
             (".github/agents", "copilot-config", {".github/agents/reviewer.md": "x"}),
             (".claude/skills", "copilot-config", {}),
+            (".codex/agents", "inventory", {".codex/agents/reviewer.toml": "x"}),
+            (".codex/rules", "inventory", {".codex/rules/default.rules": "x"}),
         ]
         for rel, check, files in rows:
             with self.subTest(rel=rel):
                 _write_fixture(self.root, files)
-                with stat_denied(self.root / rel):
+                with self.denied(self.root / rel):
                     findings = audit.audit(self.root).findings
                 self.assertEqual(
                     [check], [f.check for f in findings if f.path == rel and f.severity == "ERROR"], findings
@@ -5535,7 +5550,7 @@ class UnexaminedPathTests(unittest.TestCase):
                 (self.root / rel).unlink()
 
     def test_a_skill_folder_that_cannot_be_examined_is_an_error_never_no_folder(self) -> None:
-        with stat_denied(self.root / ".agents/skills"):
+        with self.denied(self.root / ".agents/skills"):
             rows = _finding_rows(audit.check_copilot_configuration(self.root, {}))
         self.assertIn(
             ("ERROR", "copilot-config", ".agents/skills", "Could not list the directory: Access is denied"), rows
@@ -5547,7 +5562,7 @@ class UnexaminedPathTests(unittest.TestCase):
         self.assertEqual((None, "generator-scope-unreadable"), audit.derive_generator_scope(self.root))
         generator.rmdir()
         _write_fixture(self.root, {".github/scripts/ai_config.py": "TARGET_RUNTIMES = []\n"})
-        with stat_denied(generator):
+        with self.denied(generator):
             self.assertEqual((None, "generator-scope-unreadable"), audit.derive_generator_scope(self.root))
 
     def test_an_invocation_policy_that_is_a_folder_or_cannot_be_examined_is_a_problem_never_no_policy(self) -> None:
@@ -5559,12 +5574,12 @@ class UnexaminedPathTests(unittest.TestCase):
         _write_fixture(
             self.root, {".agents/skills/demo/agents/openai.yaml": "policy:\n  allow_implicit_invocation: false\n"}
         )
-        with stat_denied(policy):
+        with self.denied(policy):
             self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
 
     def test_a_manifest_that_is_a_folder_or_cannot_be_examined_is_there_to_the_scope_check(self) -> None:
         manifest = self.root / MANIFEST_PATH
-        with stat_denied(manifest):
+        with self.denied(manifest):
             self.assertEqual("manifest-declared-only", audit.check_scope_and_roles(self.root, {})[0])
         manifest.unlink()
         manifest.mkdir()
@@ -5572,7 +5587,7 @@ class UnexaminedPathTests(unittest.TestCase):
 
     def test_an_artifact_that_is_a_folder_or_cannot_be_examined_could_not_be_read_never_is_missing(self) -> None:
         unread = (None, "Generated artifact exists but could not be read")
-        with stat_denied(self.root / "AGENTS.md"):
+        with self.denied(self.root / "AGENTS.md"):
             self.assertEqual(unread, audit._read_artifact(self.root, "AGENTS.md"))
         (self.root / "AGENTS.md").unlink()
         (self.root / "AGENTS.md").mkdir()
@@ -5581,11 +5596,17 @@ class UnexaminedPathTests(unittest.TestCase):
     def test_codex_chooses_an_instruction_file_it_cannot_examine_as_holding_text_and_passes_a_folder_by(self) -> None:
         (self.root / "AGENTS.md").write_text("  \n", encoding="utf-8")
         self.assertEqual(("AGENTS.md", False), audit._codex_choice(self.root, self.root, []))
-        with stat_denied(self.root / "AGENTS.md"):
+        with self.denied(self.root / "AGENTS.md"):
             self.assertEqual(("AGENTS.md", True), audit._codex_choice(self.root, self.root, []))
         (self.root / "AGENTS.md").unlink()
         (self.root / "AGENTS.md").mkdir()
         self.assertEqual(("CLAUDE.md", True), audit._codex_choice(self.root, self.root, ["CLAUDE.md"]))
+
+
+class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
+    """The same rows with each predicate left on a refused path answering False, as from Python 3.14 on."""
+
+    OLDER = False
 
 
 class UnlistableDirectoryTests(unittest.TestCase):
