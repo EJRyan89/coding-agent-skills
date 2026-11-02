@@ -163,6 +163,9 @@ UPDATABLE = frozenset({"SUCCESS", "NEUTRAL", "PENDING"})
 UNJUDGED = UPDATABLE | {"MISSING"}
 FAILED_LEG = frozenset({"failure", "cancelled", "timed_out", "startup_failure"})
 RUN_URL = re.compile(r"/actions/runs/(\d+)")
+# The kinds of entry gh lists in a check rollup: a check run, which a workflow's job reports, and a commit status.
+CHECK_RUN = "CheckRun"
+STATUS_CONTEXT = "StatusContext"
 # What GitHub puts before each log line: a timestamp, and with --log-failed the job's and step's names before it.
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?")
 ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -364,11 +367,12 @@ def member(entry: dict[str, Any], key: str, kind: type, what: str) -> Any:
     return value
 
 
-def reported(entry: dict[str, Any], key: str, kind: type, what: str) -> Any:
-    """`entry`'s `key` as `member` reads it, or the malformed GitHubError naming `what` when it is absent or null: a
-    member whose value decides a write is read only as GitHub reported it, never as a default."""
+def reported(entry: dict[str, Any], key: str, kind: type, what: str, *, empty: bool = True) -> Any:
+    """`entry`'s `key` as `member` reads it, or the malformed GitHubError naming `what` when it is absent or null, or,
+    without `empty`, empty text: a member whose value decides a write is read only as GitHub reported it, never as a
+    default."""
     value = member(entry, key, kind, what)
-    if value is None:
+    if value is None or (not empty and value == ""):
         raise malformed(f"{what} without its {key}")
     return value
 
@@ -390,26 +394,43 @@ def run_of(entry: dict[str, Any]) -> int | None:
 def required_check(rollup: Any) -> Check:
     """The required check's state in the newest run on the head, PENDING while that run's legs run before it starts,
     and MISSING without it, with the share of that run's legs that finished. An older run on the same head, such as
-    one a newer run cancelled, is not read."""
+    one a newer run cancelled, is not read.
+
+    The state gates updating a branch and the pre-merge review, so each member it rests on is read only as GitHub
+    reported it: a check run without its name, workflow, status, conclusion, start, or URL, or a Validation one whose
+    URL names no run, is malformed, never a check of another workflow, an older run, or a pending one. A commit
+    status (a StatusContext) carries none of these and belongs to no workflow, so it is passed over by its kind."""
     # GitHub gives a head with no status at all a null rollup.
     listed = objects([] if rollup is None else rollup, "a check rollup")
+    runs: list[tuple[dict[str, Any], int]] = []
     for entry in listed:
-        # A check's URL is read, and checked, only where the run it names matters (run_of).
-        for key in ("name", "workflowName", "status", "conclusion", "startedAt"):
-            member(entry, key, str, "a check")
-    entries = [entry for entry in listed if entry.get("workflowName") == REQUIRED_CHECK]
-    newest = max((run_of(entry) or 0 for entry in entries), default=0)
-    entries = [entry for entry in entries if (run_of(entry) or 0) == newest]
-    named = [entry for entry in entries if entry.get("name") == REQUIRED_CHECK]
-    legs = [entry for entry in entries if entry.get("name") != REQUIRED_CHECK]
-    progress = sum(entry.get("status") == "COMPLETED" for entry in legs) / len(legs) if legs else 0.0
+        kind = reported(entry, "__typename", str, "a check", empty=False)
+        if kind == STATUS_CONTEXT:
+            continue
+        if kind != CHECK_RUN:
+            raise malformed(f"a check of a kind the shepherd does not know, {flat_text(kind)!r}")
+        for key in ("name", "workflowName", "status", "detailsUrl"):
+            reported(entry, key, str, "a check", empty=False)
+        # gh reports a run that has not finished with an empty conclusion, and one not started with a zero start.
+        for key in ("conclusion", "startedAt"):
+            reported(entry, key, str, "a check")
+        if entry["workflowName"] == REQUIRED_CHECK:
+            run = run_of(entry)
+            if run is None:
+                raise malformed(f"a {REQUIRED_CHECK} check whose URL names no run")
+            runs.append((entry, run))
+    newest = max((run for _, run in runs), default=0)
+    entries = [entry for entry, run in runs if run == newest]
+    named = [entry for entry in entries if entry["name"] == REQUIRED_CHECK]
+    legs = [entry for entry in entries if entry["name"] != REQUIRED_CHECK]
+    progress = sum(entry["status"] == "COMPLETED" for entry in legs) / len(legs) if legs else 0.0
     if named:
-        entry = max(named, key=lambda item: str(item.get("startedAt") or ""))
-        if entry.get("status") != "COMPLETED":
-            return Check("PENDING", run_of(entry), progress)
-        return Check(str(entry.get("conclusion") or "UNKNOWN").upper(), run_of(entry), 1.0)
+        entry = max(named, key=lambda item: str(item["startedAt"]))
+        if entry["status"] != "COMPLETED":
+            return Check("PENDING", newest, progress)
+        return Check(str(entry["conclusion"] or "UNKNOWN").upper(), newest, 1.0)
     if entries:
-        return Check("PENDING", run_of(entries[0]), progress)
+        return Check("PENDING", newest, progress)
     return Check("MISSING", None)
 
 
@@ -448,7 +469,8 @@ def pull_of(item: Any) -> Pull:
         number,
         branch,
         head,
-        reported(item, "mergeStateStatus", str, what),
+        # GitHub's merge states are an enumeration with no empty member, and an empty one would skip is_behind's probe.
+        reported(item, "mergeStateStatus", str, what, empty=False),
         member(item, "autoMergeRequest", dict, what) is not None,
         required_check(item["statusCheckRollup"]),
         paths,

@@ -222,8 +222,8 @@ SHEPHERD_RUN = {
 
 
 SHEPHERD_UNREAD = (
-    "the shepherd reads a file's path, a check's name, workflow, state, start, and run, and whether auto-merge is "
-    "requested, never this field"
+    "the shepherd reads a file's path, a check's kind, name, workflow, state, start, and run, and whether auto-merge "
+    "is requested, never this field"
 )
 
 
@@ -401,7 +401,6 @@ READERS = [
             for field in (
                 "files.0.additions",
                 "files.0.deletions",
-                "statusCheckRollup.0.__typename",
                 "autoMergeRequest.enabledAt",
                 "autoMergeRequest.mergeMethod",
             )

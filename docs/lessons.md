@@ -242,7 +242,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_pull_request_member_the_listing_leaves_out_or_nulls_is_malformed_never_a_default`,
   which holds a written-out row for every member the shepherd lists, absent and null, and fails when the listing
-  gains a member without one
+  gains a member without one, and
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_run_member_the_rollup_leaves_out_is_malformed_never_a_default`,
+  the same table for each check run in a rollup
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
   without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;
