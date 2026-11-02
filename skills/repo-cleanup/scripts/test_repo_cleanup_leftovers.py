@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -31,6 +32,7 @@ from test_repo_cleanup import (
     is_regenerable,
     refusing_branch_deletion,
     stat_failing_at,
+    unlistable,
 )
 
 # The settings conftest.py adds to the global configuration of every home this suite's git runs in.
@@ -529,6 +531,19 @@ class LeftoverTests(Fixture):
         self.assertEqual([], facts(lines, "DELETED_DIR"))
         self.assertTrue(stale.is_dir())
 
+    def test_a_directory_the_search_cannot_list_is_kept_with_why_rather_than_read_as_holding_no_leftover(self) -> None:
+        stale = self.area / "stale wt"
+        stale.mkdir(parents=True)
+        # The worktree area itself, and a directory in it, which is searched because it might hold a worktree.
+        for folder in (self.area, stale):
+            with self.subTest(folder=folder):
+                with unlistable(folder):
+                    _, applied = self.clean()
+                self.assertEqual([], facts(applied, "ORPHAN"), applied)
+                why = "could not list it to look for directories Git no longer tracks: "
+                self.preserved(applied, (folder, f"{why}[Errno 13] Permission denied: {str(folder)!r}"))
+                self.assertTrue(stale.is_dir())
+
     def test_a_directory_whose_git_entry_cannot_be_told_about_is_never_offered(self) -> None:
         stale = self.area / "stale wt"
         stale.mkdir(parents=True)
@@ -788,6 +803,29 @@ class LeftoverTests(Fixture):
         self.assertTrue(is_regenerable("real/.venv/", tree, entries))
         self.assertFalse(is_regenerable("linked/__pycache__/", tree, entries), "reached through a link")
         self.assertFalse(is_regenerable("linked/.venv/", tree, entries), "an addition, through a link")
+
+    def test_a_project_folder_that_cannot_be_listed_or_a_project_file_that_cannot_be_looked_at_keeps_with_why(
+        self,
+    ) -> None:
+        policy = cleanup_policy.configured()
+        tree = self.root / "layout"
+        web = tree / "web"
+        (web / "node_modules").mkdir(parents=True)
+        project = web / "package.json"
+        project.write_text("{}\n", encoding="utf-8")
+        self.assertTrue(is_regenerable("web/node_modules/", tree, policy))
+        why = f"could not look in {web.as_posix()} for the project files: [Errno 13] Permission denied: "
+        for name, failing, named in (("unlistable", unlistable, web), ("unstatable", stat_failing_at, project)):
+            with (
+                self.subTest(name),
+                failing(named),
+                self.assertRaisesRegex(rc.CleanupError, f"^{re.escape(why + repr(str(named)))}$"),
+            ):
+                rc.regenerable_under(rc.Services(), str(tree), ["web/node_modules/"], policy)
+        # A folder named like a project file is no project file.
+        project.unlink()
+        project.mkdir()
+        self.assertFalse(is_regenerable("web/node_modules/", tree, policy))
 
 
 def test_a_hidden_file_is_compared_only_when_its_index_mode_and_its_worktree_entry_are_both_regular(

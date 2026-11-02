@@ -407,6 +407,39 @@ class MemoryAuditTests(unittest.TestCase):
                 self.assertTrue(any(Path(o["file"]).as_posix().endswith(relative) for o in overlaps), overlaps)
                 (self.repo / relative).unlink()
 
+    def test_an_instruction_file_whose_stat_fails_fails_the_audit_rather_than_losing_its_overlaps(self) -> None:
+        rule = "Never name the object under test sut; derive the variable name from its class instead."
+        write(self.memory_dir / "sut.md", memory("sut", rule))
+        user_dir = self.root / "user-config"
+        named = write(self.root / "named" / "CLAUDE.md", f"- {rule}\n")
+        # One named on the command line, one a pattern naming one file finds, and one a wildcard pattern finds.
+        for path in (
+            named,
+            write(user_dir / "CLAUDE.md", f"- {rule}\n"),
+            write(self.repo / "docs" / "a.md", f"- {rule}\n"),
+        ):
+            with self.subTest(path=path):
+                found = memory_audit.audit(self.memory_dir, self.repo, [named], user_dir=user_dir)
+                self.assertIn(str(path), [o["file"] for o in found["memories"][0]["overlaps"]])
+                with stat_failing_at(path), self.assertRaises(PermissionError) as raised:
+                    memory_audit.audit(self.memory_dir, self.repo, [named], user_dir=user_dir)
+                self.assertEqual(str(path), raised.exception.filename)
+        write(self.memory_dir / "MEMORY.md", "")
+        with stat_failing_at(named):
+            code, stdout, _ = run_main(
+                "audit", "--memory-dir", str(self.memory_dir), "--repo", str(self.repo), "--instructions", str(named)
+            )
+        self.assertEqual((1, f"FAILED Permission denied: {named}\n"), (code, stdout))
+
+    def test_a_folder_named_like_an_instruction_file_is_passed_over(self) -> None:
+        rule = "Never name the object under test sut; derive the variable name from its class instead."
+        write(self.memory_dir / "sut.md", memory("sut", rule))
+        named, user_dir = self.root / "named.md", self.root / "user-config"
+        for folder in (named, user_dir / "CLAUDE.md", self.repo / "docs" / "folder.md"):
+            folder.mkdir(parents=True)
+        found = memory_audit.audit(self.memory_dir, self.repo, [named], user_dir=user_dir)
+        self.assertEqual([], found["memories"][0]["overlaps"])
+
     def test_user_level_rules_and_skipped_directories(self) -> None:
         rule = "Never name the object under test sut; derive the variable name from its class instead."
         user_dir = self.root / "user-config"

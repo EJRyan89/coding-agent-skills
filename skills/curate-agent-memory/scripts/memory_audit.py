@@ -504,15 +504,21 @@ def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> lis
 
 
 def destination_files(repo: Path | None, instructions: list[Path], user_dir: Path | None = None) -> list[Path]:
-    files = [path for path in instructions if path.is_file()]
+    """The instruction files a memory's overlaps are measured against: each named one and each a destination pattern
+    finds. A folder among them is passed over, and a stat that fails raises, so an instruction file the audit cannot
+    look at fails it rather than silently losing its overlaps. A pattern naming one file is looked up directly: glob
+    checks such a name with os.path.lexists, which answers False for a stat that fails."""
+    files = [path for path in instructions if is_present(path, other_is_absent=True)]
     for root, patterns in ((repo, DESTINATION_GLOBS), (user_dir, USER_DESTINATION_GLOBS)):
         if root is None:
             continue
         for pattern in patterns:
+            found = root.glob(pattern) if "*" in pattern else [root / pattern]
             files.extend(
                 path
-                for path in root.glob(pattern)
-                if path.is_file() and not SKIPPED_DIRECTORIES.intersection(path.relative_to(root).parts[:-1])
+                for path in found
+                if is_present(path, other_is_absent=True)
+                and not SKIPPED_DIRECTORIES.intersection(path.relative_to(root).parts[:-1])
             )
     unique: dict[str, Path] = {}
     for path in files:
@@ -1013,6 +1019,7 @@ def output_refusal(explicit: Path, memory_dir: Path, projects: Path) -> str | No
     root = skills_directory_holding(explicit)
     if root:
         return f"{explicit} is inside the skills directory {root}; omit --output to write a new temporary file"
+    # A failed stat reads as no file here, but main opens the report with mode "x", which never replaces a file.
     if os.path.lexists(explicit):
         return (
             f"{explicit} already exists, and audit never replaces a file; omit --output to write a new temporary file"

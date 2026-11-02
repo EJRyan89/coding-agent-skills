@@ -3323,6 +3323,18 @@ def test_a_dependency_s_metadata_whose_stat_fails_is_unreadable_rather_than_abse
     ]
 
 
+def trigger_scenarios_folder(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root)
+    scenarios = root / skill_inventory.TRIGGER_SCENARIOS / "alpha"
+    write(scenarios / "description" / "scenario.json", '{"mode": "trigger", "requests": ["a"], "near_misses": []}')
+    return ["tools", str(folder / "SKILL.md")], scenarios
+
+
+def stray_among_trigger_scenarios(root: Path) -> tuple[list[str], Path]:
+    arguments, scenarios = trigger_scenarios_folder(root)
+    return arguments, scenarios / "notes.txt"
+
+
 def stray_in_plugin_cache(root: Path) -> tuple[list[str], Path]:
     plugin_in_cache(root / "home")
     return locate_arguments(root), root / "home" / skill_inventory.PLUGIN_CACHE / "notes.txt"
@@ -3345,7 +3357,13 @@ def stray_named_as_a_sibling_skill(root: Path) -> tuple[list[str], Path]:
 
 @pytest.mark.parametrize(
     "fixture",
-    [stray_in_plugin_cache, stray_in_skills_root, stray_beside_a_plugin_skill, stray_named_as_a_sibling_skill],
+    [
+        stray_in_plugin_cache,
+        stray_in_skills_root,
+        stray_beside_a_plugin_skill,
+        stray_named_as_a_sibling_skill,
+        stray_among_trigger_scenarios,
+    ],
 )
 def test_a_file_among_the_folders_a_command_lists_is_passed_over_as_no_folder_never_refused(
     fixture: Callable[[Path], tuple[list[str], Path]], tmp_path: Path
@@ -3376,3 +3394,50 @@ def test_each_outside_reference_on_a_line_is_judged_after_a_missing_or_unreadabl
         "OUTSIDE_READ SKILL.md:4 9 3 ../shared.md",
         "UNREADABLE ../denied.md Permission denied",
     ]
+
+
+@contextmanager
+def unlistable(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused, as one the user may not read is: os.scandir and os.listdir raise
+    PermissionError naming it, which Path.iterdir raises too, while Path.glob matches nothing in it. Its stat, and
+    every other folder, are read as they are."""
+
+    def refusing(real: Callable[..., object]) -> Callable[..., object]:
+        def answer(name: object = ".", *rest: object) -> object:
+            if isinstance(name, (str, os.PathLike)) and Path(name) == folder:
+                raise PermissionError(errno.EACCES, "Permission denied", str(name))
+            return real(name, *rest)
+
+        return answer
+
+    with ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, side_effect=refusing(getattr(os, name))))
+        yield
+
+
+def trigger_scenario_folder(root: Path) -> tuple[list[str], Path]:
+    arguments, scenarios = trigger_scenarios_folder(root)
+    return arguments, scenarios / "description"
+
+
+def invoked_skill_folder(root: Path) -> tuple[list[str], Path]:
+    support = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
+    folder = source_skill(root, "Then invoke `beta` for each one.\n", {"runtime_support": support})
+    write(root / "skills" / "beta" / "SKILL.md", '---\ndescription: Help.\nallowed-tools: ["Agent"]\n---\nBody.\n')
+    return ["tools", str(folder / "SKILL.md")], root / "skills" / "beta"
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [trigger_scenarios_folder, trigger_scenario_folder, runtime_prompt_samples, agents_folder, invoked_skill_folder],
+)
+def test_a_folder_the_command_cannot_list_fails_it_rather_than_reading_as_empty(
+    fixture: Callable[[Path], tuple[list[str], Path]], tmp_path: Path
+) -> None:
+    arguments, folder = fixture(tmp_path)
+    code, lines, error = run(*arguments)
+    assert (code, error) == (0, ""), lines
+    with unlistable(folder):
+        code, lines, error = run(*arguments)
+    assert (code, lines, error) == (1, [f"FAILED cannot read {folder.as_posix()}: Permission denied"], "")

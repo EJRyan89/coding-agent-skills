@@ -87,6 +87,26 @@ def denied(path: Path) -> PermissionError:
 
 
 @contextlib.contextmanager
+def unlistable(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused, as one the user may not read is: os.scandir and os.listdir raise
+    PermissionError naming it, which Path.iterdir raises too, while Path.glob matches nothing in it. Its stat, and
+    every other folder, are read as they are."""
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def answer(name: Any = ".", *rest: Any) -> Any:
+            if isinstance(name, (str, os.PathLike)) and Path(name) == folder:
+                raise denied(folder)
+            return real(name, *rest)
+
+        return answer
+
+    with contextlib.ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, side_effect=refusing(getattr(os, name))))
+        yield
+
+
+@contextlib.contextmanager
 def stat_failing_at(path: Path) -> Iterator[None]:
     """A stat of one path that fails, as a denied one does: Path.stat, os.stat, and os.lstat raise PermissionError
     for it, through links or not, and each presence predicate answers False for it, as every one does for a failed

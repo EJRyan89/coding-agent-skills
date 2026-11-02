@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import fnmatch
 import hashlib
 import json
 import os
@@ -1234,11 +1235,26 @@ def regenerable_holders(path: str, worktree: str, entries: tuple[Regenerable, ..
             holder = Path(worktree, *parts[:start])
             if not linkless_below(str(holder.joinpath(*components)), worktree):
                 continue
-            if not entry.projects or any(
-                found.is_file() for pattern in entry.projects for found in holder.glob(pattern)
-            ):
+            if not entry.projects or holds_project(holder, entry.projects):
                 holders.append((entry, "/".join(parts[: start + len(components)])))
     return holders
+
+
+def holds_project(holder: Path, patterns: tuple[str, ...]) -> bool:
+    """Whether a file in `holder` matches one of the project file `patterns`, as Path.glob matches a name.
+
+    The folder is listed with iterdir, so one that cannot be listed, or a match that cannot be looked at, raises
+    CleanupError, which keeps the worktree with that reason, where glob would match nothing there and the reason
+    would name only its ignored paths.
+    """
+    try:
+        return any(
+            fnmatch.fnmatch(found.name, pattern) and file_presence.is_present(found, other_is_absent=True)
+            for found in holder.iterdir()
+            for pattern in patterns
+        )
+    except OSError as exc:
+        raise CleanupError(f"could not look in {holder.as_posix()} for the project files: {one_line(exc)}") from exc
 
 
 def tracked_below(services: Services, worktree: str, directory: str) -> bool:
@@ -1549,12 +1565,15 @@ def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]
             offer_line(plan, "CONFIRM_LOCAL", branch["name"], branch["worktree"])
     offer_detached(services, plan)
     registered = [tree.path for tree in list_worktrees(services, root)]
-    for path in orphan_directories(registered, plan["orphan_areas"], area_anchors(plan)):
+    found, unlisted = orphan_search(registered, plan["orphan_areas"], area_anchors(plan))
+    for path in found:
         tracked = tracked_reason(services, plan, path)
         if tracked:
             record(plan, "PRESERVED", path, tracked)
         else:
             offer_line(plan, "ORPHAN", path)
+    for path, why in unlisted:
+        record(plan, "PRESERVED", path, f"could not list it to look for directories Git no longer tracks: {why}")
 
 
 def prune_parents(plan: dict[str, Any], removed: str) -> None:
@@ -1637,20 +1656,31 @@ def area_anchors(plan: dict[str, Any]) -> list[str]:
 
 
 def orphan_directories(registered: list[str], areas: list[str], anchors: list[str]) -> list[str]:
-    """The directories under the worktree areas that Git no longer tracks, the outermost of each.
+    """The directories under the worktree areas that Git no longer tracks, as orphan_search finds them."""
+    return orphan_search(registered, areas, anchors)[0]
+
+
+def orphan_search(
+    registered: list[str], areas: list[str], anchors: list[str]
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """The directories under the worktree areas that Git no longer tracks, the outermost of each, and each directory
+    the search could not list, with why, which may hold more.
 
     Such a directory is no registered worktree, has no `.git` entry, and holds no worktree or repository, as a
     worktree whose removal Git finished but Windows could not complete leaves behind. A directory that holds a
     worktree is searched instead, and a link is neither followed nor reported: one inside an area, and one on the
     way to it from `anchors`, which skips the area (searchable_areas). A directory whose `.git` entry cannot be told
-    about is never reported, as holds_checkout never reports one it cannot read.
+    about is never reported, as holds_checkout never reports one it cannot read, and a directory the search cannot
+    list is named with the reason, so the report never reads it as holding no leftover.
     """
     found: list[str] = []
+    unlisted: list[tuple[str, str]] = []
 
     def search(directory: Path) -> None:
         try:
             children = sorted(directory.iterdir(), key=lambda path: path.name.casefold())
-        except OSError:
+        except OSError as exc:
+            unlisted.append((directory.as_posix(), one_line(exc)))
             return
         for child in children:
             if not is_plain_directory(child) or has_git_entry(child):
@@ -1664,7 +1694,7 @@ def orphan_directories(registered: list[str], areas: list[str], anchors: list[st
 
     for area in searchable_areas(areas, anchors):
         search(Path(area))
-    return found
+    return found, unlisted
 
 
 def has_git_entry(directory: Path) -> bool:

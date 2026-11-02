@@ -153,6 +153,7 @@ from __future__ import annotations
 import argparse
 import ast
 import errno
+import fnmatch
 import os
 import re
 import sys
@@ -951,6 +952,24 @@ def is_listed_file(path: Path) -> bool:
         return False
 
 
+def listed_entries(folder: Path, pattern: str) -> list[Path]:
+    """The entries of `folder` whose names match the one-segment glob `pattern`, in path order, as Path.glob matches
+    them, but listed with iterdir, which raises for a folder it cannot list, where glob matches nothing there and the
+    audit would answer as though the folder were empty."""
+    return sorted(path for path in folder.iterdir() if fnmatch.fnmatch(path.name, pattern))
+
+
+def listed_in_folders(folder: Path, name: str) -> list[Path]:
+    """The entries named `name` in the folders `folder` holds, in path order, as Path.glob("*/<name>") matches them;
+    `folder` or a folder in it that cannot be listed, or looked at, raises."""
+    return sorted(
+        path
+        for child in folder.iterdir()
+        if is_directory(child, other_is_absent=True)
+        for path in listed_entries(child, name)
+    )
+
+
 def main_files(directory: Path) -> list[Path]:
     if not is_directory(directory):
         return []
@@ -1458,7 +1477,7 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
         return []
     scenarios = root / TRIGGER_SCENARIOS / directory.name
     output = []
-    for spec_file in sorted(scenarios.glob("*/scenario.json")):
+    for spec_file in listed_in_folders(scenarios, "scenario.json") if is_directory(scenarios) else []:
         try:
             spec = json_reader.read_file(spec_file)
         except OSError as exc:
@@ -1864,7 +1883,7 @@ def sample_lines(runtime_prompts: list[tuple[Path, int]]) -> list[str]:
             output.append(f"RUNTIME_PROMPT_UNSAMPLED {posix(path)} {line} not in a skill source tree")
             continue
         samples_folder = root / RUNTIME_PROMPT_SAMPLES / folder.name
-        samples = sorted(samples_folder.glob("*.txt")) if is_directory(samples_folder) else []
+        samples = listed_entries(samples_folder, "*.txt") if is_directory(samples_folder) else []
         if not samples:
             output.append(f"RUNTIME_PROMPT_UNSAMPLED {posix(path)} {line} no sample under {posix(samples_folder)}")
         elif samples_folder not in measured:
@@ -2340,7 +2359,7 @@ def defined_agents(folder: Path) -> dict[str, Path]:
     root = agents_folder(folder)
     plugin = plugin_of(folder)
     prefix = f"{plugin[0]}:" if plugin is not None else ""
-    return {f"{prefix}{path.stem}": path for path in sorted(root.glob("*.md"))} if is_directory(root) else {}
+    return {f"{prefix}{path.stem}": path for path in listed_entries(root, "*.md")} if is_directory(root) else {}
 
 
 def line_agents(line: str, defined: set[str]) -> list[str]:
@@ -2757,7 +2776,7 @@ def invoked_evidence(folder: Path) -> list[tuple[str, str]]:
     """Each runtime capability a skill the audited one invokes carries over to it, with that skill, by
     ejryan89-skill-core's runtime_support derivation, which repository validation shares."""
     skills = folder.parent
-    known = {path.parent.name for path in skills.glob("*/SKILL.md")}
+    known = {path.parent.name for path in listed_in_folders(skills, "SKILL.md")}
 
     def invokes(name: str) -> set[str]:
         path = skills / name / "SKILL.md"
