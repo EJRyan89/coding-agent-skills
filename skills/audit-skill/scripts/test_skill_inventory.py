@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import io
 import json
 import os
@@ -1651,6 +1652,28 @@ class StatusLineTests(TemporaryTestCase):
         write(self.root / "repo" / "tools" / "gone.py", 'print("RUN")\n')
         code, lines, error = run("scan", str(folder))
         self.assertEqual([], [line for line in lines if line.startswith("SCRIPT_MISSING ")], error)
+
+    def test_a_script_name_the_platform_cannot_hold_is_missing_and_a_failed_stat_reaches_the_caller(self) -> None:
+        folder = self.skill('Run it:\n\n```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/odd?name.py" run\n```\n')
+        code, lines, error = run("scan", str(folder))
+        self.assertEqual((0, ""), (code, error))
+        skill_md = (folder / "SKILL.md").as_posix()
+        self.assertEqual(
+            [f"SCRIPT_MISSING {skill_md} 7 {skill_inventory.SKILL_DIR_PREFIX}scripts/odd?name.py"],
+            [line for line in lines if line.startswith("SCRIPT_MISSING ")],
+        )
+        for failure in (OSError(errno.EINVAL, "invalid argument"), PermissionError(errno.EACCES, "denied")):
+            with self.subTest(failure=failure), mock.patch.object(skill_inventory, "is_present", side_effect=failure):
+                if failure.errno == errno.EINVAL:
+                    self.assertFalse(skill_inventory.script_is_present(folder / "scripts" / "odd?name.py"))
+                else:
+                    with self.assertRaises(PermissionError):
+                        skill_inventory.script_is_present(folder / "scripts" / "tool.py")
+        with (
+            mock.patch.object(skill_inventory, "is_present", side_effect=skill_inventory.NotAFile(folder)),
+            self.assertRaises(skill_inventory.NotAFile),
+        ):
+            skill_inventory.script_is_present(folder)
 
     def test_frontmatter_names_no_command_whose_script_could_be_missing(self) -> None:
         folder = self.skill("Body.\n")

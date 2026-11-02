@@ -152,6 +152,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import os
 import re
 import sys
@@ -169,7 +170,7 @@ import runtime_support
 import skill_menu
 import whole_number
 from console import run_main
-from file_presence import is_present
+from file_presence import NotAFile, is_present
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
@@ -2030,12 +2031,25 @@ def folder_scripts(folder: Path) -> list[Path]:
     ]
 
 
+def script_is_present(script: Path) -> bool:
+    """Whether a script a command names is there, a name the platform answers EINVAL for being one no file holds."""
+    try:
+        return is_present(script)
+    except NotAFile:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.EINVAL:
+            return False
+        raise
+
+
 def command_scripts(
     folder: Path, root: Path | None, markdown: list[tuple[Path, list[str]]]
 ) -> tuple[list[Path], list[str]]:
     """The scripts the Markdown's commands run, through the skill-directory variable or from the repository root, as a
     repository skill runs a tool: those that exist, and a SCRIPT_MISSING line for each command naming one that does
-    not. A directory in a script's place raises file_presence's NotAFile."""
+    not. A directory in a script's place raises file_presence's NotAFile, and a stat that fails raises its OSError; a
+    name the platform cannot hold, such as one with a `?` on Windows, names no file, so it is missing."""
     found: list[Path] = []
     missing: list[str] = []
     for path, lines in markdown:
@@ -2053,7 +2067,7 @@ def command_scripts(
                     script = root / text
                 else:
                     continue
-                if is_present(script):
+                if script_is_present(script):
                     found.append(script.resolve())
                 # A bare name from the repository root, such as a value a span gives, names no tool's path.
                 elif text.startswith(SKILL_DIR_PREFIX) or "/" in text:

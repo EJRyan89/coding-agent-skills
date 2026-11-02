@@ -42,7 +42,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Rule:** A reader that cannot tell whether something is there reports that it could not tell, never that it is
   absent or that nothing was wrong.
 - **Why:** An unreadable path, a failed command, or a git error read as "not found" otherwise reads as a clean pass.
-- **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart;
+- **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart, and lets a stat that
+  fails with anything but "not found" through as the error the stat raised;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
   `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read; and git's found,
   absent, and could-not-tell lookups, `git_client:GitClient.rev_parse_paths` for a path query,
@@ -58,18 +59,23 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
   `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
   `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
-  `tests/tools/test_hub_guard.py::PlaceLookupTests`
+  `tests/tools/test_hub_guard.py::PlaceLookupTests`,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::FilePresenceTests::test_a_stat_that_fails_with_anything_but_not_found_reaches_the_caller`,
+  `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
-  followed by a `return None`, `return []`, or `return False`, where `is_present` should probe; `if not result.stdout`
+  followed by a `return None`, `return []`, or `return False`, where `is_present` should probe, and its expression
+  form, `... if path.is_file() else None`; `exists()`, `is_file()`, `is_dir()`, `os.path.exists`, `os.path.lexists`,
+  `os.path.isfile`, or `os.path.isdir` anywhere a False must mean nothing is there, since from Python 3.14 each
+  returns False on every `OSError`, and `lexists` on a `ValueError` too; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
   that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
   callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
   another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
   other than absence, such as a start inside a git directory, which has no work tree to show.
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2205
 
 ### Evidence that was never produced is never a pass
 
