@@ -116,9 +116,9 @@ It checks that a red run tested the pull request's
 current head before judging it, reruns a failure of the runner or a service once per head, and names every other
 failure for the session that owns the branch. Each worktree whose pull request merged is named for `repo-cleanup`,
 run from outside it, judged by the commit it has checked out and never by its branch's name, so a later task on a
-merged branch's name is not offered. It admits only pull requests whose head branch is in this repository: one from a fork or any
-other repository is named as not admitted and never armed, judged, updated, or rerun, so it merges only when the
-maintainer merges it. A script rather than a prompt repeats these steps, so neither session spends its context on
+merged branch's name is not offered. It admits only pull requests whose head branch is in this repository and that
+would merge into `main`: one from a fork or any other repository, or onto another branch, is named as not admitted
+and never armed, judged, updated, or rerun, so it merges only when the maintainer merges it. A script rather than a prompt repeats these steps, so neither session spends its context on
 them, and the orchestrator keeps its own for the decisions.
 
 Each tick also checks the pre-merge review, which is report-only. For each admitted pull request in step, not in

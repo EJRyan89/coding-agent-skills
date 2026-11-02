@@ -189,6 +189,7 @@ def pull(
     run: int = RUN,
     cross: bool = False,
     branch: str | None = None,
+    base: str = "main",
 ) -> dict[str, Any]:
     return {
         "number": number,
@@ -201,6 +202,7 @@ def pull(
         "files": [{"path": path} for path in files],
         "statusCheckRollup": rollup(state, run),
         "body": "",
+        "baseRefName": base,
     }
 
 
@@ -676,6 +678,22 @@ class AdmissionTest(FixtureTestCase):
         self.assertFalse(any(call[1:3] == ["run", "view"] for call in gh.calls))
         self.assertFalse(any("30" in write for write in gh.writes()), gh.writes())
 
+    def test_a_pull_request_onto_another_branch_is_never_armed_updated_or_reviewed_and_is_named(self) -> None:
+        other = pull(32, armed=False, merge="BEHIND", state="FAILURE", base="release/v1")
+        gh = StubGh(
+            [other, pull(33, armed=False, merge="BEHIND")],
+            runs={RUN: run_view([job("Windows shard 2/4", "failure")])},
+            logs={1: failed_log(TERMINATED_BLOCK)},
+        )
+        status, lines = self.tick(gh)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "NOT_ADMITTED #32 fix/topic-32 head aaaaaaa onto release/v1", self.line(lines, "NOT_ADMITTED ")
+        )
+        self.assertFalse(any(line.startswith(("JUDGED", "RERUN", "DEFECT")) for line in lines), lines)
+        self.assertFalse(any("32" in write for write in gh.writes()), gh.writes())
+        self.assertIn(["pr", "merge", "33", "--repo", REPOSITORY, "--auto", "--squash"], gh.writes())
+
     def test_a_pull_request_from_this_repository_is_still_armed_and_updated(self) -> None:
         gh = self.fork_beside_own()
         _, lines = self.tick(gh)
@@ -1084,6 +1102,7 @@ class ShapeTest(unittest.TestCase):
             "files": (files, files),
             "statusCheckRollup": ("a pull request without its statusCheckRollup", None),
             "body": ("a pull request without its body", "a pull request without its body"),
+            "baseRefName": ("a pull request without its baseRefName", "a pull request without its baseRefName"),
         }
         self.assertEqual(set(catalogue), set(shepherd.PULL_FIELDS.split(",")))
         for key, (absent, null) in catalogue.items():
@@ -1159,6 +1178,17 @@ class ShapeTest(unittest.TestCase):
         self.assertEqual(shepherd.Check("SUCCESS", RUN, 1.0), shepherd.required_check([status, *rollup("SUCCESS")]))
         other = {**check_run("Validation"), "__typename": "Annotation"}
         self.malformed("a check of a kind the shepherd does not know, 'Annotation'", shepherd.required_check, [other])
+
+    def test_an_empty_branch_head_or_base_is_malformed(self) -> None:
+        # An empty branch matched no branch on origin, so out_of_step read the pull request as in step.
+        unpinned = "a pull request without its number, branch, or head"
+        for key, reason in (
+            ("headRefName", unpinned),
+            ("headRefOid", unpinned),
+            ("baseRefName", "a pull request without its baseRefName"),
+        ):
+            with self.subTest(member=key):
+                self.malformed(reason, shepherd.pull_of, {**pull(20), key: ""})
 
     def test_an_empty_merge_state_is_malformed(self) -> None:
         # GitHub's merge states have no empty member; read as one, it would skip is_behind's ancestry probe.

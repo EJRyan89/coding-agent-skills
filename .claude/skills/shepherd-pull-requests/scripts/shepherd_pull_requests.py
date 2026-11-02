@@ -11,9 +11,9 @@ Run it from the hub on main. One tick:
 - holds each admitted pull request whose body has a line `Shepherd-hold: <reason>`: it neither arms it nor lets it
   merge, turning off an auto-merge already armed, and names it with the reason, while it still names, judges, and
   reruns for it as for any other; deleting the line releases it;
-- admits only the pull requests whose head branch is in this repository, and names every other one, such as one
-  opened from a fork, as not admitted: it arms, judges, updates, and reruns nothing for it, and it holds no other
-  pull request's update;
+- admits only the pull requests whose head branch is in this repository and that would merge into main, and names
+  every other one, such as one opened from a fork or onto another branch, as not admitted: it arms, judges, updates,
+  and reruns nothing for it, and it holds no other pull request's update;
 - arms squash auto-merge on each admitted one that has none and is not held;
 - names each pull request whose recorded head is not the commit its branch on origin holds, because GitHub missed a
   push, and neither judges nor updates it, since GitHub refuses to update a stale head;
@@ -64,9 +64,10 @@ Every line is one fact:
                                        list of armed, disarmed, updated, rerun (would-arm, would-disarm,
                                        would-update, and would-rerun with --dry-run), held, an update a HOLD line
                                        holds, and next-tick, a behind pull request left for a later tick
-    NOT_ADMITTED #<number> <branch> head <commit> from another repository
-                                       a pull request whose head branch is not in this repository, left to the
-                                       maintainer: never armed, judged, updated, or rerun
+    NOT_ADMITTED #<number> <branch> head <commit> from another repository|onto <base>
+                                       a pull request whose head branch is not in this repository, or that would
+                                       merge into a branch other than main, left to the maintainer: never armed,
+                                       judged, updated, or rerun
     OUT_OF_STEP #<number> <branch> head <commit> branch <commit>
                                        a pull request whose recorded head is not its branch's commit on origin,
                                        neither judged nor updated until its owner pushes again
@@ -149,7 +150,7 @@ OPEN_LISTED = 100
 MERGED_LISTED = 100
 PULL_FIELDS = (
     "number,headRefName,headRefOid,isCrossRepository,isDraft,mergeStateStatus,autoMergeRequest,files,statusCheckRollup,"
-    "body"
+    "body,baseRefName"
 )
 # The line in a pull request's body that holds it from arming and merging, with its reason; deleting it releases it.
 HOLD_LINE = re.compile(r"^Shepherd-hold:[ 	]*(.*?)[ 	]*$", re.MULTILINE)
@@ -236,6 +237,7 @@ class Pull:
     cross_repository: bool
     draft: bool
     hold: str | None  # the reason a Shepherd-hold line gives, or None when none holds it
+    base: str = BASE  # the branch it would merge into
 
 
 @dataclass
@@ -448,7 +450,8 @@ def pull_of(item: Any) -> Pull:
     number = member(item, "number", int, "a pull request")
     branch = member(item, "headRefName", str, "a pull request")
     head = member(item, "headRefOid", str, "a pull request")
-    if number is None or branch is None or head is None:
+    # An empty branch or head would match no branch on origin, so out_of_step would read the pull request as in step.
+    if number is None or not branch or not head:
         raise malformed("a pull request without its number, branch, or head")
     listed_paths = [entry.get("path") for entry in objects(item.get("files"), "a pull request's files")]
     paths = tuple(path for path in listed_paths if isinstance(path, str) and path)
@@ -461,6 +464,7 @@ def pull_of(item: Any) -> Pull:
     # refused absent and read null as none. An empty body is one GitHub reported, so it shows that no line holds it.
     cross_repository = member(item, "isCrossRepository", bool, what)
     draft = member(item, "isDraft", bool, what)
+    base = reported(item, "baseRefName", str, what, empty=False)
     if cross_repository is None or draft is None:
         raise malformed("a pull request without its isCrossRepository or isDraft")
     for key in ("autoMergeRequest", "statusCheckRollup"):
@@ -477,7 +481,13 @@ def pull_of(item: Any) -> Pull:
         cross_repository,
         draft,
         hold_of(reported(item, "body", str, what)),
+        base,
     )
+
+
+def admitted(pull: Pull) -> bool:
+    """Whether the tick acts on `pull`: its head branch is in this repository and it would merge into main."""
+    return not pull.cross_repository and pull.base == BASE
 
 
 def read_pulls(client: GitHubClient, repository: str) -> list[Pull]:
@@ -899,8 +909,9 @@ def act(client: GitHubClient, repository: str, pull: Pull, outcome: Outcome, sta
     """Name `pull` when it is not admitted; otherwise arm it, and name it when it is out of step, where `stale` is its
     branch's commit on origin, or in conflict, and judge its red check."""
     named = f"{flat_text(pull.branch)} head {short(pull.head)}"
-    if pull.cross_repository:
-        outcome.lines.append(f"NOT_ADMITTED #{pull.number} {named} from another repository")
+    if not admitted(pull):
+        source = "from another repository" if pull.cross_repository else f"onto {flat_text(pull.base)}"
+        outcome.lines.append(f"NOT_ADMITTED #{pull.number} {named} {source}")
         outcome.flagged = True
         return
     arm(client, repository, pull, outcome, dry_run)
@@ -922,7 +933,7 @@ def premerge_reviews(
     ready = [
         Head(pull.number, pull.branch, pull.head)
         for pull in pulls
-        if not pull.cross_repository
+        if admitted(pull)
         and out_of_step(pull, heads) is None
         and pull.merge_state != CONFLICTED
         and pull.check.state in UPDATABLE
@@ -992,21 +1003,21 @@ def shepherd_pulls(
 ) -> bool:
     """Arm, hold, name, judge, and update the open pull requests that are not drafts, print their lines through
     `emit`, and return whether any line is for the shepherd's judgment."""
-    admitted = [pull for pull in pulls if not pull.cross_repository]
-    holds = {pull.number: path for pull in admitted if (path := holding_path(pull.files)) is not None}
+    acted_on = [pull for pull in pulls if admitted(pull)]
+    holds = {pull.number: path for pull in acted_on if (path := holding_path(pull.files)) is not None}
     for number, path in holds.items():
         emit(f"HOLD #{number} changes {flat_text(path)}")
     outcomes = {pull.number: Outcome() for pull in pulls}
     stale = {pull.number: branch for pull in pulls if (branch := out_of_step(pull, heads)) is not None}
     behind = {
         pull.number
-        for pull in admitted
+        for pull in acted_on
         if pull.number not in stale and is_behind(git, place.top, pull, heads.get(BASE))
     }
     blocked = set(stale) | {pull.number for pull in pulls if pull.merge_state == CONFLICTED}
     for pull in pulls:
         act(client, place.repository, pull, outcomes[pull.number], stale.get(pull.number), dry_run)
-    update(client, place.repository, admitted, (behind, blocked), holds, outcomes, dry_run)
+    update(client, place.repository, acted_on, (behind, blocked), holds, outcomes, dry_run)
     for pull in pulls:
         emit(pull_line(pull, outcomes[pull.number]))
         for line in outcomes[pull.number].lines:

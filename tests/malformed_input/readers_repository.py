@@ -201,6 +201,7 @@ SHEPHERD_PULL = {
         }
     ],
     "body": "Closes #1",
+    "baseRefName": "main",
 }
 SHEPHERD_RUN = {
     "headSha": SHEPHERD_HEAD,
