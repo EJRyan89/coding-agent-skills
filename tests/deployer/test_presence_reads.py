@@ -129,8 +129,21 @@ class PresenceReadTests(DeployerTestCase):
         run.mkdir(parents=True, exist_ok=True)
         empty = self.staging_run("20260101-000000-none")
         empty.mkdir(parents=True, exist_ok=True)
+        # A later run is still visited after the held one.
+        later = self.staging_run("20260101-000000-torn")
+        later.mkdir(parents=True, exist_ok=True)
+        (later / "journal.jsonl").write_text("not a journal\n", encoding="utf-8")
         with stat_failing_at(run / "journal.jsonl"):
-            self.assertEqual([("20260101-000000-held", False)], journal.pending_runs(self.paths))
+            self.assertEqual(
+                [("20260101-000000-held", False), ("20260101-000000-torn", False)], journal.pending_runs(self.paths)
+            )
+
+    def test_a_pin_that_is_not_a_release_tag_or_has_no_commit_is_the_users_before_the_checkout_is_read(self) -> None:
+        # Neither the .git nor the tags are read for a pin whose form already names its owner.
+        with stat_failing_at(self.source / ".git"):
+            self.assertFalse(source_ref.is_release_pin(self.source, "v1.0.0", COMMIT))
+            self.assertFalse(source_ref.is_release_pin(self.source, "refs/tags/v1.0.0", None))
+            self.assertFalse(source_ref.is_release_pin(self.source, None, COMMIT))
 
     def test_a_missing_staging_root_or_agents_folder_is_nothing_there(self) -> None:
         self.assertEqual([], journal.pending_runs(self.paths))
