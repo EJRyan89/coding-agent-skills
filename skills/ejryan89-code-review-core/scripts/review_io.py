@@ -20,6 +20,7 @@ from typing import IO, Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 import json_writer
 from atomic_file import UnfinishedCopyError, replace_bytes
@@ -51,6 +52,12 @@ Value = TypeVar("Value")
 
 class PersistenceError(RuntimeError):
     """Raised when durable state cannot be read or committed safely."""
+
+
+class FileUnreadable(PersistenceError):
+    """A file that is there, or may be, which the file system would not let be read: a stat or a read it refused, or
+    something other than a file in its place. Never a file that is not there, and never one whose content is
+    invalid, so a reader that takes invalid content for no record still refuses this."""
 
 
 class PersistenceFieldError(FieldError, PersistenceError):
@@ -123,6 +130,16 @@ def parse_json(text: str) -> Any:
     return value
 
 
+def record_present(path: Path) -> bool:
+    """Whether a file is at `path`, for a reader that takes nothing there for no record: False only when nothing is,
+    and a FileUnreadable naming the path and the reason, in read_json's words, when something else is there or the
+    stat fails, so a record it cannot stat is never read as one not written."""
+    try:
+        return file_presence.is_present(path)
+    except OSError as exc:
+        raise FileUnreadable(f"Cannot read valid JSON from {path}: {exc}") from exc
+
+
 def read_json(path: Path, *, maximum_bytes: int = 4 * 1024 * 1024) -> Any:
     try:
         size = path.stat().st_size
@@ -131,7 +148,9 @@ def read_json(path: Path, *, maximum_bytes: int = 4 * 1024 * 1024) -> Any:
         return parse_json(path.read_text(encoding="utf-8-sig"))
     except PersistenceError:
         raise
-    except (OSError, *CONTENT_ERRORS) as exc:
+    except OSError as exc:
+        raise FileUnreadable(f"Cannot read valid JSON from {path}: {exc}") from exc
+    except CONTENT_ERRORS as exc:
         raise PersistenceError(f"Cannot read valid JSON from {path}: {exc}") from exc
 
 

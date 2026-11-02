@@ -17,10 +17,11 @@ resolve and audit are read-only. They never decide what to keep or delete; the c
 every candidate. resolve locates the memory directory for --repo, else for the current directory, and
 prints `REPO <root>`, the top level of the Git worktree holding that folder, or the folder itself when
 --repo names one in no Git repository; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`,
-`EXISTS yes|no`, and `REFUSED <reason>` when the directory exists but is no memory store, or
-`NO_MEMORY_DIR` when no usable directory resolves; one `CANDIDATE <dir>` per memory directory under the
-configuration directory's projects folder when no memory store resolved, whether settings named a
-missing one, the default one is missing or refused, or none is usable; and one `NOTE <text>` per caveat.
+`EXISTS yes|no`, and `REFUSED <reason>` when the directory exists but is no memory store, or cannot be
+looked at, which counts as existing, or `NO_MEMORY_DIR` when no usable directory resolves; one
+`CANDIDATE <dir>` per memory directory under the configuration directory's projects folder when no memory
+store resolved, whether settings named a missing one, the default one is missing or refused, or none is
+usable; and one `NOTE <text>` per caveat, among them each memory directory there that cannot be looked at.
 No directory is a result, not a failure. A directory a repository's settings choose is not used while
 permissions.blockReadsOutsideWorkingDirectories is on in any scope, since Claude Code then loads no
 memory from it and saves none to it. Without settings, the directory is derived from the top level of
@@ -103,7 +104,7 @@ import json_writer
 from atomic_file import replace_text
 from console import run_main
 from executable_locator import environment_path
-from file_presence import is_present
+from file_presence import is_directory, is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
@@ -503,15 +504,21 @@ def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> lis
 
 
 def destination_files(repo: Path | None, instructions: list[Path], user_dir: Path | None = None) -> list[Path]:
-    files = [path for path in instructions if path.is_file()]
+    """The instruction files a memory's overlaps are measured against: each named one and each a destination pattern
+    finds. A folder among them is passed over, and a stat that fails raises, so an instruction file the audit cannot
+    look at fails it rather than silently losing its overlaps. A pattern naming one file is looked up directly: glob
+    checks such a name with os.path.lexists, which answers False for a stat that fails."""
+    files = [path for path in instructions if is_present(path, other_is_absent=True)]
     for root, patterns in ((repo, DESTINATION_GLOBS), (user_dir, USER_DESTINATION_GLOBS)):
         if root is None:
             continue
         for pattern in patterns:
+            found = root.glob(pattern) if "*" in pattern else [root / pattern]
             files.extend(
                 path
-                for path in root.glob(pattern)
-                if path.is_file() and not SKIPPED_DIRECTORIES.intersection(path.relative_to(root).parts[:-1])
+                for path in found
+                if is_present(path, other_is_absent=True)
+                and not SKIPPED_DIRECTORIES.intersection(path.relative_to(root).parts[:-1])
             )
     unique: dict[str, Path] = {}
     for path in files:
@@ -529,7 +536,8 @@ def audit(
     now = time.time() if now is None else now
     index_path = memory_dir / INDEX_NAME
     entries, index_lines = parse_index(index_path)
-    index_bytes = index_path.stat().st_size if index_path.is_file() else 0
+    index_exists = is_present(index_path)
+    index_bytes = index_path.stat().st_size if index_exists else 0
     indexed_files = Counter(target_identity(memory_dir, entry["target"]) for entry in entries)
     candidates, others = memory_entries(memory_dir)
     unreadable = {target_identity(memory_dir, name): (name, problem) for name, problem in others}
@@ -569,7 +577,7 @@ def audit(
         "memory_dir": str(memory_dir),
         "index": {
             "path": str(index_path),
-            "exists": index_path.is_file(),
+            "exists": index_exists,
             "entries": len(entries),
             "lines": len(index_lines),
             "line_limit": INDEX_LINE_LIMIT,
@@ -808,7 +816,7 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path |
         if refused:
             result["refused"] = refused
     if not result["exists"] or result.get("refused"):
-        found = sorted(str(path) for path in (config_dir / "projects").glob("*/memory") if path.is_dir())
+        found, unreadable = candidate_directories(config_dir / "projects")
         refused_dir = result["memory_dir"] if result.get("refused") else None
         result["candidates"] = [path for path in found if not holds_line_break(path) and path != refused_dir]
         result["notes"] += [
@@ -816,7 +824,35 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path |
             for path in found
             if holds_line_break(path)
         ]
+        result["notes"] += unreadable
     return result
+
+
+def candidate_directories(projects: Path) -> tuple[list[str], list[str]]:
+    """The memory directory of each project under `projects`, in order, and a note for each one, or for `projects`
+    itself, that cannot be looked at, which is left out rather than taken for missing."""
+    try:
+        entries = list(projects.iterdir()) if is_directory(projects, other_is_absent=True) else []
+    except OSError as exc:
+        return [], [f"Left out the memory directories under {str(projects)!r}, which cannot be read: {reason(exc)}"]
+    found: list[str] = []
+    unreadable: list[str] = []
+    for memory in sorted(str(entry / "memory") for entry in entries):
+        try:
+            if is_directory(Path(memory), other_is_absent=True):
+                found.append(memory)
+        except OSError as exc:
+            unreadable.append(f"Left out a memory directory that cannot be looked at: {memory!r}: {reason(exc)}")
+    return found, unreadable
+
+
+def directory_state(directory: Path) -> dict[str, Any]:
+    """Whether the memory directory exists, as `exists`. One whose presence cannot be told is never reported as
+    missing: it counts as there, and `refused` says why the later steps refuse it."""
+    try:
+        return {"exists": is_directory(directory, other_is_absent=True)}
+    except OSError as exc:
+        return {"exists": True, "refused": f"{directory} cannot be looked at: {reason(exc)}"}
 
 
 class UnreadableSettings(Exception):
@@ -923,7 +959,7 @@ def locate(
             source = f"derived from the repository's main worktree ({root})"
         directory = projects / encode_project(str(root)) / "memory"
         notes.append("The directory name is derived by convention; confirm it before changing anything.")
-    return {"memory_dir": str(directory), "source": source, "exists": directory.is_dir(), "notes": notes}
+    return {"memory_dir": str(directory), "source": source, **directory_state(directory), "notes": notes}
 
 
 def chosen_directory(
@@ -957,7 +993,7 @@ def chosen_directory(
     return {
         "memory_dir": str(directory),
         "source": f"autoMemoryDirectory in {scope} settings ({path})",
-        "exists": directory.is_dir(),
+        **directory_state(directory),
         "notes": notes,
     }
 
@@ -983,6 +1019,7 @@ def output_refusal(explicit: Path, memory_dir: Path, projects: Path) -> str | No
     root = skills_directory_holding(explicit)
     if root:
         return f"{explicit} is inside the skills directory {root}; omit --output to write a new temporary file"
+    # A failed stat reads as no file here, but main opens the report with mode "x", which never replaces a file.
     if os.path.lexists(explicit):
         return (
             f"{explicit} already exists, and audit never replaces a file; omit --output to write a new temporary file"
@@ -1123,7 +1160,7 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
             repo = None
             unread = f"NOTE {flat_text(f'no project skill was looked for: git could not read the repository: {exc}')}"
         project = None if repo is None else repo / ".claude" / "skills" / args.name / "SKILL.md"
-        candidates += [project] if project is not None and project.is_file() else []
+        candidates += [project] if project is not None and is_present(project) else []
         missing = (
             f"no editable source of skill {args.name}: the deployer's manifest records none, and the repository has "
             "no project skill of that name; name its source file with --file"

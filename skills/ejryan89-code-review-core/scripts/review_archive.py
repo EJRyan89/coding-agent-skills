@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import sys
 from collections.abc import Iterable
@@ -10,6 +11,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from review_config import validate_repository_identity
 from review_io import PersistenceError, ResourceLock
 from review_records import (
@@ -47,9 +49,17 @@ def pull_directory(root: Path, repository: str, pull_number: int) -> Path:
 
 def record_files(root: Path, repository: str) -> list[Path]:
     """The JSON file of every review record pair of a repository's pull requests, sorted: each pull request's version
-    chain and any pair beside it, such as one converted from another tool, which list_versions leaves out."""
+    chain and any pair beside it, such as one converted from another tool, which list_versions leaves out. Empty when
+    the repository has no pulls folder; anything else in its place, or a folder it cannot stat or list, is the
+    OSError file_presence or the listing raises. Each folder is listed with iterdir, which raises where glob would
+    match nothing in a folder it cannot list."""
     pulls = pulls_directory(root, repository)
-    return sorted(pulls.glob("*/review*.json")) if pulls.exists() else []
+    if not file_presence.is_directory(pulls):
+        return []
+    pull_folders = [entry for entry in pulls.iterdir() if file_presence.is_directory(entry, other_is_absent=True)]
+    return sorted(
+        path for folder in pull_folders for path in folder.iterdir() if fnmatch.fnmatch(path.name, "review*.json")
+    )
 
 
 INT_PARSE_ALLOWED = {
@@ -68,9 +78,12 @@ def _version_from_name(path: Path) -> int | None:
 
 
 def list_versions(directory: Path) -> list[int]:
-    if not directory.exists():
+    """A pull request folder's review versions, oldest first: none when the folder is not there, and the OSError
+    file_presence or iterdir raises when something else is in its place or it cannot be stat'ed or listed, where glob
+    would match nothing."""
+    if not file_presence.is_directory(directory):
         return []
-    versions = [version for path in directory.glob("review*.json") if (version := _version_from_name(path))]
+    versions = [version for path in directory.iterdir() if (version := _version_from_name(path))]
     return sorted(set(versions))
 
 
@@ -146,7 +159,7 @@ def commit_record(
         if record["review"]["version"] != version:
             raise ArchiveError(f"Record version must be {version}")
         json_path, markdown_path = record_paths(directory, version)
-        if json_path.exists() or markdown_path.exists():
+        if file_presence.is_occupied(json_path) or file_presence.is_occupied(markdown_path):
             raise PersistenceError("Review destination already exists")
         prior_records = (
             [validate_record_pair(*record_paths(directory, item)) for item in versions]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -32,6 +33,7 @@ from review_config import load_config, write_config
 from review_flags import add_flag
 from review_github import GitHubClient
 from review_records import ReviewRecord, build_record, validate_adapter_result, validate_record_pair
+from test_review_archive import unstatable
 from update_pr_dashboard import update_dashboard_rows
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -1437,6 +1439,28 @@ class OverrideTests(TrackerPipelineFixture):
         self.config_path = default
         code, out, err = self.run_main("override", "--set", "example/two#5=on hold")
         self.assertEqual((0, ""), (code, err))
+
+    def test_a_record_it_cannot_stat_is_refused_never_read_as_no_update(self) -> None:
+        self.track("example/two#5")
+        for arguments in (("override", "--set", "example/two#5=on hold"), ("override",)):
+            with self.subTest(arguments=arguments), unstatable(self.record):
+                code, out, err = self.run_main(*arguments)
+            reason = f"[Errno 13] Permission denied: {str(self.record)!r}"
+            self.assertEqual(
+                (1, [f"FAILED Cannot read valid JSON from {self.record}: {reason}"], ""), (code, out.splitlines(), err)
+            )
+        self.assertEqual({}, load_config(self.config_path)["dashboard"]["status_overrides"])
+
+    def test_a_folder_in_the_record_s_place_is_refused_never_read_as_no_update(self) -> None:
+        self.record.mkdir()
+        for arguments in (("override", "--set", "example/two#5=on hold"), ("override",)):
+            with self.subTest(arguments=arguments):
+                code, out, err = self.run_main(*arguments)
+            reason = f"[Errno {errno.EISDIR}] not a file: {str(self.record)!r}"
+            self.assertEqual(
+                (1, [f"FAILED Cannot read valid JSON from {self.record}: {reason}"], ""), (code, out.splitlines(), err)
+            )
+        self.assertEqual({}, load_config(self.config_path)["dashboard"]["status_overrides"])
 
     def test_a_configuration_reached_through_a_link_has_the_record_update_wrote_and_stays_linked(self) -> None:
         self.serve_default_pages()

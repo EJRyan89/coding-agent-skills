@@ -4,6 +4,7 @@ import ast
 import contextlib
 import io
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -13,6 +14,7 @@ import unittest
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
+from unittest import mock
 
 import pytest
 
@@ -247,6 +249,20 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             "GATE evaluate-skill alpha trigger", self.gates(uncommitted={"skills/alpha/SKILL.md": changed})[-1]
         )
+
+    def test_a_changed_file_whose_stat_fails_fails_rather_than_reading_as_removed(self) -> None:
+        changed = self.root / "skills" / "alpha" / "SKILL.md"
+        write(self.root, {"skills/alpha/SKILL.md": skill_text("Alpha does another thing. Use it when asked.")})
+        real_stat = Path.stat
+
+        def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == changed:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", autospec=True, side_effect=denied):
+            code, lines = run(["gates", "--base", "main"], self.root)
+        self.assertEqual((1, f"FAILED [Errno 13] Permission denied: {str(changed)!r}"), (code, lines[-1]), lines)
 
     def test_an_unreadable_scenario_counts_as_a_review_scenario(self) -> None:
         scenario = {"tests/fixtures/skill-evals/alpha/broken/scenario.json": "{not json\n"}

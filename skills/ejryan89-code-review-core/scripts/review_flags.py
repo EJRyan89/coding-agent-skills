@@ -13,7 +13,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from review_config import validate_repository_identity
-from review_io import ResourceLock, atomic_write_json, read_json
+from review_io import ResourceLock, atomic_write_json, read_json, record_present
 from review_records import FINDING_ID
 from typed_fields import FieldError, FieldReader
 
@@ -172,7 +172,9 @@ def _upgraded_flag(flag: Any) -> Any:
 
 
 def load_store(path: Path) -> dict[str, Any]:
-    if not path.exists():
+    """The validated flag store, or an empty one when nothing is at `path`. A store it cannot stat, or anything else in
+    its place, is the FileUnreadable `record_present` raises, so no write starts over from an empty store."""
+    if not record_present(path):
         return empty_store()
     return validate_store(upgrade_store(read_json(path, maximum_bytes=STORE_MAXIMUM_BYTES)))
 
@@ -270,8 +272,9 @@ def _stored_flag(store: dict[str, Any], flag_id: str) -> dict[str, Any]:
 
 
 def _refuse_without_store(path: Path, flag_id: str) -> None:
-    """Refuse a flag ID when there is no store, before the lock creates the store's folder."""
-    if not path.exists():
+    """Refuse a flag ID when there is no store, before the lock creates the store's folder; a store it cannot stat is
+    the FileUnreadable `record_present` raises."""
+    if not record_present(path):
         raise FlagError(f"Unknown flag ID: {flag_id}")
 
 

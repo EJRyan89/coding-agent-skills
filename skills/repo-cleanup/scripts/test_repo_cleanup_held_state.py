@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import repo_cleanup as rc
 from git_client import GitClient, GitResult
-from test_repo_cleanup import GIT_CONFIG, CleanupTestCase, remove_tree
+from test_repo_cleanup import GIT_CONFIG, CleanupTestCase, remove_tree, stat_failing_at
 
 # The settings conftest.py adds to the global configuration of every home this suite's git runs in.
 git_config = GIT_CONFIG
@@ -70,3 +70,16 @@ class HeldStateTests(CleanupTestCase):
         for name, (changed, why) in cases.items():
             with self.subTest(name):
                 self.assertEqual(lost + why, self.held(self.answers(**changed)))
+
+    def test_an_operation_marker_whose_stat_fails_keeps_the_worktree_with_why(self) -> None:
+        lost = "cannot be read for what its removal would lose: "
+        for marker, label in rc.OPERATION_MARKERS:
+            with self.subTest(label, marker=marker):
+                located = self.worktree / "git" / marker
+                with stat_failing_at(located):
+                    held = self.held(self.answers())
+                self.assertEqual(
+                    f"{lost}cannot tell whether the operation marker {located} of worktree {self.worktree} is there: "
+                    f"[Errno 13] Permission denied: {str(located)!r}",
+                    held,
+                )

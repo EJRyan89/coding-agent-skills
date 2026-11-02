@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -700,6 +702,39 @@ class MSBuild:
         return [(cwd / arguments[2]).resolve().relative_to(self.root).as_posix() for arguments, cwd, _ in self.calls]
 
 
+def stat_failing_at(target: Path) -> contextlib.ExitStack:
+    """A stat of `target` alone fails, as on a path the script may not examine, and every presence predicate answers
+    False for it, as Python 3.14 and later do there, so a predicate left on the path reads it as absent."""
+    real_stat, real_os_stat = Path.stat, os.stat
+
+    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == target:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    def os_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if Path(path) == target:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real_os_stat(path, *args, **kwargs)
+
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.object(Path, "stat", stat))
+    stack.enter_context(mock.patch.object(os, "stat", os_stat))
+    for name in ("exists", "is_file", "is_dir"):
+        real = getattr(Path, name)
+        stack.enter_context(
+            mock.patch.object(
+                Path, name, lambda path, *a, real=real, **k: False if path == target else real(path, *a, **k)
+            )
+        )
+    for name in ("exists", "lexists", "isfile", "isdir"):
+        real = getattr(os.path, name)
+        stack.enter_context(
+            mock.patch.object(os.path, name, lambda path, real=real: False if Path(path) == target else real(path))
+        )
+    return stack
+
+
 PACKAGE_REFERENCE = {"PackageReference": [{"Identity": "Roslynator.Formatting.Analyzers", "Version": "4.12.0"}]}
 
 
@@ -1102,6 +1137,33 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("ADDED", grouped)
         self.assertEqual(undecodable, editorconfig.read_bytes())
 
+    def test_an_editorconfig_misplaced_or_unexamined_fails_before_any_file_is_written(self) -> None:
+        # src/.editorconfig ends Program.cs's chain and is written first; the root's is Tool.cs's apply target, and
+        # src/App's is read for Program.cs's settings alone, never written.
+        nested = self.root / "src" / ".editorconfig"
+        self.changed("src/App/Program.cs", "Tool.cs")
+        not_a_file, denied = f"[Errno {errno.EISDIR}] not a file", f"[Errno {errno.EACCES}] Access is denied"
+        for relative in (".editorconfig", "src/App/.editorconfig"):
+            for place, error in (("folder", not_a_file), ("denied", denied)):
+                with self.subTest(path=relative, place=place):
+                    editorconfig = self.root / relative
+                    nested.write_text("root = true\n", encoding="utf-8")
+                    if place == "folder":
+                        editorconfig.mkdir()
+                    else:
+                        editorconfig.write_text("# shared\n", encoding="utf-8")
+                    with stat_failing_at(editorconfig) if place == "denied" else contextlib.nullcontext():
+                        status, grouped = self.run_config("--apply")
+                    self.assertEqual(1, status)
+                    self.assertEqual(f"FAILED {error}: {str(editorconfig)!r}", list(grouped)[-1])
+                    self.assertNotIn("ADDED", grouped)
+                    self.assertEqual("root = true\n", nested.read_text(encoding="utf-8"))
+                    if place == "folder":
+                        editorconfig.rmdir()
+                    else:
+                        self.assertEqual("# shared\n", editorconfig.read_text(encoding="utf-8"))
+                        editorconfig.unlink()
+
     def test_a_solution_it_cannot_read_fails_instead_of_searching_only_its_folder(self) -> None:
         (self.root / "App.slnx").write_text(
             '<Solution><Project Path="src/App/App.csproj"></Solution>', encoding="utf-8"
@@ -1142,14 +1204,15 @@ class ConfigTests(unittest.TestCase):
         (self.root / "App.slnx").write_text(
             f'<Solution><Project Path="src\\App\\App.csproj" />{listed}</Solution>', encoding="utf-8"
         )
+        # Every path the run examines, through file_presence or a Path predicate, is a Path.stat call.
         touched: list[str] = []
-        is_file = Path.is_file
+        examine = Path.stat
 
-        def recording(path: Path) -> bool:
+        def recording(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
             touched.append(str(path))
-            return is_file(path)
+            return examine(path, follow_symlinks=follow_symlinks)
 
-        with mock.patch.object(Path, "is_file", recording):
+        with mock.patch.object(Path, "stat", recording):
             grouped = self.config(solution="App.slnx")
         self.assertEqual(list(entries), [entry for entry, _ in grouped["REFUSED"]])
         for (entry, reason), expected in zip(grouped["REFUSED"], entries.values(), strict=True):

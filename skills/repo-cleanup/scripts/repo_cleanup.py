@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import fnmatch
 import hashlib
 import json
 import os
@@ -1234,11 +1235,26 @@ def regenerable_holders(path: str, worktree: str, entries: tuple[Regenerable, ..
             holder = Path(worktree, *parts[:start])
             if not linkless_below(str(holder.joinpath(*components)), worktree):
                 continue
-            if not entry.projects or any(
-                found.is_file() for pattern in entry.projects for found in holder.glob(pattern)
-            ):
+            if not entry.projects or holds_project(holder, entry.projects):
                 holders.append((entry, "/".join(parts[: start + len(components)])))
     return holders
+
+
+def holds_project(holder: Path, patterns: tuple[str, ...]) -> bool:
+    """Whether a file in `holder` matches one of the project file `patterns`, as Path.glob matches a name.
+
+    The folder is listed with iterdir, so one that cannot be listed, or a match that cannot be looked at, raises
+    CleanupError, which keeps the worktree with that reason, where glob would match nothing there and the reason
+    would name only its ignored paths.
+    """
+    try:
+        return any(
+            fnmatch.fnmatch(found.name, pattern) and file_presence.is_present(found, other_is_absent=True)
+            for found in holder.iterdir()
+            for pattern in patterns
+        )
+    except OSError as exc:
+        raise CleanupError(f"could not look in {holder.as_posix()} for the project files: {one_line(exc)}") from exc
 
 
 def tracked_below(services: Services, worktree: str, directory: str) -> bool:
@@ -1313,13 +1329,24 @@ def ignored_paths(services: Services, path: str, policy: Policy) -> tuple[str, s
 
 
 def operations(services: Services, path: str) -> list[str]:
-    """The operations under way in the worktree at `path`, as the markers in its own Git directory show them."""
+    """The operations under way in the worktree at `path`, as the markers in its own Git directory show them.
+
+    A marker whose presence cannot be told raises CleanupError, so the worktree is kept.
+    """
     arguments = [argument for marker, _ in OPERATION_MARKERS for argument in ("--git-path", marker)]
     listing = git_output(services, path, "rev-parse", "--path-format=absolute", *arguments)
     located = [line.rstrip("\r") for line in listing.split("\n") if line.strip()]
     if len(located) != len(OPERATION_MARKERS):
         raise CleanupError(f"git rev-parse did not name each operation marker of worktree {path}")
-    found = [label for (_, label), marker in zip(OPERATION_MARKERS, located, strict=True) if os.path.lexists(marker)]
+    found: list[str] = []
+    for (_, label), marker in zip(OPERATION_MARKERS, located, strict=True):
+        try:
+            if file_presence.is_occupied(Path(marker)):
+                found.append(label)
+        except OSError as exc:
+            raise CleanupError(
+                f"cannot tell whether the operation marker {marker} of worktree {path} is there: {exc}"
+            ) from exc
     return list(dict.fromkeys(found))
 
 
@@ -1328,7 +1355,8 @@ def hidden_edits(services: Services, path: str) -> list[str]:
     in the worktree differs from the index: edits removing the worktree would lose.
 
     A marked file that is absent, as a sparse checkout leaves each path outside it, holds nothing to lose. One that is
-    not a regular file, such as a link, counts as edited, since its content is not compared.
+    not a regular file, such as a link, counts as edited, since its content is not compared. One whose presence cannot
+    be told raises CleanupError, so the worktree is kept.
     """
     compared: list[tuple[str, str]] = []
     edited: list[str] = []
@@ -1339,8 +1367,13 @@ def hidden_edits(services: Services, path: str) -> list[str]:
         fields, _, name = rest.partition("\t")
         mode, sha, *_ = fields.split(" ")
         target = Path(path, name)
-        if not os.path.lexists(target):
-            continue
+        try:
+            if not file_presence.is_occupied(target):
+                continue
+        except OSError as exc:
+            raise CleanupError(
+                f"cannot tell whether the marked file {name} of worktree {path} is there: {exc}"
+            ) from exc
         if mode in REGULAR_MODES and is_plain_file(target):
             compared.append((name, sha))
         else:
@@ -1532,12 +1565,15 @@ def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]
             offer_line(plan, "CONFIRM_LOCAL", branch["name"], branch["worktree"])
     offer_detached(services, plan)
     registered = [tree.path for tree in list_worktrees(services, root)]
-    for path in orphan_directories(registered, plan["orphan_areas"], area_anchors(plan)):
+    found, unlisted = orphan_search(registered, plan["orphan_areas"], area_anchors(plan))
+    for path in found:
         tracked = tracked_reason(services, plan, path)
         if tracked:
             record(plan, "PRESERVED", path, tracked)
         else:
             offer_line(plan, "ORPHAN", path)
+    for path, why in unlisted:
+        record(plan, "PRESERVED", path, f"could not list it to look for directories Git no longer tracks: {why}")
 
 
 def prune_parents(plan: dict[str, Any], removed: str) -> None:
@@ -1620,22 +1656,34 @@ def area_anchors(plan: dict[str, Any]) -> list[str]:
 
 
 def orphan_directories(registered: list[str], areas: list[str], anchors: list[str]) -> list[str]:
-    """The directories under the worktree areas that Git no longer tracks, the outermost of each.
+    """The directories under the worktree areas that Git no longer tracks, as orphan_search finds them."""
+    return orphan_search(registered, areas, anchors)[0]
+
+
+def orphan_search(
+    registered: list[str], areas: list[str], anchors: list[str]
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """The directories under the worktree areas that Git no longer tracks, the outermost of each, and each directory
+    the search could not list, with why, which may hold more.
 
     Such a directory is no registered worktree, has no `.git` entry, and holds no worktree or repository, as a
     worktree whose removal Git finished but Windows could not complete leaves behind. A directory that holds a
     worktree is searched instead, and a link is neither followed nor reported: one inside an area, and one on the
-    way to it from `anchors`, which skips the area (searchable_areas).
+    way to it from `anchors`, which skips the area (searchable_areas). A directory whose `.git` entry cannot be told
+    about is never reported, as holds_checkout never reports one it cannot read, and a directory the search cannot
+    list is named with the reason, so the report never reads it as holding no leftover.
     """
     found: list[str] = []
+    unlisted: list[tuple[str, str]] = []
 
     def search(directory: Path) -> None:
         try:
             children = sorted(directory.iterdir(), key=lambda path: path.name.casefold())
-        except OSError:
+        except OSError as exc:
+            unlisted.append((directory.as_posix(), one_line(exc)))
             return
         for child in children:
-            if not is_plain_directory(child) or os.path.lexists(child / ".git"):
+            if not is_plain_directory(child) or has_git_entry(child):
                 continue
             if any(same_path(str(child), path) for path in registered):
                 continue
@@ -1646,13 +1694,21 @@ def orphan_directories(registered: list[str], areas: list[str], anchors: list[st
 
     for area in searchable_areas(areas, anchors):
         search(Path(area))
-    return found
+    return found, unlisted
+
+
+def has_git_entry(directory: Path) -> bool:
+    """Whether a `.git` entry is in `directory`; True when its presence cannot be told."""
+    try:
+        return file_presence.is_occupied(directory / ".git")
+    except OSError:
+        return True
 
 
 def holding_repositories(path: str, anchors: list[str]) -> list[str]:
     """Every directory holding `path` that has a `.git` entry, from the outermost anchor holding it, itself included,
     down to its parent: the swept repository for its own area, and a repository such as one named like the shared
-    worktree area."""
+    worktree area. A `.git` entry whose presence cannot be told raises the stat's OSError."""
     # Lexical, like linkless_below, which the search already held for every component below the anchor.
     path = os.path.abspath(path)  # noqa: PTH100 - lexical, as the comment says
     holding = [anchor for anchor in anchors if strictly_inside(path, anchor, lexical=True)]
@@ -1661,7 +1717,7 @@ def holding_repositories(path: str, anchors: list[str]) -> list[str]:
     current = Path(os.path.abspath(min(holding, key=len)))  # noqa: PTH100 - lexical, as the comment says
     found = []
     for part in Path(path).relative_to(current).parts:
-        if os.path.lexists(current / ".git"):
+        if file_presence.is_occupied(current / ".git"):
             found.append(current.as_posix())
         current /= part
     return found
@@ -1669,11 +1725,16 @@ def holding_repositories(path: str, anchors: list[str]) -> list[str]:
 
 def tracked_reason(services: Services, plan: dict[str, Any], path: str) -> str:
     """Why an orphan candidate stays: a repository holding it tracks files in it, as `git ls-files` lists them, or
-    Git could not say; empty when no repository holding it tracks any file in it.
+    Git could not say, or which directories holding it are repositories cannot be told; empty when no repository
+    holding it tracks any file in it.
 
     The pathspec is literal and matches in any letter case, so a folder Git tracks under another case is kept too.
     """
-    for holder in holding_repositories(path, area_anchors(plan)):
+    try:
+        holders = holding_repositories(path, area_anchors(plan))
+    except OSError as exc:
+        return f"could not tell which directories holding it are repositories: {one_line(exc)}"
+    for holder in holders:
         relative = Path(os.path.relpath(path, holder)).as_posix()
         listed = git(services, holder, "ls-files", "-z", "--", f":(literal,icase){relative}")
         if listed.returncode != 0:
@@ -1722,14 +1783,19 @@ def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
     """Delete an offered orphan directory that is still one.
 
     True when it was deleted, or stays because it is gone or Git tracks it as a worktree or repository again; False
-    when deleting it failed, it no longer resolves inside a worktree area, or a repository holding it tracks files in
-    it. Just before the deletion, and before anything else is asked of it, a directory that still exists must be no
-    link and, resolved through any link, lie inside an area the search may enter, resolved the same way, so the
-    deletion never reaches a directory the search did not; then the search must still find it, and no repository
-    holding it may track a file in it, as tracked_reason asks again.
+    when deleting it failed, whether it is still there cannot be told, it no longer resolves inside a worktree area,
+    or a repository holding it tracks files in it. Just before the deletion, and before anything else is asked of it,
+    a directory that still exists must be no link and, resolved through any link, lie inside an area the search may
+    enter, resolved the same way, so the deletion never reaches a directory the search did not; then the search must
+    still find it, and no repository holding it may track a file in it, as tracked_reason asks again.
     """
     areas = plan["orphan_areas"]
-    if not os.path.lexists(path):
+    try:
+        present = file_presence.is_occupied(Path(path))
+    except OSError as exc:
+        record(plan, "PRESERVED", path, f"could not tell whether it is still there: {one_line(exc)}")
+        return False
+    if not present:
         record(plan, "PRESERVED", path, "no longer a directory Git does not track")
         return True
     searchable = searchable_areas(areas, area_anchors(plan))
