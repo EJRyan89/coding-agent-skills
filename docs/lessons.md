@@ -369,13 +369,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A record separator is one the data cannot hold
 
 - **Rule:** A listing of names or records another program writes is split on a separator the data cannot hold, NUL
-  for git.
+  for git, and a script never splits a line it printed to recover a value it already holds.
 - **Why:** A name holding the separator, or a path git quotes, is split or misread, and the listing names a file that
   is not there.
 - **Use:** `git_client:GitClient.names`, which runs a name listing with -z and splits it on NUL;
   `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
   joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
-  a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds.
+  a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds;
+  and `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
   split of git's output with splitlines() unless its module states why,
@@ -387,12 +388,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_mutation_gate.py::test_the_gate_reads_a_changed_module_whose_path_holds_a_non_ascii_character_or_a_newline`,
   `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipTests::test_an_upstream_whose_name_holds_a_bar_is_read_whole`,
   `tests/tools/test_release_notes.py::RangeEntriesTests::test_a_message_holding_any_byte_but_nul_is_read_whole`,
-  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_every_name_reads_back_as_resolve_writes_it`
+  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::FileListTests::test_every_name_reads_back_as_resolve_writes_it`,
+  `skills/audit-skill/scripts/test_skill_inventory.py::ScanTests::test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line`
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
-  output passed into a function that splits it.
-- **Examples:** #1816, #1848, #1862, #1908, #2034
+  output passed into a function that splits it; `.split()[` or `.partition(" ")` on a line the same module wrote,
+  beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space.
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2206
 
 ### Two spellings are compared as their consumer compares them
 
