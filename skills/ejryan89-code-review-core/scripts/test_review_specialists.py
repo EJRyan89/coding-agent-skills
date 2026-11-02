@@ -28,6 +28,7 @@ from review_runtime import (
     load_manifest_from_commit,
     materialize_reviewer,
     materialize_source_snapshot,
+    specialist_inputs,
     validate_adapter_manifest,
     write_adapter_request,
 )
@@ -184,12 +185,13 @@ class ManifestTests(unittest.TestCase):
         def specialist(**settings: object) -> dict[str, Any]:
             given = manifest()
             given["specialists"][2] = {**given["specialists"][2], "shares_files": True, **settings}
-            return validate_adapter_manifest(given)["specialists"][2]
+            validated: dict[str, Any] = validate_adapter_manifest(given)["specialists"][2]
+            return validated
 
         plain = specialist()
         self.assertNotIn("title_pattern", plain)
         self.assertNotIn("inputs", plain)
-        self.assertEqual(("description", "comments"), rs.specialist_inputs(plain))
+        self.assertEqual(("description", "comments"), specialist_inputs(plain))
         self.assertNotIn("title_pattern", specialist(title_pattern=None))
         self.assertNotIn("inputs", specialist(inputs=None))
         self.assertEqual("^fix[(:]", specialist(title_pattern="^fix[(:]")["title_pattern"])
@@ -197,9 +199,7 @@ class ManifestTests(unittest.TestCase):
             ["description", "closing-issues"], specialist(inputs=["closing-issues", "description"])["inputs"]
         )
         self.assertEqual([], specialist(inputs=[])["inputs"])
-        self.assertEqual(
-            (), rs.specialist_inputs(specialist(inputs=[])), "an empty list gives no text, not the default"
-        )
+        self.assertEqual((), specialist_inputs(specialist(inputs=[])), "an empty list gives no text, not the default")
 
     def test_a_title_route_or_withheld_comments_without_shared_files_and_a_malformed_setting_are_refused(self) -> None:
         def refused(settings: dict[str, object], reason: str) -> None:

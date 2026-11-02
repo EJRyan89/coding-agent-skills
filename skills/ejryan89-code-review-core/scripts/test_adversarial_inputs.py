@@ -1864,13 +1864,13 @@ class ClosingIssueTests(AdversarialFixture):
                 self.github.title = title
                 ready = self.prepare()
                 self.assertEqual(["generic-review"], [role["id"] for role in ready["roles"]])
-                rp.remove_run(ready["run"])
+                review_run.remove_run(ready["run"])
         for title in ("fix: x", "fix(core): x"):
             with self.subTest(title=title):
                 self.github.title = title
                 ready = self.prepare()
                 self.assertEqual(["completeness", "generic-review"], [role["id"] for role in ready["roles"]])
-                rp.remove_run(ready["run"])
+                review_run.remove_run(ready["run"])
 
     def test_no_closing_issue_is_stated_from_the_request_and_never_guessed(self) -> None:
         # No issue GitHub links, and links GitHub no longer resolves for the viewer: each is stated, never a failure.
@@ -1887,7 +1887,7 @@ class ClosingIssueTests(AdversarialFixture):
                     json.loads((ready["run"] / "closing-issues.json").read_text(encoding="utf-8")),
                 )
                 self.assertIn(stated, " ".join(self.roles(ready)["completeness"].split()))
-                rp.remove_run(ready["run"])
+                review_run.remove_run(ready["run"])
 
     def test_a_reviewer_no_specialist_of_which_asks_reads_no_closing_issue(self) -> None:
         manifest = json.loads(json.dumps(self.MANIFEST))

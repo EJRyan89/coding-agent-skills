@@ -3991,7 +3991,7 @@ class ReviewerSourceTests(PipelineFixture):
                 self.assertIs(routed, "ROUTE fix-reviewer files=1" in lines)
                 ready = self.prepare(force=True)
                 self.assertIs(routed, "fix-reviewer" in [role["id"] for role in ready["roles"]])
-                rp.remove_run(ready["run"])
+                review_run.remove_run(ready["run"])
 
     def test_a_condition_reads_the_diff_and_writes_its_file_where_validation_and_a_review_say(self) -> None:
         # It opens only on the pull request's own diff, which its environment names, and writes a file there too.
