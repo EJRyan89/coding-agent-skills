@@ -527,6 +527,9 @@ def check_ownership(context: Context, wanted: Mapping[ItemKind, list[str]]) -> N
                 f"symlink or junction: {platform_support.normalize(link)}",
                 "Remove it or restore the deployed copy after verifying its contents, then retry.",
             )
+    # Every root the run creates holds the .backups a replaced or changed copy is kept in, which the run reaches only
+    # after the manifest commit, so its place is judged here, while nothing has changed.
+    journal.check_backup_roots(paths)
 
 
 def _replace(

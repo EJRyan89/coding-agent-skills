@@ -85,7 +85,7 @@ JSON_WRITE_ALLOWED = {
     "the branch git knows"
 }
 # The fields a plan holds, as build_plan writes them, and those a plan built outside a sweep, or a command that never
-# stopped, leaves out: the sync a sweep adds, and the stopped marker of a command that failed partway.
+# stopped, leaves out: the sync a sweep adds, and the STOP_MARKERS of a run that failed partway.
 PLAN_FIELDS = (
     "schema_version",
     "repo_root",
@@ -102,7 +102,14 @@ PLAN_FIELDS = (
     "applied",
     "events",
 )
-OPTIONAL_PLAN_FIELDS = ("sync", "stopped")
+# Why a run on the plan stopped partway: the apply, which runs once, so its stop stays; and the latest confirmation
+# (delete-local, force-delete, remove-directory), whose stop the next one that completes clears.
+APPLY_STOP = "stopped"
+CONFIRMATION_STOP = "confirmation_stopped"
+STOP_MARKERS = (APPLY_STOP, CONFIRMATION_STOP)
+# The offered branches and paths a confirmation tried and did not carry out, as when Git refused, until one does.
+CONFIRMATION_REFUSED = "confirmation_refused"
+OPTIONAL_PLAN_FIELDS = ("sync", *STOP_MARKERS, CONFIRMATION_REFUSED)
 # How many fields after its kind each event a plan records carries, at least and at most.
 EVENT_FIELDS = {
     "DELETED": (1, 1),
@@ -549,26 +556,28 @@ def access_failure(error: GitHubError) -> str:
 # sync -----------------------------------------------------------------------------------------------------------
 
 
-def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] | None:
+def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] | str:
     """Fetch and prune, then switch to the default branch and fast-forward it.
 
     The default branch is chosen after the fetch, from the remote-tracking refs it left: before it, a branch origin
-    renamed or deleted still has its stale remote-tracking ref. None when it stopped for the user; otherwise what it
-    did to the default branch, for the repository's summary.
+    renamed or deleted still has its stale remote-tracking ref. When it stopped for the user, the sweep state that says
+    why, `dirty` or `fetch-failed`, which the sweep records as given and never reads back from the lines printed: a
+    dirty worktree swept with skip_checkout whose fetch then fails stopped on the fetch. Otherwise what it did to the
+    default branch, for the repository's summary.
     """
     require_repository(root)
     dirty = dirty_count(services, root)
     if dirty:
         emit("DIRTY_MAIN", dirty)
         if not skip_checkout:
-            return None
+            return "dirty"
     fetched = git(services, root, "fetch", "--all", "--prune", "--quiet")
     if fetched.returncode != 0:
         error = reason(fetched)
         emit("FETCH_FAILED", error)
         for line in fetch_failed_summary(Path(root).name, error):
             emit("SUMMARY", line)
-        return None
+        return "fetch-failed"
     default = default_branch(services, root)
     if skip_checkout:
         checkout = "skipped"
@@ -965,8 +974,15 @@ def read_plan_fields(plan: object) -> None:
         )
     if "sync" in document:
         read_sync(fields, document["sync"])
-    if "stopped" in document:
-        fields.string(document["stopped"], "stopped")
+    for marker in STOP_MARKERS:
+        if marker in document:
+            fields.string(document[marker], marker)
+    if CONFIRMATION_REFUSED in document:
+        fields.array(
+            document[CONFIRMATION_REFUSED],
+            CONFIRMATION_REFUSED,
+            lambda value, path: read_branch_name(fields, value, path),
+        )
 
 
 def read_branch_name(fields: FieldReader, value: object, path: str) -> str:
@@ -1102,7 +1118,10 @@ def delete_merged(services: Services, plan: dict[str, Any], name: str, sha: str,
 
     git branch -d judges a branch against its upstream, or against HEAD when that is gone or unset, and HEAD is not
     the default branch after --skip-checkout or a failed switch. So the default branch decides, and -D deletes a
-    branch -d refused only because HEAD lacks it. False when Git refused the deletion.
+    branch -d refused only because HEAD lacks it. False when Git refused the deletion. A branch that is no longer at
+    `sha` once -d refused it moved under the deletion, and -d refuses a branch whose new commits the default branch
+    lacks: it is kept and reported moved, as a branch that moved before the deletion is, since nothing was deleted
+    and what it holds now is not what the plan proved merged.
     """
     if not in_default(services, plan, sha):
         return unmerged(services, plan, name, sha, pr)
@@ -1434,20 +1453,22 @@ def apply(plan_path: str, services: Services) -> bool:
     if plan["applied"]:
         raise CleanupError(f"this plan was already applied; {SWEEP_AGAIN}")
     plan["applied"] = True
-    return run_and_report(plan_path, plan, lambda: apply_plan(plan, services))
+    return run_and_report(plan_path, plan, lambda: apply_plan(plan, services), APPLY_STOP)
 
 
-def run_and_report(plan_path: str, plan: dict[str, Any], action: Callable[[], T]) -> T:
+def run_and_report(plan_path: str, plan: dict[str, Any], action: Callable[[], T], marker: str) -> T:
     """Run `action` on the plan, then save the plan and print its summary, also when the action failed partway.
 
     Every branch deleted and worktree removed before a failure is then in the summary, printed ahead of the failure.
-    The stopped marker describes the last run on the plan, so a later run that completes clears it.
+    A failure is recorded under `marker`, one of STOP_MARKERS, and a run clears only its own marker: a confirmation
+    that completes clears an earlier confirmation's stop, never the apply's, since the fast-forwards and offers a
+    stopped apply did not reach never run.
     """
-    plan.pop("stopped", None)
+    plan.pop(marker, None)
     try:
         return action()
     except Exception as exc:
-        plan["stopped"] = one_line(exc) or type(exc).__name__
+        plan[marker] = one_line(exc) or type(exc).__name__
         raise
     finally:
         try:
@@ -1733,6 +1754,18 @@ def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
     return True
 
 
+def settle(plan: dict[str, Any], name: str, finished: bool) -> None:
+    """Keep under CONFIRMATION_REFUSED each offered branch or path a confirmation tried and did not carry out, as when
+    Git refused it, until a later confirmation does, so the report counts it as an error meanwhile."""
+    pending = [known for known in plan.get(CONFIRMATION_REFUSED, []) if known != name]
+    if not finished:
+        pending.append(name)
+    if pending:
+        plan[CONFIRMATION_REFUSED] = pending
+    else:
+        plan.pop(CONFIRMATION_REFUSED, None)
+
+
 def remove_directories(plan_path: str, paths: list[str], services: Services) -> bool:
     """Remove the confirmed detached worktrees and orphan directories the plan offered; False when any stayed."""
     plan = plan_in_scope(plan_path)
@@ -1749,15 +1782,19 @@ def remove_directories(plan_path: str, paths: list[str], services: Services) -> 
             if offered is None:
                 record(plan, "PRESERVED", path, "not a detached worktree or orphan directory offered by this plan")
                 succeeded = False
-            elif any(same_path(offered, gone) for gone in done):
+                continue
+            if any(same_path(offered, gone) for gone in done):
                 record(plan, "PRESERVED", path, "already removed by this plan")
+                finished = True
             elif offered in detached:
-                succeeded = remove_detached(services, plan, offered, detached[offered]) and succeeded
+                finished = remove_detached(services, plan, offered, detached[offered])
             else:
-                succeeded = delete_orphan(services, plan, offered) and succeeded
+                finished = delete_orphan(services, plan, offered)
+            settle(plan, offered, finished)
+            succeeded = finished and succeeded
         return succeeded
 
-    return run_and_report(plan_path, plan, remove)
+    return run_and_report(plan_path, plan, remove, CONFIRMATION_STOP)
 
 
 def confirm(plan_path: str, names: list[str], services: Services, force: bool) -> bool:
@@ -1771,16 +1808,17 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
         eligible = {fields[0]: fields[1] for fields in events(plan, "UNMERGED")}
         refusal = "not reported UNMERGED by this plan"
     else:
-        # A closed pull request's branch is offered only once its worktree is gone, and a local-only branch in a
-        # clean worktree with the worktree's path, to be removed with it.
+        # Only a branch the offer named in a CONFIRM_LOCAL event, never one the plan merely planned to ask about: an
+        # apply that stopped before its offers ran offered none. A local-only branch and a closed pull request's
+        # branch, offered once its worktree is gone, are named alone; a local-only branch in a clean worktree with the
+        # worktree's path, to be removed with it.
         offered = events(plan, "CONFIRM_LOCAL")
-        closed = {fields[0] for fields in offered} & closed_branches(plan)
+        alone = {fields[0] for fields in offered if len(fields) == 1}
         worktrees = {fields[0]: fields[1] for fields in offered if len(fields) > 1}
         eligible = {
             branch["name"]: branch["sha"]
             for branch in plan["branches"]
-            if branch["action"] == "ask-delete"
-            or branch["name"] in closed
+            if (branch["action"] in ("ask-delete", "remove-worktree-ask") and branch["name"] in alone)
             or (branch["action"] == "ask-remove-worktree" and branch["name"] in worktrees)
         }
         refusal = "not a local-only or closed branch offered by this plan"
@@ -1789,25 +1827,30 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
         located = checkouts(services, plan["repo_root"])
         succeeded = True
         for name in dict.fromkeys(names):
-            if name in deleted(plan):
-                record(plan, "PRESERVED", name, "already deleted by this plan")
-            elif name not in eligible:
+            if name not in deleted(plan) and name not in eligible:
                 record(plan, "PRESERVED", name, refusal)
                 succeeded = False
-            elif unchanged(services, plan, name, eligible[name], located, worktrees.get(name)):
-                if force:
-                    succeeded = force_delete(services, plan, name) and succeeded
-                elif name in worktrees:
-                    entry = {"path": worktrees[name], "branch": name}
-                    outcome = remove_worktree(services, plan, entry, eligible[name], states[name])
-                    if outcome.removed:
-                        prune_parents(plan, worktrees[name])
-                    succeeded = outcome.removed and not outcome.refused and succeeded
-                else:
-                    succeeded = delete_merged(services, plan, name, eligible[name], states[name]) and succeeded
+                continue
+            finished = True
+            if name in deleted(plan):
+                record(plan, "PRESERVED", name, "already deleted by this plan")
+            elif not unchanged(services, plan, name, eligible[name], located, worktrees.get(name)):
+                pass  # it moved: nothing is left to do, as its PRESERVED fact says
+            elif force:
+                finished = force_delete(services, plan, name)
+            elif name in worktrees:
+                entry = {"path": worktrees[name], "branch": name}
+                outcome = remove_worktree(services, plan, entry, eligible[name], states[name])
+                if outcome.removed:
+                    prune_parents(plan, worktrees[name])
+                finished = outcome.removed and not outcome.refused
+            else:
+                finished = delete_merged(services, plan, name, eligible[name], states[name])
+            settle(plan, name, finished)
+            succeeded = finished and succeeded
         return succeeded
 
-    return run_and_report(plan_path, plan, delete)
+    return run_and_report(plan_path, plan, delete, CONFIRMATION_STOP)
 
 
 # summary --------------------------------------------------------------------------------------------------------
@@ -1886,7 +1929,7 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
 def summary_lines(plan: dict[str, Any]) -> list[str]:
     items = summary_items(plan)
     protected = [entry for entry in plan["worktrees"] if entry["action"] == "protected"]
-    stopped = plan.get("stopped")
+    stopped = stop_reason(plan)
     heading = f"cleanup stopped partway ({stopped}); done before it" if stopped else "cleanup complete"
     lines = [
         f"{plan['repo_name']} {heading}:",
@@ -1937,7 +1980,14 @@ def default_notes(plan: dict[str, Any]) -> str:
 
 def is_quiet(plan: dict[str, Any]) -> bool:
     """Nothing changed and nothing needs the user: its summary would only say the default branch is up to date."""
-    return default_notes(plan) == "up to date" and not plan.get("stopped") and not any(summary_items(plan).values())
+    return default_notes(plan) == "up to date" and not stop_reason(plan) and not any(summary_items(plan).values())
+
+
+def stop_reason(plan: dict[str, Any]) -> str | None:
+    """Why the latest run on the plan that has not since been completed stopped partway: a confirmation's stop, else
+    the apply's, which no later run clears; None when none did."""
+    reason: str | None = plan.get(CONFIRMATION_STOP) or plan.get(APPLY_STOP)
+    return reason
 
 
 def print_summary(plan: dict[str, Any]) -> None:
@@ -1995,9 +2045,8 @@ def sweep_repository(
     refused = False
     try:
         synced = sync(root, skip_checkout, services)
-        if synced is None:
-            dirty = any(line.split("\t")[0] == "DIRTY_MAIN" for line in lines)
-            state = "dirty" if dirty else "fetch-failed"
+        if isinstance(synced, str):
+            state = synced
         else:
             plan = build_plan(root, repos_root, services, DefaultBranch(**synced["default"]), policy)
             plan["sync"] = synced
@@ -2113,13 +2162,15 @@ def write_record(
 ) -> None:
     """Record each swept repository's state and plan in the plans directory, replacing what an earlier sweep there
     recorded for it, as sweeping a dirty repository again does, and keeping every other repository in its place, with
-    the lines naming the lists the latest sweep used."""
+    the lines naming the lists the latest sweep used. `refused` keeps that Git refused a deletion or removal the apply
+    tried, which made the sweep exit 1 and which no later command retries."""
     for result in results:
         entry = {
             "root": result["root"],
             "state": result["state"],
             "plan": result["plan"],
             "lines": recorded_lines(result),
+            "refused": result["refused"],
         }
         index = next((i for i, known in enumerate(entries) if same_path(known["root"], entry["root"])), None)
         if index is None:
@@ -2140,6 +2191,7 @@ def is_entry(entry: Any) -> bool:
         and (entry.get("plan") is None or isinstance(entry.get("plan"), str))
         and isinstance(entry.get("lines"), list)
         and all(isinstance(line, str) for line in entry["lines"])
+        and isinstance(entry.get("refused", False), bool)
     )
 
 
@@ -2193,9 +2245,13 @@ def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[d
 def report(directory: Path, aborted: list[str]) -> int:
     """Print each repository's current summary, then the closing count, from what the sweeps there recorded.
 
-    A plan's summary is its latest: every command saves it, and one that completes clears an earlier stop, which then
-    no longer counts as an error. Quiet repositories share one line. The lines naming the lists the sweep used come
-    first, once the record and the plans are read, so a report that fails prints only its FAILED line.
+    A plan's summary is its latest: every command saves it. A repository counts as one with an error when the sweep
+    recorded it failing, whatever ran on its plan later, since a confirmation never runs what a stopped apply did not
+    reach; when Git refused a deletion or removal its apply tried; while a run on its plan stands stopped; or while a
+    branch or path a confirmation tried stands not carried out, until a later confirmation carries it out. A hold,
+    such as a fast-forward kept from a worktree with changes, tried nothing and is not one: the summary names it
+    with its reason. Quiet repositories share one line. The lines naming the lists the sweep used come first, once
+    the record and the plans are read, so a report that fails prints only its FAILED line.
     """
     entries, policy = read_record(directory)
     dropped = aborted_entries(entries, aborted)
@@ -2209,7 +2265,11 @@ def report(directory: Path, aborted: list[str]) -> int:
         if entry["state"] == "quiet":
             quiet.append(entry["root"])
             continue
-        if entry["state"] in FAILED_STATES and (plan is None or "stopped" in plan):
+        if (
+            entry["state"] in FAILED_STATES
+            or entry.get("refused", False)
+            or (plan is not None and (stop_reason(plan) is not None or bool(plan.get(CONFIRMATION_REFUSED))))
+        ):
             failed += 1
         emit("REPO", entry["root"], "aborted" if entry in dropped else entry["state"])
         if plan is not None:

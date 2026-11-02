@@ -363,6 +363,25 @@ class BoundedProcessTests(unittest.TestCase):
             {"PATH": "a path"}, bounded_process.without_repository_variables({"git_dir": "x", "PATH": "a path"})
         )
 
+    def test_the_isolated_git_environment_keeps_no_git_variable_and_switches_the_configuration_off(self) -> None:
+        null = "nul" if os.name == "nt" else "/dev/null"
+        given = {**selecting_environment(), "git_trace": "1", "GIT_EXEC_PATH": "elsewhere", "PATH_KEPT": "kept"}
+        with mock.patch.dict(os.environ, given, clear=True):
+            environment = bounded_process.isolated_git_environment()
+        self.assertEqual(
+            {
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": null,
+                "GIT_ATTR_NOSYSTEM": "1",
+            },
+            {name: value for name, value in environment.items() if name.upper().startswith("GIT_")},
+        )
+        self.assertEqual(
+            ("never", "1", "kept"),
+            tuple(environment[name] for name in ("GCM_INTERACTIVE", "GH_PROMPT_DISABLED", "PATH_KEPT")),
+        )
+
     def test_the_one_builder_leaves_out_exactly_the_repository_selecting_variables_in_any_case(self) -> None:
         given = {
             **dict.fromkeys(REPOSITORY_SELECTING, "elsewhere"),

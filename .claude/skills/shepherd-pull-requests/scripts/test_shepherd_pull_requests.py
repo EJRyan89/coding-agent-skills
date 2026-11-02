@@ -152,16 +152,29 @@ FLAT_BRANCH = "fix/odd name here"
 ODD_STEP = "Run\x85repository\u2028validation"
 
 
+def check_run(name: str, run: int = RUN, **fields: str) -> dict[str, Any]:
+    """A check run as gh lists it in a rollup, every member present: a Validation leg in progress unless `fields`
+    says otherwise."""
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "workflowName": "Validation",
+        "status": "IN_PROGRESS",
+        "conclusion": "",
+        "startedAt": "2026-10-16T05:00:00Z",
+        "detailsUrl": f"https://github.com/{REPOSITORY}/actions/runs/{run}/job/9",
+        **fields,
+    }
+
+
 def rollup(state: str = "SUCCESS", run: int = RUN) -> list[dict[str, Any]]:
     """A head's checks: the legs, and the required check once they finished; PENDING has the legs running alone."""
-    url = f"https://github.com/{REPOSITORY}/actions/runs/{run}/job/9"
-    leg = {"__typename": "CheckRun", "name": "Validation on Linux", "workflowName": "Validation", "detailsUrl": url}
     if state == "PENDING":
-        return [{**leg, "status": "IN_PROGRESS", "conclusion": ""}]
+        return [check_run("Validation on Linux", run)]
     if state == "MISSING":
-        return [{"__typename": "CheckRun", "name": "Analyze (python)", "workflowName": "CodeQL", "detailsUrl": url}]
-    required = {**leg, "name": "Validation", "status": "COMPLETED", "conclusion": state, "startedAt": "2026-10-16"}
-    return [{**leg, "status": "COMPLETED", "conclusion": "SUCCESS"}, required]
+        return [check_run("Analyze (python)", run, workflowName="CodeQL", status="COMPLETED", conclusion="SUCCESS")]
+    required = check_run("Validation", run, status="COMPLETED", conclusion=state, startedAt="2026-10-16T06:00:00Z")
+    return [check_run("Validation on Linux", run, status="COMPLETED", conclusion="SUCCESS"), required]
 
 
 def pull(
@@ -176,6 +189,7 @@ def pull(
     run: int = RUN,
     cross: bool = False,
     branch: str | None = None,
+    base: str = "main",
 ) -> dict[str, Any]:
     return {
         "number": number,
@@ -187,6 +201,8 @@ def pull(
         "autoMergeRequest": {"mergeMethod": "SQUASH"} if armed else None,
         "files": [{"path": path} for path in files],
         "statusCheckRollup": rollup(state, run),
+        "body": "",
+        "baseRefName": base,
     }
 
 
@@ -662,6 +678,22 @@ class AdmissionTest(FixtureTestCase):
         self.assertFalse(any(call[1:3] == ["run", "view"] for call in gh.calls))
         self.assertFalse(any("30" in write for write in gh.writes()), gh.writes())
 
+    def test_a_pull_request_onto_another_branch_is_never_armed_updated_or_reviewed_and_is_named(self) -> None:
+        other = pull(32, armed=False, merge="BEHIND", state="FAILURE", base="release/v1")
+        gh = StubGh(
+            [other, pull(33, armed=False, merge="BEHIND")],
+            runs={RUN: run_view([job("Windows shard 2/4", "failure")])},
+            logs={1: failed_log(TERMINATED_BLOCK)},
+        )
+        status, lines = self.tick(gh)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "NOT_ADMITTED #32 fix/topic-32 head aaaaaaa onto release/v1", self.line(lines, "NOT_ADMITTED ")
+        )
+        self.assertFalse(any(line.startswith(("JUDGED", "RERUN", "DEFECT")) for line in lines), lines)
+        self.assertFalse(any("32" in write for write in gh.writes()), gh.writes())
+        self.assertIn(["pr", "merge", "33", "--repo", REPOSITORY, "--auto", "--squash"], gh.writes())
+
     def test_a_pull_request_from_this_repository_is_still_armed_and_updated(self) -> None:
         gh = self.fork_beside_own()
         _, lines = self.tick(gh)
@@ -752,9 +784,25 @@ class HoldTest(FixtureTestCase):
         self.assertEqual(1, status)
         self.assertEqual("PR_FAILED #20 disarm pr merge refused (HTTP 422)", self.line(lines, "PR_FAILED "))
 
+    def test_a_listing_whose_pull_request_has_no_body_ends_the_tick_and_arms_nothing(self) -> None:
+        for body in ("absent", None):
+            with self.subTest(body=body):
+                listed = pull(20, armed=False)
+                if body == "absent":
+                    del listed["body"]
+                else:
+                    listed["body"] = body
+                gh = StubGh([listed])
+                status, lines = self.tick(gh)
+                self.assertEqual(1, status)
+                self.assertEqual(
+                    "FAILED cannot list the open pull requests: GitHub returned a pull request without its body",
+                    lines[-1],
+                )
+                self.assertEqual([], gh.writes())
+
     def test_only_a_line_of_its_own_holds_and_its_reason_is_flattened(self) -> None:
         self.assertIsNone(shepherd.hold_of("Do not add a Shepherd-hold: line yet"))
-        self.assertIsNone(shepherd.hold_of(None))
         self.assertEqual("no reason given", shepherd.hold_of("Text\nShepherd-hold:\n"))
         self.assertEqual("waits on #1 then #2", shepherd.hold_of("Shepherd-hold:  waits on #1\x85then #2  "))
         # A pull request from another repository is not admitted, held or not.
@@ -809,16 +857,10 @@ class FlatTextTest(FixtureTestCase):
 
 def legs_finished(finished: int, legs: int, run: int = RUN) -> list[dict[str, Any]]:
     """A head's checks while its run's legs run, `finished` of `legs` of them done."""
-    url = f"https://github.com/{REPOSITORY}/actions/runs/{run}/job/9"
     return [
-        {
-            "__typename": "CheckRun",
-            "name": f"Windows shard {index}/{legs}",
-            "workflowName": "Validation",
-            "detailsUrl": url,
-            "status": "COMPLETED" if index <= finished else "IN_PROGRESS",
-            "conclusion": "SUCCESS" if index <= finished else "",
-        }
+        check_run(f"Windows shard {index}/{legs}", run, status="COMPLETED", conclusion="SUCCESS")
+        if index <= finished
+        else check_run(f"Windows shard {index}/{legs}", run)
         for index in range(1, legs + 1)
     ]
 
@@ -847,12 +889,28 @@ class UpdateTest(FixtureTestCase):
         )
         self.assertEqual(0.75, shepherd.required_check(legs_finished(3, 4)).progress)
         # The required check's own entry is no leg, even while it runs.
-        url = f"https://github.com/{REPOSITORY}/actions/runs/{RUN}/job/9"
-        running = {"name": "Validation", "workflowName": "Validation", "detailsUrl": url, "status": "IN_PROGRESS"}
+        running = check_run("Validation")
         self.assertEqual(shepherd.Check("PENDING", RUN, 0.75), shepherd.required_check([*legs_finished(3, 4), running]))
         self.assertEqual(shepherd.Check("PENDING", RUN, 0.0), shepherd.required_check([running]))
         ended = {**running, "status": "COMPLETED", "conclusion": ""}
         self.assertEqual(shepherd.Check("UNKNOWN", RUN, 1.0), shepherd.required_check([ended]))
+        self.assertEqual(
+            shepherd.Check("NEUTRAL", RUN, 1.0), shepherd.required_check([{**ended, "conclusion": "neutral"}])
+        )
+
+    def test_a_rerun_of_the_required_check_in_the_same_run_is_read_by_its_latest_start(self) -> None:
+        # The first attempt passed, the rerun after it failed, and gh may list either first.
+        passed = check_run("Validation", status="COMPLETED", conclusion="SUCCESS", startedAt="2026-10-16T05:00:00Z")
+        failed = check_run("Validation", status="COMPLETED", conclusion="FAILURE", startedAt="2026-10-16T07:00:00Z")
+        running = check_run("Validation", startedAt="2026-10-16T08:00:00Z")
+        for listed in ([passed, failed], [failed, passed]):
+            with self.subTest(first=listed[0]["conclusion"]):
+                self.assertEqual(shepherd.Check("FAILURE", RUN, 1.0), shepherd.required_check(listed))
+        for listed in ([failed, running], [running, failed]):
+            with self.subTest(first=listed[0]["status"]):
+                self.assertEqual("PENDING", shepherd.required_check(listed).state)
+        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check([]))
+        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(None))
 
     def test_nothing_is_updated_while_an_armed_current_pull_request_is_green_or_pending(self) -> None:
         for state in ("SUCCESS", "PENDING"):
@@ -1037,21 +1095,148 @@ class ShapeTest(unittest.TestCase):
         found = shepherd.pull_of(pull(20, cross=True, draft=True))
         self.assertEqual((True, True), (found.cross_repository, found.draft))
 
-    def test_a_pull_request_without_auto_merge_status_checks_or_body_still_reads(self) -> None:
-        found = shepherd.pull_of({**pull(20, armed=False), "statusCheckRollup": None, "body": None})
+    def test_null_auto_merge_and_status_checks_and_an_empty_body_read_as_none(self) -> None:
+        found = shepherd.pull_of({**pull(20, armed=False), "statusCheckRollup": None, "body": ""})
         self.assertEqual((False, shepherd.Check("MISSING", None), None), (found.armed, found.check, found.hold))
-        listed = pull(20)
-        del listed["mergeStateStatus"]
-        self.assertEqual("UNKNOWN", shepherd.pull_of(listed).merge_state)
 
-    def test_a_run_with_no_attempt_is_its_first_and_a_nameless_leg_is_named_so(self) -> None:
+    def test_a_pull_request_member_the_listing_leaves_out_or_nulls_is_malformed_never_a_default(self) -> None:
+        # Each member pull_of reads, written out here rather than read from PULL_FIELDS, with what an absent member
+        # and a null one are refused as, or None where GitHub reports null for "none" and null reads as none.
+        unpinned = "a pull request without its number, branch, or head"
+        admission = "a pull request without its isCrossRepository or isDraft"
+        files = "a pull request's files that is not a list of objects"
+        catalogue: dict[str, tuple[str, str | None]] = {
+            "number": (unpinned, unpinned),
+            "headRefName": (unpinned, unpinned),
+            "headRefOid": (unpinned, unpinned),
+            "isCrossRepository": (admission, admission),
+            "isDraft": (admission, admission),
+            "mergeStateStatus": (
+                "a pull request without its mergeStateStatus",
+                "a pull request without its mergeStateStatus",
+            ),
+            "autoMergeRequest": ("a pull request without its autoMergeRequest", None),
+            "files": (files, files),
+            "statusCheckRollup": ("a pull request without its statusCheckRollup", None),
+            "body": ("a pull request without its body", "a pull request without its body"),
+            "baseRefName": ("a pull request without its baseRefName", "a pull request without its baseRefName"),
+        }
+        self.assertEqual(set(catalogue), set(shepherd.PULL_FIELDS.split(",")))
+        for key, (absent, null) in catalogue.items():
+            with self.subTest(member=key, value="absent"):
+                listed = pull(20, armed=False)
+                del listed[key]
+                self.malformed(absent, shepherd.pull_of, listed)
+            with self.subTest(member=key, value=None):
+                if null is None:
+                    shepherd.pull_of({**pull(20, armed=False), key: None})
+                else:
+                    self.malformed(null, shepherd.pull_of, {**pull(20, armed=False), key: None})
+
+    def test_a_nameless_leg_is_named_so(self) -> None:
         nameless = {
             key: value for key, value in job("unused", "failure", failed_step="Set up job").items() if key != "name"
         }
-        run = {key: value for key, value in run_view([nameless]).items() if key != "attempt"}
         found = shepherd.pull_of(pull(20, state="FAILURE"))
-        judged = shepherd.judge(self.client(run, [{"databaseId": RUN}]), "owner/repo", found)
+        judged = shepherd.judge(self.client(run_view([nameless]), [{"databaseId": RUN}]), "owner/repo", found)
         self.assertEqual((1, "unnamed leg", "service"), (judged.attempt, judged.leg, judged.reason))
+
+    def test_a_check_run_member_the_rollup_leaves_out_is_malformed_never_a_default(self) -> None:
+        # Each member required_check reads of a check run, written out here: those GitHub never reports empty are
+        # refused empty too; gh reports an unfinished conclusion and an unstarted start as text it may leave empty.
+        catalogue = {
+            "__typename": False,
+            "name": False,
+            "workflowName": False,
+            "status": False,
+            "detailsUrl": False,
+            "conclusion": True,
+            "startedAt": True,
+        }
+        for key, empty_reads in catalogue.items():
+            refused = [None, "absent", *([] if empty_reads else [""])]
+            for value in refused:
+                with self.subTest(member=key, value=value):
+                    entry = check_run("Validation", status="COMPLETED", conclusion="SUCCESS")
+                    if value == "absent":
+                        del entry[key]
+                    else:
+                        entry[key] = value
+                    self.malformed(f"a check without its {key}", shepherd.required_check, [entry])
+            if empty_reads:
+                with self.subTest(member=key, value=""):
+                    shepherd.required_check([{**check_run("Validation"), key: ""}])
+
+    def test_a_check_whose_status_is_missing_is_malformed_not_pending(self) -> None:
+        # Read as PENDING, it would let the shepherd update the branch and ask for the pre-merge review.
+        for value in ("absent", None):
+            with self.subTest(value=value):
+                entry = check_run("Validation")
+                if value == "absent":
+                    del entry["status"]
+                else:
+                    entry["status"] = value
+                self.malformed("a check without its status", shepherd.required_check, [entry])
+
+    def test_a_newer_run_missing_its_url_or_workflow_never_hides_behind_an_older_passing_run(self) -> None:
+        older = rollup("SUCCESS", run=5)
+        self.assertEqual(shepherd.Check("SUCCESS", 5, 1.0), shepherd.required_check(older))
+        newer = check_run("Validation", 6, status="COMPLETED", conclusion="FAILURE")
+        self.assertEqual("FAILURE", shepherd.required_check([*older, newer]).state)
+        for key in ("detailsUrl", "workflowName"):
+            with self.subTest(member=key):
+                cut = {name: value for name, value in newer.items() if name != key}
+                self.malformed(f"a check without its {key}", shepherd.required_check, [*older, cut])
+        nameless = {**newer, "detailsUrl": "https://github.com/owner/repo/checks/6"}
+        self.malformed("a Validation check whose URL names no run", shepherd.required_check, [*older, nameless])
+
+    def test_a_commit_status_is_passed_over_and_a_check_of_another_kind_is_malformed(self) -> None:
+        status = {"__typename": "StatusContext", "context": "ci/other", "state": "FAILURE"}
+        self.assertEqual(shepherd.Check("SUCCESS", RUN, 1.0), shepherd.required_check([status, *rollup("SUCCESS")]))
+        other = {**check_run("Validation"), "__typename": "Annotation"}
+        self.malformed("a check of a kind the shepherd does not know, 'Annotation'", shepherd.required_check, [other])
+
+    def test_an_empty_branch_head_or_base_is_malformed(self) -> None:
+        # An empty branch matched no branch on origin, so out_of_step read the pull request as in step.
+        unpinned = "a pull request without its number, branch, or head"
+        for key, reason in (
+            ("headRefName", unpinned),
+            ("headRefOid", unpinned),
+            ("baseRefName", "a pull request without its baseRefName"),
+        ):
+            with self.subTest(member=key):
+                self.malformed(reason, shepherd.pull_of, {**pull(20), key: ""})
+
+    def test_an_empty_merge_state_is_malformed(self) -> None:
+        # GitHub's merge states have no empty member; read as one, it would skip is_behind's ancestry probe.
+        self.malformed(
+            "a pull request without its mergeStateStatus", shepherd.pull_of, {**pull(20), "mergeStateStatus": ""}
+        )
+
+    def test_a_run_or_leg_member_that_decides_a_rerun_is_malformed_absent_or_null(self) -> None:
+        failed = job("Linux shard 1/4", "failure", failed_step="Set up job")
+        found = shepherd.pull_of(pull(20, state="FAILURE"))
+        for value in ("absent", None):
+            with self.subTest(member="attempt", value=value):
+                run = run_view([failed])
+                if value == "absent":
+                    del run["attempt"]
+                else:
+                    run["attempt"] = value
+                client = self.client(run, [{"databaseId": RUN}])
+                self.malformed("a workflow run without its attempt", shepherd.judge, client, "owner/repo", found)
+            with self.subTest(member="conclusion", value=value):
+                run = run_view([failed])
+                leg = dict(failed)
+                if value == "absent":
+                    del run["conclusion"]
+                    del leg["conclusion"]
+                else:
+                    run["conclusion"] = leg["conclusion"] = value
+                client = self.client(run, [{"databaseId": RUN}])
+                self.malformed("a workflow run without its conclusion", shepherd.judge, client, "owner/repo", found)
+                client = self.client(run_view([leg]), [{"databaseId": RUN}])
+                self.malformed("a job without its conclusion", shepherd.judge, client, "owner/repo", found)
 
     def test_a_failed_validation_leg_reads_its_log_by_the_job_id(self) -> None:
         failed = job("Linux shard 1/4", "failure", number=8)
@@ -1301,15 +1486,25 @@ class JudgementTest(FixtureTestCase):
         )
         self.assertEqual([], gh.writes())
 
-    def test_a_check_naming_no_run_is_a_defect(self) -> None:
-        entry = pull(20, state="FAILURE")
+    def test_a_validation_check_naming_no_run_ends_the_tick_and_a_red_check_without_one_is_a_defect(self) -> None:
+        # Its run cannot be ordered against the head's other runs, so the listing is malformed: read as run 0, it hid a
+        # newer run and fed the update gate.
+        entry = pull(20, state="FAILURE", armed=False)
         for check in entry["statusCheckRollup"]:
             check["detailsUrl"] = "https://github.com/owner/repo/runs/5"
-        _, lines = self.tick(StubGh([entry]))
+        gh = StubGh([entry])
+        status, lines = self.tick(gh)
+        self.assertEqual(1, status)
         self.assertEqual(
-            'DEFECT #20 fix/topic-20 leg "Validation" check "the check names no workflow run"',
-            self.line(lines, "DEFECT "),
+            "FAILED cannot list the open pull requests: GitHub returned a Validation check whose URL names no run",
+            lines[-1],
         )
+        self.assertEqual([], gh.writes())
+        found = dataclasses.replace(shepherd.pull_of(pull(20, state="FAILURE")), check=shepherd.Check("FAILURE", None))
+        judged = shepherd.judge(
+            GitHubClient(lambda command: CommandResult(1, "", "unused"), backoff=NO_WAIT), "o/r", found
+        )
+        self.assertEqual(("defect", "the check names no workflow run"), (judged.kind, judged.check))
 
     def test_a_judgment_that_cannot_read_the_run_is_named(self) -> None:
         status, lines = self.tick(StubGh([pull(20, state="FAILURE")], failing=["run view"]))

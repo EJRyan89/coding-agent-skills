@@ -90,7 +90,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from atomic_file import replace_text
 from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
-from flat_text import flat_text
+from flat_text import fact_line, flat_text
 from folder_walk import walk_files
 from folders_up import folders_up
 from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
@@ -231,7 +231,7 @@ class Emitter:
     def line(self, key: str, *fields: object) -> None:
         if key in FINDING_KEYS:
             self.findings += 1
-        self.emit("\t".join([key, *(flat_text(str(value)) for value in fields)]))
+        self.emit(fact_line(key, *fields))
 
 
 def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[Path]:
@@ -1084,7 +1084,7 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
     try:
         run(arguments, services or Services(), out)
     except (Failed, OSError) as error:
-        print(f"FAILED {error}")
+        print(f"FAILED {flat_text(str(error))}")
         return 1
     return 1 if out.findings else 0
 

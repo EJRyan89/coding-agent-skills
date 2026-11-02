@@ -327,7 +327,7 @@ class LeftoverTests(Fixture):
         git(self.clone, "branch", "in-tree", "main")
         git(self.clone, "worktree", "add", "--quiet", str(self.area / "in-tree wt"), "in-tree")
         finished, lines = self.sync()
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         _, planned = self.plan()
         self.assertEqual(
             {"fresh": "ask-delete", "in-tree": "ask-remove-worktree"},

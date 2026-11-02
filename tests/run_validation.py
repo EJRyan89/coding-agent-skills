@@ -39,7 +39,8 @@ so the legs together run exactly what one run would, each once.
 
 The one check that reads GitHub, whether each issue the malformed-input known failures name is open, is not run here:
 tests/known_failure_issues.py runs it alone, importing none of this runner's policy modules, and CI runs that in a job
-of its own, the only job given the run's token, so no policy, no suite, and no process a suite starts holds it.
+of its own, the only job whose command is given the run's token, so no policy, no suite, and no process a suite
+starts holds it.
 
 The policy checks run on the main thread while the pool's thread starts jobs from os.environ and prints each result
 to sys.stdout, so no policy check swaps a standard stream or changes the environment, and
