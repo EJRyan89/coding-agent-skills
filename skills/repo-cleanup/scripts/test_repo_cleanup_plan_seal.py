@@ -448,10 +448,19 @@ class PlanFieldTests(CleanupTestCase):
                 self.refused(written_plan(sync=value), detail)
 
     def test_stopped_and_the_default_branch_are_read_by_their_kinds(self) -> None:
-        self.assertEqual("git vanished", self.read(written_plan(stopped="git vanished"))["stopped"])
+        for marker in ("stopped", "confirmation_stopped"):
+            self.assertEqual("git vanished", self.read(written_plan(**{marker: "git vanished"}))[marker])
         cases: dict[str, tuple[dict[str, Any], str]] = {
             "a stopped marker that is not a string": (written_plan(stopped=1), "stopped must be a non-empty string"),
             "an empty stopped marker": (written_plan(stopped=""), "stopped must be a non-empty string"),
+            "a confirmation's stopped marker that is not a string": (
+                written_plan(confirmation_stopped=1),
+                "confirmation_stopped must be a non-empty string",
+            ),
+            "an empty confirmation's stopped marker": (
+                written_plan(confirmation_stopped=""),
+                "confirmation_stopped must be a non-empty string",
+            ),
             "no default status": (
                 written_plan(default={"name": "main"}),
                 "default must be an object with field status",
@@ -738,7 +747,7 @@ class PlanOutsideASweepTests(Fixture):
     def test_a_plan_built_outside_a_sweep_leaves_out_only_sync_and_stopped_and_is_read(self) -> None:
         git(self.clone, "branch", "scratch", "main")
         plan = rc.build_plan(str(self.clone), str(self.repos), rc.Services(gh=self.github))
-        self.assertTrue({"sync", "stopped"}.isdisjoint(plan), plan)
+        self.assertTrue({"sync", "stopped", "confirmation_stopped"}.isdisjoint(plan), plan)
         path = self.root / "plan.json"
         rc.save_plan(path, plan)
         self.assertEqual(plan, rc.load_plan(path))

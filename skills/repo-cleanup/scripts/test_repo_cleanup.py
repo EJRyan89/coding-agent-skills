@@ -438,8 +438,8 @@ class Fixture(CleanupTestCase):
             result = action(rc.Services(gh=self.github))
         return result, output.getvalue().splitlines()
 
-    def sync(self, skip_checkout: bool = False) -> tuple[dict[str, Any] | None, list[str]]:
-        """What sync did, or None when it stopped before the sweep plans and applies, and the lines it printed."""
+    def sync(self, skip_checkout: bool = False) -> tuple[dict[str, Any] | str, list[str]]:
+        """What sync did, or the sweep state it stopped in before any plan, and the lines it printed."""
         return self.step(lambda services: rc.sync(str(self.clone), skip_checkout, services))
 
     def plan(self) -> tuple[int, list[str]]:
@@ -459,7 +459,7 @@ class Fixture(CleanupTestCase):
 
     def clean(self) -> tuple[list[str], list[str]]:
         finished, lines = self.sync()
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         _, planned = self.plan()
         _, applied = self.apply()
         return planned, applied
@@ -601,7 +601,7 @@ class SyncTests(Fixture):
         self.commit(self.other, "upstream work")
         git(self.other, "push", "--quiet", "origin", "main")
         finished, lines = self.sync()
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         self.assertEqual([["switched"]], facts(lines, "CHECKOUT"))
         forwarded = ["forwarded", git(self.other, "rev-parse", "HEAD")]
         self.assertEqual([forwarded], facts(lines, "FF_DEFAULT"))
@@ -621,12 +621,12 @@ class SyncTests(Fixture):
         upstream = self.commit(self.other, "upstream work")
         git(self.other, "push", "--quiet", "origin", "main")
         finished, lines = self.sync()
-        self.assertFalse(finished, lines)
+        self.assertEqual("dirty", finished, lines)
         self.assertEqual([["1"]], facts(lines, "DIRTY_MAIN"))
         self.assertEqual([], facts(lines, "CHECKOUT") + facts(lines, "FF_DEFAULT"))
         self.assertEqual(before, git(self.clone, "rev-parse", "refs/remotes/origin/main"))
         finished, lines = self.sync(skip_checkout=True)
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         self.assertEqual([["skipped"]], facts(lines, "CHECKOUT"))
         self.assertEqual([["forwarded", upstream]], facts(lines, "FF_DEFAULT"))
         self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
@@ -640,7 +640,7 @@ class SyncTests(Fixture):
         git(self.other, "push", "--quiet", "origin", "main")
         (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
         finished, lines = self.sync(skip_checkout=True)
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         self.assertEqual(
             [["failed", f"worktree {self.clone.as_posix()} has 1 uncommitted change"]], facts(lines, "FF_DEFAULT")
         )
@@ -651,21 +651,21 @@ class SyncTests(Fixture):
         git(self.clone, "switch", "--quiet", "-c", "topic")
         git(self.clone, "worktree", "add", "--quiet", str(self.area / "main wt"), "main")
         finished, lines = self.sync()
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         checkout = facts(lines, "CHECKOUT")
         self.assertEqual(1, len(checkout), lines)
         self.assertEqual("failed", checkout[0][0])
         self.assertIn("main", checkout[0][1], "Git's reason names the branch it could not switch to")
         self.assertEqual([["current"]], facts(lines, "FF_DEFAULT"))
         self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
-        self.assertEqual("failed", finished["checkout"] if finished else None)
+        self.assertEqual("failed", finished["checkout"] if isinstance(finished, dict) else None)
 
     def test_fetch_failure_stops_the_repository_before_it_is_switched(self) -> None:
         git(self.clone, "switch", "--quiet", "-c", "topic")
         git(self.clone, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
         git(self.clone, "config", "--unset", f"url.{self.remote.as_posix()}.insteadOf")
         finished, lines = self.sync()
-        self.assertFalse(finished, lines)
+        self.assertEqual("fetch-failed", finished, lines)
         self.assertEqual(1, len(facts(lines, "FETCH_FAILED")))
         self.assertEqual([], facts(lines, "CHECKOUT") + facts(lines, "FF_DEFAULT"))
         self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
@@ -673,12 +673,25 @@ class SyncTests(Fixture):
         self.assertTrue(summary[0].startswith("my repo skipped: fetch failed — "), summary)
         self.assertIn("nothing was fast-forwarded", summary[1])
 
+    def test_each_stop_is_returned_as_the_state_it_stopped_in_never_read_back_from_the_lines(self) -> None:
+        # The DIRTY_MAIN line a skip_checkout sync prints before a fetch that then fails must not make the stop dirty.
+        (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
+        self.assertEqual("dirty", self.sync()[0])
+        git(self.clone, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
+        git(self.clone, "config", "--unset", f"url.{self.remote.as_posix()}.insteadOf")
+        for skip_checkout, expected, fetched in ((False, "dirty", 0), (True, "fetch-failed", 1)):
+            with self.subTest(skip_checkout=skip_checkout):
+                finished, lines = self.sync(skip_checkout=skip_checkout)
+                self.assertEqual(expected, finished, lines)
+                self.assertEqual([["1"]], facts(lines, "DIRTY_MAIN"))
+                self.assertEqual(fetched, len(facts(lines, "FETCH_FAILED")), lines)
+
     def test_diverged_default_is_reported_and_left_alone(self) -> None:
         local = self.commit(self.clone, "local main work")
         self.commit(self.other, "upstream work")
         git(self.other, "push", "--quiet", "origin", "main")
         finished, lines = self.sync()
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         self.assertEqual([["diverged", "1", "1"]], facts(lines, "FF_DEFAULT"))
         self.assertEqual(local, self.tip("main"))
 
@@ -896,6 +909,34 @@ class PlanApplyTests(Fixture):
         )
         self.assertIn(f"  Preserved:               1 — secret-gone: {preserved_reason}", summary)
 
+    def test_no_planned_action_lets_a_deleting_command_act_without_the_offer_the_apply_wrote(self) -> None:
+        # Every action the plan can give a branch, and every offer kind: eligibility comes from the offer's events.
+        git(self.clone, "branch", "scratch", "main")
+        self.clean()
+        saved = rc.load_plan(self.plan_file)
+        offers = ("CONFIRM_LOCAL", "UNMERGED", "CONFIRM_DETACHED", "ORPHAN")
+        actions = ("keep", "delete", "remove-worktree", "remove-worktree-ask", "ask-remove-worktree", "ask-delete")
+        commands = {
+            "delete-local": ["--branch", "scratch"],
+            "force-delete": ["--branch", "scratch"],
+            "remove-directory": ["--path", self.clone.as_posix()],
+        }
+        for action in actions:
+            for command, named in commands.items():
+                with self.subTest(action=action, command=command):
+                    plan = json.loads(json.dumps(saved))
+                    plan["events"] = [event for event in plan["events"] if event[0] not in offers]
+                    for branch in plan["branches"]:
+                        if branch["name"] == "scratch":
+                            branch["action"] = action
+                    rc.save_plan(self.plan_file, plan)
+                    code, lines = self.invoke(command, "--plan", str(self.plan_file), *named)
+                    self.assertEqual(1, code, lines)
+                    self.assertEqual([], facts(lines, "DELETED") + facts(lines, "DELETED_DIR"), lines)
+                    self.assertEqual(1, len(facts(lines, "PRESERVED")), lines)
+                    self.assertTrue(facts(lines, "PRESERVED")[0][1].startswith("not "), lines)
+                    self.assertIsNotNone(self.tip("scratch"))
+
     def test_local_only_branches_wait_for_confirmation(self) -> None:
         git(self.clone, "branch", "local-merged", "main")
         git(self.clone, "switch", "--quiet", "-c", "local-work", "main")
@@ -1002,7 +1043,7 @@ class PlanApplyTests(Fixture):
         self.push_branch("behind")
         self.advance_remotely("behind")
         git(self.clone, "worktree", "add", "--quiet", str(self.area / "wt"), "merged-gone")
-        self.assertTrue(self.sync()[0])
+        self.assertIsInstance(self.sync()[0], dict)
 
         def snapshot() -> tuple[str, ...]:
             return (
@@ -1160,7 +1201,7 @@ class PlanApplyTests(Fixture):
         self.advance_remotely("topic")
         (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
         finished, lines = self.sync(skip_checkout=True)
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         _, planned = self.plan()
         _, applied = self.apply()
         self.assertEqual([], facts(planned, "FASTFORWARD"))
@@ -1207,7 +1248,7 @@ class PlanApplyTests(Fixture):
         self.commit(self.clone, "work stacked on the abandoned branch")
         (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
         finished, lines = self.sync(skip_checkout=True)
-        self.assertTrue(finished, lines)
+        self.assertIsInstance(finished, dict, lines)
         _, planned = self.plan()
         _, applied = self.apply()
         self.assertEqual("delete", self.branch_fact(planned, "abandoned")[4])
@@ -1466,7 +1507,7 @@ class SweepTests(Fixture):
         recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
         self.assertEqual((True, "could not run git: git vanished"), (recorded["applied"], recorded["stopped"]))
 
-    def test_a_later_command_that_completes_no_longer_reports_the_stopped_cleanup(self) -> None:
+    def test_a_branch_a_stopped_apply_never_offered_is_refused_and_the_stop_outlasts_later_commands(self) -> None:
         git(self.clone, "branch", "scratch", "main")
         self.push_branch("behind")
         self.advance_remotely("behind")
@@ -1476,7 +1517,8 @@ class SweepTests(Fixture):
                 raise GitError("git vanished", kind="execution")
             return git_client.subprocess_runner(command, timeout)
 
-        self.sweep(rc.Services(git=GitClient(failing), gh=self.github), "my repo")
+        _, swept = self.sweep(rc.Services(git=GitClient(failing), gh=self.github), "my repo")
+        self.assertEqual([], facts(swept, "CONFIRM_LOCAL"), "the apply stopped before its offers ran")
         plan = (self.root / "plans" / "my repo.json").as_posix()
         stopped = "my repo cleanup stopped partway (could not run git: git vanished); done before it:"
         code, lines = self.report()
@@ -1489,19 +1531,63 @@ class SweepTests(Fixture):
             facts(lines, "PROCESSED"),
         )
 
+        # The plan planned to ask about scratch, but the offer never named it, so no confirmation may delete it.
         code, lines = self.invoke("delete-local", "--plan", plan, "--branch", "scratch")
-        self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
-        self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
-        self.assertNotIn("stopped", json.loads(Path(plan).read_text(encoding="utf-8")))
+        self.assertEqual(1, code, lines)
+        self.assertEqual([], facts(lines, "DELETED"), lines)
+        self.assertEqual(
+            [["scratch", "not a local-only or closed branch offered by this plan"]], facts(lines, "PRESERVED")
+        )
+        self.assertIsNotNone(self.tip("scratch"))
+        self.assertEqual(stopped, self.summary(lines).splitlines()[0], "a later run never clears the apply's stop")
+        recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
+        self.assertEqual("could not run git: git vanished", recorded["stopped"])
         code, reported = self.report()
         self.assertEqual(0, code, reported)
         self.assertEqual("POLICY", reported[0].split("\t")[0], "the lists the sweep used come first")
         summary = [line for line in lines if line.startswith("SUMMARY\t")]
         self.assertEqual(summary, reported[2:-1], "the report shows the last summary printed")
+        self.assertEqual(stopped, self.summary(reported).splitlines()[0])
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 1 with an error."]],
+            facts(reported, "PROCESSED"),
+            "the stopped apply stays outstanding",
+        )
+
+    def test_a_confirmation_that_stops_is_reported_until_a_later_one_completes(self) -> None:
+        git(self.clone, "branch", "scratch", "main")
+        self.sweep(None, "my repo")
+        plan = (self.root / "plans" / "my repo.json").as_posix()
+
+        def failing(command: Sequence[str], timeout: float) -> GitResult:
+            if "branch" in command and "-d" in command:
+                raise GitError("git vanished", kind="execution")
+            return git_client.subprocess_runner(command, timeout)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = rc.main(
+                ["delete-local", "--plan", plan, "--branch", "scratch"],
+                rc.Services(git=GitClient(failing), gh=self.github),
+            )
+        lines = output.getvalue().splitlines()
+        self.assertEqual(1, code, lines)
+        self.assertEqual(
+            "my repo cleanup stopped partway (could not run git: git vanished); done before it:",
+            self.summary(lines).splitlines()[0],
+        )
+        recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
+        self.assertEqual("could not run git: git vanished", recorded["confirmation_stopped"])
+        self.assertNotIn("stopped", recorded, "the apply completed")
+
+        code, lines = self.invoke("delete-local", "--plan", plan, "--branch", "scratch")
+        self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
+        self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
+        self.assertTrue({"stopped", "confirmation_stopped"}.isdisjoint(json.loads(Path(plan).read_text("utf-8"))))
+        code, reported = self.report()
         self.assertEqual(
             [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error."]],
             facts(reported, "PROCESSED"),
-            "a stop a later command completed is not outstanding",
         )
 
     def report(self, *aborted: str, plans: Path | None = None) -> tuple[int, list[str]]:
@@ -1588,6 +1674,29 @@ class SweepTests(Fixture):
             "the summary delete-local printed last, as given",
         )
         self.assertIn("Local-only (kept):       1 — kept", self.summary(blocks["continued repo"]))
+
+    def test_a_continued_dirty_repository_whose_fetch_fails_is_recorded_fetch_failed_and_the_report_runs(self) -> None:
+        (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
+        code, lines = self.sweep(None, "my repo")
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "dirty"]], facts(lines, "REPO"))
+        git(self.clone, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
+        git(self.clone, "config", "--unset", f"url.{self.remote.as_posix()}.insteadOf")
+
+        code, lines = self.sweep(None, "--record", str(self.root / "plans"), "--skip-checkout", "my repo")
+        self.assertEqual(1, code, lines)
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "fetch-failed"]], facts(lines, "REPO"))
+        self.assertEqual(
+            [["1", "cleaned=0", "quiet=0", "dirty=0", "fetch-failed=1", "error=0", "git-failed=0"]],
+            facts(lines, "SWEPT"),
+        )
+        code, lines = self.report()
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "fetch-failed"]], facts(lines, "REPO"))
+        self.assertTrue(facts(lines, "SUMMARY")[0][0].startswith("my repo skipped: fetch failed — "), lines)
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 1 fetch failed, 0 aborted, 0 with an error."]],
+            facts(lines, "PROCESSED"),
+        )
 
     def test_the_report_refuses_an_aborted_repository_the_sweep_did_not_leave_dirty(self) -> None:
         self.sweep(None, "my repo")
