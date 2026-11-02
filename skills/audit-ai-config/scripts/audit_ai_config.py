@@ -32,6 +32,7 @@ import argparse
 import ast
 import contextlib
 import errno
+import fnmatch
 import hashlib
 import re
 import sys
@@ -51,8 +52,8 @@ import json_writer
 from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from check_provenance import Source
 from console import run_main
-from file_presence import NotAFile, is_directory, is_present
-from folder_walk import LINKED, SKIPPED_FOLDERS
+from file_presence import NotAFile, is_directory, is_occupied, is_present
+from folder_walk import LINKED, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
 from frontmatter import (
     COMMENT,
     NESTED_KEY,
@@ -279,10 +280,12 @@ def leaves_root(root: Path, path: Path) -> bool:
 
 @dataclass
 class Listing:
-    """The paths a walk or listing found inside the root, and the links it did not follow because they lead out."""
+    """The paths a walk or listing found inside the root, the links it did not follow because they lead out, and each
+    folder it could not list or entry it could not examine, with the reason, which the inventory reports."""
 
     paths: list[Path] = field(default_factory=list)
     outside: list[Path] = field(default_factory=list)
+    unread: list[tuple[Path, str]] = field(default_factory=list)
 
     def add(self, root: Path, path: Path) -> None:
         (self.outside if leaves_root(root, path) else self.paths).append(path)
@@ -291,14 +294,33 @@ class Listing:
 def list_directory(root: Path, directory: Path, pattern: str | None = None) -> Listing:
     """The entries of `directory`, or those `pattern` matches, sorted, never listing or naming one through a link
     that leads out of the root, which goes in `outside`, the directory's own link when it lies behind one; raises
-    OSError when the directory cannot be listed."""
+    OSError when the directory cannot be listed. It lists with iterdir, which raises there, where glob matches
+    nothing."""
     listing = Listing()
     if leaves_root(root, directory):
         listing.outside.append(outside_link(root, directory) or directory)
         return listing
-    for path in sorted(directory.iterdir() if pattern is None else directory.glob(pattern)):
-        listing.add(root, path)
+    for path in sorted(directory.iterdir()):
+        if pattern is None or fnmatch.fnmatch(path.name, pattern):
+            listing.add(root, path)
     return listing
+
+
+def regular_files(root: Path, listing: Listing) -> Listing:
+    """The entries of a listing a check reads as files: each regular file, and each entry whose stat fails, which may
+    be one and whose read reports itself, also kept in `unread` with the reason for the inventory. An entry that is
+    something else, a folder or a link to nothing, is no such file."""
+    files = Listing(outside=listing.outside, unread=list(listing.unread))
+    for path in listing.paths:
+        try:
+            if is_present(path):
+                files.add(root, path)
+        except NotAFile:
+            continue
+        except OSError as error:
+            files.add(root, path)
+            files.unread.append((path, str(error)))
+    return files
 
 
 def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: frozenset[str] = frozenset()) -> Listing:
@@ -307,8 +329,8 @@ def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: f
 
     A folder or wanted file that leads out of the root is neither entered nor read: the link it is, or lies behind when
     `base` does, goes in `outside`. A link that
-    stays inside the root is followed, but never back into a folder the walk is inside, and a folder that cannot be
-    listed holds nothing.
+    stays inside the root is followed, but never back into a folder the walk is inside. A folder that cannot be
+    listed, `base` included, and an entry that cannot be examined go in `unread` with the reason, never read as empty.
     """
     listing = Listing()
     if leaves_root(root, base):
@@ -316,6 +338,9 @@ def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: f
         return listing
     walk = folder_walk.walk_files(base, wanted, skipped=skipped, follow=lambda path: not leaves_root(root, path))
     listing.outside.extend(entry.path for entry in walk.not_entered if entry.kind == LINKED)
+    listing.unread.extend(
+        (entry.path, entry.reason) for entry in walk.not_entered if entry.kind in (UNLISTABLE, UNEXAMINED)
+    )
     for path in walk.files:
         listing.add(root, path)
     return listing
@@ -334,6 +359,12 @@ OUTSIDE_LINK = "Link leads out of the repository; the audit does not follow it"
 def outside_link_findings(root: Path, listing: Listing) -> list[Finding]:
     """One inventory WARNING per link a walk or listing did not follow; audit() keeps one per path."""
     return [outside_link_finding(root, path) for path in listing.outside]
+
+
+def unread_findings(root: Path, listing: Listing) -> list[Finding]:
+    """One inventory ERROR per folder a walk or listing could not list and entry it could not examine; audit() keeps
+    one per path."""
+    return [_unreadable_finding(root, path, reason) for path, reason in listing.unread]
 
 
 def outside_link_finding(root: Path, link: Path) -> Finding:
@@ -494,6 +525,9 @@ RECURSIVE_INVENTORY_NAMES: list[str] = ["AGENTS.md", "AGENTS.override.md"]
 # Every name a nested-file check walks the repository for; the inventory's walk reports a link to one that leads out.
 NESTED_FILE_NAMES: frozenset[str] = frozenset({*RECURSIVE_INVENTORY_NAMES, ".mcp.json"})
 GENERATOR_CANDIDATES: list[str] = [".github/scripts/ai_config.py", "scripts/ai_config.py"]
+# The folders whose presence alone a check reads, as the scope a repository's files show reads .codex and .github; the
+# inventory reports one it cannot examine, or a file in its place.
+INVENTORY_FOLDERS: list[str] = [".codex", ".github"]
 
 
 # The fixed files a check reads with no finding of its own when it cannot read or decode one, or with only a WARNING:
@@ -519,42 +553,64 @@ CLAUDE_AGENTS_MD_SINCE = "v2.1.277"
 
 
 def check_inventory(root: Path) -> list[Finding]:
-    return [
-        *_inventory_unreadable(root, [root / rel for rel in (*READ_FILES, *GENERATOR_CANDIDATES)]),
-        *_inventory_fixed_files(root),
-        *_inventory_recursive_files(root),
-        *_inventory_skill_directories(root),
-        *_inventory_agent_directories(root),
-        *_inventory_claude_rules(root),
-        *_inventory_codex_folders(root),
-        *_inventory_path_instructions(root),
-        *_inventory_generator_scripts(root),
-        *_inventory_parity_workflows(root),
-    ]
+    walk = walk_files(root, root, lambda name: name in NESTED_FILE_NAMES, SKIPPED_FOLDERS)
+    return _one_unread_error_per_path(
+        [
+            *_inventory_unreadable(root, [root / rel for rel in (*READ_FILES, *GENERATOR_CANDIDATES)]),
+            *_inventory_fixed_files(root),
+            *_inventory_folders(root),
+            *_inventory_recursive_files(root, walk),
+            *_inventory_skill_directories(root),
+            *_inventory_agent_directories(root),
+            *_inventory_claude_rules(root),
+            *_inventory_codex_folders(root),
+            *_inventory_path_instructions(root),
+            *_inventory_generator_scripts(root),
+            *_inventory_parity_workflows(root),
+            # Every folder below the root the repository walk could not list, and every entry it could not examine,
+            # which a nested-file check skips; last, so a folder a reporter above names keeps that one's reason.
+            *unread_findings(root, walk),
+        ]
+    )
 
 
 def _inventory_finding(path: str, message: str) -> Finding:
     return Finding(severity="INFO", check="inventory", path=path, message=message)
 
 
-def _inventory_unreadable(root: Path, paths: list[Path]) -> list[Finding]:
-    """An ERROR for each of these files that is there but cannot be read or decoded: one whose stat fails, or a folder
-    or anything else in a file's place, is not taken for no file."""
+def _inventory_unreadable(root: Path, paths: list[Path], *, read: bool = True) -> list[Finding]:
+    """An ERROR for each of these files that is there but cannot be read or decoded, or, without `read`, examined:
+    one whose stat fails, or a folder or anything else in a file's place, is not taken for no file."""
     findings: list[Finding] = []
     for path in paths:
         try:
-            if not is_present(path):
-                continue
-            read_text(root, path)
+            if is_present(path) and read:
+                read_text(root, path)
         except (OSError, UnicodeError) as error:
             findings.append(_unreadable_finding(root, path, error))
     return findings
 
 
-def _unreadable_finding(root: Path, path: Path, error: Exception) -> Finding:
-    """The inventory ERROR for a file or folder a check reads that is there but cannot be read."""
-    message = f"Could not read, so the checks that read it did not run: {error}"
-    return Finding("ERROR", "inventory", path.relative_to(root).as_posix(), message=message)
+UNREAD = "Could not read, so the checks that read it did not run: "
+
+
+def _unreadable_finding(root: Path, path: Path, error: Exception | str) -> Finding:
+    """The inventory ERROR for a file or folder a check reads that is there but cannot be read, examined, or listed."""
+    return Finding("ERROR", "inventory", path.relative_to(root).as_posix(), message=f"{UNREAD}{error}")
+
+
+def _one_unread_error_per_path(findings: list[Finding]) -> list[Finding]:
+    """The findings with each path that could not be read, examined, or listed reported once, by the first reporter,
+    though several listings or checks meet it."""
+    seen: set[str | None] = set()
+    kept: list[Finding] = []
+    for finding in findings:
+        if finding.severity == "ERROR" and finding.message.startswith((UNREAD, UNLISTED)):
+            if finding.path in seen:
+                continue
+            seen.add(finding.path)
+        kept.append(finding)
+    return kept
 
 
 def _inventory_fixed_files(root: Path) -> list[Finding]:
@@ -569,64 +625,104 @@ def _fixed_files(root: Path, rel_paths: list[str], found: str) -> list[Finding]:
         link = outside_link(root, root / rel_path)
         if link is not None:
             findings.append(outside_link_finding(root, link))
-        elif found_file(root / rel_path):
-            findings.append(_inventory_finding(rel_path, found.format(rel_path)))
+            continue
+        try:
+            if is_present(root / rel_path):
+                findings.append(_inventory_finding(rel_path, found.format(rel_path)))
+        except OSError as error:
+            findings.append(_unreadable_finding(root, root / rel_path, error))
     return findings
 
 
-def _inventory_recursive_files(root: Path) -> list[Finding]:
-    """Each nested instruction file, and each directory or nested-file link that leads out of the repository, which
-    the nested-file checks' walks do not follow either."""
-    walk = walk_files(root, root, lambda name: name in NESTED_FILE_NAMES, SKIPPED_FOLDERS)
+def _inventory_folders(root: Path) -> list[Finding]:
+    """An ERROR for each of INVENTORY_FOLDERS that cannot be examined or has a file in its place."""
+    findings: list[Finding] = []
+    for rel in INVENTORY_FOLDERS:
+        try:
+            is_directory(root / rel)
+        except OSError as error:
+            findings.append(_unreadable_finding(root, root / rel, error))
+    return findings
+
+
+def _inventory_recursive_files(root: Path, walk: Listing) -> list[Finding]:
+    """Each nested instruction file the repository walk found, an ERROR for each file it found that cannot be
+    examined, or, for an AGENTS.md, read, and each directory or nested-file link that leads out of the repository,
+    which the nested-file checks' walks do not follow either."""
     found = [
         _inventory_finding(rel, f"Found {rel}")
         for name in RECURSIVE_INVENTORY_NAMES
         for rel in (path.relative_to(root).as_posix() for path in walk.paths if path.name == name)
     ]
-    unreadable = _inventory_unreadable(root, [path for path in walk.paths if path.name == "AGENTS.md"])
+    unreadable = [
+        *_inventory_unreadable(root, [path for path in walk.paths if path.name == "AGENTS.md"]),
+        *_inventory_unreadable(root, [path for path in walk.paths if path.name != "AGENTS.md"], read=False),
+    ]
     return [*unreadable, *found, *outside_link_findings(root, walk)]
 
 
 def skill_files(root: Path, directory: Path) -> Listing:
     """`<directory>/<name>/SKILL.md` for each folder directly in `directory`, as `glob("*/SKILL.md")` finds them, but
-    never through a link that leads out of the root; a directory that cannot be listed holds none."""
+    never through a link that leads out of the root. A directory that cannot be listed, and a SKILL.md whose stat
+    fails or with something else in its place, go in `unread`; one whose stat fails is kept too, as regular_files
+    keeps one."""
     try:
         folders = list_directory(root, directory)
-    except OSError:
-        return Listing()
+    except OSError as error:
+        return Listing(unread=[(directory, str(error))])
     listing = Listing(outside=folders.outside)
     for folder in folders.paths:
-        if (folder / "SKILL.md").is_file():
-            listing.add(root, folder / "SKILL.md")
+        skill = folder / "SKILL.md"
+        try:
+            if is_present(skill):
+                listing.add(root, skill)
+        except NotAFile as error:
+            listing.unread.append((skill, str(error)))
+        except OSError as error:
+            listing.add(root, skill)
+            listing.unread.append((skill, str(error)))
     return listing
 
 
 def _inventory_skill_directories(root: Path) -> list[Finding]:
+    """The skills in each skill folder, and an ERROR for a folder, or a skill's SKILL.md, that cannot be examined or
+    listed, or holds the wrong kind."""
     findings: list[Finding] = []
     for skill_dir in (".claude/skills", ".agents/skills", ".github/skills"):
         d = root / skill_dir
-        if found_folder(d):
-            listing = skill_files(root, d)
-            skills = [p.parent.name for p in listing.paths]
-            if skills:
-                findings.append(_inventory_finding(skill_dir, f"Skills found: {', '.join(sorted(skills))}"))
-            findings.extend(outside_link_findings(root, listing))
+        try:
+            if not is_directory(d):
+                continue
+        except OSError as error:
+            findings.append(_unreadable_finding(root, d, error))
+            continue
+        listing = skill_files(root, d)
+        skills = [p.parent.name for p in listing.paths]
+        if skills:
+            findings.append(_inventory_finding(skill_dir, f"Skills found: {', '.join(sorted(skills))}"))
+        findings.extend(outside_link_findings(root, listing))
+        findings.extend(unread_findings(root, listing))
     return findings
 
 
 def _inventory_agent_directories(root: Path) -> list[Finding]:
+    """The custom agent files in each agent folder, and an ERROR for a folder, or an entry in it, that cannot be
+    examined or listed, or a file in the folder's place."""
     findings: list[Finding] = []
     for agent_dir in (".github/agents", ".claude/agents"):
         d = root / agent_dir
-        if found_folder(d):
-            try:
-                listing = list_directory(root, d)
-            except OSError:
-                continue  # check_copilot_configuration reports a directory it cannot list
-            agents = [p.name for p in listing.paths if p.is_file()]
-            if agents:
-                findings.append(_inventory_finding(agent_dir, f"Custom agent files found: {', '.join(sorted(agents))}"))
-            findings.extend(outside_link_findings(root, listing))
+        try:
+            if not is_directory(d):
+                continue
+            listing = regular_files(root, list_directory(root, d))
+        except OSError as error:
+            findings.append(_unreadable_finding(root, d, error))
+            continue
+        agents = [p.name for p in listing.paths]
+        if agents:
+            findings.append(_inventory_finding(agent_dir, f"Custom agent files found: {', '.join(sorted(agents))}"))
+        findings.extend(outside_link_findings(root, listing))
+        findings.extend(unread_findings(root, listing))
     return findings
 
 
@@ -638,23 +734,27 @@ def _inventory_claude_rules(root: Path) -> list[Finding]:
             return []
     except OSError as error:
         return [_unreadable_finding(root, base, error)]  # _claude_rules leaves a folder it cannot read to this ERROR
-    rules = sorted(path.relative_to(base).as_posix() for path in walk_files(root, base, _is_markdown).paths)
-    return [_inventory_finding(".claude/rules", f"Rules found: {', '.join(rules)}")] if rules else []
+    walk = walk_files(root, base, _is_markdown)
+    rules = sorted(path.relative_to(base).as_posix() for path in walk.paths)
+    found = [_inventory_finding(".claude/rules", f"Rules found: {', '.join(rules)}")] if rules else []
+    return [*found, *unread_findings(root, walk)]
 
 
 def _inventory_codex_folders(root: Path) -> list[Finding]:
     """Codex's custom agents and rules, the files directly in .codex/agents and .codex/rules its pages describe, and
-    an ERROR for either folder that cannot be examined or listed, or has a file in its place, which the Codex checks
-    leave to it; the Codex checks report a link either listing skips."""
+    an ERROR for either folder that cannot be examined or listed, or has a file in its place, and for each entry in it
+    that cannot be examined, which the Codex checks leave to it; the Codex checks report a link either listing skips."""
     findings: list[Finding] = []
     for folder, pattern, kind in ((".codex/agents", "*.toml", "Custom agents"), (".codex/rules", "*.rules", "Rules")):
         try:
-            names = [path.name for path in _codex_files(root, folder, pattern).paths]
+            listing = _codex_files(root, folder, pattern)
         except OSError as error:
             findings.append(_unreadable_finding(root, root / folder, error))
             continue
+        names = [path.name for path in listing.paths]
         if names:
             findings.append(_inventory_finding(folder, f"{kind} found: {', '.join(names)}"))
+        findings.extend(unread_findings(root, listing))
     return findings
 
 
@@ -671,7 +771,7 @@ def _inventory_path_instructions(root: Path) -> list[Finding]:
     except OSError as error:
         return [_unreadable_finding(root, instructions_dir, error)]
     walk = walk_files(root, instructions_dir, _is_path_instructions)
-    findings = outside_link_findings(root, walk)
+    findings = [*outside_link_findings(root, walk), *unread_findings(root, walk)]
     if walk.paths:
         findings.insert(
             0, _inventory_finding(".github/instructions", f"{len(walk.paths)} path-specific instruction file(s)")
@@ -700,8 +800,9 @@ def _inventory_parity_workflows(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for listing in listings:
         # A folder the listing found by a workflow's name is no workflow; an entry it cannot examine is reported.
-        findings.extend(_inventory_unreadable(root, [path for path in listing.paths if not path.is_dir()]))
-        for wf in listing.paths:
+        workflows = regular_files(root, listing)
+        findings.extend(_inventory_unreadable(root, workflows.paths))
+        for wf in workflows.paths:
             wf_content = read_text_or_none(root, wf)
             if wf_content is not None and ("ai-config" in wf_content.lower() or "ai_config" in wf_content.lower()):
                 rel = wf.relative_to(root).as_posix()
@@ -1067,6 +1168,11 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
             continue
         walk = walk_files(root, directory, lambda name: name == "SKILL.md")
         findings.extend(outside_link_findings(root, walk))
+        # A folder below it the walk cannot list, which the repository walk skips by its name or reports too.
+        findings.extend(
+            Finding("ERROR", "copilot-config", path.relative_to(root).as_posix(), message=f"{UNREAD}{reason}")
+            for path, reason in walk.unread
+        )
         for path in sorted(walk.paths):
             findings.extend(_validate_skill(path, root))
             if skill_dir == ".github/skills":
@@ -1078,12 +1184,12 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         try:
             if not is_directory(directory):
                 continue
-            listing = list_directory(root, directory)
+            listing = regular_files(root, list_directory(root, directory))
         except OSError as error:
             findings.append(_unlistable_finding(agent_dir, error))
             continue
         findings.extend(outside_link_findings(root, listing))
-        for path in (p for p in listing.paths if p.is_file()):
+        for path in listing.paths:  # the inventory reports an entry it cannot examine, whose read reports itself
             if agent_dir == ".claude/agents":
                 # Claude Code's sub-agents page reads a project agent from a Markdown file here, and Copilot CLI's
                 # command reference reads its custom agents from here after .github/agents.
@@ -1096,9 +1202,12 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
     return findings
 
 
+UNLISTED = "Could not list the directory: "
+
+
 def _unlistable_finding(directory: str, error: OSError) -> Finding:
     """The ERROR for a skill or agent folder that is there but cannot be listed, or a file in a folder's place."""
-    return Finding("ERROR", "copilot-config", directory, message=f"Could not list the directory: {error.strerror}")
+    return Finding("ERROR", "copilot-config", directory, message=f"{UNLISTED}{error.strerror}")
 
 
 def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
@@ -1347,18 +1456,19 @@ def derive_file_scope(root: Path) -> dict[str, list[str]]:
     a manifest targets them.
     """
     runtimes: list[str] = []
-    if any((root / name).is_file() for name in (*CLAUDE_MD_FILES, CLAUDE_AGENTS_MD)):
+    # The inventory reports each of these paths that cannot be examined, or holds the wrong kind, as an ERROR.
+    if any(found_file(root / name) for name in (*CLAUDE_MD_FILES, CLAUDE_AGENTS_MD)):
         runtimes.append("claude")
     if (
-        any((root / name).is_file() for name in CODEX_INSTRUCTION_FILES)
-        or (root / ".codex").is_dir()
-        or (root / ".agents/skills").is_dir()
+        any(found_file(root / name) for name in CODEX_INSTRUCTION_FILES)
+        or found_folder(root / ".codex")
+        or found_folder(root / ".agents/skills")
     ):
         runtimes.append("codex")
     surfaces: list[str] = []
-    if (root / ".github").is_dir():
+    if found_folder(root / ".github"):
         surfaces.extend(("copilot_cli", "code_review"))
-        if (root / ".github/workflows/copilot-setup-steps.yml").is_file():
+        if found_file(root / ".github/workflows/copilot-setup-steps.yml"):
             surfaces.append("cloud_agent")
     return {"runtimes": runtimes, "surfaces": surfaces} if runtimes or surfaces else {}
 
@@ -1644,7 +1754,7 @@ def _validate_claude_manifest(root: Path, data: dict[str, Any]) -> tuple[str | N
     schema_errors = _validate_manifest_schema(data)
     if schema_errors:
         return None, {}, [_manifest_authority_finding("ERROR", f"Manifest schema: {msg}") for msg in schema_errors]
-    if not (root / "CLAUDE.md").is_file():
+    if not _claude_md_there(root):
         return (
             None,
             {},
@@ -1662,14 +1772,25 @@ def _validate_claude_manifest(root: Path, data: dict[str, Any]) -> tuple[str | N
     return "manifest", data, []
 
 
+def _claude_md_there(root: Path) -> bool:
+    """Whether the root CLAUDE.md a manifest names is there: one that cannot be examined is, since only its read can
+    tell, and the inventory reports it as an ERROR; a folder in its place is not."""
+    try:
+        return is_present(root / "CLAUDE.md")
+    except NotAFile:
+        return False
+    except OSError:
+        return True
+
+
 def _has_claude_md(root: Path) -> bool:
-    return any((root / name).is_file() for name in CLAUDE_MD_FILES)
+    return any(found_file(root / name) for name in CLAUDE_MD_FILES)
 
 
 def claude_md_text(root: Path) -> tuple[str, str] | None:
     """The first CLAUDE.md Claude Code reads, as a path, and the text of every one it reads, or None when there is
-    none it can read; the inventory reports one it cannot read as an ERROR."""
-    found = [(name, read_text_or_none(root, root / name)) for name in CLAUDE_MD_FILES if (root / name).is_file()]
+    none it can read; the inventory reports one it cannot read or examine as an ERROR."""
+    found = [(name, read_text_or_none(root, root / name)) for name in CLAUDE_MD_FILES if found_file(root / name)]
     texts = [text for _, text in found if text is not None]
     return (found[0][0], "\n".join(texts)) if texts else None
 
@@ -2517,8 +2638,9 @@ def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[
     if not (sources.agents_md and sources.agents_redirects):
         return findings
     for nested in _nested_files(root, "AGENTS.md"):
-        if (nested.parent / "AGENTS.override.md").is_file():
-            continue  # Codex takes the override beside it, which the warning above names
+        if found_file(nested.parent / "AGENTS.override.md"):
+            continue  # Codex takes the override beside it, which the warning above names; the inventory reports one
+            # it cannot examine
         try:
             if is_redirecting_agents_md(read_text(root, nested)):
                 continue
@@ -2652,7 +2774,7 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
             ("AGENTS.md", sources.agents_md and not sources.agents_redirects),
             ("CLAUDE.md", sources.claude_md),
             ("GEMINI.md", sources.gemini_md),
-            ("REVIEW.md", (root / "REVIEW.md").is_file()),
+            ("REVIEW.md", found_file(root / "REVIEW.md")),
             (".github/copilot-instructions.md", sources.copilot_instructions),
             (".github/instructions", sources.path_instructions),
         )
@@ -3079,7 +3201,12 @@ def _missing_imports(root: Path, rel: str, imports: list[str]) -> list[Finding]:
         if name.startswith(("~", "/")) or not ("/" in name or "." in name):
             continue
         target = (root / rel).parent / name
-        if leaves_root(root, target) or target.exists():
+        try:
+            if leaves_root(root, target) or is_occupied(target):
+                continue
+        except OSError as error:
+            message = f"Import @{name} names a path that could not be examined, so whether it loads is unknown: {error}"
+            findings.append(Finding("WARNING", "claude-memory", rel, message=message))
             continue
         findings.append(
             Finding("WARNING", "claude-memory", rel, message=f"Import @{name} names no file, so nothing loads for it")
@@ -3229,8 +3356,7 @@ def _codex_files(root: Path, folder: str, pattern: str) -> Listing:
     directory = root / folder
     if not is_directory(directory):
         return Listing()
-    listing = list_directory(root, directory, pattern)
-    return Listing([path for path in listing.paths if path.is_file()], listing.outside)
+    return regular_files(root, list_directory(root, directory, pattern))
 
 
 def _codex_agents(root: Path) -> list[Finding]:
@@ -3503,7 +3629,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
                 continue
         except OSError:
             continue  # check_copilot_configuration reports a folder it cannot list as an ERROR
-        for path in sorted(p for p in walk_files(root, base, lambda name: name.endswith(".md")).paths if p.is_file()):
+        for path in sorted(regular_files(root, walk_files(root, base, lambda name: name.endswith(".md"))).paths):
             rel = path.relative_to(root).as_posix()
             try:
                 generated = has_ownership_marker(read_text(root, path))
@@ -3512,7 +3638,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
             if generated or rel in artifact_paths:
                 note(rel, "Generated Copilot projection is provenance-checked only, not reconstructed")
     instructions = root / ".github/instructions"
-    if instructions.is_dir() and walk_files(root, instructions, _is_path_instructions).paths:
+    if found_folder(instructions) and walk_files(root, instructions, _is_path_instructions).paths:
         note(".github/instructions", "Path-specific instructions are not checked for contradictions or overlap")
     for nested in _nested_files(root, ".mcp.json"):
         note(nested.relative_to(root).as_posix(), "Nested .mcp.json files are not validated")
@@ -3532,7 +3658,7 @@ def audit(root: Path) -> AuditResult:
     # Step 1: Inventory
     result.findings.extend(check_inventory(root))
     _authority_and_checks(root, result)
-    result.findings = _one_finding_per_link(result.findings)
+    result.findings = _one_unread_error_per_path(_one_finding_per_link(result.findings))
     return result
 
 
@@ -3711,7 +3837,12 @@ def main() -> int:
     args = parser.parse_args()
 
     git_marker = args.root / ".git"
-    if not git_marker.exists():
+    try:
+        checkout = is_occupied(git_marker)
+    except OSError as error:
+        print(f"FAILED {args.root} could not be examined for a .git: {error}")
+        return 1
+    if not checkout:
         print(f"FAILED {args.root} is not a Git repository (no .git found)")
         return 1
 
