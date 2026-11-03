@@ -710,7 +710,7 @@ SEPARATORS = ("/", "\\")
 def _last_item(value: ast.expr) -> ast.expr | None:
     """The last value a `%` formatting fills in: a tuple's last item, or the one value itself."""
     if isinstance(value, ast.Tuple):
-        return value.elts[-1] if value.elts and not isinstance(value.elts[-1], ast.Starred) else None
+        return value.elts[-1] if value.elts else None
     return value
 
 
@@ -720,114 +720,111 @@ class _ContainmentReader:
     def __init__(self, tree: ast.Module) -> None:
         self.resolver = CallableResolver(tree)
         self.imported = import_aliases(tree)
+        # The names being followed, by the scope that owns each, so a name bound in a cycle is followed once.
+        self.following: set[tuple[int, str]] = set()
         # What `name += value` adds to a name, by the scope that owns the name, since it binds no value of its own.
         self.added: dict[tuple[int, str], list[ast.expr]] = {}
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.AugAssign)
-                and isinstance(node.op, ast.Add)
-                and isinstance(node.target, ast.Name)
-                and (owner := self._owner(node.target)) is not None
-            ):
-                self.added.setdefault((owner[0], node.target.id), []).append(node.value)
+            if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and isinstance(node.target, ast.Name):
+                key, _ = self._owner(node.target)
+                self.added.setdefault(key, []).append(node.value)
 
-    def _owner(self, node: ast.Name) -> tuple[int, list[ast.expr | str | None]] | None:
-        """The identity of the scope that owns a name, and what that scope binds the name to, or None."""
-        scope = self.resolver.scopes.get(id(node))
-        owner = scope.owner(node.id) if scope is not None else None
-        return (id(owner), owner.bindings.get(node.id, [])) if owner is not None else None
-
-    def _bound(self, node: ast.Name, seen: frozenset[int]) -> tuple[list[ast.expr], list[ast.expr]]:
-        """Every expression the module binds a name to, and every one it adds to it, or none once already followed."""
-        owner = self._owner(node) if id(node) not in seen else None
+    def _owner(self, node: ast.Name) -> tuple[tuple[int, str], list[ast.expr]]:
+        """The key of the scope that owns a name, with the name, and every expression that scope binds it to; a name
+        bound nowhere, such as a builtin, is owned by no scope and bound to nothing."""
+        owner = self.resolver.scopes[id(node)].owner(node.id)
         if owner is None:
-            return [], []
-        values = [value for value in owner[1] if isinstance(value, ast.expr)]
-        return values, self.added.get((owner[0], node.id), [])
+            return (0, node.id), []
+        return (id(owner), node.id), [value for value in owner.bindings[node.id] if isinstance(value, ast.expr)]
+
+    def _follow(self, node: ast.Name, read: Callable[[ast.expr], bool], added: Callable[[ast.expr], bool]) -> bool:
+        """Whether `read` holds for any expression the module binds a name to, or `added` for any it adds to it with
+        `+=`; False for a name already being followed, so a cycle of names ends."""
+        key, values = self._owner(node)
+        if key in self.following:
+            return False
+        self.following.add(key)
+        try:
+            return any(map(read, values)) or any(map(added, self.added.get(key, [])))
+        finally:
+            self.following.discard(key)
 
     def name(self, node: ast.AST) -> str:
-        """The dotted name an expression stands for, through the module's imports and the names it binds once."""
-        resolved = self.resolver.name(node) if id(node) in self.resolver.scopes else ""
-        return resolved or qualified_name(node, self.imported)
+        """The dotted name an expression stands for, through the names the module binds once, or else through its
+        imports, which still name a module it imports in two places."""
+        return self.resolver.name(node) or qualified_name(node, self.imported)
 
-    def ends(self, value: ast.expr | None, seen: frozenset[int] = frozenset()) -> bool:
+    def ends(self, value: ast.expr | None) -> bool:
         """Whether the text `value` gives ends in a separator, a literal such as "/" or "skills/" included."""
-        if value is None:
-            return False
         if isinstance(value, ast.Constant):
             return isinstance(value.value, str) and value.value.endswith(SEPARATORS)
-        if self.name(value) in SEPARATOR_NAMES:
-            return True
+        if isinstance(value, ast.NamedExpr):
+            return self.ends(value.value)
         if isinstance(value, ast.Name):
-            values, added = self._bound(value, seen)
-            return any(self.ends(item, seen | {id(value)}) for item in [*values, *added])
-        return self.built(value, seen)
+            return self.name(value) in SEPARATOR_NAMES or self._follow(value, self.ends, self.ends)
+        return value is not None and (self.name(value) in SEPARATOR_NAMES or self.built(value))
 
-    def built(self, value: ast.expr | None, seen: frozenset[int] = frozenset()) -> bool:
+    def built(self, value: ast.expr) -> bool:
         """Whether `value` builds a text ending in a separator from another, as a folder and its separator are built:
         by `+`, an f-string, `%` or `str.format`, a `join` of a path module or of a string, or any of these held in a
         name, by its binding or a `+=`, or in an item of a tuple or list of prefixes. A literal alone is no folder."""
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
-            return self.ends(value.right, seen)
+            return self.ends(value.right)
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod) and isinstance(value.left, ast.Constant):
             template = value.left.value
             return isinstance(template, str) and (
-                template.endswith(SEPARATORS) or (template.endswith("%s") and self.ends(_last_item(value.right), seen))
+                template.endswith(SEPARATORS) or (template.endswith("%s") and self.ends(_last_item(value.right)))
             )
         if isinstance(value, ast.JoinedStr):
             last = value.values[-1] if value.values else None
-            return self.ends(last.value if isinstance(last, ast.FormattedValue) else last, seen)
+            return self.ends(last.value if isinstance(last, ast.FormattedValue) else last)
         if isinstance(value, ast.Call):
-            return self._built_by_call(value, seen)
+            return self._built_by_call(value)
         if isinstance(value, ast.Tuple | ast.List | ast.Set):
-            return any(self.built(item, seen) for item in value.elts)
+            return any(map(self.built, value.elts))
+        if isinstance(value, ast.NamedExpr):
+            return self.built(value.value)
         if isinstance(value, ast.Name):
-            values, added = self._bound(value, seen)
-            inner = seen | {id(value)}
-            return any(self.built(item, inner) for item in values) or any(self.ends(item, inner) for item in added)
+            return self._follow(value, self.built, self.ends)
         return False
 
-    def _built_by_call(self, call: ast.Call, seen: frozenset[int]) -> bool:
-        arguments = [argument for argument in call.args if not isinstance(argument, ast.Starred)]
-        if len(arguments) != len(call.args) or not arguments:
-            return False
+    def _built_by_call(self, call: ast.Call) -> bool:
         function = self.name(call.func)
+        last = call.args[-1:]
         if function in PATH_JOINS:
-            last = arguments[-1]
-            return (isinstance(last, ast.Constant) and last.value == "") or self.ends(last, seen)
+            return any(self.ends(item) or (isinstance(item, ast.Constant) and item.value == "") for item in last)
         if function == "str.format":
-            template, *arguments = arguments
+            template, last = (call.args[0] if call.args else None), call.args[1:][-1:]
         elif isinstance(call.func, ast.Attribute) and call.func.attr == "format":
             template = call.func.value
         elif isinstance(call.func, ast.Attribute) and call.func.attr == "join":
-            return self._joined(call.func.value, arguments[0], seen)
+            return any(self._joined(call.func.value, items) for items in call.args[:1])
         else:
             return False
         if not (isinstance(template, ast.Constant) and isinstance(template.value, str)):
             return False
-        return template.value.endswith(SEPARATORS) or (
-            template.value.endswith("{}") and any(self.ends(argument, seen) for argument in arguments[-1:])
-        )
+        return template.value.endswith(SEPARATORS) or (template.value.endswith("{}") and any(map(self.ends, last)))
 
-    def _joined(self, joiner: ast.expr, items: ast.expr, seen: frozenset[int]) -> bool:
+    def _joined(self, joiner: ast.expr, items: ast.expr) -> bool:
         """Whether a join of a literal tuple or list ends in a separator: its last item does, or the joiner does and
         the last item is empty."""
-        if not (isinstance(items, ast.Tuple | ast.List) and items.elts) or isinstance(items.elts[-1], ast.Starred):
+        if not (isinstance(items, ast.Tuple | ast.List) and items.elts):
             return False
         last = items.elts[-1]
         empty = isinstance(last, ast.Constant) and last.value == ""
-        return self.ends(last, seen) or (empty and self.ends(joiner, seen))
+        return self.ends(last) or (empty and self.ends(joiner))
 
-    def _relative(self, value: ast.expr, seen: frozenset[int] = frozenset()) -> bool:
+    def _relative(self, value: ast.expr) -> bool:
         """Whether `value` holds a relpath's result: the call itself, or a name the module binds to one."""
-        for node in ast.walk(value):
-            if isinstance(node, ast.Call) and self.name(node.func) in RELATIVE_PATHS:
-                return True
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                values, _ = self._bound(node, seen)
-                if any(self._relative(item, seen | {id(node)}) for item in values):
-                    return True
-        return False
+        return any(
+            (isinstance(node, ast.Call) and self.name(node.func) in RELATIVE_PATHS)
+            or (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and self._follow(node, self._relative, self._relative)
+            )
+            for node in ast.walk(value)
+        )
 
     def _parent(self, value: ast.expr) -> bool:
         """Whether `value` is a parent segment, as a literal starting with "..", os.pardir, either followed by more,
@@ -846,7 +843,11 @@ class _ContainmentReader:
         comparison of a path's leading parts."""
         if isinstance(node, ast.Attribute) and node.attr == "is_relative_to":
             return "is_relative_to"
-        if isinstance(node, ast.Attribute | ast.Name) and (function := self.name(node)) in COMMON_PATH_FUNCTIONS:
+        if (
+            isinstance(node, ast.Attribute | ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and (function := self.name(node)) in COMMON_PATH_FUNCTIONS
+        ):
             return function.rpartition(".")[2]
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "startswith":
             subjects = [node.func.value, *node.args]

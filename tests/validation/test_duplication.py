@@ -816,7 +816,13 @@ from posixpath import commonprefix as common
 
 from path_containment import posix_within, within
 
+try:
+    import genericpath
+except ImportError:
+    genericpath = None
+
 SEPARATOR = "/"
+join = os.path.join
 
 
 def hand_written(path: Path, root: Path, name: str, top: str) -> list[bool]:
@@ -832,7 +838,7 @@ def hand_written(path: Path, root: Path, name: str, top: str) -> list[bool]:
     ]
 
 
-def widened(name: str, top: str, other: str, path: str, root: str) -> list[bool]:
+def widened(name: str, top: str, other: str, path: str, root: str, *rest: str) -> list[bool]:
     prefix = top + "/"
     added = top
     added += os.sep
@@ -842,6 +848,7 @@ def widened(name: str, top: str, other: str, path: str, root: str) -> list[bool]
         ntpath.commonpath([path, root]) == root,
         posixpath.commonpath([path, root]) == root,
         common([path, root]) == root,
+        genericpath.commonprefix([path, root]) == root,
         name.startswith(prefix),
         name.startswith((top + "/", other + "/")),
         name.startswith(prefixes),
@@ -857,6 +864,13 @@ def widened(name: str, top: str, other: str, path: str, root: str) -> list[bool]
         name.startswith("".join([top, "/"])),
         name.startswith(os.sep.join([top, ""])),
         str.startswith(name, top + "/"),
+        name.startswith(join(top, "sub/")),
+        name.startswith(os.path.join(top, *rest, "")),
+        name.startswith(top + os.path.altsep),
+        name.startswith(top + "\\\\"),
+        name.startswith(held := top + "/"),
+        name.startswith(top + (tail := "/")),
+        name.startswith(prefix),
         relative.startswith(".."),
         relative == os.pardir,
         posixpath.relpath(path, root).startswith(os.pardir + os.sep),
@@ -868,6 +882,9 @@ def conforms(path: Path, root: Path, name: str, top: str, other: str, *rest: str
     first = top
     second = first
     first = second
+    looped = top + back
+    back = looped
+    added = top
     label = top
     label += "-"
     fixed = "skills/"
@@ -881,22 +898,38 @@ def conforms(path: Path, root: Path, name: str, top: str, other: str, *rest: str
         name.startswith(fixed),
         name.startswith(top + "-"),
         name.startswith(label),
+        name.startswith(added),
         name.startswith((top, other)),
         name.startswith("{}-".format(top)),
         name.startswith("%s-" % top),
         name.startswith(os.path.join(top, "x")),
+        name.startswith(os.path.join(top, "sub/", "x")),
+        name.startswith(os.path.join()),
         name.startswith(", ".join([top, other])),
         relative == "docs",
         relative.startswith("docs"),
         ".." in name.split("/"),
         name.startswith(*rest),
         name.startswith("%s%s" % (top, other)),
+        name.startswith("%s%s%s" % (top, os.sep, other)),
+        name.startswith("%s" % ()),
         name.startswith("%s/%s" % (top, *rest)),
+        name.startswith(f""),
+        name.startswith(f"{top}/{other}"),
         name.startswith("{}{}".format(top, other)),
+        name.startswith("{}{}{}".format(top, os.sep, other)),
         name.startswith(str.format("{}")),
+        name.startswith(str.format()),
+        name.startswith(str.format("{}{}", os.sep, other)),
+        name.startswith(top.format(other)),
+        name.startswith(make_prefix(top)),
         name.startswith(os.sep.join([top, "x"])),
         name.startswith("".join([top, *rest])),
+        name.startswith("".join([top, "/", other])),
+        name.startswith("".join([])),
+        name.startswith("".join(rest)),
         name.startswith(first),
+        name.startswith(looped),
     ]
 
 
@@ -927,17 +960,18 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
     relpath = "a relpath checked for a parent segment"
     found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
     assert found == [
-        f"{alpha}:16 tests containment with is_relative_to{remedy}",
-        f"{alpha}:17 tests containment with commonpath{remedy}",
-        f"{alpha}:18 tests containment with commonprefix{remedy}",
-        f"{alpha}:19 tests containment with commonpath{remedy}",
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (20, 21, 22)),
-        f"{alpha}:23 tests containment with a comparison of a path's leading parts{remedy}",
-        f"{alpha}:34 tests containment with commonpath{remedy}",
-        f"{alpha}:35 tests containment with commonpath{remedy}",
-        f"{alpha}:36 tests containment with commonprefix{remedy}",
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(37, 52)),
-        *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in range(52, 56)),
+        f"{alpha}:22 tests containment with is_relative_to{remedy}",
+        f"{alpha}:23 tests containment with commonpath{remedy}",
+        f"{alpha}:24 tests containment with commonprefix{remedy}",
+        f"{alpha}:25 tests containment with commonpath{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (26, 27, 28)),
+        f"{alpha}:29 tests containment with a comparison of a path's leading parts{remedy}",
+        f"{alpha}:40 tests containment with commonpath{remedy}",
+        f"{alpha}:41 tests containment with commonpath{remedy}",
+        f"{alpha}:42 tests containment with commonprefix{remedy}",
+        f"{alpha}:43 tests containment with commonprefix{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(44, 66)),
+        *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in range(66, 70)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]
