@@ -1542,11 +1542,10 @@ BINARY_LAYERS = frozenset(
 # The console's device names: the reserved names, as ejryan89-skill-core's device_names reads them, that open the
 # console rather than a printer, a port, or the null device.
 CONSOLE_DEVICE_NAMES = frozenset({"con", "conin$", "conout$"})
-# The paths that open the console on Linux, compared as PurePosixPath writes them: a standard stream by its name or its
-# descriptor, the descriptor
-# through /dev/fd or the process's own descriptor folder, by self, thread-self, or a process number, which the kernel
-# reads without a leading zero; and the terminal itself, the controlling one, a virtual console, a pseudo-terminal, or
-# the system console.
+# The paths that open the console on Linux, compared as Linux resolves them: a standard stream by its name or its
+# descriptor, the descriptor through /dev/fd or the process's own descriptor folder, by self, thread-self, or a process
+# number, which the kernel reads without a leading zero; and the terminal itself, the controlling one, a virtual
+# console, a pseudo-terminal, or the system console.
 POSIX_CONSOLE_DEVICE = re.compile(
     r"/dev/(?:std(?:in|out|err)|fd/[012]|tty\d*|pts/\d+|console)|/proc/(?:self|thread-self|[1-9]\d*)/fd/[012]"
 )
@@ -1555,12 +1554,22 @@ POSIX_CONSOLE_DEVICE = re.compile(
 def is_console_device(path: str) -> bool:
     """Whether a path opens the console: one whose last segment, after either separator and any drive, is a console
     device name in every form Windows reads, any case, before an extension or a colon, as `conout$`, `CON:`, and
-    `con.txt` are, in any folder; or a Linux path to a standard stream or a terminal, however its separators fall."""
+    `con.txt` are, in any folder; or a Linux path to a standard stream or a terminal, however its separators fall and
+    whatever `.` or `..` segments it holds, `..` read lexically."""
     segments = [segment for segment in re.split(r"[\\/]", path) if segment]
     last = DRIVE.sub("", segments[-1], count=1) if segments else ""
     if is_reserved_device_name(last) and any(last.casefold().startswith(name) for name in CONSOLE_DEVICE_NAMES):
         return True
-    return path.startswith("/") and POSIX_CONSOLE_DEVICE.fullmatch(str(PurePosixPath(path))) is not None
+    if not path.startswith("/"):
+        return False
+    # Linux reads any run of slashes as one and `..` as the folder above, the root's being the root.
+    parts: list[str] = []
+    for part in path.split("/"):
+        if part == "..":
+            parts = parts[:-1]
+        elif part not in ("", "."):
+            parts.append(part)
+    return POSIX_CONSOLE_DEVICE.fullmatch("/" + "/".join(parts)) is not None
 
 
 RECONFIGURE = "reconfigure"

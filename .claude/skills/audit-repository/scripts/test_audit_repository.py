@@ -1654,6 +1654,15 @@ class GuidanceTests(Fixture):
             ('RUNTIME_TITLES.setdefault("gamma", "Gamma")', "3"),
             ("rename(RUNTIME_TITLES)", "3"),
             ("TITLES = RUNTIME_TITLES", "3"),
+            # Each capture and declaration that binds a name outside a Name node. A type parameter binds by the same
+            # `name` the definitions, the handler, and the captures do, and Python 3.11, which validation runs on,
+            # cannot parse one.
+            ("match x:\n    case {**RUNTIMES}:\n        pass", "4"),
+            ("match x:\n    case [*RUNTIMES]:\n        pass", "4"),
+            ("match x:\n    case y as RUNTIMES:\n        pass", "4"),
+            ("match x:\n    case RUNTIMES:\n        pass", "4"),
+            ("try:\n    pass\nexcept OSError as RUNTIMES:\n    pass", "5"),
+            ("def outer():\n    RUNTIMES = 1\n    def inner():\n        nonlocal RUNTIMES", "4, 6"),
         ):
             with self.subTest(change=change):
                 write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": CATALOGUE + change + "\n"})

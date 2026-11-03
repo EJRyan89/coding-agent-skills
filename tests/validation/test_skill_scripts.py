@@ -1692,6 +1692,11 @@ def test_console_setup_policy_passes_a_wrapper_over_any_other_file(tmp_path: Pat
         "/proc/self/fd/1",
         "/proc/thread-self/fd/2",
         "/proc/4242/fd//0",
+        "//dev/stdout",
+        "///dev/tty",
+        "/var/../dev/stdout",
+        "/../dev/console",
+        "/proc/self/fd/../fd/1",
         b"CONOUT$",
     ],
 )
@@ -1724,6 +1729,8 @@ def test_console_setup_policy_refuses_a_wrapper_over_every_spelling_of_a_console
         "/proc/self/fd/3",
         "/proc/01/fd/1",
         "/proc/self/status",
+        "/dev/stdout/..",
+        "/dev/tty/../null",
     ],
 )
 def test_console_setup_policy_passes_a_wrapper_over_a_file_no_console_device_names(tmp_path: Path, path: str) -> None:
