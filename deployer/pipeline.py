@@ -220,6 +220,9 @@ def _deploy(
     pin: source_ref.Pin | None = None,
 ) -> int:
     data = manifest.load(paths.manifest_file)
+    # A deployment commits by saving the manifest, which a read-only one refuses, so it is refused here, before the
+    # first change, and by the dry run, which answers as the deployment would.
+    data.refuse_read_only()
     context = Context(paths, options, src, values, data, data.ownership(src.source_id), stdin, pin=pin)
     if options.migrate_from:
         migrate.migrate(context, options.migrate_from)
