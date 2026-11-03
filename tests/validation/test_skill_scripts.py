@@ -591,9 +591,11 @@ class SkillScriptsFixtures(unittest.TestCase):
             '    return lookup(subprocess, "Popen")\n'  # 8
             "def dynamic(name):\n"
             "    return builtins.getattr(os, name)\n"  # 10
-            # A lookup of what starts nothing is no runner.
+            # A lookup of what starts nothing, and a getattr given no name, are no runner.
             "def constant():\n"
             '    return builtins.getattr(subprocess, "DEVNULL")\n'
+            "def unnamed():\n"
+            "    return getattr(subprocess)\n"
         )
         path = "skills/alpha/scripts/tool.py"
         self.assertEqual(
@@ -1182,25 +1184,49 @@ class SkillScriptsFixtures(unittest.TestCase):
                     'run(["gh", *base, "-t", "{{.}}"])\n'  # 3
                     'run(["gh", "pr", "list", "--json", "title"] + ["-t", "{{.}}"])\n'  # 4
                     'run(base + ["--json", "title", "-q", ".x"])\n'  # 5
-                    'run(["gh", "pr", "create"] + ["-t", "Title"])\n',
+                    'run(["gh", "pr", "create"] + ["-t", "Title"])\n'
+                    # A `+` whose left side joins a list to words it does not write, and a gh list given more words.
+                    'run(base + ["--json", "title"] + ["-t", "{{.}}"])\n'  # 7
+                    'run(["gh", "pr", "view", "1"] + extra + ["-t", "{{.}}"])\n'  # 8
+                    'run(["gh", "pr", "list", "-t", "{{.}}"] + extra)\n'  # 9
+                    # --json with its fields after `=`, and a filter that runs onto a second line.
+                    'run(["gh", "pr", "view", "--json=title", "-q", ".title"])\n'  # 10
+                    'run(["gh", "pr", "view", "--json", "title", "-q.title\\n.x"])\n'  # 11
+                    # A word a name holds, a list a name starts, another program's list that unpacks words, and an
+                    # empty list are no gh filter.
+                    'run(["gh", "pr", "create", "-t", title])\n'
+                    'run([program, "pr", "list", "-t", "x"])\n'
+                    'run(["git", *options, "-q"])\n'
+                    "run([])\n",
                     "skills/alpha/scripts/tool.sh": "name=$(gh api repos/o/r -t '{{.name}}')\n"
                     # A command continued by a backslash is read whole, by its first line.
                     "gh pr view --json title \\\n  --jq .title\n"
-                    "gh pr list --json title \\\n  -t '{{.}}'\n",
+                    "gh pr list --json title \\\n  -t '{{.}}'\n"
+                    # A backtick that ends a Bash line continues nothing.
+                    "gh pr view --json title # the `title`\n"
+                    "echo -t done\n",
                     "skills/alpha/scripts/tool.ps1": "gh pr view --json title `\n  -q .title\n",
+                    "skills/Zeta/scripts/tool.bash": "gh pr view --json title -q .title\n",
                     # A repository skill's script is a skill script too.
                     ".claude/skills/beta/scripts/tool.sh": "gh api repos/o/r --jq .name\n",
                 },
             )
+            # In the order the paths' text sorts in on every platform, where Windows would sort Zeta after alpha.
             self.assertEqual(
                 [
                     refusal(".claude/skills/beta/scripts/tool.sh", 1, "--jq"),
+                    refusal("skills/Zeta/scripts/tool.bash", 1, "-q"),
                     refusal("skills/alpha/scripts/tool.ps1", 1, "-q"),
                     refusal("skills/alpha/scripts/tool.py", 1, "-q"),
                     refusal("skills/alpha/scripts/tool.py", 2, "-t"),
                     refusal("skills/alpha/scripts/tool.py", 3, "-t"),
                     refusal("skills/alpha/scripts/tool.py", 4, "-t"),
                     refusal("skills/alpha/scripts/tool.py", 5, "-q"),
+                    refusal("skills/alpha/scripts/tool.py", 7, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 8, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 9, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 10, "-q"),
+                    refusal("skills/alpha/scripts/tool.py", 11, "-q"),
                     refusal("skills/alpha/scripts/tool.sh", 1, "-t"),
                     refusal("skills/alpha/scripts/tool.sh", 2, "--jq"),
                     refusal("skills/alpha/scripts/tool.sh", 4, "-t"),
@@ -1731,9 +1757,13 @@ def test_console_setup_policy_refuses_a_wrapper_over_every_spelling_of_a_console
         "/proc/self/status",
         "/dev/stdout/..",
         "/dev/tty/../null",
+        "",
+        b"\xff",
     ],
 )
-def test_console_setup_policy_passes_a_wrapper_over_a_file_no_console_device_names(tmp_path: Path, path: str) -> None:
+def test_console_setup_policy_passes_a_wrapper_over_a_file_no_console_device_names(
+    tmp_path: Path, path: str | bytes
+) -> None:
     write_fixture_tree(tmp_path, {"tools/plain.py": f'OUT = open({path!r}, "w", encoding="utf-8")\n'})
     mark_skills(tmp_path)
     assert console_setup_problems(tmp_path) == []
@@ -1750,6 +1780,9 @@ def test_console_setup_policy_passes_a_wrapper_over_a_file_no_console_device_nam
         'fix = builtins.getattr(sys.stdout, name)\nfix(encoding="utf-8")',
         'operator.methodcaller("reconfigure", encoding="utf-8")(sys.stdout)',
         "operator.methodcaller(name, **OPTIONS)(sys.stdout)",
+        'fix: object = sys.stdout.reconfigure\nfix(encoding="utf-8")',
+        'fix: object = getattr(sys.stdout, "reconfigure")\nfix(encoding="utf-8")',
+        '(fix := builtins.getattr(sys.stderr, "reconfigure"))\nfix(encoding="utf-8")',
     ],
 )
 def test_console_setup_policy_refuses_a_reconfigure_looked_up_by_name(tmp_path: Path, reach: str) -> None:
@@ -1770,6 +1803,8 @@ def test_console_setup_policy_refuses_a_reconfigure_looked_up_by_name(tmp_path: 
         "builtins.getattr(sys.stderr, name)(line_buffering=True)",
         'operator.methodcaller("write", "text")(sys.stdout)',
         'operator.methodcaller("reconfigure", line_buffering=True)(sys.stdout)',
+        'builtins.getattr(sys.stdout, "write")(encoding="utf-8")',
+        'operator.methodcaller("write", encoding="utf-8")(sys.stdout)',
     ],
 )
 def test_console_setup_policy_passes_another_method_looked_up_by_name(tmp_path: Path, use: str) -> None:

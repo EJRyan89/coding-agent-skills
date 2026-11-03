@@ -1638,6 +1638,7 @@ class GuidanceTests(Fixture):
             ("del RUNTIMES", "3"),
             ("from elsewhere import RUNTIMES", "3"),
             ("import elsewhere as RUNTIMES", "3"),
+            ("import RUNTIMES.sub", "3"),
             ("def RUNTIMES():\n    pass", "3"),
             ("class RUNTIMES:\n    pass", "3"),
             ("def load(RUNTIMES=None):\n    pass", "3"),
@@ -1668,7 +1669,14 @@ class GuidanceTests(Fixture):
                 write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": CATALOGUE + change + "\n"})
                 with self.assertRaises(audit.AuditError) as raised:
                     audit.supported_runtimes(self.root)
-                self.assertTrue(str(raised.exception).endswith(f"may change it on line {lines}"), raised.exception)
+                # The refusal names the one the change reaches, so a check that refused the other passes no row.
+                name = "RUNTIME_TITLES" if "RUNTIME_TITLES" in change else "RUNTIMES"
+                self.assertTrue(
+                    str(raised.exception).endswith(
+                        f" must change {name} nowhere but its one literal assignment, but may change it on line {lines}"
+                    ),
+                    raised.exception,
+                )
 
     def test_a_catalogue_that_assigns_its_runtimes_other_than_once_fails(self) -> None:
         for text in (
@@ -1690,7 +1698,10 @@ class GuidanceTests(Fixture):
             'RUNTIMES: tuple[str, ...] = ("alpha", "beta")\n'
             'RUNTIME_TITLES = {"alpha": "Alpha CLI", "beta": "Beta"}\n'
             "KNOWN = set(RUNTIMES)\n"
-            "FIRST = RUNTIMES[0], RUNTIMES.index('beta')\n"
+            "FIRST = RUNTIMES[0], RUNTIMES.index('beta'), RUNTIMES.count('alpha')\n"
+            "COPY = RUNTIME_TITLES.copy(), RUNTIME_TITLES.keys(), RUNTIME_TITLES.values()\n"
+            # An import of a module named RUNTIMES under a package binds the package's name, not RUNTIMES.
+            "import package.RUNTIMES\n"
             "def title(runtime, value=None):\n"
             "    RUNTIME = runtime\n"
             "    return RUNTIME_TITLES.get(runtime) if runtime in RUNTIME_TITLES else RUNTIME_TITLES[RUNTIME]\n"

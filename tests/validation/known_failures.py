@@ -121,7 +121,7 @@ def _named(node: ast.AST) -> str | None:
     if isinstance(node, ast.keyword):
         return node.arg
     if isinstance(node, ast.alias):
-        return node.asname or node.name.rpartition(".")[2]
+        return node.asname or node.name.partition(".")[0]
     if isinstance(node, (ast.Global, ast.Nonlocal)):
         return PENDING if PENDING in node.names else None
     if isinstance(node, ast.MatchMapping):

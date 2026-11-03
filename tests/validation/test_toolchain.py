@@ -281,6 +281,10 @@ def test_a_workflow_installs_only_its_locks_with_hash_checking() -> None:
         "          python -m pip  install  ruff==0.17.1\n",
         "          C:/Python311/Scripts/pip.exe install ruff==0.17.1\n",
         "          uv pip install ruff==0.17.1\n",
+        # pip quoted, a lock named with more after it, and -r after a flag clustered before it.
+        "          'pip' install ruff==0.17.1\n",
+        "          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txtX\n",
+        "          python -m pip install --require-hashes --only-binary :all: -qr requirements-dev.txt\n",
     ):
         assert [
             "line 2 does not install only ['requirements-dev.txt'] with --require-hashes --only-binary :all:: "
@@ -289,6 +293,8 @@ def test_a_workflow_installs_only_its_locks_with_hash_checking() -> None:
     # A workflow that installs no lock may run no pip install, and pip that installs nothing is not one.
     assert len(hash_install_problems(clean, ())) == 1
     assert hash_install_problems("      - run: python -m pip --version\n        cache: pip\n", ()) == []
+    # A program whose name only ends in pip is not pip.
+    assert hash_install_problems("          Xpip install ruff==0.17.1\n", ()) == []
 
 
 @pytest.mark.parametrize(
@@ -354,6 +360,9 @@ def test_each_pip_install_among_the_commands_of_one_line_is_read(join: str) -> N
         pytest.param("python -m pip install --req=requirements-dev.txt", id="an ambiguous prefix"),
         pytest.param("python -m pip install -qr requirements-dev.txt", id="-r clustered after a flag"),
         pytest.param("python -m pip install -Uqrrequirements-dev.txt", id="-r<file> clustered after flags"),
+        pytest.param("python -m pip install --req=requirements=dev.txt", id="an ambiguous prefix with = in its value"),
+        pytest.param("python -m pip install '--req' requirements-dev.txt", id="a quoted ambiguous prefix"),
+        pytest.param("python -m pip install --r requirements-dev.txt", id="the shortest prefix"),
         pytest.param("python -m pip install \\\n  -r requirements-dev.txt", id="continued by a backslash"),
         pytest.param("python -m pip install `\n  -r requirements-dev.txt", id="continued by a backtick"),
         pytest.param(
@@ -377,6 +386,8 @@ def test_a_documented_install_from_a_requirements_file_is_read_in_each_form_pip_
         pytest.param("python -m pip install -crequirements-dev.txt ruff==0.17.1", id="-c takes the r as its value"),
         pytest.param("python -m pip install -i https://example.invalid/simple ruff==0.17.1", id="an index"),
         pytest.param("python -m pip install --root /opt ruff==0.17.1", id="a long option that is no prefix"),
+        pytest.param("python -m pip install --reqX requirements-dev.txt", id="a long option that only starts like one"),
+        pytest.param("python -m pip install -- ruff==0.17.1", id="the end of the options"),
         pytest.param("python -m pip install pip-tools==7.6.2 \\\\\n-r requirements-dev.txt", id="an escaped backslash"),
     ],
 )

@@ -271,6 +271,7 @@ class PendingShapeTests(KnownFailureFixture):
             "def PENDING():\n    pass",
             "class PENDING:\n    pass",
             "import os as PENDING",
+            "import PENDING.sub",
             "from os import PENDING",
             "from os import environ as PENDING",
             'globals()["PENDING"] = {"x": 4242}',

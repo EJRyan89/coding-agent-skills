@@ -23,9 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import duplication
 import skill_scripts
 from validation_support import (
+    BASH_CONTINUATION,
     CODE_SPAN,
     COMPUTED_NAME,
     MODULE_SCOPE,
+    POWERSHELL_CONTINUATION,
     CallableResolver,
     ModuleImport,
     ScriptsEntry,
@@ -723,6 +725,11 @@ class RepositoryFilesFixtures(unittest.TestCase):
                 ReleaseNotesError, "git ls-files --cached --others --exclude-standard -z failed"
             ):
                 repository_files(Path(temporary))
+
+
+def test_each_shell_continues_a_command_by_its_one_mark() -> None:
+    assert (BASH_CONTINUATION, POWERSHELL_CONTINUATION) == ("\\", "`")
+    assert continued_lines("a \\\nb `\nc\n") == [(1, "a  b  c")]
 
 
 @pytest.mark.parametrize(

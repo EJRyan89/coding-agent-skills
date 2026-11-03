@@ -160,8 +160,9 @@ def test_the_scope_check_holds_what_the_policy_reads_against_every_file_ruff_for
     read = ["tools/b.py", "tools/stubs.pyi", "deploy.py"]
     files = [tmp_path / name for name in read]
     assert unread_python(tmp_path, files) == []
-    # A module outside the roots the policy reads by, and a notebook ruff formats and the policy cannot parse.
-    unread = ["docs/example.py", "tools/notes.ipynb"]
+    # A module and a stub outside the roots the policy reads by, and a notebook ruff formats and the policy cannot
+    # parse.
+    unread = ["docs/example.py", "docs/stubs.pyi", "tools/notes.ipynb"]
     files += [tmp_path / name for name in [*unread, "tools/notes.txt"]]
     assert unread_python(tmp_path, files) == [
         f"the literal policy does not read {name}; add its root to the policy's scope, or state why it is left out"

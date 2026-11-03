@@ -1395,9 +1395,10 @@ def _gh_json_output(words: list[str]) -> bool:
     return first == ["api"] or any(word == "--json" or word.startswith("--json=") for word in words)
 
 
-def _command_items(node: ast.expr) -> list[ast.expr] | None:
-    """The items of the command a list or tuple literal writes, or a `+` of them does, in order, an operand that is
-    no literal sequence standing as an unpacking of unknown words; None for an expression that is neither."""
+def _command_items(node: ast.expr) -> list[ast.expr | None] | None:
+    """The items of the command a list or tuple literal writes, or a `+` of them does, in order, with None for an
+    operand that is no literal sequence, which holds words it does not write; None for an expression that is
+    neither."""
     if isinstance(node, (ast.List, ast.Tuple)):
         return list(node.elts)
     if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
@@ -1405,10 +1406,7 @@ def _command_items(node: ast.expr) -> list[ast.expr] | None:
     left, right = _command_items(node.left), _command_items(node.right)
     if left is None and right is None:
         return None
-    return [
-        *(left if left is not None else [ast.Starred(value=node.left, ctx=ast.Load())]),
-        *(right if right is not None else [ast.Starred(value=node.right, ctx=ast.Load())]),
-    ]
+    return [*(left if left is not None else [None]), *(right if right is not None else [None])]
 
 
 def _gh_filter_flags(tree: ast.Module) -> list[tuple[int, str]]:
@@ -1423,7 +1421,7 @@ def _gh_filter_flags(tree: ast.Module) -> list[tuple[int, str]]:
         elif isinstance(node, ast.expr) and (items := _command_items(node)) is not None:
             values = [item.value for item in items if isinstance(item, ast.Constant) and isinstance(item.value, str)]
             runs_gh = bool(items) and isinstance(items[0], ast.Constant) and items[0].value == "gh"
-            unpacked = any(isinstance(item, ast.Starred) for item in items)
+            unpacked = any(item is None or isinstance(item, ast.Starred) for item in items)
             if _gh_json_output(values) or (runs_gh and unpacked):
                 found += [
                     (node.lineno, flag) for value in values if (flag := gh_filter_flag(value)) in GH_FILTER_SHORTHANDS
@@ -1539,9 +1537,9 @@ STREAM_LAYER_METHODS = frozenset({"detach", "fileno"})
 BINARY_LAYERS = frozenset(
     {"io.FileIO", "io.BufferedWriter", "io.BufferedReader", "io.BufferedRandom", "io.BufferedRWPair", "os.dup"}
 )
-# The console's device names: the reserved names, as ejryan89-skill-core's device_names reads them, that open the
-# console rather than a printer, a port, or the null device.
-CONSOLE_DEVICE_NAMES = frozenset({"con", "conin$", "conout$"})
+# What every reserved name that opens the console starts with, as ejryan89-skill-core's device_names reads them:
+# con, conin$, and conout$. None of the others, the printer, the ports, aux, and the null device, does.
+CONSOLE_DEVICE_PREFIX = "con"
 # The paths that open the console on Linux, compared as Linux resolves them: a standard stream by its name or its
 # descriptor, the descriptor through /dev/fd or the process's own descriptor folder, by self, thread-self, or a process
 # number, which the kernel reads without a leading zero; and the terminal itself, the controlling one, a virtual
@@ -1558,7 +1556,7 @@ def is_console_device(path: str) -> bool:
     whatever `.` or `..` segments it holds, `..` read lexically."""
     segments = [segment for segment in re.split(r"[\\/]", path) if segment]
     last = DRIVE.sub("", segments[-1], count=1) if segments else ""
-    if is_reserved_device_name(last) and any(last.casefold().startswith(name) for name in CONSOLE_DEVICE_NAMES):
+    if is_reserved_device_name(last) and last.casefold().startswith(CONSOLE_DEVICE_PREFIX):
         return True
     if not path.startswith("/"):
         return False

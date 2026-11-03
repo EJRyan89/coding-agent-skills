@@ -700,7 +700,7 @@ def _binds(node: ast.AST, name: str) -> bool:
     definition, an exception or match capture, a match mapping's rest, a type parameter, a global or nonlocal
     declaration, or a keyword, as `globals().update(RUNTIMES=...)` writes one."""
     if isinstance(node, ast.alias):
-        return (node.asname or node.name.rpartition(".")[2]) == name
+        return (node.asname or node.name.partition(".")[0]) == name
     if isinstance(node, (ast.Global, ast.Nonlocal)):
         return name in node.names
     if isinstance(node, ast.arg):

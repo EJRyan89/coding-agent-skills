@@ -370,7 +370,7 @@ def install_words(words: list[str]) -> list[str]:
     read: list[str] = []
     for word in (word.strip("'\"") for word in words):
         name, equals, value = word.partition("=")
-        if word.startswith("--") and len(name) >= len(REQUIREMENT_PREFIX) and REQUIREMENT_OPTION.startswith(name):
+        if name.startswith(REQUIREMENT_PREFIX) and REQUIREMENT_OPTION.startswith(name):
             read += ["-r", value] if equals else ["-r"]
         elif word.startswith("-") and not word.startswith("--") and (cut := _clustered_requirement(word)) is not None:
             flags, attached = cut
