@@ -452,6 +452,54 @@ class ConfigurationTests(unittest.TestCase):
         config["dashboard"] = {"ignored_repositories": ["exam*one/*", "example/x*", "e*/one?"]}
         validate_config(config)
 
+    def test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees(self) -> None:
+        # GitHub's repository name rule: up to 100 letters, digits, `_`, `.`, and `-`, any of them first, as in an
+        # organization's `.github`, except the whole names `.` and `..`. The owner is a login and starts with a letter
+        # or a digit.
+        accepted = [
+            "owner/.github",
+            "owner/a.b",
+            "owner/...",
+            "owner/.git",
+            "owner/-repo",
+            "owner/_repo",
+            "Owner/.GitHub",
+            "o/" + "n" * 100,
+            "o" * 100 + "/n",
+        ]
+        refused = [
+            "owner/.",
+            "owner/..",
+            "owner/",
+            ".owner/repo",
+            "-owner/repo",
+            "owner",
+            "owner/repo/x",
+            "owner/./x",
+            "owner/repo name",
+            "owner/repo\n",
+            "o/" + "n" * 101,
+            "o" * 101 + "/n",
+        ]
+        for identity in accepted:
+            with self.subTest(identity=identity):
+                self.assertEqual(identity.lower(), review_config.validate_repository_identity(identity))
+                # A mute names any identity the check reports, and matches it.
+                entry = review_config.normalize_ignored_repository(identity, "entry")
+                self.assertEqual(entry, review_config.ignored_repository_match(identity, [entry]))
+                # A status override's key is the identity and a pull request's number.
+                config = valid_config()
+                config["dashboard"] = {"status_overrides": {f"{identity}#1": "On hold"}}
+                validate_config(config)
+        for identity in refused:
+            with self.subTest(identity=identity):
+                with self.assertRaisesRegex(ConfigurationError, "^Invalid repository identity: "):
+                    review_config.validate_repository_identity(identity)
+                config = valid_config()
+                config["dashboard"] = {"status_overrides": {f"{identity}#1": "On hold"}}
+                with self.assertRaisesRegex(ConfigurationError, "^Invalid dashboard status override key: "):
+                    validate_config(config)
+
     def test_an_ignored_entry_splits_owner_from_name_at_the_first_slash(self) -> None:
         match = review_config.ignored_repository_match
         self.assertEqual("octo/*", match("Octo/Sandbox", ["other/*", "octo/*"]))
