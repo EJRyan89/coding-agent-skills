@@ -328,6 +328,23 @@ def test_a_lock_installed_with_hash_checking_passes_in_each_form_pip_reads(insta
     assert fence_install_problems(f"```bash\n{install}\n```\n", locks) == []
 
 
+@pytest.mark.parametrize("join", ["&&", "||", ";", "|", "&"])
+def test_each_pip_install_among_the_commands_of_one_line_is_read(join: str) -> None:
+    locked = "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt"
+    for unpinned in ("python -m pip install ruff", "pip3 install -r requirements-dev.txt"):
+        assert hash_install_problems(f"        run: {locked} {join} {unpinned}\n", ("requirements-dev.txt",)) == [
+            "line 1 does not install only ['requirements-dev.txt'] with --require-hashes --only-binary :all:: "
+            + repr(unpinned)
+        ]
+    # The documented install of a lock is read wherever it stands among the commands, so the second one here is.
+    document = f"```bash\npython -m pip install pip-tools==7.6.2 {join} pip install -r requirements-dev.txt\n```\n"
+    assert fence_install_problems(document, ("requirements-dev.txt",)) == [
+        "line 2 does not install only ['requirements-dev.txt'] with --require-hashes --only-binary :all:: "
+        "'pip install -r requirements-dev.txt'"
+    ]
+    assert hash_install_problems(f"        run: {locked} {join} {locked}\n", ("requirements-dev.txt",)) == []
+
+
 @pytest.mark.parametrize(
     "drifted",
     [

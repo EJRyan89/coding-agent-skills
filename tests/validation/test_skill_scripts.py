@@ -51,6 +51,11 @@ def mark_skills(root: Path) -> Path:
 
 
 COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
+# The operating-system names this module states on purpose, with the reason, which the platform policy reads.
+PLATFORM_ALLOWED = {
+    "/proc": "names Linux's per-process descriptor paths as fixture values the console-setup policy refuses or "
+    "passes; the fixture writes them into a module it parses and opens nothing",
+}
 
 
 def unreadable(path: str, line: int, description: str) -> str:
@@ -1171,7 +1176,13 @@ class SkillScriptsFixtures(unittest.TestCase):
                 {
                     # gh api writes JSON with no --json, so its shorthands filter it, with or without gh first.
                     "skills/alpha/scripts/tool.py": 'run(["api", "repos/o/r", "-q", ".name"])\n'
-                    'run(["gh", "api", "repos/o/r", "-t{{.name}}"])\n',
+                    'run(["gh", "api", "repos/o/r", "-t{{.name}}"])\n'
+                    # gh with words it unpacks, which may ask for JSON, and a command joined from lists by `+`; a
+                    # joined title is no filter.
+                    'run(["gh", *base, "-t", "{{.}}"])\n'  # 3
+                    'run(["gh", "pr", "list", "--json", "title"] + ["-t", "{{.}}"])\n'  # 4
+                    'run(base + ["--json", "title", "-q", ".x"])\n'  # 5
+                    'run(["gh", "pr", "create"] + ["-t", "Title"])\n',
                     "skills/alpha/scripts/tool.sh": "name=$(gh api repos/o/r -t '{{.name}}')\n"
                     # A command continued by a backslash is read whole, by its first line.
                     "gh pr view --json title \\\n  --jq .title\n"
@@ -1187,6 +1198,9 @@ class SkillScriptsFixtures(unittest.TestCase):
                     refusal("skills/alpha/scripts/tool.ps1", 1, "-q"),
                     refusal("skills/alpha/scripts/tool.py", 1, "-q"),
                     refusal("skills/alpha/scripts/tool.py", 2, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 3, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 4, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 5, "-q"),
                     refusal("skills/alpha/scripts/tool.sh", 1, "-t"),
                     refusal("skills/alpha/scripts/tool.sh", 2, "--jq"),
                     refusal("skills/alpha/scripts/tool.sh", 4, "-t"),
@@ -1671,6 +1685,13 @@ def test_console_setup_policy_passes_a_wrapper_over_any_other_file(tmp_path: Pat
         "/dev//stdout",
         "/dev/./stderr",
         "/dev/fd//1",
+        "/dev/tty",
+        "/dev/tty1",
+        "/dev/pts/3",
+        "/dev/console",
+        "/proc/self/fd/1",
+        "/proc/thread-self/fd/2",
+        "/proc/4242/fd//0",
         b"CONOUT$",
     ],
 )
@@ -1688,7 +1709,22 @@ def test_console_setup_policy_refuses_a_wrapper_over_every_spelling_of_a_console
 # A reserved name that opens no console, a name a device name only starts, and a path that only ends like one.
 @pytest.mark.parametrize(
     "path",
-    ["NUL", "prn.txt", "COM1:", "console.txt", "conifer", "con$", "dev/stdout", "/dev/null", "/dev/stdout2"],
+    [
+        "NUL",
+        "prn.txt",
+        "COM1:",
+        "console.txt",
+        "conifer",
+        "con$",
+        "dev/stdout",
+        "/dev/null",
+        "/dev/stdout2",
+        "/dev/ttyS",
+        "/dev/fd/3",
+        "/proc/self/fd/3",
+        "/proc/01/fd/1",
+        "/proc/self/status",
+    ],
 )
 def test_console_setup_policy_passes_a_wrapper_over_a_file_no_console_device_names(tmp_path: Path, path: str) -> None:
     write_fixture_tree(tmp_path, {"tools/plain.py": f'OUT = open({path!r}, "w", encoding="utf-8")\n'})

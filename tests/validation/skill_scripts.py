@@ -1395,19 +1395,36 @@ def _gh_json_output(words: list[str]) -> bool:
     return first == ["api"] or any(word == "--json" or word.startswith("--json=") for word in words)
 
 
+def _command_items(node: ast.expr) -> list[ast.expr] | None:
+    """The items of the command a list or tuple literal writes, or a `+` of them does, in order, an operand that is
+    no literal sequence standing as an unpacking of unknown words; None for an expression that is neither."""
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return list(node.elts)
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
+        return None
+    left, right = _command_items(node.left), _command_items(node.right)
+    if left is None and right is None:
+        return None
+    return [
+        *(left if left is not None else [ast.Starred(value=node.left, ctx=ast.Load())]),
+        *(right if right is not None else [ast.Starred(value=node.right, ctx=ast.Load())]),
+    ]
+
+
 def _gh_filter_flags(tree: ast.Module) -> list[tuple[int, str]]:
-    """The line and flag of each gh filter a Python module passes."""
+    """The line and flag of each gh filter a Python module passes. A list, a tuple, or a `+` of them holds a shorthand
+    as a filter when it asks for JSON, or when it runs gh and unpacks words it does not write, which may."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             flag = gh_filter_flag(node.value)
             if flag in ("--jq", "--template"):
                 found.append((node.lineno, flag))
-        elif isinstance(node, (ast.List, ast.Tuple)):
-            values = [
-                item.value for item in node.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)
-            ]
-            if _gh_json_output(values):
+        elif isinstance(node, ast.expr) and (items := _command_items(node)) is not None:
+            values = [item.value for item in items if isinstance(item, ast.Constant) and isinstance(item.value, str)]
+            runs_gh = bool(items) and isinstance(items[0], ast.Constant) and items[0].value == "gh"
+            unpacked = any(isinstance(item, ast.Starred) for item in items)
+            if _gh_json_output(values) or (runs_gh and unpacked):
                 found += [
                     (node.lineno, flag) for value in values if (flag := gh_filter_flag(value)) in GH_FILTER_SHORTHANDS
                 ]
@@ -1525,22 +1542,25 @@ BINARY_LAYERS = frozenset(
 # The console's device names: the reserved names, as ejryan89-skill-core's device_names reads them, that open the
 # console rather than a printer, a port, or the null device.
 CONSOLE_DEVICE_NAMES = frozenset({"con", "conin$", "conout$"})
-# The paths that open a standard stream on Linux, compared as PurePosixPath writes them.
-POSIX_CONSOLE_DEVICES = frozenset(
-    {f"/dev/{stream}" for stream in ("stdin", "stdout", "stderr")}
-    | {f"{folder}/{fd}" for folder in ("/dev/fd", "/proc/self/fd") for fd in STANDARD_DESCRIPTORS}
+# The paths that open the console on Linux, compared as PurePosixPath writes them: a standard stream by its name or its
+# descriptor, the descriptor
+# through /dev/fd or the process's own descriptor folder, by self, thread-self, or a process number, which the kernel
+# reads without a leading zero; and the terminal itself, the controlling one, a virtual console, a pseudo-terminal, or
+# the system console.
+POSIX_CONSOLE_DEVICE = re.compile(
+    r"/dev/(?:std(?:in|out|err)|fd/[012]|tty\d*|pts/\d+|console)|/proc/(?:self|thread-self|[1-9]\d*)/fd/[012]"
 )
 
 
 def is_console_device(path: str) -> bool:
     """Whether a path opens the console: one whose last segment, after either separator and any drive, is a console
     device name in every form Windows reads, any case, before an extension or a colon, as `conout$`, `CON:`, and
-    `con.txt` are, in any folder; or a Linux path to a standard stream, however its separators fall."""
+    `con.txt` are, in any folder; or a Linux path to a standard stream or a terminal, however its separators fall."""
     segments = [segment for segment in re.split(r"[\\/]", path) if segment]
     last = DRIVE.sub("", segments[-1], count=1) if segments else ""
     if is_reserved_device_name(last) and any(last.casefold().startswith(name) for name in CONSOLE_DEVICE_NAMES):
         return True
-    return path.startswith("/") and str(PurePosixPath(path)) in POSIX_CONSOLE_DEVICES
+    return path.startswith("/") and POSIX_CONSOLE_DEVICE.fullmatch(str(PurePosixPath(path))) is not None
 
 
 RECONFIGURE = "reconfigure"

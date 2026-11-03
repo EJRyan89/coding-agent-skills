@@ -323,19 +323,23 @@ def lock_problems(lock: str, inputs: str, shared: Mapping[str, Locked] | None = 
 # A word that runs pip: pip, pip3, or pip3.11, as a name or the last part of a path, with or without .exe, as in
 # `python -m pip`, `pip3`, or `uv pip`.
 PIP_PROGRAM = re.compile(r"(?:.*[/\\])?pip(?:3(?:\.\d+)*)?(?:\.exe)?", re.IGNORECASE)
+# What ends one command and starts the next on a line, in Bash and PowerShell: a list operator, a pipe, or `;`.
+COMMAND_BREAK = re.compile(r"&&|\|\||[;|&]")
 
 
 def pip_installs(workflow: str) -> list[tuple[int, list[str], str]]:
     """Each command of a workflow that runs pip with an install among its words after it, as the number of its first
-    line, the words after the pip, and the command, however its options and spacing fall and onto however many lines a
-    trailing backslash or backtick continues it."""
+    line, the words after the pip, and the command, however its options and spacing fall, onto however many lines a
+    trailing backslash or backtick continues it, and wherever among the commands a list operator, a pipe, or `;` joins
+    on one line it stands."""
     found: list[tuple[int, list[str], str]] = []
     for number, line in continued_lines(workflow):
-        words = line.split()
-        for index, word in enumerate(words):
-            if PIP_PROGRAM.fullmatch(word.strip("'\"")) and "install" in words[index + 1 :]:
-                found.append((number, words[index + 1 :], line))
-                break
+        for command in COMMAND_BREAK.split(line):
+            words = command.split()
+            for index, word in enumerate(words):
+                if PIP_PROGRAM.fullmatch(word.strip("'\"")) and "install" in words[index + 1 :]:
+                    found.append((number, words[index + 1 :], command))
+                    break
     return found
 
 
