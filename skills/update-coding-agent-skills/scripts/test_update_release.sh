@@ -253,6 +253,61 @@ grep -qx "CROSSED unknown..v6.0.0" <<<"$OUTPUT" ||
   fail "release from no deployed commit accepted: crossing not named: $OUTPUT"
 expect_deployed "release from no deployed commit accepted" "--all --at refs/tags/v6.0.0"
 
+# A deployed commit the clone does not hold, as one on a branch since deleted and pruned, is named on a NOT_IN_CLONE line
+# wherever the update would read it, never read as one the release adds nothing to and drops nothing from: its release
+# cannot be read, so the release channel stops at any release as with no deployed commit, and once --cross-major
+# accepts it the update lists the commits the release adds to local main.
+begin_case 'release from a deployed commit the clone does not hold'
+LOST=0123456789abcdef0123456789abcdef01234567
+! git -C "$CLONE" cat-file -e "$LOST" 2>/dev/null || fail "release from a lost commit: the clone holds $LOST"
+BEFORE=$(git -C "$CLONE" rev-parse HEAD)
+publish "seventh major"
+tag_upstream v7.0.0
+printf '%s\n' "$LOST" >"$CLONE/.fake-deployed"
+run_subject "$CLONE" release
+expect_status 1 "release from a lost commit"
+expect_first_line "MAJOR_UPDATE unknown..v7.0.0" "release from a lost commit"
+expect_no_stderr "release from a lost commit"
+[ "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" = "NOT_IN_CLONE $LOST" ] ||
+  fail "release from a lost commit: NOT_IN_CLONE does not follow MAJOR_UPDATE: $OUTPUT"
+grep -q " seventh major$" <<<"$OUTPUT" || fail "release from a lost commit: the release's commit not listed: $OUTPUT"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "release from a lost commit: main moved"
+expect_not_deployed "release from a lost commit"
+run_subject "$CLONE" release --cross-major
+expect_status 0 "release from a lost commit accepted"
+expect_first_line "UPDATED unknown..v7.0.0" "release from a lost commit accepted"
+expect_no_stderr "release from a lost commit accepted"
+[ "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" = "NOT_IN_CLONE $LOST" ] ||
+  fail "release from a lost commit accepted: NOT_IN_CLONE does not follow UPDATED: $OUTPUT"
+grep -q " seventh major$" <<<"$OUTPUT" || fail "release from a lost commit accepted: commit not listed: $OUTPUT"
+if grep -q "NOT_IN_RELEASE" <<<"$OUTPUT"; then
+  fail "release from a lost commit accepted: claimed what the release drops from a commit it cannot read: $OUTPUT"
+fi
+grep -qx "CROSSED unknown..v7.0.0" <<<"$OUTPUT" || fail "release from a lost commit accepted: crossing not named: $OUTPUT"
+expect_deployed "release from a lost commit accepted" "--all --at refs/tags/v7.0.0"
+
+# A list of commits git cannot read, here because the clone's configuration names a date format git log refuses, is an
+# UNLISTED line naming the range and git's error in its place, never an empty list: the release's added commits, and
+# in place of NOT_IN_RELEASE, the commits it may drop.
+begin_case 'commits git cannot list'
+V7=$(git -C "$SEED" rev-parse "v7.0.0^{commit}")
+publish "seven one"
+tag_upstream v7.1.0
+git_quiet -C "$CLONE" config log.date bogus
+run_subject "$CLONE" release
+git_quiet -C "$CLONE" config --unset log.date
+expect_status 0 "commits git cannot list"
+expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$V7")..v7.1.0" "commits git cannot list"
+expect_no_stderr "commits git cannot list"
+for RANGE in "$V7..refs/tags/v7.1.0" "refs/tags/v7.1.0..$V7"; do
+  grep -qx "UNLISTED $RANGE fatal: unknown date format bogus" <<<"$OUTPUT" ||
+    fail "commits git cannot list: no UNLISTED line for $RANGE: $OUTPUT"
+done
+if grep -q "NOT_IN_RELEASE" <<<"$OUTPUT"; then
+  fail "commits git cannot list: claimed what the release drops from a list git could not read: $OUTPUT"
+fi
+expect_deployed "commits git cannot list" "--all --at refs/tags/v7.1.0"
+
 # Without a release tag on origin/main the release channel has nothing to deploy: it stops after the fetch, and the
 # main channel still follows main.
 begin_case 'no release'

@@ -20,15 +20,19 @@
 #                    major is 0) above the release of the commit `deploy.py check` names as deployed,
 #                    and --cross-major was not given; <current> is untagged, counted as 0.0.0, when no
 #                    release tag reaches that commit, and unknown, which any release raises, when check
-#                    names no deployed commit
+#                    names no deployed commit or the clone does not hold it, which a NOT_IN_CLONE line then
+#                    names before the commits
 #   CHECKOUT_FAILED  followed by Git's error from switching to main
 #   NOT_FAST_FORWARD followed by the commits main has that origin/main lacks, found before switching branches;
 #                    or by Git's error when Git refuses the fast-forward itself, after which the clone is
 #                    switched back to the branch it was found on, or a "still on main:" line says why not
 #   UP_TO_DATE <sha> or UPDATED <old>..<new> on the main channel, followed by the pulled commits;
 #   UP_TO_DATE <tag> or UPDATED <old>..<tag> on the release channel, where <old> is the deployed commit, or unknown
-#                    when check names none, followed by the commits the release adds to it, or to local main as it
-#                    was before the fast-forward when <old> is unknown, and by
+#                    when check names none or the clone does not hold it, followed by
+#                    NOT_IN_CLONE <commit> when the clone does not hold the deployed commit check names, as when it
+#                    was on a branch since deleted and pruned, so what the release adds to it and drops from it
+#                    cannot be read, then by the commits the release adds to the deployed commit, or to local main
+#                    as it was before the fast-forward when <old> is unknown, and by
 #                    NOT_IN_RELEASE <tag>..<old> and the deployed commits the release does not carry, when there are
 #                    any; either is followed by CROSSED <current>..<target> when --cross-major accepted a release
 #                    boundary, then the deploy output and DEPLOYED, DEPLOY_FAILED <code>, or DEPLOY_PINNED <ref>
@@ -40,6 +44,8 @@
 #                    commit or the pin in a form the update cannot read, so whether the installation is pinned is
 #                    unknown, a step failed outright, or a release tag the stop compares has a version component too
 #                    long to compare
+# Each list of commits above that git cannot read, after any status line, is one UNLISTED <range> <reason> line in its
+# place, never an empty list.
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
 # switches it to main and leaves it there.
 # Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
@@ -183,6 +189,26 @@ release_of() {
     echo "FAILED cannot read the release tags reaching $2: $(one_line "${answer#FAILED }")"
     return 1
   fi
+}
+# The commits git log lists for a range, one a line; when git cannot list them, an UNLISTED line naming the range and
+# git's error in their place, and status 1, so a failure never reads as a range holding no commits.
+log_lines() {
+  local listed code=0
+  listed=$(git -C "$CLONE" log --oneline --no-decorate "$1" 2>&1) || code=$?
+  if [ "$code" -ne 0 ]; then
+    echo "UNLISTED $1 $(one_line "$listed")"
+    return 1
+  fi
+  [ -z "$listed" ] || printf '%s\n' "$listed" | tr -d '\r'
+}
+# A commit's short name; when git cannot give it, a FAILED line naming the second argument, and status 1.
+short_name() {
+  local named
+  if ! named=$(git -C "$CLONE" rev-parse --short "$1" 2>&1); then
+    echo "FAILED cannot read the short name of $2: $(one_line "$named")"
+    return 1
+  fi
+  printf '%s\n' "$named" | tr -d '\r'
 }
 # A version component is compared as a number without its leading zeros, of at most MAX_DIGITS digits, so Bash's
 # 64-bit integers hold it exactly.
@@ -344,14 +370,33 @@ if [ "$CHANNEL" = release ]; then
   fi
 fi
 
+# The deployed commit as the fetched clone holds it: KNOWN_COMMIT is DEPLOYED_COMMIT when the clone holds it as a
+# commit, and empty when check names none or the clone does not hold it, as when it was on a branch since deleted and
+# pruned. git's --verify --quiet answers 1 with nothing printed only for a name it cannot find; any other failure is a
+# FAILED line, so a git that cannot answer is never read as a commit the clone lacks.
+KNOWN_COMMIT=
+NOT_IN_CLONE=
+if [ -n "$DEPLOYED_COMMIT" ]; then
+  VERIFIED=0
+  OUTPUT=$(git -C "$CLONE" rev-parse --verify --quiet "$DEPLOYED_COMMIT^{commit}" 2>&1) || VERIFIED=$?
+  if [ "$VERIFIED" -eq 0 ]; then
+    KNOWN_COMMIT=$DEPLOYED_COMMIT
+  elif [ "$VERIFIED" -eq 1 ] && [ -z "$OUTPUT" ]; then
+    NOT_IN_CLONE="NOT_IN_CLONE $DEPLOYED_COMMIT"
+  else
+    echo "FAILED cannot look up the deployed commit $DEPLOYED_COMMIT: $(one_line "$OUTPUT")"
+    exit 1
+  fi
+fi
+
 # The installed version is the release of the deployed commit, not of local main, which a pull by hand may have moved
 # past it. Without a release on origin/main there is nothing to cross. A deployed commit no release tag reaches counts
-# as version zero, and one check does not name stops at any release.
+# as version zero, and one check does not name, or the clone does not hold, stops at any release.
 CROSSED=
 if [ -n "$TARGET" ]; then
   CURRENT=unknown
-  if [ -n "$DEPLOYED_COMMIT" ]; then
-    CURRENT=$(release_of "$DEPLOYED_COMMIT" "the deployed commit $DEPLOYED_COMMIT") || { echo "$CURRENT"; exit 1; }
+  if [ -n "$KNOWN_COMMIT" ]; then
+    CURRENT=$(release_of "$KNOWN_COMMIT" "the deployed commit $KNOWN_COMMIT") || { echo "$CURRENT"; exit 1; }
   fi
 fi
 if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
@@ -368,10 +413,12 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
   if [ -n "$RAISED" ]; then
     if [ -z "$CROSS_MAJOR" ]; then
       echo "MAJOR_UPDATE $CURRENT..$TARGET"
-      # The commits the update would deploy: from the deployed commit, or from local main when check names none.
-      LISTED_FROM=${DEPLOYED_COMMIT:-$MAIN}
+      [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
+      # The commits the update would deploy: from the deployed commit, or from local main when check names none or
+      # the clone does not hold it. A clone with no local main yet has none to list from.
+      LISTED_FROM=${KNOWN_COMMIT:-$MAIN}
       if git -C "$CLONE" rev-parse --verify --quiet "$LISTED_FROM^{commit}" >/dev/null; then
-        git -C "$CLONE" log --oneline --no-decorate "$LISTED_FROM..$DEPLOY_END" | tr -d '\r'
+        log_lines "$LISTED_FROM..$DEPLOY_END"
       fi
       exit 1
     fi
@@ -385,19 +432,24 @@ ANCESTOR=0
 git -C "$CLONE" merge-base --is-ancestor "$MAIN" "$ORIGIN_MAIN" >/dev/null 2>&1 || ANCESTOR=$?
 if [ "$ANCESTOR" -eq 1 ]; then
   echo "NOT_FAST_FORWARD"
-  git -C "$CLONE" log --oneline --no-decorate "$ORIGIN_MAIN..$MAIN" | tr -d '\r'
+  log_lines "$ORIGIN_MAIN..$MAIN"
   exit 1
 fi
 
 # The branch or, when HEAD is detached, the commit the clone was found on, to return to if the fast-forward fails.
-FOUND_ON=$(git -C "$CLONE" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$CLONE" rev-parse --verify --quiet HEAD)
+# Neither answering leaves nothing to return to, so the update stops before it switches branches.
+if ! FOUND_ON=$(git -C "$CLONE" symbolic-ref --quiet --short HEAD 2>/dev/null ||
+  git -C "$CLONE" rev-parse --verify --quiet HEAD); then
+  echo "FAILED cannot read the branch or the commit the clone is on"
+  exit 1
+fi
 FOUND_ON=$(printf '%s' "$FOUND_ON" | tr -d '\r')
 if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
   echo "CHECKOUT_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
   exit 1
 fi
-BEFORE=$(git -C "$CLONE" rev-parse --short HEAD | tr -d '\r')
+BEFORE=$(short_name HEAD "main before the fast-forward") || { echo "$BEFORE"; exit 1; }
 if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
   echo "NOT_FAST_FORWARD"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
@@ -407,7 +459,7 @@ if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
   fi
   exit 1
 fi
-AFTER=$(git -C "$CLONE" rev-parse --short HEAD | tr -d '\r')
+AFTER=$(short_name HEAD "main after the fast-forward") || { echo "$AFTER"; exit 1; }
 
 # The main channel reports how local main moved. The release channel reports how the installation moves, from the
 # deployed commit to the release: the commits the release adds, and those the deployment had that the release does
@@ -417,21 +469,26 @@ if [ "$CHANNEL" = main ]; then
     echo "UP_TO_DATE $AFTER"
   else
     echo "UPDATED $BEFORE..$AFTER"
-    git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$AFTER" | tr -d '\r'
+    log_lines "$BEFORE..$AFTER"
   fi
 elif [ "$DEPLOYED_COMMIT" = "$RELEASE_COMMIT" ]; then
   echo "UP_TO_DATE $TARGET"
-elif [ -z "$DEPLOYED_COMMIT" ]; then
-  # Without a deployed commit, the commits listed are those the release adds to local main, as the stop listed them.
+elif [ -z "$KNOWN_COMMIT" ]; then
+  # Without a deployed commit the clone holds, the commits listed are those the release adds to local main, as the
+  # stop listed them, and what the release drops from the deployed commit is not claimed either way.
   echo "UPDATED unknown..$TARGET"
-  git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$RELEASE_REF" | tr -d '\r'
+  [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
+  log_lines "$BEFORE..$RELEASE_REF"
 else
-  OLD=$(git -C "$CLONE" rev-parse --short "$DEPLOYED_COMMIT" | tr -d '\r')
+  OLD=$(short_name "$KNOWN_COMMIT" "the deployed commit $KNOWN_COMMIT") || { echo "$OLD"; exit 1; }
   echo "UPDATED $OLD..$TARGET"
-  git -C "$CLONE" log --oneline --no-decorate "$DEPLOYED_COMMIT..$RELEASE_REF" | tr -d '\r'
-  LEFT=$(git -C "$CLONE" log --oneline --no-decorate "$RELEASE_REF..$DEPLOYED_COMMIT" | tr -d '\r')
-  if [ -n "$LEFT" ]; then
-    echo "NOT_IN_RELEASE $TARGET..$OLD"
+  log_lines "$KNOWN_COMMIT..$RELEASE_REF"
+  if LEFT=$(log_lines "$RELEASE_REF..$KNOWN_COMMIT"); then
+    if [ -n "$LEFT" ]; then
+      echo "NOT_IN_RELEASE $TARGET..$OLD"
+      printf '%s\n' "$LEFT"
+    fi
+  else
     printf '%s\n' "$LEFT"
   fi
 fi

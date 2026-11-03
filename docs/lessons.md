@@ -95,8 +95,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
   other than absence, such as a start inside a git directory, which has no work tree to show; `.wait()` or a
   `returncode` of a command that reports a per-file error on stderr and goes on, such as `git grep`, read as the whole
-  answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match".
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2182, #2185, #2205, #2236, #2245
+  answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match"; in a shipped
+  `.sh`, `rg -n '\$\(git |git .*\| *tr ' skills --glob '*.sh'`, a git answer taken through a command substitution or a
+  pipeline whose status no branch reads, which a script without `set -e` reads as an empty answer, and a
+  `rev-parse --verify --quiet` whose exit 1 is not told from any other failure.
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2182, #2185, #2205, #2218, #2236,
+  #2245
 
 ### Evidence that was never produced is never a pass
 
