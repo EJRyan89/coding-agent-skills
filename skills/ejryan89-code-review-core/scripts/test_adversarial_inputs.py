@@ -2612,14 +2612,15 @@ class FixtureInputTests(AdversarialFixture):
         self.assertEqual([], calls)
 
 
-def test_every_name_a_snapshot_reader_refuses_the_writer_leaves_out() -> None:
-    # The writer's rules and the readers' one rule, diff_paths.unsafe_snapshot_name, agree on each character a name
-    # can hold, so no snapshot holds a file its reader then refuses.
-    ample = review_runtime.PathRoom(file=10_000, folder=10_000)
-    for code in [*range(0x80), 0x85, 0xA0, 0x2028]:
-        name = f"app/a{chr(code)}b.py"
-        if unsafe_snapshot_name(name):
-            assert review_runtime.unsafe_path_reason(name, ample) is not None, repr(name)
-    for name in ("app/con", "app/a.", "app/a ", "app/conin$.txt", "app/lpt\u00b2.y"):
-        assert unsafe_snapshot_name(name)
-        assert review_runtime.unsafe_path_reason(name, ample) is not None, name
+def test_the_writer_leaves_out_exactly_the_names_a_snapshot_reader_refuses() -> None:
+    # The writer's rules that do not depend on where the snapshot is written, and the readers' one rule,
+    # diff_paths.unsafe_snapshot_name, agree on every name in both directions: no snapshot holds a file its reader
+    # refuses, and no reader refuses a file the snapshot holds.
+    ample = review_runtime.PathRoom(file=100_000, folder=100_000)
+    names = [f"app/a{chr(code)}b.py" for code in [*range(0x80), 0x85, 0xA0, 0x2028, 0xDCE2]]
+    names += [*UNSAFE_NAMES, *KEPT_NAMES, "app/lpt\u00b2.y", "app/x.y.", "app/" + "n" * 255, "app/" + "n" * 256]
+    for name in names:
+        if name.startswith(("app/" + "p" * 97, "app/" + "f" * 85)):
+            continue  # the two length rules depend on the room, which no reader knows
+        writer = review_runtime.unsafe_path_reason(name, ample) is not None
+        assert writer == unsafe_snapshot_name(name), repr(name)

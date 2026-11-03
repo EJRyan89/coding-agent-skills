@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import file_presence
 from device_names import is_reserved_device_name
-from diff_paths import unsafe_snapshot_name
+from diff_paths import MAX_SEGMENT_UNITS, unsafe_snapshot_name
 from executable_locator import find_executable
 from git_client import OBJECT_NAME as GIT_OBJECT_ID
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
@@ -106,7 +106,6 @@ SNAPSHOT_EXCLUSION_REASONS = {
 # A reserved character or a control character, DEL among them as diff_paths.unsafe_snapshot_name reads it, so the
 # snapshot writer never holds a name a snapshot reader refuses.
 WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f\x7f]')
-MAX_SEGMENT_UNITS = 255  # NTFS, ReFS, exFAT, and FAT32 all stop a name at 255 UTF-16 code units
 MAX_PATH = 260  # a Windows path without long-path support, its terminating NUL included
 LONG_PATH_UNITS = 32_767  # an NT path with long-path support, counted with the volume's device name for the drive
 # What each runtime gives a review, which is not everything it can do: Copilot CLI starts subagents, but its hooks let a
@@ -1528,6 +1527,7 @@ def _verify_fetched_files(
             or relative in hashes
             or relative in excluded
             or _is_agent_instruction_path(relative)
+            or unsafe_snapshot_name(relative)
         ):
             raise RuntimeContractError(f"Source snapshot fetchable path is invalid: {relative!r}")
         size = tree.files.get(relative)
@@ -1544,7 +1544,7 @@ def _verify_fetched_files(
 def _snapshot_file_size(tree: _SnapshotTree, relative: str, expected_hash: Any) -> int:
     """A listed file's size, once its name, its hash's format, its place under the root, and its size check out."""
     normalized = _safe_relative_path(relative, f"a key of {SOURCE_SNAPSHOT_MANIFEST}.source_hashes")
-    if normalized != relative or relative == SOURCE_SNAPSHOT_MANIFEST:
+    if normalized != relative or relative == SOURCE_SNAPSHOT_MANIFEST or unsafe_snapshot_name(relative):
         raise RuntimeContractError(f"Source snapshot path is invalid: {relative!r}")
     if _is_agent_instruction_path(relative):
         raise RuntimeContractError(f"Source snapshot includes an agent-instruction path: {relative}")
@@ -2128,15 +2128,16 @@ def fetch_source_file(
     )
     form = metadata.get(SNAPSHOT_EXTRACTED, {}).get(relative)
     if form is not None:
+        _snapshot_path(root, relative)  # the document's own name is judged before its text's is joined
         return root.joinpath(*PurePosixPath(held_path(relative, form)).parts)
-    target = root.joinpath(*PurePosixPath(relative).parts)
     if relative in metadata["source_hashes"]:
-        return target
+        return _snapshot_path(root, relative)
     if relative in metadata["excluded_paths"]:
         return str(metadata["excluded_paths"][relative])
     blob = metadata.get(SNAPSHOT_FETCHABLE, {}).get(relative)
     if blob is None:
         raise RuntimeContractError(f"The head commit has no file {json.dumps(relative)} the snapshot can hold")
+    target = _snapshot_path(root, relative)
     if relative in tree.files:
         _require_blob(root, relative, blob)
         return target

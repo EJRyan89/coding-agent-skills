@@ -162,7 +162,7 @@ class SnapshotPathTests(unittest.TestCase):
         (self.outer / "outside.py").write_text("def private_name():\n    pass\n", encoding="utf-8")
 
     def test_a_path_inside_the_snapshot_is_where_it_lands(self) -> None:
-        for path in ("tools/inside.py", "tools/not yet here.py", "tools/ab:c.py", "tools/..x.py"):
+        for path in ("tools/inside.py", "tools/not yet here.py", "tools/..x.py", "tools/" + "n" * 255):
             with self.subTest(path=path):
                 self.assertEqual(self.root.resolve().joinpath(*path.split("/")), snapshot_path(self.root, path))
 
@@ -292,6 +292,18 @@ UNSAFE_SNAPSHOT_NAMES = [
     "/etc/outside.py",
     "C:/outside.py",
     "",
+    # The characters the snapshot's writer leaves out, which a reader refuses alike.
+    "a/x?y.py",
+    "a/x<y",
+    "a/x>y",
+    "a/x|y",
+    'a/x"y',
+    "a/x*y",
+    "tools/ab:c.py",
+    "a/del\x7f.py",
+    "a/bad\udce2.py",
+    "a/" + "n" * 256,
+    "a/" + "\U0001f600" * 128,
 ]
 
 
@@ -301,6 +313,8 @@ def test_an_unsafe_snapshot_name_is_refused_by_the_shared_rule(path: str) -> Non
     assert snapshot_path(Path("root"), path) is None
 
 
-@pytest.mark.parametrize("path", ["a.py", "src/a b.py", "tools/..x.py", "tools/ab:c.py", ".github/x.yml", "con_x/a"])
+@pytest.mark.parametrize(
+    "path", ["a.py", "src/a b.py", "tools/..x.py", ".github/x.yml", "con_x/a", "a/" + "\U0001f600" * 127]
+)
 def test_a_safe_snapshot_name_passes_the_shared_rule(path: str) -> None:
     assert not diff_paths.unsafe_snapshot_name(path)
