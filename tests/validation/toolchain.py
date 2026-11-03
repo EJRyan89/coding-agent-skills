@@ -16,7 +16,7 @@ import file_presence
 import json_reader
 import json_writer
 from job_pool import Terminated, refuse_termination, run_process
-from validation_support import REPOSITORY_ROOT, find_fences, markdown_section, repository_files
+from validation_support import REPOSITORY_ROOT, continued_lines, find_fences, markdown_section, repository_files
 
 from deployer import platform_support, render, tools
 
@@ -326,10 +326,11 @@ PIP_PROGRAM = re.compile(r"(?:.*[/\\])?pip(?:3(?:\.\d+)*)?(?:\.exe)?", re.IGNORE
 
 
 def pip_installs(workflow: str) -> list[tuple[int, list[str], str]]:
-    """Each line of a workflow that runs pip with an install among its words after it, as its number, the words after
-    the pip, and the line, however its options and spacing fall."""
+    """Each command of a workflow that runs pip with an install among its words after it, as the number of its first
+    line, the words after the pip, and the command, however its options and spacing fall and onto however many lines a
+    trailing backslash or backtick continues it."""
     found: list[tuple[int, list[str], str]] = []
-    for number, line in enumerate(workflow.splitlines(), start=1):
+    for number, line in continued_lines(workflow):
         words = line.split()
         for index, word in enumerate(words):
             if PIP_PROGRAM.fullmatch(word.strip("'\"")) and "install" in words[index + 1 :]:
@@ -338,9 +339,57 @@ def pip_installs(workflow: str) -> list[tuple[int, list[str], str]]:
     return found
 
 
+# pip reads its options with optparse, which takes a long option by any prefix that names it alone and a short option's
+# value attached or as the next word, after any short flags clustered before it. --requirement shares `--require` with
+# --require-hashes and --require-virtualenv, so a prefix names it alone from `--requirem` on, and a shorter one is
+# ambiguous, which pip refuses. Of pip install's short options, these take a value, which ends a cluster.
+REQUIREMENT_OPTION = "--requirement"
+REQUIREMENT_PREFIX = "--requirem"
+PIP_SHORT_VALUES = frozenset("cefirt")
+
+
+def _clustered_requirement(word: str) -> tuple[str, str] | None:
+    """The short flags before a cluster's -r and the value attached after it, or None when no -r is in the cluster
+    before an option that takes the rest of the word as its value."""
+    for index, letter in enumerate(word[1:], start=1):
+        if letter == "r":
+            return word[:index], word[index + 1 :]
+        if letter in PIP_SHORT_VALUES:
+            return None
+    return None
+
+
+def install_words(words: list[str]) -> list[str]:
+    """The words after a pip, unquoted, with each requirements file named in a form optparse reads written as
+    `-r <file>`: `-r<file>`, `--requirement=<file>`, a prefix of --requirement that names it alone, with its value
+    attached or after it, and -r after short flags clustered before it, as `-qr <file>` writes it."""
+    read: list[str] = []
+    for word in (word.strip("'\"") for word in words):
+        name, equals, value = word.partition("=")
+        if word.startswith("--") and len(name) >= len(REQUIREMENT_PREFIX) and REQUIREMENT_OPTION.startswith(name):
+            read += ["-r", value] if equals else ["-r"]
+        elif word.startswith("-") and not word.startswith("--") and (cut := _clustered_requirement(word)) is not None:
+            flags, attached = cut
+            read += [flags] if flags != "-" else []
+            read += ["-r", attached] if attached else ["-r"]
+        else:
+            read.append(word)
+    return read
+
+
+def names_requirements(words: list[str]) -> bool:
+    """Whether the words after a pip name a requirements file, in any form install_words reads, or by a prefix of
+    --requirement too short to name it alone, which pip refuses but which a reader must not take for no file."""
+    names = (word.strip("'\"").partition("=")[0] for word in words)
+    return "-r" in install_words(words) or any(
+        name.startswith("--") and len(name) > 2 and REQUIREMENT_OPTION.startswith(name) for name in names
+    )
+
+
 def checks_hashes(words: list[str], locks: tuple[str, ...]) -> bool:
     """Whether the words after a pip read `install --require-hashes --only-binary :all:` and then only `-r <lock>` for
-    one of `locks`."""
+    one of `locks`, each requirements file in any form install_words reads."""
+    words = install_words(words)
     flags = ["install", *HASH_CHECKED_INSTALL.split()]
     files = words[len(flags) :]
     pairs = list(zip(files[::2], files[1::2], strict=False))
@@ -373,7 +422,7 @@ def fence_install_problems(markdown: str, locks: tuple[str, ...]) -> list[str]:
     return [
         f"line {number} does not install only {list(locks)} with {HASH_CHECKED_INSTALL}: {line.strip()!r}"
         for number, words, line in pip_installs(markdown)
-        if number in body and {"-r", "--requirement"} & set(words) and not checks_hashes(words, locks)
+        if number in body and names_requirements(words) and not checks_hashes(words, locks)
     ]
 
 

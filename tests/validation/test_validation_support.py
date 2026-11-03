@@ -32,6 +32,7 @@ from validation_support import (
     UnreadablePython,
     call_argument,
     call_arguments,
+    continued_lines,
     docstring_ids,
     fence_body_line,
     fence_holders,
@@ -722,3 +723,21 @@ class RepositoryFilesFixtures(unittest.TestCase):
                 ReleaseNotesError, "git ls-files --cached --others --exclude-standard -z failed"
             ):
                 repository_files(Path(temporary))
+
+
+@pytest.mark.parametrize(
+    ("text", "marks", "expected"),
+    [
+        pytest.param("a \\\n  b\nc\n", "\\`", [(1, "a    b"), (3, "c")], id="a backslash joins the next line"),
+        pytest.param("a `\nb `\nc\nd", "\\`", [(1, "a  b  c"), (4, "d")], id="backticks join a run of lines"),
+        pytest.param("a \\\\\nb\n", "\\`", [(1, "a \\\\"), (2, "b")], id="a doubled backslash ends no command"),
+        pytest.param("a \\\\\\\nb\n", "\\`", [(1, "a \\\\ b")], id="an odd run of backslashes continues"),
+        pytest.param("a `\nb\n", "\\", [(1, "a `"), (2, "b")], id="a mark not given ends no command"),
+        pytest.param("a \\ \nb\n", "\\`", [(1, "a \\ "), (2, "b")], id="a space after the mark ends the command"),
+        pytest.param("a \\", "\\`", [(1, "a  ")], id="a mark at the end of the text"),
+    ],
+)
+def test_a_shell_line_continued_by_its_mark_is_read_with_the_next(
+    text: str, marks: str, expected: list[tuple[int, str]]
+) -> None:
+    assert continued_lines(text, marks) == expected

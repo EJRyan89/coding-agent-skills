@@ -1627,6 +1627,89 @@ class GuidanceTests(Fixture):
             audit.supported_runtimes(self.root)
         self.assertIn("cannot read the runtime catalogue", str(raised.exception))
 
+    def test_a_catalogue_that_may_change_its_runtimes_after_their_literal_fails_by_line(self) -> None:
+        # Each form that may leave the module running with other runtimes or titles than its one literal says, after
+        # the catalogue's two lines, with the lines the refusal names.
+        for change, lines in (
+            ('RUNTIMES += ("gamma",)', "3"),
+            ('if True:\n    RUNTIMES = ("gamma",)', "4"),
+            ('for RUNTIMES in [("gamma",)]:\n    pass', "3"),
+            ('with open("x") as RUNTIMES:\n    pass', "3"),
+            ("del RUNTIMES", "3"),
+            ("from elsewhere import RUNTIMES", "3"),
+            ("import elsewhere as RUNTIMES", "3"),
+            ("def RUNTIMES():\n    pass", "3"),
+            ("class RUNTIMES:\n    pass", "3"),
+            ("def load(RUNTIMES=None):\n    pass", "3"),
+            ('def load():\n    global RUNTIMES\n    RUNTIMES = ("gamma",)', "4, 5"),
+            ('(RUNTIMES := ("gamma",))', "3"),
+            ('globals()["RUNTIMES"] = ("gamma",)', "3"),
+            ('globals().update(RUNTIMES=("gamma",))', "3"),
+            ('setattr(sys.modules[__name__], "RUNTIMES", ("gamma",))', "3"),
+            ('sys.modules[__name__].RUNTIMES = ("gamma",)', "3"),
+            ('RUNTIME_TITLES["alpha"] = "Other"', "3"),
+            ('del RUNTIME_TITLES["beta"]', "3"),
+            ('RUNTIME_TITLES |= {"gamma": "Gamma"}', "3"),
+            ('RUNTIME_TITLES.update(gamma="Gamma")', "3"),
+            ('RUNTIME_TITLES.setdefault("gamma", "Gamma")', "3"),
+            ("rename(RUNTIME_TITLES)", "3"),
+            ("TITLES = RUNTIME_TITLES", "3"),
+        ):
+            with self.subTest(change=change):
+                write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": CATALOGUE + change + "\n"})
+                with self.assertRaises(audit.AuditError) as raised:
+                    audit.supported_runtimes(self.root)
+                self.assertTrue(str(raised.exception).endswith(f"may change it on line {lines}"), raised.exception)
+
+    def test_a_catalogue_that_assigns_its_runtimes_other_than_once_fails(self) -> None:
+        for text in (
+            CATALOGUE + 'RUNTIMES = ("alpha",)\n',
+            CATALOGUE + 'RUNTIMES = RUNTIMES + ("gamma",)\n',
+            'if True:\n    RUNTIMES = ("alpha", "beta")\nRUNTIME_TITLES = {"alpha": "Alpha CLI", "beta": "Beta"}\n',
+            'RUNTIMES, OTHER = ("alpha", "beta"), 1\nRUNTIME_TITLES = {"alpha": "Alpha CLI", "beta": "Beta"}\n',
+        ):
+            with self.subTest(text=text):
+                write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": text})
+                with self.assertRaises(audit.AuditError) as raised:
+                    audit.supported_runtimes(self.root)
+                self.assertIn("must assign RUNTIMES once at module level", str(raised.exception))
+
+    def test_a_catalogue_that_only_reads_its_runtimes_passes(self) -> None:
+        reads = (
+            '"""The RUNTIMES and the RUNTIME_TITLES."""\n'
+            '__all__ = ["RUNTIMES", "RUNTIME_TITLES"]\n'
+            'RUNTIMES: tuple[str, ...] = ("alpha", "beta")\n'
+            'RUNTIME_TITLES = {"alpha": "Alpha CLI", "beta": "Beta"}\n'
+            "KNOWN = set(RUNTIMES)\n"
+            "FIRST = RUNTIMES[0], RUNTIMES.index('beta')\n"
+            "def title(runtime, value=None):\n"
+            "    RUNTIME = runtime\n"
+            "    return RUNTIME_TITLES.get(runtime) if runtime in RUNTIME_TITLES else RUNTIME_TITLES[RUNTIME]\n"
+            "NAMES = [name for name in RUNTIME_TITLES]\n"
+            "for name in RUNTIME_TITLES.items():\n"
+            "    pass\n"
+        )
+        write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": reads})
+        self.assertEqual({"alpha": "Alpha CLI", "beta": "Beta"}, audit.supported_runtimes(self.root))
+
+    def test_each_error_literal_eval_raises_on_the_runtimes_fails_by_name(self) -> None:
+        write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": CATALOGUE})
+        real = ast.literal_eval
+        for error in (ValueError, TypeError, MemoryError, RecursionError):
+
+            def refusing(node: object, error: type[Exception] = error) -> object:
+                if isinstance(node, ast.Tuple):
+                    raise error("refused")
+                return real(node)  # type: ignore[arg-type]  # each call passes an ast node, as the reader does
+
+            with (
+                self.subTest(error=error.__name__),
+                mock.patch.object(ast, "literal_eval", refusing),
+                self.assertRaises(audit.AuditError) as raised,
+            ):
+                audit.supported_runtimes(self.root)
+            self.assertIn("must assign RUNTIMES a literal", str(raised.exception))
+
     def test_a_catalogue_without_literal_runtimes_fails(self) -> None:
         for text in ("RUNTIMES = tuple(load())\n", "RUNTIMES = ('alpha',)\nRUNTIME_TITLES = {}\n", "def (\n"):
             with self.subTest(text=text):

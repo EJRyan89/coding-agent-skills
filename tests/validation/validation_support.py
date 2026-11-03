@@ -728,6 +728,33 @@ def fence_body_line(holder: Fence | None, index: int) -> bool:
     return holder is not None and index not in (holder.opener, holder.closer)
 
 
+# The marks that, ending a line, continue a shell command on the next: Bash's backslash and PowerShell's backtick.
+BASH_CONTINUATION = "\\"
+POWERSHELL_CONTINUATION = "`"
+SHELL_CONTINUATIONS = BASH_CONTINUATION + POWERSHELL_CONTINUATION
+
+
+def continued_lines(text: str, marks: str = SHELL_CONTINUATIONS) -> list[tuple[int, str]]:
+    """Each line of a script as its shell reads a command, by the number of its first line: a line that one of `marks`
+    ends joins the next, the mark read as a space. A mark doubled, as `\\\\` writes a backslash, ends no command, so a
+    line ends a continuation only when an odd run of its mark ends it."""
+    joined: list[tuple[int, str]] = []
+    start, held = 0, ""
+    for number, physical in enumerate(text.splitlines(), start=1):
+        if not held:
+            start = number
+        line = held + physical
+        mark = line[-1:]
+        if mark and mark in marks and (len(line) - len(line.rstrip(mark))) % 2:
+            held = line[:-1] + " "
+            continue
+        joined.append((start, line))
+        held = ""
+    if held:
+        joined.append((start, held))
+    return joined
+
+
 def repository_files(root: Path) -> list[Path]:
     """Tracked files plus untracked ones Git does not ignore, which is what a commit could include.
 

@@ -6,6 +6,7 @@ Each policy fails on a violating input and passes on a conforming one.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -288,6 +289,82 @@ def test_a_workflow_installs_only_its_locks_with_hash_checking() -> None:
     # A workflow that installs no lock may run no pip install, and pip that installs nothing is not one.
     assert len(hash_install_problems(clean, ())) == 1
     assert hash_install_problems("      - run: python -m pip --version\n        cache: pip\n", ()) == []
+
+
+@pytest.mark.parametrize(
+    "install",
+    [
+        pytest.param(
+            "python -m pip install --require-hashes --only-binary :all: -rrequirements-dev.txt", id="-r<file>"
+        ),
+        pytest.param(
+            "python -m pip install --require-hashes --only-binary :all: --requirement=requirements-dev.txt",
+            id="--requirement=<file>",
+        ),
+        pytest.param(
+            "python -m pip install --require-hashes --only-binary :all: --requirement requirements-dev.txt",
+            id="--requirement <file>",
+        ),
+        pytest.param(
+            "python -m pip install --require-hashes --only-binary :all: --requirem requirements-dev.txt",
+            id="a prefix that names --requirement alone",
+        ),
+        pytest.param(
+            "python -m pip install --require-hashes --only-binary :all: -r 'requirements-dev.txt'", id="a quoted lock"
+        ),
+        pytest.param(
+            "python -m pip install \\\n  --require-hashes --only-binary :all: \\\n  -r requirements-dev.txt",
+            id="continued by backslashes",
+        ),
+        pytest.param(
+            "python -m pip install `\n  --require-hashes --only-binary :all: -r requirements-dev.txt",
+            id="continued by a backtick",
+        ),
+    ],
+)
+def test_a_lock_installed_with_hash_checking_passes_in_each_form_pip_reads(install: str) -> None:
+    locks = ("requirements-dev.txt",)
+    assert hash_install_problems(f"        run: |\n{install}\n", locks) == []
+    assert fence_install_problems(f"```bash\n{install}\n```\n", locks) == []
+
+
+@pytest.mark.parametrize(
+    "drifted",
+    [
+        pytest.param("python -m pip install -rrequirements-dev.txt", id="-r<file>"),
+        pytest.param("python -m pip install --requirement=requirements-dev.txt", id="--requirement=<file>"),
+        pytest.param("python -m pip install --requirem requirements-dev.txt", id="a prefix naming --requirement"),
+        pytest.param("python -m pip install --req=requirements-dev.txt", id="an ambiguous prefix"),
+        pytest.param("python -m pip install -qr requirements-dev.txt", id="-r clustered after a flag"),
+        pytest.param("python -m pip install -Uqrrequirements-dev.txt", id="-r<file> clustered after flags"),
+        pytest.param("python -m pip install \\\n  -r requirements-dev.txt", id="continued by a backslash"),
+        pytest.param("python -m pip install `\n  -r requirements-dev.txt", id="continued by a backtick"),
+        pytest.param(
+            "python -m pip install --require-hashes --only-binary :all: \\\n  -r requirements-dev.txt ruff",
+            id="continued onto a package beside the lock",
+        ),
+    ],
+)
+def test_a_documented_install_from_a_requirements_file_is_read_in_each_form_pip_reads(drifted: str) -> None:
+    locks = ("requirements-dev.txt",)
+    command = re.sub(r"[\\`]\n", " ", drifted)
+    assert fence_install_problems(f"Install them:\n\n```bash\n{drifted}\n```\n", locks) == [
+        "line 4 does not install only ['requirements-dev.txt'] with --require-hashes --only-binary :all:: "
+        + repr(command)
+    ]
+
+
+@pytest.mark.parametrize(
+    "install",
+    [
+        pytest.param("python -m pip install -crequirements-dev.txt ruff==0.17.1", id="-c takes the r as its value"),
+        pytest.param("python -m pip install -i https://example.invalid/simple ruff==0.17.1", id="an index"),
+        pytest.param("python -m pip install --root /opt ruff==0.17.1", id="a long option that is no prefix"),
+        pytest.param("python -m pip install pip-tools==7.6.2 \\\\\n-r requirements-dev.txt", id="an escaped backslash"),
+    ],
+)
+def test_a_documented_install_naming_no_requirements_file_is_not_one(install: str) -> None:
+    assert fence_install_problems(f"```bash\n{install}\n```\n", ("requirements-dev.txt",)) == []
 
 
 def test_a_documented_install_from_a_requirements_file_checks_hashes_as_ci_does() -> None:

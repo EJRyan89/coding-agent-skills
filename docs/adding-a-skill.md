@@ -122,7 +122,7 @@ Every skill script reports the same way, so a `SKILL.md` reads each one alike:
 
 The skill's Markdown names each line a script it runs prints, by its first word, where the agent acts on it or, for a line that needs nothing, saying so, as "`DRY_RUN` and `REPOSITORY` need nothing from you". Validation fails, for every shipped and repository skill, on a line such a script prints whose first word the Markdown never names, on a status word a code span on a prose line about output names that none of the skill's scripts prints, and on an exit code the prose states that none of them uses: the `audit-skill` inventory's `UNEXPLAINED`, `UNPRINTED`, and `EXIT_MISMATCH` lines, which `skill_inventory.py scan` prints for one skill.
 
-A script that must speak another protocol states why beside its code as a module-level `EXIT_CONTRACT_EXEMPT = "<reason>"`: `review_guard.py`, for example, answers Claude Code's hook protocol. Repository validation fails when any other script calls `parser.error` while handling an exception, prints `FAILED` on stderr, prints `json.dumps` output, or exits with a literal code other than 0, 1, or 2. It also fails when an entry point's `__main__` block (a skill script's, `deploy.py`'s, or a deployer or `tools/` module's) does not start with `run_main()`, resolved through its imports, or when a script outside `ejryan89-skill-core` reconfigures a stream's encoding itself, and it runs each entry point's block as written with its `main` failing, to show the `FAILED` line and the exit code.
+A script that must speak another protocol states why beside its code as a module-level `EXIT_CONTRACT_EXEMPT = "<reason>"`: `review_guard.py`, for example, answers Claude Code's hook protocol. Repository validation fails when any other script calls `parser.error` while handling an exception, prints `FAILED` on stderr, prints `json.dumps` output, or exits with a literal code other than 0, 1, or 2. It also fails when an entry point's `__main__` block (a skill script's, `deploy.py`'s, or a deployer or `tools/` module's) does not start with `run_main()`, resolved through its imports, or when a script outside `ejryan89-skill-core` reconfigures a stream's encoding itself: by its `reconfigure`, looked up by name through either spelling of `getattr` or through `operator.methodcaller`, given that name or one computed at run time, or by a text stream it builds over a standard stream, its descriptor, or a console device's path, which Windows opens in any case, before an extension or a colon, and in any folder, as `conout$`, `CON:`, and `con.txt` do, and it runs each entry point's block as written with its `main` failing, to show the `FAILED` line and the exit code.
 
 ### Working files
 
@@ -186,8 +186,10 @@ function takes as a parameter is read at every call of that function in the scri
 cannot read fails both the declared-tool and shared-client policies instead of being ignored: a format with no
 literal program prefix, such as `f"{program} api"`, a value the script reads from elsewhere, or a parameter of a
 function no call in the script passes, that the script hands on as a value, or that other scripts may call by its
-public name. Keep the program name literal and interpolate only its arguments. A function whose program truly
-comes from elsewhere, such as a runner a client injects or a server a repository configures, states why beside
+public name. So is a runner itself that the script hands on as a value, to `functools.partial`, `map`, a thread's
+target, or a collection, or takes by `getattr` or `builtins.getattr`, given the runner's name or one the script
+computes. Keep the program name literal and interpolate only its arguments. A function whose program truly comes from
+elsewhere, such as a runner a client injects or a server a repository configures, states why beside
 the code, as a module-level `COMMANDS_ALLOWED = {scope: reason}` keyed by the function's qualified name or by a
 module-level assignment's target; validation fails on an allowance that sanctions nothing it reads. A parameter
 that `COMMAND_RUNNERS` in `tests/validation/skill_scripts.py` names, such as `run_bounded`'s command, is read at
@@ -205,7 +207,7 @@ Reach for these substitutes instead:
 
 | Instead of | Use |
 |---|---|
-| `jq` | Python's `json` module, or PowerShell's `ConvertFrom-Json`. A script parses `gh --json` and `gh api` output with the `json` module, adding `--paginate --slurp` to a paginated `gh api` call, and validates its shape. `gh --jq` is for a one-line command in prose, never a script; validation fails when a skill script passes `--jq`, `-q`, or `--template` to `gh` |
+| `jq` | Python's `json` module, or PowerShell's `ConvertFrom-Json`. A script parses `gh --json` and `gh api` output with the `json` module, adding `--paginate --slurp` to a paginated `gh api` call, and validates its shape. `gh --jq` is for a one-line command in prose, never a script; validation fails when a shipped or repository skill script passes `--jq`, `--template`, or their shorthands `-q` and `-t` to `gh`, attached or not, read in a shell command with the lines a trailing backslash or backtick continues it onto; a Python list holds a shorthand as one only beside `--json` or in `gh api`, and a shell command holds `-t` as one only there, since `gh pr create -t` is a title |
 | `rg` | `grep -E` in Bash, Python's `re` module, or the agent's built-in search tool |
 | `yq` | JSON instead of YAML; Python's standard library cannot read YAML |
 | `curl` or `wget` against the GitHub API | `gh api`, which handles authentication |

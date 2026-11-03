@@ -598,7 +598,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `scope_problems` test holds, or a `glob(`
   narrower than the rule's statement in `CLAUDE.md` or `docs/`; `rg -n "glob\(\"\*\.sh\"\)|suffix == \"\.sh\"" tests/validation/`,
   a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; an
-  audit brief that asks only for drift.
+  audit brief that asks only for drift; a `scope_problems` call whose modules are filtered by the roots it is held
+  to, which compares a list with itself.
 - **Examples:** #1366, #1598, #1678, #1722, and #1884, which adds the check that holds a policy's scope to its rule
 
 ### A check reads its subject through its consumer's reader
