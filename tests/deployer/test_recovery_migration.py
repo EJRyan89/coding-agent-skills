@@ -984,6 +984,8 @@ class RecoveryBranchTests(RecoveryTestCase):
         result = self.deploy_ok("--all")
         self.assert_lines(result.output, f"Recovering committed run {self.RUN} (completing finalization)...")
         self.assertNotIn("Preserved backup", result.output)
+        # A copy an earlier attempt already moved is not moved again, so nothing warns that it stayed behind.
+        self.assertNotIn("WARNING", result.output)
         self.assertEqual("previous alpha\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_a_transient_and_a_permanent_backup_both_there_keep_the_transient_and_complete(self) -> None:
