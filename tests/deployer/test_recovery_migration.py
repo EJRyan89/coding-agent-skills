@@ -630,6 +630,26 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.deploy_ok("--all")
         self.assertFalse(run.exists())
 
+    def test_a_staging_folder_with_no_journal_that_cannot_be_removed_is_left_named_and_deleted_later(self) -> None:
+        # A run stopped before it wrote its journal, or one whose journal is already gone, holds nothing to recover, so
+        # a folder another program holds open is named rather than failing recovery.
+        self.deployed(("alpha", "Alpha content"))
+        run = self.staging_run(self.HELD)
+        self.write(run / "skills" / "alpha" / "SKILL.md", "staged, never journaled\n")
+        self.later_run()
+        with failing_at("remove", run):
+            result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output,
+            f"  WARNING: Could not delete the staging folder {forward(run)}: Access is denied. It holds no journal, "
+            "so the next deployment deletes it.",
+            f"Recovering uncommitted run {self.NEXT} (rolling back)...",
+        )
+        self.assertNotIn("Recovery failed", result.output)
+        self.assertTrue(run.is_dir())
+        self.deploy_ok("--all")
+        self.assertFalse(run.exists())
+
     def test_a_journal_that_cannot_be_removed_fails_its_run_only(self) -> None:
         # A journal left behind would be replayed after a later commit as a run that was never committed.
         self.deployed(("alpha", "Alpha content"))
