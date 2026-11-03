@@ -220,9 +220,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   the owner moves on.
 - **Use:** `tests.validation.duplication:_shared_facts`, the registry of facts each read from its owner; where a fact
   is a behavior, the owner's function, such as `frontmatter:Frontmatter.user_only`, `frontmatter:user_only_value` for
-  another reader's values, and `typed_text:read_typed`, the read of a title or body file without its byte-order mark.
+  another reader's values, `typed_text:read_typed`, the read of a title or body file without its byte-order mark, and
+  `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by.
   A module more than one part of the repository needs moves to skill-core.
-- **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_owners_hold_every_shared_fact`,
+- **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests`, which runs each backup through both paths,
+  `tests/validation/duplication.py::DuplicationPolicies::test_repository_owners_hold_every_shared_fact`,
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   `tests/validation/test_duplication.py::SharedFactPolicy`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
@@ -235,8 +237,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a module-level `frozenset({` or tuple of strings whose members another module also spells; a
   document's list of names, flags, or modules that a module's constant holds; a `print(` of a status line no
   `SKILL.md` names; a second `json.loads(`, `os.lstat(`, or other helper beside the one skill-core owns;
-  `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules.
-- **Examples:** #1349, #1477, #1495, #1596, #1679
+  `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules;
+  a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
+  in its own code what becomes of the same state on disk.
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2295, #2296
 
 ### A promise in prose is held where its reader reads it
 
@@ -247,13 +251,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `tests.validation.skill_layout:runtime_page_problems`, `tests.validation.workflows:token_reach_problems`
 - **Guard:** `tests/validation/markdown_links.py::MarkdownLinksPolicies::test_every_test_a_document_cites_exists`,
   `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`,
-  `tests/validation/workflows.py::WorkflowsPolicies::test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so`
+  `tests/validation/workflows.py::WorkflowsPolicies::test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so`,
+  `tests/deployer/test_backup_settlement.py::RecoveryStopsTests::test_when_recovery_fails_names_every_stop_recovery_makes`,
+  which reads each stop from the code and fails one the guide's list leaves out
 - **Search for:** an `assertEqual(` or `assertIn(` on a literal sentence a document states, where the test could read
   the document or the shared constant; `never`, `always`, `nothing`, `every`, or `only` in a `SKILL.md` or a
   docstring, each checked for a test of its exception; a docstring's exit codes against the function's `return` and
   `sys.exit(` values; a statement of which code a credential or the run's token reaches, checked for the code a
-  pull request can change at those paths.
-- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2237
+  pull request can change at those paths; a document's list of the cases a step stops or refuses on, checked against
+  each `return False` or `raise` of that step.
+- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2237, #2296
 
 ### A reader refuses a shape it does not know
 
@@ -276,13 +283,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   which holds a written-out row for every member the shepherd lists, absent and null, and fails when the listing
   gains a member without one, and
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_run_member_the_rollup_leaves_out_is_malformed_never_a_default`,
-  the same table for each check run in a rollup
+  the same table for each check run in a rollup, and
+  `tests/deployer/test_state_files.py::ReaderTests::test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error`,
+  which gives every key of each journal entry the deployer writes a list, an object, and a number
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
   without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;
   `member(` or `.get(` followed by `or "<default>"`, `is not None`, or `is None` where the member decides a write,
-  such as arming, holding, or a rerun, and an absent member would read as the answer that allows it.
-- **Examples:** #1890, #1892, #2235
+  such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
+  `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
+  dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
+- **Examples:** #1890, #1892, #2235, #2292
 
 ### A reader of another program's language reads it as that program does
 
@@ -404,6 +415,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
   as a destination judged in the step that creates it.
 - **Examples:** #1396, #1855, #1876, #1911, #2210
+
+### A preview reads what the run refuses on before it answers
+
+- **Rule:** A dry run or other preview reads every state its run refuses on, in the run's order, before it gives any
+  answer, so it refuses what the run would refuse.
+- **Why:** A preview that answers before the read that refuses, such as reporting a pending recovery, promises a run
+  that stops, and sends the user to the step that fails.
+- **Use:** `deployer.lock:check_holder`, which judges a lock already there as `deployer.lock:acquire` does and takes nothing, and
+  `deployer.pipeline:_reject_other_checkout`, which reads the manifest and refuses another checkout: the deployment's
+  checks before it recovers, which `deployer.pipeline:_dry_run` makes first too, in the deployment's order.
+- **Guard:** `tests/deployer/test_state_files.py::StateFileTests::test_a_dry_run_refuses_each_state_the_deployment_refuses_before_recovery_pending_run_or_not`,
+  a table of each state the deployment refuses before it recovers, each with a pending recovery beside it and without
+- **Search for:** a `return` in `_dry_run` or another preview before a check its run makes first, such as
+  `_stop_for_pending_recovery(` before `check_holder(` or `_reject_other_checkout(`; a `--dry-run` branch taken before
+  a check the full run takes, such as the lock a preview never acquires but must still judge.
+- **Examples:** #2293
 
 ### What one step accepts, every later step can read and write
 
