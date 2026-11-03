@@ -203,6 +203,7 @@ class SettlementTests(DeployerTestCase):
                     self.assertFalse(reconciled)
                     self.assertEqual(1, len(warnings), warnings)
                     self.assertIn(says, warnings[0])
+                    self.assertIn(f"The kept backup of alpha at .backups/{RUN}/alpha ", warnings[0])
                 finally:
                     fsops.remove(self.skills_dir)
                     fsops.remove(outside)
