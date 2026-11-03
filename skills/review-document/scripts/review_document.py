@@ -62,6 +62,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import file_presence
 import json_reader
 import json_writer
 from console import run_main
@@ -392,12 +393,20 @@ def output_directory(output: Path | None) -> Path | None:
     """The explicit output directory, checked before anything is read or written, or None for a new temporary one.
     One inside a skills directory is refused, since a file left there makes the deployer skip that skill, and so is
     one that exists and is not empty, so nothing the user keeps there is mixed with the review's files or replaced,
-    and one whose path a quoted argument does not keep."""
+    and one whose path a quoted argument does not keep, or that cannot be looked at, so it is never taken for new."""
     if output is None:
         return None
     directory = working_path(output, "review-document-", "").resolve()
     refuse_unquotable(directory)
-    if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+    try:
+        taken = file_presence.is_occupied(directory) and (
+            not file_presence.is_directory(directory, other_is_absent=True) or any(directory.iterdir())
+        )
+    except OSError as exc:
+        raise DocumentError(
+            f"cannot tell whether {directory} is a new or empty directory: {exc.strerror or exc}"
+        ) from exc
+    if taken:
         raise DocumentError(f"{directory} exists and is not an empty directory; name a new or empty directory")
     return directory
 

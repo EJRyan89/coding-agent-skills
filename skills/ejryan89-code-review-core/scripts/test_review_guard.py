@@ -27,6 +27,7 @@ import review_run
 import review_runtime
 from executable_locator import PYTHON
 from review_source import source_commands
+from test_review_archive import unstatable
 from test_review_io import UNPARSEABLE_JSON
 from test_review_runtime_validation import directory_link
 
@@ -746,6 +747,15 @@ class ClaimTests(GuardFixture):
         live = self.claims / "a000000000000000f.json"
         live.write_text(json.dumps({"run": str(self.other_run), "role": "csharp-review"}), encoding="utf-8")
         self.claim()
+        self.assertEqual(sorted([f"{AGENT}.json", live.name]), sorted(path.name for path in self.claims.iterdir()))
+
+    def test_a_new_claim_keeps_a_claim_whose_run_file_it_cannot_stat(self) -> None:
+        # Its run is not known to be gone, so the claim another reviewer holds stays.
+        self.claims.mkdir()
+        live = self.claims / "a000000000000000f.json"
+        live.write_text(json.dumps({"run": str(self.other_run), "role": "csharp-review"}), encoding="utf-8")
+        with unstatable(self.other_run / "run.json"):
+            self.claim()
         self.assertEqual(sorted([f"{AGENT}.json", live.name]), sorted(path.name for path in self.claims.iterdir()))
 
 

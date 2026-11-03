@@ -43,6 +43,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import file_presence
 import json_reader
 import json_writer
 from executable_locator import PYTHON
@@ -317,11 +318,12 @@ def scoped_flags(flags: list[dict[str, Any]], repositories: list[str], start: da
 
 
 def previous_period(set_root: Path, start: date, load: Any) -> tuple[Path, dict[str, Any]] | None:
-    """The report for the period that ends within a week before this one starts, the latest such."""
+    """The report for the period that ends within a week before this one starts, the latest such. A folder or report
+    it cannot stat is the OSError file_presence raises, never a period with no report."""
     candidates = []
-    for directory in set_root.iterdir() if set_root.exists() else []:
+    for directory in set_root.iterdir() if file_presence.is_directory(set_root) else []:
         match = PERIOD.fullmatch(directory.name)
-        if not match or not (directory / "insights.json").is_file():
+        if not match or not file_presence.is_present(directory / "insights.json"):
             continue
         end = date.fromisoformat(match.group(2))
         if end < start and (start - end).days <= ADJACENT_DAYS:

@@ -4,7 +4,9 @@ expectations each run is judged against."""
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -21,6 +23,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 
+import file_presence
 import json_reader
 import whole_number
 from git_client import GitClient
@@ -369,6 +372,30 @@ def _fixture_in_place(directory: Path) -> None:
         raise ScenarioError(f"its {tree}/ tree holds {relative}, which only a repository reviewer's copy restores")
 
 
+def _raise(error: OSError) -> None:
+    raise error
+
+
+def _files_below(folder: Path) -> list[Path]:
+    """Every entry below `folder` that is not a folder, sorted, or none when nothing is at `folder`. Raise ScenarioError
+    for a folder it cannot examine or list, or a file in its place: os.walk raises there, where rglob would match
+    nothing."""
+    try:
+        if not file_presence.is_directory(folder):
+            return []
+        return sorted(Path(base, name) for base, _, names in os.walk(folder, onerror=_raise) for name in names)
+    except OSError as exc:
+        raise ScenarioError(f"cannot read {folder}: {exc}") from exc
+
+
+def _occupied(path: Path) -> bool:
+    """Whether anything is at `path`; one it cannot examine raises ScenarioError, never reads as nothing there."""
+    try:
+        return file_presence.is_occupied(path)
+    except OSError as exc:
+        raise ScenarioError(f"cannot examine {path}: {exc}") from exc
+
+
 def _reviewer_folder(checkout: Path, folder: PurePosixPath) -> list[str]:
     """Every file a run places from the reviewer's folders, by its path in the checkout: all of references/, and all
     of scripts/ but its regression suites and Python's caches. The suites test the reviewer, which no review runs,
@@ -376,9 +403,9 @@ def _reviewer_folder(checkout: Path, folder: PurePosixPath) -> list[str]:
     that is not there."""
     files = []
     for name in REVIEWER_FOLDERS:
-        for path in sorted((checkout / folder / name).rglob("*")):
+        for path in _files_below(checkout / folder / name):
             relative = PurePosixPath(path.relative_to(checkout).as_posix())
-            if path.is_file() and "__pycache__" not in relative.parts and not is_suite_name(relative.name):
+            if "__pycache__" not in relative.parts and not is_suite_name(relative.name):
                 files.append(str(relative))
     return files
 
@@ -456,7 +483,7 @@ def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str,
         if not (checkout / relative).is_file():
             raise ScenarioError(f"{reviewer} declares {relative}, which the checkout lacks")
         for tree in ("base", "head"):
-            if (directory / tree / relative).exists():
+            if _occupied(directory / tree / relative):
                 raise ScenarioError(f"its {tree}/ tree holds {relative}, which the run places from the checkout")
     return files
 
@@ -466,8 +493,8 @@ def held_files(directory: Path) -> list[tuple[str, str]]:
     return [
         (tree, path.relative_to(directory / tree).as_posix())
         for tree in ("base", "head")
-        for path in sorted((directory / tree).rglob(f"*{HELD}"))
-        if path.is_file()
+        for path in _files_below(directory / tree)
+        if fnmatch.fnmatch(path.name, f"*{HELD}")
     ]
 
 
@@ -479,7 +506,7 @@ def _held(directory: Path, placed: Sequence[str]) -> tuple[str, ...]:
         restored = relative.removesuffix(HELD)
         if PurePosixPath(relative).name == HELD:
             raise ScenarioError(f"its {tree}/ tree holds {relative}, which names no file to restore")
-        if (directory / tree / restored).exists():
+        if _occupied(directory / tree / restored):
             raise ScenarioError(f"its {tree}/ tree holds both {restored} and {relative}")
         if restored in placed:
             raise ScenarioError(f"its {tree}/ tree holds {relative}, which the run places from the checkout")
@@ -716,7 +743,13 @@ def load_scenarios(
     """Each named scenario once in first-occurrence order, or every scenario in name order; a repository reviewer's
     files come from the checkout."""
     folder = root / skill
-    found = sorted(path.parent.name for path in folder.glob("*/scenario.json")) if folder.is_dir() else []
+    try:
+        there = file_presence.is_directory(folder)
+        # Listed with iterdir, which raises for a folder it cannot list, where glob would match nothing.
+        entries = sorted(folder.iterdir()) if there else []
+        found = [entry.name for entry in entries if file_presence.is_present(entry / "scenario.json")]
+    except OSError as exc:
+        raise ScenarioError(f"cannot read the scenarios for {skill} at {folder}: {exc}") from exc
     if not found:
         raise ScenarioError(f"no scenarios for {skill}: each is a <scenario>/scenario.json under {folder}")
     unknown = [name for name in names if name not in found]

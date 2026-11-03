@@ -33,6 +33,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import file_presence
 import whole_number
 from console import run_main
 from flat_text import flat_text
@@ -130,7 +131,11 @@ def check_finding(config: Path | None, repository: str, pull: int, version: int,
     """Refuse a finding that review `version` of the pull request, as archived, does not have."""
     directory = pull_directory(Path(load_config(config)["archive_root"]), repository, pull)
     json_path, markdown_path = record_paths(directory, version)
-    if not json_path.exists():
+    try:
+        present = file_presence.is_present(json_path)
+    except OSError as exc:
+        raise FlagError(f"Review v{version} of {repository}#{pull} could not be read: {exc}") from exc
+    if not present:
         raise FlagError(f"{repository}#{pull} has no review v{version} in the archive")
     if finding_id not in {finding["id"] for finding in validate_record_pair(json_path, markdown_path)["findings"]}:
         raise FlagError(f"Review v{version} of {repository}#{pull} has no finding {finding_id}")

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -27,6 +31,18 @@ README = (
     "| [`alpha`](docs/skills.md#alpha) | Sweeps. |\n| `suite` | A bundle: [`beta`](docs/skills.md#beta). |\n\n"
     "See [Skills](docs/skills.md) and [Runtime support](docs/skills.md#runtime-support).\n\n## Other\n"
 )
+
+
+def stat_denied(target: Path) -> contextlib.AbstractContextManager[object]:
+    """Path.stat refuses `target` alone, as a file system does a path the tool may not examine."""
+    real = Path.stat
+
+    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == target:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real(path, *args, **kwargs)
+
+    return mock.patch.object(Path, "stat", stat)
 
 
 class SkillReferenceTestCase(unittest.TestCase):
@@ -376,6 +392,30 @@ class SkillReferenceTestCase(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             code = skill_reference.main(["--root", str(self.root)])
         self.assertEqual((1, "README.md does not exist\n"), (code, stdout.getvalue()))
+
+    def test_a_reference_or_readme_misplaced_or_unexamined_ends_the_run_as_failed_never_as_missing(self) -> None:
+        not_a_file, denied = f"[Errno {errno.EISDIR}] not a file", f"[Errno {errno.EACCES}] Access is denied"
+        for relative in ("docs/skills.md", "README.md"):
+            for place, error in (("folder", not_a_file), ("denied", denied)):
+                with self.subTest(file=relative, place=place):
+                    path = self.root / relative
+                    kept = path.read_bytes()
+                    if place == "folder":
+                        path.unlink()
+                        path.mkdir()
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with (
+                        contextlib.redirect_stdout(stdout),
+                        contextlib.redirect_stderr(stderr),
+                        stat_denied(path) if place == "denied" else contextlib.nullcontext(),
+                    ):
+                        code = skill_reference.main(["--root", str(self.root)])
+                    if place == "folder":
+                        path.rmdir()
+                        path.write_bytes(kept)
+                    self.assertEqual(
+                        (2, "", f"FAILED {error}: {str(path)!r}\n"), (code, stdout.getvalue(), stderr.getvalue())
+                    )
 
     def test_a_file_that_is_not_utf8_ends_the_run_as_failed_never_as_stale(self) -> None:
         skill_reference.write(self.root)

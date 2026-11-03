@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 
+from presence_denial import denied
+
 from deployer import discovery, manifest, platform_support
 from deployer.errors import DeployError
 from deployer.paths import Paths
@@ -494,6 +496,26 @@ class DeployableReportTests(unittest.TestCase):
         code, output, left = self.check_leftovers()
         self.assertEqual(1, code, output)
         self.assertEqual(sorted(platform_support.normalize(path) for path in (stray, hidden)), left)
+
+    def test_a_directory_items_deploy_to_that_it_cannot_examine_or_list_is_refused_never_a_clean_one(self) -> None:
+        self.deploy_everything()
+        self.uninstall()
+        agents = self.paths.agent_dest_dir
+        arguments = (
+            "--results",
+            str(self.results_file),
+            "--home",
+            str(self.home),
+            "--source",
+            str(self.paths.source_dir),
+        )
+        for stat in (True, False):
+            with self.subTest(stat=stat), denied(agents, stat=stat):
+                code, output = self.run_main("leftovers", *arguments)
+            self.assertEqual(report.INPUT_ERROR, code, output)
+            self.assertIn(
+                f"ERROR: Cannot list {platform_support.normalize(agents)}: [Errno 13] Access is denied", output
+            )
 
     def test_an_item_the_manifest_still_owns_fails_even_when_its_file_is_gone(self) -> None:
         self.deploy_everything()

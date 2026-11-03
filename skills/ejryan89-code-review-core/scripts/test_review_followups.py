@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -33,10 +34,12 @@ from review_config import (
     selected_repository_set,
     validate_config,
 )
+from review_io import FileUnreadable
 from review_records import ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError
 from review_state import StateError
 from skill_roots import sibling_scripts
+from test_review_archive import unlistable, unstatable
 from test_review_config_validation import native
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -537,6 +540,57 @@ class ReviewedHeadTests(unittest.TestCase):
         )
         self.assertEqual(str(self.directory / "legacy-review.md"), reviewed["report"])
 
+    def test_a_legacy_report_it_cannot_read_is_neither_counted_nor_linked(self) -> None:
+        self.write_legacy()
+        report = self.directory / "legacy-review.md"
+        heading = "<summary><strong>MUST FIX ({})</strong></summary>\n"
+        read_text = Path.read_text
+
+        def refused(path: Path, *args: Any, **kwargs: Any) -> str:
+            if path == report:
+                raise PermissionError(13, "Permission denied", str(path))
+            return read_text(path, *args, **kwargs)
+
+        for name, content, reader in (
+            ("a count past the digit limit", heading.format("1" + "0" * 5000), read_text),
+            ("a read refused", heading.format(1), refused),
+        ):
+            with self.subTest(name), mock.patch.object(Path, "read_text", reader):
+                report.write_text(content, encoding="utf-8")
+                reviewed = review_operation.reviewed_head(self.root, "owner/repo", 5)
+                if reviewed is None:
+                    self.fail("the legacy review still counts as reviewed")
+                self.assertEqual((None, None, None), (reviewed["counts"], reviewed["ledger"], reviewed["report"]))
+
+    def test_a_legacy_index_it_cannot_stat_or_read_is_refused_naming_it_never_read_as_unreviewed(self) -> None:
+        # Read as no index, the pull request would be offered for review again over a review it may hold.
+        self.write_legacy()
+        path = self.directory / "legacy-review.json"
+        read_text = Path.read_text
+
+        def refused(candidate: Path, *args: Any, **kwargs: Any) -> str:
+            if candidate == path:
+                raise PermissionError(13, "Permission denied", str(candidate))
+            return read_text(candidate, *args, **kwargs)
+
+        reason = f"Cannot read valid JSON from {path}: [Errno 13] Permission denied: {str(path)!r}"
+        failures: tuple[tuple[str, Callable[[], contextlib.AbstractContextManager[object]]], ...] = (
+            ("a stat refused", lambda: unstatable(path)),
+            ("a read refused", lambda: mock.patch.object(Path, "read_text", refused)),
+        )
+        readers: dict[str, Callable[[], object]] = {
+            "legacy_index": lambda: review_operation.legacy_index(self.root, "owner/repo", 5),
+            "reviewed_head": lambda: review_operation.reviewed_head(self.root, "owner/repo", 5),
+            "latest_reviewed_heads": lambda: review_operation.latest_reviewed_heads(self.root, "owner/repo", [5]),
+        }
+        for name, failure in failures:
+            for reader, read in readers.items():
+                with self.subTest(name, reader=reader), failure(), self.assertRaises(FileUnreadable) as caught:
+                    read()
+                self.assertEqual(reason, str(caught.exception))
+        path.unlink()
+        self.assertIsNone(review_operation.legacy_index(self.root, "owner/repo", 5), "an index not there is absent")
+
     def test_a_legacy_count_past_the_digit_limit_or_in_other_digits_makes_the_report_unreadable(self) -> None:
         report = self.directory / "counted.md"
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -624,7 +678,7 @@ class ReviewedHeadTests(unittest.TestCase):
                 self.assertEqual(verdict.replace(" ", "_"), reviewed["verdict"])
                 self.assertEqual({5: "a" * 40}, review_operation.latest_reviewed_heads(self.root, "owner/repo", [5]))
 
-    def test_unreadable_legacy_json_is_absent_but_programming_errors_propagate(self) -> None:
+    def test_legacy_json_that_is_not_json_is_invalid_but_programming_errors_propagate(self) -> None:
         self.write_legacy()
         path = self.directory / "legacy-review.json"
         for content in (b"{", b"\xff"):
@@ -861,6 +915,28 @@ class EnumerateBatchTests(unittest.TestCase):
         entry = self.enumerate()
         self.assertEqual([("MERGED", 7)], [(pull["state"], pull["number"]) for pull in entry["eligible"]])
         self.assertEqual(1, entry["listing"]["pulls"])
+
+    def test_a_review_it_cannot_read_fails_its_repository_never_the_batch_and_never_offers_the_pull_again(self) -> None:
+        self.watermark("2026-03-01")
+        self.pull(1, is_open=True)
+        self.review(1)
+        folder = self.archive / "owner" / "repo" / "pulls" / "1"
+        index = folder / "legacy-review.json"
+        failures: tuple[tuple[str, Callable[[], contextlib.AbstractContextManager[object]], str], ...] = (
+            ("a pull folder it cannot list", lambda: unlistable(folder), f"Permission denied: {str(folder)!r}"),
+            (
+                "an index it cannot stat",
+                lambda: unstatable(index),
+                f"Cannot read valid JSON from {index}: [Errno 13] Permission denied: {str(index)!r}",
+            ),
+        )
+        for name, failure, reason in failures:
+            with self.subTest(name):
+                with failure():
+                    entry = self.enumerate()
+                self.assertEqual((False, []), (entry["complete"], entry["eligible"]))
+                self.assertIn(reason, entry["error"])
+        self.assertEqual([], self.enumerate()["eligible"], "read, the review counts")
 
     def test_force_reads_no_review(self) -> None:
         self.watermark("2026-03-01")
