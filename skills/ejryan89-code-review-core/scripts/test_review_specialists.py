@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import job_tree
+import review_runtime
 import review_specialists as rs
 from review_records import validate_adapter_result
 from review_runtime import (
@@ -28,6 +29,7 @@ from review_runtime import (
     load_manifest_from_commit,
     materialize_reviewer,
     materialize_source_snapshot,
+    specialist_inputs,
     validate_adapter_manifest,
     write_adapter_request,
 )
@@ -180,8 +182,130 @@ class ManifestTests(unittest.TestCase):
         ):
             validate_adapter_manifest(sharing("yes"))
 
+    def test_title_types_and_inputs_are_kept_only_when_given_each_in_its_catalogue_s_order(self) -> None:
+        def specialist(**settings: object) -> dict[str, Any]:
+            given = manifest()
+            given["specialists"][2] = {**given["specialists"][2], "shares_files": True, **settings}
+            validated: dict[str, Any] = validate_adapter_manifest(given)["specialists"][2]
+            return validated
+
+        plain = specialist()
+        self.assertNotIn("title_types", plain)
+        self.assertNotIn("inputs", plain)
+        self.assertEqual(("description", "comments"), specialist_inputs(plain))
+        self.assertNotIn("title_types", specialist(title_types=None))
+        self.assertNotIn("inputs", specialist(inputs=None))
+        self.assertEqual(["fix", "revert"], specialist(title_types=["revert", "fix"])["title_types"])
+        self.assertEqual(
+            ["description", "closing-issues"], specialist(inputs=["closing-issues", "description"])["inputs"]
+        )
+        self.assertEqual([], specialist(inputs=[])["inputs"])
+        self.assertEqual((), specialist_inputs(specialist(inputs=[])), "an empty list gives no text, not the default")
+
+    def test_a_title_route_or_withheld_comments_without_shared_files_and_a_malformed_setting_are_refused(self) -> None:
+        def refused(settings: dict[str, object], reason: str) -> None:
+            given = manifest()
+            given["specialists"][2] = {**given["specialists"][2], **settings}
+            with self.subTest(settings=settings), self.assertRaisesRegex(RuntimeContractError, re.escape(reason)):
+                validate_adapter_manifest(given)
+
+        where = "specialists-manifest.specialists[2]"
+        # Without shares_files, a title the author chose, or a comment no reviewer is given, would leave a file
+        # unreviewed or a comment without its disposition.
+        refused({"title_types": ["fix"]}, f"{where}.title_types routes on the author's title, so it needs shares_files")
+        refused({"title_types": ["fix"], "shares_files": False}, "so it needs shares_files")
+        refused({"inputs": ["description"]}, f"{where}.inputs leaves out comments, so it needs shares_files")
+        refused({"inputs": []}, "leaves out comments, so it needs shares_files")
+        sharing = {"shares_files": True}
+        # A route names known conventional-commit types, as written, each once; a pattern of any kind is no type.
+        refused({**sharing, "title_types": []}, f"{where}.title_types must be a non-empty array")
+        refused({**sharing, "title_types": "fix"}, f"{where}.title_types must be a non-empty array")
+        for unknown in ("Fix", "fixup", "^fix", "fix|feat", "fix(core)", "", 5):
+            refused({**sharing, "title_types": [unknown]}, f"{where}.title_types[0] must be one of")
+        refused({**sharing, "title_types": ["fix", "fix"]}, f"{where}.title_types names a type twice")
+        refused({**sharing, "title_pattern": "^fix"}, "title_pattern")
+        refused({**sharing, "inputs": "comments"}, f"{where}.inputs must be an array or null")
+        refused({**sharing, "inputs": ["body"]}, f"{where}.inputs[0] must be one of")
+        refused({**sharing, "inputs": ["Comments"]}, f"{where}.inputs[0] must be one of")
+        refused({**sharing, "inputs": [True]}, f"{where}.inputs[0] must be one of")
+        refused({**sharing, "inputs": ["comments", "comments"]}, f"{where}.inputs names an input twice")
+        refused({**sharing, "input": ["comments"]}, "input")
+
+
+class TitleTypeTests(unittest.TestCase):
+    """A title route reads the type a pull request's title opens with, by position, with no pattern to match."""
+
+    def test_the_type_is_the_lowercase_word_before_an_optional_scope_and_bang_and_a_colon_and_a_space(self) -> None:
+        for title, kind in (
+            ("fix: x", "fix"),
+            ("fix(code-review): x", "fix"),
+            ("feat!: x", "feat"),
+            ("fix(core)!: x", "fix"),
+            ("revert: fix: x", "revert"),
+            ("Fix: x", None),
+            ("FIX(core): x", None),
+            ("fixup: x", "fixup"),
+            ("fix:x", None),
+            ("fix : x", None),
+            (" fix: x", None),
+            ("fix() : x", None),
+            ("fix(): x", None),
+            ("fix((a)): x", None),
+            ("fix(a: x", None),
+            ("feat: fix(core)", "feat"),
+            ("fix", None),
+            ("", None),
+            (": x", None),
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(kind, review_runtime.title_type(title))
+
+    def test_a_hostile_title_is_read_in_one_pass(self) -> None:
+        # Shapes that send a backtracking pattern exponential or quadratic, at many times GitHub's 256 characters.
+        hostile = (
+            "\\" * 100_000 + "!",
+            "fix(" + "(" * 100_000,
+            "fix" * 100_000,
+            "a" * 100_000 + "(" + ")" * 100_000,
+            "fix(" + "a" * 100_000 + ")" + "!" * 100_000,
+        )
+        started = time.perf_counter()
+        for title in hostile:
+            self.assertIsNone(review_runtime.title_type(title))
+        self.assertLess(time.perf_counter() - started, 1.0)
+
 
 class DiffAndRoutingTests(unittest.TestCase):
+    def test_a_title_route_routes_only_a_title_whose_type_it_names(self) -> None:
+        value = manifest()
+        value["specialists"][2] = {
+            **value["specialists"][2],
+            "include": ["."],
+            "when": None,
+            "shares_files": True,
+            "title_types": ["fix"],
+        }
+        routing = validate_adapter_manifest(value)
+        changed = ["src/A.cs"]
+        for title, routed in (
+            ("fix: x", True),
+            ("fix(core): x", True),
+            ("fix!: x", True),
+            ("Fix: x", False),
+            ("FIX(core): x", False),
+            ("fixup: x", False),
+            ("feat: fix(core)", False),
+            (" fix: x", False),
+            ("", False),
+            (None, False),
+        ):
+            with self.subTest(title=title):
+                self.assertIs(routed, "compat-review" in rs.route(routing, changed, lambda name: True, title=title))
+                self.assertIs(routed, rs.title_routes(routing["specialists"][2], title))
+        self.assertTrue(rs.title_routes(routing["specialists"][0], None), "a specialist with no route always routes")
+        # The title route takes no file from another reviewer: a file it alone matches is still the generic reviewer's.
+        self.assertEqual(["README.md"], rs.uncovered(routing, ["README.md"]))
+
     def test_parse_paths_and_new_file_line_numbers(self) -> None:
         files = rs.parse_unified_diff(DIFF)
         self.assertEqual(["db/Procs.sql", "src dir/A Test.cs", "docs/café.md", "src dir/Old.cs"], list(files))

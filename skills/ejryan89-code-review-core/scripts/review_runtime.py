@@ -154,7 +154,14 @@ SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources
 # clear them without removing them; the configuration's own `reviewer_effort` takes null the same way.
 # `shares_files`, when true, has the specialist review its matched files beside whoever else reviews them: its matches
 # take no file from the generic reviewer, skip none when its condition is closed, and own no prior finding or comment.
-OPTIONAL_SPECIALIST_KEYS = {"model", "effort", "shares_files"}
+# `title_types`, conventional-commit types from TITLE_TYPES, routes the specialist only to a pull request whose title
+# opens with one of them, as `title_type` reads it. The author writes the title, so a specialist that uses it shares
+# its files, and a title of another type takes no file's review away.
+# `inputs` names the pull-request texts the specialist is given, from PULL_REQUEST_INPUTS; without it the specialist
+# is given DEFAULT_PULL_REQUEST_INPUTS. One without `comments` shares its files, so it owns no comment to disposition.
+OPTIONAL_SPECIALIST_KEYS = {"model", "effort", "shares_files", "title_types", "inputs"}
+PULL_REQUEST_INPUTS = ("description", "comments", "closing-issues")
+DEFAULT_PULL_REQUEST_INPUTS = ("description", "comments")
 MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
 # The runtimes whose native delegation starts a subagent on one of MODEL_ALIASES. Codex's takes only its own model
 # identifiers, so there a reviewer starts on the session's model.
@@ -430,6 +437,68 @@ def _regex_list(value: Any, field: str, *, required: bool) -> list[str]:
     return patterns
 
 
+# The conventional-commit types a title route may name: those of the Conventional Commits specification and the
+# convention it grew from, which a pull request's title opens with, as in `fix(scope): ...`.
+TITLE_TYPES = ("build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test")
+
+
+def title_type(title: str) -> str | None:
+    """The conventional-commit type a pull request's title opens with: the lowercase letters before an optional
+    `(scope)`, an optional `!`, a colon, and a space, as in `fix(code-review): ...`; None for a title with none. Read
+    by position, one character at a time, with no regular expression, so a title of any length is read in one pass."""
+    letters = len(title) - len(title.lstrip("abcdefghijklmnopqrstuvwxyz"))
+    kind, rest = title[:letters], title[letters:]
+    if not kind:
+        return None
+    if rest.startswith("("):
+        close = rest.find(")")
+        if close <= 1 or "(" in rest[1:close]:
+            return None
+        rest = rest[close + 1 :]
+    rest = rest.removeprefix("!")
+    return kind if rest.startswith(": ") else None
+
+
+def _pull_request_inputs(specialist: dict[str, Any], path: str, *, shares: bool) -> dict[str, Any]:
+    """A specialist's `title_types` and `inputs`, each left out when the manifest leaves it out or null; each in its
+    catalogue's order.
+
+    Either one that leaves a file or a comment to the author's say, a title route or withheld comments, needs
+    `shares_files`, so another reviewer still reviews every file and gives every comment its disposition."""
+    settings: dict[str, Any] = {}
+    types = READ.optional(
+        READ.array,
+        specialist.get("title_types"),
+        f"{path}.title_types",
+        lambda value, where: READ.one_of(value, where, TITLE_TYPES),
+        nonempty=True,
+    )
+    if types is not None:
+        if len(set(types)) != len(types):
+            raise RuntimeContractError(f"{path}.title_types names a type twice")
+        if not shares:
+            raise RuntimeContractError(f"{path}.title_types routes on the author's title, so it needs shares_files")
+        settings["title_types"] = [kind for kind in TITLE_TYPES if kind in types]
+    given = READ.optional(
+        READ.array,
+        specialist.get("inputs"),
+        f"{path}.inputs",
+        lambda value, where: READ.one_of(value, where, PULL_REQUEST_INPUTS),
+    )
+    if given is not None:
+        if len(set(given)) != len(given):
+            raise RuntimeContractError(f"{path}.inputs names an input twice")
+        if "comments" not in given and not shares:
+            raise RuntimeContractError(f"{path}.inputs leaves out comments, so it needs shares_files")
+        settings["inputs"] = [name for name in PULL_REQUEST_INPUTS if name in given]
+    return settings
+
+
+def specialist_inputs(specialist: dict[str, Any]) -> tuple[str, ...]:
+    """The pull-request texts a validated specialist, or a planned role, is given."""
+    return tuple(specialist.get("inputs", DEFAULT_PULL_REQUEST_INPUTS))
+
+
 def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
     root = MANIFEST_FORMATS[2]
     conditions = READ.json_object(value["conditions"], f"{root}.conditions")
@@ -479,6 +548,7 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
                 **({"model": model} if model is not None else {}),
                 **({"effort": effort} if effort is not None else {}),
                 **({"shares_files": True} if shares else {}),
+                **_pull_request_inputs(specialist, path, shares=bool(shares)),
             }
         )
     return {
@@ -2416,6 +2486,72 @@ def given_body(body: str) -> str:
     return LONE_SURROGATE.sub("�", body[:PULL_REQUEST_BODY_CHARACTERS])
 
 
+# The issues GitHub links as closing a pull request, which their authors write: a specialist whose `inputs` name
+# `closing-issues` is given the first this many, each body cut as a description is, in the run's file of them.
+CLOSING_ISSUES_MAXIMUM = 10
+CLOSING_ISSUES_FILE = "closing-issues.json"
+# Characters of a body in each item of the file's `body_lines`. Claude Code's Read tool cuts a line past 2,000
+# characters, and JSON may spell a character in six, so a piece this long stays one whole line of the indented file.
+CLOSING_ISSUE_LINE_CHARACTERS = 300
+
+
+def body_lines(body: str) -> list[str]:
+    """A body as the file holds it: its lines, each split into pieces of at most CLOSING_ISSUE_LINE_CHARACTERS, so
+    the body reads whole a line at a time and none of it lies past where a reader cuts a line."""
+    pieces: list[str] = []
+    for line in body.replace("\r\n", "\n").split("\n"):
+        pieces.extend(
+            [
+                line[start : start + CLOSING_ISSUE_LINE_CHARACTERS]
+                for start in range(0, len(line), CLOSING_ISSUE_LINE_CHARACTERS)
+            ]
+            or [""]
+        )
+    return pieces
+
+
+def given_closing_issues(
+    issues: Sequence[dict[str, Any]], total: int, repository: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The closing issues' file and the request's account of it, from `issues`, each a `repository`, `number`,
+    `state`, `title`, and `body`, of the `total` GitHub links.
+
+    The file holds the first CLOSING_ISSUES_MAXIMUM issues, each title whole and each body cut as `given_body` cuts a
+    description, with lone surrogates replaced. An issue of another repository keeps its repository, number, and
+    state but none of its text, which that repository's authors wrote and its permissions guard. The account names
+    each issue and how much of its body the file holds, so a prompt states it from the request, never from the file.
+    """
+    listed = list(issues[:CLOSING_ISSUES_MAXIMUM])
+    entries: list[dict[str, Any]] = []
+    account: list[dict[str, Any]] = []
+    for issue in listed:
+        name = {"repository": issue["repository"], "number": issue["number"], "state": issue["state"]}
+        same = issue["repository"].casefold() == repository.casefold()
+        unreadable = bool(issue.get("unreadable"))
+        body = issue["body"] if same and not unreadable else ""
+        given = min(len(body), PULL_REQUEST_BODY_CHARACTERS)
+        if not same:
+            entries.append({**name, "text": "not given: the issue is in another repository"})
+        elif unreadable:
+            entries.append({**name, "text": "not given: GitHub did not let the viewer read it"})
+        else:
+            title = LONE_SURROGATE.sub("�", issue["title"])
+            entries.append({**name, "title": title, "body_lines": body_lines(given_body(issue["body"]))})
+        account.append(
+            {
+                **name,
+                "same_repository": same,
+                "body_characters": len(body),
+                "body_given": given,
+                **({"unreadable": True} if unreadable else {}),
+            }
+        )
+    return (
+        {"total": max(total, len(issues)), "issues": entries},
+        {"total": max(total, len(issues)), "issues": account},
+    )
+
+
 def build_adapter_request(
     *,
     mode: str,
@@ -2432,15 +2568,17 @@ def build_adapter_request(
     github_comments: list[dict[str, Any]] | None = None,
     head_ref: str | None = None,
     snapshot: dict[str, Any] | None = None,
-    body_file: Path | None = None,
-    body_characters: int | None = None,
+    body: tuple[Path, int] | None = None,
+    closing_issues: tuple[Path, dict[str, Any]] | None = None,
     unreviewed_suffixes: Iterable[str] = (),
 ) -> dict[str, Any]:
     """`snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
     materialization verified, which is only checked to name this request's repository and head. Without it the
-    snapshot is verified here, contents included. `body_file` and `body_characters`, given together, name the file
-    holding the description reviewers are given and the description's full length. `unreviewed_suffixes` are the
-    repository's own suffixes of binary file types the review does not read (see `review_coverage`)."""
+    snapshot is verified here, contents included. `body` names the file holding the description reviewers are given
+    and the description's full length. `closing_issues`, for a reviewer that gives some specialist the issues the pull
+    request closes, names the file of them and its account, as `given_closing_issues` writes them.
+    `unreviewed_suffixes` are the repository's own suffixes of binary file types the review does not read (see
+    `review_coverage`)."""
     READ.one_of(mode, "request.mode", ("initial", "re-review"))
     repository = validate_repository_identity(repository)
     READ.integer(pull_number, "request.pull_number", minimum=1)
@@ -2448,11 +2586,11 @@ def build_adapter_request(
         READ.hex_digest(value, f"request.pull_request.{name}", 40, 64)
     if not diff_path.is_absolute() or not diff_path.is_file():
         raise RuntimeContractError("diff_path must name an existing absolute file")
-    if (body_file is None) != (body_characters is None):
-        raise RuntimeContractError("body_file and body_characters are given together")
-    if body_file is not None and not (body_file.is_absolute() and body_file.is_file()):
-        raise RuntimeContractError("body_file must name an existing absolute file")
-    READ.optional(READ.integer, body_characters, "request.pull_request.body_characters", minimum=0)
+    for given, name in ((body, "body"), (closing_issues, "closing_issues")):
+        if given is not None and not (given[0].is_absolute() and given[0].is_file()):
+            raise RuntimeContractError(f"{name} must name an existing absolute file")
+    if body is not None:
+        READ.integer(body[1], "request.pull_request.body_characters", minimum=0)
     if snapshot is None:
         snapshot = verify_source_snapshot(
             source_snapshot_root, expected_repository=repository, expected_commit=head_sha, contents=True
@@ -2473,11 +2611,16 @@ def build_adapter_request(
             **({"head_ref": head_ref} if head_ref else {}),
             **(
                 {
-                    "body_file": str(body_file),
-                    "body_characters": body_characters,
-                    "body_given": min(body_characters, PULL_REQUEST_BODY_CHARACTERS),
+                    "body_file": str(body[0]),
+                    "body_characters": body[1],
+                    "body_given": min(body[1], PULL_REQUEST_BODY_CHARACTERS),
                 }
-                if body_file is not None and body_characters is not None
+                if body is not None
+                else {}
+            ),
+            **(
+                {"closing_issues": {"file": str(closing_issues[0]), **closing_issues[1]}}
+                if closing_issues is not None
                 else {}
             ),
         },

@@ -342,6 +342,19 @@ class ResolveTests(unittest.TestCase):
             with self.subTest(relative=relative), denied(target, stat=stat):
                 self.assertEqual(f"{reason}: {error}: {str(target)!r}", self.failed())
 
+    def test_a_folder_by_a_project_or_solution_name_is_passed_by_and_the_files_after_it_found(self) -> None:
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("App.sln", solution("Lib\\Lib.csproj"))
+        repo.commit("solution")
+        expected = [fields for fields in self.resolve() if fields[0] != "FILE_LIST"]
+        self.assertEqual([["App.sln", "1"]], self.values(expected, "SOLUTION"))
+        # Each folder sorts before the file by its kind's name in the same folder.
+        (repo.root / "Lib/A.csproj").mkdir()
+        (repo.root / "A.sln").mkdir()
+        self.assertEqual(expected, [fields for fields in self.resolve() if fields[0] != "FILE_LIST"])
+
     def test_the_sdks_dotnet_format_is_given_an_aspnet_projects_files_and_only_the_global_tool_skips_them(self) -> None:
         # The SDK's dotnet format formats an ASP.NET project, so its files are skipped only when the solution has the
         # global tool run, and the layout checker sees them either way.

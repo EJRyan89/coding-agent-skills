@@ -226,6 +226,117 @@ class ReadTests(GuardFixture):
                     self.assert_denied(self.decide(tool, **tool_input))
 
 
+class WithheldInputTests(GuardFixture):
+    """A role the run withholds a pull-request text from reads only the paths its `reads` names, so the description,
+    the comments, and the request and other roles' prompts that carry them stay out of its reach, however spelled."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        run, work = self.run_directory, self.run_directory / "work"
+        self.reads = [
+            str(work / "sql-review.prompt.md"),
+            str(work / "sql-review.diff"),
+            str(work / "analyzers.json"),
+            str(run / "source"),
+            str(run / "reviewer"),
+            str(run / "closing-issues.json"),
+        ]
+        state = json.loads((run / "run.json").read_text(encoding="utf-8"))
+        state["roles"][1]["reads"] = self.reads
+        # Only the withheld role is given the closing issues.
+        state["restricted"] = {str(run / "closing-issues.json"): ["sql-review"]}
+        (run / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        for name in ("pull-request-body.md", "request.json", "closing-issues.json"):
+            (run / name).write_text("{}", encoding="utf-8")
+        for name in ("github-comments.json", "csharp-review.prompt.md", "sql-review.diff", "analyzers.json"):
+            (work / name).write_text("{}", encoding="utf-8")
+
+    def test_a_withheld_role_reads_only_the_paths_its_run_names(self) -> None:
+        run, work = self.run_directory, self.run_directory / "work"
+        self.claim("sql-review")
+        for tool, tool_input in (
+            ("Read", {"file_path": str(work / "sql-review.diff")}),
+            ("Read", {"file_path": str(work / "analyzers.json")}),
+            ("Read", {"file_path": str(run / "closing-issues.json")}),
+            ("Read", {"file_path": str(run / "source" / "app" / "Service.cs")}),
+            ("Read", {"file_path": str(run / "reviewer" / ".claude" / "agents" / "sql-review.md")}),
+            ("Read", {"file_path": str(guard.REFERENCES / "generic-reviewer.md")}),
+            ("Grep", {"pattern": "class", "path": str(run / "source")}),
+            ("Glob", {"pattern": "**/*.cs", "path": str(run / "source")}),
+        ):
+            with self.subTest(tool=tool, input=tool_input):
+                self.assertIsNone(self.decide(tool, **tool_input))
+        for tool, tool_input in (
+            ("Read", {"file_path": str(run / "pull-request-body.md")}),
+            ("Read", {"file_path": str(run / "request.json")}),
+            ("Read", {"file_path": str(run / "run.json")}),
+            ("Read", {"file_path": str(work / "github-comments.json")}),
+            ("Read", {"file_path": str(work / "csharp-review.prompt.md")}),
+            ("Read", {"file_path": str(run / "source" / ".." / "pull-request-body.md")}),
+            ("Read", {"file_path": str(work / "sql-review.diff" / ".." / ".." / "request.json")}),
+            ("Read", {"file_path": str(run / "PULL-REQUEST-BODY.MD")}),
+            ("Grep", {"pattern": "Closes", "path": str(run)}),
+            ("Grep", {"pattern": "Closes", "path": str(work)}),
+            ("Glob", {"pattern": "*.md", "path": str(run)}),
+        ):
+            with self.subTest(tool=tool, input=tool_input):
+                self.assert_denied(self.decide(tool, **tool_input), "the inputs your prompt names")
+        # A pattern that climbs out of an allowed folder is refused before its folder is judged, as for any role.
+        self.assert_denied(self.decide("Glob", pattern="../*.md", path=str(run / "source")), "without '..'")
+
+    def test_a_role_with_no_reads_keeps_the_whole_run(self) -> None:
+        # Only a withheld role is held to its reads; every other role still reads anywhere in its own run.
+        self.claim("csharp-review")
+        for path in (self.run_directory / "pull-request-body.md", self.run_directory / "work" / "github-comments.json"):
+            with self.subTest(path=path):
+                self.assertIsNone(self.decide("Read", file_path=str(path)))
+
+    def test_a_named_path_outside_the_run_is_still_outside_it(self) -> None:
+        # A path in `reads` widens nothing past the run: the run is the outer limit whatever the record names.
+        state = json.loads((self.run_directory / "run.json").read_text(encoding="utf-8"))
+        state["roles"][1]["reads"] = [*self.reads, str(self.checkout)]
+        (self.run_directory / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        self.claim("sql-review")
+        self.assert_denied(self.decide("Read", file_path=str(self.checkout / "app" / "Collections.cs")))
+
+    def test_a_read_that_loses_the_claim_race_is_held_to_the_claimed_role_s_reads(self) -> None:
+        # Two first reads race: the other one wrote the claim between this one's look and its own write, so this read,
+        # of another role's prompt and its review comments, is judged against the claimed role, its reads included.
+        self.claims.mkdir(exist_ok=True)
+        claim = {"run": str(self.run_directory), "role": "sql-review"}
+        (self.claims / f"{AGENT}.json").write_text(json.dumps(claim), encoding="utf-8")
+        with self.assertRaises(guard.Denied) as caught:
+            guard._claim(AGENT, Path(self.prompt("csharp-review")))
+        self.assertIn("the inputs your prompt names", str(caught.exception))
+        guard._claim(AGENT, Path(self.prompt("sql-review")))  # its own prompt, which its reads name
+
+    def test_the_closing_issues_reach_only_the_roles_the_run_gives_them(self) -> None:
+        # A role with no reads keeps its whole run but the closing issues, which only the roles given them read, and a
+        # search of a folder holding the file is refused as a read of the file is.
+        run = self.run_directory
+        self.claim("csharp-review")
+        for tool, tool_input in (
+            ("Read", {"file_path": str(run / "closing-issues.json")}),
+            ("Read", {"file_path": str(run / "source" / ".." / "closing-issues.json")}),
+            ("Grep", {"pattern": "Totals", "path": str(run)}),
+            ("Glob", {"pattern": "*.json", "path": str(run)}),
+        ):
+            with self.subTest(tool=tool, input=tool_input):
+                self.assert_denied(self.decide(tool, **tool_input), "holds one it does not")
+        self.assertIsNone(self.decide("Read", file_path=str(run / "pull-request-body.md")))
+        self.assertIsNone(self.decide("Grep", pattern="class", path=str(run / "source")))
+
+    def test_a_malformed_restriction_denies_every_read(self) -> None:
+        self.claim("csharp-review")
+        malformed: list[Any] = [[], {"x": "csharp-review"}, {"x": [5]}]
+        for restricted in malformed:
+            state = json.loads((self.run_directory / "run.json").read_text(encoding="utf-8"))
+            state["restricted"] = restricted
+            (self.run_directory / "run.json").write_text(json.dumps(state), encoding="utf-8")
+            with self.subTest(restricted=restricted):
+                self.assert_denied(self.decide("Read", file_path=str(self.run_directory / "pull-request-body.md")))
+
+
 class LocalPathTests(GuardFixture):
     """A path is held to the temporary directory and the skill's folder by its text, before anything resolves it."""
 
@@ -833,6 +944,13 @@ class FieldKindTests(GuardFixture):
             {"roles": [{key: value for key, value in role.items() if key != "result_file"}]},
             {"roles": [{**role, "self_check": None}]},
             {"roles": [{**role, "self_check": ""}]},
+            # The paths a role withheld a pull-request text may read: a list that holds none, or that is no list of
+            # paths, would otherwise read as no limit at all.
+            {"roles": [{**role, "reads": None}]},
+            {"roles": [{**role, "reads": []}]},
+            {"roles": [{**role, "reads": str(self.run_directory / "source")}]},
+            {"roles": [{**role, "reads": [5]}]},
+            {"roles": [{**role, "reads": [""]}]},
         ]
         for run in runs:
             with self.subTest(run=run):

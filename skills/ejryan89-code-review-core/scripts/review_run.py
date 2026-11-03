@@ -108,13 +108,15 @@ def self_check_command(run: Path, role: str) -> str:
 
 class RunRole(TypedDict):
     """One reviewer role of a run: its prompt, where its result goes, and, for a specialist, the model and effort it
-    starts on, either of which prepare may set to None."""
+    starts on, either of which prepare may set to None, and, for one withheld a pull-request text, every path the
+    reviewer guard lets it read."""
 
     id: str
     prompt_file: str
     result_file: str
     model: NotRequired[str | None]
     effort: NotRequired[str | None]
+    reads: NotRequired[list[str]]
 
 
 class ReadCount(TypedDict):
@@ -170,6 +172,8 @@ class RunState(TypedDict):
     uncovered_files: list[str]
     archive_base: NotRequired[dict[str, Any]]
     documents: NotRequired[dict[str, list[str]]]
+    # Each file only some roles are given, such as the closing issues, with the roles given it.
+    restricted: NotRequired[dict[str, list[str]]]
     seal: NotRequired[Seal]
 
 
@@ -350,6 +354,10 @@ def _read_optional(state: dict[str, Any], read: RunState, identities: set[str]) 
         read["archive_base"] = READ.json_object(state["archive_base"], "run.archive_base")
     if "documents" in state:
         read["documents"] = _object_of(state["documents"], "run.documents", _document_places)
+    if "restricted" in state:
+        read["restricted"] = _object_of(
+            state["restricted"], "run.restricted", lambda value, path: READ.array(value, path, READ.string)
+        )
     if "seal" in state:
         read["seal"] = _read_seal(state["seal"], "run.seal", identities)
 
@@ -393,6 +401,8 @@ def _read_role(value: object, path: str) -> RunRole:
         role["model"] = READ.optional(READ.string, entry["model"], f"{path}.model")
     if "effort" in entry:
         role["effort"] = READ.optional(READ.string, entry["effort"], f"{path}.effort")
+    if "reads" in entry:
+        role["reads"] = READ.array(entry["reads"], f"{path}.reads", READ.string, nonempty=True)
     return role
 
 

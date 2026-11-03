@@ -787,6 +787,107 @@ class RecordTests(unittest.TestCase):
                 with self.assertRaisesRegex(RecordError, "body_"):
                     validate_record(broken)
 
+    def test_the_record_keeps_how_much_of_each_closing_issue_a_specialist_was_given_and_the_report_says_so(
+        self,
+    ) -> None:
+        def issue(number: int, characters: int, given: int, *, same: bool = True, state: str = "OPEN") -> Any:
+            repository = "example/one" if same else "other/two"
+            return {
+                "repository": repository,
+                "number": number,
+                "state": state,
+                "same_repository": same,
+                "body_characters": characters,
+                "body_given": given,
+            }
+
+        closing: dict[str, Any] = {
+            "total": 4,
+            "issues": [issue(1, 30_000, 24_000), issue(2, 0, 0, same=False), issue(3, 9, 9)],
+        }
+        request = {**valid_request(), "closing_issues": closing}
+        record = build_record(request, valid_adapter_result(), version=1, policy={})
+        validate_record(record)
+        self.assertEqual(closing, record["pull_request"].get("closing_issues"))
+        markdown = render_markdown(record, record_payload_hash="0" * 64)
+        self.assertEqual(
+            [
+                # Each issue's name and how much of it was given, with punctuation written as character entities so
+                # the cell renders as text, as the Title row's does.
+                "| **Closing issues** | example&#47;one&#35;1 &#40;open&#41;&#44; the first 24&#44;000 of 30&#44;000 "
+                "characters&#59; other&#47;two&#35;2 &#40;open&#41;&#44; another repository&#39;s&#44; not given&#59; "
+                "example&#47;one&#35;3 &#40;open&#41;&#44; 9 characters&#44; given whole&#59; 1 more not given |"
+            ],
+            [line for line in markdown.splitlines() if line.startswith("| **Closing issues**")],
+        )
+        older = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
+        self.assertNotIn("closing_issues", older["pull_request"])
+        self.assertNotIn("**Closing issues**", render_markdown(older, record_payload_hash="0" * 64))
+        faults: list[tuple[Any, str]] = [
+            ({"total": 1, "issues": [issue(1, 5, 5), issue(2, 5, 5)]}, "more issues than its total"),
+            ({"total": 1, "issues": [issue(1, 5, 6)]}, "body_given is more"),
+            ({"total": 1, "issues": [issue(1, 5, 5, same=False)]}, "body_given is more"),
+            ({"total": 1, "issues": [issue(1, 5, 5, state="MERGED")]}, "state"),
+            ({"total": -1, "issues": []}, "total"),
+            ({"total": 1, "issues": [{**issue(1, 5, 5), "body": "text"}]}, "body"),
+            ({"issues": []}, "total"),
+        ]
+        for value, message in faults:
+            with self.subTest(value=value):
+                broken = copy.deepcopy(older)
+                broken["pull_request"]["closing_issues"] = value
+                with self.assertRaisesRegex(RecordError, message):
+                    validate_record(broken)
+        # Each refusal names the field it read, whole.
+        field = "record.pull_request.closing_issues"
+        named: list[tuple[Any, str]] = [
+            ("x", f'{field} must be an object, found string "x"'),
+            ({"total": -1, "issues": []}, f"{field}.total must be an integer of at least 0, found integer -1"),
+            ({"total": 1, "issues": "x"}, f'{field}.issues must be an array, found string "x"'),
+            ({"total": 1, "issues": ["x"]}, f'{field}.issues[0] must be an object, found string "x"'),
+            (
+                {"total": 1, "issues": [{**issue(1, 5, 5), "number": 0}]},
+                f"{field}.issues[0].number must be an integer of at least 1, found integer 0",
+            ),
+            (
+                {"total": 1, "issues": [{**issue(1, 5, 5), "repository": 5}]},
+                f"{field}.issues[0].repository must be a non-empty string, found integer 5",
+            ),
+            (
+                {"total": 1, "issues": [{**issue(1, 5, 5), "extra": 1}]},
+                f'{field}.issues[0] must be an object of known fields, found unknown field "extra"',
+            ),
+        ]
+        for value, message in named:
+            with self.subTest(message=message):
+                broken = copy.deepcopy(older)
+                broken["pull_request"]["closing_issues"] = value
+                with self.assertRaises(RecordError) as caught:
+                    validate_record(broken)
+                self.assertEqual(message, str(caught.exception))
+        # One GitHub did not let the reviewer's account read is marked so and given nothing.
+        unreadable_cases: list[tuple[dict[str, Any], str | None]] = [
+            ({**issue(1, 0, 0), "unreadable": True}, None),
+            ({**issue(1, 0, 0), "unreadable": False}, f"{field}.issues[0].unreadable must be one of true"),
+            ({**issue(1, 5, 5), "unreadable": True}, "body_given is more than the issue's body it could be given"),
+        ]
+        for value, expected in unreadable_cases:
+            with self.subTest(value=value):
+                marked: Any = copy.deepcopy(older)
+                marked["pull_request"]["closing_issues"] = {"total": 1, "issues": [value]}
+                if expected is None:
+                    validate_record(marked)
+                else:
+                    with self.assertRaisesRegex(RecordError, re.escape(expected)):
+                        validate_record(marked)
+        # No closing issue at all is an account too.
+        none = copy.deepcopy(older)
+        none["pull_request"]["closing_issues"] = {"total": 0, "issues": []}
+        validate_record(none)
+        # The record holds its own copy: a later change to the request's account does not reach it.
+        closing["issues"][0]["body_given"] = 0
+        self.assertEqual(24_000, record["pull_request"]["closing_issues"]["issues"][0]["body_given"])
+
 
 class CoveragePathTests(unittest.TestCase):
     """A file the review leaves uncovered or cannot reach, named as git names it."""
