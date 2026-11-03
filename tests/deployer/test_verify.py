@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -15,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import job_tree
+from bounded_process import KILL_WAIT_SECONDS
 from harness import (
     DEPLOY_COMMAND,
     DeployerTestCase,
@@ -60,6 +62,15 @@ def catalog_answer(*skills: tuple[str, str]) -> str:
         for name, path in skills
     )
     return json.dumps([{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": text}]}])
+
+
+# Each character other than "\n" and "\r" that str.splitlines() breaks a line on, read from Python itself rather than
+# listed, so a separator a later Python adds is a row too.
+LINE_BREAKS = tuple(
+    character
+    for character in map(chr, range(sys.maxunicode + 1))
+    if character not in "\n\r" and len(f"a{character}b".splitlines()) == 2
+)
 
 
 # verify's details, written out here rather than read from deployer/verify.py.
@@ -400,6 +411,45 @@ class ParsingTests(unittest.TestCase):
             found,
         )
 
+    def test_a_codex_catalog_description_holding_a_line_break_other_than_newline_is_part_of_its_line(self) -> None:
+        # Codex writes each description into its prompt input as it is, and only "\n" ends a line of its list, so a
+        # description holding U+2028, U+0085, or another character str.splitlines() breaks on stays on its line, even
+        # when what follows it starts as a heading or a tag would.
+        self.assertLessEqual({"\u0085", "\u2028", "\u2029"}, set(LINE_BREAKS))
+        for separator in LINE_BREAKS:
+            for after in ("and more", "# not a heading", "<not a tag>"):
+                with self.subTest(separator=hex(ord(separator)), after=after):
+                    text = (
+                        "## Skills\n### Skill roots\n- `r0` = `/skills`\n### Available skills\n"
+                        f"- one: A description with a line separator{separator}{after} inside it. "
+                        "(file: r0/one/SKILL.md)\n- two: Another skill. (file: r0/two/SKILL.md)\n"
+                    )
+                    found = discovery.parse_codex_catalog([json.dumps([{"text": text}])])
+                    self.assertEqual(
+                        {
+                            "one": [Listed(forward(Path("/skills/one")), True)],
+                            "two": [Listed(forward(Path("/skills/two")), True)],
+                        },
+                        found,
+                    )
+
+    def test_a_codex_catalog_whose_lines_end_with_a_carriage_return_is_read_as_one_ending_with_a_newline(self) -> None:
+        text = (
+            "### Skill roots\r\n- `r0` = `/skills`\r\n### Available skills\r\n"
+            "- one: A skill. (file: r0/one/SKILL.md)\r\n</skills_instructions>"
+        )
+        found = discovery.parse_codex_catalog([json.dumps([{"text": text}])])
+        self.assertEqual({"one": [Listed(forward(Path("/skills/one")), True)]}, found)
+
+    def test_output_lines_split_on_newline_alone_and_take_off_a_carriage_return_before_it(self) -> None:
+        for separator in LINE_BREAKS:
+            with self.subTest(separator=hex(ord(separator))):
+                self.assertEqual([f"a{separator}b", "c"], discovery.output_lines(f"a{separator}b\nc\n"))
+        self.assertEqual(["a", "b", ""], discovery.output_lines("a\r\nb\n\n"))
+        self.assertEqual(["a\rb"], discovery.output_lines("a\rb"))
+        self.assertEqual([], discovery.output_lines(""))
+        self.assertEqual([""], discovery.output_lines("\n"))
+
     def test_a_codex_catalog_that_is_not_json_is_a_listing_error(self) -> None:
         for lines in (["Error: something"], ['{"text": "a", "text": "b"}']):
             with self.subTest(lines=lines), self.assertRaisesRegex(ListingError, "its prompt input is not JSON"):
@@ -645,6 +695,22 @@ class ConverseTests(DeployerTestCase):
         with self.assertRaisesRegex(ListingError, expected):
             self.talk(arguments, ['{"id": 0}'], answered=discovery.codex_answered)
 
+    def test_a_last_error_line_holding_a_line_break_other_than_newline_is_named_whole(self) -> None:
+        # A runtime's message may hold U+2028, U+0085, or another character str.splitlines() breaks on, and on Windows
+        # it may end its lines with "\r\n"; only "\n" ends a line of it.
+        for separator in LINE_BREAKS:
+            with self.subTest(separator=hex(ord(separator))):
+                last = f"Error: one{separator}two"
+                written = f"first\r\n{last}\r\n".encode()
+                arguments = self.program(f"""
+                    import sys
+                    sys.stderr.buffer.write({written!r})
+                    sys.exit(3)
+                """)
+                with self.assertRaises(ListingError) as caught:
+                    self.talk(arguments)
+                self.assertEqual(f"it failed with exit code 3: {last}", str(caught.exception))
+
     def test_without_an_awaited_answer_all_output_is_read_and_a_failure_is_an_error(self) -> None:
         self.assertEqual(["one", "two"], self.talk(self.program('print("one")\nprint("two")\n')))
         with self.assertRaisesRegex(ListingError, r"^it failed with exit code 2$"):
@@ -699,13 +765,38 @@ class ConverseTests(DeployerTestCase):
                 process = mock.MagicMock(spec=subprocess.Popen)
                 for pipe in ("stdin", "stdout"):
                     setattr(process, pipe, None if pipe == missing else mock.MagicMock())
+                # A kill that is never reported gone still ends in the refusal, not in a wait without end.
+                process.wait.side_effect = subprocess.TimeoutExpired([sys.executable], KILL_WAIT_SECONDS)
                 with (
                     mock.patch.object(subprocess, "Popen", return_value=process),
                     self.assertRaisesRegex(ListingError, r"^its pipes did not open$"),
                 ):
                     self.talk([sys.executable], ['{"id": 0}'], answered=discovery.codex_answered)
                 process.kill.assert_called_once_with()
-                process.wait.assert_called_once_with()
+                process.wait.assert_called_once_with(timeout=KILL_WAIT_SECONDS)
+
+    def test_a_program_whose_kill_is_never_reported_ends_in_a_listing_error_within_the_waits_bounds(self) -> None:
+        # A program that outlives its grace is killed; a kill never reported gone is waited for KILL_WAIT_SECONDS at
+        # most, so verify reports the failure rather than holding past its deadline.
+        process = mock.MagicMock(spec=subprocess.Popen)
+        process.stdin, process.stdout, process.returncode = mock.MagicMock(), io.StringIO(""), None
+        waits: list[float | None] = []
+
+        def wait(timeout: float | None = None) -> int:
+            waits.append(timeout)
+            raise subprocess.TimeoutExpired([sys.executable], timeout or 0)
+
+        process.wait.side_effect = wait
+        tree = mock.MagicMock()
+        tree.start_options.return_value = {}
+        with (
+            mock.patch.object(platform_support, "process_tree", return_value=tree),
+            mock.patch.object(subprocess, "Popen", return_value=process),
+            self.assertRaisesRegex(ListingError, r"^it failed with exit code None$"),
+        ):
+            self.talk([sys.executable])
+        process.kill.assert_called_once_with()
+        self.assertEqual([discovery.CLOSE_GRACE, KILL_WAIT_SECONDS], waits)
 
     def test_requests_go_one_per_line_and_stdin_closes_when_no_answer_is_awaited(self) -> None:
         # The program reads to the end of stdin, so it answers only once stdin closes.

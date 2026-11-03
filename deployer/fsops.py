@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import file_presence
+from atomic_file import ReadOnlyTargetError, is_read_only
 
 from . import platform_support
 
@@ -89,10 +90,16 @@ def write_file(path: Path, content: bytes) -> None:
 def write_atomic(path: Path, content: bytes) -> None:
     """Replace a file through a synced copy beside it, removing the copy if the write or the replace fails.
 
+    A read-only target raises ReadOnlyTargetError before a copy exists, on every platform, as atomic_file refuses it:
+    Windows refuses to replace a read-only file, where Linux would replace it as it would any other, so the one answer
+    both can give is to refuse.
+
     mkstemp creates the copy under a fresh name and refuses an existing one, so a file left at a temporary name, or
     planted there, is never written through. Its owner-only mode bits set no access control on Windows: the file
     inherits its folder's permissions, so a private file relies on its folder.
     """
+    if is_read_only(path):
+        raise ReadOnlyTargetError(path)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
