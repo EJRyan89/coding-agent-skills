@@ -60,7 +60,8 @@ and nothing is written.
 delete removes the named memory files and nothing else. Each name must be a bare .md file name
 directly inside the memory directory: not MEMORY.md, not a path (no separator, drive, `.`, or
 `..`), holding no line break, not named twice, and an existing regular file, never a directory,
-symbolic link, or junction. Every name is checked before any is deleted. When any name is refused it prints one
+symbolic link, or junction, and not read-only: Windows will not delete a read-only file, so one is refused on every
+platform alike. Every name is checked before any is deleted. When any name is refused it prints one
 `FAILED <name>: <reason>` line per refusal, deletes nothing, and exits 1; otherwise it prints one
 `DELETED <name>` line per file. When a deletion fails part way, the files already printed as
 DELETED are gone, a last `FAILED <name>: <reason>` names the one that failed, and the rest remain.
@@ -101,7 +102,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_reader
 import json_writer
-from atomic_file import replace_text
+from atomic_file import is_read_only, replace_text
 from console import run_main
 from executable_locator import environment_path
 from file_presence import is_directory, is_present, matching
@@ -735,7 +736,11 @@ def refusal(memory_dir: Path, name: str) -> str | None:
         return NOT_MARKDOWN
     if name.casefold() == INDEX_NAME.casefold():
         return "the index is rebuilt with reindex, never deleted"
-    return entry_problem(memory_dir / name)
+    problem = entry_problem(memory_dir / name)
+    # Windows will not delete a read-only file, so one is refused with the rest, before any deletion, everywhere.
+    if problem is None and is_read_only(memory_dir / name):
+        return "the file is read-only; make it writable to delete it"
+    return problem
 
 
 def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
