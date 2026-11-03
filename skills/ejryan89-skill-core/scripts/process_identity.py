@@ -7,6 +7,11 @@ from the one recorded is another program that reuses it. The deployer reaches th
 
 A probe that cannot read a process's state never reports it gone: a process whose state is unreadable is reported
 alive with no start time, which its caller treats as a holder it cannot confirm, never as one it may reclaim.
+
+A PID read from a file is read through `read_pid`, which refuses one outside the platform's range, so no value is
+truncated to another process's PID before it reaches the probe: Windows passes a PID as a 32-bit `DWORD`, and Linux
+allots none past `PID_MAX_LIMIT`, the most `/proc/sys/kernel/pid_max` may be set to. The probe itself reports a PID
+outside that range as no process.
 """
 
 from __future__ import annotations
@@ -18,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from typed_fields import FieldReader
+
 # Where Linux reports each process: /proc/<pid>/stat, whose fields after the command name, in parentheses, start with
 # the state and hold the start time, in clock ticks since boot, as the twentieth (field 22 of the whole line). It is
 # ejryan89-skill-core's one reader of /proc: job_tree imports PROC, ENDED_STATES, and stat_fields from here.
@@ -27,6 +34,11 @@ STAT_START_TIME = 19
 ENDED_STATES = frozenset({b"Z", b"X", b"x"})
 # The error OpenProcess sets for a PID that names no process.
 ERROR_INVALID_PARAMETER = 87
+# The largest PID each platform can give a process: OpenProcess takes a DWORD, and Linux's PID_MAX_LIMIT on a 64-bit
+# kernel, 4 * 1024 * 1024, bounds pid_max, every PID being below it.
+WINDOWS_PID_MAXIMUM = 2**32 - 1
+LINUX_PID_MAXIMUM = 4 * 1024 * 1024 - 1
+PID_MAXIMUM = WINDOWS_PID_MAXIMUM if sys.platform == "win32" else LINUX_PID_MAXIMUM
 
 
 @dataclass(frozen=True)
@@ -35,9 +47,18 @@ class ProcessStatus:
     start_time: int | None
 
 
+def read_pid(value: object, path: str, reader: FieldReader | None = None) -> int:
+    """A PID read from a file: an integer from 1 to the platform's `PID_MAXIMUM`, or `reader`'s `FieldError`, naming
+    `path`, for anything else, so a value past the range is refused rather than truncated to another process's PID."""
+    return (reader or FieldReader()).integer(value, path, minimum=1, maximum=PID_MAXIMUM)
+
+
 def process_status(pid: int) -> ProcessStatus:
     """Report whether a process is running and, when readable, its start time: its creation time on Windows, and
-    elsewhere its start in clock ticks since boot, read from /proc."""
+    elsewhere its start in clock ticks since boot, read from /proc. A PID outside the platform's range names no
+    process."""
+    if not 0 < pid <= PID_MAXIMUM:
+        return ProcessStatus(False, None)
     if sys.platform == "win32":
         return _windows_status(pid)
     return proc_status(pid)
@@ -45,8 +66,9 @@ def process_status(pid: int) -> ProcessStatus:
 
 def proc_status(pid: int) -> ProcessStatus:
     """The process's state as /proc reports it. A PID /proc does not list is asked of the kernel with a signal of none,
-    which tells a process that has gone from one /proc cannot show, such as another user's under `hidepid`."""
-    if pid <= 0:
+    which tells a process that has gone from one /proc cannot show, such as another user's under `hidepid`. A PID past
+    Linux's range names no process, and never reaches the signal, which refuses one past a C int."""
+    if not 0 < pid <= LINUX_PID_MAXIMUM:
         return ProcessStatus(False, None)
     try:
         text = (PROC / str(pid) / "stat").read_bytes()

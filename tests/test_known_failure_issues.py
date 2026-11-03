@@ -53,6 +53,7 @@ LOADED = sorted(
                 "release_tags",
                 "skill_menu",
                 "suite_names",
+                "typed_fields",
                 "typed_text",
                 "versions",
                 "whole_number",
