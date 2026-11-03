@@ -33,7 +33,7 @@ from deployer import render
 # subject; the path is set once here, at import, so no policy changes sys.path while another policy module is importing.
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
 import skill_inventory
-from path_containment import within
+from path_containment import relative_within
 
 GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
 # A fence command that runs the skill's own scripts, which its grants must cover: a shipped skill names them through
@@ -138,7 +138,8 @@ def status_line_problems(root: Path, skill_files: list[Path] | None = None) -> l
     def shown(text: str) -> str:
         """A path the inventory printed, from the repository root when it lies under the root as given or resolved."""
         path = Path(text)
-        return next((path.relative_to(top).as_posix() for top in tops if within(path, top)), text)
+        found = (relative_within(path, top) for top in tops)
+        return next((relative.as_posix() for relative in found if relative is not None), text)
 
     problems: list[str] = []
     files = [*shipped_skill_files(root), *repository_skill_files(root)] if skill_files is None else skill_files
