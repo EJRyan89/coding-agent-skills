@@ -1078,7 +1078,7 @@ class ChangeSizeTests(AdversarialFixture):
         **files({"app/service.py": b"def total(items):\n    return 0\n", "app/extra.py": b"x = 1\n"}),
     }
 
-    def files_listing(self, *, patched: bool, changed: int = 2) -> PullFiles:
+    def files_listing(self, *, patched: bool, changed: int = 2, head: str | None = None) -> PullFiles:
         """The change as GitHub's files endpoint lists it, each file with its patch, or with none, as GitHub gives
         none for a diff too large to show."""
         entries = (
@@ -1095,7 +1095,7 @@ class ChangeSizeTests(AdversarialFixture):
             | {"patch": patch if patched else None}
             for name, status, changes, patch in entries
         ]
-        return PullFiles(listed, changed, self.github.head)
+        return PullFiles(listed, changed, self.github.head if head is None else head)
 
     def test_a_change_over_the_diff_endpoint_s_limit_is_read_whole_from_another_source_or_fails(self) -> None:
         _, head = self.pull_request(self.HEAD)
@@ -1135,6 +1135,30 @@ class ChangeSizeTests(AdversarialFixture):
                 f"{SELECTOR} is over GitHub's diff limit of 300 files, and GitHub's files API lists 2 of its "
                 f"3,000,001 changed files; set checkout_path for {REPOSITORY} so prepare reads its diff from the "
                 "checkout"
+            )
+        )
+
+    def test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers(self) -> None:
+        # An author can push past the files API's cap, or push while the listing is read, which GitHub serves by pull
+        # number. Each reader of the listing, prepare's files-API route and review-document's build, judges it by
+        # PullFiles.cut and PullFiles.moved_from before it reads anything from it; review-document's own suite drives
+        # its build through both refusals, since this suite cannot import a skill that depends on the core.
+        _, head = self.pull_request(self.HEAD)
+        moved = "f" * 40
+        whole = self.files_listing(patched=True)
+        self.assertEqual((False, False), (whole.cut, whole.moved_from(self.github.head)))
+        self.assertTrue(self.files_listing(patched=True, changed=3_001).cut, "a listing GitHub cut at its cap")
+        self.assertTrue(PullFiles(whole.files, 1, self.github.head).cut, "a listing longer than the count")
+        self.assertTrue(self.files_listing(patched=True, head=moved).moved_from(self.github.head))
+        # prepare refuses a moved head on the route where the files API is the diff's source.
+        self.github.refusal = self.REFUSAL
+        self.configure(checkout=False)
+        self.services.fetch_tarball = self.github_archive(head)
+        self.github.files = self.files_listing(patched=True, head=moved)
+        self.assert_prepare_fails(
+            re.escape(
+                f"{SELECTOR} changed while it was being prepared (head {self.github.head[:12]} is now {moved[:12]}); "
+                "run prepare again"
             )
         )
 

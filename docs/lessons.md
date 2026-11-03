@@ -178,14 +178,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A listing cut at its limit otherwise reads as the whole set, and what lies past the cut is never judged.
 - **Use:** `github_client:GitHubClient.capped_list`, which asks gh for one more item than its limit and says whether
   GitHub held more; `bounded_process:run_bounded`, `pr_status:_list_pulls`, `audit_repository:duplicates`,
-  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`.
+  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`, and `review_github:PullFiles.cut`, which says
+  whether a pull request's file listing holds the files it changes.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_gh_listing_is_capped_outside_the_client`,
   which refuses a limit passed to gh by hand outside the GitHub client unless its module states why,
   `skills/ejryan89-skill-core/scripts/test_github_client.py::CappedListTests`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::DuplicateTests::test_a_search_that_finds_exactly_what_it_lists_is_not_cut`,
   `skills/review-insights/scripts/test_review_guidance.py::ReportTests::test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input`,
   `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`,
-  `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`
+  `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`,
+  `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::ChangeSizeTests::test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers`
 - **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a pull request's
   `pulls/<n>/files` pages read outside `review_github:GitHubClient.list_pull_files`, or its `PullFiles` used without
   comparing `files` with `changed`, since GitHub's files API lists at most 3,000; a slice such as

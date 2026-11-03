@@ -591,23 +591,25 @@ def pull_changes(github: GitHubClient, pull: Pull) -> list[Change]:
     before the pages or after them, since the documents are read at that head and the listing follows a push."""
     selector = f"{pull.repository}#{pull.number}"
     listing = github.list_pull_files(pull.repository, pull.number)
-    refuse_moved(selector, pull.head, listing.head)
-    if len(listing.files) != listing.changed:
+    if listing.moved_from(pull.head):
+        raise moved(selector, pull.head, listing.head)
+    if listing.cut:
         raise DocumentError(
             f"GitHub's files API lists {len(listing.files):,} of the {listing.changed:,} files {selector} changes, "
             "so a document past its cut would go unreviewed; review such a document by its path in a checkout of "
             "the pull request's head"
         )
-    refuse_moved(selector, pull.head, github.get_pull(pull.repository, pull.number)["headRefOid"])
+    now = github.get_pull(pull.repository, pull.number)["headRefOid"]
+    if now != pull.head:
+        raise moved(selector, pull.head, now)
     return [Change(file["filename"], file["status"], file["previous_filename"]) for file in listing.files]
 
 
-def refuse_moved(selector: str, head: str, now: str) -> None:
-    """Refuse a pull request whose head is now `now`, not the `head` the build reads its documents at."""
-    if now != head:
-        raise DocumentError(
-            f"{selector} changed while its files were being read (head {head[:12]} is now {now[:12]}); run build again"
-        )
+def moved(selector: str, head: str, now: str) -> DocumentError:
+    """The refusal of a pull request whose head is now `now`, not the `head` the build reads its documents at."""
+    return DocumentError(
+        f"{selector} changed while its files were being read (head {head[:12]} is now {now[:12]}); run build again"
+    )
 
 
 def pull_blob(github: GitHubClient, repository: str, commit: str, path: str, at: str) -> bytes:
