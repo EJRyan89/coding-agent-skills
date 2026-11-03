@@ -705,6 +705,73 @@ def config_refusal(value: str) -> str:
     )
 
 
+HOME_VARIABLE = "USERPROFILE" if sys.platform == "win32" else "HOME"
+
+
+def home_refusal(value: str) -> str:
+    return (
+        f"FAILED {HOME_VARIABLE} is {value!r}, which is not an absolute path; set it to the absolute path of your "
+        "home folder\n"
+    )
+
+
+class HomeFolderTests(unittest.TestCase):
+    """A home folder that is not an absolute path, which Path.home() takes as given from the variable, is refused by
+    every command that reads it, rather than read relative to the working directory."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.memory_dir = self.root / "memory"
+        write(self.memory_dir / "MEMORY.md", "")
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+
+    def run_with_home(self, home: Path, *arguments: str) -> tuple[int, str, str]:
+        with (
+            mock.patch.object(Path, "home", return_value=home),
+            mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}),
+        ):
+            os.environ.pop(CONFIG, None)
+            return run_main(*arguments)
+
+    def test_each_command_that_reads_the_home_refuses_one_that_is_not_absolute(self) -> None:
+        # Before, each read the folder relative to its working directory.
+        commands = (
+            ("resolve", "--repo", str(self.repo)),
+            ("audit", "--memory-dir", str(self.memory_dir)),
+            ("audit", "--memory-dir", str(self.memory_dir), "--output", str(self.root / "report.json")),
+            ("skill-source", "demo", "--repo", str(self.repo)),
+        )
+        for arguments in commands:
+            with self.subTest(arguments=arguments):
+                result = self.run_with_home(Path("relative home"), *arguments)
+                self.assertEqual((1, home_refusal("relative home"), ""), result)
+        self.assertFalse((self.root / "report.json").exists())
+
+    def test_a_home_python_cannot_find_is_refused_by_its_variable(self) -> None:
+        with (
+            mock.patch.object(Path, "home", side_effect=RuntimeError("Could not determine home directory.")),
+            mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}),
+        ):
+            result = run_main("resolve", "--repo", str(self.repo))
+        self.assertEqual((1, home_refusal(""), ""), result)
+
+    def test_a_cited_home_path_is_never_completed_from_a_relative_home(self) -> None:
+        write(self.memory_dir / "cited.md", memory("cited", "See `~/notes/rule.md` for the rule."))
+        result = self.run_with_home(
+            Path("relative home"), "audit", "--memory-dir", str(self.memory_dir), "--user-dir", str(self.root)
+        )
+        self.assertEqual((1, home_refusal("relative home"), ""), result)
+
+    def test_an_explicit_home_or_user_dir_needs_no_home_folder(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        result = self.run_with_home(Path("relative home"), "resolve", "--repo", str(self.repo), "--home", str(home))
+        self.assertEqual(0, result[0], result[1])
+
+
 class ConfigDirectoryTests(unittest.TestCase):
     def test_the_config_directory_is_the_absolute_path_named_else_the_home_s_claude_folder(self) -> None:
         home = Path(tempfile.gettempdir()).resolve() / "home"

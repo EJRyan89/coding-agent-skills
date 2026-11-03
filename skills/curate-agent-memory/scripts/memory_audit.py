@@ -35,9 +35,9 @@ anything, an --output that exists or lies inside the memory directory, the confi
 projects folder, the skills directory it runs from, ~/.claude/skills, or ~/.agents/skills. The report's
 `unreadable` list names each entry it could not read as a memory, with the reason, and the rest are
 audited. It searches the user's Claude configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude)
-unless --user-dir names another. A CLAUDE_CONFIG_DIR that is set but is not an absolute path is a
-`FAILED <reason>` line naming it, from resolve and from an audit that reads the configuration
-directory, and nothing is read from it.
+unless --user-dir names another. A CLAUDE_CONFIG_DIR that is set but is not an absolute path, and a
+home folder (USERPROFILE on Windows, HOME elsewhere) that is not one, is a `FAILED <reason>` line
+naming the variable, from any command that reads it, and nothing is read from it.
 
 reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memory:
 `- [Title](file.md) — hook`. It writes only MEMORY.md, only with --write, and never deletes
@@ -105,7 +105,7 @@ import json_reader
 import json_writer
 from atomic_file import replace_text
 from console import run_main
-from executable_locator import RelativeEnvironmentPath, environment_path, required_environment_path
+from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path, required_environment_path
 from file_presence import is_directory, is_present, matching
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -458,7 +458,9 @@ def cited_paths(body: str, bases: list[Path]) -> list[CitedPath]:
         ):
             continue
         seen.add(candidate)
-        expanded = Path(candidate.replace("~", str(Path.home()), 1)) if candidate.startswith("~") else Path(candidate)
+        expanded = (
+            Path(candidate.replace("~", str(absolute_home()), 1)) if candidate.startswith("~") else Path(candidate)
+        )
         exists, unreadable = cited_presence(
             [expanded] if expanded.is_absolute() else [base / expanded for base in bases]
         )
@@ -1203,7 +1205,7 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
 
 def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     """Write the JSON audit report to a new file, --output or a temporary one, and name it."""
-    user_dir = args.user_dir or config_directory(Path.home(), dict(os.environ))
+    user_dir = args.user_dir or config_directory(absolute_home(), dict(os.environ))
     found = audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir)
     try:
         report = json_writer.dumps(found, indent=2) + "\n"
@@ -1248,7 +1250,7 @@ def run(args: argparse.Namespace) -> tuple[int, list[str]]:
     if args.command == "skill-source":
         return skill_source_lines(args)
     if args.command == "audit" and args.output:
-        projects = config_directory(Path.home(), dict(os.environ)) / "projects"
+        projects = config_directory(absolute_home(), dict(os.environ)) / "projects"
         refused = output_refusal(args.output, args.memory_dir, projects)
         if refused:
             return 1, [f"FAILED {refused}"]
@@ -1272,7 +1274,7 @@ def main(arguments: list[str] | None = None) -> int:
     locate.add_argument(
         "--repo", type=Path, help="default: the root of the Git repository holding the current directory"
     )
-    locate.add_argument("--home", type=Path, default=Path.home())
+    locate.add_argument("--home", type=Path, help="default: the home folder")
     inspect = commands.add_parser("audit", help="audit one memory directory")
     inspect.add_argument("--memory-dir", type=Path, required=True)
     inspect.add_argument("--repo", type=Path)
@@ -1292,14 +1294,22 @@ def main(arguments: list[str] | None = None) -> int:
     source.add_argument(
         "--repo", type=Path, help="default: the root of the Git repository holding the current directory"
     )
-    source.add_argument("--home", type=Path, default=Path.home())
+    source.add_argument("--home", type=Path, help="default: the home folder")
     args = parser.parse_args(arguments)
     try:
+        # The home folder is read only once a command needs it, so a home that is not an absolute path is refused on
+        # a FAILED line rather than in building the parser.
+        if hasattr(args, "home") and args.home is None:
+            args.home = absolute_home()
         code, lines = run(args)
     except OSError as exc:
         code, lines = 1, [f"FAILED {describe(exc)}"]
     except RelativeEnvironmentPath as exc:
-        remedy = "set it to the absolute path of the Claude configuration directory, or unset it"
+        remedy = (
+            "set it to the absolute path of the Claude configuration directory, or unset it"
+            if exc.variable == "CLAUDE_CONFIG_DIR"
+            else "set it to the absolute path of your home folder"
+        )
         code, lines = 1, [f"FAILED {flat_text(f'{exc}; {remedy}')}"]
     print("\n".join(lines))
     return code

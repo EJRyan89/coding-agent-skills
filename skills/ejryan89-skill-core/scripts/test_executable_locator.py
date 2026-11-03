@@ -312,6 +312,26 @@ class EnvironmentPathTests(unittest.TestCase):
         self.assertEqual(folder, executable_locator.environment_path(self.VARIABLE, given))
         self.assertEqual(folder, executable_locator.required_environment_path(self.VARIABLE, given))
 
+    def test_the_absolute_home_is_python_s_home_when_it_is_absolute(self) -> None:
+        folder = Path(tempfile.gettempdir()).resolve()
+        with mock.patch.object(Path, "home", return_value=folder):
+            self.assertEqual(folder, executable_locator.absolute_home())
+
+    def test_a_home_that_is_not_absolute_or_not_found_is_refused_by_its_variable(self) -> None:
+        variable = "USERPROFILE" if WINDOWS else "HOME"
+        self.assertEqual(variable, executable_locator.HOME_VARIABLE)
+        for home, value in (
+            *((mock.Mock(return_value=Path(each)), str(Path(each))) for each in self.RELATIVE),
+            (mock.Mock(side_effect=RuntimeError("Could not determine home directory.")), ""),
+        ):
+            with (
+                self.subTest(value=value),
+                mock.patch.object(Path, "home", home),
+                self.assertRaises(executable_locator.RelativeEnvironmentPath) as raised,
+            ):
+                executable_locator.absolute_home()
+            self.assertEqual((variable, value), (raised.exception.variable, raised.exception.value))
+
     def test_a_required_path_is_none_only_when_unset_or_empty(self) -> None:
         for environment in ({}, {self.VARIABLE: ""}):
             with self.subTest(environment=environment):

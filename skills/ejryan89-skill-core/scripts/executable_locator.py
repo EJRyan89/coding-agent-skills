@@ -64,6 +64,23 @@ def required_environment_path(variable: str, environment: Mapping[str, str] | No
     return path
 
 
+# The variable Python's home lookup reads first: the profile folder on Windows, and HOME elsewhere.
+HOME_VARIABLE = "USERPROFILE" if sys.platform == "win32" else "HOME"
+
+
+def absolute_home() -> Path:
+    """Python's home folder, `Path.home()`, which reads HOME_VARIABLE as given; raises RelativeEnvironmentPath naming
+    that variable when the home is not an absolute path, or cannot be found at all, so no folder under the home is read
+    relative to the working directory."""
+    try:
+        home = Path.home()
+    except RuntimeError:
+        raise RelativeEnvironmentPath(HOME_VARIABLE, "") from None
+    if not home.is_absolute():
+        raise RelativeEnvironmentPath(HOME_VARIABLE, str(home))
+    return home
+
+
 def environment_path(variable: str, environment: Mapping[str, str] | None = None) -> Path | None:
     """The absolute path the environment variable `variable` names in `environment`, this process's when it is None,
     or None when it is unset, empty, or not an absolute path, a drive-relative `C:bin` or a rooted `\\bin` on Windows
