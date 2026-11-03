@@ -24,6 +24,7 @@ from workflows import (
     PINNED_TOOL_LINES,
     PULL_REQUEST_CODE_STATEMENT,
     SAME_REPOSITORY_STATEMENT,
+    TOKEN_CLAIM_FILES,
     WorkflowSyntaxError,
     changelog_job_problems,
     codex_settings_problems,
@@ -2083,6 +2084,22 @@ def test_a_retired_token_claim_anywhere_in_the_design_document_fails(claim: str,
         assert len(problems) == 1, problems
         assert problems[0].startswith("docs/design.md says "), problems
         assert problems[0].endswith(suffix), problems
+
+
+def test_the_files_read_for_token_claims_are_pinned_and_each_is_read() -> None:
+    assert TOKEN_CLAIM_FILES == (
+        "conftest.py",
+        "tests/run_validation.py",
+        "tests/known_failure_issues.py",
+        "tests/test_known_failure_issues.py",
+        "tests/validation/credentials.py",
+        "tests/validation/job_pool.py",
+        "tests/validation/known_failures.py",
+        "docs/implementing-changes.md",
+        "CONTRIBUTING.md",
+    )
+    root = Path(__file__).resolve().parents[2]
+    assert all((root / path).read_text(encoding="utf-8") for path in TOKEN_CLAIM_FILES)
 
 
 def test_a_row_silent_on_the_actions_default_input_fails() -> None:
