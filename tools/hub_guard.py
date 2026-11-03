@@ -1485,14 +1485,18 @@ class BashReader:
     command or process substitution run in a copy whose changes die with it.
     """
 
-    def __init__(self, reading: Reading, depth: int, builtin: str = "") -> None:
+    def __init__(self, reading: Reading, depth: int, builtin: str = "", unsettled_name: bool = False) -> None:
         self.reading = reading
         self.depth = depth
         # The name a builtin was called by, which export, declare, command, and the rest read.
         self.current_builtin = builtin
+        # Whether a word after the command's name may be an assignment whose name the text does not settle: one the
+        # text does not settle that the grammar does not read as an assignment, which a declaration builtin may take
+        # as one, as `export "$v=1"`.
+        self.unsettled_name = unsettled_name
 
     def with_builtin(self, name: str) -> BashReader:
-        return BashReader(self.reading, self.depth, name)
+        return BashReader(self.reading, self.depth, name, self.unsettled_name)
 
     def run_text(self, text: str, shell: Shell) -> Outcome:
         try:
@@ -1659,6 +1663,11 @@ class BashReader:
             # A declaration builtin's assignment, whose value the text may not settle, still names its variable.
             if word.assignment is not None:
                 shell.note_alias(word.assignment.name)
+                # An element's assignment sets the variable too, so a value it does not settle may be any.
+                shell.note_option_variable(word.assignment.name, assigned_value(word.assignment, shell))
+        self.unsettled_name = any(
+            word.assignment is None and word_value(word, shell) is None for word in words[index + 1 :]
+        )
         if index == len(words):
             assigned = [(assignment.name, assigned_value(assignment, shell)) for assignment in assignments]
             for name, value in assigned:
@@ -2076,7 +2085,7 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
     referencing: bool | None = None
     for word in arguments:
         if word is None:
-            shell.may_assign_any()
+            declare_unsettled(reader, shell, referencing)
             continue
         if is_declare_option(word):
             flags = word[1:]
@@ -2105,6 +2114,17 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
         elif exporting or (shell.allexport and has_value):
             shell.exported.add(subject)
     return certain(shell)
+
+
+def declare_unsettled(reader: BashReader, shell: Shell, referencing: bool | None) -> None:
+    """A declaration word the text does not settle: the shell is one the text does not settle. It may assign any
+    variable where the grammar does not read it as an assignment, as `export "$v=1"`, and where it makes a name
+    reference, as `declare -n r=$v`, whose later assignments reach a variable the text does not settle; one the grammar
+    reads as an assignment names its variable, whose value alone is unsettled."""
+    if reader.unsettled_name or referencing:
+        shell.may_assign_any()
+    else:
+        shell.opaque = True
 
 
 def is_declare_option(word: str) -> bool:
@@ -2151,7 +2171,6 @@ def declared_name(shell: Shell, name: str, value: str | None, referencing: bool 
         shell.references[name] = value
         if value or name in shell.variables:
             # The reference's own value, which a program sees when it is exported.
-            shell.note_option_variable(name, value)
             shell.variables[name] = value
         return name
     if referencing is False and name in shell.references:

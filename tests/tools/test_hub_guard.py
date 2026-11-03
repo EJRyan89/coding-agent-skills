@@ -2899,7 +2899,7 @@ class ContractTests(GuardTestCase):
         # A declaration word the text does not settle may be -fx, and may export any variable, so the bash it
         # starts is one the text does not settle either.
         self.assertEqual("deny", self.bash(f"{body}; declare $o f; bash -c f", self.hub))
-        self.assertIn(UNPLACED.format("switch"), self.reason)
+        self.assertIn("could not read the name a command assigns", self.reason)
         # A function defined before allexport is turned on, or listed by -F alone, is not exported.
         self.assertIsNone(self.bash(f"{body}; set -a; bash -c f", self.hub))
         self.assertIsNone(self.bash(f"{body}; declare -F f; bash -c f", self.hub))
