@@ -806,12 +806,17 @@ def test_the_deployer_states_the_path_first_and_relative_to_itself(tmp_path: Pat
     assert expected == skill_core_import_problems(tmp_path)
 
 
-CONTAINMENT_SOURCE = """import os
+CONTAINMENT_SOURCE = """import ntpath
+import os
 import os.path as osp
+import posixpath
 from os.path import commonpath
 from pathlib import Path
+from posixpath import commonprefix as common
 
 from path_containment import posix_within, within
+
+SEPARATOR = "/"
 
 
 def hand_written(path: Path, root: Path, name: str, top: str) -> list[bool]:
@@ -827,8 +832,72 @@ def hand_written(path: Path, root: Path, name: str, top: str) -> list[bool]:
     ]
 
 
-def conforms(path: Path, root: Path, name: str, top: str) -> list[bool]:
-    return [within(path, root), posix_within(name, top), name.startswith(top), name.startswith("prefix-")]
+def widened(name: str, top: str, other: str, path: str, root: str) -> list[bool]:
+    prefix = top + "/"
+    added = top
+    added += os.sep
+    prefixes = (top + "/", other + "/")
+    relative = os.path.relpath(path, root)
+    return [
+        ntpath.commonpath([path, root]) == root,
+        posixpath.commonpath([path, root]) == root,
+        common([path, root]) == root,
+        name.startswith(prefix),
+        name.startswith((top + "/", other + "/")),
+        name.startswith(prefixes),
+        name.startswith("{}/".format(top)),
+        name.startswith("%s/" % top),
+        name.startswith(os.path.join(top, "")),
+        name.startswith(added),
+        name.startswith(f"{top}{os.sep}"),
+        name.startswith(top + SEPARATOR),
+        name.startswith("%s%s" % (top, os.sep)),
+        name.startswith("{}{}".format(top, os.sep)),
+        name.startswith(str.format("{}/", top)),
+        name.startswith("".join([top, "/"])),
+        name.startswith(os.sep.join([top, ""])),
+        str.startswith(name, top + "/"),
+        relative.startswith(".."),
+        relative == os.pardir,
+        posixpath.relpath(path, root).startswith(os.pardir + os.sep),
+        ".." in Path(relative).parts,
+    ]
+
+
+def conforms(path: Path, root: Path, name: str, top: str, other: str, *rest: str) -> list[bool]:
+    first = top
+    second = first
+    first = second
+    label = top
+    label += "-"
+    fixed = "skills/"
+    relative = os.path.relpath(path, root)
+    return [
+        within(path, root),
+        posix_within(name, top),
+        name.startswith(top),
+        name.startswith("prefix-"),
+        name.startswith(("./", "../")),
+        name.startswith(fixed),
+        name.startswith(top + "-"),
+        name.startswith(label),
+        name.startswith((top, other)),
+        name.startswith("{}-".format(top)),
+        name.startswith("%s-" % top),
+        name.startswith(os.path.join(top, "x")),
+        name.startswith(", ".join([top, other])),
+        relative == "docs",
+        relative.startswith("docs"),
+        ".." in name.split("/"),
+        name.startswith(*rest),
+        name.startswith("%s%s" % (top, other)),
+        name.startswith("%s/%s" % (top, *rest)),
+        name.startswith("{}{}".format(top, other)),
+        name.startswith(str.format("{}")),
+        name.startswith(os.sep.join([top, "x"])),
+        name.startswith("".join([top, *rest])),
+        name.startswith(first),
+    ]
 
 
 def told_apart(name: str, top: str) -> bool:
@@ -855,14 +924,20 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
     )
     alpha = "skills/alpha/scripts/alpha.py"
     prefix = "a startswith of a folder and its separator"
+    relpath = "a relpath checked for a parent segment"
     found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
     assert found == [
-        f"{alpha}:11 tests containment with is_relative_to{remedy}",
-        f"{alpha}:12 tests containment with commonpath{remedy}",
-        f"{alpha}:13 tests containment with commonprefix{remedy}",
-        f"{alpha}:14 tests containment with commonpath{remedy}",
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (15, 16, 17)),
-        f"{alpha}:18 tests containment with a comparison of a path's leading parts{remedy}",
+        f"{alpha}:16 tests containment with is_relative_to{remedy}",
+        f"{alpha}:17 tests containment with commonpath{remedy}",
+        f"{alpha}:18 tests containment with commonprefix{remedy}",
+        f"{alpha}:19 tests containment with commonpath{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (20, 21, 22)),
+        f"{alpha}:23 tests containment with a comparison of a path's leading parts{remedy}",
+        f"{alpha}:34 tests containment with commonpath{remedy}",
+        f"{alpha}:35 tests containment with commonpath{remedy}",
+        f"{alpha}:36 tests containment with commonprefix{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(37, 52)),
+        *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in range(52, 56)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

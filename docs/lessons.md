@@ -380,9 +380,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_plugin_canary.py::test_an_installed_plugin_the_canary_cannot_place_in_the_home_is_refused_by_name`,
   `tests/tools/test_checkout.py::test_every_tool_that_takes_root_parses_it_with_checkout_root_and_the_module_names_it`
 - **Search for:** `root / name` or `joinpath(*` where the operand comes from input and no `refusal` judged it first;
-  `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, or
-  `startswith(f"{` with a trailing `/` outside `path_containment.py`, which the guard refuses unless a
-  `CONTAINMENT_ALLOWED` entry states why.
+  `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, a
+  `startswith(` of a folder built to end in a separator, or a `relpath(` checked for `..`, outside
+  `path_containment.py`, which the guard refuses unless a `CONTAINMENT_ALLOWED` entry states why.
 - **Examples:** #1780, #1782, #1818, #1905, #2050
 
 ### Every check comes before the first write
