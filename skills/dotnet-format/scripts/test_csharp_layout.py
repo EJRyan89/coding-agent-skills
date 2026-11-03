@@ -1138,6 +1138,56 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual({".editorconfig"}, {target for target, _, _ in added}, "a global file is no chain member")
         self.assertTrue(inner.read_text(encoding="utf-8").startswith("is_global = true\n"))
 
+    def test_a_negative_global_level_is_read_with_its_sign_down_to_the_32_bit_floor(self) -> None:
+        # The inner global file sets no level, so it is at 0, and wins only over a .globalconfig whose level is read as
+        # below 0: a reader that drops the sign reads -200 as 200, and one past the floor keeps the default 100.
+        inner = self.root / "src" / "App" / ".editorconfig"
+        inner.write_text("is_global = true\ndotnet_diagnostic.RCS0063.severity = none\n", encoding="utf-8")
+        cases = (
+            ("global_level = -200\n", "other:none"),
+            ("global_level = -2147483648\n", "other:none"),
+            ("global_level = -2147483649\n", "present"),
+            ("global_level = 1\n", "present"),
+        )
+        for level, state in cases:
+            with self.subTest(level=level):
+                (self.root / ".globalconfig").write_text(
+                    f"{level}dotnet_diagnostic.RCS0063.severity = warning\n", encoding="utf-8"
+                )
+                self.assertEqual(state, self.severity("RCS0063"))
+
+    def test_keys_and_values_are_lowered_as_the_compiler_lowers_them_never_case_folded(self) -> None:
+        # The compiler lowers a key one character for one, so a key spelled with a long s, which Unicode case folding
+        # reads as s, names another setting; ASCII case alone is ignored, in keys and in the values compared.
+        editorconfig = self.root / ".editorconfig"
+        cases = (
+            ("DOTNET_DIAGNOSTIC.RCS0063.SEVERITY = WARNING\n", "present"),
+            ("dotnet_diagno\u017ftic.RCS0063.severity = warning\n", "missing"),
+            ("dotnet_diagnostic.RCS0063.severity = \u017fuggestion\n", "other:\u017fuggestion"),
+        )
+        for line, state in cases:
+            with self.subTest(line=line):
+                editorconfig.write_text(f"root = true\n\n[*.cs]\n{line}", encoding="utf-8")
+                self.assertEqual(state, self.severity("RCS0063"))
+
+    def test_an_editorconfig_that_sets_is_global_to_any_value_is_a_global_config(self) -> None:
+        # The compiler asks only whether the preamble holds the key, so `is_global = false` makes the file global too:
+        # its preamble then reaches every file, as a global config's does, and it ends no .editorconfig chain.
+        (self.root / ".globalconfig").write_text("dotnet_diagnostic.RCS0063.severity = warning\n", encoding="utf-8")
+        inner = self.root / "src" / "App" / ".editorconfig"
+        for value in ("true", "false", "no"):
+            with self.subTest(value=value):
+                inner.write_text(
+                    f"is_global = {value}\nglobal_level = 200\ndotnet_diagnostic.RCS0063.severity = none\n",
+                    encoding="utf-8",
+                )
+                self.assertEqual("other:none", self.severity("RCS0063"))
+        self.assertFalse(
+            layout.AnalyzerConfig(Path("src/.globalconf\ufb01g"), {}, []).named_global,
+            "a name the compiler compares ordinally is no .globalconfig through a ligature",
+        )
+        self.assertTrue(layout.AnalyzerConfig(Path("src/.GlobalConfig"), {}, []).named_global)
+
     def test_a_global_configs_section_applies_only_to_the_file_whose_absolute_path_it_names(self) -> None:
         program = (self.root / "src" / "App" / "Program.cs").as_posix()
         (self.root / ".globalconfig").write_text(

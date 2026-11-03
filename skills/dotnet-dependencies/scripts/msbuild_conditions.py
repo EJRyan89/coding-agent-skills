@@ -13,21 +13,22 @@ give `True` or `False`; and `$([MSBuild]::GetPathOfFileAbove('file', 'dir'))` an
 `$([MSBuild]::GetDirectoryNameOfFileAbove('dir', 'file'))`, which search the folders above for a file as MSBuild
 does. Any other property function, an item list `@(...)`, or metadata `%(...)` cannot be settled.
 
-What a condition may hold: `==` and `!=`, which compare two numbers as numbers, two booleans as booleans, and any
-other two values as text without regard to case, as .NET's ordinal comparison ignores case; `<`, `>`, `<=`, and `>=`
-between two numbers; `!`, `and`, `or` (the keywords in any case), and parentheses, with `or` over `and` over `!`; a
-quoted or a bare operand; a lone operand read as a boolean (`true`, `on`, `yes`, `false`, `off`, `no`, in any case and
-each optionally after `!`, with nothing around it); and the functions `Exists('path')` and `HasTrailingSlash('text')`.
-A number is what MSBuild reads as one: ASCII digits with an optional leading sign and at most one `.`, such as `+5`,
-`.5`, or `5.`, that a double holds finitely; `NaN` in any case, with an optional sign, which no comparison finds equal
-or ordered; or `0x` followed by ASCII hexadecimal digits, read as the bits of a 32-bit integer, so `0xFFFFFFFF` is -1
-and nine significant digits are none. An exponent, an underscore, a thousands separator, whitespace, a sign before
-`0x`, `Infinity`, and any other digit than ASCII's make no number, and a comparison of versions, which MSBuild also
-orders, is unsettled. One operand decides an `or` that holds or an `and`
-that fails whatever the others are. Any other function, a malformed condition, or a lone operand that is not a
-boolean is unsettled. So is a condition whose negations and parentheses, or a property function whose arguments,
-nest deeper than ejryan89-skill-core's `nesting_depth.DEPTH_LIMIT`, which the reader stops at rather than recursing
-without bound.
+What a condition may hold: `==` and `!=`, which compare two numbers as numbers, two booleans as booleans, and any other
+two values as text without regard to case, as .NET's ordinal comparison ignores case; `<`, `>`, `<=`, and `>=` between
+two numbers; `!`, `and`, `or` (the keywords in any case), and parentheses, with `or` over `and` over `!`; a quoted or a
+bare operand; a lone operand read as a boolean (`true`, `on`, `yes`, `false`, `off`, `no`, in any case and each
+optionally after `!`, with nothing around it); and the functions `Exists('path')` and `HasTrailingSlash('text')`. A
+number is what MSBuild reads as one: ASCII digits with an optional leading sign and at most one `.`, such as `+5`, `.5`,
+or `5.`, that a double holds finitely; `NaN` in any case, with an optional sign, which no comparison finds equal or
+ordered; or `0x` followed by ASCII hexadecimal digits, read as the bits of a 32-bit integer, so `0x80000000` to
+`0xFFFFFFFF` are negative and a value past 32 bits, such as `0x100000000`, is none. An exponent, an underscore, a
+thousands separator, whitespace, a sign before `0x`, `Infinity`, and any other digit than ASCII's make no number, and a
+comparison of versions, which MSBuild also orders, is unsettled. One operand decides an `or` that holds or an `and` that
+fails whatever the others are. Any other function, a malformed condition, a lone operand that is not a boolean, and a
+text comparison of two values differing in a character whose simple uppercase the reader cannot tell, such as a Greek
+letter with a subscript iota, are unsettled. So is a condition whose negations and parentheses, or a property function
+whose arguments, nest deeper than ejryan89-skill-core's `nesting_depth.DEPTH_LIMIT`, which the reader stops at rather
+than recursing without bound.
 """
 
 from __future__ import annotations

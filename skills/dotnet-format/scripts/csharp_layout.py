@@ -28,17 +28,18 @@ when dotnet is not installed or MSBuild cannot evaluate a project. A setting is 
 .editorconfig files above the file, nearest last, up to the repository root or the first whose preamble, the lines
 before its first section, sets `root = true`; and below them from the global analyzer configs, the nearest
 `.globalconfig` at or above the file's project folder within the repository and any .editorconfig whose preamble sets
-`is_global = true`, each giving its preamble to every file and a section only to the file whose absolute path it names,
-the higher `global_level` winning, read as .NET's int.TryParse reads it, an optional sign and ASCII digits within a
-32-bit integer (100 for a `.globalconfig` that sets none or another value, 0 for any other file) and a key two files at
-one level both set left unset. A global config a project names in `GlobalAnalyzerConfigFiles` is not read. With --apply
-it adds only the missing settings, as a `[*.cs]` section placed first in the outermost .editorconfig that applies, so
-every existing section, and every value a global config sets, still holds, and prints `ADDED <.editorconfig> <key>
-<value>`, or `UNREADABLE <.editorconfig> <reason>` for one whose byte order mark names an encoding its bytes are not in,
-to which it adds nothing, so its settings stay missing; it never changes a value the repository already sets and never
-adds a package reference. It exits 1 when a setting is still missing, because --apply was not given or could not write
-it, or a listed entry was REFUSED (findings), 0 otherwise: another value is the repository's choice, and the package is
-advice the skill cannot act on.
+`is_global` to any value, each giving its preamble to every file and a section only to the file whose absolute path it
+names, the higher `global_level` winning, read as .NET's int.TryParse reads it, an optional sign and ASCII digits within
+a 32-bit integer (100 for a `.globalconfig` that sets none or another value, 0 for any other file) and a key two files
+at one level both set left unset. Keys, and the values compared, are lowered as the compiler lowers them, one character
+for one, never by Unicode case folding. A global config a project names in `GlobalAnalyzerConfigFiles` is not read. With
+--apply it adds only the missing settings, as a `[*.cs]` section placed first in the outermost .editorconfig that
+applies, so every existing section, and every value a global config sets, still holds, and prints `ADDED <.editorconfig>
+<key> <value>`, or `UNREADABLE <.editorconfig> <reason>` for one whose byte order mark names an encoding its bytes are
+not in, to which it adds nothing, so its settings stay missing; it never changes a value the repository already sets and
+never adds a package reference. It exits 1 when a setting is still missing, because --apply was not given or could not
+write it, or a listed entry was REFUSED (findings), 0 otherwise: another value is the repository's choice, and the
+package is advice the skill cannot act on.
 
 Both act only inside the repository. Each reads a FILE_LIST entry only when it lies inside the repository root, judged
 from its text before anything touches it and then as resolved: an absolute entry, one whose `..` segments leave the
@@ -797,7 +798,8 @@ def section_matches(section: str, relative_path: str) -> bool:
 @dataclass(frozen=True)
 class AnalyzerConfig:
     """One analyzer configuration file as the compiler reads it: the properties of its preamble, the lines before its
-    first section, and each section's name and properties in order, keys and values case-folded."""
+    first section, and each section's name and properties in order, keys and values lowered as `roslyn_lower`
+    lowers them."""
 
     path: Path
     preamble: dict[str, str]
@@ -805,13 +807,15 @@ class AnalyzerConfig:
 
     @property
     def named_global(self) -> bool:
-        return self.path.name.casefold() == GLOBAL_CONFIG
+        """Whether its name is .globalconfig, compared as the compiler compares it, ordinally ignoring case, which only
+        ASCII letters can match."""
+        return self.path.name.isascii() and self.path.name.lower() == GLOBAL_CONFIG
 
     @property
     def is_global(self) -> bool:
         """Whether the compiler reads it as a global config: a file named .globalconfig, or one whose preamble sets
-        `is_global = true`, which an .editorconfig may."""
-        return self.named_global or self.preamble.get("is_global") == "true"
+        `is_global` to any value, which an .editorconfig may: the compiler asks only whether the key is there."""
+        return self.named_global or "is_global" in self.preamble
 
     @property
     def is_root(self) -> bool:
@@ -829,6 +833,23 @@ class AnalyzerConfig:
         return NAMED_GLOBAL_LEVEL if self.named_global else 0
 
 
+def _roslyn_lower(character: str) -> str:
+    """A character as the compiler's CaseInsensitiveComparison.ToLower lowers it: its simple lowercase, one character
+    for one, `İ` as `i`, and a character beyond the 16-bit range, which .NET holds as two surrogates it does not lower,
+    unchanged."""
+    if character == "\u0130":
+        return "i"
+    lower = character.lower()
+    return lower if len(lower) == 1 and ord(character) <= 0xFFFF else character
+
+
+def roslyn_lower(text: str) -> str:
+    """Text lowered as the compiler lowers an analyzer config's key, and the values it compares without regard to
+    case, one character at a time, never with Unicode case folding, which would read the long s as `s` or the
+    sharp s as `ss`."""
+    return text.lower() if text.isascii() else "".join(_roslyn_lower(character) for character in text)
+
+
 def read_analyzer_config(path: Path) -> AnalyzerConfig:
     preamble: dict[str, str] = {}
     sections: list[tuple[str, dict[str, str]]] = []
@@ -842,7 +863,7 @@ def read_analyzer_config(path: Path) -> AnalyzerConfig:
             sections.append((line[1:-1], current))
         elif "=" in line:
             key, value = (part.strip() for part in line.split("=", 1))
-            current[key.casefold()] = value.casefold()
+            current[roslyn_lower(key)] = roslyn_lower(value)
     return AnalyzerConfig(path, preamble, sections)
 
 
