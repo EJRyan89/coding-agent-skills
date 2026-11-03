@@ -64,6 +64,21 @@ def within(path: StrPath, tree: StrPath, *, strict: bool = False) -> bool:
     return candidate.is_relative_to(root) and not (strict and candidate == root)
 
 
+def _plain(path: StrPath) -> Path:
+    """`path` as `within` reads it before case-folding: without an extended-length or device-namespace prefix, made
+    absolute against the working directory, and normalized by text alone."""
+    return Path(os.path.normpath(Path.cwd() / without_extended_prefix(Path(path))))
+
+
+def relative_within(path: StrPath, tree: StrPath, *, strict: bool = False) -> Path | None:
+    """`path` relative to `tree`, taken from the same forms `within` compares, so a prefix one side carries and the
+    other does not changes nothing; None when `within` finds it outside, or, with `strict`, the tree itself. A caller
+    that needs where a path lies in its tree takes it here, never from a `relative_to` of the paths as given."""
+    if not within(path, tree, strict=strict):
+        return None
+    return _plain(path).relative_to(_plain(tree))
+
+
 def posix_within(name: str, folder: str, *, strict: bool = False) -> bool:
     """Whether `name`, a `/`-separated path such as a repository path git lists, is `folder` or lies in it, by text,
     case and all, as git names a repository's files; with `strict`, lies in it only. It is for names a listing gives,

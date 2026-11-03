@@ -178,7 +178,7 @@ from fsops_platform import ATTRIBUTE_BY_NAME, PLATFORM_ALLOWANCE, platform_token
 from git_client import GitClient
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, reached_suites
-from path_containment import within
+from path_containment import relative_within
 from suite_discovery import pytest_command
 from suite_names import is_suite_name
 from typed_fields import FieldError, FieldReader
@@ -938,9 +938,10 @@ def module_entries(
     for name, entry in files.items() if isinstance(files, dict) else ():
         # pathlib joins an absolute name as itself, so a name relative to the worktree and a path into it alike.
         path, root = (tree / name).resolve(), tree.resolve()
-        if not within(path, root):
+        relative = relative_within(path, root)
+        if relative is None:
             continue
-        module = path.relative_to(root).as_posix()
+        module = relative.as_posix()
         if module in modules and isinstance(entry, dict):
             yield module, entry, len((tree / module).read_bytes().splitlines())
 

@@ -309,3 +309,27 @@ class RefusalTests(unittest.TestCase):
         with mock.patch.object(path_containment, "is_link_or_junction", side_effect=recording):
             self.assertIsNone(refusal("docs/a.md", self.tree))
         self.assertEqual([self.tree / "docs", self.tree / "docs" / "a.md"], probed)
+
+
+class RelativeWithinTests(unittest.TestCase):
+    def test_a_path_in_its_tree_is_given_relative_to_it_and_one_outside_is_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary) / "tree"
+            self.assertEqual(Path("a", "b.py"), path_containment.relative_within(tree / "a" / "b.py", tree))
+            self.assertEqual(Path("a"), path_containment.relative_within(tree / "a" / ".." / "a", tree))
+            self.assertEqual(Path(), path_containment.relative_within(tree, tree))
+            self.assertIsNone(path_containment.relative_within(tree, tree, strict=True))
+            for outside in (Path(temporary), Path(temporary) / "tree2" / "a", tree / ".." / "other"):
+                with self.subTest(outside=outside):
+                    self.assertIsNone(path_containment.relative_within(outside, tree))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
+    def test_a_prefix_on_one_side_alone_still_gives_the_relative_path(self) -> None:
+        # Path.resolve gives a path too long for MAX_PATH with the prefix and a short tree without it.
+        for path, tree in (
+            ("\\\\?\\C:\\tree\\tools\\calc.py", "C:\\tree"),
+            ("C:\\tree\\tools\\calc.py", "\\\\?\\C:\\tree"),
+            ("\\\\.\\c:\\TREE\\tools\\calc.py", "C:\\tree"),
+        ):
+            with self.subTest(path=path, tree=tree):
+                self.assertEqual(Path("tools", "calc.py"), path_containment.relative_within(path, tree))

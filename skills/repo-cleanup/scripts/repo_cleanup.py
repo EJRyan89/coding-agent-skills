@@ -66,7 +66,7 @@ from github_client import GitHubClient, GitHubError, replace_undecodable, subpro
 from github_client import Runner as GhRunner
 from github_remote import github_repository
 from link_probe import is_plain_directory, is_plain_file
-from path_containment import within
+from path_containment import relative_within, within
 from path_keys import path_key
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
@@ -1632,9 +1632,10 @@ def linkless_below(path: str, anchor: str) -> bool:
     plain directory: no link or junction, so the path resolves where it reads."""
     # Lexical, like prune_empty_parents: Path.resolve would follow the very links this looks for.
     path, anchor = os.path.abspath(path), os.path.abspath(anchor)  # noqa: PTH100 - lexical, as the comment says
-    if not within(path, anchor, strict=True):
+    relative = relative_within(path, anchor, strict=True)
+    if relative is None:
         return False
-    parts = Path(path).parts[len(Path(anchor).parts) :]
+    parts = relative.parts
     current = Path(anchor)
     for part in parts:
         current /= part

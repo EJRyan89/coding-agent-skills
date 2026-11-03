@@ -392,6 +392,18 @@ class ReachFixtures(unittest.TestCase):
         self.assertIn(f"    {Path('tree/tools/calc.py')}\n    {Path('tree/deployer/a.py')}\n", settings)
         self.assertIn("disable_warnings = no-data-collected,", settings)
 
+    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
+    def test_a_coverage_path_with_the_extended_length_prefix_is_read_as_its_module(self) -> None:
+        # coverage.py may name a file deep in the worktree in the prefixed form Path.resolve gives a long path.
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary).resolve() / "tree"
+            (tree / "tools").mkdir(parents=True)
+            (tree / "tools" / "calc.py").write_text("a\n" * 3, encoding="utf-8")
+            prefixed = "\\\\?\\" + str(tree / "tools" / "calc.py")
+            report = {"files": {prefixed: {"executed_lines": [2], "missing_lines": [1, 3]}}}
+            lines = executed_lines(report, tree, ["tools/calc.py"])
+        self.assertEqual({"tools/calc.py": {2}}, {module: set(found) for module, found in lines.items()})
+
     def test_executed_lines_are_read_by_module_whatever_path_names_the_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary) / "tree with spaces"
