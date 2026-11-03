@@ -2076,6 +2076,7 @@ RETIRED_CLAIM_SPELLINGS = [
     ("no step is given the run's read only token", NO_STEP),
     ("no job is given the run's readonly token", NO_STEP),
     ("no leg is given the run's read\N{EN DASH}only token", NO_STEP),
+    ("no leg is given the built\N{EN DASH}in token", NO_STEP),
     ("the legs' token is given to no step", NO_STEP),
     ("the only job given the repository's token", ONLY_JOB),
     ("each leg held no validate.yml's read only token", NO_TOKEN),
