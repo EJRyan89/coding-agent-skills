@@ -42,11 +42,15 @@ TREE_ENTRY = re.compile(
 )
 # The path characters one `git check-attr` call is given, well inside what a Windows command line holds.
 ATTRIBUTE_PATH_UNITS = 8000
+# The prefix of the throwaway directory that holds the index of a commit's tree whose attributes --at reads.
+ATTRIBUTE_INDEX_PREFIX = "deploy-at-attributes-"
 
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.mkdtemp": "--at exports a commit's tree into a fresh directory under the system temporary directory, "
-    "outside every managed root, which the run removes through fsops when it ends; it changes no deployed state",
+    "outside every managed root, which the run removes through fsops when it ends, and reads the commit's attributes "
+    "from an index of its tree that git read-tree writes into another such directory, removed through fsops on every "
+    "exit; neither changes deployed state",
 }
 
 
@@ -69,7 +73,11 @@ class TagsUnreadable(Exception):
 
 
 def _run_git(
-    arguments: Sequence[str], timeout: float | None = None, *, separate_errors: bool = False
+    arguments: Sequence[str],
+    timeout: float | None = None,
+    *,
+    separate_errors: bool = False,
+    environment: dict[str, str] | None = None,
 ) -> platform_support.ToolResult:
     git = platform_support.find_executable("git")
     if git is None:
@@ -77,23 +85,32 @@ def _run_git(
             "ERROR: --at needs Git, which was not found.",
             'Install it as "Installing the tools" in docs/installation.md says, then retry.',
         )
-    return platform_support.run_tool([git, *arguments], timeout=timeout, separate_errors=separate_errors)
+    return platform_support.run_tool([git, *arguments], environment, timeout=timeout, separate_errors=separate_errors)
 
 
 def _git(source_dir: Path, *arguments: str) -> platform_support.ToolResult:
     return _run_git(["-C", str(source_dir), *arguments])
 
 
-def _git_runner(command: Sequence[str], timeout: float) -> GitResult:
+def _git_runner(command: Sequence[str], timeout: float, environment: dict[str, str] | None = None) -> GitResult:
     """GitClient's runner over the deployer's own, for resolve and release_tags: the command GitClient builds, git
     first, run by run_tool with stdout and stderr kept apart, so a warning git prints beside an answer is never part of
-    it and a failure's reason is git's stderr."""
-    result = _run_git(command[1:], timeout, separate_errors=True)
+    it and a failure's reason is git's stderr. `environment` is added to that call's environment alone."""
+    result = _run_git(command[1:], timeout, separate_errors=True, environment=environment)
     return GitResult(result.returncode, result.output, result.errors)
 
 
-def _client() -> GitClient:
-    return GitClient(_git_runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
+def _client(index: Path | None = None) -> GitClient:
+    """The deployer's GitClient, or with `index`, one whose every call reads that file as Git's index: given only to
+    the calls that read a commit's attributes, so no other git call sees the throwaway index."""
+    if index is None:
+        return GitClient(_git_runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
+    environment = {"GIT_INDEX_FILE": str(index)}
+
+    def runner(command: Sequence[str], timeout: float) -> GitResult:
+        return _git_runner(command, timeout, environment)
+
+    return GitClient(runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
 
 
 def resolve(source_dir: Path, ref: str) -> Pin:
@@ -197,7 +214,7 @@ def export(source_dir: Path, commit: str) -> Path:
     git archive writes the files as a checkout of the commit would, line endings, `ident`, and filters included, so
     the tree is the one a deployment from a checkout of the commit reads. Only the attributes git archive applies and
     a checkout does not, export-ignore and export-subst, would make it another tree, so a commit on any path of whose
-    tree git archive would act on either is refused before anything is made (see `archive_attributes`). A tree holding
+    tree git archive would act on either is refused before the export is made (see `archive_attributes`). A tree holding
     a link or a special file is refused before anything is extracted, and the extraction's data filter refuses any
     member that would land outside the folder; either refusal names the member.
     """
@@ -257,19 +274,37 @@ def _attribute_calls(paths: Sequence[str]) -> list[list[str]]:
 
 def archive_attributes(source_dir: Path, commit: str) -> list[tuple[str, str]]:
     """Each (path, attribute) of the commit's tree on which an attribute of ARCHIVE_ONLY_ATTRIBUTES is set, in tree
-    order, read by `git check-attr --source`, which reads the commit's own .gitattributes files with the checkout's
-    .git/info/attributes and Git's attributes files, as git archive reads them, macros included. An attribute counts
-    when Git answers `set`, the one value git archive acts on, and export-subst only on a file, the one entry whose
-    bytes git archive rewrites.
+    order, read as git archive reads them: `git read-tree` writes an index of the commit's tree into a throwaway
+    directory, and `git check-attr --cached` reads the commit's own .gitattributes files from it with the checkout's
+    .git/info/attributes and Git's attributes files, macros included. An attribute counts when Git answers `set`, the
+    one value git archive acts on, and export-subst only on a file, the one entry whose bytes git archive rewrites.
+    The directory is removed on every exit.
 
-    Raises DeployError with Git's reason when Git cannot list the tree or read its attributes, and when its answer is
-    not the one asked for, path by path and attribute by attribute, so no unread answer passes as none set.
+    Raises DeployError with Git's reason when Git cannot list the tree, index it, or read its attributes, and when its
+    answer is not the one asked for, path by path and attribute by attribute, so no unread answer passes as none set.
     """
+    paths = _tree_paths(source_dir, commit)
+    directory = Path(tempfile.mkdtemp(prefix=ATTRIBUTE_INDEX_PREFIX))
+    try:
+        return _indexed_attributes(source_dir, commit, paths, _client(directory / "index"))
+    finally:
+        _remove_index(directory)
+
+
+def _indexed_attributes(
+    source_dir: Path, commit: str, paths: Sequence[str], client: GitClient
+) -> list[tuple[str, str]]:
+    """archive_attributes' reading, through a client whose index is the throwaway one."""
+    try:
+        # A split index would write its shared part into the checkout's Git directory, so this index is never split.
+        client.output(["-c", "core.splitIndex=false", "read-tree", commit], directory=source_dir)
+    except GitError as error:
+        raise _attributes_unreadable(commit, flat_text(str(error))) from error
     found: list[tuple[str, str]] = []
-    for call in _attribute_calls(_tree_paths(source_dir, commit)):
-        arguments = ["check-attr", "-z", f"--source={commit}", *ARCHIVE_ONLY_ATTRIBUTES, "--", *call]
+    for call in _attribute_calls(paths):
+        arguments = ["check-attr", "-z", "--cached", *ARCHIVE_ONLY_ATTRIBUTES, "--", *call]
         try:
-            fields = _client().names(arguments, directory=source_dir)
+            fields = client.names(arguments, directory=source_dir)
         except GitError as error:
             raise _attributes_unreadable(commit, flat_text(str(error))) from error
         asked = [(path, attribute) for path in call for attribute in ARCHIVE_ONLY_ATTRIBUTES]
@@ -306,10 +341,19 @@ def refuse_archive_attributes(source_dir: Path, commit: str) -> None:
 def _attributes_unreadable(commit: str, reason: str) -> DeployError:
     return DeployError(
         f"ERROR: Git could not read the attributes of the tree of {commit}: {reason}",
-        "Put right what Git reports in the checkout, then retry; reading a commit's attributes needs Git "
-        f"{tools.format_version(tools.GIT.feature_minimums[tools.AT_FEATURE])} or newer.",
+        "Put right what Git reports in the checkout, then retry.",
         see_recovery(EARLIER_COMMIT),
     )
+
+
+def _remove_index(directory: Path) -> None:
+    """Remove the throwaway index's directory, warning rather than failing: it is outside every managed root, and a
+    failure here must not hide the answer or the refusal it follows."""
+    try:
+        fsops.remove(directory)
+    except OSError as exc:
+        shown = platform_support.normalize(directory)
+        print(f"WARNING: Could not remove the attributes index {shown}: {exc}. Delete it by hand.", file=sys.stderr)
 
 
 def require_extraction_filters() -> None:

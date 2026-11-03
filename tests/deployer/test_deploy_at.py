@@ -755,6 +755,13 @@ class DeployAtTests(DeployerTestCase):
                 changed.append(name)
         self.assertEqual(acts, bool(changed), (ref, path, changed))
 
+    def assert_only_indexes_removed(self, made: list[Path], count: int = 1) -> None:
+        """The attributes were read through `count` throwaway indexes, each removed, and no export was made."""
+        self.assertEqual(count, len(made), made)
+        for directory in made:
+            self.assertTrue(directory.name.startswith(source_ref.ATTRIBUTE_INDEX_PREFIX), directory)
+            self.assertFalse(directory.exists(), directory)
+
     def assert_attribute_refused(self, ref: str, path: str, attribute: str, more: str = "") -> None:
         self.assert_archive_acts(ref, path, acts=True)
         patch, made = recorded_temporary_directories()
@@ -770,7 +777,7 @@ class DeployAtTests(DeployerTestCase):
             "neither export-ignore nor export-subst.",
             'See "Deploying an earlier commit" in docs/recovery.md.',
         )
-        self.assertEqual([], made)
+        self.assert_only_indexes_removed(made)
         self.assertFalse(self.manifest_file.exists())
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assert_head_unmoved()
@@ -839,46 +846,114 @@ class DeployAtTests(DeployerTestCase):
             source_ref.export(self.source, "0" * 40)
         lines = raised.exception.lines
         self.assertTrue(lines[0].startswith(f"ERROR: Git could not read the attributes of the tree of {'0' * 40}: "))
-        self.assertEqual(
-            "Put right what Git reports in the checkout, then retry; reading a commit's attributes needs Git 2.40.0 "
-            "or newer.",
-            lines[1],
-        )
+        self.assertEqual("Put right what Git reports in the checkout, then retry.", lines[1])
+        # git ls-tree refuses the commit before any index is made.
         self.assertEqual([], made)
 
-    def test_the_installation_requirements_state_the_git_that_reads_a_commits_attributes(self) -> None:
-        # check-attr took --source in Git 2.40; the catalogue holds that floor for --at alone, and the requirements
-        # state the version the catalogue holds.
-        self.assertEqual("--at", tools.AT_FEATURE)
-        self.assertEqual({"--at": (2, 40, 0)}, tools.GIT.feature_minimums)
-        self.assertEqual((), tools.GIT.minimum)
-        requirements = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
-        self.assertIn("`--at` needs Git 2.40.0 or newer, which reads a commit's attributes", requirements)
+    def test_an_index_or_attribute_read_git_refuses_is_refused_with_gits_reason_and_leaves_no_index(self) -> None:
+        # git read-tree writes the throwaway index and git check-attr reads it; either one's failure is refused with
+        # Git's reason, the index's directory is removed, and no export is made.
+        reason = "fatal: synthetic failure"
+        listing = [f"100644 blob {'a' * 40}\tREADME.md"]
+        for step in ("read-tree", "check-attr"):
+            with self.subTest(step=step):
+                client = mock.Mock()
+                client.output.side_effect = GitError(reason, returncode=128) if step == "read-tree" else None
+                client.names.side_effect = [listing, GitError(reason, returncode=129)]
+                patch, made = recorded_temporary_directories()
+                with (
+                    patch,
+                    mock.patch.object(source_ref, "_client", return_value=client),
+                    self.assertRaises(DeployError) as raised,
+                ):
+                    source_ref.export(self.source, self.release)
+                self.assertEqual(
+                    (
+                        f"ERROR: Git could not read the attributes of the tree of {self.release}: {reason}",
+                        "Put right what Git reports in the checkout, then retry.",
+                        'See "Deploying an earlier commit" in docs/recovery.md.',
+                    ),
+                    raised.exception.lines,
+                )
+                called = [call.args[0] for call in (*client.output.call_args_list, *client.names.call_args_list)]
+                self.assertIn(step, [argument for arguments in called for argument in arguments])
+                self.assert_only_indexes_removed(made)
 
-    def test_a_check_attr_git_refuses_is_refused_with_gits_reason_and_the_floor_before_anything_is_made(self) -> None:
-        # A Git older than 2.40.0 lists the tree but refuses check-attr's --source, so the refusal carries its reason
-        # and names the Git --at needs.
-        reason = "error: unknown option `source=0123'"
-        client = mock.Mock()
-        client.names.side_effect = [[f"100644 blob {'a' * 40}\tREADME.md"], GitError(reason, returncode=129)]
-        patch, made = recorded_temporary_directories()
-        with (
-            patch,
-            mock.patch.object(source_ref, "_client", return_value=client),
-            self.assertRaises(DeployError) as raised,
-        ):
-            source_ref.export(self.source, self.release)
-        self.assertEqual(
-            (
-                f"ERROR: Git could not read the attributes of the tree of {self.release}: {reason}",
-                "Put right what Git reports in the checkout, then retry; reading a commit's attributes needs Git "
-                "2.40.0 or newer.",
-                'See "Deploying an earlier commit" in docs/recovery.md.',
+    def commit_tree(self, branch: str, files: dict[str, str]) -> None:
+        """Commit these files, on a new branch, over the fixture's tree, then return to main, whose worktree and index
+        hold none of them."""
+        git(self.source, "switch", "-q", "-c", branch)
+        for name, text in files.items():
+            self.write(self.source / name, text)
+        git(self.source, "add", "-A")
+        git(self.source, "commit", "-q", "-m", branch)
+        git(self.source, "switch", "-q", "main")
+
+    def test_the_commits_attributes_are_read_from_an_index_of_its_tree_as_git_archive_reads_them(self) -> None:
+        # Real git read-tree and check-attr --cached, with nothing stubbed. Each commit's attributes are its own, not
+        # the worktree's or the checkout's index's, which hold none of them: a nested .gitattributes overrides the
+        # top-level one for the paths under it, a macro sets what it names, and .git/info/attributes counts.
+        skill, nested = "skills/alpha/SKILL.md", "skills/alpha/notes.md"
+        rows = {
+            "file": ({".gitattributes": f"{skill} export-ignore\n"}, "", [(skill, "export-ignore")]),
+            "folder": ({".gitattributes": "skills/alpha/ export-ignore\n"}, "", [("skills/alpha/", "export-ignore")]),
+            "macro": (
+                {".gitattributes": f"[attr]packed export-subst\n{skill} packed\n"},
+                "",
+                [(skill, "export-subst")],
             ),
-            raised.exception.lines,
+            "nested precedence": (
+                {".gitattributes": "*.md export-ignore\n", "skills/alpha/.gitattributes": "*.md -export-ignore\n"},
+                "",
+                [("README.md", "export-ignore")],
+            ),
+            "info/attributes": ({}, f"{nested} export-subst\n", [(nested, "export-subst")]),
+        }
+        info = self.source / ".git" / "info" / "attributes"
+        for name, (files, information, expected) in rows.items():
+            with self.subTest(row=name):
+                branch = f"read-{name.replace(' ', '-').replace('/', '-')}"
+                self.commit_tree(branch, {"README.md": "Readme\n", nested: "Notes\n", **files})
+                self.write(info, information)
+                patch, made = recorded_temporary_directories()
+                with patch:
+                    found = source_ref.archive_attributes(self.source, git(self.source, "rev-parse", branch))
+                self.assertEqual(expected, found)
+                self.assert_only_indexes_removed(made)
+        info.unlink()
+        self.assert_head_unmoved()
+
+    def test_only_the_attribute_reads_are_given_the_throwaway_index_and_it_is_removed_after_an_export(self) -> None:
+        calls: list[tuple[list[str], dict[str, str] | None]] = []
+        real = platform_support.run_tool
+
+        def run_tool(
+            arguments: list[str], environment: dict[str, str] | None = None, **options: Any
+        ) -> platform_support.ToolResult:
+            calls.append((arguments, environment))
+            return real(arguments, environment, **options)
+
+        patch, made = recorded_temporary_directories()
+        with patch, mock.patch.object(platform_support, "run_tool", run_tool):
+            export = source_ref.export(self.source, self.release)
+        source_ref.remove(export)
+        indexed = {
+            next(argument for argument in arguments if argument in {"ls-tree", "read-tree", "check-attr", "archive"})
+            for arguments, environment in calls
+            if environment and "GIT_INDEX_FILE" in environment
+        }
+        self.assertEqual({"read-tree", "check-attr"}, indexed)
+        commands = {argument for arguments, _ in calls for argument in arguments}
+        self.assertLessEqual({"ls-tree", "archive"}, commands)
+        self.assertEqual(2, len(made))
+        index, exported = made
+        self.assertTrue(index.name.startswith(source_ref.ATTRIBUTE_INDEX_PREFIX))
+        self.assertFalse(index.exists())
+        self.assertFalse(exported.exists())
+        self.assertEqual(
+            {str(index / "index")},
+            {environment["GIT_INDEX_FILE"] for _, environment in calls if environment},
         )
-        self.assertEqual("check-attr", client.names.call_args_list[1].args[0][0])
-        self.assertEqual([], made)
 
     def test_an_answer_check_attr_did_not_give_for_each_path_and_attribute_is_refused(self) -> None:
         answers = {
@@ -945,7 +1020,8 @@ class DeployAtTests(DeployerTestCase):
                 self.assertFalse(self.manifest_file.exists())
                 self.assertFalse((self.skills_dir / "alpha").exists())
                 self.assert_head_unmoved()
-        self.assertEqual(3, len(made))
+        exports = [directory for directory in made if not directory.name.startswith(source_ref.ATTRIBUTE_INDEX_PREFIX)]
+        self.assertEqual(3, len(exports))
         for directory in made:
             self.assertFalse(directory.exists(), directory)
 
@@ -965,6 +1041,7 @@ class DeployAtTests(DeployerTestCase):
         with (
             patch,
             mock.patch.object(source_ref, "_git", archive),
+            mock.patch.object(source_ref, "refuse_archive_attributes"),
             self.assertRaises(DeployError) as raised,
         ):
             source_ref.export(self.source, self.release)
