@@ -271,6 +271,7 @@ class PendingShapeTests(KnownFailureFixture):
             "def PENDING():\n    pass",
             "class PENDING:\n    pass",
             "import os as PENDING",
+            "import PENDING.sub",
             "from os import PENDING",
             "from os import environ as PENDING",
             'globals()["PENDING"] = {"x": 4242}',
@@ -293,6 +294,11 @@ class PendingShapeTests(KnownFailureFixture):
             '"""PENDING names each reader owed a table entry."""\n\nPENDING = {"a.reader": 1}\n\n'
             '__all__ = ["PENDING", "READERS"]\n__all__ += ["PENDING"]\n'
         )
+        self.assertEqual({"a.reader": 1}, read_pending(self.root / PENDING_MODULE))
+
+    def test_an_import_of_a_module_named_for_the_table_under_a_package_passes(self) -> None:
+        # `import package.PENDING` binds package, so the table it runs with is the one read.
+        self.write_pending('import package.PENDING\n\nPENDING = {"a.reader": 1}\n')
         self.assertEqual({"a.reader": 1}, read_pending(self.root / PENDING_MODULE))
 
 

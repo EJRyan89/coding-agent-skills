@@ -51,6 +51,11 @@ def mark_skills(root: Path) -> Path:
 
 
 COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
+# The operating-system names this module states on purpose, with the reason, which the platform policy reads.
+PLATFORM_ALLOWED = {
+    "/proc": "names Linux's per-process descriptor paths as fixture values the console-setup policy refuses or "
+    "passes; the fixture writes them into a module it parses and opens nothing",
+}
 
 
 def unreadable(path: str, line: int, description: str) -> str:
@@ -573,6 +578,34 @@ class SkillScriptsFixtures(unittest.TestCase):
         self.assertEqual([], CommandReader(ast.parse(sanctioned)).problems(path))
         # A module that only hands a runner on starts a process all the same.
         self.assertTrue(CommandReader(ast.parse("import subprocess\nRUNNERS = [subprocess.run]\n")).starts_process())
+
+    def test_command_policies_report_a_runner_taken_by_either_spelling_of_getattr(self) -> None:
+        script = (
+            "import builtins\n"
+            "import os\n"
+            "import subprocess\n"
+            "from builtins import getattr as lookup\n"
+            "def named():\n"
+            '    return builtins.getattr(subprocess, "run")(["git"])\n'  # 6
+            "def aliased():\n"
+            '    return lookup(subprocess, "Popen")\n'  # 8
+            "def dynamic(name):\n"
+            "    return builtins.getattr(os, name)\n"  # 10
+            # A lookup of what starts nothing, and a getattr given no name, are no runner.
+            "def constant():\n"
+            '    return builtins.getattr(subprocess, "DEVNULL")\n'
+            "def unnamed():\n"
+            "    return getattr(subprocess)\n"
+        )
+        path = "skills/alpha/scripts/tool.py"
+        self.assertEqual(
+            [
+                unreadable(path, 6, "the program `builtins.getattr(subprocess, 'run')` runs, which getattr takes"),
+                unreadable(path, 8, "the program `lookup(subprocess, 'Popen')` runs, which getattr takes"),
+                unreadable(path, 10, "the program `builtins.getattr(os, name)` runs, which getattr takes"),
+            ],
+            CommandReader(ast.parse(script)).problems(path),
+        )
         self.assertFalse(
             CommandReader(ast.parse("import subprocess\ndef f(p: subprocess.Popen[str]): ...\n")).starts_process()
         )
@@ -1092,6 +1125,8 @@ class SkillScriptsFixtures(unittest.TestCase):
             "--template=": ["--template={{.}}"],
             "-q": ["-q", ".x"],
             "-q<filter>": ["-q.x"],
+            "-t": ["-t", "{{.}}"],
+            "-t<filter>": ["-t{{.}}"],
         }
         doc = '"Commands skills may run" in docs/adding-a-skill.md'
         for name, words in forms.items():
@@ -1119,11 +1154,85 @@ class SkillScriptsFixtures(unittest.TestCase):
                 root,
                 {
                     "skills/alpha/scripts/tool.py": 'run(["git", "fetch", "-q"])\n'
-                    'run(["gh", "pr", "view", "--jquery"])\n',
-                    "skills/alpha/scripts/tool.sh": "git fetch -q origin\ngh pr view --jquery x\n",
+                    'run(["gh", "pr", "view", "--jquery"])\n'
+                    # gh's -t is a title where the command writes no JSON.
+                    'run(["pr", "create", "-t", "Title"])\n'
+                    'run(["gh", "issue", "create", "-tTitle"])\n',
+                    "skills/alpha/scripts/tool.sh": "git fetch -q origin\ngh pr view --jquery x\n"
+                    'gh pr create -t "Title" --body x\n',
+                    "skills/alpha/scripts/tool.ps1": "gh issue create -t Title `\n  --body x\n",
                 },
             )
             self.assertEqual([], gh_filter_problems(root))
+
+    def test_the_gh_filter_shorthands_are_read_on_gh_api_and_on_a_continued_command(self) -> None:
+        doc = '"Commands skills may run" in docs/adding-a-skill.md'
+
+        def refusal(script: str, line: int, flag: str) -> str:
+            return f"{script}:{line} filters gh output with {flag}; parse its JSON in Python instead; see {doc}"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    # gh api writes JSON with no --json, so its shorthands filter it, with or without gh first.
+                    "skills/alpha/scripts/tool.py": 'run(["api", "repos/o/r", "-q", ".name"])\n'
+                    'run(["gh", "api", "repos/o/r", "-t{{.name}}"])\n'
+                    # gh with words it unpacks, which may ask for JSON, and a command joined from lists by `+`; a
+                    # joined title is no filter.
+                    'run(["gh", *base, "-t", "{{.}}"])\n'  # 3
+                    'run(["gh", "pr", "list", "--json", "title"] + ["-t", "{{.}}"])\n'  # 4
+                    'run(base + ["--json", "title", "-q", ".x"])\n'  # 5
+                    'run(["gh", "pr", "create"] + ["-t", "Title"])\n'
+                    # A `+` whose left side joins a list to words it does not write, and a gh list given more words.
+                    'run(base + ["--json", "title"] + ["-t", "{{.}}"])\n'  # 7
+                    'run(["gh", "pr", "view", "1"] + extra + ["-t", "{{.}}"])\n'  # 8
+                    'run(["gh", "pr", "list", "-t", "{{.}}"] + extra)\n'  # 9
+                    # --json with its fields after `=`, and a filter that runs onto a second line.
+                    'run(["gh", "pr", "view", "--json=title", "-q", ".title"])\n'  # 10
+                    'run(["gh", "pr", "view", "--json", "title", "-q.title\\n.x"])\n'  # 11
+                    # A word a name holds, a list a name starts, another program's list that unpacks words, and an
+                    # empty list are no gh filter.
+                    'run(["gh", "pr", "create", "-t", title])\n'
+                    'run([program, "pr", "list", "-t", "x"])\n'
+                    'run(["git", *options, "-q"])\n'
+                    "run([])\n",
+                    "skills/alpha/scripts/tool.sh": "name=$(gh api repos/o/r -t '{{.name}}')\n"
+                    # A command continued by a backslash is read whole, by its first line.
+                    "gh pr view --json title \\\n  --jq .title\n"
+                    "gh pr list --json title \\\n  -t '{{.}}'\n"
+                    # A backtick that ends a Bash line continues nothing.
+                    "gh pr view --json title # the `title`\n"
+                    "echo -t done\n",
+                    "skills/alpha/scripts/tool.ps1": "gh pr view --json title `\n  -q .title\n",
+                    "skills/Zeta/scripts/tool.bash": "gh pr view --json title -q .title\n",
+                    # A repository skill's script is a skill script too.
+                    ".claude/skills/beta/scripts/tool.sh": "gh api repos/o/r --jq .name\n",
+                },
+            )
+            # In the order the paths' text sorts in on every platform, where Windows would sort Zeta after alpha.
+            self.assertEqual(
+                [
+                    refusal(".claude/skills/beta/scripts/tool.sh", 1, "--jq"),
+                    refusal("skills/Zeta/scripts/tool.bash", 1, "-q"),
+                    refusal("skills/alpha/scripts/tool.ps1", 1, "-q"),
+                    refusal("skills/alpha/scripts/tool.py", 1, "-q"),
+                    refusal("skills/alpha/scripts/tool.py", 2, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 3, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 4, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 5, "-q"),
+                    refusal("skills/alpha/scripts/tool.py", 7, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 8, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 9, "-t"),
+                    refusal("skills/alpha/scripts/tool.py", 10, "-q"),
+                    refusal("skills/alpha/scripts/tool.py", 11, "-q"),
+                    refusal("skills/alpha/scripts/tool.sh", 1, "-t"),
+                    refusal("skills/alpha/scripts/tool.sh", 2, "--jq"),
+                    refusal("skills/alpha/scripts/tool.sh", 4, "-t"),
+                ],
+                gh_filter_problems(root),
+            )
 
     def test_skill_command_policy_detects_undeclared_unused_and_nonstandard_commands(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1577,6 +1686,135 @@ def test_console_setup_policy_refuses_a_wrapper_over_every_reach_to_a_standard_s
 )
 def test_console_setup_policy_passes_a_wrapper_over_any_other_file(tmp_path: Path, use: str) -> None:
     imports = "import codecs\nimport io\nimport os\nimport sys\nimport tempfile\n\n"
+    write_fixture_tree(tmp_path, {"tools/plain.py": imports + use + "\n"})
+    mark_skills(tmp_path)
+    assert console_setup_problems(tmp_path) == []
+
+
+# A console device in each form Windows opens it by: any case, before an extension or a colon, in any folder, after a
+# drive, or through the device namespace; a Linux stream path however its separators fall; and either as bytes.
+@pytest.mark.parametrize(
+    "device",
+    [
+        "conout$",
+        "Conin$",
+        "con",
+        "CON:",
+        "con.txt",
+        "CONOUT$.log",
+        "con :",
+        "C:\\temp\\CONOUT$",
+        "C:CON",
+        "\\\\.\\CON",
+        "//./conout$",
+        "logs/con.txt",
+        "/dev//stdout",
+        "/dev/./stderr",
+        "/dev/fd//1",
+        "/dev/tty",
+        "/dev/tty1",
+        "/dev/pts/3",
+        "/dev/console",
+        "/proc/self/fd/1",
+        "/proc/thread-self/fd/2",
+        "/proc/4242/fd//0",
+        "//dev/stdout",
+        "///dev/tty",
+        "/var/../dev/stdout",
+        "/../dev/console",
+        "/proc/self/fd/../fd/1",
+        b"CONOUT$",
+    ],
+)
+def test_console_setup_policy_refuses_a_wrapper_over_every_spelling_of_a_console_device(
+    tmp_path: Path, device: str | bytes
+) -> None:
+    write_fixture_tree(tmp_path, {"tools/reopened.py": f'OUT = open({device!r}, "w", encoding="utf-8")\n'})
+    mark_skills(tmp_path)
+    assert console_setup_problems(tmp_path) == [
+        "tools/reopened.py:1 reconfigures a stream itself; call run_main() from ejryan89-skill-core instead; see "
+        '"Script results" in docs/adding-a-skill.md'
+    ]
+
+
+# A reserved name that opens no console, a name a device name only starts, and a path that only ends like one.
+@pytest.mark.parametrize(
+    "path",
+    [
+        "NUL",
+        "prn.txt",
+        "COM1:",
+        "console.txt",
+        "conifer",
+        "con$",
+        "dev/stdout",
+        "/dev/null",
+        "/dev/stdout2",
+        "/dev/ttyS",
+        "/dev/fd/3",
+        "/proc/self/fd/3",
+        "/proc/01/fd/1",
+        "/proc/self/status",
+        "/dev/stdout/..",
+        "/dev/tty/../null",
+        "",
+        b"\xff",
+    ],
+)
+def test_console_setup_policy_passes_a_wrapper_over_a_file_no_console_device_names(
+    tmp_path: Path, path: str | bytes
+) -> None:
+    write_fixture_tree(tmp_path, {"tools/plain.py": f'OUT = open({path!r}, "w", encoding="utf-8")\n'})
+    mark_skills(tmp_path)
+    assert console_setup_problems(tmp_path) == []
+
+
+# A stream's reconfigure reached by its name: through builtins' getattr, an alias of it, a name computed at run time,
+# or operator.methodcaller, called at once or bound first.
+@pytest.mark.parametrize(
+    "reach",
+    [
+        'builtins.getattr(sys.stdout, "reconfigure")(encoding="utf-8")',
+        'from builtins import getattr as lookup\nlookup(sys.stderr, "reconfigure")(encoding="utf-8")',
+        'getattr(sys.stdout, name)(encoding="utf-8")',
+        'fix = builtins.getattr(sys.stdout, name)\nfix(encoding="utf-8")',
+        'operator.methodcaller("reconfigure", encoding="utf-8")(sys.stdout)',
+        "operator.methodcaller(name, **OPTIONS)(sys.stdout)",
+        'functools.partial(sys.stdout.reconfigure, encoding="utf-8")()',
+        'fix = functools.partial(sys.stderr.reconfigure)\nfix(encoding="utf-8")',
+        'operator.attrgetter("reconfigure")(sys.stdout)(encoding="utf-8")',
+        'fix = operator.attrgetter("reconfigure")(sys.stdout)\nfix(encoding="utf-8")',
+        'sys.stdout.reconfigure(**{"encoding": "utf-8"})',
+        "getattr(sys.stdout, name)(**OPTIONS)",
+        'fix: object = sys.stdout.reconfigure\nfix(encoding="utf-8")',
+        'fix: object = getattr(sys.stdout, "reconfigure")\nfix(encoding="utf-8")',
+        '(fix := builtins.getattr(sys.stderr, "reconfigure"))\nfix(encoding="utf-8")',
+    ],
+)
+def test_console_setup_policy_refuses_a_reconfigure_looked_up_by_name(tmp_path: Path, reach: str) -> None:
+    imports = "import builtins\nimport functools\nimport operator\nimport sys\n\n"
+    write_fixture_tree(tmp_path, {"tools/reconfigured.py": imports + reach + "\n"})
+    mark_skills(tmp_path)
+    [problem] = console_setup_problems(tmp_path)
+    assert problem.startswith("tools/reconfigured.py:")
+    assert "reconfigures a stream itself" in problem
+
+
+# Another method by its name, and a reconfigure by name given no encoding.
+@pytest.mark.parametrize(
+    "use",
+    [
+        'builtins.getattr(sys.stdout, "write")("text")',
+        'getattr(sys.stdout, name)("text")',
+        "builtins.getattr(sys.stderr, name)(line_buffering=True)",
+        'operator.methodcaller("write", "text")(sys.stdout)',
+        'operator.methodcaller("reconfigure", line_buffering=True)(sys.stdout)',
+        'builtins.getattr(sys.stdout, "write")(encoding="utf-8")',
+        'operator.methodcaller("write", encoding="utf-8")(sys.stdout)',
+    ],
+)
+def test_console_setup_policy_passes_another_method_looked_up_by_name(tmp_path: Path, use: str) -> None:
+    imports = "import builtins\nimport operator\nimport sys\n\n"
     write_fixture_tree(tmp_path, {"tools/plain.py": imports + use + "\n"})
     mark_skills(tmp_path)
     assert console_setup_problems(tmp_path) == []
