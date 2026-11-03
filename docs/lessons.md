@@ -287,7 +287,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::ReaderSourceTests`,
   `tests/tools/test_hub_guard_shells.py::EnvironmentSetDifferentialTests`,
   `tests/tools/test_hub_guard_shells.py::UnsetDifferentialTests`,
-  `tests/tools/test_hub_guard_shells.py::ShellOptionsDifferentialTests`
+  `tests/tools/test_hub_guard_shells.py::ShellOptionsDifferentialTests`,
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_the_recorded_rollup_reads_its_newest_validation_run`,
+  which reads a check rollup recorded from gh's pull request listing, and
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_no_workflow_reports_neither_satisfies_nor_blocks_the_required_check`
 - **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`, or tests a builtin's option by an exact
   word's membership, as `"-f" in arguments` misses `unset -fn` and `-a` misses `exec -ca`; each way the shell defines a name a later
@@ -306,9 +309,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `$Node.Member -isnot [StringConstantExpressionAst]` that passes over a member it cannot name rather than refusing
   it; a decision that matches a node's `Extent.Text` where the syntax tree and the resolver settle what it is; a parameter read from a command's arguments alone, where a cmdlet after the first in its pipeline takes it
   from there; a join of two paths' state that keeps one path's value, as `{**first.<field>, **second.<field>}` does,
-  where the paths differ.
+  where the paths differ; a refusal of an empty or absent member of another program's entries, such as
+  `reported(..., empty=False)`, whose fixture rows give every kind of entry the member typed in, never read from
+  what the program lists for each kind it reports, as gh lists a check run no workflow reports with an empty
+  `workflowName`.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140, #2232, #2233, #2234
+  #2137, #2138, #2139, #2140, #2232, #2233, #2234, #2276
 
 ### A recursive parser of input has a depth bound
 
