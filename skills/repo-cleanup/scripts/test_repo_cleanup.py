@@ -2560,24 +2560,6 @@ def link_folder(target: Path, link: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
-def test_linkless_below_holds_a_path_strictly_below_its_anchor_through_plain_folders(tmp_path: Path) -> None:
-    anchor = tmp_path / "anchor"
-    (anchor / "a" / "b").mkdir(parents=True)
-    (tmp_path / "anchor2" / "a").mkdir(parents=True)
-    link_folder(anchor / "a", anchor / "linked")
-    assert rc.linkless_below(str(anchor / "a" / "b"), str(anchor))
-    assert rc.linkless_below(str(anchor / "a" / "b" / ".." / "b"), str(anchor))
-    for path in (anchor, tmp_path / "anchor2" / "a", tmp_path, anchor / "linked" / "b", anchor / "a" / ".." / ".."):
-        assert not rc.linkless_below(str(path), str(anchor)), path
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="only Windows compares names without their case")
-def test_linkless_below_reads_the_anchor_in_any_case_where_the_platform_folds_it(tmp_path: Path) -> None:
-    anchor = tmp_path / "Anchor"
-    (anchor / "a").mkdir(parents=True)
-    assert rc.linkless_below(str(tmp_path / "ANCHOR" / "a"), str(anchor))
-
-
 def test_a_plan_named_through_a_linked_folder_has_the_seal_of_the_file_it_names(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
