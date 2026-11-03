@@ -150,8 +150,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
   `FAILED AttributeError` expected by a test; a state decided from the lines a step printed, such as
-  `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2207, #2209
+  `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears;
+  a reader that returns None or `{}` for every fault, whose caller then refuses a field of it as missing.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209
 
 ### A caller catches the whole error family its callee raises on content
 
@@ -198,19 +199,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   allocation, or a negative count the code never expected.
 - **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
   number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
-  refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds.
+  refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid`
+  for a PID, bounded by the platform's range so none is truncated to another process's.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
   `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
-  `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
+  `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`,
+  `skills/ejryan89-skill-core/scripts/test_process_identity.py::PidRangeTests::test_a_pid_is_read_within_the_platforms_range_and_anything_else_is_refused_by_its_path`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
   has `\d+` or `[0-9]+` rather than a bounded count; `.isdigit()` before an `int(`, which admits digits `int` reads
   past any bound; `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
   `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
   bounds no length; a refusal worded "more than N digits" for a `\d` group,
-  which also admits digits that are not ASCII.
-- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897
+  which also admits digits that are not ASCII; an integer read from a file and handed to a `ctypes` call, whose
+  declared type holds the kind and truncates the range.
+- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2215
 
 ### One fact has one owner
 
@@ -508,18 +512,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `versions:find`, `versions:read`, and `versions:latest`, the one version reader, which reads a version's
   numbers and orders by them; `release_tags:release_order` and `release_tags:highest_release`, a release tag through
   it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
-  `deployer.platform_support:path_key`; `guidance_record:canonical_url`.
+  `deployer.platform_support:path_key`; `guidance_record:canonical_url`; `deployer.source:any_case` and
+  `deployer.source:refuse_other_spellings`, which find a name the deployer reads spelled in any case on every
+  platform and refuse one spelled otherwise.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   which fails a version's numbers read by hand outside the version reader, and a path case-folded by hand outside
   the path key;
   `skills/ejryan89-skill-core/scripts/test_versions.py::OrderTests::test_versions_order_by_number_never_as_text`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
-  `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`
+  `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`,
+  `tests/deployer/test_source_validation.py::MetadataValidationTests::test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform`
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
   `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
-  normalization, or `os.path.normcase` outside `path_keys.py`.
-- **Examples:** #1556, #1855, #1867, #1909
+  normalization, or `os.path.normcase` outside `path_keys.py`; a glob, `fnmatch.fnmatch(`, or `.is_file()` of a
+  fixed file name, which folds case on Windows, beside a dictionary keyed by each file's spelling on disk.
+- **Examples:** #1556, #1855, #1867, #1909, #2299
 
 ### A child process starts from an environment built for it
 

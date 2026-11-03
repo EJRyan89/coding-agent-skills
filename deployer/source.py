@@ -25,6 +25,7 @@ from skill_menu import root_names as root_names
 from . import platform_support, state_files
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
 from .errors import DeployError, os_error
+from .names import safe_name_problem
 from .paths import Paths
 from .tools import SKILL_TOOLS
 
@@ -35,6 +36,13 @@ SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 # not contain a reserved word, and neither its name nor its description an XML tag. The naming grammar already keeps
 # angle brackets out of a name.
 AGENT_SKILLS_RULE = "which the Agent Skills frontmatter rules forbid"
+# The step a source.json the deployer cannot read takes: the checkout's own copy is the one to put back.
+SOURCE_JSON_REMEDY = "Put back the checkout's source.json, for example with 'git checkout -- source.json', then retry."
+# The names the deployer reads a source by, each spelled only as here: Windows opens another case's spelling as the
+# name, where Linux passes it over, so either platform would deploy a source the other refuses or reads otherwise.
+SOURCE_JSON = "source.json"
+SKILL_FILE = "SKILL.md"
+METADATA_SUFFIX = ".json"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -76,19 +84,52 @@ def _load_json(path: Path) -> object:
     return state_files.parse_json(text)
 
 
-def _load_source_document(paths: Paths) -> object:
-    """source.json's content, as _load_json reads it, with a read failure reported as unreadable, not malformed."""
+def any_case(name: str) -> str:
+    """A glob pattern that matches `name` spelled in any case, on a file system that keeps case as on one that folds
+    it, so a name spelled in another case is found on every platform."""
+    return "".join(
+        f"[{letter.upper()}{letter.lower()}]" if letter.upper() != letter.lower() else letter for letter in name
+    )
+
+
+def refuse_other_spellings(folder: Path, name: str, what: str) -> None:
+    """Refuse an entry of `folder` that spells `name` in another case, naming it as `what`. A stat or listing that
+    fails raises its OSError."""
+    for found in file_presence.matching(folder, any_case(name)):
+        if found.name != name:
+            raise DeployError(
+                f"ERROR: {what} {platform_support.normalize(found)} is spelled in another case than {name}.",
+                f"Rename it {name}, then retry.",
+            )
+
+
+def _load_source_document(paths: Paths) -> dict[str, object]:
+    """source.json's object, refused by its fault: a read that fails as unreadable, and content that is not UTF-8 or
+    not a JSON object the deployer reads, such as one that repeats a key or holds NaN, as malformed."""
+    shown = platform_support.normalize(paths.source_file)
     try:
-        return _load_json(paths.source_file)
+        text = paths.source_file.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise os_error(exc, "read source.json") from exc
+    except UnicodeError:
+        raise DeployError(f"ERROR: source.json is malformed: {shown} is not UTF-8 text.", SOURCE_JSON_REMEDY) from None
+    document = state_files.parse_json(text)
+    if not isinstance(document, dict):
+        raise DeployError(
+            f"ERROR: source.json is malformed: {shown} is not a JSON object the deployer reads.", SOURCE_JSON_REMEDY
+        )
+    return document
 
 
 def load_source_id(paths: Paths) -> str:
+    try:
+        refuse_other_spellings(paths.tree, SOURCE_JSON, "The source file")
+    except OSError as exc:
+        raise os_error(exc, "read the source's folder") from exc
     if not state_files.is_present(paths.source_file, "source.json"):
         raise DeployError(f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}")
     document = _load_source_document(paths)
-    source_id = document.get("id") if isinstance(document, dict) else None
+    source_id = document.get("id")
     shown = source_id if isinstance(source_id, str) else "null"
     if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
         raise DeployError(f"ERROR: Invalid source ID format: {shown}")
@@ -153,8 +194,7 @@ def _source_name(document: dict[str, object]) -> str:
 
 
 def load_source_name(paths: Paths) -> str:
-    document = _load_source_document(paths)
-    return _source_name(document) if isinstance(document, dict) else ""
+    return _source_name(_load_source_document(paths))
 
 
 def label(source_id: str, name: str) -> str:
@@ -240,10 +280,14 @@ def _is_file(path: Path) -> bool:
         return False
 
 
-def _discover_directories(paths: Paths) -> dict[str, Path]:
+def _discover_directories(paths: Paths, metadata: set[str]) -> dict[str, Path]:
+    """Each skill directory by its name: one holding a SKILL.md directly under skills/, with a deploy-meta/<name>.json
+    among `metadata`, the names the metadata listing found. SKILL.md is matched in any case, so a skill whose entry
+    file is spelled otherwise is refused by name on every platform, rather than passed over where names keep their
+    case and read where they fold it, then missed by the files staged under their own spelling."""
     skills_src = paths.skills_src
     directories: dict[str, Path] = {}
-    for skill_md in file_presence.matching(skills_src, "**/SKILL.md"):
+    for skill_md in file_presence.matching(skills_src, f"**/{any_case(SKILL_FILE)}"):
         if not _is_file(skill_md):
             continue
         found_dir = skill_md.parent
@@ -252,8 +296,12 @@ def _discover_directories(paths: Paths) -> dict[str, Path]:
         if len(relative) != 1:
             raise DeployError(f"ERROR: SKILL.md must be directly under skills/<name>: {shown}")
         name = found_dir.name
-        # A metadata file whose stat fails is refused here as missing: the source is refused either way.
-        if not (paths.meta_dir / f"{name}.json").is_file():
+        if skill_md.name != SKILL_FILE:
+            raise DeployError(
+                f"ERROR: Skill '{name}' entry file {shown} is spelled in another case than {SKILL_FILE}.",
+                f"Rename it {SKILL_FILE}, then retry.",
+            )
+        if name not in metadata:
             raise DeployError(f"ERROR: Skill '{name}' has no matching deploy-meta/{name}.json")
         directories[name] = found_dir
     return directories
@@ -458,24 +506,35 @@ def discover(paths: Paths, source_id: str) -> Source:
 
 
 def _metadata_files(meta_dir: Path) -> list[Path]:
-    """deploy-meta's *.json entries, sorted, matched as a glob of them matches, or none when there is no deploy-meta.
-    It is listed with iterdir, whose listing error raises, where Path.glob answers a folder it cannot list with no
-    entries, which would drop every skill from the source and remove each deployed one. The skills folder is listed with
-    file_presence.matching, which raises for a folder it cannot list too."""
+    """deploy-meta's *.json files, sorted, or none when there is no deploy-meta. It is listed with iterdir, whose
+    listing error raises, where Path.glob answers a folder it cannot list with no entries, which would drop every skill
+    from the source and remove each deployed one. The suffix is matched in any case, and a file whose suffix is spelled
+    otherwise is refused, which one platform would read and the other pass over. An entry that is not a regular file is
+    passed over, and one whose stat fails raises its OSError."""
     if not file_presence.is_directory(meta_dir):
         return []
-    return sorted(entry for entry in meta_dir.iterdir() if fnmatch.fnmatch(entry.name, "*.json"))
+    suffix = f"*{any_case(METADATA_SUFFIX)}"
+    found = sorted(entry for entry in meta_dir.iterdir() if fnmatch.fnmatchcase(entry.name, suffix))
+    for entry in found:
+        if not entry.name.endswith(METADATA_SUFFIX):
+            spelled = f"{entry.name[: -len(METADATA_SUFFIX)]}{METADATA_SUFFIX}"
+            raise DeployError(
+                f"ERROR: Metadata file {platform_support.normalize(entry)} is spelled in another case than {spelled}.",
+                f"Rename it {spelled}, then retry.",
+            )
+    return [entry for entry in found if _is_file(entry)]
 
 
 def _discover(paths: Paths, source_id: str) -> Source:
+    for folder in (paths.skills_src, paths.meta_dir, paths.agents_src):
+        refuse_other_spellings(paths.tree, folder.name, "The source folder")
     _reject_links(paths.skills_src)
-    directories = _discover_directories(paths)
+    metadata = _metadata_files(paths.meta_dir)
+    directories = _discover_directories(paths, {meta_file.stem for meta_file in metadata})
     source = Source(source_id)
-    for meta_file in _metadata_files(paths.meta_dir):
-        if _is_file(meta_file):
-            source.skills[meta_file.stem] = _load_skill(paths, meta_file.stem, directories)
+    for meta_file in metadata:
+        source.skills[meta_file.stem] = _load_skill(paths, meta_file.stem, directories)
     document = _load_source_document(paths)
-    document = document if isinstance(document, dict) else {}
     source.name = _source_name(document)
     _load_bundles(document, source)
     _load_renamed(document, source)
@@ -486,6 +545,10 @@ def _discover(paths: Paths, source_id: str) -> Source:
             if agent not in source.agents:
                 raise DeployError(f"ERROR: Skill '{name}' depends on unknown agent '{agent}'")
     source.shared_assets = _shared_assets(document)
+    for asset, role in sorted(source.shared_assets.items()):
+        # An unsafe name is refused by the plan before any path is built from it; an owned asset is read from skills/.
+        if role == "owner" and safe_name_problem(asset, "shared asset name") is None:
+            refuse_other_spellings(paths.skills_src, asset, f"Shared asset '{asset}' file")
     return source
 
 

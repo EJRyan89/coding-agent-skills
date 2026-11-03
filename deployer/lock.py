@@ -13,6 +13,8 @@ from types import TracebackType
 
 import file_presence
 import json_writer
+from process_identity import read_pid
+from typed_fields import FieldError
 
 from . import fsops, platform_support, state_files
 from .errors import DeployError, os_error, see_recovery
@@ -47,7 +49,8 @@ class Lock:
         token_file = self.paths.lock_dir / "token"
         try:
             current = token_file.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeError):
+            # A token file that does not read, or is not the UTF-8 this run wrote, holds no token of this run's.
             return
         if current != self.token:
             return
@@ -91,13 +94,37 @@ def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
 
 
 def _read_info(lock_dir: Path) -> dict[str, object]:
-    """A lock's metadata, or an empty mapping when it cannot be read."""
+    """A lock's metadata, or an empty mapping when it cannot be read: for the check that a lock moved aside is the one
+    judged stale, which any metadata but that lock's fails."""
     try:
         text = (lock_dir / "info.json").read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return {}
     info = state_files.parse_json(text)
     return info if isinstance(info, dict) else {}
+
+
+def _holder_info(paths: Paths, hint: tuple[str, ...]) -> dict[str, object]:
+    """A held lock's metadata, refused by its fault: no file yet, something else where the file belongs, a file whose
+    stat or read fails, or one that is not UTF-8 or not the JSON object the deployer writes."""
+    info_file = paths.lock_dir / "info.json"
+    shown = platform_support.normalize(info_file)
+    try:
+        if not file_presence.is_present(info_file):
+            raise DeployError("ERROR: Lock exists but has no metadata (may be initializing).", *hint)
+        text = info_file.read_text(encoding="utf-8")
+    except file_presence.NotAFile:
+        raise DeployError(f"ERROR: The lock's metadata at {shown} is not a file.", *hint) from None
+    except OSError as exc:
+        raise DeployError(
+            f"ERROR: Could not read the lock's metadata at {shown}: {exc.strerror or exc}.", *hint
+        ) from exc
+    except UnicodeError:
+        raise DeployError(f"ERROR: Lock metadata is malformed: {shown} is not UTF-8 text.", *hint) from None
+    info = state_files.parse_json(text)
+    if not isinstance(info, dict):
+        raise DeployError(f"ERROR: Lock metadata is malformed: {shown} is not a JSON object the deployer reads.", *hint)
+    return info
 
 
 def _existing_holder(paths: Paths, probe: ProcessProbe) -> tuple[int, object]:
@@ -107,12 +134,12 @@ def _existing_holder(paths: Paths, probe: ProcessProbe) -> tuple[int, object]:
         f"remove {platform_support.normalize(paths.lock_dir)}, then retry.",
         see_recovery(LOCK),
     )
-    if not (paths.lock_dir / "info.json").is_file():
-        raise DeployError("ERROR: Lock exists but has no metadata (may be initializing).", *hint)
-    info = _read_info(paths.lock_dir)
-    pid = info.get("pid")
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        raise DeployError("ERROR: Lock metadata is malformed (no PID).", *hint)
+    info = _holder_info(paths, hint)
+    try:
+        # A PID outside the platform's range is no process's, so it is malformed, never probed as another's.
+        pid = read_pid(info.get("pid"), "pid")
+    except FieldError as exc:
+        raise DeployError(f"ERROR: Lock metadata is malformed (no valid PID): {exc}.", *hint) from None
     recorded = info.get("start_time")
     status = probe(pid)
     if not status.alive:
