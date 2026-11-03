@@ -2911,10 +2911,10 @@ class PresenceReadTests(Fixture):
             with (
                 mock.patch.dict(os.environ, {"NUGET_PACKAGES": str(configured)}),
                 stat_failing_at(configured),
-                self.assertRaises(PermissionError) as raised,
+                self.assertRaises(msbuild_reader.Unreadable) as raised,
             ):
                 dependency_graph.nuget_cache()
-        self.assertEqual(str(configured), raised.exception.filename)
+        self.assertEqual((configured, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_the_packages_folder_passes_over_a_file_and_refuses_one_it_cannot_stat(self) -> None:
         project = self.root / "src" / "App"
@@ -2923,9 +2923,9 @@ class PresenceReadTests(Fixture):
         self.write("src/packages", "not a folder")
         self.assertEqual(self.root / "packages", dependency_graph.packages_folder(project, self.root))
         nearer = project / "packages"
-        with stat_failing_at(nearer), self.assertRaises(PermissionError) as raised:
+        with stat_failing_at(nearer), self.assertRaises(msbuild_reader.Unreadable) as raised:
             dependency_graph.packages_folder(project, self.root)
-        self.assertEqual(str(nearer), raised.exception.filename)
+        self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_a_package_folder_it_cannot_list_or_stat_is_unreadable_never_a_package_not_unpacked(self) -> None:
         packages = self.root / "packages"
@@ -2958,6 +2958,13 @@ class PresenceReadTests(Fixture):
         for label, failing, shown, source in (
             ("listing", unlistable(packages), "packages", "direct"),
             ("stat", stat_failing_at(unpacked), "packages/Lantern.Core.2.0.0", "nuspec"),
+            ("nuspec listing", unlistable(unpacked), "packages/Lantern.Core.2.0.0", "nuspec"),
+            (
+                "packages folder",
+                stat_failing_at(self.root / "src" / "Harbor.Web" / "packages"),
+                "src/Harbor.Web/packages",
+                "direct",
+            ),
         ):
             with self.subTest(label), failing:
                 code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
@@ -2967,19 +2974,102 @@ class PresenceReadTests(Fixture):
             self.assertIn(web, self.lines(rows, "PROJECT"))
             self.assertNotIn(nuspec_path, self.lines(rows, "PATH"))
 
-    def test_a_packages_config_or_assets_file_it_cannot_stat_fails_the_graph(self) -> None:
+    def answered(self, root: Path, failing: Any) -> list[list[str]]:
+        """The rows `why Lantern.Json` gives with `failing` in force, after holding that the query still answered:
+        every project row, no FAILED line, and a path for the package."""
+        with failing:
+            code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertEqual(1, code)
+        self.assertEqual([], self.lines(rows, "FAILED"))
+        self.assertEqual(
+            [
+                "src/Harbor.Core/Harbor.Core.csproj",
+                "src/Harbor.Tests/Harbor.Tests.csproj",
+                "src/Harbor.Web/Harbor.Web.csproj",
+            ],
+            [row[0] for row in self.lines(rows, "PROJECT")],
+        )
+        self.assertTrue(self.lines(rows, "PATH"))
+        return rows
+
+    def test_a_packages_config_or_assets_file_it_cannot_stat_is_an_unreadable_row(self) -> None:
         root = self.mixed_solution()
-        for path in (
-            self.root / "src" / "Harbor.Web" / "packages.config",
-            self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json",
+        for path, shown in (
+            (self.root / "src" / "Harbor.Web" / "packages.config", "src/Harbor.Web/packages.config"),
+            (
+                self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json",
+                "src/Harbor.Core/obj/project.assets.json",
+            ),
         ):
-            with (
-                self.subTest(path.name),
-                stat_failing_at(path),
-                self.assertRaises(PermissionError) as raised,
-            ):
-                dependency_graph.build_graph(root, self.without_dotnet)
-            self.assertEqual(str(path), raised.exception.filename)
+            with self.subTest(shown):
+                rows = self.answered(root, stat_failing_at(path))
+                self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))
+
+    def test_an_assets_file_whose_age_cannot_be_told_is_an_unreadable_row_and_its_targets_stay(self) -> None:
+        # Its presence and its read each stat it once and are answered; the third stat, which compares its age with
+        # the project's, fails.
+        root = self.mixed_solution()
+        assets = self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json"
+        real = Path.stat
+        calls = [0]
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == assets:
+                calls[0] += 1
+                if calls[0] == 3:
+                    raise PermissionError(13, "Access is denied", str(path))
+            return real(path, follow_symlinks=follow_symlinks)
+
+        rows = self.answered(root, mock.patch.object(Path, "stat", stat))
+        self.assertEqual(3, calls[0])
+        self.assertEqual(
+            [["src/Harbor.Core/obj/project.assets.json", "Access is denied"]], self.lines(rows, "UNREADABLE")
+        )
+        self.assertIn(["src/Harbor.Core/Harbor.Core.csproj", "sdk", "assets", "listed"], self.lines(rows, "PROJECT"))
+
+    def test_an_assembly_folder_it_cannot_list_is_an_unreadable_row_against_its_package(self) -> None:
+        root = self.mixed_solution()
+        lib = self.root / "packages" / "Lantern.Core.2.0.0" / "lib" / "net45"
+        rows = self.answered(root, unlistable(lib))
+        self.assertEqual(
+            [["packages/Lantern.Core.2.0.0/lib/net45", "Access is denied"]], self.lines(rows, "UNREADABLE")
+        )
+
+    def test_a_file_above_a_project_a_property_function_cannot_stat_is_an_unreadable_row(self) -> None:
+        self.write(
+            "src/App/App.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <Import Project=\"$([MSBuild]::GetPathOfFileAbove('Shared.props', '$(MSBuildThisFileDirectory)'))\" />\n"
+            "  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n"
+            '  <ItemGroup><PackageReference Include="Quill.Http" Version="1.2.0" /></ItemGroup>\n'
+            "</Project>\n",
+        )
+        self.write("Shared.props", "<Project />")
+        with stat_failing_at(self.root / "src" / "App" / "Shared.props"):
+            code, rows = self.run_main("why", "Quill.Http", "--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertEqual([], self.lines(rows, "FAILED"))
+        self.assertIn(["src/App/Shared.props", "Access is denied"], self.lines(rows, "UNREADABLE"))
+        self.assertEqual([["src/App/App.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual(
+            [["src/App/App.csproj", "-", "Quill.Http", "graph", "Quill.Http (v1.2.0)"]], self.lines(rows, "PATH")
+        )
+
+    def test_a_props_file_above_a_project_it_cannot_stat_is_an_unreadable_row(self) -> None:
+        root = self.mixed_solution()
+        self.write("Directory.Build.props", "<Project />")
+        props = self.root / "src" / "Directory.Build.props"
+        rows = self.answered(root, stat_failing_at(props))
+        self.assertEqual([["src/Directory.Build.props", "Access is denied"]], self.lines(rows, "UNREADABLE"))
+        # Each project is still read from its own file, never left as one that could not be read.
+        self.assertEqual(
+            [
+                ["src/Harbor.Core/Harbor.Core.csproj", "sdk", "assets", "listed"],
+                ["src/Harbor.Tests/Harbor.Tests.csproj", "sdk", "direct", "listed"],
+                ["src/Harbor.Web/Harbor.Web.csproj", "legacy", "nuspec", "listed"],
+            ],
+            self.lines(rows, "PROJECT"),
+        )
 
     def test_a_root_or_listed_project_it_cannot_stat_is_refused_with_its_reason(self) -> None:
         root = self.mixed_solution()
@@ -2993,7 +3083,9 @@ class PresenceReadTests(Fixture):
         self.assertNotIn(listed, projects)
         self.assertEqual([(listed, "Access is denied")], unreadable)
 
-    def test_a_config_it_cannot_stat_fails_the_graph_and_a_folder_of_its_name_is_passed_over(self) -> None:
+    def test_a_config_or_project_folder_it_cannot_read_is_an_unreadable_row_and_a_folder_config_is_passed_over(
+        self,
+    ) -> None:
         root = self.mixed_solution()
         project = self.root / "src" / "Harbor.Web"
         redirects = {
@@ -3004,6 +3096,10 @@ class PresenceReadTests(Fixture):
         (project / "app.config").mkdir()
         again = dependency_graph.build_graph(root, self.without_dotnet)
         self.assertEqual(redirects, {name: again.projects[name].file.redirects for name in again.projects})
-        with stat_failing_at(project / "Web.config"), self.assertRaises(PermissionError) as raised:
-            dependency_graph.build_graph(root, self.without_dotnet)
-        self.assertEqual(str(project / "Web.config"), raised.exception.filename)
+        for failing, shown in (
+            (stat_failing_at(project / "Web.config"), "src/Harbor.Web/Web.config"),
+            (unlistable(project), "src/Harbor.Web"),
+        ):
+            with self.subTest(shown):
+                rows = self.answered(root, failing)
+                self.assertIn([shown, "Access is denied"], self.lines(rows, "UNREADABLE"))

@@ -232,9 +232,9 @@ class ReaderTests(unittest.TestCase):
         (self.root / "src" / "App" / "Directory.Packages.props").mkdir(parents=True)
         self.assertEqual(props, nearest_file(self.root / "src" / "App", "Directory.Packages.props"))
         nearer = self.root / "src" / "Directory.Packages.props"
-        with stat_failing_at(nearer), self.assertRaises(PermissionError) as raised:
+        with stat_failing_at(nearer), self.assertRaises(msbuild_reader.Unreadable) as raised:
             nearest_file(self.root / "src" / "App", "Directory.Packages.props")
-        self.assertEqual(str(nearer), raised.exception.filename)
+        self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_packages_config_lists_each_package_with_its_version_and_framework(self) -> None:
         self.assertEqual(

@@ -106,6 +106,7 @@ from msbuild_reader import (
     Unreadable,
     examined_tree,
     matching_framework,
+    os_unreadable,
     package_assemblies,
     read_assets,
     read_nuspec,
@@ -332,30 +333,48 @@ def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
 
 
 def read_configs(graph: Graph, project: Project) -> None:
-    """The binding redirects of the project's web.config and app.config, when it has them."""
-    for candidate in sorted(project.file.path.parent.iterdir()):
-        if candidate.name.casefold() in CONFIG_FILES and file_presence.is_present(candidate, other_is_absent=True):
-            try:
-                project.file.redirects += read_redirects(candidate)
-            except Unreadable as error:
-                graph.refuse(error)
+    """The binding redirects of the project's web.config and app.config, when it has them. A project folder it cannot
+    list, or a config it cannot stat, is reported against itself, and the rest of the graph is still answered."""
+    folder = project.file.path.parent
+    try:
+        configs = [
+            candidate
+            for candidate in sorted(folder.iterdir())
+            if candidate.name.casefold() in CONFIG_FILES and file_presence.is_present(candidate, other_is_absent=True)
+        ]
+    except OSError as error:
+        graph.refuse(os_unreadable(error, folder))
+        return
+    for candidate in configs:
+        try:
+            project.file.redirects += read_redirects(candidate)
+        except Unreadable as error:
+            graph.refuse(error)
 
 
 def nuget_cache() -> list[Path]:
-    """The folders the NuGet cache may be in: NUGET_PACKAGES, and ~/.nuget/packages."""
+    """The folders the NuGet cache may be in: NUGET_PACKAGES, and ~/.nuget/packages; `Unreadable` naming one whose
+    stat fails."""
     folders: list[Path] = []
     configured = os.environ.get("NUGET_PACKAGES")
     if configured:
         folders.append(Path(configured))
     folders.append(Path.home() / ".nuget" / "packages")
-    return [folder for folder in folders if file_presence.is_directory(folder, other_is_absent=True)]
+    try:
+        return [folder for folder in folders if file_presence.is_directory(folder, other_is_absent=True)]
+    except OSError as error:
+        raise os_unreadable(error, folders[0]) from None
 
 
 def packages_folder(project_dir: Path, stop: Path) -> Path | None:
-    """The nearest `packages` folder from the project's directory up to the solution's, or None."""
+    """The nearest `packages` folder from the project's directory up to the solution's, or None; `Unreadable` naming
+    a candidate whose stat fails."""
     for folder in folders_up(project_dir, stop):
-        if file_presence.is_directory(candidate := folder / "packages", other_is_absent=True):
-            return candidate
+        try:
+            if file_presence.is_directory(candidate := folder / "packages", other_is_absent=True):
+                return candidate
+        except OSError as error:
+            raise os_unreadable(error, folder / "packages") from None
     return None
 
 
@@ -374,7 +393,7 @@ def package_directory(folders: Sequence[Path], package: str, version: str) -> Pa
                         if f"{child.name}/{inner.name}".casefold() in wanted and _folder(inner):
                             return inner
         except OSError as error:
-            raise Unreadable(Path(error.filename) if error.filename else folder, error.strerror or str(error)) from None
+            raise os_unreadable(error, folder) from None
     return None
 
 
@@ -394,7 +413,11 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
         return None
     if directory is None:
         return None
-    nuspecs = [path for path in directory.iterdir() if path.name.casefold() == f"{reference.id}.nuspec".casefold()]
+    try:
+        nuspecs = [path for path in directory.iterdir() if path.name.casefold() == f"{reference.id}.nuspec".casefold()]
+    except OSError as error:
+        graph.refuse(os_unreadable(error, directory))
+        return None
     if not nuspecs:
         return None
     try:
@@ -487,29 +510,49 @@ def closure_from_assets(graph: Graph, project: Project, assets_path: Path, servi
         for framework, nodes in assets.nodes.items()
     ]
     project.edges = "assets"
-    fresh = assets_path.stat().st_mtime >= project.file.path.stat().st_mtime
+    try:
+        fresh = assets_path.stat().st_mtime >= project.file.path.stat().st_mtime
+    except OSError as error:
+        # Whether the restore is older than the project cannot be told, so the SDK is not asked to answer for it.
+        graph.refuse(os_unreadable(error, assets_path))
+        fresh = False
     project.sdk_answers = fresh and services.which("dotnet") is not None
 
 
 def build_closure(graph: Graph, project: Project, services: Services) -> None:
     """Fill the project's targets: the direct packages, their package nodes, and where their edges came from."""
     config = project.file.path.parent / PACKAGES_CONFIG
-    if file_presence.is_present(config, other_is_absent=True):
+    if _present(graph, config):
         direct: list[PackageRef] = []
         try:
             direct = read_packages_config(config)
         except Unreadable as error:
             graph.refuse(error)
-        folder = packages_folder(project.file.path.parent, graph.base)
-        closure_from_nuspecs(graph, project, direct, [folder] if folder else nuget_cache())
+        folders: list[Path] = []
+        try:
+            folder = packages_folder(project.file.path.parent, graph.base)
+            folders = [folder] if folder else nuget_cache()
+        except Unreadable as error:
+            graph.refuse(error)
+        closure_from_nuspecs(graph, project, direct, folders)
         refuse_file_unevaluated(graph, project, packages=False)
         return
     project.targets = [file_target(project, list(project.file.packages))]
     assets_path = project.file.path.parent / "obj" / ASSETS_FILE
-    if project.file.style == "sdk" and file_presence.is_present(assets_path, other_is_absent=True):
+    if project.file.style == "sdk" and _present(graph, assets_path):
         closure_from_assets(graph, project, assets_path, services)
     if project.targets[0].framework == NO_FRAMEWORK:
         refuse_file_unevaluated(graph, project, packages=True)
+
+
+def _present(graph: Graph, path: Path) -> bool:
+    """Whether a regular file is at path: False for nothing or something else there, and for a path whose stat fails,
+    which is reported against it, so the project is still answered from what can be read."""
+    try:
+        return file_presence.is_present(path, other_is_absent=True)
+    except OSError as error:
+        graph.refuse(os_unreadable(error, path))
+        return False
 
 
 def build_graph(root: Path, services: Services) -> Graph:

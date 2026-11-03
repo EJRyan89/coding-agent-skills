@@ -123,6 +123,12 @@ def children(element: Element, name: str) -> list[Element]:
     return [child for child in element.iter() if local_name(child) == name]
 
 
+def os_unreadable(error: OSError, fallback: Path) -> Unreadable:
+    """An OSError as the `Unreadable` its caller reports against one file or package: the path the error names, else
+    `fallback`, with the error's reason."""
+    return Unreadable(Path(error.filename) if error.filename else fallback, error.strerror or str(error))
+
+
 def read_bounded(path: Path) -> bytes:
     """The bytes of the regular file at `path`, read by ejryan89-skill-core's `read_bounded`, or `Unreadable` with its
     reason when it refuses the file: it cannot be read, is not a regular file, or holds more than `READ_LIMIT_BYTES`."""
@@ -236,11 +242,15 @@ def item_specs(text: str) -> list[str]:
 
 def nearest_file(project_dir: Path, name: str) -> Path | None:
     """The nearest file named `name` from the project's directory up to the filesystem's root, as MSBuild searches
-    for Directory.Build.props and Directory.Packages.props; None when there is none."""
+    for Directory.Build.props and Directory.Packages.props; None when there is none, and `Unreadable` naming a
+    candidate whose stat fails, never read as none there."""
     for directory in folders_up(project_dir):
         candidate = directory / name
-        if is_present(candidate, other_is_absent=True):
-            return candidate
+        try:
+            if is_present(candidate, other_is_absent=True):
+                return candidate
+        except OSError as error:
+            raise os_unreadable(error, candidate) from None
     return None
 
 
@@ -297,14 +307,16 @@ def read_nuspec(path: Path, assemblies: tuple[str, ...] = ()) -> PackageNode:
 
 def package_assemblies(package_dir: Path) -> tuple[str, ...]:
     """The stems of the assemblies a package folder ships under lib/, each once, in name order, or `Unreadable` when
-    something other than a folder stands at lib/ or whether one is there cannot be told."""
+    something other than a folder stands at lib/, whether one is there cannot be told, or a folder below it cannot be
+    listed."""
     lib = package_dir / "lib"
     try:
         if not is_directory(lib):
             return ()
+        found = matching(lib, "**/*.dll")
     except OSError as error:
-        raise Unreadable(lib, error.strerror or str(error)) from None
-    return tuple(sorted({path.stem for path in matching(lib, "**/*.dll")}, key=str.casefold))
+        raise os_unreadable(error, lib) from None
+    return tuple(sorted({path.stem for path in found}, key=str.casefold))
 
 
 def assets_assemblies(entry: dict[str, Any], path: Path, where: str) -> tuple[str, ...]:

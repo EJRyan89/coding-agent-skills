@@ -328,7 +328,12 @@ class Evaluation:
         directory = project_path(self.project.path.parent, start)
         if refusal(directory, self.project.sources.tree) is not None:
             return None
-        found = nearest_file(directory, name)
+        try:
+            found = nearest_file(directory, name)
+        except Unreadable as error:
+            # A candidate it cannot stat leaves the folder unsettled, never read as none above.
+            self.reports.append(error)
+            return None
         return "" if found is None else found.parent.as_posix()
 
     def holds(self, text: str | None) -> bool | None:
@@ -482,19 +487,27 @@ class Evaluation:
             return
         self.points.add("props")
         for name in (BUILD_PROPS, CENTRAL_VERSIONS):
-            found = nearest_file(self.project.path.parent, name)
-            if found is not None:
-                self.import_file(found, found.as_posix())
+            self.import_nearest(name)
 
     def targets_point(self) -> None:
         """Where the common targets import Directory.Build.targets, and NuGet's add the GlobalPackageReference items."""
         if "targets" in self.points:
             return
         self.points.add("targets")
-        found = nearest_file(self.project.path.parent, BUILD_TARGETS)
+        self.import_nearest(BUILD_TARGETS)
+        self.items.append(Placed(GLOBAL_PACKAGES, "Include", None))
+
+    def import_nearest(self, name: str) -> None:
+        """Import the nearest file named `name` at or above the project; a candidate it cannot stat is reported and
+        unsettles what follows, as an import it cannot read does."""
+        try:
+            found = nearest_file(self.project.path.parent, name)
+        except Unreadable as error:
+            self.reports.append(error)
+            self.state.unsettle()
+            return
         if found is not None:
             self.import_file(found, found.as_posix())
-        self.items.append(Placed(GLOBAL_PACKAGES, "Include", None))
 
     def target(self, target: Element) -> None:
         """Report each item inside a Target, which MSBuild defines only when the target runs."""
