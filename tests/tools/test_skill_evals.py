@@ -42,7 +42,8 @@ import review_run
 import review_source
 import review_specialists
 import skill_inventory
-from git_client import GitClient, GitError, GitResult, subprocess_runner
+from checkout_fixture import follow, own_checkout
+from git_client import GitClient, GitError, GitResult
 from presence_denial import denied
 from review_config import write_config
 from review_documents import document_format, extract, locations, split_label
@@ -1507,97 +1508,22 @@ def unreadable_checkout() -> str | None:
 
 
 class CheckoutTests(unittest.TestCase):
-    """A run refuses a checkout that follows another repository's pull request, read from the checkout's git."""
+    """A run reads the checkout at the repository root; tests/tools/test_checkout_trust.py covers the reading."""
 
     # The home conftest.py's git_home fixture gives the running test's git.
     git_home: GitHome
 
     def setUp(self) -> None:
-        self.root = temporary_root(self)
         self.git = GitClient()
-        for arguments in (
-            ["init", "-q", "-b", "main"],
-            ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "one"],
-            ["update-ref", "refs/remotes/origin/main", "HEAD"],
-            ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "two"],
-        ):
-            self.git.output(arguments, directory=self.root)
-
-    def follow(self, remote: str, merge: str) -> None:
-        self.git.output(["config", "branch.main.remote", remote], directory=self.root)
-        self.git.output(["config", "branch.main.merge", merge], directory=self.root)
-
-    def foreign(self) -> str | None:
-        return skill_evals.foreign_checkout(self.git, self.root)
-
-    def test_a_branch_of_the_user_s_own_is_accepted(self) -> None:
-        self.assertIsNone(self.foreign())
-        for remote, merge in (("origin", "refs/heads/main"), (".", "refs/heads/other")):
-            with self.subTest(remote=remote):
-                self.follow(remote, merge)
-                self.assertIsNone(self.foreign())
-
-    def test_a_branch_following_a_pull_request_s_ref_or_another_remote_is_refused(self) -> None:
-        cases = {
-            ("origin", "refs/pull/7/head"): "its branch main follows refs/pull/7/head, a pull request's ref",
-            ("someone", "refs/heads/topic"): "its branch main follows someone, not origin",
-            ("https://github.com/someone/fork.git", "refs/heads/topic"): (
-                "its branch main follows https://github.com/someone/fork.git, not origin"
-            ),
-        }
-        for (remote, merge), reason in cases.items():
-            with self.subTest(remote=remote, merge=merge):
-                self.follow(remote, merge)
-                self.assertEqual(reason, self.foreign())
-
-    def test_a_branch_whose_name_ends_in_a_character_strip_drops_is_named_whole(self) -> None:
-        name = "topic\u00a0"
-        self.git.output(["checkout", "-q", "-b", name], directory=self.root)
-        self.git.output(["config", f"branch.{name}.remote", "someone"], directory=self.root)
-        self.git.output(["config", f"branch.{name}.merge", "refs/heads/topic"], directory=self.root)
-        self.assertEqual(f"its branch {name} follows someone, not origin", self.foreign())
-
-    def test_a_detached_head_is_accepted_only_at_a_commit_a_branch_of_origin_holds(self) -> None:
-        self.git.output(["checkout", "-q", "--detach", "HEAD"], directory=self.root)
-        self.assertEqual("its HEAD is detached at a commit no branch of origin holds", self.foreign())
-        self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/main"], directory=self.root)
-        self.assertIsNone(self.foreign())
-
-    def test_the_branches_holding_head_are_origin_s_alone_by_their_full_names(self) -> None:
-        # origin/topic holds the second commit, origin/main only the first; another remote's branch never counts.
-        self.git.output(["update-ref", "refs/remotes/origin/topic", "HEAD"], directory=self.root)
-        self.git.output(["update-ref", "refs/remotes/someone/topic", "HEAD"], directory=self.root)
-        self.assertEqual(["refs/remotes/origin/topic"], skill_evals.origin_branches_holding_head(self.git, self.root))
-        self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/main"], directory=self.root)
-        self.assertEqual(
-            ["refs/remotes/origin/main", "refs/remotes/origin/topic"],
-            skill_evals.origin_branches_holding_head(self.git, self.root),
-        )
+        self.root = own_checkout(temporary_root(self), self.git)
 
     def test_a_run_reads_the_checkout_at_the_repository_root(self) -> None:
         with mock.patch.object(skill_evals, "REPOSITORY_ROOT", self.root):
             self.assertIsNone(skill_evals.this_checkout())
-            self.follow("origin", "refs/pull/7/head")
+            follow(self.root, self.git, "origin", "refs/pull/7/head")
             self.assertEqual(
                 "its branch main follows refs/pull/7/head, a pull request's ref", skill_evals.this_checkout()
             )
-
-    def test_a_setting_or_head_git_cannot_read_raises_never_read_as_unset(self) -> None:
-        refused = GitResult(1, "", "error: could not lock config file .git/config\n")
-        for word in ("branch.main.remote", "branch.main.merge", "symbolic-ref"):
-
-            def run(command: Sequence[str], timeout: float, word: str = word) -> GitResult:
-                return refused if word in command else subprocess_runner(command, timeout)
-
-            with self.subTest(word=word), self.assertRaises(GitError) as raised:
-                skill_evals.foreign_checkout(GitClient(run), self.root)
-            self.assertIn("could not lock config file", str(raised.exception))
-
-    def test_a_folder_git_cannot_read_raises(self) -> None:
-        outside = self.root.parent / "not a checkout"
-        outside.mkdir()
-        with self.assertRaises(GitError):
-            skill_evals.foreign_checkout(self.git, outside)
 
 
 class DocumentStagingTests(unittest.TestCase):
