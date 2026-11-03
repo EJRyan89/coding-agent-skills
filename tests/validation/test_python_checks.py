@@ -3175,7 +3175,20 @@ def test_time_option_policy_reads_every_time_word(word: str) -> None:
 
 def test_time_words_hold_each_limit_word_and_unit() -> None:
     # Pinned against literals, not the constant under test.
-    assert {"ttl", "duration", "backoff", "sec", "secs", "millis", "mins", "hrs"} <= python_checks.TIME_WORDS
+    assert {
+        "ttl",
+        "duration",
+        "backoff",
+        "sec",
+        "secs",
+        "millis",
+        "msec",
+        "millisecond",
+        "usec",
+        "microseconds",
+        "mins",
+        "hrs",
+    } <= python_checks.TIME_WORDS
 
 
 @pytest.mark.parametrize(

@@ -821,6 +821,34 @@ def test_resolved_calls_read_a_setdefault_and_an_update_of_a_literal_dict() -> N
     assert [view.unread for view in _resolved_calls(source)[5]] == [[]]
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("extra[key] = float", id="a subscript store of a key that is no constant"),
+        pytest.param("extra |= other", id="an augmented assignment"),
+        pytest.param("extra.pop('type')", id="another method that changes the dict"),
+        pytest.param("extra.update(**other)", id="an update of an unpacked mapping"),
+        pytest.param("extra.update(other)", id="an update of another mapping"),
+    ],
+)
+def test_resolved_calls_keep_a_dict_changed_another_way_unread(change: str) -> None:
+    source = f"def f(parser, key, other):\n    extra = {{}}\n    {change}\n    parser.add_argument('--x', **extra)\n"
+    assert [view.unread for view in _resolved_calls(source)[4]] == [["extra"]]
+
+
+def test_resolved_calls_keep_a_dict_an_augmented_assignment_updates_in_place_unread() -> None:
+    # A resolver that reads `|=` as an update in place keeps the name bound to its literal, so only the change itself
+    # says the dict is unread.
+    tree = ast.parse(
+        "def f(parser, other):\n    extra = {}\n    extra |= other\n    parser.add_argument('--x', **extra)\n"
+    )
+    resolver = CallableResolver(tree, in_place_updates=True)
+    call = next(
+        node.value for node in ast.walk(tree) if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+    )
+    assert [[ast.unparse(item) for item in read.unread] for read in resolved_calls(call, resolver)] == [["extra"]]
+
+
 def test_resolved_calls_name_a_getattr_bound_to_a_name_through_the_imports() -> None:
     assert _resolved_calls()[12] == [ResolvedCallView("json.dumps", "dumps", "j", ["data"], {}, [])]
 

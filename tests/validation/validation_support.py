@@ -1009,7 +1009,7 @@ def _spread_keywords(
             added, changed = _dict_additions(keyword.value, resolver)
             for key, items in added.items():
                 found.setdefault(key, []).extend(items)
-            if changed:
+            if changed and not any(item is keyword.value for item in unread):
                 unread.append(keyword.value)
 
 
