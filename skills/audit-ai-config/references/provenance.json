@@ -295,7 +295,7 @@
       },
       {
         "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
-        "passage": "Copilot CLI, the cloud agent, and code review on GitHub.com read agent instructions from AGENTS.md, CLAUDE.md, or GEMINI.md, while Copilot Chat in JetBrains reads only .github/copilot-instructions.md and path-specific instructions."
+        "passage": "Copilot CLI, the cloud agent, and code review on GitHub.com read agent instructions from AGENTS.md, CLAUDE.md, or GEMINI.md, while Copilot Chat in JetBrains reads personal instructions, .github/copilot-instructions.md, and path-specific instructions, and no AGENTS.md or CLAUDE.md."
       }
     ],
     "trust-boundary": [
