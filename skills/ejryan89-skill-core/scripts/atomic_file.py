@@ -3,7 +3,8 @@
 A script that rewrites a plan, a record, or a state file replaces it here, so every script makes the same promise:
 a reader sees the old file or the new one, never part of either, and a write that fails, whatever ends it, an
 OSError, a KeyboardInterrupt, or a defect, leaves the old file in place and no copy beside it. The deployer does not
-call it: its writes are journaled, and every one goes through `deployer/fsops.py`.
+replace through it: its writes are journaled, and every one goes through `deployer/fsops.py`, whose `write_atomic`
+refuses a read-only target with this module's `is_read_only` and `ReadOnlyTargetError`.
 
 A read-only target is refused before a copy exists, on every platform. Windows refuses to replace a read-only file,
 where Linux replaces it as it would any other, so the one answer both can give is to refuse; a file counts as
