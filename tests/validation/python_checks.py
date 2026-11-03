@@ -1309,7 +1309,8 @@ def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
 # isdecimal(), or isnumeric() test admitted, which passes a digit such as a superscript two that int() then refuses.
 # Nor does an argparse option read its number with int() or float(): an add_argument's type is never int or float,
 # through an alias, a getattr, a functools.partial, or a `**` literal (resolved_calls), and a function or lambda the
-# module gives an add_argument as its type never converts its own parameter with int() or float(); the option takes
+# module gives an add_argument as its type never converts its own parameter's text, through a method call on it, an
+# index, or a local name bound to one, with int() or float(); the option takes
 # whole_number.argument, or seconds_option.positive_seconds for a time. Any other conversion states why in a
 # module-level INT_PARSE_ALLOWED = {scope: reason}, as where the pattern itself bounds the digits. A type built by a
 # call, as a factory's inner function, and one another module defines, are read only by what they resolve to.
@@ -1556,28 +1557,60 @@ def _argument_conversions(
     return typed, converted
 
 
+def _text_source(node: ast.expr) -> ast.Name | None:
+    """The name an expression takes its text from through method calls on it, its attributes, and indexes into it, as
+    `value.replace(",", "").strip()` and `value[1:]` take `value`'s, or None for any other expression: a function
+    given the name, as `len(value)`, computes something else from it."""
+    while isinstance(node, ast.Attribute | ast.Subscript | ast.Call):
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Attribute):
+                return None
+            node = node.func.value
+        else:
+            node = node.value
+    return node if isinstance(node, ast.Name) else None
+
+
 def _parameter_conversions(
     function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, resolver: CallableResolver
 ) -> dict[int, tuple[str, str, str]]:
-    """Each int() or float() call in a function that converts one of its own parameters, stripped or not, by the call,
-    with the builtin, the parameter, and the function's name."""
+    """Each int() or float() call in a function that converts the text of one of its own parameters, by the call, with
+    the builtin, the name it converts, and the function's name. The text is the parameter's, and that of a method call
+    on it, an attribute or an index of it, or a name the function binds to one of these, as
+    `text = value.lower()` binds `text`, each name by the scope that binds it."""
     arguments = function.args
-    parameters = {
-        argument.arg: resolver.scopes.get(id(argument))
+
+    def key(name: ast.Name) -> tuple[int, str] | None:
+        scope = resolver.scopes.get(id(name))
+        owner = scope.owner(name.id) if scope is not None else None
+        return (id(owner), name.id) if owner is not None else None
+
+    received = {
+        (id(scope), argument.arg)
         for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+        if (scope := resolver.scopes.get(id(argument))) is not None
     }
+    bindings = [
+        (target, value) for node in ast.walk(function) for _place, names, value in _bindings(node) for target in names
+    ]
+    # A binding may read a name another binds later in the walk, so they are read until they add no name.
+    while True:
+        known = len(received)
+        for target, value in bindings:
+            source = _text_source(value)
+            if source is not None and key(source) in received and (bound := key(target)) is not None:
+                received.add(bound)
+        if len(received) == known:
+            break
     label = function.name if not isinstance(function, ast.Lambda) else "a lambda"
     found: dict[int, tuple[str, str, str]] = {}
     for call in ast.walk(function):
         if not isinstance(call, ast.Call) or not call.args:
             continue
         builtin = resolver.name(call.func).removeprefix("builtins.")
-        argument = _unstripped(call.args[0])
-        if builtin not in ARGUMENT_NUMBER_TYPES or not isinstance(argument, ast.Name) or argument.id not in parameters:
-            continue
-        scope = resolver.scopes.get(id(argument))
-        if scope is not None and scope.owner(argument.id) is parameters[argument.id]:
-            found[id(call)] = (builtin, argument.id, label)
+        source = _text_source(call.args[0])
+        if builtin in ARGUMENT_NUMBER_TYPES and source is not None and key(source) in received:
+            found[id(call)] = (builtin, source.id, label)
     return found
 
 

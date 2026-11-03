@@ -1448,6 +1448,21 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("stripped", "def count(value):\n    return int(value.strip())\n\n\nP.add_argument('--n', type=count)"),
             ("with a base", "def count(value):\n    return int(value, 10)\n\n\nP.add_argument('--n', type=count)"),
             ("with float()", "def ratio(value):\n    return float(value)\n\n\nP.add_argument('--r', type=ratio)"),
+            (
+                "through a method call",
+                "def count(value):\n    return int(value.replace(',', ''))\n\n\nP.add_argument('--n', type=count)",
+            ),
+            ("through an index", "def count(value):\n    return int(value[1:])\n\n\nP.add_argument('--n', type=count)"),
+            (
+                "through a local name",
+                "def count(value):\n    text = value.lower()\n    return int(text)\n\n\n"
+                "P.add_argument('--n', type=count)",
+            ),
+            (
+                "through a local name bound later in the walk",
+                "def count(value):\n    if value:\n        return int(text)\n    text = value.strip()\n\n\n"
+                "P.add_argument('--n', type=count)",
+            ),
             ("in a lambda", "P.add_argument('--n', type=lambda value: int(value))"),
             ("in a lambda bound to a name", "COUNT = lambda value: int(value)\nP.add_argument('--n', type=COUNT)"),
             (
@@ -1474,6 +1489,21 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             (
                 "type function that converts what is not its parameter",
                 "def count(value):\n    return int(len(value))\n\n\nP.add_argument('--n', type=count)",
+            ),
+            # A type built by a call, as a factory's inner function, is read only by what the call resolves to:
+            # the policy's stated limit, so the inner function's int() passes.
+            (
+                "type a factory builds",
+                "def factory():\n    def inner(value):\n        return int(value)\n\n    return inner\n\n\n"
+                "P.add_argument('--n', type=factory())",
+            ),
+            # A type function another module defines is read only by what it resolves to: the policy reads one module
+            # at a time, so an imported function's int() passes here, the policy's stated limit.
+            ("type function another module defines", "from helpers import count\n\nP.add_argument('--n', type=count)"),
+            # A function given the parameter computes something else from it, as len() does, so it is no text of it.
+            (
+                "type function that converts a function's result on its parameter",
+                "def count(value):\n    return int(len(value.strip()))\n\n\nP.add_argument('--n', type=count)",
             ),
             # A function the module never gives as a type is held only to the group and digit-test rules.
             ("function given to no add_argument", "def count(value):\n    return int(value)"),
@@ -2660,6 +2690,24 @@ def sanctioned(parser):
 
 INT_PARSE_ALLOWED = {"sanctioned": "the workflow passes the code it was given", "stale": "a reason"}
 """
+
+
+def test_a_type_functions_digit_tested_int_is_reported_once() -> None:
+    # The int() converts a value an isdigit() test admitted, which the group and digit-test rule refuses too; the policy
+    # names it once, as the option type function's conversion.
+    source = (
+        "import argparse\n\n\ndef count(value):\n    if value.isdigit():\n        return int(value)\n    return 0\n\n\n"
+        "P = argparse.ArgumentParser()\nP.add_argument('--n', type=count)\n"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.int_parse_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py:6 converts value with int() in count, an option's argparse type, which reads a "
+        "sign, spaces, underscores, and every Unicode decimal digit; call ejryan89-skill-core's whole_number.argument, "
+        "or seconds_option.positive_seconds for a time, as the option's type, or state why in INT_PARSE_ALLOWED"
+    ]
 
 
 def test_int_parse_policy_refuses_an_option_read_with_int_or_float() -> None:
