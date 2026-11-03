@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-import stat
 import unittest
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -144,8 +143,12 @@ def deploy_variable_problems(
     shared = json_reader.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
     for asset in sorted(shared):
         path = root / "skills" / asset
+        # A declared asset that is not there is named; one whose stat fails raises.
+        if not file_presence.is_occupied(path):
+            problems.append(f"source.json declares shared asset {asset}, which skills/ does not hold")
+            continue
         # A shared asset is a file or a folder; a folder's files are read where its skills are.
-        text = "" if stat.S_ISDIR(path.stat().st_mode) else path.read_text(encoding="utf-8")
+        text = "" if file_presence.is_directory(path, other_is_absent=True) else path.read_text(encoding="utf-8")
         tokens = set(TEMPLATE_TOKEN.findall(text))
         used_anywhere |= tokens
         problems.extend(f"shared asset {asset} uses non-derived variable {key}" for key in sorted(tokens - derived))

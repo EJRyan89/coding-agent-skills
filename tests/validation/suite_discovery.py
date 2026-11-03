@@ -388,7 +388,7 @@ def recorded_shard_problems(
     problems: list[str] = []
     for name, seconds in recorded.items():
         path = root / name
-        if not (path.is_file() and path.suffix == ".py"):
+        if not (path.suffix == ".py" and file_presence.is_present(path, other_is_absent=True)):
             continue
         try:
             defined = defined_tests(parse_python(path))
@@ -1050,7 +1050,7 @@ class RepositoryModules:
     def _module_file(base: Path, parts: list[str]) -> Path | None:
         target = base.joinpath(*parts)
         for candidate in (target.with_name(f"{target.name}.py"), target / "__init__.py"):
-            if candidate.is_file():
+            if file_presence.is_present(candidate, other_is_absent=True):
                 return candidate.resolve()
         return None
 

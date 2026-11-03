@@ -29,6 +29,7 @@ from dependency_graph import main
 from dotnet_solution import same_path
 from flat_text import flat_text
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, Completed, SdkPath, Services
+from test_msbuild_reader import stat_failing_at
 
 SCRIPT = Path(__file__).resolve().parent / "dependency_graph.py"
 CSHARP = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
@@ -2856,3 +2857,91 @@ class MSBuildEvaluationTests(Fixture):
             self.lines(rows, "PATH"),
         )
         self.assertEqual([[label, "net8.0;net9.0", "Lantern.Json", "1"]], self.lines(rows, "TRUNCATED"))
+
+
+class PresenceReadTests(Fixture):
+    """Each reader that chooses among a folder's entries, or walks up for one, tells a file, a folder, and nothing
+    apart, and refuses an entry it cannot stat or a folder it cannot list rather than reading it as absent."""
+
+    def test_the_root_chooses_the_one_solution_file_and_refuses_a_child_it_cannot_stat(self) -> None:
+        (self.root / "Folder.sln").mkdir()
+        solution = self.write("Real.sln", "")
+        resolved, base, projects = dependency_graph.resolve_root(self.root, [])
+        self.assertEqual((solution, self.root, []), (resolved, base, projects))
+        locked = self.write("Locked.sln", "")
+        with stat_failing_at(locked), self.assertRaises(PermissionError) as raised:
+            dependency_graph.resolve_root(self.root, [])
+        self.assertEqual(str(locked), raised.exception.filename)
+
+    def test_the_cache_keeps_a_folder_drops_a_file_or_nothing_and_refuses_one_it_cannot_stat(self) -> None:
+        home = self.root / "home"
+        (home / ".nuget" / "packages").mkdir(parents=True)
+        configured = self.root / "configured"
+        configured.mkdir()
+        file = self.write("cache.txt", "")
+        with mock.patch.object(Path, "home", return_value=home):
+            for value, expected in (
+                (str(configured), [configured, home / ".nuget" / "packages"]),
+                (str(file), [home / ".nuget" / "packages"]),
+                (str(self.root / "missing"), [home / ".nuget" / "packages"]),
+            ):
+                with self.subTest(value=value), mock.patch.dict(os.environ, {"NUGET_PACKAGES": value}):
+                    self.assertEqual(expected, dependency_graph.nuget_cache())
+            with (
+                mock.patch.dict(os.environ, {"NUGET_PACKAGES": str(configured)}),
+                stat_failing_at(configured),
+                self.assertRaises(PermissionError) as raised,
+            ):
+                dependency_graph.nuget_cache()
+        self.assertEqual(str(configured), raised.exception.filename)
+
+    def test_the_packages_folder_passes_over_a_file_and_refuses_one_it_cannot_stat(self) -> None:
+        project = self.root / "src" / "App"
+        project.mkdir(parents=True)
+        (self.root / "packages").mkdir()
+        self.write("src/packages", "not a folder")
+        self.assertEqual(self.root / "packages", dependency_graph.packages_folder(project, self.root))
+        nearer = project / "packages"
+        with stat_failing_at(nearer), self.assertRaises(PermissionError) as raised:
+            dependency_graph.packages_folder(project, self.root)
+        self.assertEqual(str(nearer), raised.exception.filename)
+
+    def test_a_package_folder_it_cannot_list_or_stat_is_unreadable_never_a_package_not_unpacked(self) -> None:
+        packages = self.root / "packages"
+        (packages / "Lantern.Core.2.0.0").mkdir(parents=True)
+        other = self.root / "other"
+        other.mkdir()
+        self.write("other/Lantern.Core.2.0.0", "a file of the folder's name")
+        self.assertEqual(
+            packages / "Lantern.Core.2.0.0",
+            dependency_graph.package_directory([other, packages], "Lantern.Core", "2.0.0"),
+        )
+        real = os.scandir
+
+        def scandir(path: object = ".") -> object:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == packages:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real(path)  # type: ignore[call-overload]  # the path a test hands on
+
+        with mock.patch.object(os, "scandir", scandir), self.assertRaises(msbuild_reader.Unreadable) as raised:
+            dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0")
+        self.assertEqual((packages, "Access is denied"), (raised.exception.file, raised.exception.reason))
+        unpacked = packages / "Lantern.Core.2.0.0"
+        with stat_failing_at(unpacked), self.assertRaises(msbuild_reader.Unreadable) as raised:
+            dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0")
+        self.assertEqual(unpacked, raised.exception.file)
+
+    def test_a_config_it_cannot_stat_fails_the_graph_and_a_folder_of_its_name_is_passed_over(self) -> None:
+        root = self.mixed_solution()
+        project = self.root / "src" / "Harbor.Web"
+        redirects = {
+            name: graph.projects[name].file.redirects
+            for graph in [dependency_graph.build_graph(root, self.without_dotnet)]
+            for name in graph.projects
+        }
+        (project / "app.config").mkdir()
+        again = dependency_graph.build_graph(root, self.without_dotnet)
+        self.assertEqual(redirects, {name: again.projects[name].file.redirects for name in again.projects})
+        with stat_failing_at(project / "Web.config"), self.assertRaises(PermissionError) as raised:
+            dependency_graph.build_graph(root, self.without_dotnet)
+        self.assertEqual(str(project / "Web.config"), raised.exception.filename)

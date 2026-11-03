@@ -328,7 +328,7 @@ def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
 def read_configs(graph: Graph, project: Project) -> None:
     """The binding redirects of the project's web.config and app.config, when it has them."""
     for candidate in sorted(project.file.path.parent.iterdir()):
-        if candidate.is_file() and candidate.name.casefold() in CONFIG_FILES:
+        if candidate.name.casefold() in CONFIG_FILES and file_presence.is_present(candidate, other_is_absent=True):
             try:
                 project.file.redirects += read_redirects(candidate)
             except Unreadable as error:
@@ -348,34 +348,44 @@ def nuget_cache() -> list[Path]:
 def packages_folder(project_dir: Path, stop: Path) -> Path | None:
     """The nearest `packages` folder from the project's directory up to the solution's, or None."""
     for folder in folders_up(project_dir, stop):
-        if (candidate := folder / "packages").is_dir():
+        if file_presence.is_directory(candidate := folder / "packages", other_is_absent=True):
             return candidate
     return None
 
 
 def package_directory(folders: Sequence[Path], package: str, version: str) -> Path | None:
     """The folder a package at a version is unpacked in: `<id>.<version>` in a packages folder, or
-    `<id>/<version>` in the NuGet cache, matched without regard to case."""
+    `<id>/<version>` in the NuGet cache, matched without regard to case. A folder it cannot list or an entry it cannot
+    stat raises Unreadable naming it, never reads as a package that is not unpacked there."""
     for folder in folders:
         wanted = {f"{package}.{version}".casefold(), f"{package}/{version}".casefold()}
         try:
             for child in folder.iterdir():
-                if child.name.casefold() == f"{package}.{version}".casefold() and child.is_dir():
+                if child.name.casefold() == f"{package}.{version}".casefold() and _folder(child):
                     return child
-                if child.name.casefold() == package.casefold() and child.is_dir():
+                if child.name.casefold() == package.casefold() and _folder(child):
                     for inner in child.iterdir():
-                        if f"{child.name}/{inner.name}".casefold() in wanted and inner.is_dir():
+                        if f"{child.name}/{inner.name}".casefold() in wanted and _folder(inner):
                             return inner
-        except OSError:
-            continue
+        except OSError as error:
+            raise Unreadable(Path(error.filename) if error.filename else folder, error.strerror or str(error)) from None
     return None
+
+
+def _folder(path: Path) -> bool:
+    """Whether a folder is at path: False for nothing or something else there, and the stat's OSError otherwise."""
+    return file_presence.is_directory(path, other_is_absent=True)
 
 
 def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) -> PackageNode | None:
     """The package's node from its nuspec in one of the folders, or None when it is not unpacked there."""
     if not reference.version:
         return None
-    directory = package_directory(folders, reference.id, reference.version)
+    try:
+        directory = package_directory(folders, reference.id, reference.version)
+    except Unreadable as error:
+        graph.refuse(error)
+        return None
     if directory is None:
         return None
     nuspecs = [path for path in directory.iterdir() if path.name.casefold() == f"{reference.id}.nuspec".casefold()]

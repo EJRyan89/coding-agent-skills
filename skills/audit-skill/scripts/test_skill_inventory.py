@@ -3441,3 +3441,30 @@ def test_a_folder_the_command_cannot_list_fails_it_rather_than_reading_as_empty(
     with unlistable(folder):
         code, lines, error = run(*arguments)
     assert (code, lines, error) == (1, [f"FAILED cannot read {folder.as_posix()}: Permission denied"], "")
+
+
+def test_folder_files_lists_each_file_below_the_skill_but_those_in_skipped_folders(tmp_path: Path) -> None:
+    skill = tmp_path / "skill"
+    for name in (
+        "SKILL.md",
+        "scripts/run.py",
+        "references/deep/notes.md",
+        ".git/config",
+        "scripts/__pycache__/run.pyc",
+        "node_modules/x.js",
+    ):
+        (skill / name).parent.mkdir(parents=True, exist_ok=True)
+        (skill / name).write_text("", encoding="utf-8")
+    (skill / "empty").mkdir()
+    listed = [path.relative_to(skill).as_posix() for path in skill_inventory.folder_files(skill)]
+    assert listed == ["references/deep/notes.md", "scripts/run.py", "SKILL.md"]
+
+
+def test_folder_files_refuses_a_folder_below_the_skill_it_cannot_list(tmp_path: Path) -> None:
+    # A glob matches nothing in a folder it cannot list, which would leave its files out of the measure.
+    skill = tmp_path / "skill"
+    (skill / "references").mkdir(parents=True)
+    (skill / "references" / "notes.md").write_text("", encoding="utf-8")
+    with unlistable(skill / "references"), pytest.raises(PermissionError) as raised:
+        skill_inventory.folder_files(skill)
+    assert raised.value.filename == str(skill / "references")

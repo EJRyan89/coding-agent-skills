@@ -742,10 +742,13 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # what a folder holds, and lets a stat or a listing that fails through, where every presence predicate returns False on
 # an OSError from Python 3.14 on and Path.glob matches nothing in a folder it cannot list from 3.15 on. A predicate
 # whose False is itself the answer reads a path it could not stat as nothing there: `if not p.is_file(): return None`,
-# `if not p.is_dir(): continue`, `while not p.is_dir(): p = p.parent`, `v if p.exists() else []`, `return p.exists()`,
+# `if not p.is_dir(): continue`, `if not (p.is_file() and q): continue`, `while not p.is_dir(): p = p.parent`,
+# `v if p.exists() else []`, `return p.exists()`, `if p.is_file(): return p` falling through to `return None`,
 # `[e for e in es if e.is_file()]`, `filter(os.path.isfile, es)`, or `p.exists() and any(p.iterdir())`, a name bound
 # only to a predicate's answer included. So does a glob, an os.walk that ignores the folders it cannot list, and a
-# removal that discards its errors. Any such site outside file_presence and link_probe states why in a module-level
+# removal that discards its errors. An if on a predicate with no else is left out unless its branch returns a value and
+# its False goes on to an empty return or the function's end, since its False otherwise goes on to code that meets the
+# same path or gives a value. Any such site outside file_presence and link_probe states why in a module-level
 # PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
@@ -781,6 +784,8 @@ class _PresenceReader:
 
     aliases: dict[str, str]
     names: Mapping[str, str]
+    # The ifs whose True branch returns a value and whose False goes on to an empty return or the function's end.
+    falling: frozenset[int] = frozenset()
 
     def call(self, node: ast.expr) -> str | None:
         """The presence predicate whose answer an expression is, as `is_file` or `os.path.lexists`, or None."""
@@ -800,9 +805,10 @@ class _PresenceReader:
         return None
 
     def negated(self, test: ast.expr) -> str | None:
-        """The predicate a test reads as absent: `not P`, or `not P` as an operand of an `or`."""
+        """The predicate a test reads as absent: `not P`, `not (P and Q)`, `not (P or Q)`, or one of them as an operand
+        of an `or`."""
         if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-            return self.call(test.operand)
+            return self.held(test.operand)
         if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
             return next((found for value in test.values if (found := self.negated(value))), None)
         return None
@@ -813,6 +819,15 @@ class _PresenceReader:
             return found
         if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
             return next((found for value in test.values if (found := self.affirmed(value))), None)
+        return None
+
+    def held(self, node: ast.expr) -> str | None:
+        """The predicate an expression holds unnegated: `P`, or `P` as an operand of an `and` or an `or`, at any
+        depth."""
+        if found := self.call(node):
+            return found
+        if isinstance(node, ast.BoolOp):
+            return next((found for value in node.values if (found := self.held(value))), None)
         return None
 
     def truth(self, node: ast.expr) -> str | None:
@@ -868,6 +883,8 @@ class _PresenceReader:
         if isinstance(node, ast.If):
             if (found := self.negated(node.test)) and _empty_branch(node.body):
                 return found
+            if id(node) in self.falling and (found := self.affirmed(node.test)):
+                return found
             return found if (found := self.affirmed(node.test)) and _empty_branch(node.orelse) else None
         if (found := self.affirmed(node.test)) and _empty(node.orelse):
             return found
@@ -906,6 +923,37 @@ def _empty_branch(body: list[ast.stmt]) -> bool:
     if isinstance(statement, ast.Return):
         return _empty(statement.value)
     return isinstance(statement, ast.Continue)
+
+
+def _falling_ifs(tree: ast.Module) -> frozenset[int]:
+    """Each if with no else whose branch ends by returning a value that is not empty, and whose False goes on to an
+    empty return or the end of its function: the statement after it, or after the block, loop, `with`, or `try` that
+    holds it."""
+    found: set[int] = set()
+
+    def visit(block: list[ast.stmt], ends_empty: bool) -> None:
+        for index, statement in enumerate(block):
+            after = block[index + 1] if index + 1 < len(block) else None
+            empty_after = ends_empty if after is None else isinstance(after, ast.Return) and _empty(after.value)
+            if isinstance(statement, ast.If):
+                last = statement.body[-1]
+                if not statement.orelse and isinstance(last, ast.Return) and not _empty(last.value) and empty_after:
+                    found.add(id(statement))
+                visit(statement.body, empty_after)
+                visit(statement.orelse, empty_after)
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)):
+                visit(statement.body, empty_after)
+                visit(getattr(statement, "orelse", []), empty_after)
+            elif isinstance(statement, (ast.Try, ast.TryStar)):
+                visit(statement.body, empty_after and not statement.orelse)
+                for handler in statement.handlers:
+                    visit(handler.body, empty_after)
+                visit(statement.orelse, empty_after)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            visit(node.body, True)
+    return frozenset(found)
 
 
 def _bound_answers(tree: ast.Module, aliases: dict[str, str]) -> dict[str, dict[str, str]]:
@@ -974,9 +1022,10 @@ def _listing_answer(node: ast.AST, aliases: dict[str, str]) -> str | None:
 def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tuple[ast.AST, str, str]]:
     """Each node where a failed stat, listing, or removal is read as nothing there, with its scope and its refusal."""
     bound = _bound_answers(tree, aliases)
+    falling = _falling_ifs(tree)
     readers: dict[str, _PresenceReader] = {}
     for node, scope in scoped_nodes(tree.body):
-        reader = readers.setdefault(scope, _PresenceReader(aliases, bound.get(scope, {})))
+        reader = readers.setdefault(scope, _PresenceReader(aliases, bound.get(scope, {}), falling))
         if predicate := reader.answer(node):
             yield (
                 node,

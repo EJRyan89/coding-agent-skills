@@ -3157,6 +3157,18 @@ PRESENCE_SHAPES = {
         "def f(ps):\n    for p in ps:\n        if not {call}:\n            continue\n        print(p)\n"
     ),
     "while not P": "def f(p):\n    while not {call}:\n        p = p.parent\n    return p\n",
+    "if not (P and Q): continue": (
+        "def f(ps, q):\n    for p in ps:\n        if not ({call} and q):\n            continue\n        print(p)\n"
+    ),
+    "if not (Q or P): return E": "def f(p, q):\n    if not (q or {call}):\n        return {empty}\n    return 1\n",
+    "if P: return V, then return E": "def f(p):\n    if {call}:\n        return p.read_text()\n    return {empty}\n",
+    "if P: return V at the function's end": "def f(p):\n    if {call}:\n        return p.read_text()\n",
+    "if P: return V in a loop, then return E": (
+        "def f(ps):\n    for p in ps:\n        if {call}:\n            return p\n    return {empty}\n"
+    ),
+    "if P: return V in a with at the function's end": (
+        "def f(p, lock):\n    with lock:\n        if {call}:\n            return p\n"
+    ),
     "V if P else E": "def f(p):\n    return p.read_text() if {call} else {empty}\n",
     "V if P and Q else E": "def f(p, q):\n    return p.read_text() if q and {call} else {empty}\n",
     "E if not P else V": "def f(p):\n    return {empty} if not {call} else p.read_text()\n",
@@ -3268,6 +3280,14 @@ PRESENCE_PASSED = {
     "more work": "def f(p):\n    if not p.is_dir():\n        p.mkdir()\n        return None\n    return 1\n",
     "an operand of a wider test": "def f(p, q):\n    if q and p.is_file():\n        return 1\n    return 2\n",
     "an if with no else": "def f(p):\n    if p.exists():\n        p.unlink()\n    return 1\n",
+    # An if whose True branch returns and whose False goes on to a value, more work, or an empty return of its own.
+    "an if P: return V, then a value": (
+        "def f(p):\n    if p.is_file():\n        return p.read_text()\n    return 'default'\n"
+    ),
+    "an if P: return V, then more work": (
+        "def f(p):\n    if p.is_file():\n        return 1\n    p.mkdir()\n    return 2\n"
+    ),
+    "an if P: return E at the function's end": "def f(p):\n    if p.is_file():\n        return None\n",
     # A name bound to a predicate's answer and to anything else, or a parameter, is not followed.
     "a name bound otherwise too": (
         "def f(p, q):\n    found = p.exists()\n    found = q\n    if not found:\n        return None\n    return 1\n"
@@ -3418,6 +3438,14 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
         "suite_discovery.RepositoryModules": (
             at(root / "pyproject.toml"),
             lambda: suite_discovery.RepositoryModules(root),
+        ),
+        "suite_discovery.recorded_shard_problems": (
+            at(root / next(iter(suite_discovery.RECORDED_TEST_SECONDS))),
+            lambda: suite_discovery.recorded_shard_problems(root),
+        ),
+        "suite_discovery.RepositoryModules._module_file": (
+            at(root / "tests" / "validation" / "python_checks.py"),
+            lambda: suite_discovery.RepositoryModules._module_file(root / "tests" / "validation", ["python_checks"]),
         ),
         "suite_discovery.git_isolation_problems": (
             at(root / "conftest.py"),

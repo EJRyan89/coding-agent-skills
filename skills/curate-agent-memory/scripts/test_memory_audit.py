@@ -2481,3 +2481,30 @@ def test_a_folder_a_destination_pattern_matches_is_passed_over(tmp_path: Path) -
     (tmp_path / "AGENTS.md").mkdir()
     (tmp_path / "README.md").mkdir()
     assert memory_audit.destination_files(tmp_path, []) == [guide]
+
+
+def test_memory_entries_lists_the_memory_files_and_names_what_is_none(tmp_path: Path) -> None:
+    store = tmp_path / "memory"
+    store.mkdir()
+    for name in ("MEMORY.md", "beta.md", "alpha.md", "notes.txt"):
+        (store / name).write_text("", encoding="utf-8")
+    (store / "folder.md").mkdir()
+    files, others = memory_audit.memory_entries(store)
+    assert [path.name for path in files] == ["alpha.md", "beta.md"]
+    assert others == [("folder.md", "not a regular file")]
+
+
+def test_memory_entries_refuses_a_store_it_cannot_list_never_reads_it_as_empty(tmp_path: Path) -> None:
+    store = tmp_path / "memory"
+    store.mkdir()
+    (store / "alpha.md").write_text("", encoding="utf-8")
+    real = os.scandir
+
+    def scandir(path: Any = ".") -> Any:
+        if isinstance(path, (str, os.PathLike)) and Path(path) == store:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path)
+
+    with mock.patch.object(os, "scandir", scandir), pytest.raises(PermissionError) as raised:
+        memory_audit.memory_entries(store)
+    assert raised.value.filename == str(store)

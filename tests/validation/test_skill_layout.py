@@ -849,6 +849,19 @@ class SkillLayoutFixtures(unittest.TestCase):
                 ),
             )
 
+    def test_a_declared_shared_asset_that_is_not_there_is_named_and_a_folder_one_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            (root / "skills" / "folder-asset").mkdir(parents=True)
+            (root / "source.json").write_text(
+                json.dumps({"shared_assets": {"missing.md": "owner", "folder-asset": "owner"}}), encoding="utf-8"
+            )
+            self.assertEqual(
+                ["source.json declares shared asset missing.md, which skills/ does not hold"],
+                deploy_variable_problems(root, set(), set(), set()),
+            )
+
     def test_script_dependency_policy_detects_an_undeclared_sibling(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

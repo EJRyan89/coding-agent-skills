@@ -1643,3 +1643,32 @@ class OneLineFactTests(unittest.TestCase):
         missing = self.root / "gone\u2028STOP.cs"
         status, lines = self.check(missing.name)
         self.assertEqual((1, [f"FAILED {flat_text(str(missing))} does not exist"]), (status, lines))
+
+
+class CheckFilesPresenceTests(unittest.TestCase):
+    """A listed file that is not there, or is a folder, is refused as missing; one whose stat fails raises."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        (self.root / "A.cs").write_text("class A\n{\n}\n", encoding="utf-8")
+        self.lines: list[str] = []
+
+    def check(self, *names: str) -> bool:
+        return layout.check_files(self.root, list(names), False, self.lines.append)
+
+    def test_a_present_file_is_checked(self) -> None:
+        self.assertFalse(self.check("A.cs"))
+
+    def test_a_file_that_is_not_there_or_is_a_folder_is_refused_as_missing(self) -> None:
+        (self.root / "Folder.cs").mkdir()
+        for name in ("Gone.cs", "Folder.cs"):
+            with self.subTest(name=name), self.assertRaises(layout.Failed) as raised:
+                self.check("A.cs", name)
+            self.assertEqual(f"{self.root / name} does not exist", str(raised.exception))
+
+    def test_a_file_whose_stat_fails_is_refused_with_the_error_never_as_missing(self) -> None:
+        with stat_failing_at(self.root / "A.cs"), self.assertRaises(PermissionError) as raised:
+            self.check("A.cs")
+        self.assertEqual(str(self.root / "A.cs"), raised.exception.filename)

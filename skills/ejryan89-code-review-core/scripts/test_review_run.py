@@ -520,3 +520,43 @@ def test_every_step_that_reads_a_damaged_run_names_the_field_in_its_failed_line(
     expected = f"FAILED {run} {message}\n" if command in several else f"FAILED {message}\n"
     assert (1, expected, "") == _pipeline(command, "--run", str(run), *rest)
     assert before == (run / review_run.RUN_FILE).read_bytes()
+
+
+def _sealed_run(root: Path) -> tuple[Path, dict[str, Any]]:
+    """A run holding two sealed files and a sealed result, with the state that seals them."""
+    run = root / "run"
+    (run / "work").mkdir(parents=True)
+    files = {"plan.json": b"plan", "work/request.json": b"request"}
+    for relative, content in files.items():
+        (run / relative).write_bytes(content)
+    result = run / "work" / "result.json"
+    result.write_bytes(b"result")
+    state = {
+        "selector": "owner/repo#1",
+        "roles": [{"id": "alpha", "result_file": str(result)}],
+        "seal": {
+            "files": {relative: hashlib.sha256(content).hexdigest() for relative, content in files.items()},
+            "results": {"alpha": hashlib.sha256(b"result").hexdigest()},
+        },
+    }
+    return run, state
+
+
+def test_the_seal_holds_for_unchanged_files_and_names_one_gone_or_replaced_by_a_folder(tmp_path: Path) -> None:
+    run, state = _sealed_run(tmp_path)
+    review_run.verify_seal(run, state)  # type: ignore[arg-type]  # the fields verify_seal reads
+    (run / "plan.json").unlink()
+    (run / "work" / "request.json").unlink()
+    (run / "work" / "request.json").mkdir()
+    with pytest.raises(review_run.PipelineError) as raised:
+        review_run.verify_seal(run, state)  # type: ignore[arg-type]  # the fields verify_seal reads
+    assert str(raised.value) == (
+        "owner/repo#1: run files changed during the inline review: plan.json, work/request.json"
+    )
+
+
+def test_the_seal_refuses_a_sealed_file_it_cannot_stat_rather_than_read_it_as_changed(tmp_path: Path) -> None:
+    run, state = _sealed_run(tmp_path)
+    with unstatable(run / "plan.json"), pytest.raises(PermissionError) as raised:
+        review_run.verify_seal(run, state)  # type: ignore[arg-type]  # the fields verify_seal reads
+    assert raised.value.filename == str(run / "plan.json")

@@ -36,6 +36,7 @@ from itertools import islice
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from path_containment import refusal
@@ -182,7 +183,7 @@ def _working_copy(root: Path, path: str) -> bytes | None:
     if refusal(path, root) is not None:
         return None
     target = root.joinpath(*PurePosixPath(path).parts)
-    if target.is_file() and target.stat().st_size <= READ_BYTES:
+    if file_presence.is_present(target, other_is_absent=True) and target.stat().st_size <= READ_BYTES:
         return target.read_bytes()
     return None
 

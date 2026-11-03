@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dotnet_solution
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
-from file_presence import is_directory, matching
+from file_presence import is_directory, is_present, matching
 from folders_up import folders_up
 from msbuild_xml import local_name
 from xml_reader import XmlRefused, read_xml
@@ -240,7 +240,7 @@ def nearest_file(project_dir: Path, name: str) -> Path | None:
     for Directory.Build.props and Directory.Packages.props; None when there is none."""
     for directory in folders_up(project_dir):
         candidate = directory / name
-        if candidate.is_file():
+        if is_present(candidate, other_is_absent=True):
             return candidate
     return None
 

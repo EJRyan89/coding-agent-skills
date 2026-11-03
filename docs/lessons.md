@@ -79,7 +79,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
   followed by a `return None`, `return []`, or `return False`, where `is_present` should probe, and its expression
   form, `... if path.is_file() else None`, its loop forms, `if not path.is_file(): continue` and
-  `while not path.is_dir():`, its return form, `return path.exists()`, its filter forms,
+  `while not path.is_dir():`, its return forms, `return path.exists()` and `if path.is_file(): return path`
+  falling through to `return None` or the end of the function, its parenthesised form,
+  `if not (path.is_file() and ...): continue`, its filter forms,
   `[e for e in entries if e.is_file()]`, `any(p.exists() for p in paths)`, and `filter(os.path.isfile, paths)`,
   and an emptiness check that passes a folder it cannot stat by, `path.exists() and any(path.iterdir())`; a
   `glob` or `rglob`, which matches nothing in a folder it cannot list from Python 3.15, an `os.walk` with no

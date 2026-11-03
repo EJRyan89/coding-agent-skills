@@ -231,6 +231,32 @@ class TemplateLookupTests(unittest.TestCase):
         (self.root / "docs" / "pull_request_template.md").write_text("## Changes\n", encoding="utf-8")
         self.assertEqual(self.root / "docs" / "pull_request_template.md", pull_request.find_template(self.root))
 
+    def test_a_template_whose_stat_fails_is_refused_rather_than_passed_over_for_the_next(self) -> None:
+        template = self.root / ".github" / "pull_request_template.md"
+        template.parent.mkdir()
+        template.write_text("## Changes\n", encoding="utf-8")
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "pull_request_template.md").write_text("## Changes\n", encoding="utf-8")
+        real_stat, real_is_file = Path.stat, Path.is_file
+
+        def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == template:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        def is_file(path: Path, *rest: object, **options: object) -> bool:
+            return False if path == template else real_is_file(path)
+
+        with (
+            mock.patch.object(Path, "stat", autospec=True, side_effect=denied),
+            mock.patch.object(Path, "is_file", autospec=True, side_effect=is_file),
+            self.assertRaises(pull_request.PullRequestError) as refused,
+        ):
+            pull_request.find_template(self.root)
+        self.assertEqual(
+            f'cannot read "{template}": [Errno 13] Permission denied: {str(template)!r}', str(refused.exception)
+        )
+
     def test_a_template_folder_whose_stat_fails_is_refused_rather_than_passed_over(self) -> None:
         github = self.root / ".github"
         github.mkdir()
