@@ -21,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import process_identity
 import review_io
 from process_identity import ProcessStatus
 from review_io import (
@@ -185,6 +186,11 @@ class StateAndLockTests(unittest.TestCase):
             "pid a boolean": ({"pid": True, "start_time": 1234}, ProcessStatus(False, None)),
             "pid a float": ({"pid": 4242.0, "start_time": 1234}, ProcessStatus(False, None)),
             "pid an object": ({"pid": {}, "start_time": 1234}, ProcessStatus(False, None)),
+            # Past the platform's range: never truncated to another process's PID and judged by its state.
+            "pid past the platform's range": (
+                {"pid": process_identity.PID_MAXIMUM + 1, "start_time": 1234},
+                ProcessStatus(False, None),
+            ),
         }
         for name, (owner, status) in cases.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
