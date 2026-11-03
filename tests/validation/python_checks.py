@@ -738,18 +738,24 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-# ejryan89-skill-core's file_presence is the one reader of whether a path a reader may find absent is there, and of
-# what a folder holds, and lets a stat or a listing that fails through, where every presence predicate returns False on
-# an OSError from Python 3.14 on and Path.glob matches nothing in a folder it cannot list from 3.15 on. A predicate
-# whose False is itself the answer reads a path it could not stat as nothing there: `if not p.is_file(): return None`,
-# `if not p.is_dir(): continue`, `if not (p.is_file() and q): continue`, `while not p.is_dir(): p = p.parent`,
-# `v if p.exists() else []`, `return p.exists()`, `if p.is_file(): return p` falling through to `return None`,
-# `[e for e in es if e.is_file()]`, `filter(os.path.isfile, es)`, or `p.exists() and any(p.iterdir())`, a name bound
-# only to a predicate's answer included. So does a glob, an os.walk that ignores the folders it cannot list, and a
-# removal that discards its errors. An if on a predicate with no else is left out unless its branch returns a value and
-# its False goes on to an empty return or the function's end, since its False otherwise goes on to code that meets the
-# same path or gives a value. Any such site outside file_presence and link_probe states why in a module-level
+# ejryan89-skill-core's file_presence is the one reader of whether a path a reader may find absent is there, and of what
+# a folder holds, and lets a stat or a listing that fails through, where every presence predicate returns False on an
+# OSError from Python 3.14 on and Path.glob matches nothing in a folder it cannot list from 3.15 on. A predicate whose
+# False is itself the answer reads a path it could not stat as nothing there: `if not p.is_file(): return None`, `if not
+# p.is_dir(): continue`, `if not (p.is_file() and q): continue`, `while not p.is_dir(): p = p.parent`, `v if p.exists()
+# else []`, `return p.exists()`, `if p.is_file(): return p` falling through to `return None`, `[e for e in es if
+# e.is_file()]`, `filter(os.path.isfile, es)`, or `p.exists() and any(p.iterdir())`, a name bound only to a predicate's
+# answer included, and a branch that only logs before its empty answer. So does a glob, an os.walk that ignores the
+# folders it cannot list, a removal that discards its errors, and an except clause or a contextlib.suppress that answers
+# a failed stat or listing with nothing. An if on a predicate with no else is left out unless its branch returns a value
+# and its False goes on to an empty return or the function's end, since its False otherwise goes on to code that meets
+# the same path or gives a value. Any such site outside file_presence and link_probe states why in a module-level
 # PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
+# Stated limits, which the policy's next widening reads: `if not P and Q: return None`; a predicate handed to map, as
+# `any(map(os.path.exists, ps))`; a predicate bound to a name this does not follow or reached through getattr; a
+# returned sentinel name, as `result = []` then `if not P: return result`; `P == False` and `P is False`; an rmtree
+# onerror or onexc that swallows the error; a read whose OSError handler answers nothing; and a branch that does work
+# other than logging before its empty answer, read as recording the case.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )
@@ -915,14 +921,34 @@ def _empty(node: ast.expr | None) -> bool:
     )
 
 
-def _empty_branch(body: list[ast.stmt]) -> bool:
-    """Whether a branch is only an empty answer: a return of one, or a continue past the item at hand."""
-    if len(body) != 1:
+# The calls that only log a case, which a branch may make before its empty answer and still answer nothing: a log
+# names no file or package to the caller, where a branch that records the case, as `problems.append(...)` or a
+# report of its own does, answers with it.
+LOG_FUNCTIONS = frozenset({"print", "warnings.warn", "sys.stderr.write", "sys.stdout.write"})
+LOG_METHODS = frozenset({"debug", "info", "warning", "warn", "error", "exception", "critical", "log"})
+
+
+def _only_logs(statement: ast.stmt) -> bool:
+    """Whether a statement only logs: `pass`, or a call of print, warnings.warn, a write to sys.stderr or sys.stdout,
+    or a logging method, as `logger.warning(...)` or `logging.info(...)`."""
+    if isinstance(statement, ast.Pass):
+        return True
+    if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)):
         return False
-    statement = body[0]
-    if isinstance(statement, ast.Return):
-        return _empty(statement.value)
-    return isinstance(statement, ast.Continue)
+    func = statement.value.func
+    named = qualified_name(func, {})
+    return named in LOG_FUNCTIONS or (isinstance(func, ast.Attribute) and func.attr in LOG_METHODS)
+
+
+def _empty_branch(body: list[ast.stmt]) -> bool:
+    """Whether a branch answers nothing: it ends in a return of an empty value or a continue past the item at hand,
+    and every statement before that only logs."""
+    if not body or not all(_only_logs(statement) for statement in body[:-1]):
+        return False
+    last = body[-1]
+    if isinstance(last, ast.Return):
+        return _empty(last.value)
+    return isinstance(last, ast.Continue)
 
 
 def _falling_ifs(tree: ast.Module) -> frozenset[int]:
@@ -978,6 +1004,77 @@ def _bound_answers(tree: ast.Module, aliases: dict[str, str]) -> dict[str, dict[
         names = seen.setdefault(scope, {})
         names[name] = answer if names.get(name, answer) == answer else None
     return {scope: {name: found for name, found in names.items() if found} for scope, names in seen.items()}
+
+
+# The calls that stat or list a path, whose OSError a handler may read as nothing there: a path's stat, lstat, and
+# listings, os's, and file_presence's own readers, besides the presence predicates.
+STATTING_METHODS = frozenset({"stat", "lstat", "iterdir", "scandir", "listdir", "glob", "rglob"})
+STATTING_FUNCTIONS = frozenset({"os.stat", "os.lstat", "os.scandir", "os.listdir", "os.walk", "os.fwalk"})
+FILE_PRESENCE_READERS = frozenset({"is_present", "is_directory", "is_occupied", "matching"})
+# The exceptions whose handler takes a failed stat or listing, beyond "not found": OSError, its aliases and the
+# subclass a denied stat raises, and the classes above it.
+SWALLOWING_ERRORS = frozenset(
+    {"OSError", "EnvironmentError", "IOError", "PermissionError", "Exception", "BaseException"}
+)
+
+
+def _stats_or_lists(body: list[ast.stmt], aliases: dict[str, str]) -> str | None:
+    """The first call in a block, outside a function it defines, that stats or lists a path, by its name, or None."""
+    pending: list[ast.AST] = list(body)
+    while pending:
+        node = pending.pop(0)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Call):
+            named = qualified_name(node.func, aliases)
+            method = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+            if method in STATTING_METHODS | PRESENCE_PREDICATES:
+                return method
+            if named in STATTING_FUNCTIONS | PRESENCE_FUNCTIONS:
+                return named
+            if named.rpartition(".")[2] in FILE_PRESENCE_READERS and named.startswith("file_presence."):
+                return named
+        pending.extend(ast.iter_child_nodes(node))
+    return None
+
+
+def _swallows(types: ast.expr | None) -> bool:
+    """Whether an except clause, or a suppress, takes a failed stat's OSError: a bare except, or one of
+    SWALLOWING_ERRORS, alone or in a tuple."""
+    if types is None:
+        return True
+    names = types.elts if isinstance(types, ast.Tuple) else [types]
+    return any(
+        (name.attr if isinstance(name, ast.Attribute) else getattr(name, "id", "")) in SWALLOWING_ERRORS
+        for name in names
+    )
+
+
+def _handled_answer(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    """How a handler around a stat or listing reads its OSError as nothing there: an except clause that answers nothing,
+    as `_empty_branch` reads a branch, or a contextlib.suppress of it."""
+    if (
+        isinstance(node, (ast.Try, ast.TryStar))
+        and (call := _stats_or_lists(node.body, aliases))
+        and any(_swallows(handler.type) and _empty_branch(handler.body) for handler in node.handlers)
+    ):
+        return (
+            f"answers nothing from a handler of {call}'s OSError, which reads a path it cannot stat or list as "
+            "nothing there; let the error through, or report the path"
+        )
+    if isinstance(node, (ast.With, ast.AsyncWith)) and (call := _stats_or_lists(node.body, aliases)):
+        for item in node.items:
+            context = item.context_expr
+            if (
+                isinstance(context, ast.Call)
+                and qualified_name(context.func, aliases) == "contextlib.suppress"
+                and any(_swallows(argument) for argument in context.args)
+            ):
+                return (
+                    f"suppresses {call}'s OSError, which reads a path it cannot stat or list as nothing there; let "
+                    "the error through, or report the path"
+                )
+    return None
 
 
 def _flag_given(node: ast.expr | None) -> bool:
@@ -1036,6 +1133,8 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
             )
         elif listing := _listing_answer(node, aliases):
             yield node, scope, listing
+        elif handled := _handled_answer(node, aliases):
+            yield node, scope, handled
 
 
 def presence_problems(root: Path, files: list[Path]) -> list[str]:

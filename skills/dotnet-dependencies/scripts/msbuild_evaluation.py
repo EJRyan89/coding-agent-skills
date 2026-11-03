@@ -58,6 +58,7 @@ from xml.etree.ElementTree import Element
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from dotnet_solution import project_path, refusal, same_path
+from file_presence import is_directory, is_present
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
     ASSEMBLY_VERSION,
@@ -70,6 +71,7 @@ from msbuild_reader import (
     item_specs,
     matching_framework,
     nearest_file,
+    os_unreadable,
     parse_xml,
 )
 from msbuild_xml import implicit_sdk, is_sdk_style, local_name
@@ -321,8 +323,16 @@ class Evaluation:
         return self.state.get(key)
 
     def exists(self, text: str) -> bool | None:
+        """MSBuild's `Exists()`: whether a file or a folder is at the path, following links; None, unsettled, for a path
+        the tree refuses or one whose stat fails, which is reported, never answered as not there."""
         path = project_path(self.project.path.parent, text)
-        return None if refusal(path, self.project.sources.tree) is not None else path.exists()
+        if refusal(path, self.project.sources.tree) is not None:
+            return None
+        try:
+            return is_present(path, other_is_absent=True) or is_directory(path, other_is_absent=True)
+        except OSError as error:
+            self.reports.append(os_unreadable(error, path))
+            return None
 
     def folder_above(self, name: str, start: str) -> str | None:
         directory = project_path(self.project.path.parent, start)
@@ -466,7 +476,15 @@ class Evaluation:
         if refused is not None:
             self.not_read(written, refused)
             return
-        if not path.is_file():
+        try:
+            present = is_present(path, other_is_absent=True)
+        except OSError as error:
+            # A file it cannot stat is reported with the stat's reason, as import_nearest reports one, never as not
+            # found.
+            self.reports.append(os_unreadable(error, path))
+            self.state.unsettle()
+            return
+        if not present:
             self.not_read(written, "the file it names is not found")
             return
         try:

@@ -78,8 +78,9 @@ SELF_CHECK_COMMAND = PYTHON + ' -B "{script}" validate-result --run "{run}" --ro
 # The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
 # each with why that is the answer it should give.
 PRESENCE_ALLOWED = {
-    "remove_run": "its caller passes ignore_errors only for a run it made and is removing because preparing it failed,"
-    " before raising that failure, which an error of the removal must not replace",
+    "remove_run": "making the source repository's read-only files writable is a best effort before the removal, and "
+    "its caller passes ignore_errors only for a run it made and is removing because preparing it failed, before "
+    "raising that failure, which an error of the removal must not replace",
 }
 
 

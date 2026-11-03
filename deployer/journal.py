@@ -69,6 +69,16 @@ JournalEntry = BackupEntry | InstallEntry | PreserveEntry
 Op = Literal["backup", "install", "preserve"]
 
 
+# The presence reads here that read a path they cannot stat or list as nothing there, each with why that is
+# the answer it should give.
+PRESENCE_ALLOWED = {
+    "journaled_runs": "None is its answer for staging runs it cannot read, apart from [] for none, and the report then"
+    " says nothing about what is installed",
+    "recover_incomplete": "a staging root it cannot list is reported as an ERROR and recovery answers False, that a "
+    "run needs inspection, never that none was interrupted",
+}
+
+
 def entry_root(entry: JournalEntry) -> str:
     """The root an entry names, or the skills root for one that names none."""
     return entry.get("root", DEFAULT_ROOT)

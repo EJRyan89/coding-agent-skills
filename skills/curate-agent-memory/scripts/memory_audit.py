@@ -213,18 +213,13 @@ USER_DESTINATION_GLOBS = ("CLAUDE.md", "rules/**/*.md")
 SKIPPED_DIRECTORIES = frozenset({".git", "node_modules", "bin", "obj", ".venv", "venv", "__pycache__", "packages"})
 
 
-# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
-# each with why that is the answer it should give.
-PRESENCE_ALLOWED = {
-    "cited_paths": "a cited path it cannot stat is reported as not found, a finding the user reviews and approves "
-    "before any memory changes, never a pass",
-}
-
-
 @dataclass
 class CitedPath:
+    """A path a memory cites: whether anything is there, or None with the reason when that cannot be told."""
+
     path: str
-    exists: bool
+    exists: bool | None
+    unreadable: str | None = None
 
 
 @dataclass
@@ -462,9 +457,24 @@ def cited_paths(body: str, bases: list[Path]) -> list[CitedPath]:
             continue
         seen.add(candidate)
         expanded = Path(candidate.replace("~", str(Path.home()), 1)) if candidate.startswith("~") else Path(candidate)
-        exists = expanded.exists() if expanded.is_absolute() else any((base / expanded).exists() for base in bases)
-        cited.append(CitedPath(candidate, exists))
+        exists, unreadable = cited_presence(
+            [expanded] if expanded.is_absolute() else [base / expanded for base in bases]
+        )
+        cited.append(CitedPath(candidate, exists, unreadable))
     return cited
+
+
+def cited_presence(places: list[Path]) -> tuple[bool | None, str | None]:
+    """Whether a file or a folder is at one of the places a cited path may name, following links; None with the
+    reason when none is found and a stat failed, so a path it cannot examine is never reported as not found."""
+    reason: str | None = None
+    for place in places:
+        try:
+            if is_present(place, other_is_absent=True) or is_directory(place, other_is_absent=True):
+                return True, None
+        except OSError as error:
+            reason = reason or flat_text(error.strerror or str(error))
+    return (None, reason) if reason is not None else (False, None)
 
 
 def destination_blocks(files: list[Path]) -> list[tuple[str, int, str, set[str]]]:

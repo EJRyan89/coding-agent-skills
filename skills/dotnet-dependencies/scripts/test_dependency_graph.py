@@ -2880,6 +2880,43 @@ def unlistable(folder: Path) -> Iterator[None]:
         yield
 
 
+@contextlib.contextmanager
+def stat_through_fails(target: Path) -> Iterator[None]:
+    """A stat through links of `target` alone fails, while its own link state still reads, so the tree's containment
+    check passes it and the reader's own stat is the one that fails; Path's presence predicates answer False for it,
+    as Python 3.14 and later do there."""
+    real_stat, real_exists, real_is_file = Path.stat, Path.exists, Path.is_file
+
+    def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == target and follow_symlinks:
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    def exists(path: Path, *rest: Any, **options: Any) -> bool:
+        return False if path == target else real_exists(path, *rest, **options)
+
+    def is_file(path: Path, *rest: Any, **options: Any) -> bool:
+        return False if path == target else real_is_file(path, *rest, **options)
+
+    with (
+        mock.patch.object(Path, "stat", stat),
+        mock.patch.object(Path, "exists", exists),
+        mock.patch.object(Path, "is_file", is_file),
+    ):
+        yield
+
+
+EVALUATED_PROJECT = (
+    '<Project Sdk="Microsoft.NET.Sdk">\n'
+    '  <Import Project="Local.props" />\n'
+    "  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n"
+    '  <ItemGroup><PackageReference Include="Quill.Http" Version="1.2.0" /></ItemGroup>\n'
+    "  <ItemGroup Condition=\"Exists('extra.marker')\">"
+    '<PackageReference Include="Quill.Extra" Version="1.0.0" /></ItemGroup>\n'
+    "</Project>\n"
+)
+
+
 class PresenceReadTests(Fixture):
     """Each reader that chooses among a folder's entries, or walks up for one, tells a file, a folder, and nothing
     apart, and refuses an entry it cannot stat or a folder it cannot list rather than reading it as absent."""
@@ -3054,6 +3091,22 @@ class PresenceReadTests(Fixture):
         self.assertEqual(
             [["src/App/App.csproj", "-", "Quill.Http", "graph", "Quill.Http (v1.2.0)"]], self.lines(rows, "PATH")
         )
+
+    def test_an_import_or_an_exists_condition_it_cannot_stat_is_an_unreadable_row_never_not_found(self) -> None:
+        # An Import whose file it cannot stat names the stat's reason, never "not found"; an Exists() condition on a
+        # path it cannot stat is reported and left unsettled, never answered False.
+        self.write("src/App/App.csproj", EVALUATED_PROJECT)
+        self.write("src/App/Local.props", "<Project />")
+        self.write("src/App/extra.marker", "")
+        for shown in ("src/App/Local.props", "src/App/extra.marker"):
+            with self.subTest(shown), stat_through_fails(self.root / shown):
+                code, rows = self.run_main("why", "Quill.Http", "--root", str(self.root))
+            self.assertEqual(1, code)
+            self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))
+            self.assertEqual([["src/App/App.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+            self.assertEqual(
+                [["src/App/App.csproj", "-", "Quill.Http", "graph", "Quill.Http (v1.2.0)"]], self.lines(rows, "PATH")
+            )
 
     def test_a_props_file_above_a_project_it_cannot_stat_is_an_unreadable_row(self) -> None:
         root = self.mixed_solution()

@@ -349,8 +349,22 @@ class MemoryAuditTests(unittest.TestCase):
                 "or `skills/<name>/SKILL.md`.",
             ),
         )
-        cited = {item["path"]: item["exists"] for item in self.by_file(self.run_audit())["paths.md"]["cited_paths"]}
-        self.assertEqual({"docs/guide.md": True, "docs/removed.md": False}, cited)
+        cited = {
+            item["path"]: (item["exists"], item["unreadable"])
+            for item in self.by_file(self.run_audit())["paths.md"]["cited_paths"]
+        }
+        self.assertEqual({"docs/guide.md": (True, None), "docs/removed.md": (False, None)}, cited)
+
+    def test_a_cited_path_it_cannot_stat_is_unreadable_never_not_found(self) -> None:
+        write(self.repo / "tools" / "run.py", "print()\n")
+        write(self.memory_dir / "paths.md", memory("paths", "Run `tools/run.py`."))
+        with stat_failing_at(self.repo / "tools" / "run.py"):
+            report = self.run_audit()
+        cited = {
+            item["path"]: (item["exists"], item["unreadable"])
+            for item in self.by_file(report)["paths.md"]["cited_paths"]
+        }
+        self.assertEqual({"tools/run.py": (None, "Permission denied")}, cited)
 
     def test_overlaps_point_at_matching_destination_text(self) -> None:
         write(

@@ -3157,6 +3157,17 @@ PRESENCE_SHAPES = {
         "def f(ps):\n    for p in ps:\n        if not {call}:\n            continue\n        print(p)\n"
     ),
     "while not P": "def f(p):\n    while not {call}:\n        p = p.parent\n    return p\n",
+    "if not P: print, return E": (
+        "def f(p):\n    if not {call}:\n        print('missing', p)\n        return {empty}\n    return 1\n"
+    ),
+    "if not P: log, continue": (
+        "import logging\n\n\ndef f(ps):\n    for p in ps:\n        if not {call}:\n"
+        "            logging.warning('missing %s', p)\n            continue\n        print(p)\n"
+    ),
+    "if P: ... else: log, return E": (
+        "def f(p, log):\n    if {call}:\n        return 1\n    else:\n        log.info('gone')\n        pass\n"
+        "        return {empty}\n"
+    ),
     "if not (P and Q): continue": (
         "def f(ps, q):\n    for p in ps:\n        if not ({call} and q):\n            continue\n        print(p)\n"
     ),
@@ -3195,6 +3206,49 @@ def _presence_form(shape: str, call: str, empty: str) -> str:
     return f"import os\nimport os.path as osp\nfrom os.path import isfile\n\n\n{body}"
 
 
+# A stat or listing whose OSError a handler answers with nothing, each call by each handler the policy reads, and a
+# contextlib.suppress of it.
+PRESENCE_STAT_CALLS = {
+    "a path's stat": "p.stat()",
+    "a path's lstat": "p.lstat()",
+    "a path's iterdir": "list(p.iterdir())",
+    "os.stat": "os.stat(p)",
+    "os.scandir": "list(os.scandir(p))",
+    "os.listdir": "os.listdir(p)",
+    "file_presence.is_present": "file_presence.is_present(p)",
+    "file_presence.matching": "file_presence.matching(p, '*')",
+    "a path's is_file": "p.is_file()",
+}
+PRESENCE_HANDLERS = {
+    "OSError": "except OSError:",
+    "PermissionError": "except PermissionError:",
+    "IOError": "except IOError:",
+    "Exception": "except Exception:",
+    "a bare except": "except:",
+    "a tuple with OSError": "except (ValueError, OSError):",
+}
+PRESENCE_HANDLED = {
+    **{
+        f"{handler} around {call}": (
+            f"import os\nimport file_presence\n\n\ndef f(p):\n    try:\n        x = {expression}\n    {clause}\n"
+            "        return []\n    return x\n"
+        )
+        for call, expression in PRESENCE_STAT_CALLS.items()
+        for handler, clause in PRESENCE_HANDLERS.items()
+    },
+    "an OSError handler that logs and continues": (
+        "import os\n\n\ndef f(ps):\n    for p in ps:\n        try:\n            os.stat(p)\n"
+        "        except OSError:\n            print('skipped', p)\n            continue\n        print(p)\n"
+    ),
+    "contextlib.suppress of OSError around a stat": (
+        "import contextlib\n\n\ndef f(p):\n    with contextlib.suppress(OSError):\n        return p.stat()\n"
+        "    return None\n"
+    ),
+    "suppress by its name around a listing": (
+        "from contextlib import suppress\n\n\ndef f(p):\n    with suppress(PermissionError, ValueError):\n"
+        "        return list(p.iterdir())\n    return []\n"
+    ),
+}
 # The listings, walks, and removals the policy refuses, each written as the module's imports may reach it.
 PRESENCE_LISTINGS = {
     "a path's glob": "def f(p):\n    return list(p.glob('*'))\n",
@@ -3250,6 +3304,7 @@ PRESENCE_REFUSED = {
         for listing in ("p.iterdir()", "reversed(list(os.scandir(p)))", "os.listdir(p)")
     },
     **PRESENCE_LISTINGS,
+    **PRESENCE_HANDLED,
 }
 PRESENCE_PASSED = {
     # The file_presence forms, which let a failed stat or listing through.
@@ -3280,6 +3335,35 @@ PRESENCE_PASSED = {
     "more work": "def f(p):\n    if not p.is_dir():\n        p.mkdir()\n        return None\n    return 1\n",
     "an operand of a wider test": "def f(p, q):\n    if q and p.is_file():\n        return 1\n    return 2\n",
     "an if with no else": "def f(p):\n    if p.exists():\n        p.unlink()\n    return 1\n",
+    # A branch that records the case before its empty answer, as a report or a list of problems does, answers with
+    # it; only a branch that logs and answers nothing reads it as nothing there.
+    "a branch that records the case and continues": (
+        "def f(ps, problems):\n    for p in ps:\n        if not p.is_file():\n"
+        "            problems.append(f'{p} is missing')\n            continue\n        print(p)\n"
+    ),
+    "a branch that reports and returns nothing": (
+        "def f(self, p):\n    if not p.is_file():\n        self.not_read(p, 'not found')\n        return\n"
+        "    return 1\n"
+    ),
+    # A handler that takes only "not found", lets the error through, or answers with a value, and a handler around
+    # a read rather than a stat or a listing, are no answer of nothing for a path it cannot stat.
+    "a FileNotFoundError handler": (
+        "def f(p):\n    try:\n        return p.stat()\n    except FileNotFoundError:\n        return None\n"
+    ),
+    "an OSError handler that raises": (
+        "def f(p):\n    try:\n        return p.stat()\n    except OSError as error:\n"
+        "        raise RuntimeError(p) from error\n"
+    ),
+    "an OSError handler that answers with a reason": (
+        "def f(p):\n    try:\n        return p.stat()\n    except OSError as error:\n        return str(error)\n"
+    ),
+    "an OSError handler around a read": (
+        "def f(p):\n    try:\n        return p.read_text()\n    except OSError:\n        return None\n"
+    ),
+    "suppress of FileNotFoundError around a stat": (
+        "import contextlib\n\n\ndef f(p):\n    with contextlib.suppress(FileNotFoundError):\n"
+        "        return p.stat()\n    return None\n"
+    ),
     # An if whose True branch returns and whose False goes on to a value, more work, or an empty return of its own.
     "an if P: return V, then a value": (
         "def f(p):\n    if p.is_file():\n        return p.read_text()\n    return 'default'\n"

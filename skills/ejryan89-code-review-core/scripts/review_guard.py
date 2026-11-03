@@ -129,6 +129,7 @@ Claim = tuple[Path, dict[str, Any]]
 PRESENCE_ALLOWED = {
     "_log_read": "counts a read the guard already allowed; a path it cannot stat goes uncounted, as one the JSON "
     "writer refuses does, and never turns the read into a denial",
+    "_prune_claims": "a claim whose run.json it cannot stat or read is kept, never pruned as one whose run is gone",
 }
 
 

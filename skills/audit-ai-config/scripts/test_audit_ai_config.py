@@ -6673,6 +6673,31 @@ class CodexLayeringTests(unittest.TestCase):
             ),
         )
 
+    def test_a_root_file_whose_size_cannot_be_read_is_an_error_never_measured_as_within_the_cap(self) -> None:
+        _write_fixture(self.root, {"AGENTS.md": "# Agents\n"})
+        agents = self.root / "AGENTS.md"
+        real = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == agents and follow_symlinks:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat):
+            findings = audit._codex_size(self.root, "AGENTS.md")
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "layering",
+                    "AGENTS.md",
+                    "Codex: the size of the root AGENTS.md cannot be read (Access is denied), so whether Codex reads "
+                    "it whole is not known",
+                )
+            ],
+            [(f.severity, f.check, f.path, f.message) for f in findings],
+        )
+
     def test_a_cap_that_is_not_a_positive_integer_leaves_codexs_default(self) -> None:
         for value in ("0", "-1", "true", '"100"', "1.5"):
             with self.subTest(value=value):
