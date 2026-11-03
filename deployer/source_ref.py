@@ -269,7 +269,7 @@ def archive_attributes(source_dir: Path, commit: str) -> list[tuple[str, str]]:
     """
     found: list[tuple[str, str]] = []
     for call in _attribute_calls(_tree_paths(source_dir, commit)):
-        arguments = ["check-attr", f"--source={commit}", *ARCHIVE_ONLY_ATTRIBUTES, "--", *call]
+        arguments = ["check-attr", "-z", f"--source={commit}", *ARCHIVE_ONLY_ATTRIBUTES, "--", *call]
         try:
             fields = _client().names(arguments, directory=source_dir)
         except GitError as error:
