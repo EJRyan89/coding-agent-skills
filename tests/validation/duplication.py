@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import re
+import string
 import sys
 import unittest
 from collections.abc import Callable, Iterator
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 import file_presence
+import whole_number
 from path_containment import posix_within
 from python_checks import claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
@@ -691,23 +693,439 @@ def skill_script_import_problems(root: Path) -> list[str]:
 
 
 # ejryan89-skill-core's path_containment is the one test of whether a path lies in a tree, so a fix to it reaches every
-# caller. Any other containment test, an is_relative_to, an os.path.commonpath, a prefix test written by hand, or a
-# relative_to whose ValueError a handler turns into an answer, states why in a module-level
-# CONTAINMENT_ALLOWED = {scope: reason}.
+# caller. Any other containment test, an is_relative_to, a commonpath or commonprefix of any path module, a search of a
+# path's parents, a prefix test written by hand, a relpath or a relative_to that walks up checked for a parent segment,
+# or a relative_to whose ValueError a handler or a contextlib.suppress turns into an answer, states why in a
+# module-level CONTAINMENT_ALLOWED = {scope: reason}.
 PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
 CONTAINMENT_ALLOWANCE = "CONTAINMENT_ALLOWED"
+# os.path is ntpath or posixpath, and each takes commonprefix from genericpath, so a test is read under every name.
+# The exceptions whose handler catches the ValueError relative_to raises, by the names a module reads them under.
+VALUE_ERROR_CATCHERS = frozenset({"ValueError", "Exception", "BaseException"})
+PATH_MODULES = ("os.path", "ntpath", "posixpath", "genericpath")
+COMMON_PATH_FUNCTIONS = frozenset(
+    f"{module}.{name}" for module in PATH_MODULES for name in ("commonpath", "commonprefix")
+)
+PATH_JOINS = frozenset(f"{module}.join" for module in PATH_MODULES)
+RELATIVE_PATHS = frozenset(f"{module}.relpath" for module in PATH_MODULES)
+SEPARATOR_NAMES = frozenset(f"{module}.{name}" for module in ("os", *PATH_MODULES) for name in ("sep", "altsep"))
+PARENT_NAMES = frozenset(f"{module}.pardir" for module in ("os", *PATH_MODULES))
+SEPARATORS = ("/", "\\")
+# The string methods that test a prefix or find where one starts, and the set and sequence methods that look for a
+# path among a path's parents.
+PREFIX_METHODS = frozenset({"startswith", "find", "index"})
+PARENT_SEARCHES = frozenset({"isdisjoint", "issubset", "issuperset", "intersection", "count", "index", "__contains__"})
+# Each function that matches a text against a pattern, by the position of its pattern: a regular expression's, and a
+# glob's, whose pattern may end in wildcards after the separator.
+REGULAR_EXPRESSIONS = {"re.match": 0, "re.fullmatch": 0, "re.search": 0, "re.compile": 0}
+GLOBS = {"fnmatch.fnmatch": 1, "fnmatch.fnmatchcase": 1, "fnmatch.filter": 1, "fnmatch.translate": 0}
+# The builtins that make a collection of what they are given, so its items are the prefixes given.
+COLLECTIONS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
 
 
-def _catches_value_error(handler: ast.ExceptHandler, aliases: dict[str, str]) -> bool:
-    """Whether `handler` catches ValueError, alone, in a tuple, or as a bare `except` or one of its bases."""
-    caught = handler.type
-    names = caught.elts if isinstance(caught, ast.Tuple) else [caught]
-    return any(
-        name is None or qualified_name(name, aliases) in {"ValueError", "Exception", "BaseException"} for name in names
-    )
+def _last_item(value: ast.expr) -> ast.expr | None:
+    """The last value a `%` formatting fills in: a tuple's last item, or the one value itself."""
+    if isinstance(value, ast.Tuple):
+        return value.elts[-1] if value.elts else None
+    return value
 
 
-def _relative_to_in(statements: list[ast.stmt]) -> bool:
+def _last_field(template: str, positional: list[ast.expr], keywords: list[ast.keyword]) -> ast.expr | None:
+    """The value a `str.format` template's last replacement field takes when nothing follows the field, by automatic
+    position, explicit index, or keyword, or None: text after it, a conversion, an attribute or item of the value, a
+    position an unpacking may move, or a template that does not parse."""
+    try:
+        fields = list(string.Formatter().parse(template))
+    except ValueError:
+        return None
+    if not fields or fields[-1][1] is None or fields[-1][3] is not None:
+        return None
+    field = fields[-1][1]
+    if field.isidentifier():
+        return {keyword.arg: keyword.value for keyword in keywords}.get(field)
+    index = sum(name == "" for _, name, _, _ in fields) - 1 if field == "" else whole_number.parse(field)
+    if index is None or index >= len(positional):
+        return None
+    return None if any(isinstance(argument, ast.Starred) for argument in positional[:index]) else positional[index]
+
+
+def _alternatives(value: ast.expr | None) -> list[ast.expr] | None:
+    """The values an expression may give, for one that gives one of others: an assignment expression's value, either
+    branch of a conditional expression, or any operand of `and` or `or`; None for any other expression."""
+    if isinstance(value, ast.NamedExpr):
+        return [value.value]
+    if isinstance(value, ast.IfExp):
+        return [value.body, value.orelse]
+    return value.values if isinstance(value, ast.BoolOp) else None
+
+
+def _never(_: ast.expr) -> bool:
+    """What a `+=` tells of a value that only a binding can give, such as a length or a stripped text: nothing."""
+    return False
+
+
+def _names_parents(value: ast.expr) -> bool:
+    """Whether `value` reads a path's `parents`."""
+    return any(isinstance(node, ast.Attribute) and node.attr == "parents" for node in ast.walk(value))
+
+
+def _returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.expr]:
+    """Each value a function returns, leaving out those of a function or class it defines."""
+    pending: list[ast.AST] = list(function.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Return) and node.value is not None:
+            yield node.value
+        if not isinstance(node, (*DEFINITIONS, ast.Lambda)):
+            pending.extend(ast.iter_child_nodes(node))
+
+
+class _ContainmentReader:
+    """Reads the containment tests a module writes, following each name, attribute, and call of a function the module
+    defines to every value it is given."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.resolver = CallableResolver(tree)
+        self.imported = import_aliases(tree)
+        # The names being followed, by the scope that owns each, so a name bound in a cycle is followed once.
+        self.following: set[tuple[int, str]] = set()
+        # Trailing characters a pattern's text may end in after its separator, such as a glob's `*`.
+        self.trailing = ""
+        # What each name holds beyond its bindings, by its key: a parameter's default, keyed as its function's scope
+        # owns it, and what an attribute is assigned and a function the module defines returns, keyed by name alone.
+        self.held: dict[tuple[int, str], list[ast.expr]] = {}
+        # What `+=` adds to a name or an attribute, since it binds no value of its own.
+        self.added: dict[tuple[int, str], list[ast.expr]] = {}
+        # What a loop or a comprehension iterates for each name it binds, whose items the name holds in turn.
+        self.looped: dict[tuple[int, str], list[ast.expr]] = {}
+        for node in ast.walk(tree):
+            self._record(node)
+
+    def _record(self, node: ast.AST) -> None:
+        if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and (key := self._key(node.target)):
+            self.added.setdefault(key, []).append(node.value)
+        elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension) and isinstance(node.target, ast.Name):
+            self.looped.setdefault(self._owner(node.target)[0], []).append(node.iter)
+        elif isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                if isinstance(target, ast.Attribute):
+                    self.held.setdefault((0, f".{target.attr}"), []).append(node.value)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            arguments = node.args
+            positional = [*arguments.posonlyargs, *arguments.args]
+            for argument, default in [
+                *zip(positional[len(positional) - len(arguments.defaults) :], arguments.defaults, strict=True),
+                *zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True),
+            ]:
+                if default is not None:
+                    scope = id(self.resolver.scopes[id(argument)])
+                    self.held.setdefault((scope, argument.arg), []).append(default)
+            if not isinstance(node, ast.Lambda):
+                self.held.setdefault((0, f"{node.name}()"), []).extend(_returns(node))
+
+    def _key(self, node: ast.expr) -> tuple[int, str] | None:
+        """The key a name or an attribute is followed by, or None for any other expression."""
+        if isinstance(node, ast.Attribute):
+            return 0, f".{node.attr}"
+        return self._owner(node)[0] if isinstance(node, ast.Name) else None
+
+    def _owner(self, node: ast.Name) -> tuple[tuple[int, str], list[ast.expr]]:
+        """The key of the scope that owns a name, with the name, and every expression that scope binds it to; a name
+        bound nowhere, such as a builtin, is owned by no scope and bound to nothing."""
+        owner = self.resolver.scopes[id(node)].owner(node.id)
+        if owner is None:
+            return (0, node.id), []
+        return (id(owner), node.id), [value for value in owner.bindings[node.id] if isinstance(value, ast.expr)]
+
+    def _follow(self, node: ast.expr, read: Callable[[ast.expr], bool], added: Callable[[ast.expr], bool]) -> bool:
+        """Whether `read` holds for any value a name, an attribute, or a call of a function the module defines is
+        given, or `added` for any `+=` adds to it; False for one already being followed, so a cycle ends."""
+        if isinstance(node, ast.Name):
+            key, values = self._owner(node)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute):
+            called = node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+            key, values = (0, f"{called}()"), []
+        elif isinstance(node, ast.Attribute):
+            key, values = (0, f".{node.attr}"), []
+        else:
+            return False
+        if key in self.following:
+            return False
+        self.following.add(key)
+        try:
+            return (
+                any(map(read, [*values, *self.held.get(key, [])]))
+                or any(self._each(iterable, read) for iterable in self.looped.get(key, []))
+                or any(map(added, self.added.get(key, [])))
+            )
+        finally:
+            self.following.discard(key)
+
+    def _each(self, iterable: ast.expr, read: Callable[[ast.expr], bool]) -> bool:
+        """Whether `read` holds for an item of what a loop iterates: a literal tuple, list, or set, a comprehension's
+        element, a collection a builtin such as `tuple` makes of one, or one a name, an attribute, or a function of the
+        module holds."""
+        if isinstance(iterable, ast.Tuple | ast.List | ast.Set):
+            return any(map(read, iterable.elts))
+        if isinstance(iterable, ast.ListComp | ast.SetComp | ast.GeneratorExp):
+            return read(iterable.elt)
+        if isinstance(iterable, ast.Call) and self.name(iterable.func) in COLLECTIONS:
+            return any(self._each(argument, read) for argument in iterable.args[:1])
+
+        def each(held: ast.expr) -> bool:
+            return self._each(held, read)
+
+        return self._follow(iterable, each, each)
+
+    def name(self, node: ast.AST) -> str:
+        """The dotted name an expression stands for, through the names the module binds once, or else through its
+        imports, which still name a module it imports in two places."""
+        return self.resolver.name(node) or qualified_name(node, self.imported)
+
+    def ends(self, value: ast.expr | None) -> bool:
+        """Whether the text `value` gives ends in a separator, a literal such as "/" or "skills/" included."""
+        if isinstance(value, ast.Constant):
+            return isinstance(value.value, str) and value.value.rstrip(self.trailing).endswith(SEPARATORS)
+        if (choices := _alternatives(value)) is not None:
+            return any(map(self.ends, choices))
+        if isinstance(value, ast.Name | ast.Attribute) and self.name(value) in SEPARATOR_NAMES:
+            return True
+        if isinstance(value, ast.Name | ast.Attribute):
+            return self._follow(value, self.ends, self.ends)
+        return value is not None and self.built(value)
+
+    def built(self, value: ast.expr) -> bool:
+        """Whether `value` builds a text ending in a separator from another, as a folder and its separator are built:
+        by `+`, an f-string, `%` or `str.format`, a `join` of a path module or of a string, or any of these held in a
+        name, an attribute, a parameter's default, or what a function of the module returns, by a binding or a `+=`,
+        or in an item of a tuple or list of prefixes. A literal alone is no folder."""
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            return self.ends(value.right)
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod) and isinstance(value.left, ast.Constant):
+            template = value.left.value
+            return isinstance(template, str) and (
+                template.endswith(SEPARATORS) or (template.endswith("%s") and self.ends(_last_item(value.right)))
+            )
+        if isinstance(value, ast.JoinedStr):
+            last = value.values[-1] if value.values else None
+            return self.ends(last.value if isinstance(last, ast.FormattedValue) else last)
+        if isinstance(value, ast.Call):
+            return self._built_by_call(value)
+        if isinstance(value, ast.Tuple | ast.List | ast.Set):
+            return any(map(self.built, value.elts))
+        if (choices := _alternatives(value)) is not None:
+            return any(map(self.built, choices))
+        return self._follow(value, self.built, self.ends)
+
+    def _built_by_call(self, call: ast.Call) -> bool:
+        function = self.name(call.func)
+        last = call.args[-1:]
+        if function in PATH_JOINS:
+            return any(self.ends(item) or (isinstance(item, ast.Constant) and item.value == "") for item in last)
+        if function == "str.format":
+            template, positional = (call.args[0] if call.args else None), call.args[1:]
+        elif isinstance(call.func, ast.Attribute) and call.func.attr == "format":
+            template, positional = call.func.value, call.args
+        elif isinstance(call.func, ast.Attribute) and call.func.attr == "join":
+            return any(self._joined(call.func.value, items) for items in call.args[:1])
+        elif function in COLLECTIONS:
+            return self._each(call, self.built)
+        else:
+            return self._follow(call, self.built, self.built)
+        if not (isinstance(template, ast.Constant) and isinstance(template.value, str)):
+            return False
+        filled = _last_field(template.value, positional, call.keywords)
+        return template.value.endswith(SEPARATORS) or self.ends(filled)
+
+    def _joined(self, joiner: ast.expr, items: ast.expr) -> bool:
+        """Whether a join of a literal tuple or list ends in a separator: its last item does, or the joiner does and
+        the last item is empty."""
+        if not (isinstance(items, ast.Tuple | ast.List) and items.elts):
+            return False
+        last = items.elts[-1]
+        empty = isinstance(last, ast.Constant) and last.value == ""
+        return self.ends(last) or (empty and self.ends(joiner))
+
+    def _pattern(self, call: ast.Call, positions: dict[str, int], trailing: str) -> bool:
+        """Whether `call` matches against a pattern holding a text built to end in a separator, followed by any of
+        `trailing`."""
+        position = positions.get(self.name(call.func))
+        pattern = call_argument(call, position, "pattern", "pat") if position is not None else None
+        if pattern is None:
+            return False
+        self.trailing = trailing
+        try:
+            return any(self.built(node) for node in ast.walk(pattern) if isinstance(node, ast.expr))
+        finally:
+            self.trailing = ""
+
+    def _relative(self, value: ast.expr) -> bool:
+        """Whether `value` holds a relpath's result, or a relative_to's that walks up with `..` segments: the call
+        itself, or a name the module binds to one."""
+        return any(
+            (isinstance(node, ast.Call) and (self.name(node.func) in RELATIVE_PATHS or _walks_up(node)))
+            or (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and self._follow(node, self._relative, self._relative)
+            )
+            for node in ast.walk(value)
+        )
+
+    def _parent(self, value: ast.expr) -> bool:
+        """Whether `value` is a parent segment, as a literal starting with "..", os.pardir, either followed by more,
+        or a tuple or list holding one."""
+        if isinstance(value, ast.Constant):
+            return isinstance(value.value, str) and value.value.startswith("..")
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            return self._parent(value.left)
+        if isinstance(value, ast.Tuple | ast.List | ast.Set):
+            return any(self._parent(item) for item in value.elts)
+        return self.name(value) in PARENT_NAMES
+
+    def _length(self, value: ast.expr | None) -> bool:
+        """Whether `value` is a `len` call, or a name bound to one."""
+        if isinstance(value, ast.Call):
+            return self.name(value.func) == "len"
+        return isinstance(value, ast.Name) and self._follow(value, self._length, _never)
+
+    def _stripped(self, value: ast.expr) -> bool:
+        """Whether `value` is a text with a folder and its separator removed from its front, or a name bound to one."""
+        if isinstance(value, ast.Call):
+            method = value.func.attr if isinstance(value.func, ast.Attribute) else ""
+            return method == "removeprefix" and any(map(self.built, value.args))
+        return isinstance(value, ast.Name) and self._follow(value, self._stripped, _never)
+
+    def _leading(self, value: ast.expr) -> bool:
+        """Whether `value` slices a text or a path's parts up to the length of another."""
+        return (
+            isinstance(value, ast.Subscript)
+            and isinstance(value.slice, ast.Slice)
+            and (
+                value.slice.lower is None
+                or (isinstance(value.slice.lower, ast.Constant) and value.slice.lower.value == 0)
+            )
+            and self._length(value.slice.upper)
+        )
+
+    def _after_prefix(self, value: ast.expr) -> bool:
+        """Whether `value` reads a text from the length of another on: the character there, or the rest."""
+        if not isinstance(value, ast.Subscript):
+            return False
+        index = value.slice
+        return self._length(index.lower if isinstance(index, ast.Slice) else index)
+
+    def _holds_separator(self, value: ast.expr) -> bool:
+        """Whether `value` is a separator, a literal holding one, or a tuple, list, or set holding one."""
+        if isinstance(value, ast.Constant):
+            return isinstance(value.value, str) and any(separator in value.value for separator in SEPARATORS)
+        if isinstance(value, ast.Tuple | ast.List | ast.Set):
+            return any(map(self._holds_separator, value.elts))
+        return self.name(value) in SEPARATOR_NAMES
+
+    def test(self, node: ast.AST) -> str | None:
+        """The containment test `node` writes, or None: an is_relative_to, a commonpath or commonprefix of any path
+        module, a search of a path's parents, a startswith, find, index, regular expression, or glob of a text built
+        to end in a separator, a comparison of what a removeprefix of one leaves, a check for a separator after a
+        prefix, a relpath or a relative_to that walks up checked for a parent segment, a comparison of a path's
+        leading parts, or of a leading slice with a folder and its separator, or a `try` or a `with` whose body calls
+        relative_to and whose handler catches, or whose `contextlib.suppress` suppresses, the ValueError it raises for
+        a path outside the folder, which turns that error into an answer."""
+        if isinstance(node, ast.Attribute) and node.attr == "is_relative_to":
+            return "is_relative_to"
+        if (
+            isinstance(node, ast.Try | ast.TryStar)
+            and _calls_relative_to(node.body)
+            and any(self._catches_value_error(handler.type) for handler in node.handlers)
+        ) or (
+            isinstance(node, ast.With)
+            and _calls_relative_to(node.body)
+            and any(self._suppresses_value_error(item.context_expr) for item in node.items)
+        ):
+            return "a relative_to whose ValueError is caught"
+        if (
+            isinstance(node, ast.Attribute | ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and (function := self.name(node)) in COMMON_PATH_FUNCTIONS
+        ):
+            return function.rpartition(".")[2]
+        if isinstance(node, ast.Call):
+            return self._call_test(node)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitAnd) and _names_parents(node):
+            return "a search of a path's parents"
+        if isinstance(node, ast.Compare):
+            return self._comparison_test(node)
+        return None
+
+    def _catches_value_error(self, caught: ast.expr | None) -> bool:
+        """Whether an `except` clause's type catches ValueError: bare, ValueError itself or a base of it, alone or in a
+        tuple."""
+        if caught is None:
+            return True
+        kinds = caught.elts if isinstance(caught, ast.Tuple) else [caught]
+        return any(self.name(kind).removeprefix("builtins.") in VALUE_ERROR_CATCHERS for kind in kinds)
+
+    def _suppresses_value_error(self, context: ast.expr) -> bool:
+        """Whether a `with` item is a `contextlib.suppress` given ValueError or a base of it."""
+        return (
+            isinstance(context, ast.Call)
+            and self.name(context.func) == "contextlib.suppress"
+            and any(self._catches_value_error(kind) for kind in context.args)
+        )
+
+    def _call_test(self, call: ast.Call) -> str | None:
+        method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+        subjects = [call.func.value, *call.args] if isinstance(call.func, ast.Attribute) else []
+        if method in PARENT_SEARCHES and any(map(_names_parents, subjects)):
+            return "a search of a path's parents"
+        if method == "startswith" and any(map(self._relative, subjects)) and any(map(self._parent, call.args)):
+            return "a relpath checked for a parent segment"
+        if (
+            method == "startswith"
+            and any(map(self._after_prefix, subjects))
+            and any(map(self._holds_separator, call.args))
+        ):
+            return "a check for a separator after a prefix"
+        if method in PREFIX_METHODS and any(map(self.built, call.args)):
+            return (
+                "a startswith of a folder and its separator"
+                if method == "startswith"
+                else "a search for a folder and its separator"
+            )
+        if self._pattern(call, REGULAR_EXPRESSIONS, ""):
+            return "a regular expression of a folder and its separator"
+        if self._pattern(call, GLOBS, "*"):
+            return "a glob of a folder and its separator"
+        return None
+
+    def _comparison_test(self, comparison: ast.Compare) -> str | None:
+        sides = [comparison.left, *comparison.comparators]
+        searched = [
+            side
+            for op, side in zip(comparison.ops, comparison.comparators, strict=True)
+            if isinstance(op, ast.In | ast.NotIn)
+        ]
+        if any(map(_names_parents, searched)):
+            return "a search of a path's parents"
+        if any(map(self._parent, sides)) and any(map(self._relative, sides)):
+            return "a relpath checked for a parent segment"
+        if any(map(self._after_prefix, sides)) and any(map(self._holds_separator, sides)):
+            return "a check for a separator after a prefix"
+        if any(map(self._stripped, sides)):
+            return "a removeprefix of a folder and its separator"
+        leading = next(filter(self._leading, sides), None)
+        if (
+            isinstance(leading, ast.Subscript)
+            and isinstance(leading.value, ast.Attribute)
+            and leading.value.attr == "parts"
+        ):
+            return "a comparison of a path's leading parts"
+        if leading is not None and any(map(self.built, sides)):
+            return "a comparison of a leading slice"
+        return None
+
+
+def _calls_relative_to(statements: list[ast.stmt]) -> bool:
     """Whether `statements` call `relative_to` as they run, not inside a function, lambda, or class they define, which
     runs later, outside their handlers."""
 
@@ -721,69 +1139,17 @@ def _relative_to_in(statements: list[ast.stmt]) -> bool:
     return any(calls(statement) for statement in statements)
 
 
-def _containment_test(node: ast.AST, aliases: dict[str, str]) -> str | None:
-    """The containment test `node` writes, or None: an is_relative_to, an os.path.commonpath, a startswith of a text
-    ending in a separator, a comparison of a path's leading parts, or a `try` whose body calls `relative_to` and one of
-    whose handlers catches the ValueError it raises for a path outside the folder."""
-
-    def separator(value: ast.expr) -> bool:
-        return (isinstance(value, ast.Constant) and value.value in {"/", "\\"}) or qualified_name(value, aliases) in {
-            "os.sep",
-            "os.altsep",
-            "os.path.sep",
-            "os.path.altsep",
-        }
-
-    def ends_in_separator(value: ast.expr) -> bool:
-        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
-            return separator(value.right) or (
-                isinstance(value.right, ast.Constant)
-                and isinstance(value.right.value, str)
-                and value.right.value.endswith(("/", "\\"))
-            )
-        return (
-            isinstance(value, ast.JoinedStr)
-            and bool(value.values)
-            and isinstance(last := value.values[-1], ast.Constant)
-            and isinstance(last.value, str)
-            and last.value.endswith(("/", "\\"))
+def _walks_up(call: ast.Call) -> bool:
+    """Whether a call is a relative_to given `walk_up` as anything but a false literal, which puts `..` segments in
+    its result for a path outside the folder rather than raising."""
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "relative_to"
+        and any(
+            keyword.arg == "walk_up" and not (isinstance(keyword.value, ast.Constant) and not keyword.value.value)
+            for keyword in call.keywords
         )
-
-    def leading_parts(value: ast.expr) -> bool:
-        return (
-            isinstance(value, ast.Subscript)
-            and isinstance(value.value, ast.Attribute)
-            and value.value.attr == "parts"
-            and isinstance(value.slice, ast.Slice)
-            and value.slice.lower is None
-            and isinstance(value.slice.upper, ast.Call)
-            and qualified_name(value.slice.upper.func, aliases) == "len"
-        )
-
-    if isinstance(node, ast.Attribute) and node.attr == "is_relative_to":
-        return "is_relative_to"
-    if isinstance(node, ast.Attribute | ast.Name) and qualified_name(node, aliases) in {
-        "os.path.commonpath",
-        "os.path.commonprefix",
-    }:
-        return qualified_name(node, aliases).removeprefix("os.path.")
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "startswith"
-        and node.args
-        and ends_in_separator(node.args[0])
-    ):
-        return "a startswith of a folder and its separator"
-    if isinstance(node, ast.Compare) and any(leading_parts(side) for side in (node.left, *node.comparators)):
-        return "a comparison of a path's leading parts"
-    if (
-        isinstance(node, ast.Try | ast.TryStar)
-        and _relative_to_in(node.body)
-        and any(_catches_value_error(handler, aliases) for handler in node.handlers)
-    ):
-        return "a relative_to whose ValueError is caught"
-    return None
+    )
 
 
 def containment_problems(root: Path, files: list[Path]) -> list[str]:
@@ -791,7 +1157,7 @@ def containment_problems(root: Path, files: list[Path]) -> list[str]:
     problems: list[str] = []
     paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != PATH_CONTAINMENT]
     for _, name, tree in python_trees(paths, root, problems):
-        aliases = import_aliases(tree)
+        reader = _ContainmentReader(tree)
         found = [
             (
                 node.lineno,
@@ -800,7 +1166,7 @@ def containment_problems(root: Path, files: list[Path]) -> list[str]:
                 f"test, or state why in {CONTAINMENT_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.expr | ast.Try | ast.TryStar) and (test := _containment_test(node, aliases))
+            if isinstance(node, ast.expr | ast.Try | ast.TryStar | ast.With) and (test := reader.test(node))
         ]
         problems += sanctioned_problems(name, tree, CONTAINMENT_ALLOWANCE, found)
     return problems

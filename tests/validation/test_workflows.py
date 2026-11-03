@@ -23,7 +23,10 @@ from workflows import (
     IMAGE_MODULE_STEP,
     PINNED_TOOL_LINES,
     PULL_REQUEST_CODE_STATEMENT,
+    RETIRED_TOKEN_CLAIMS,
     SAME_REPOSITORY_STATEMENT,
+    TOKEN_CLAIM_OMISSIONS,
+    TOKEN_CLAIM_SPANS,
     WorkflowSyntaxError,
     changelog_job_problems,
     codex_settings_problems,
@@ -44,6 +47,8 @@ from workflows import (
     read_workflow,
     required_check_problems,
     token_claim_problems,
+    token_claim_read_problems,
+    token_claim_texts,
     token_reach_problems,
     tool_cache_problems,
     uninstall_check_problems,
@@ -1974,30 +1979,352 @@ def test_a_token_job_running_the_pull_requests_code_unstated_or_from_an_unread_t
     assert any(problem in found for found in problems), problems
 
 
-def test_a_row_naming_the_actions_default_input_and_no_retired_claim_passes() -> None:
-    assert token_claim_problems({"validate.yml": "no command a step runs is given the token"}, REACH_DESIGN) == []
+def _token_sentence_spellings(sentence: str) -> dict[str, str]:
+    """The sentence as a workflow comment, upper-cased, reflowed one word to a comment line, and as a Markdown
+    quotation reflowed with its first word emphasized and the token in backticks, each a spelling token_claim_problems
+    reads as the same sentence."""
+    words = sentence.split()
+    emphasized = [f"*{words[0]}*", *words[1:]]
+    return {
+        "as-written": f"    # The legs:\n    # {sentence}.\n",
+        "case-folded": f"# {sentence.upper()}.\n",
+        "reflowed": "".join(f"    # {word}\n" for word in words),
+        "markdown": "> "
+        + "\n> ".join(" ".join(emphasized[i : i + 2]) for i in range(0, len(emphasized), 2)).replace(
+            "token", "`token`"
+        ),
+    }
+
+
+# Each claim the repository retired as false, its respellings, and the words it may be written in, with the retired
+# claim each makes.
+NO_STEP, NO_TOKEN, ONLY_JOB = (
+    "no step is given the token",
+    "the legs hold no token",
+    "the only job given the run's token",
+)
+RETIRED_CLAIM_SPELLINGS = [
+    ("no step here is given the token", NO_STEP),
+    ("no step is given the token", NO_STEP),
+    ("hold no token", NO_TOKEN),
+    ("the only job given the run's token", ONLY_JOB),
+    ("the one job given the run's read-only token", ONLY_JOB),
+    # The respellings a review found passing the exact-substring check.
+    ("No step here is given the token", NO_STEP),
+    ("no step is given the run's token", NO_STEP),
+    ("the legs holds no token", NO_TOKEN),
+    ("the only job given the token", ONLY_JOB),
+    # The holders, verbs, negations, and token names the patterns read.
+    ("no steps here are given the GITHUB_TOKEN", NO_STEP),
+    ("none of the legs is given the token", NO_STEP),
+    ("no workflow receives a token", NO_STEP),
+    ("no job runs with the GH_TOKEN", NO_STEP),
+    ("the legs are not given the token", NO_STEP),
+    ("the legs do not hold the run's token", NO_STEP),
+    ("the steps never hold the token", NO_STEP),
+    ("the legs don't get the token", NO_STEP),
+    ("the legs are given no token", NO_TOKEN),
+    ("each leg held no read-only token", NO_TOKEN),
+    ("the sole job that holds the token", ONLY_JOB),
+    ("only the known-failures job is given the run\N{RIGHT SINGLE QUOTATION MARK}s token", ONLY_JOB),
+    ("the single step with the token", ONLY_JOB),
+    # The spellings the governance sibling review reproduced passing: underscore emphasis.
+    ("no step is _given_ the token", NO_STEP),
+    # Unicode's hyphen, dash, minus, and space variants, and the invisible characters.
+    ("no step is given the read\N{NON-BREAKING HYPHEN}only token", NO_STEP),
+    ("each leg held no read\N{MINUS SIGN}only token", NO_TOKEN),
+    ("no\N{NO-BREAK SPACE}step is\N{NARROW NO-BREAK SPACE}given\N{THIN SPACE}the token", NO_STEP),
+    ("no step is gi\N{ZERO WIDTH SPACE}ven the to\N{SOFT HYPHEN}ken", NO_STEP),
+    # A word that qualifies the holder or the verb.
+    ("no step is ever given the token", NO_STEP),
+    ("no other job is given the token", NO_STEP),
+    ("not one step is given the token", NO_STEP),
+    ("zero steps are given the token", NO_STEP),
+    ("no command or step is given the token", NO_STEP),
+    ("not a single leg holds the token", NO_STEP),
+    # The token named first.
+    ("the token is given to no step", NO_STEP),
+    ("the token is passed to no job", NO_STEP),
+    ("the token reaches no step", NO_STEP),
+    ("the token goes to this job alone", ONLY_JOB),
+    ("the token is handed to the known-failures job alone", ONLY_JOB),
+    ("the token is given only to the known-failures job", ONLY_JOB),
+    # The token's other names, an expression that reads it among them.
+    ("no step is given the repository token", NO_STEP),
+    ("no step is given ${{ secrets.GITHUB_TOKEN }}", NO_STEP),
+    ("no job receives ${{ github.token }}", NO_STEP),
+    ("only the query job uses github.token", ONLY_JOB),
+    # The common verbs beyond giving and holding.
+    ("no step sees the token", NO_STEP),
+    ("no step uses the token", NO_STEP),
+    ("no step can read the token", NO_STEP),
+    ("no step has access to the token", NO_STEP),
+    ("no step is granted the token", NO_STEP),
+    ("every step runs without the token", NO_STEP),
+    ("the legs cannot read the token", NO_STEP),
+    # The spellings the review of the pull request reproduced passing: a holder placed by "in".
+    ("no step in this job is given the token", NO_STEP),
+    ("no step in validate.yml is given the token", NO_STEP),
+    ("no step within the legs holds the token", NO_STEP),
+    # The token named first with its verb negated.
+    ("the token is not given to any step", NO_STEP),
+    ("the token is never given to a job", NO_STEP),
+    ("the token is not passed to any job", NO_STEP),
+    ("the token isn't handed to the legs", NO_STEP),
+    ("the token does not reach any step", NO_STEP),
+    ("the token never goes to a leg", NO_STEP),
+    # Any possessive before the token, and "read-only" with a space, no space, or a hyphen variant.
+    ("no step is given the workflow's token", NO_STEP),
+    ("no step is given the run's read only token", NO_STEP),
+    ("no job is given the run's readonly token", NO_STEP),
+    ("no leg is given the run's read\N{EN DASH}only token", NO_STEP),
+    ("no leg is given the built\N{EN DASH}in token", NO_STEP),
+    ("the legs' token is given to no step", NO_STEP),
+    ("the only job given the repository's token", ONLY_JOB),
+    ("each leg held no validate.yml's read only token", NO_TOKEN),
+    # The plural and possessive token.
+    ("the legs hold no tokens", NO_TOKEN),
+    ("no step is given any tokens", NO_STEP),
+    ("no step is given the run's tokens", NO_STEP),
+    ("no job receives the tokens' values", NO_STEP),
+    # An auxiliary before the verb, and each negated.
+    ("no step has been given the token", NO_STEP),
+    ("no step will be given the token", NO_STEP),
+    ("no step should hold the token", NO_STEP),
+    ("no job is being given the token", NO_STEP),
+    ("no leg has held the token", NO_STEP),
+    ("the legs have not been given the token", NO_STEP),
+    ("the legs won't be given the token", NO_STEP),
+    ("the legs should not hold the token", NO_STEP),
+    ("the legs will be given no token", NO_TOKEN),
+    ("the token has been given to no step", NO_STEP),
+    ("the token will be passed to no job", NO_STEP),
+    ("the token has not been given to any step", NO_STEP),
+    ("the token will not reach any step", NO_STEP),
+    ("the only job that has been given the token", ONLY_JOB),
+    ("only the known-failures job will be given the token", ONLY_JOB),
+    ("the legs did not get passed the token", NO_STEP),
+]
+
+# The true statements the repository makes about the token, each of which names the command or program that holds it
+# or a holder the patterns do not read.
+TRUE_TOKEN_STATEMENTS = [
+    "no command a step runs is given the token",
+    "no command a step here runs is given the token, so no suite holds it; the pinned actions take the run's token as "
+    "the default of their `token` input, as every job's do",
+    "It is the only job whose command is given the run's token, as GH_TOKEN in its one step that runs anything",
+    "the one job whose command is given the run's read-only token, so no suite holds the token",
+    "The run's own token reaches one command alone, that step's, as `GH_TOKEN`",
+    "the validation legs read `contents` alone and no command they run is given the token",
+    "a fork's pull request is given a read-only token whatever it changes",
+    "the legs' commands are given no token",
+    "so no program a job runs is given a token",
+    "Only `tests/known_failure_issues.py` runs it, so the token gh reads reaches no policy and no suite",
+    "refuses each of `RETIRED_TOKEN_CLAIMS` by its meaning: that a step, job, leg, or workflow is given none, or that "
+    "one job alone is given it",
+    "no command or program a step runs is given the token",
+    "the token reaches that program and the modules it imports alone",
+    "validation and every workflow run without a model, a token beyond the read-only default, or a signed-in runtime",
+    # A holder that owns what the token reaches, named after the token.
+    "the token is not given to any step's command",
+    "the token is given to no step's command",
+    "the token reaches no step's command",
+    "the token does not reach any step's command",
+    "the token reaches no steps' commands",
+    "the token goes only to the query job's command",
+    # "Only" opening a condition, not closing the holder.
+    "The token reaches a step only as one of `token_steps` names",
+    "the token reaches a job only through its one sanctioned step",
+    # The same true statements with an auxiliary before the verb.
+    "no command a step runs has been given the token",
+    "the token will reach no step's command",
+    "the tokens a contributor's shell holds reach no suite",
+]
 
 
 @pytest.mark.parametrize(
-    "claim",
+    "text",
     [
-        "no step here is given the token",
-        "no step is given the token",
-        "hold no token",
-        "the only job given the run's token",
-        "the one job given the run's read-only token",
+        pytest.param(text, id=f"{statement[:40]}-{spelling}")
+        for statement in TRUE_TOKEN_STATEMENTS
+        for spelling, text in _token_sentence_spellings(statement).items()
     ],
 )
-def test_a_retired_token_claim_anywhere_fails(claim: str) -> None:
-    # A claim wrapped across lines is still read, as `_comment_text` hands the comments over.
-    wrapped = claim.replace(" ", "\n", 1)
-    assert token_claim_problems({"validate.yml": f"The legs:\n{wrapped}."}, REACH_DESIGN) == [
-        f"validate.yml says {claim!r}, which the pinned actions' default `token` input makes untrue"
+def test_a_true_token_statement_in_any_spelling_passes(text: str) -> None:
+    assert token_claim_problems({"validate.yml": text}, REACH_DESIGN) == []
+    assert token_claim_problems({}, f"{REACH_DESIGN}\n{text}\n") == []
+
+
+@pytest.mark.parametrize(
+    ("text", "retired"),
+    [
+        pytest.param(text, retired, id=f"{claim}-{spelling}")
+        for claim, retired in RETIRED_CLAIM_SPELLINGS
+        for spelling, text in _token_sentence_spellings(claim).items()
+    ],
+)
+def test_a_retired_token_claim_in_any_spelling_fails(text: str, retired: str) -> None:
+    suffix = f", the retired claim {retired!r}, which the pinned actions' default `token` input makes untrue"
+    problems = token_claim_problems({"validate.yml": text}, REACH_DESIGN)
+    assert len(problems) == 1, problems
+    assert problems[0].startswith("validate.yml says "), problems
+    assert problems[0].endswith(suffix), problems
+
+
+@pytest.mark.parametrize(("claim", "retired"), RETIRED_CLAIM_SPELLINGS)
+def test_a_retired_token_claim_anywhere_in_the_design_document_fails(claim: str, retired: str) -> None:
+    suffix = f", the retired claim {retired!r}, which the pinned actions' default `token` input makes untrue"
+    in_row = REACH_DESIGN.replace("the token.", f"the legs: {claim}.")
+    elsewhere = f"{REACH_DESIGN}\n## Another section\n\nThe legs:\n{claim.replace(' ', chr(10), 1)}.\n"
+    for design in (in_row, elsewhere):
+        problems = token_claim_problems({}, design)
+        assert len(problems) == 1, problems
+        assert problems[0].startswith("docs/design.md says "), problems
+        assert problems[0].endswith(suffix), problems
+
+
+def test_a_retired_token_claim_far_into_a_long_text_fails_and_each_is_found_once() -> None:
+    filler = "a sentence with nothing to say. " * 100
+    text = f"{filler}no step is given the token. {filler}the legs hold no token. the token reaches no step. {filler}"
+    problems = token_claim_problems({"README.md": text}, REACH_DESIGN)
+    assert sorted(problem.split(", the retired claim ")[0] for problem in problems) == [
+        "README.md says 'legs hold no token'",
+        "README.md says 'no step is given the token'",
+        "README.md says 'the token reaches no step'",
     ]
-    row = REACH_DESIGN.replace("the token.", f"the legs {claim}.")
-    assert token_claim_problems({}, row) == [
-        f"docs/design.md's credentials row says {claim!r}, which the pinned actions' default `token` input makes untrue"
+
+
+def test_a_token_claim_read_that_found_nothing_fails_and_one_that_read_each_place_passes() -> None:
+    required = [
+        ".github/workflows/deployable.yml",
+        ".github/workflows/mutation.yml",
+        ".github/workflows/runtime-changelogs.yml",
+        ".github/workflows/runtime-command-lines.yml",
+        ".github/workflows/validate.yml",
+        "CONTRIBUTING.md",
+        "docs/implementing-changes.md",
+        "tests/known_failure_issues.py",
+        "tests/run_validation.py",
+        "tests/validation/credentials.py",
     ]
+    assert token_claim_read_problems({}) == [
+        f"the token-claim policy read no {name}, where a retired claim was made" for name in required
+    ]
+    assert token_claim_read_problems(dict.fromkeys(required, "")) == []
+    missing_one = dict.fromkeys(required[1:], "")
+    assert token_claim_read_problems(missing_one) == [
+        f"the token-claim policy read no {required[0]}, where a retired claim was made"
+    ]
+
+
+def test_the_parts_the_token_claim_policy_leaves_out_are_pinned_with_their_reasons() -> None:
+    assert TOKEN_CLAIM_OMISSIONS == {
+        "tests/validation/test_workflows.py": "its fixture rows write each retired claim",
+        "skills/": "a shipped skill speaks of the user's repository, its jobs and steps, and the user's own gh token",
+        "agents/": "a shipped agent speaks of the user's repository, as a shipped skill does",
+        "tests/fixtures/": "a fixture stands for another repository, not this one's workflows",
+    }
+
+
+@pytest.mark.parametrize(
+    ("character", "claim", "retired"),
+    [
+        *(
+            pytest.param(chr(point), "no step is given the read{}only token", NO_STEP, id=f"dash-{point:04X}")
+            for point in (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212)
+        ),
+        *(
+            pytest.param(chr(point), "the only job given the run{}s token", ONLY_JOB, id=f"apostrophe-{point:04X}")
+            for point in (0x2018, 0x2019, 0x02BC, 0x2032)
+        ),
+        *(
+            pytest.param(chr(point), "no step is gi{}ven the token", NO_STEP, id=f"dropped-{point:04X}")
+            for point in (ord("`"), ord("*"), 0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF)
+        ),
+    ],
+)
+def test_each_character_the_claim_text_folds_still_reads_the_claim(character: str, claim: str, retired: str) -> None:
+    problems = token_claim_problems({"validate.yml": claim.format(character)}, REACH_DESIGN)
+    assert len(problems) == 1, problems
+    assert f", the retired claim {retired!r}," in problems[0], problems
+
+
+def test_the_token_claim_policy_reads_every_file_but_the_design_document_and_its_omissions(tmp_path: Path) -> None:
+    files = {
+        "README.md": b"no step is given the token",
+        "docs/parallel-sessions.md": b"text",
+        "docs/design.md": b"the design",
+        "notes.txt": b"caf\xe9",
+        ".claude/skills/review-repository/SKILL.md": b"text",
+        "tests/validation/workflows_support.py": b"text",
+        "tests/validation/workflows.py": b"text",
+        "tests/validation/test_workflows.py": b"text",
+        "skills/a/SKILL.md": b"text",
+        "agents/a.md": b"text",
+        "tests/fixtures/a/README.md": b"text",
+    }
+    paths = []
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        paths.append(path)
+    assert token_claim_texts(tmp_path, paths) == {
+        "README.md": "no step is given the token",
+        "docs/parallel-sessions.md": "text",
+        "notes.txt": "caf\N{REPLACEMENT CHARACTER}",
+        ".claude/skills/review-repository/SKILL.md": "text",
+        "tests/validation/workflows_support.py": "text",
+        "tests/validation/workflows.py": "text",
+    }
+
+
+def test_every_word_class_a_claim_pattern_names_is_filled_in() -> None:
+    # A class named in a plain string rather than an f-string stays as its literal name, which matches nothing.
+    assert [claim for claim, pattern in RETIRED_TOKEN_CLAIMS.items() if "{_" in pattern.pattern] == []
+
+
+def test_the_span_the_token_claim_policy_blanks_is_pinned_with_its_reason() -> None:
+    assert TOKEN_CLAIM_SPANS == {
+        "tests/validation/workflows.py": (
+            "# What every job's pinned actions do with the run's token",
+            "# The parts of the repository token_claim_texts leaves out",
+            "the claim list and the patterns that spell each claim, which quote the claims they refuse",
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "read"),
+    [
+        pytest.param(
+            "a docstring\n# What every job's pinned actions do with the run's token\nno step is given the token\n"
+            "# The parts of the repository token_claim_texts leaves out\nmore\n",
+            "a docstring\n\n\n# The parts of the repository token_claim_texts leaves out\nmore\n",
+            id="the span blanked, the rest read",
+        ),
+        pytest.param("no step is given the token\n", "no step is given the token\n", id="no markers: read whole"),
+        pytest.param(
+            "# What every job's pinned actions do with the run's token\nno step is given the token\n",
+            "# What every job's pinned actions do with the run's token\nno step is given the token\n",
+            id="no closing marker: read whole",
+        ),
+        pytest.param(
+            "# The parts of the repository token_claim_texts leaves out\nno step is given the token\n"
+            "# What every job's pinned actions do with the run's token\n",
+            "# The parts of the repository token_claim_texts leaves out\nno step is given the token\n"
+            "# What every job's pinned actions do with the run's token\n",
+            id="markers reversed: read whole",
+        ),
+    ],
+)
+def test_the_policy_module_is_read_but_for_its_claim_span(tmp_path: Path, source: str, read: str) -> None:
+    module = tmp_path / "tests" / "validation" / "workflows.py"
+    module.parent.mkdir(parents=True)
+    module.write_bytes(source.encode("utf-8"))
+    other = tmp_path / "other.py"
+    other.write_bytes(source.encode("utf-8"))
+    assert token_claim_texts(tmp_path, [module, other]) == {"tests/validation/workflows.py": read, "other.py": source}
 
 
 def test_a_row_silent_on_the_actions_default_input_fails() -> None:

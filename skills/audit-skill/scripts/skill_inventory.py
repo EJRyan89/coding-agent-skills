@@ -175,6 +175,7 @@ from file_presence import NotAFile, is_directory, is_occupied, is_present, match
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
+from path_containment import within
 from path_keys import path_key
 from suite_names import is_suite_name
 
@@ -1301,7 +1302,7 @@ def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[st
                 reference = match.group(0)
                 base = directory if match.group(1) else (directory / relative).parent
                 target = (base / match.group(2)).resolve()
-                if target == root or root in target.parents:
+                if within(target, root):
                     continue
                 where = f"{relative}:{number + 1}"
                 key = identity(target)
@@ -2216,7 +2217,12 @@ def status_lines(folder: Path) -> list[str]:
     reading = [*own, *commands, *(path for command in commands for path in folder_scripts(command.parent))]
     reading += [path for core in cores for path in folder_scripts(core)]
     skills_roots = {folder.resolve().parent, *((root / "skills", root / ".claude" / "skills") if root else ())}
-    runs = [path for path in commands if folder.resolve() in path.parents or skills_roots.isdisjoint(path.parents)]
+    runs = [
+        path
+        for path in commands
+        if within(path, folder.resolve(), strict=True)
+        or not any(within(path, skills, strict=True) for skills in skills_roots)
+    ]
     facts = ScriptFacts()
     first_lines: dict[str, tuple[Path, int]] = {}
     for path in dict.fromkeys(reading):

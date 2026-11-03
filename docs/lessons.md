@@ -387,25 +387,29 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `path_containment:refusal`, which judges an entry from input as written, as resolved, and through the link
   probe, and names why; `path_containment:within`, the one comparison of a path with its tree, which every other
   containment test calls on paths it has made absolute or resolved; `path_containment:posix_within` for a repository
-  path a listing gives; `diff_paths:snapshot_path`, which holds a diff's path to the same written rules;
-  `dotnet_solution:refusal` and `dotnet_format_targets:listed_refusal`, which compare through it a
+  path a listing gives; `diff_paths:snapshot_path` and `diff_paths:unsafe_snapshot_name`, which hold a snapshot's
+  readers and its writer to the same written rules; `dotnet_solution:refusal` and
+  `dotnet_format_targets:listed_refusal`, which compare through it a
   path a solution or a file list names; `link_probe:is_plain_file`, `tools.checkout:checkout_root`,
   `memory_audit:bare_name`.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_path_containment_is_the_one_containment_test`,
   `skills/ejryan89-skill-core/scripts/test_path_containment.py::RefusalTests`,
   `skills/ejryan89-skill-core/scripts/test_path_containment.py::ExtendedPrefixTests`,
   `skills/ejryan89-skill-core/scripts/test_diff_paths.py::SnapshotPathTests`,
+  `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::test_the_writer_leaves_out_exactly_the_names_a_snapshot_reader_refuses`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ListedRefusalTests`,
   `skills/curate-agent-memory/scripts/test_memory_audit.py::ReindexTests::test_a_target_with_a_parent_segment_is_never_read`,
   `tests/tools/test_plugin_canary.py::test_an_installed_plugin_the_canary_cannot_place_in_the_home_is_refused_by_name`,
   `tests/tools/test_checkout.py::test_every_tool_that_takes_root_parses_it_with_checkout_root_and_the_module_names_it`
 - **Search for:** `root / name` or `joinpath(*` where the operand comes from input and no `refusal` judged it first;
-  `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, or
-  `startswith(f"{` with a trailing `/` outside `path_containment.py`, or a `relative_to(` inside a `try` whose
-  `except ValueError` answers the question, which the guard refuses unless a `CONTAINMENT_ALLOWED` entry states why;
-  a second judge of a path from input, such as a snapshot reader's own segment rules, that leaves out a rule
-  `written_refusal` holds, a reserved device name or a trailing dot or space; a `.resolve()` compared as text with a
-  path that was not resolved, where Windows may add its extended-length prefix to one.
+  `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, `in` a path's
+  `.parents`, a `startswith(`, `find(`, `removeprefix(`, slice, regular expression, or glob of a folder built to end
+  in a separator, a `relpath(` or a `relative_to(..., walk_up=True)` checked for `..`, or a `relative_to(` inside a
+  `try` or a `contextlib.suppress` that turns its `ValueError` into an answer, outside `path_containment.py`, which
+  the guard refuses unless a `CONTAINMENT_ALLOWED` entry states why; a second judge of a path from input, such as a
+  snapshot reader's own segment rules, that leaves out a rule `written_refusal` holds, a reserved device name or a
+  trailing dot or space, or a writer and its readers whose rules differ in either direction; a `.resolve()`
+  compared as text with a path that was not resolved, where Windows may add its extended-length prefix to one.
 - **Examples:** #1780, #1782, #1818, #1905, #2050, #2195, #2196, #2226
 
 ### Every check comes before the first write
@@ -652,9 +656,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a policy whose file list is a hand-kept tuple of directories, such as a `*_ROOTS`, that no
   `scope_problems` test holds, or a `glob(`
   narrower than the rule's statement in `CLAUDE.md` or `docs/`; `rg -n "glob\(\"\*\.sh\"\)|suffix == \"\.sh\"" tests/validation/`,
-  a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; an
-  audit brief that asks only for drift.
-- **Examples:** #1366, #1598, #1678, #1722, and #1884, which adds the check that holds a policy's scope to its rule
+  a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; a
+  policy that refuses a sentence as an exact substring, which a capital, a reflowed line, or an optional word walks
+  past; an audit brief that asks only for drift.
+- **Examples:** #1366, #1598, #1678, #1722, #2260, and #1884, which adds the check that holds a policy's scope to its
+  rule
 
 ### A check reads its subject through its consumer's reader
 

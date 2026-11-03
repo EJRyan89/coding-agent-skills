@@ -2283,6 +2283,12 @@ def select_step(gate: Gate, folder: Path, environment: Mapping[str, str]) -> Non
         print(f"{chosen.module}: {len(chosen.mutants)} mutants, run on {', '.join(ran) or 'no leg'}", flush=True)
 
 
+TIME_OPTION_ALLOWED = {
+    "parse_arguments": "--minutes is a whole number of minutes the leg records hold as an integer, and the function "
+    "refuses one below 1 with a usage error as soon as the arguments are parsed",
+}
+
+
 def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Mutate a pull request's changed lines and report the survivors.")
     parser.add_argument(
