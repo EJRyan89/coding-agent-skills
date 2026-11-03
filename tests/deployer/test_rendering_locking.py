@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -702,7 +703,39 @@ class LockTests(DeployerTestCase):
         directory.mkdir(parents=True)
         self.deploy_fails("--all", pattern="Lock exists but has no metadata")
         self.write(directory / "info.json", json.dumps({"token": "x"}))
-        self.deploy_fails("--all", pattern="Lock metadata is malformed \\(no PID\\)")
+        self.deploy_fails("--all", pattern="Lock metadata is malformed \\(no valid PID\\)")
+
+    def test_a_lock_pid_outside_the_platforms_range_is_malformed_and_never_probed(self) -> None:
+        # Truncated to the 32 bits Windows' OpenProcess takes, 2**32 + this PID names this live process.
+        self.fixture()
+        maximum = process_identity.PID_MAXIMUM
+        probed: list[int] = []
+
+        def probe(pid: int) -> process_identity.ProcessStatus:
+            probed.append(pid)
+            return process_identity.process_status(pid)
+
+        for pid in (2**32 + os.getpid(), maximum + 1):
+            with self.subTest(pid=pid):
+                directory = self.write_lock({"pid": pid, "token": "x", "start_time": 7})
+                try:
+                    result = self.deploy_fails("--all", pattern="Lock metadata is malformed", probe=probe)
+                    self.assertIn(
+                        f"ERROR: Lock metadata is malformed (no valid PID): pid must be an integer from 1 to "
+                        f"{maximum}, found integer {pid}.",
+                        result.output,
+                    )
+                    self.assertEqual([], probed)
+                    self.assertFalse((self.skills_dir / "alpha").exists())
+                finally:
+                    # The next case writes its own lock, whatever this one found.
+                    shutil.rmtree(directory)
+
+    def test_a_token_file_that_is_not_utf_8_leaves_the_lock_in_place_without_an_error(self) -> None:
+        held = lock.acquire(self.paths)
+        (self.lock_dir / "token").write_bytes(b"\xff\xfe")
+        held.release()
+        self.assertTrue(self.lock_dir.is_dir())
 
     def test_failed_lock_initialization_removes_the_new_lock(self) -> None:
         self.fixture()
@@ -778,6 +811,25 @@ class LockTests(DeployerTestCase):
         self.assertIn("Alpha content", self.skill_text("alpha"))
         self.assertEqual(manifest, self.manifest_file.read_bytes())
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
+        self.deploy_ok("--all")
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+
+    def test_a_read_only_manifest_is_refused_before_the_first_change_and_by_the_dry_run(self) -> None:
+        # The commit's write_atomic refuses a read-only manifest on every platform, so the run refuses it first.
+        self.fixture()
+        self.deploy_ok("--all")
+        self.make_skill("alpha", "Updated alpha")
+        manifest = self.manifest_file.read_bytes()
+        self.manifest_file.chmod(stat.S_IREAD)
+        self.addCleanup(self.manifest_file.chmod, stat.S_IREAD | stat.S_IWRITE)
+        refusal = f"ERROR: The manifest is read-only: {re.escape(forward(self.manifest_file))}\nMake it writable"
+        with mock.patch("deployer.plan.carry_out", side_effect=AssertionError("the run changed an item")):
+            for arguments in (("--all",), ("--all", "--dry-run")):
+                with self.subTest(arguments=arguments):
+                    self.deploy_fails(*arguments, pattern=refusal)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertEqual(manifest, self.manifest_file.read_bytes())
+        self.manifest_file.chmod(stat.S_IREAD | stat.S_IWRITE)
         self.deploy_ok("--all")
         self.assertIn("Updated alpha", self.skill_text("alpha"))
 

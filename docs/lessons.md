@@ -150,8 +150,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
   `FAILED AttributeError` expected by a test; a state decided from the lines a step printed, such as
-  `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2207, #2209
+  `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears;
+  a reader that returns None or `{}` for every fault, whose caller then refuses a field of it as missing.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209
 
 ### A caller catches the whole error family its callee raises on content
 
@@ -198,19 +199,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   allocation, or a negative count the code never expected.
 - **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
   number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
-  refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds.
+  refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid`
+  for a PID, bounded by the platform's range so none is truncated to another process's.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
   `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
-  `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
+  `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`,
+  `skills/ejryan89-skill-core/scripts/test_process_identity.py::PidRangeTests::test_a_pid_is_read_within_the_platforms_range_and_anything_else_is_refused_by_its_path`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
   has `\d+` or `[0-9]+` rather than a bounded count; `.isdigit()` before an `int(`, which admits digits `int` reads
   past any bound; `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
   `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
   bounds no length; a refusal worded "more than N digits" for a `\d` group,
-  which also admits digits that are not ASCII.
-- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897
+  which also admits digits that are not ASCII; an integer read from a file and handed to a `ctypes` call, whose
+  declared type holds the kind and truncates the range.
+- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2215
 
 ### One fact has one owner
 
@@ -430,11 +434,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that writes an output is the mechanism in #1911.
 - **Guard:** `tests/deployer/test_invariants.py::RefusalBeforeMutationGuardTests::test_a_refusal_raised_after_the_deployment_changed_the_home_fails_the_test`,
   `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
-  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`
+  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`,
+  `tests/deployer/test_rendering_locking.py::LockTests::test_a_read_only_manifest_is_refused_before_the_first_change_and_by_the_dry_run`,
+  `skills/curate-agent-memory/scripts/test_memory_audit.py::DeleteTests::test_a_read_only_memory_among_several_is_refused_before_any_is_deleted`
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
   `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
-  as a destination judged in the step that creates it.
-- **Examples:** #1396, #1855, #1876, #1911, #2210
+  as a destination judged in the step that creates it; a refusal added to a write the commit makes, such as
+  `fsops.write_atomic`'s, with no check of the same target in the plan; an `unlink(`, `rename(`, or `replace_text(` in
+  a loop over several files whose refusals do not ask `atomic_file:is_read_only`, which Windows refuses to delete or
+  replace.
+- **Examples:** #1396, #1855, #1876, #1911, #2184, #2210, #2223
 
 ### A preview reads what the run refuses on before it answers
 
@@ -487,8 +496,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `git_client:output_line`, which takes off only the newline ending a one-line answer, where strip() also drops
   U+00A0 and U+2028;
   `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
-  `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason; and
-  `flat_text:fact_line`, which flattens every field of a tab-separated fact line.
+  `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason;
+  `deployer.discovery:output_lines`, which splits a runtime's output, its skill catalog, and the canary's records on a
+  newline alone, taking off a carriage return before it; and `flat_text:fact_line`, which flattens every field of a
+  tab-separated fact line.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
   split of git's output with splitlines(), or a strip() or split() of it given no argument, unless its module
@@ -506,8 +517,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/audit-skill/scripts/test_skill_inventory.py::ScanTests::test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line`,
   `skills/ejryan89-skill-core/scripts/test_flat_text.py::FactLineTests::test_a_field_holding_any_line_or_field_break_stays_one_field_on_one_line`,
   `skills/dotnet-format/scripts/test_run_dotnet_format.py::OneLineFactTests::test_a_saved_file_holding_a_line_separator_is_named_on_one_line`,
-  `skills/dotnet-format/scripts/test_csharp_layout.py::OneLineFactTests::test_violations_and_fixes_in_a_name_holding_a_line_break_print_one_line_each`;
-  a policy holding every result-line printer to one choke point is #2248's
+  `skills/dotnet-format/scripts/test_csharp_layout.py::OneLineFactTests::test_violations_and_fixes_in_a_name_holding_a_line_break_print_one_line_each`,
+  `tests/deployer/test_verify.py::ParsingTests::test_a_codex_catalog_description_holding_a_line_break_other_than_newline_is_part_of_its_line`,
+  `tests/deployer/test_verify.py::ConverseTests::test_a_last_error_line_holding_a_line_break_other_than_newline_is_named_whole`,
+  `tests/tools/test_runtime_canary.py::RunTests::test_a_line_holding_a_line_break_other_than_newline_is_read_whole`;
+  a policy holding every result-line printer to one choke point is #2248's, and one refusing splitlines() of any
+  program's output, not git's alone, is #2329's
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
@@ -517,7 +532,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   exception, or another program's output without `fact_line` or `flat_text`; `.strip()` or `.split()` with no
   argument on git's output, a ref name read from `symbolic-ref` or `config` most of all; a git subcommand left out of
   the policy's catalogue and run through a wrapper whose name does not say git.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214
 
 ### Two spellings are compared as their consumer compares them
 
@@ -527,18 +542,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `versions:find`, `versions:read`, and `versions:latest`, the one version reader, which reads a version's
   numbers and orders by them; `release_tags:release_order` and `release_tags:highest_release`, a release tag through
   it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
-  `deployer.platform_support:path_key`; `guidance_record:canonical_url`.
+  `deployer.platform_support:path_key`; `guidance_record:canonical_url`; `deployer.source:any_case` and
+  `deployer.source:refuse_other_spellings`, which find a name the deployer reads spelled in any case on every
+  platform and refuse one spelled otherwise.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   which fails a version's numbers read by hand outside the version reader, and a path case-folded by hand outside
   the path key;
   `skills/ejryan89-skill-core/scripts/test_versions.py::OrderTests::test_versions_order_by_number_never_as_text`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
-  `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`
+  `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`,
+  `tests/deployer/test_source_validation.py::MetadataValidationTests::test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform`
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
   `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
-  normalization, or `os.path.normcase` outside `path_keys.py`.
-- **Examples:** #1556, #1855, #1867, #1909
+  normalization, or `os.path.normcase` outside `path_keys.py`; a glob, `fnmatch.fnmatch(`, or `.is_file()` of a
+  fixed file name, which folds case on Windows, beside a dictionary keyed by each file's spelling on disk.
+- **Examples:** #1556, #1855, #1867, #1909, #2299
 
 ### A child process starts from an environment built for it
 
@@ -628,15 +647,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_reading_ends_with_the_reading_time`,
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_judging_ends_with_the_reading_time`, and
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`,
-  `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`
+  `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`,
+  `tests/deployer/test_verify.py::ConverseTests::test_a_program_whose_kill_is_never_reported_ends_in_a_listing_error_within_the_waits_bounds`
 - **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
   as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
   each item's work starts processes; a deadline set after work it promises to bound has begun; a loop that gathers
   what it finds into a local and returns it only at the end, while a step inside it can raise the deadline's error;
   a handler that counts the deadline's own error as cut short but not a process's timeout error, which a step given
   the time left raises when the deadline ends inside it; a test that moves the clock only between steps, never
-  inside one.
-- **Examples:** #2031, #2087, #2092, #2132
+  inside one; a `.kill()` followed by a `.wait()` with no `timeout=`, which waits for as long as the kill goes
+  unreported.
+- **Examples:** #2031, #2087, #2092, #2132, #2184
 
 ### A test's time-out is injected, never raced
 
@@ -724,7 +745,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
   and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the **Search for** of the
   pattern above that the defect is an instance of.
-- **Examples:** #1369, #1521
+- **Examples:** #1369, #1521, #2184
 
 ### A foreign function declares its types
 
