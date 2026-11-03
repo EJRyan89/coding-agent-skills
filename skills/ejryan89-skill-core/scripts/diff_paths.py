@@ -8,7 +8,9 @@ end is plain however it ends. A script that reads those lines decodes the path h
 and undoes the same quoting, and one that writes them, as from a listing of changed files, quotes it here.
 
 A decoded path is the pull request author's to choose, and pathlib on Windows reads a backslash in it as a separator,
-so a script that reads the file a diff names finds it through `snapshot_path`, which holds it inside the snapshot.
+so a script that reads the file a diff names finds it through `snapshot_path`, which holds it inside the snapshot,
+and every reader of a snapshot's file by its repository path judges the name with `unsafe_snapshot_name`, so the
+snapshot readers apply one rule.
 """
 
 from __future__ import annotations
@@ -16,13 +18,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from path_containment import within
+from path_containment import within, written_refusal
 
 # The bytes git escapes by a letter or by themselves rather than in octal.
 ESCAPED_BYTES = {"a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A, "v": 0x0B, "f": 0x0C, "r": 0x0D, '"': 0x22, "\\": 0x5C}
 OCTAL_DIGITS = frozenset("01234567")
-# What no path a script reads by may hold: a backslash, which Windows reads as a separator, or a control character.
-UNSAFE_CHARACTERS = re.compile(r"[\\\x00-\x1f\x7f]")
+# What no path a script reads by may hold: a backslash, which Windows reads as a separator, a character Windows
+# reserves in a name, a control character, DEL among them, or a lone surrogate, which surrogateescape gives a byte that
+# is not UTF-8, so the name has no exact spelling to open.
+UNSAFE_CHARACTERS = re.compile(r'[\\:<>"|?*\x00-\x1f\x7f\udc80-\udcff]')
+# The longest segment, in UTF-16 code units, any Windows file system holds: NTFS, ReFS, exFAT, and FAT32 all stop there.
+MAX_SEGMENT_UNITS = 255
 DRIVE = re.compile(r"^[A-Za-z]:")
 # A unified diff's hunk header, with the first line of its new side as the first group.
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -107,15 +113,27 @@ def header_path(value: str) -> str | None:
     return path[2:] if path.startswith(("a/", "b/")) else path
 
 
+def unsafe_snapshot_name(path: str) -> bool:
+    """Whether a repository path names no file a snapshot can hold as written: one holding a character
+    `UNSAFE_CHARACTERS` names, one with a `.` segment or a segment over `MAX_SEGMENT_UNITS` UTF-16 code units, or one
+    ejryan89-skill-core's `path_containment.written_refusal` refuses, as an absolute, drive, empty, `..`,
+    reserved-device, or trailing dot or space segment. It is every rule of the code-review snapshot's writer that does
+    not depend on where the snapshot is written, so the writer leaves out each name it refuses, and it is the same on
+    every platform, so a path refused on one is refused on all."""
+    segments = path.split("/")
+    return (
+        bool(UNSAFE_CHARACTERS.search(path))
+        or "." in segments
+        or any(len(segment.encode("utf-16-le", "surrogatepass")) // 2 > MAX_SEGMENT_UNITS for segment in segments)
+        or written_refusal(path) is not None
+    )
+
+
 def snapshot_path(root: Path, path: str) -> Path | None:
-    """Where a decoded diff path lands in the snapshot at `root`, resolved, or None when it could land outside it: a
-    path holding a backslash or a control character, one with an empty, `.`, or `..` segment, which an absolute path
-    has first, or a segment that starts with a drive, which Windows joins as a new root, and one that resolves outside
-    the resolved root, as through a link, or cannot be resolved. The rule is the same on every platform, so a path
-    refused on one is refused on all."""
-    if UNSAFE_CHARACTERS.search(path):
-        return None
-    if any(segment in {"", ".", ".."} or DRIVE.match(segment) for segment in path.split("/")):
+    """Where a decoded diff path lands in the snapshot at `root`, resolved, or None when it could land outside it or
+    open something other than a file there: a name `unsafe_snapshot_name` refuses, and one that resolves outside the
+    resolved root, as through a link, or cannot be resolved."""
+    if unsafe_snapshot_name(path):
         return None
     try:
         base = root.resolve()
