@@ -415,10 +415,15 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
       echo "MAJOR_UPDATE $CURRENT..$TARGET"
       [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
       # The commits the update would deploy: from the deployed commit, or from local main when check names none or
-      # the clone does not hold it. A clone with no local main yet has none to list from.
+      # the clone does not hold it. A clone with no local main yet, which git's quiet exit 1 alone says, has none to
+      # list from; any other answer of the lookup is an UNLISTED line, never an empty list.
       LISTED_FROM=${KNOWN_COMMIT:-$MAIN}
-      if git -C "$CLONE" rev-parse --verify --quiet "$LISTED_FROM^{commit}" >/dev/null; then
+      VERIFIED=0
+      OUTPUT=$(git -C "$CLONE" rev-parse --verify --quiet "$LISTED_FROM^{commit}" 2>&1) || VERIFIED=$?
+      if [ "$VERIFIED" -eq 0 ]; then
         log_lines "$LISTED_FROM..$DEPLOY_END"
+      elif [ "$VERIFIED" -ne 1 ] || [ -n "$OUTPUT" ]; then
+        echo "UNLISTED $LISTED_FROM..$DEPLOY_END $(one_line "$OUTPUT")"
       fi
       exit 1
     fi
@@ -439,8 +444,8 @@ fi
 # The branch or, when HEAD is detached, the commit the clone was found on, to return to if the fast-forward fails.
 # Neither answering leaves nothing to return to, so the update stops before it switches branches.
 if ! FOUND_ON=$(git -C "$CLONE" symbolic-ref --quiet --short HEAD 2>/dev/null ||
-  git -C "$CLONE" rev-parse --verify --quiet HEAD); then
-  echo "FAILED cannot read the branch or the commit the clone is on"
+  git -C "$CLONE" rev-parse --verify --quiet HEAD 2>&1); then
+  echo "FAILED cannot read the branch or the commit the clone is on: $(one_line "$FOUND_ON")"
   exit 1
 fi
 FOUND_ON=$(printf '%s' "$FOUND_ON" | tr -d '\r')

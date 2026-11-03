@@ -308,6 +308,83 @@ if grep -q "NOT_IN_RELEASE" <<<"$OUTPUT"; then
 fi
 expect_deployed "commits git cannot list" "--all --at refs/tags/v7.1.0"
 
+# A git that fails where the update reads it ends the update with a FAILED line naming what it could not read, or an
+# UNLISTED line in place of a list, never an empty answer. A stand-in for git, first on the update's PATH, fails each
+# call whose arguments hold one of the |-separated forms in FAKE_GIT_FAIL, from its FAKE_GIT_FAIL_NTH matching call on
+# (the first by default), as git fails, and runs git itself for every other call.
+REAL_GIT=$(command -v git)
+SHIM="$FIXTURE/git-shim"
+mkdir -p "$SHIM"
+cat >"$SHIM/git" <<'EOF'
+#!/usr/bin/env bash
+IFS='|' read -r -a forms <<<"${FAKE_GIT_FAIL:-}"
+for form in "${forms[@]}"; do
+  if [[ " $* " == *" $form "* ]]; then
+    count=$(($(cat "$FAKE_GIT_COUNT" 2>/dev/null || echo 0) + 1))
+    echo "$count" >"$FAKE_GIT_COUNT"
+    if [ "$count" -ge "${FAKE_GIT_FAIL_NTH:-1}" ]; then
+      echo "fatal: injected failure" >&2
+      exit 128
+    fi
+  fi
+done
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$SHIM/git"
+export REAL_GIT
+failing_git() {
+  local forms=$1 nth=$2
+  shift 2
+  export FAKE_GIT_COUNT="$FIXTURE/git-shim-count"
+  rm -f -- "$FAKE_GIT_COUNT"
+  PATH="$SHIM:$PATH" FAKE_GIT_FAIL=$forms FAKE_GIT_FAIL_NTH=$nth run_subject "$@"
+}
+V71=$(git -C "$SEED" rev-parse "v7.1.0^{commit}")
+[ "$(recorded_line 1)" = "$V71" ] || fail "git failures: the case starts from v7.1.0, not $(recorded_line 1)"
+
+# A lookup of the deployed commit that fails other than with git's quiet "no such commit" is a FAILED line, never a
+# commit the clone lacks.
+begin_case 'deployed commit git cannot look up'
+failing_git "rev-parse --verify --quiet $V71^{commit}" 1 "$CLONE" release
+expect_failed "FAILED cannot look up the deployed commit $V71: fatal: injected failure" \
+  "deployed commit git cannot look up"
+expect_not_deployed "deployed commit git cannot look up"
+
+# The major stop lists the commits from the deployed commit, and a lookup of it there that git cannot answer is an
+# UNLISTED line in place of the list.
+begin_case 'major stop list git cannot read'
+publish "eighth major"
+tag_upstream v8.0.0
+failing_git "rev-parse --verify --quiet $V71^{commit}" 2 "$CLONE" release
+expect_status 1 "major stop list git cannot read"
+expect_first_line "MAJOR_UPDATE v7.1.0..v8.0.0" "major stop list git cannot read"
+[ "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" = "UNLISTED $V71..refs/tags/v8.0.0 fatal: injected failure" ] ||
+  fail "major stop list git cannot read: no UNLISTED line in place of the list: $OUTPUT"
+[ "$(printf '%s\n' "$OUTPUT" | wc -l | tr -d ' ')" = "2" ] || fail "major stop list git cannot read: more lines: $OUTPUT"
+expect_not_deployed "major stop list git cannot read"
+
+# A short name git cannot give, of main before or after the fast-forward or of the deployed commit, ends the update
+# with a FAILED line naming it, never an UPDATED line with an empty end.
+begin_case 'short names git cannot give'
+for SITE in "rev-parse --short HEAD|1|main before the fast-forward" \
+  "rev-parse --short HEAD|2|main after the fast-forward" \
+  "rev-parse --short $V71|1|the deployed commit $V71"; do
+  IFS='|' read -r FORM NTH WHAT <<<"$SITE"
+  failing_git "$FORM" "$NTH" "$CLONE" release --cross-major
+  expect_failed "FAILED cannot read the short name of $WHAT: fatal: injected failure" "short name of $WHAT"
+  expect_not_deployed "short name of $WHAT"
+done
+
+# A clone whose branch and commit git cannot name stops before the checkout, on the branch it was found on.
+begin_case 'branch git cannot name'
+git_quiet -C "$CLONE" checkout -q -b aside
+failing_git "symbolic-ref --quiet --short HEAD|rev-parse --verify --quiet HEAD" 1 "$CLONE" release --cross-major
+expect_failed "FAILED cannot read the branch or the commit the clone is on: fatal: injected failure" \
+  "branch git cannot name"
+[ "$(git -C "$CLONE" branch --show-current)" = "aside" ] || fail "branch git cannot name: the clone left its branch"
+expect_not_deployed "branch git cannot name"
+git_quiet -C "$CLONE" checkout -q main
+
 # Without a release tag on origin/main the release channel has nothing to deploy: it stops after the fetch, and the
 # main channel still follows main.
 begin_case 'no release'
