@@ -76,6 +76,12 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{INSIGHTS_SCRIPTS}/review_synthesis.py",
     # The plugin build's installer of the reviewer guard's hook.
     "tools/plugin_agents.py",
+    # The refusal of a checkout that follows another repository's pull request, and the skill evaluation that runs
+    # the checkout's fixtures signed in as the user.
+    "tools/checkout_trust.py",
+    "tools/skill_evals.py",
+    # The merge shepherd's admission of a pull request whose head branch is in this repository.
+    ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py",
     f"{SKILL_CORE}/bounded_process.py",
     f"{SKILL_CORE}/device_names.py",
     f"{SKILL_CORE}/diff_paths.py",
@@ -115,7 +121,12 @@ OUTSIDE_THE_BOUNDARY = {
     f"{SKILL_CORE}/console.py": "sets each entry point's output encoding; its FAILED line flattens through flat_text",
     f"{SKILL_CORE}/folder_walk.py": "dotnet_solution takes only its skipped folder names; the inventory walks none",
     f"{SKILL_CORE}/frontmatter.py": "reads the frontmatter of a reviewer skill from the trusted commit",
+    f"{SKILL_CORE}/pull_carried.py": "judges from commits alone whether a merged pull request carried a worktree's tip",
+    f"{SKILL_CORE}/seconds_option.py": "reads the user's own time option as a positive finite number of seconds",
     f"{SKILL_CORE}/skill_roots.py": "finds a sibling skill's scripts folder in the checkout or the deployed home",
+    ".claude/skills/shepherd-pull-requests/scripts/premerge_review.py": (
+        "reads the review archive for the heads the shepherd admitted and prints review-prs arguments, admitting none"
+    ),
 }
 # Each repository tool that imports the run contract or a pipeline module that stages a run, with why the
 # trust-boundary reviewer need not hold it: none carries a pull request's text to a reviewer.
@@ -176,6 +187,15 @@ PROFILE_SECTIONS = {
 NAMED_ELSEWHERE = {
     "deploy.py": "the deployer route; the threat model names `deploy.py check`, which reports pdf_tool.py's floors",
     "review_config.py": "named as a script a grant must not reach, which the skill-scripts route reviews",
+}
+# Each script the trust model in docs/design.md names that the trust-boundary reviewer does not hold, with the reason.
+DESIGN_NAMED_ELSEWHERE = {
+    "deployer/tools.py": "the deployer route; its row names the catalogue of the tools a skill may run",
+    "tools/plugin_canary.py": (
+        "refuses a foreign checkout through checkout_trust.py, which test_checkout_trust.py holds it to calling, and "
+        "stages only its own fixture's run"
+    ),
+    "tools/release_notes.py": "reproduces approved bodies as authored Markdown the maintainer reviews before release",
 }
 
 
@@ -494,6 +514,30 @@ class ManifestTests(unittest.TestCase):
         ]
         self.assertEqual(named - set(NAMED_ELSEWHERE), {path.rsplit("/", 1)[-1] for path in paths})
         self.assertEqual([], [path for path in paths if "trust-boundary" not in reached([path])[path]])
+
+    def test_every_script_the_design_trust_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
+        # docs/design.md's trust model names the code that holds each boundary, so a script one of its rows names in
+        # code, such as skill_evals.py's refusal of a foreign checkout, is one the trust-boundary reviewer holds to
+        # that row, unless another route or the row itself holds it for the reason given. A suite or a validation
+        # policy under tests/ a row names is the boundary's guard, which the validation-policy route reviews.
+        design = (REPOSITORY / "docs" / "design.md").read_text(encoding="utf-8")
+        section = design.split("\n## Trust model\n", 1)[1].split("\n## ", 1)[0]
+        named = {
+            path
+            for path in re.findall(r"`([^`\s]+\.py)`", section)
+            if "/" in path and not conditions.is_suite(path) and not path.startswith("tests/")
+        }
+        self.assertIn("tools/skill_evals.py", named)
+        self.assertIn("tools/checkout_trust.py", named)
+        self.assertEqual([], sorted(named - set(tracked_files())))
+        self.assertLessEqual(set(DESIGN_NAMED_ELSEWHERE), named)
+        unrouted = [
+            path
+            for path in sorted(named - set(DESIGN_NAMED_ELSEWHERE))
+            if "trust-boundary" not in reached([path])[path]
+        ]
+        self.assertEqual([], unrouted)
+        self.assertEqual([], [path for path in DESIGN_NAMED_ELSEWHERE if "trust-boundary" in reached([path])[path]])
 
     def test_each_profile_names_trusted_files_the_manifest_declares_and_sections_they_hold(self) -> None:
         # A reviewer reads its briefing from the trusted files its profile names, so a file no specialist declares,
