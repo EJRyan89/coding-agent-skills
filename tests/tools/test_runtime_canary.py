@@ -32,11 +32,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import runtime_support
 import whole_number
+from checkout_fixture import FOREIGN, make_foreign, own_checkout
+from git_client import GitClient, GitError
 
 from deployer import discovery, platform_support
 from deployer import source as deploy_source
 from deployer.paths import Paths
-from tools import runtime_canary
+from tools import checkout_trust, runtime_canary
 from tools.runtime_canary import Completed
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +61,16 @@ CAPTURED = REPOSITORY_ROOT / "tests" / "fixtures" / "captured-output"
 CODEX_REJECTION = (CAPTURED / "codex" / "exec-policy-rejection.stderr.txt").read_text(encoding="utf-8")
 CODEX_UNSTARTED = (CAPTURED / "codex" / "exec-sandbox-unstarted.stderr.txt").read_text(encoding="utf-8")
 CLAUDE_SIGNED_OUT = (CAPTURED / "claude" / "signed-out-stream.jsonl").read_text(encoding="utf-8")
+
+
+# The real reading, which the autouse fixture below stands in for so no other test depends on this checkout's branch.
+READ_FOREIGN_CHECKOUT = checkout_trust.foreign_checkout
+
+
+@pytest.fixture(autouse=True)
+def own_checkout_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every run reads this checkout as the user's own, whatever branch or detached HEAD CI checked out."""
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", lambda git, directory: None)
 
 
 def forward(path: Path | str) -> str:
@@ -1195,6 +1207,29 @@ class RunTests(RuntimeCanaryTestCase):
                 self.assertEqual((None, denials), runtime_canary.claude_stream(stream))
         init = json.dumps({"type": "system", "subtype": "init", "skills": 5})
         self.assertEqual((set(), []), runtime_canary.claude_stream(init))
+
+    def test_a_line_holding_a_line_break_other_than_newline_is_read_whole(self) -> None:
+        # JSON holds U+2028, U+0085, and the other characters str.splitlines() breaks on as they are, and a log line
+        # may too, so each reader of a runtime's output or a record file splits on "\n" alone.
+        breaks = [
+            character
+            for character in map(chr, range(sys.maxunicode + 1))
+            if character not in "\n\r" and len(f"a{character}b".splitlines()) == 2
+        ]
+        self.assertLessEqual({"\u0085", "\u2028", "\u2029"}, set(breaks))
+        for separator in breaks:
+            with self.subTest(separator=hex(ord(separator))):
+                init = {"type": "system", "subtype": "init", "cwd": f"a{separator}b", "skills": ["/alpha"]}
+                stream = json.dumps(init, ensure_ascii=False) + "\n"
+                self.assertEqual(({"alpha"}, []), runtime_canary.claude_stream(stream))
+                with tempfile.TemporaryDirectory() as temporary:
+                    records = Path(temporary) / "records.jsonl"
+                    records.write_bytes(stream.encode("utf-8"))
+                    self.assertEqual([init], runtime_canary.read_records(records))
+                failed = f"error=exec_command failed: a{separator}b"
+                self.assertEqual(
+                    [failed], runtime_canary.unread_rejections("codex", Completed(0, "", f"before\n{failed}\n"))
+                )
 
     def test_a_stream_line_that_is_not_json_or_repeats_a_key_is_passed_over(self) -> None:
         init = json.dumps({"type": "system", "subtype": "init", "skills": ["/alpha"]})
@@ -2746,3 +2781,46 @@ def test_a_path_is_inside_a_folder_only_below_it_and_as_written(tmp_path: Path) 
     assert not runtime_canary.inside(str(folder), folder), "the folder itself holds no script of its own"
     assert not runtime_canary.inside(str(folder / ".." / "other" / "run.py"), folder)
     assert not runtime_canary.inside(str(tmp_path / "skills-other" / "run.py"), folder)
+
+
+@pytest.mark.parametrize("case", sorted(FOREIGN))
+def test_main_refuses_a_checkout_following_another_repositorys_pull_request_before_making_a_home(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git = GitClient()
+    (tmp_path / "checkout with spaces").mkdir()
+    checkout = own_checkout(tmp_path / "checkout with spaces", git)
+    reason = make_foreign(checkout, git, case)
+    read: list[Path] = []
+
+    def foreign(client: GitClient, directory: Path) -> str | None:
+        read.append(directory)
+        return READ_FOREIGN_CHECKOUT(client, checkout)
+
+    def unreachable(*arguments: object, **options: object) -> int:
+        raise AssertionError("the run went on past a refused checkout")
+
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", foreign)
+    monkeypatch.setattr(runtime_canary, "create_home", unreachable)
+    monkeypatch.setattr(runtime_canary, "canary", unreachable)
+    assert runtime_canary.main(["--discovery-only"]) == 1
+    refusal = "the checkout follows another repository's pull request: " + reason
+    assert capsys.readouterr().out.splitlines() == [f"FAILED {runtime_canary.quote(refusal)}"]
+    assert read == [runtime_canary.REPOSITORY_ROOT]
+
+
+def test_main_refuses_a_checkout_git_cannot_read_before_making_a_home(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(client: GitClient, directory: Path) -> str | None:
+        raise GitError("fatal: not a git repository")
+
+    def unreachable(*arguments: object, **options: object) -> int:
+        raise AssertionError("the run went on past an unreadable checkout")
+
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", unreadable)
+    monkeypatch.setattr(runtime_canary, "create_home", unreachable)
+    monkeypatch.setattr(runtime_canary, "canary", unreachable)
+    assert runtime_canary.main(["--discovery-only"]) == 1
+    refusal = "cannot read the checkout's branch: fatal: not a git repository"
+    assert capsys.readouterr().out.splitlines() == [f"FAILED {runtime_canary.quote(refusal)}"]
