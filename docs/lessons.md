@@ -421,11 +421,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that writes an output is the mechanism in #1911.
 - **Guard:** `tests/deployer/test_invariants.py::RefusalBeforeMutationGuardTests::test_a_refusal_raised_after_the_deployment_changed_the_home_fails_the_test`,
   `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
-  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`
+  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`,
+  `tests/deployer/test_rendering_locking.py::LockTests::test_a_read_only_manifest_is_refused_before_the_first_change_and_by_the_dry_run`,
+  `skills/curate-agent-memory/scripts/test_memory_audit.py::DeleteTests::test_a_read_only_memory_among_several_is_refused_before_any_is_deleted`
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
   `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
-  as a destination judged in the step that creates it.
-- **Examples:** #1396, #1855, #1876, #1911, #2210
+  as a destination judged in the step that creates it; a refusal added to a write the commit makes, such as
+  `fsops.write_atomic`'s, with no check of the same target in the plan; an `unlink(`, `rename(`, or `replace_text(` in
+  a loop over several files whose refusals do not ask `atomic_file:is_read_only`, which Windows refuses to delete or
+  replace.
+- **Examples:** #1396, #1855, #1876, #1911, #2184, #2210, #2223
 
 ### A preview reads what the run refuses on before it answers
 
@@ -478,8 +483,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `git_client:output_line`, which takes off only the newline ending a one-line answer, where strip() also drops
   U+00A0 and U+2028;
   `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
-  `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason; and
-  `flat_text:fact_line`, which flattens every field of a tab-separated fact line.
+  `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason;
+  `deployer.discovery:output_lines`, which splits a runtime's output, its skill catalog, and the canary's records on a
+  newline alone, taking off a carriage return before it; and `flat_text:fact_line`, which flattens every field of a
+  tab-separated fact line.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
   split of git's output with splitlines(), or a strip() or split() of it given no argument, unless its module
@@ -497,8 +504,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/audit-skill/scripts/test_skill_inventory.py::ScanTests::test_a_runtime_prompt_in_a_folder_whose_path_holds_a_space_keeps_its_line`,
   `skills/ejryan89-skill-core/scripts/test_flat_text.py::FactLineTests::test_a_field_holding_any_line_or_field_break_stays_one_field_on_one_line`,
   `skills/dotnet-format/scripts/test_run_dotnet_format.py::OneLineFactTests::test_a_saved_file_holding_a_line_separator_is_named_on_one_line`,
-  `skills/dotnet-format/scripts/test_csharp_layout.py::OneLineFactTests::test_violations_and_fixes_in_a_name_holding_a_line_break_print_one_line_each`;
-  a policy holding every result-line printer to one choke point is #2248's
+  `skills/dotnet-format/scripts/test_csharp_layout.py::OneLineFactTests::test_violations_and_fixes_in_a_name_holding_a_line_break_print_one_line_each`,
+  `tests/deployer/test_verify.py::ParsingTests::test_a_codex_catalog_description_holding_a_line_break_other_than_newline_is_part_of_its_line`,
+  `tests/deployer/test_verify.py::ConverseTests::test_a_last_error_line_holding_a_line_break_other_than_newline_is_named_whole`,
+  `tests/tools/test_runtime_canary.py::RunTests::test_a_line_holding_a_line_break_other_than_newline_is_read_whole`;
+  a policy holding every result-line printer to one choke point is #2248's, and one refusing splitlines() of any
+  program's output, not git's alone, is #2329's
 - **Search for:** a `"log"` or `"show"` git call with `--name-only` and no `-z`, which the policy does not read; a
   name listing whose arguments a function builds from names rather than string literals; `split("|")` or
   `splitlines()` on another program's output, git's included where the policy cannot trace it to the call, such as
@@ -508,7 +519,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   exception, or another program's output without `fact_line` or `flat_text`; `.strip()` or `.split()` with no
   argument on git's output, a ref name read from `symbolic-ref` or `config` most of all; a git subcommand left out of
   the policy's catalogue and run through a wrapper whose name does not say git.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214
 
 ### Two spellings are compared as their consumer compares them
 
@@ -621,15 +632,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_reading_ends_with_the_reading_time`,
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_judging_ends_with_the_reading_time`, and
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`,
-  `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`
+  `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`,
+  `tests/deployer/test_verify.py::ConverseTests::test_a_program_whose_kill_is_never_reported_ends_in_a_listing_error_within_the_waits_bounds`
 - **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
   as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
   each item's work starts processes; a deadline set after work it promises to bound has begun; a loop that gathers
   what it finds into a local and returns it only at the end, while a step inside it can raise the deadline's error;
   a handler that counts the deadline's own error as cut short but not a process's timeout error, which a step given
   the time left raises when the deadline ends inside it; a test that moves the clock only between steps, never
-  inside one.
-- **Examples:** #2031, #2087, #2092, #2132
+  inside one; a `.kill()` followed by a `.wait()` with no `timeout=`, which waits for as long as the kill goes
+  unreported.
+- **Examples:** #2031, #2087, #2092, #2132, #2184
 
 ### A test's time-out is injected, never raced
 
@@ -717,7 +730,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
   and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the **Search for** of the
   pattern above that the defect is an instance of.
-- **Examples:** #1369, #1521
+- **Examples:** #1369, #1521, #2184
 
 ### A foreign function declares its types
 
