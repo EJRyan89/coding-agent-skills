@@ -304,6 +304,43 @@ def test_a_table_that_is_not_utf8_is_refused_by_name(tmp_path: Path) -> None:
         job_seconds(path)
 
 
+@pytest.mark.parametrize(
+    ("path", "folder"),
+    [
+        ("skills/alpha/scripts/alpha.py", "skills/alpha/scripts"),
+        ("skills/alpha/SKILL.md", "skills/alpha/scripts"),
+        (".claude/skills/beta/scripts/beta.py", ".claude/skills/beta/scripts"),
+        ("skills/alpha/", "skills/alpha/scripts"),
+        ("skills/alpha", None),
+        ("skills", None),
+        ("skillset/alpha/scripts/alpha.py", None),
+        ("docs/skills/alpha.md", None),
+    ],
+)
+def test_a_path_names_the_scripts_folder_of_the_skill_it_sits_in(path: str, folder: str | None) -> None:
+    assert job_selection.skill_scripts_folder(path) == folder
+
+
+def test_a_changed_skill_file_reaches_the_suites_in_its_skills_scripts_folder_alone(tmp_path: Path) -> None:
+    tree = {
+        "skills/a/SKILL.md": "# a\n",
+        "skills/a/scripts/test_a.sh": "true\n",
+        "skills/a/scripts/nested/test_nested.sh": "true\n",
+        "skills/a/scripts-old/test_old.sh": "true\n",
+        "skills/ab/scripts/test_ab.sh": "true\n",
+        "skills/a/test_beside.sh": "true\n",
+    }
+    for name, text in tree.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    suites = [tmp_path / name for name in sorted(tree) if "/test_" in name]
+    selected = changed_suites(tmp_path, ["skills/a/SKILL.md"], suites, list(tree))
+    assert [suite.relative_to(tmp_path).as_posix() for suite in selected] == [
+        "skills/a/scripts/nested/test_nested.sh",
+        "skills/a/scripts/test_a.sh",
+    ]
+
+
 class JobSelectionFixtures(unittest.TestCase):
     def test_suites_that_name_a_changed_document_still_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
