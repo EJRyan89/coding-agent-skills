@@ -299,3 +299,29 @@ class EnvironmentPathTests(unittest.TestCase):
         for value in [None, *relative]:
             with self.subTest(value=value):
                 self.assertIsNone(self.path(value))
+
+    # Each value that is set but names no absolute path, which a caller that must refuse one is told about.
+    RELATIVE = (".", "bin", "Git/bin/bash.exe", "bash.exe", *(("C:bin", r"\bin") if WINDOWS else ()))
+
+    def test_a_given_environment_is_read_instead_of_this_process(self) -> None:
+        folder = Path(tempfile.gettempdir()).resolve()
+        with mock.patch.dict(os.environ, {self.VARIABLE: str(folder)}):
+            self.assertIsNone(executable_locator.environment_path(self.VARIABLE, {}))
+            self.assertIsNone(executable_locator.required_environment_path(self.VARIABLE, {}))
+        given = {self.VARIABLE: str(folder)}
+        self.assertEqual(folder, executable_locator.environment_path(self.VARIABLE, given))
+        self.assertEqual(folder, executable_locator.required_environment_path(self.VARIABLE, given))
+
+    def test_a_required_path_is_none_only_when_unset_or_empty(self) -> None:
+        for environment in ({}, {self.VARIABLE: ""}):
+            with self.subTest(environment=environment):
+                self.assertIsNone(executable_locator.required_environment_path(self.VARIABLE, environment))
+
+    def test_a_required_path_that_is_not_absolute_is_refused_with_its_variable_and_value(self) -> None:
+        for value in self.RELATIVE:
+            with self.subTest(value=value):
+                with self.assertRaises(executable_locator.RelativeEnvironmentPath) as raised:
+                    executable_locator.required_environment_path(self.VARIABLE, {self.VARIABLE: value})
+                self.assertEqual((self.VARIABLE, value), (raised.exception.variable, raised.exception.value))
+                self.assertEqual(f"{self.VARIABLE} is {value!r}, which is not an absolute path", str(raised.exception))
+                self.assertIsNone(executable_locator.environment_path(self.VARIABLE, {self.VARIABLE: value}))

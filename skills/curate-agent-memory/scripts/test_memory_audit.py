@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import atomic_file
 import memory_audit
 import skill_roots
+from executable_locator import RelativeEnvironmentPath
 from file_presence import NotAFile
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitClient, GitError, GitResult
@@ -669,6 +670,58 @@ class MemoryAuditTests(unittest.TestCase):
                 line = self.main_output(*arguments, environment=environment).strip()
                 report = json.loads(Path(line.removeprefix("REPORT ")).read_text(encoding="utf-8"))
                 self.assertEqual([str(expected)], [o["file"] for o in report["memories"][0]["overlaps"]])
+
+    def test_a_config_directory_that_is_not_an_absolute_path_fails_an_audit_that_reads_it(self) -> None:
+        # Before, the audit read the folder it names relative to its own working directory.
+        (self.memory_dir / "MEMORY.md").touch()
+        explicit = self.root / "explicit"
+        explicit.mkdir()
+        output = self.root / "report.json"
+        for value in RELATIVE_VALUES:
+            for arguments in ((), ("--output", str(output)), ("--user-dir", str(explicit), "--output", str(output))):
+                with self.subTest(value=value, arguments=arguments), mock.patch.dict(os.environ, {CONFIG: value}):
+                    code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir), *arguments)
+                    self.assertEqual((1, config_refusal(value), ""), (code, stdout, stderr))
+                    self.assertFalse(output.exists())
+        # An audit given its configuration directory and no report file reads nothing CLAUDE_CONFIG_DIR names.
+        with mock.patch.dict(os.environ, {CONFIG: "relative config"}):
+            self.assertTrue(self.main_output("--user-dir", str(explicit)).startswith("REPORT "))
+
+
+# The variable naming Claude Code's configuration directory, and values of it that name no absolute path.
+CONFIG = "CLAUDE_CONFIG_DIR"
+RELATIVE_VALUES = (
+    ".",
+    "relative config",
+    "config/.claude",
+    *(("C:config", r"\config") if sys.platform == "win32" else ()),
+)
+
+
+def config_refusal(value: str) -> str:
+    return (
+        f"FAILED {CONFIG} is {value!r}, which is not an absolute path; set it to the absolute path of the Claude "
+        "configuration directory, or unset it\n"
+    )
+
+
+class ConfigDirectoryTests(unittest.TestCase):
+    def test_the_config_directory_is_the_absolute_path_named_else_the_home_s_claude_folder(self) -> None:
+        home = Path(tempfile.gettempdir()).resolve() / "home"
+        config = Path(tempfile.gettempdir()).resolve() / "config"
+        for environment, expected in (
+            ({}, home / ".claude"),
+            ({CONFIG: ""}, home / ".claude"),
+            ({CONFIG: str(config)}, config),
+        ):
+            with self.subTest(environment=environment):
+                self.assertEqual(expected, memory_audit.config_directory(home, environment))
+
+    def test_a_config_directory_that_is_not_an_absolute_path_is_refused_with_its_value(self) -> None:
+        for value in RELATIVE_VALUES:
+            with self.subTest(value=value), self.assertRaises(RelativeEnvironmentPath) as raised:
+                memory_audit.config_directory(Path(tempfile.gettempdir()), {CONFIG: value})
+            self.assertEqual((CONFIG, value), (raised.exception.variable, raised.exception.value))
 
 
 class ReindexTests(unittest.TestCase):
@@ -1627,6 +1680,17 @@ class ResolveTests(unittest.TestCase):
         result = self.resolve({"CLAUDE_CONFIG_DIR": str(config), "CLAUDE_CODE_PROJECT_DIR_NAME": "shared"})
         self.assertEqual(str(config / "projects" / "shared" / "memory"), result["memory_dir"])
         self.assertEqual("CLAUDE_CODE_PROJECT_DIR_NAME", result["source"])
+
+    def test_a_config_dir_that_is_not_an_absolute_path_fails_resolve_on_one_line(self) -> None:
+        # Before, resolve named a memory directory under the folder it names relative to its working directory.
+        for value in RELATIVE_VALUES:
+            with (
+                self.subTest(value=value),
+                mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root), CONFIG: value}),
+                mock.patch.object(memory_audit, "managed_settings_path", return_value=self.managed),
+            ):
+                code, stdout, stderr = run_main("resolve", "--repo", str(self.repo), "--home", str(self.home))
+            self.assertEqual((1, config_refusal(value), ""), (code, stdout, stderr))
 
     SETTINGS_NOTE = (
         "NOTE A --settings file passed when Claude Code starts can also set autoMemoryDirectory; "

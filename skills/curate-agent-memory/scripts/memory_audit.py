@@ -35,7 +35,9 @@ anything, an --output that exists or lies inside the memory directory, the confi
 projects folder, the skills directory it runs from, ~/.claude/skills, or ~/.agents/skills. The report's
 `unreadable` list names each entry it could not read as a memory, with the reason, and the rest are
 audited. It searches the user's Claude configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude)
-unless --user-dir names another.
+unless --user-dir names another. A CLAUDE_CONFIG_DIR that is set but is not an absolute path is a
+`FAILED <reason>` line naming it, from resolve and from an audit that reads the configuration
+directory, and nothing is read from it.
 
 reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memory:
 `- [Title](file.md) — hook`. It writes only MEMORY.md, only with --write, and never deletes
@@ -103,7 +105,7 @@ import json_reader
 import json_writer
 from atomic_file import replace_text
 from console import run_main
-from executable_locator import environment_path
+from executable_locator import RelativeEnvironmentPath, environment_path, required_environment_path
 from file_presence import is_directory, is_present, matching
 from flat_text import flat_text
 from git_client import GitClient, GitError
@@ -819,8 +821,10 @@ def repository_root(directory: Path) -> Path | None:
 
 
 def config_directory(home: Path, environment: dict[str, str]) -> Path:
-    """The user's Claude Code configuration directory."""
-    return Path(environment["CLAUDE_CONFIG_DIR"]) if environment.get("CLAUDE_CONFIG_DIR") else home / ".claude"
+    """The user's Claude Code configuration directory: CLAUDE_CONFIG_DIR, else the home's .claude folder. Raises
+    RelativeEnvironmentPath for a CLAUDE_CONFIG_DIR that is not an absolute path, which only the directory Claude Code
+    started in could complete, so no directory is read relative to this script's working directory."""
+    return required_environment_path("CLAUDE_CONFIG_DIR", environment) or home / ".claude"
 
 
 def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path | None) -> dict[str, Any]:
@@ -1294,6 +1298,9 @@ def main(arguments: list[str] | None = None) -> int:
         code, lines = run(args)
     except OSError as exc:
         code, lines = 1, [f"FAILED {describe(exc)}"]
+    except RelativeEnvironmentPath as exc:
+        remedy = "set it to the absolute path of the Claude configuration directory, or unset it"
+        code, lines = 1, [f"FAILED {flat_text(f'{exc}; {remedy}')}"]
     print("\n".join(lines))
     return code
 
