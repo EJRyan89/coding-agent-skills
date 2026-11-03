@@ -1145,6 +1145,8 @@ def more(path: Path, root: Path, name: str, top: str, other: str, *rest: str) ->
         name.startswith(sorted(PREFIXES)),
         name.startswith(tuple([item for item in PREFIXES])),
         name.startswith(tuple({item for item in PREFIXES})),
+        name.startswith("{0}".format(os.sep, *rest)),
+        name.startswith(other if top else top + "/"),
         name.startswith("{0}{1}".format(os.sep, top)),  # The last field is top.
         name.startswith("{sep}{}".format(top, sep=os.sep)),  # The last field is top.
         name.startswith("{}/{0.name}".format(top)),  # Not read: a field's attribute.
@@ -1156,6 +1158,8 @@ def more(path: Path, root: Path, name: str, top: str, other: str, *rest: str) ->
         name.startswith(tuple(top)),  # A tuple of a plain name's characters.
         name.startswith(tuple()),  # An empty tuple.
         name.startswith(sorted(item.name for item in path.parents)),  # Plain names, no separator.
+        name.startswith(tuple(top, PREFIXES)),  # A collection is made of its first argument alone.
+        name.startswith("{1}".format(os.sep)),  # No argument fills the field.
     ]
 
 
@@ -1219,7 +1223,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
             for line in (316, 317, 318)
         ),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (319, 320, 321)),
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(322, 340)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(322, 342)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

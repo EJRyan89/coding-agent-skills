@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 import file_presence
+import whole_number
 from path_containment import posix_within
 from python_checks import claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
@@ -738,12 +739,11 @@ def _last_field(template: str, positional: list[ast.expr], keywords: list[ast.ke
         return None
     field = fields[-1][1]
     if field.isidentifier():
-        return next((keyword.value for keyword in keywords if keyword.arg == field), None)
-    index = int(field) if field.isdigit() else sum(name == "" for _, name, _, _ in fields) - 1 if not field else -1
-    leading = positional[: index + 1]
-    if index < 0 or len(leading) <= index or any(isinstance(argument, ast.Starred) for argument in leading):
+        return {keyword.arg: keyword.value for keyword in keywords}.get(field)
+    index = sum(name == "" for _, name, _, _ in fields) - 1 if field == "" else whole_number.parse(field)
+    if index is None or index >= len(positional):
         return None
-    return positional[index]
+    return None if any(isinstance(argument, ast.Starred) for argument in positional[:index]) else positional[index]
 
 
 def _alternatives(value: ast.expr | None) -> list[ast.expr] | None:
