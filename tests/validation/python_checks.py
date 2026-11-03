@@ -1581,9 +1581,13 @@ class _JsonModel:
                 break
             self.encoder_classes |= added
         module_level = {id(node) for node in _module_level_nodes(tree)}
+        self.augmented: set[tuple[str, str]] = set()
         bindings = []
         for node, scope in nodes:
             for target, value in _bound_values(node):
+                if isinstance(target, ast.Name) and isinstance(node, ast.AugAssign):
+                    # An augmented assignment adds to a name's value, which bound_values cannot follow.
+                    self.augmented.add((scope, target.id))
                 key = place_key(target, scope, self.class_names)
                 wide = id(node) in module_level or not isinstance(target, ast.Name) or scope in self.class_names
                 bindings.append((MODULE_WIDE if wide else scope, key, value, scope))
@@ -1609,8 +1613,12 @@ class _JsonModel:
         return _JsonNames(own.text | wide.text, own.encoders | wide.encoders)
 
     def held(self, node: ast.AST, scope: str, kind: str) -> bool:
-        """Whether a place an expression reads is bound to JSON text ("text") or to a JSONEncoder ("encoders")."""
-        if not (isinstance(node, JSON_PLACES) and isinstance(node.ctx, ast.Load)):
+        """Whether a place an expression reads is bound to JSON text ("text") or to a JSONEncoder ("encoders"). A
+        name is read so only where an augmented assignment adds to it; any other is followed through bound_values,
+        which keeps only the bindings that may reach it."""
+        if not isinstance(node, JSON_PLACES) or not isinstance(node.ctx, ast.Load):
+            return False
+        if isinstance(node, ast.Name) and (scope, node.id) not in self.augmented:
             return False
         return place_key(node, scope, self.class_names) in getattr(self.names(scope), kind)
 
@@ -1993,6 +2001,17 @@ class _ForeignLibraries:
                 found += self.functions.get(place_key(value, self.scope(value), self.class_names), [])
         return list(dict.fromkeys(found))
 
+    def called(self, call: ast.Call) -> dict[ForeignFunction, bool]:
+        """Each foreign function a call may run, through its function or a functools.partial, a getattr, or an
+        operator.attrgetter of one (resolved_calls), with whether any way of making it gives arguments."""
+        found = dict.fromkeys(self.foreign(call.func), bool(call.args or call.keywords))
+        for read in resolved_calls(call, self.resolver):
+            if read.attribute and read.attribute not in FOREIGN_MEMBERS and read.receiver is not None:
+                given = bool(read.args or read.keywords or read.unread)
+                for library in self.libraries(read.receiver):
+                    found[library, read.attribute] = found.get((library, read.attribute), False) or given
+        return found
+
     def declarations(self, node: ast.AST) -> Iterator[tuple[ForeignFunction, str]]:
         """Each foreign function and declaration, argtypes or restype, a node assigns: by every target of an
         assignment, chained or unpacked, by an annotated assignment, or by a setattr of a constant name."""
@@ -2031,12 +2050,15 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
         libraries = _ForeignLibraries(tree, CallableResolver(tree))
         declared: dict[ForeignFunction, set[str]] = {}
         calls: list[tuple[ast.Call, str, ForeignFunction]] = []
+        given: set[ForeignFunction] = set()
         for node, scope in scoped_nodes(tree.body):
             for declared_function, declaration in libraries.declarations(node):
                 declared.setdefault(declared_function, set()).add(declaration)
             if isinstance(node, ast.Call):
-                calls += [(node, scope, function) for function in libraries.foreign(node.func)]
-        given = {function for call, _, function in calls if call.args or call.keywords}
+                for function, arguments in libraries.called(node).items():
+                    calls.append((node, scope, function))
+                    if arguments:
+                        given.add(function)
         found: list[tuple[int, str, str]] = []
         for call, scope, function in calls:
             missing = [

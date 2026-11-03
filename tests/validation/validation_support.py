@@ -781,7 +781,7 @@ def _shape(resolver: CallableResolver) -> _ModuleShape:
     return resolver.shape
 
 
-def _reaches(binding: ast.expr, others: list[ast.expr], use: ast.AST, shape: _ModuleShape) -> bool:
+def _reaches(binding: ast.AST, others: list[ast.expr], use: ast.AST, shape: _ModuleShape) -> bool:
     """Whether a binding's value may reach a use in the same scope: unless it comes after the use in the statement list
     that holds both, or another binding of the name in the same list comes after it and before the use, as a second
     assignment in straight-line code replaces the first. A binding in a branch, a try, or a handler is not replaced by
@@ -899,20 +899,25 @@ def _references(node: ast.expr, resolver: CallableResolver, seen: frozenset[int]
 def _dict_additions(name: ast.Name, resolver: CallableResolver) -> tuple[dict[str, list[ast.expr]], bool]:
     """The keys a scope adds to the dict a name holds, by a constant subscript store, an `update` of keywords or of a
     literal dict, or a `setdefault` of a constant key, with each value; and whether any other change, such as an
-    `update` of another mapping or `|=`, leaves it unread."""
+    `update` of another mapping or `|=`, leaves it unread. In the scope that binds the name, a change counts only where
+    it may reach the read, by the rule bound_values keeps: a later binding in the same statement list replaces it."""
     scope = resolver.scopes.get(id(name))
     owner = scope.owner(name.id) if scope is not None else None
+    bindings = [value for value in owner.bindings[name.id] if isinstance(value, ast.expr)] if owner is not None else []
+    shape = _shape(resolver)
     added: dict[str, list[ast.expr]] = {}
     unread = False
 
-    def same(node: ast.expr) -> bool:
+    def same(node: ast.expr, change: ast.AST) -> bool:
         if not isinstance(node, ast.Name) or node.id != name.id:
             return False
         found = resolver.scopes.get(id(node))
-        return found is not None and found.owner(node.id) is owner
+        if found is None or found.owner(node.id) is not owner:
+            return False
+        return owner is not scope or _reaches(change, bindings, name, shape)
 
     for node in ast.walk(resolver.tree):
-        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and same(node.value):
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and same(node.value, node):
             key = node.slice
             parent = _shape(resolver).parents.get(id(node))
             value = parent.value if isinstance(parent, ast.Assign) else None
@@ -920,9 +925,9 @@ def _dict_additions(name: ast.Name, resolver: CallableResolver) -> tuple[dict[st
                 added.setdefault(key.value, []).append(value)
             else:
                 unread = True
-        elif isinstance(node, ast.AugAssign) and same(node.target):
+        elif isinstance(node, ast.AugAssign) and same(node.target, node):
             unread = True
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and same(node.func.value):
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and same(node.func.value, node):
             unread = _dict_method_additions(node, node.func.attr, added) or unread
     return added, unread
 

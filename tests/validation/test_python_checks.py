@@ -3150,6 +3150,11 @@ def marked_rows(body: str) -> list[str]:
             "def f(p):\n    operator.attrgetter('add_argument')(p)('--timeout', type=float)  # read\n",
             id="an attrgetter of add_argument",
         ),
+        pytest.param(
+            "def f(p):\n    options = {}\n    options['type'] = float\n    options = {}\n"
+            "    p.add_argument('--timeout', **options)\n",
+            id="a key added before the dict is bound again passes",
+        ),
     ],
 )
 def test_time_option_policy_reads_each_form_resolved_call_follows(body: str) -> None:
@@ -3280,6 +3285,10 @@ def test_time_words_hold_each_limit_word_and_unit() -> None:
             "    def save(self, s, d):\n        s.write(self.enc.encode(d))  # read\n",
             id="an encoder an attribute bound later gives",
         ),
+        pytest.param(
+            "def f(s):\n    t = json.dumps({})\n    t = 'x'\n    s.write(t)\n",
+            id="text bound again to plain text passes",
+        ),
     ],
 )
 def test_json_write_policy_reads_each_form_resolved_call_follows(body: str) -> None:
@@ -3370,6 +3379,19 @@ DECLARED = "    lib.CloseHandle.argtypes = [wintypes.HANDLE]\n    lib.CloseHandl
             "        user32.F.argtypes = [wintypes.HANDLE]\n        user32.F.restype = wintypes.BOOL\n"
             "        self.lib = user32\n\n    def c(self, h):\n        self.lib.F(h)  # read\n",
             id="a place bound to two libraries counts both",
+        ),
+        pytest.param(
+            "def f():\n    lib = ctypes.WinDLL('k')\n    g = functools.partial(lib.CloseHandle, 1)\n    g()  # read\n",
+            id="a partial of a foreign function bound to a name",
+        ),
+        pytest.param(
+            "def f():\n    lib = ctypes.WinDLL('k')\n    functools.partial(lib.CloseHandle, 1)()  # read\n",
+            id="a partial of a foreign function called in place",
+        ),
+        pytest.param(
+            "def f():\n    lib = ctypes.WinDLL('k')\n"
+            "    functools.partial(operator.attrgetter('CloseHandle')(lib), 1)()  # read\n",
+            id="a partial over an attrgetter of a foreign function",
         ),
     ],
 )
