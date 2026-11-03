@@ -139,6 +139,8 @@ CONFIGURATION_PAIR = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+")
 SHELLOPTS, BASHOPTS = "SHELLOPTS", "BASHOPTS"
 SHELL_OPTION_VARIABLES = (SHELLOPTS, BASHOPTS)
 ALLEXPORT = "allexport"
+# xtrace, under which Bash expands PS4 before each command it traces, running any substitution PS4 holds.
+XTRACE, PS4 = "xtrace", "PS4"
 # The shell options the guard reads, one table for set's and one for shopt's, through which every source of options
 # is read: set, shopt, a nested bash's own options, and the SHELLOPTS, BASHOPTS, and POSIXLY_CORRECT its environment
 # hands it. Each set option has the letter that names it in a bundle, or none, and each option of either the state in
@@ -178,8 +180,9 @@ SET_OPTIONS: dict[str, tuple[str, str]] = {
     "physical": ("P", "on"),
     # On, a nested bash ignores the SHELLOPTS and functions its environment hands it.
     "privileged": ("p", "on"),
-    # On, each command's trace expands PS4, which may hold a command substitution.
-    "xtrace": ("x", "on"),
+    # On, each command's trace expands PS4, which may hold a command substitution: judge_options refuses it where PS4
+    # may hold an expansion, and read_bash a command that names PS4.
+    "xtrace": ("x", ""),
     # Off in a script, Bash reads a word starting with # as a comment all the same; in an interactive bash, -i, it
     # does not.
     "interactive-comments": ("", "off"),
@@ -254,6 +257,7 @@ BASH_LONG_OPTIONS = {
 # an earlier Bash's behavior. Bash reads each by its exact name.
 OPTION_SETTING_VARIABLES = {"POSIXLY_CORRECT": "posix", "BASH_COMPAT": "an earlier Bash's behavior"}
 OPTION_SETTING_TEXT = re.compile(r"\b(?:POSIXLY_CORRECT|BASH_COMPAT)\b")
+PS4_TEXT = re.compile(r"\bPS4\b")
 # A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry a
 # leading backslash or, without one, the provider's module. A variable may follow a separator on the drive only: after
 # Environment:: PowerShell keeps the separator as part of the variable's name.
@@ -1701,7 +1705,9 @@ class BashReader:
             read = functools.partial(
                 read_bash,
                 functions=exported_functions(shell),
-                allexport=bash_allexport(program, arguments, self.reading),
+                allexport=bash_allexport(
+                    program, arguments, self.reading, script, {**variables, PS4: None} if shell.opaque else variables
+                ),
                 opaque=shell.opaque,
             )
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read)
@@ -2278,7 +2284,7 @@ def bash_set(reader: BashReader, arguments: list[Word], _: object, shell: Shell,
     if changes is None:
         reader.reading.cannot_read("could not read the options passed to set")
         return certain(shell)
-    allexport = judge_options(changes, reader.reading, "set")
+    allexport = judge_options(changes, reader.reading, "set", shell_ps4(shell))
     if allexport is not None:
         shell.allexport = allexport
     return certain(shell)
@@ -2325,15 +2331,20 @@ def option_changes(arguments: list[Word], starting: bool) -> list[OptionChange] 
     return changes
 
 
-def judge_options(changes: Iterable[OptionChange], reading: Reading, source: str) -> bool | None:
+def judge_options(
+    changes: Iterable[OptionChange], reading: Reading, source: str, ps4: tuple[Word, ...] = ()
+) -> bool | None:
     """Records as a part the guard cannot read each change to an option no table names, and each that leaves an
-    option in the state SET_OPTIONS or SHOPT_OPTIONS names; returns what the changes leave allexport, the last
-    winning, or None when they leave it as it was."""
+    option in the state SET_OPTIONS or SHOPT_OPTIONS names, and xtrace turned on where the PS4 the shell holds, if
+    any, may hold an expansion (expanding_ps4); returns what the changes leave allexport, the last winning, or None
+    when they leave it as it was."""
     allexport: bool | None = None
     for table, name, on in changes:
         state = "on" if on else "off"
         if table == "set" and name == ALLEXPORT:
             allexport = on
+        if table == "set" and name == XTRACE and on and expanding_ps4(ps4):
+            reading.cannot_read(f"{XTRACE} is turned on by {source} where {PS4} may hold an expansion, which it runs")
         refused = OPTION_STATES[table].get(name)
         if refused is None:
             reading.cannot_read(f"the option {name} is turned {state} by {source}, and the guard does not read it")
@@ -2342,16 +2353,46 @@ def judge_options(changes: Iterable[OptionChange], reading: Reading, source: str
     return allexport
 
 
-def bash_allexport(program: str | None, arguments: list[Word], reading: Reading) -> bool:
+def expanding_ps4(ps4: tuple[Word, ...]) -> bool:
+    """Whether a PS4, given as (value,) or () when the shell holds none, may hold an expansion: a value the text does
+    not settle, or one holding $ or a backquote."""
+    return bool(ps4) and (ps4[0] is None or bool(re.search(r"[$`]", ps4[0])))
+
+
+def shell_ps4(shell: Shell) -> tuple[Word, ...]:
+    """The PS4 a shell holds, as expanding_ps4 takes it; any value in a shell the text does not settle."""
+    if shell.opaque:
+        return (None,)
+    return (shell.variables[PS4],) if PS4 in shell.variables else ()
+
+
+def handed_ps4(environment: Mapping[str, Word], names_folded: bool) -> tuple[Word, ...]:
+    """The PS4 an environment hands a bash, as expanding_ps4 takes it, by a name in any case where the starter folds
+    names."""
+    found = [value for name, value in environment.items() if (name.upper() if names_folded else name) == PS4]
+    return (found[0],) if found else ()
+
+
+def bash_allexport(
+    program: str | None,
+    arguments: list[Word],
+    reading: Reading,
+    script: list[Word] | None,
+    environment: Mapping[str, Word],
+    names_folded: bool = False,
+) -> bool:
     """Whether a bash starts with allexport on, by its own options before its script, as -a or -o allexport; each
     other option is judged (judge_options), and sh, which Bash runs in POSIX mode, is a shell the guard cannot read.
-    An option word the text does not settle makes the script one the text does not hold (bash_script)."""
+    Only a script the guard reads is judged: a script file it does not read whatever the options, and one the text
+    does not hold, which an option word the text does not settle also makes (bash_script), it cannot read already.
+    Its PS4 is the one the environment it starts with, these handed variables over the hook's own, gives it."""
     changes = option_changes(arguments, starting=True)
-    if changes is None:
+    if changes is None or script is None or script == [None]:
         return False
     if program == "sh":
         changes.insert(0, ("set", "posix", True))
-    return judge_options(changes, reading, f"{program}'s own options") is True
+    ps4 = handed_ps4(started_environment(reading, environment), names_folded)
+    return judge_options(changes, reading, f"{program}'s own options", ps4) is True
 
 
 def bash_shopt(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
@@ -2365,7 +2406,8 @@ def bash_shopt(reader: BashReader, arguments: list[Word], _: object, shell: Shel
         return certain(shell)
     if flags & {"s", "u"}:
         table: Literal["set", "shopt"] = "set" if "o" in flags else "shopt"
-        allexport = judge_options([(table, name, "s" in flags) for name in read[1]], reader.reading, "shopt")
+        changes: list[OptionChange] = [(table, name, "s" in flags) for name in read[1]]
+        allexport = judge_options(changes, reader.reading, "shopt", shell_ps4(shell))
         if allexport is not None:
             shell.allexport = allexport
     return certain(shell)
@@ -2744,7 +2786,7 @@ def started_options(environment: Mapping[str, Word], names_folded: bool, reading
         reading.cannot_read(f"could not read the {BASHOPTS} its environment hands bash, which may turn on any option")
     else:
         changes.extend(("shopt", name, True) for name in bashopts.split(":") if name)
-    judge_options(changes, reading, "the environment bash starts with")
+    judge_options(changes, reading, "the environment bash starts with", handed_ps4(environment, names_folded))
     handed = {name.upper() if names_folded else name for name in environment}
     for name, effect in OPTION_SETTING_VARIABLES.items():
         if name in handed:
@@ -2777,6 +2819,11 @@ def read_bash(
         # Assigned in the text, by any builtin, an arithmetic expression, or before a command, each turns its option
         # on as Bash makes the assignment, and unset turns it off.
         reading.cannot_read("the command names a variable that turns on a shell option the guard does not read")
+    if PS4_TEXT.search(command):
+        # Whatever the command sets PS4 to, xtrace, now or later, expands it before each command it traces.
+        reading.cannot_read(
+            f"the command names {PS4}, which {XTRACE} expands before each command, running what it holds"
+        )
     allexport = allexport or started == "on"
     shell = Shell(cwd, dict(inherited), set(inherited), allexport=allexport, opaque=opaque, reading=reading)
     shell.functions.update(functions or {})
@@ -3210,14 +3257,15 @@ class PowerShellReader:
             read_git(arguments, cwd, variables, self.reading, opaque)
         elif name in BASH_NAMES:
             script = bash_script(arguments, [], Shell(None, {}, set()))
+            handed = {**variables, SHELLOPTS: None, BASHOPTS: None, PS4: None} if opaque else variables
+            folds = platform_support.ENVIRONMENT_NAMES_FOLD_CASE
             read = functools.partial(
                 read_bash,
                 functions=self.bash_functions,
-                allexport=bash_allexport(name, arguments, self.reading),
+                allexport=bash_allexport(name, arguments, self.reading, script, handed, folds),
                 opaque=opaque,
-                names_folded=platform_support.ENVIRONMENT_NAMES_FOLD_CASE,
+                names_folded=folds,
             )
-            handed = {**variables, SHELLOPTS: None, BASHOPTS: None} if opaque else variables
             follow(name, script, cwd, handed, self.reading, self.depth, read)
         elif name in POWERSHELL_NAMES:
             follow_powershell(

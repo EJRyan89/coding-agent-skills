@@ -950,7 +950,6 @@ OPTION_PROBES = {
     "lastpipe": "shopt -q lastpipe && [[ ! -o monitor ]] && echo ON",
     "cdable_vars": "shopt -q cdable_vars && echo ON",
     "physical": "[[ -o physical ]] && echo ON",
-    "xtrace": "[[ -o xtrace ]] && echo ON",
 }
 # Each spelling that turns an option on or leaves it off, with PROBE standing for what is run where it holds, the
 # option, and the verdict: "holds" where Bash holds it and the guard refuses the shell, "refused" where the guard
@@ -1025,7 +1024,6 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
         (spelling, "physical", "holds")
         for spelling in ("set -P; PROBE", "set -o physical; PROBE", "bash -P -c 'PROBE'")
     ),
-    *((spelling, "xtrace", "holds") for spelling in ("set -x; PROBE", "bash -x -c 'PROBE'", "bash --norc -xc 'PROBE'")),
     # The guard refuses sh, which Bash runs in POSIX mode and a system may provide as another shell, such as dash,
     # which has no [[; and lastpipe turned on beside job control, which keeps it from holding.
     ("sh -c 'PROBE'", "posix", "refused"),
@@ -1051,7 +1049,6 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
             ("env BASHOPTS=extglob bash -c 'PROBE'", "lastpipe"),
             ("shopt -u cdable_vars; PROBE", "cdable_vars"),
             ("set +P; PROBE", "physical"),
-            ("set +x; PROBE", "xtrace"),
         )
     ),
 )

@@ -423,8 +423,10 @@ refused while a guarded hub is in view, and what they do not see at all is named
   or `BASH_COMPAT` it is handed or the command names. Each table names each option Bash lists and whether a shell
   holding it is one the guard reads: the guard follows allexport, reads a shell under an option that changes nothing
   it reads, such as `errexit`, `pipefail`, `nounset`, or `extglob`, and cannot read one under `keyword`, `posix`,
-  `lastpipe`, `cdable_vars`, `physical`, `privileged`, `xtrace`, or the others its table marks, nor an option it
-  does not name. An
+  `lastpipe`, `cdable_vars`, `physical`, `privileged`, or the others its table marks, nor an option it does not
+  name. `xtrace` expands `PS4` before each command it traces, so the guard cannot read a shell where it is turned on
+  while the shell holds a `PS4` that may hold an expansion, nor a command that names `PS4`. A nested `bash`'s own
+  options are judged only where the guard reads its script: a script file is unread whatever they are. An
   `env` word the text does not settle, as in `env FOO=$(cmd)`, may assign any variable, so the guard cannot read it,
   and every variable git or a nested bash reads is unsettled for the command after it. A shell the text does not settle may have exported any
   variable, so a shell it starts is one the text does not settle either. Nesting of shells, `eval`, function calls,
@@ -459,7 +461,8 @@ the hubs they reach stay in view. While one is, the guard refuses:
   among its options, as in `bash -c"$x"` or `bash $x -c`, which may be `-c`, an option word of `set` or `shopt`
   the text does not settle, which may turn on allexport, a shell where an option the guard's tables mark as unread
   holds or one they do not name is turned on, by any source above, `sh` and a `POSIXLY_CORRECT` the command names or
-  its environment hands it among them, a `BASH_FUNC_<name>%%` a PowerShell cmdlet writes,
+  its environment hands it among them, `xtrace` turned on where `PS4` may hold an expansion, a command that names
+  `PS4`, a `BASH_FUNC_<name>%%` a PowerShell cmdlet writes,
   whose body the text does not settle, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
   inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
   lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline

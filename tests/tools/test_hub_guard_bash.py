@@ -597,7 +597,6 @@ REFUSED_SET_OPTIONS = {
     "posix": "on",
     "physical": "on",
     "privileged": "on",
-    "xtrace": "on",
     "igncr": "on",
     "interactive-comments": "off",
 }
@@ -745,6 +744,59 @@ class ShellOptionTableTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(unread, bash_reading(command).unread)
                 self.assertEqual(["status"], subcommands(command))
+
+    def test_xtrace_is_refused_where_ps4_may_hold_an_expansion(self) -> None:
+        names = "the command names PS4, which xtrace expands before each command, running what it holds"
+        for command, environment, unread in (
+            ("set -x; git status", {}, []),
+            ("bash -x -c 'git status'", {}, []),
+            ("set -x; git status", {"PS4": "+ "}, []),
+            (
+                "set -x; git status",
+                {"PS4": "$(cmd)"},
+                ["xtrace is turned on by set where PS4 may hold an expansion, which it runs"],
+            ),
+            (
+                "shopt -so xtrace; git status",
+                {"PS4": "`cmd`"},
+                ["xtrace is turned on by shopt where PS4 may hold an expansion, which it runs"],
+            ),
+            ("set +x; git status", {"PS4": "$(cmd)"}, []),
+            (
+                "bash -x -c 'git status'",
+                {"PS4": "${x}"},
+                ["xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs"],
+            ),
+            ("bash -c 'git status'", {"PS4": "$(cmd)"}, []),
+            ("PS4=+; git status", {}, [names]),
+            (
+                "declare $n=1; set -x; git status",
+                {},
+                ["xtrace is turned on by set where PS4 may hold an expansion, which it runs"],
+            ),
+        ):
+            with self.subTest(command=command, environment=environment):
+                reading = hub_guard.Reading({}, command)
+                hub_guard.read_bash(command, START, reading, 1, environment)
+                self.assertEqual(unread, reading.unread)
+        source = "the environment bash starts with"
+        for handed, unread in (
+            ({"SHELLOPTS": "xtrace"}, []),
+            (
+                {"SHELLOPTS": "xtrace", "PS4": "$(cmd)"},
+                [f"xtrace is turned on by {source} where PS4 may hold an expansion, which it runs"],
+            ),
+            (
+                {"SHELLOPTS": "xtrace", "PS4": None},
+                [f"xtrace is turned on by {source} where PS4 may hold an expansion, which it runs"],
+            ),
+        ):
+            with self.subTest(handed=handed):
+                reading = hub_guard.Reading({}, "git status")
+                hub_guard.read_bash("git status", START, reading, 1, handed)
+                self.assertEqual(unread, reading.unread)
+        self.assertEqual((), hub_guard.handed_ps4({"ps4": "$(x)"}, names_folded=False))
+        self.assertEqual(("$(x)",), hub_guard.handed_ps4({"ps4": "$(x)"}, names_folded=True))
 
     def test_the_environment_a_bash_starts_with_is_judged_by_each_variable_that_sets_options(self) -> None:
         source = "the environment bash starts with"

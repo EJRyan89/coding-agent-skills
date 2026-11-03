@@ -1286,7 +1286,6 @@ SHELLOPTS_STARTS = (
     ("export SHELLOPTS=x; set -a; bash -c 'SCRIPT'", True),
     ("declare -n ref=SHELLOPTS; export ref; set -a; bash -c 'SCRIPT'", True),
     ("env SHELLOPTS=pipefail bash -c 'SCRIPT'", False),
-    ("env SHELLOPTS=ALLEXPORT bash -c 'SCRIPT'", False),
     ("env shellopts=allexport bash -c 'SCRIPT'", False),
     ("SHELLOPTS=allexport bash -c 'SCRIPT'", False),
     ("set -a; bash -c 'SCRIPT'", False),
@@ -3017,6 +3016,9 @@ class ContractTests(GuardTestCase):
                         self.assertIn(WRITES.format("switch"), self.reason)
                     else:
                         self.assertIsNone(self.bash(command, cwd))
+        # A name no table of shell options holds, as ALLEXPORT, which Bash passes over, may be one a later Bash reads.
+        self.assertEqual("deny", self.bash("env SHELLOPTS=ALLEXPORT bash -c 'git switch -c x'", self.tree))
+        self.assertIn("the option ALLEXPORT is turned on by the environment bash starts with", self.reason)
         # PowerShell holds environment names folded where the platform folds them, so a SHELLOPTS listing allexport
         # may be one Bash reads, by its exact name, or not.
         unread = "could not read the SHELLOPTS its environment hands bash"
