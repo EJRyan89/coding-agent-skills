@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -778,6 +779,25 @@ class LockTests(DeployerTestCase):
         self.assertIn("Alpha content", self.skill_text("alpha"))
         self.assertEqual(manifest, self.manifest_file.read_bytes())
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
+        self.deploy_ok("--all")
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+
+    def test_a_read_only_manifest_is_refused_before_the_first_change_and_by_the_dry_run(self) -> None:
+        # The commit's write_atomic refuses a read-only manifest on every platform, so the run refuses it first.
+        self.fixture()
+        self.deploy_ok("--all")
+        self.make_skill("alpha", "Updated alpha")
+        manifest = self.manifest_file.read_bytes()
+        self.manifest_file.chmod(stat.S_IREAD)
+        self.addCleanup(self.manifest_file.chmod, stat.S_IREAD | stat.S_IWRITE)
+        refusal = f"ERROR: The manifest is read-only: {re.escape(forward(self.manifest_file))}\nMake it writable"
+        with mock.patch("deployer.plan.carry_out", side_effect=AssertionError("the run changed an item")):
+            for arguments in (("--all",), ("--all", "--dry-run")):
+                with self.subTest(arguments=arguments):
+                    self.deploy_fails(*arguments, pattern=refusal)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertEqual(manifest, self.manifest_file.read_bytes())
+        self.manifest_file.chmod(stat.S_IREAD | stat.S_IWRITE)
         self.deploy_ok("--all")
         self.assertIn("Updated alpha", self.skill_text("alpha"))
 
