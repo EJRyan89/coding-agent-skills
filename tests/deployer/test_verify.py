@@ -24,9 +24,11 @@ from harness import (
     remove_directory_link,
 )
 from test_job_tree import ended
+from test_presence_reads import stat_failing_at
 
 from deployer import discovery, platform_support, verify
 from deployer.discovery import Listed, ListingError
+from deployer.render import CODEX_METADATA
 from deployer.report import ReportLine
 
 EXECUTABLES = {"codex": "C:/tools/codex.cmd", "copilot": "C:/tools/copilot.exe"}
@@ -1013,6 +1015,26 @@ class VerifyCommandTests(DeployerTestCase):
             result.output,
         )
         self.assertNotIn("Cannot list its skills", result.output)
+        self.assertEqual({"FOUND": ["alpha", "beta", "gamma"]}, self.groups(result.output, "COPILOT CLI"))
+        self.assertIn("Verification failed for Codex CLI.\nSee docs/codex-support.md.\n", result.output)
+
+    def test_a_user_only_marker_whose_stat_fails_fails_codex_rather_than_passing_the_adapter_as_one_the_model_starts(
+        self,
+    ) -> None:
+        # Read as no marker, gamma would pass as an adapter the model may start, which Codex offers it.
+        self.make_skill("gamma", "Gamma", user_only=True)
+        self.deploy_ok("--all")
+        everything = [(name, self.adapter(name), True) for name in ("alpha", "beta", "gamma")]
+        self.answer(codex=everything, copilot=everything)
+        marker = self.agents_dir / "gamma" / CODEX_METADATA
+        with stat_failing_at(marker):
+            result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            "\n=== CODEX CLI ===\n\nListed its skills, but cannot read which adapters only the user starts, from their "
+            f"{CODEX_METADATA}: {forward(marker)}: Access is denied\n\n",
+            result.output,
+        )
         self.assertEqual({"FOUND": ["alpha", "beta", "gamma"]}, self.groups(result.output, "COPILOT CLI"))
         self.assertIn("Verification failed for Codex CLI.\nSee docs/codex-support.md.\n", result.output)
 

@@ -92,6 +92,7 @@ def resolve(source_dir: Path, ref: str) -> Pin:
     """
     check_ref(ref)
     shown = platform_support.normalize(source_dir)
+    # A .git whose stat fails is refused as no checkout: its False stops --at before anything runs, as git would.
     if not (source_dir / ".git").exists():
         raise DeployError(f"ERROR: --at needs a Git checkout, and {shown} is not one.")
     # commit_of ends the options before the ref, so a ref is never read as an option even if the pattern above ever
@@ -163,8 +164,9 @@ def recorded_ref(source_dir: Path, pin: Pin | None, ref: str | None, commit: str
     at the pinned commit. A user's pin keeps its ref as written through a deployment at its commit unless that passes
     --unpin, since recording the update's refs/tags/<tag> over it would let the next release move it. Over the update's
     own pin, as over any other, the ref --at names is recorded, so a user's pin there is recorded as the user's. When
-    Git cannot read the pinned commit's tags, the recorded ref is kept as written: the run has deployed by then, and
-    keeping it changes neither the pinned commit nor the owner its form names.
+    Git cannot read the pinned commit's tags, whose the recorded ref is cannot be told, and the run has deployed by
+    then: a ref --at names in a form only a user gives, a short name or a commit, is recorded, since the pin is the
+    user's whoever made the recorded one, and a ref --at names in full is not, so the recorded ref is kept as written.
     """
     if pin is None:
         return None
@@ -173,7 +175,7 @@ def recorded_ref(source_dir: Path, pin: Pin | None, ref: str | None, commit: str
     try:
         own = is_release_pin(source_dir, ref, commit)
     except TagsUnreadable:
-        own = False
+        own = not pin.ref.startswith(TAGS)
     return pin.ref if own else ref
 
 

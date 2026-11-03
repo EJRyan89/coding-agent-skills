@@ -7,6 +7,7 @@ import contextlib
 import functools
 import io
 import os
+import shutil
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -16,12 +17,26 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import DeployerTestCase, backup_entry, forward, install_entry, journal_line
+import file_presence
+from harness import SOURCE_ID, DeployerTestCase, backup_entry, forward, install_entry, journal_line
 
-from deployer import hashing, journal, pipeline, platform_support, source, source_commit, source_ref
+from deployer import (
+    fsops,
+    hashing,
+    journal,
+    paths,
+    pipeline,
+    platform_support,
+    report,
+    source,
+    source_commit,
+    source_ref,
+    verify,
+)
 from deployer.errors import DeployError
 from deployer.kinds import AGENT_KIND, SKILL
 from deployer.names import BACKUP_SUFFIX, transient_name
+from deployer.render import CODEX_METADATA
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
@@ -31,22 +46,22 @@ def denied(path: Path) -> PermissionError:
 
 
 @contextlib.contextmanager
-def stat_failing_at(path: Path) -> Iterator[None]:
-    """A stat of one path that fails, as a denied one does: Path.stat raises PermissionError, through links or not,
-    and each presence predicate answers False for it, as every one does for a failed stat from Python 3.14 on, so a
-    reader that still asks one reads the path as absent. Every other path is answered as it is."""
+def stat_failing_at(*failing: Path) -> Iterator[None]:
+    """A stat of each given path that fails, as a denied one does: Path.stat raises PermissionError, through links or
+    not, and each presence predicate answers False for it, as every one does for a failed stat from Python 3.14 on, so
+    a reader that still asks one reads the path as absent. Every other path is answered as it is."""
     real_stat = Path.stat
 
     def stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-        if self == path:
-            raise denied(path)
+        if self in failing:
+            raise denied(self)
         return real_stat(self, follow_symlinks=follow_symlinks)
 
     def method(real: Callable[..., bool]) -> Callable[..., bool]:
-        return lambda self, *rest, **options: False if self == path else real(self, *rest, **options)
+        return lambda self, *rest, **options: False if self in failing else real(self, *rest, **options)
 
     def function(real: Callable[..., bool]) -> Callable[..., bool]:
-        return lambda name, *rest: False if Path(name) == path else real(name, *rest)
+        return lambda name, *rest: False if Path(name) in failing else real(name, *rest)
 
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(Path, "stat", autospec=True, side_effect=stat))
@@ -369,6 +384,199 @@ class PlanPresenceTests(DeployerTestCase):
         with contextlib.redirect_stderr(io.StringIO()) as printed, contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(journal.recover_incomplete(self.paths))
         self.assertIn("Cannot list the staging runs", printed.getvalue())
+
+
+class DeployerPresenceTests(DeployerTestCase):
+    """The deployer's other readers of whether a path is there: the source's skills, fsops' deletion and moves, the
+    canary home's marker, verify's user-only markers, the Copilot shadow warning, the checkout a source records, and
+    the backups a committed run keeps. A stat that fails is refused or named, and nothing is deleted, moved over,
+    written over, or left unrecorded on a reading of absence."""
+
+    def readers(self) -> list[tuple[str, Path, Callable[[], object]]]:
+        """Each reader, the path whose stat the row fails, and the call that reads it, after making what it reads."""
+        doomed = self.root / "doomed"
+        taken = self.root / "taken"
+        marker = self.root / "adapters" / "alpha" / CODEX_METADATA
+        canary = self.root / "canary"
+        marker.parent.mkdir(parents=True)
+        canary.mkdir()
+        for path in (doomed, taken, marker, canary / paths.CANARY_MARKER):
+            path.write_text("kept", encoding="utf-8")
+
+        def refuse_existing() -> None:
+            with mock.patch.object(platform_support, "RENAME_REPLACES", True):
+                platform_support.refuse_existing_destination(taken)
+
+        return [
+            ("fsops.remove", doomed, lambda: fsops.remove(doomed)),
+            ("platform_support.refuse_existing_destination", taken, refuse_existing),
+            ("verify.user_only", marker, lambda: verify.user_only(["alpha"], self.root / "adapters")),
+            ("paths.claim_canary_home", canary / paths.CANARY_MARKER, lambda: paths.claim_canary_home(canary)),
+        ]
+
+    def test_a_path_whose_stat_fails_is_never_deleted_moved_over_or_written_over(self) -> None:
+        for name, path, read in self.readers():
+            with self.subTest(reader=name):
+                with stat_failing_at(path), self.assertRaises(Exception) as raised:
+                    read()
+                failure = raised.exception
+                if isinstance(failure, DeployError):
+                    self.assertEqual(
+                        f"ERROR: Could not read the --canary-home marker: {forward(path)}: Access is denied",
+                        failure.lines[0],
+                    )
+                else:
+                    self.assertIsInstance(failure, PermissionError)
+                    self.assertEqual(str(path), cast(PermissionError, failure).filename)
+                self.assertEqual("kept", path.read_text(encoding="utf-8"))
+
+    def test_a_missing_path_is_still_nothing_there(self) -> None:
+        missing = self.root / "missing"
+        fsops.remove(missing)
+        with mock.patch.object(platform_support, "RENAME_REPLACES", True):
+            platform_support.refuse_existing_destination(missing)
+        self.assertEqual([], verify.user_only(["alpha"], self.root / "adapters"))
+        canary = self.root / "canary"
+        canary.mkdir()
+        paths.claim_canary_home(canary)
+        self.assertEqual(paths.CANARY_MARKER_TEXT, (canary / paths.CANARY_MARKER).read_bytes())
+
+    def test_something_other_than_a_file_where_a_file_is_read_is_passed_over(self) -> None:
+        # A folder at alpha's marker makes no user-only adapter, and the next adapter is still read.
+        adapters = self.root / "adapters"
+        (adapters / "alpha" / CODEX_METADATA).mkdir(parents=True)
+        (adapters / "beta" / CODEX_METADATA).parent.mkdir(parents=True)
+        (adapters / "beta" / CODEX_METADATA).write_text("", encoding="utf-8")
+        self.assertEqual(["beta"], verify.user_only(["alpha", "beta"], adapters))
+        # A folder named SKILL.md is no skill.
+        self.make_skill("alpha", "Alpha")
+        (self.source / "skills" / "gamma" / "SKILL.md").mkdir(parents=True)
+        self.assertEqual(["alpha"], sorted(source._discover_directories(self.paths)))
+
+    def deployed(self) -> None:
+        self.make_source_json()
+        for name in ("alpha", "beta"):
+            self.make_skill(name, name.title())
+        self.make_config()
+        self.deploy_ok("--all")
+
+    def test_a_skill_whose_files_cannot_be_stat_ed_is_refused_never_dropped_from_the_source(self) -> None:
+        # Were both passed over, beta would leave the source unnoticed, and the deployment would remove it. Which of
+        # the two is refused first depends on how a Python's glob matches a literal name, so neither is named.
+        self.deployed()
+        skill_md = self.source / "skills" / "beta" / "SKILL.md"
+        metadata = self.source / "deploy-meta" / "beta.json"
+        with stat_failing_at(skill_md, metadata):
+            result = self.deploy_fails("--all", pattern="Could not read the skill source: .*: Access is denied")
+        self.assertNotIn("REMOVED", result.output)
+        self.assertTrue((self.skills_dir / "beta" / "SKILL.md").is_file())
+
+    def test_a_skill_md_whose_stat_fails_is_refused_not_passed_over(self) -> None:
+        # The listing is the one rglob gives: Python 3.11's glob stats a literal name itself, which is not under test.
+        skill_md = self.source / "skills" / "beta" / "SKILL.md"
+        self.deployed()
+        listing = [self.source / "skills" / "alpha" / "SKILL.md", skill_md]
+        with (
+            mock.patch.object(Path, "rglob", return_value=iter(listing)),
+            stat_failing_at(skill_md),
+            self.assertRaises(PermissionError) as raised,
+        ):
+            source._discover_directories(self.paths)
+        self.assertEqual(str(skill_md), raised.exception.filename)
+
+    def test_metadata_whose_stat_fails_is_refused_not_passed_over(self) -> None:
+        self.deployed()
+        orphan = self.source / "deploy-meta" / "gamma.json"
+        orphan.write_text("{}", encoding="utf-8")
+        self.deploy_fails("--all", pattern=r"deploy-meta/gamma\.json has no matching skill directory")
+        with stat_failing_at(orphan):
+            result = self.deploy_fails("--all", pattern="Could not read the skill source")
+        self.assertIn(f"ERROR: Could not read the skill source: {forward(orphan)}: Access is denied\n", result.output)
+
+    def test_a_metadata_folder_it_cannot_list_is_refused_never_read_as_no_skills(self) -> None:
+        # The listing fails as a denied one does: iterdir raises, and Path.glob answers with no entries, which read as
+        # the source's skills would remove every deployed one.
+        self.deployed()
+        meta = self.source / "deploy-meta"
+        real_iterdir, real_glob = Path.iterdir, Path.glob
+
+        def iterdir(self: Path) -> Iterator[Path]:
+            if self == meta:
+                raise denied(meta)
+            return real_iterdir(self)
+
+        def glob(self: Path, *arguments: Any, **options: Any) -> Iterator[Path]:
+            return iter([]) if self == meta else real_glob(self, *arguments, **options)
+
+        with mock.patch.object(Path, "iterdir", iterdir), mock.patch.object(Path, "glob", glob):
+            result = self.deploy_fails("--all", pattern="Could not read the skill source")
+        self.assertIn(f"ERROR: Could not read the skill source: {forward(meta)}: Access is denied\n", result.output)
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+        # The folder's *.json entries are listed in order, a file where the folder stands is refused, and no folder at
+        # all is no metadata.
+        (meta / "notes.txt").write_text("", encoding="utf-8")
+        self.assertEqual([meta / "alpha.json", meta / "beta.json"], source._metadata_files(meta))
+        shutil.rmtree(meta)
+        self.assertEqual([], source._metadata_files(meta))
+        meta.write_text("", encoding="utf-8")
+        with self.assertRaises(file_presence.NotADirectory):
+            source._metadata_files(meta)
+
+    def test_a_managed_root_component_it_cannot_stat_is_refused_not_passed(self) -> None:
+        component = self.home / ".claude"
+        component.mkdir()
+        with stat_failing_at(component), self.assertRaises(PermissionError) as raised:
+            paths.validate_managed_roots(self.paths)
+        self.assertEqual(str(component), raised.exception.filename)
+        # A file there is still refused by name, and a missing one passes.
+        component.rmdir()
+        paths.validate_managed_roots(self.paths)
+        component.write_text("", encoding="utf-8")
+        with self.assertRaises(DeployError) as refused:
+            paths.validate_managed_roots(self.paths)
+        self.assertEqual(
+            f"ERROR: Deployment path component is not a directory: {forward(component)}", refused.exception.lines[0]
+        )
+
+    def test_a_copilot_personal_skill_whose_stat_fails_is_warned_of_not_read_as_no_shadow(self) -> None:
+        personal = self.paths.copilot_skills_dir
+        for name in ("alpha", "beta", "delta", "epsilon"):
+            (personal / name).mkdir(parents=True, exist_ok=True)
+        unreadable = (personal / "alpha", personal / "delta")
+        with stat_failing_at(*unreadable), contextlib.redirect_stderr(io.StringIO()) as warned:
+            report.warn_copilot(self.paths, ["alpha", "beta", "gamma", "delta", "epsilon"])
+        self.assertEqual(
+            [
+                "",
+                "WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:",
+                f"  - beta ({forward(personal / 'beta')})",
+                f"  - epsilon ({forward(personal / 'epsilon')})",
+                "WARNING: Could not tell whether GitHub Copilot personal skills shadow generated runtime adapters:",
+                f"  - alpha ({forward(personal / 'alpha')}: Access is denied)",
+                f"  - delta ({forward(personal / 'delta')}: Access is denied)",
+            ],
+            warned.getvalue().splitlines()[:7],
+        )
+
+    def test_the_checkout_a_source_was_deployed_from_is_named_unreadable_not_gone(self) -> None:
+        self.deployed()
+        other = self.root / "other checkout"
+        other.mkdir()
+        data = self.manifest()
+        data["sources"][SOURCE_ID]["source_dir"] = forward(other)
+        self.write_manifest(data)
+        with stat_failing_at(other):
+            result = self.deploy_fails("--all", pattern="not from this checkout")
+        self.assertIn(
+            f"ERROR: Source '{SOURCE_ID}' is deployed from {forward(other)}, which could not be read (Access is "
+            f"denied), not from this checkout, {forward(self.source)}.\n",
+            result.output,
+        )
+        other.rmdir()
+        self.deploy_fails("--all", pattern="which no longer exists, not from this checkout")
+        # A file where the checkout was is no checkout either.
+        other.write_text("", encoding="utf-8")
+        self.deploy_fails("--all", pattern="which no longer exists, not from this checkout")
 
 
 class RecoveryEdgeTests(DeployerTestCase):

@@ -6,6 +6,7 @@ reads a source's plugins through too; they are imported here for the deployer's 
 
 from __future__ import annotations
 
+import fnmatch
 import graphlib
 import json
 import os
@@ -94,6 +95,15 @@ def load_source_id(paths: Paths) -> str:
     if len(source_id) > SOURCE_ID_MAX_LENGTH:
         raise DeployError(f"ERROR: Source ID exceeds {SOURCE_ID_MAX_LENGTH} characters")
     return source_id
+
+
+def checkout_gone(directory: Path) -> str:
+    """What a refusal adds after a checkout the manifest records: nothing while a folder is there, that it no longer
+    exists when nothing or something else is, and the reason when its stat fails, which is never read as gone."""
+    try:
+        return "" if file_presence.is_directory(directory, other_is_absent=True) else ", which no longer exists"
+    except OSError as exc:
+        return f", which could not be read ({exc.strerror or exc})"
 
 
 def is_linked_worktree(source_dir: Path) -> bool:
@@ -220,11 +230,21 @@ def _string_list(value: object) -> list[str] | None:
     return None
 
 
+def _is_file(path: Path) -> bool:
+    """Whether an entry a listing found is a regular file: anything else there is passed over, and a stat that fails
+    raises its OSError, which discover refuses. Passing over a SKILL.md and a metadata file whose stats fail would
+    drop their skill from the source, and the deployment would remove it as one the source no longer offers."""
+    try:
+        return file_presence.is_present(path)
+    except file_presence.NotAFile:
+        return False
+
+
 def _discover_directories(paths: Paths) -> dict[str, Path]:
     skills_src = paths.skills_src
     directories: dict[str, Path] = {}
     for skill_md in sorted(skills_src.rglob("SKILL.md")):
-        if not skill_md.is_file():
+        if not _is_file(skill_md):
             continue
         found_dir = skill_md.parent
         relative = found_dir.relative_to(skills_src).parts
@@ -232,6 +252,7 @@ def _discover_directories(paths: Paths) -> dict[str, Path]:
         if len(relative) != 1:
             raise DeployError(f"ERROR: SKILL.md must be directly under skills/<name>: {shown}")
         name = found_dir.name
+        # A metadata file whose stat fails is refused here as missing: the source is refused either way.
         if not (paths.meta_dir / f"{name}.json").is_file():
             raise DeployError(f"ERROR: Skill '{name}' has no matching deploy-meta/{name}.json")
         directories[name] = found_dir
@@ -414,6 +435,7 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
     agents: dict[str, Path] = {}
     for entry in sorted(root.iterdir(), key=lambda path: path.name):
         shown = platform_support.normalize(entry)
+        # An entry whose stat fails is refused here as no agent definition: the source is refused either way.
         if not entry.is_file() or entry.suffix != ".md":
             raise DeployError(f"ERROR: agents may contain only <name>.md agent definitions: {shown}")
         name = entry.stem
@@ -435,12 +457,22 @@ def discover(paths: Paths, source_id: str) -> Source:
         ) from exc
 
 
+def _metadata_files(meta_dir: Path) -> list[Path]:
+    """deploy-meta's *.json entries, sorted, matched as a glob of them matches, or none when there is no deploy-meta.
+    It is listed with iterdir, whose listing error raises, where Path.glob answers a folder it cannot list with no
+    entries, which would drop every skill from the source and remove each deployed one. The skills folder's rglob needs
+    no such listing: _reject_links lists every folder under it first and refuses one it cannot list."""
+    if not file_presence.is_directory(meta_dir):
+        return []
+    return sorted(entry for entry in meta_dir.iterdir() if fnmatch.fnmatch(entry.name, "*.json"))
+
+
 def _discover(paths: Paths, source_id: str) -> Source:
     _reject_links(paths.skills_src)
     directories = _discover_directories(paths)
     source = Source(source_id)
-    for meta_file in sorted(paths.meta_dir.glob("*.json")):
-        if meta_file.is_file():
+    for meta_file in _metadata_files(paths.meta_dir):
+        if _is_file(meta_file):
             source.skills[meta_file.stem] = _load_skill(paths, meta_file.stem, directories)
     document = _load_source_document(paths)
     document = document if isinstance(document, dict) else {}

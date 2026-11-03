@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import file_presence
 from path_containment import within
 
 from . import fsops, platform_support
@@ -168,9 +169,14 @@ def canary_home(value: str) -> Path:
 
 
 def claim_canary_home(home: Path) -> None:
-    """Mark a validated canary home, so a later --canary-home deployment of another source may join it."""
+    """Mark a validated canary home, so a later --canary-home deployment of another source may join it. A marker whose
+    stat fails is refused, never written over as though none were there."""
     marker = home / CANARY_MARKER
-    if not os.path.lexists(marker):
+    try:
+        marked = file_presence.is_occupied(marker)
+    except OSError as exc:
+        raise os_error(exc, "read the --canary-home marker") from exc
+    if not marked:
         fsops.write_atomic(marker, CANARY_MARKER_TEXT)
 
 
@@ -189,7 +195,8 @@ def validate_managed_roots(paths: Paths) -> None:
                     f"ERROR: Deployment path contains a symlink or junction: {platform_support.normalize(component)}",
                     "Replace it with a real directory, then retry.",
                 )
-            if os.path.lexists(component) and not component.is_dir():
+            # A component whose stat fails raises, never passing as one that is not there.
+            if file_presence.is_occupied(component) and not file_presence.is_directory(component, other_is_absent=True):
                 raise DeployError(
                     f"ERROR: Deployment path component is not a directory: {platform_support.normalize(component)}"
                 )
