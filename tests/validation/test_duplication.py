@@ -878,6 +878,124 @@ def widened(name: str, top: str, other: str, path: str, root: str, *rest: str) -
     ]
 
 
+def further(path: Path, root: Path, name: str, top: str) -> list[object]:
+    import fnmatch
+    import re
+
+    size = len(root.parts)
+    stripped = name.removeprefix(top + "/")
+    checker = lambda name, folder=top + "/": name.startswith(folder)  # noqa: E731
+    return [
+        Path(root) in Path(path).parents,
+        root not in [path, *path.parents],
+        {root}.isdisjoint(path.parents),
+        {root} & set(path.parents),
+        name.removeprefix(top + os.sep) != name,
+        stripped != name,
+        name[: len(top + "/")] == top + "/",
+        name.startswith(top) and name[len(top)] in "/\\\\",
+        name[len(top) :].startswith("\\\\"),
+        path.parts[:size] == root.parts,
+        name.find(top + os.sep) == 0,
+        name.index(top + "/"),
+        re.match(re.escape(top + os.sep), name),
+        re.search(pattern=f"^{top}/", string=name),
+        fnmatch.fnmatch(name, top + "/*"),
+        fnmatch.filter([name], pat=f"{top}/**"),
+        name.startswith(prefix_of(top)),
+    ]
+
+
+class Holder:
+    def __init__(self, top: str) -> None:
+        self.prefix = top + os.sep
+        self.grown = top
+        self.grown += "/"
+
+    def inside(self, name: str) -> bool:
+        return name.startswith(self.prefix)
+
+    def extended(self, name: str) -> bool:
+        return name.startswith(self.grown)
+
+
+def prefix_of(top: str) -> str:
+    return top + "/"
+
+
+def defaulted(name: str, folder: str = os.getcwd() + os.sep) -> bool:
+    return name.startswith(folder)
+
+
+def defaulted_by_keyword(name: str, *, folder: str = f"{os.getcwd()}/") -> bool:
+    return name.startswith(folder)
+
+
+class Annotated:
+    def __init__(self, top: str) -> None:
+        self.marked: str = top + "/"
+
+    def inside(self, name: str) -> bool:
+        return name.startswith(self.marked)
+
+    def suffixed(self, name: str, top: str) -> bool:
+        self.suffix = "/"
+        return name.startswith(top + self.suffix)
+
+
+def further_conforms(path: Path, root: Path, name: str, top: str, words: list[str], segment: str) -> list[object]:
+    import fnmatch
+    import re
+
+    size = 3
+    index = 0
+    index += len(top)
+    kept = name.removeprefix(top + "/")
+    unknown = name.removeprefix(top)
+    unknown += "/"
+    return [
+        root in path.parts,
+        [folder for folder in path.parents],
+        {root}.isdisjoint(path.parts),
+        {root} & set(path.parts),
+        {root} | set(path.parents),
+        name.removeprefix(top) != name,
+        kept,
+        unknown != name,
+        words[: len(top)] == words,
+        words[1 : len(top)] == top + "/",
+        path.parts[:size] == root.parts,
+        segment[index] == "\\\\",
+        name[len(top)] == "-",
+        name[len(top) :].startswith("-"),
+        name[1:].startswith("/"),
+        name.find(top) == 0,
+        re.match(re.escape(top), name),
+        re.match(r"^skills/", name),
+        re.sub(top + "/", "", name),
+        re.match(),
+        fnmatch.fnmatch(name, top + "*"),
+        fnmatch.fnmatch(name, "skills/*"),
+        name.startswith(outer(top)),
+        name.startswith(str(top)),
+        name.startswith(path.never_assigned),
+        name.startswith(top.upper()),
+        name.startswith(plain(name)),
+        name.startswith(top + "/*"),
+    ]
+
+
+def outer(top: str) -> str:
+    def inner() -> str:
+        return top + "/"
+
+    return top
+
+
+def plain(name: str, folder: str = "skills") -> str:
+    return folder
+
+
 def conforms(path: Path, root: Path, name: str, top: str, other: str, *rest: str) -> list[bool]:
     first = top
     second = first
@@ -958,6 +1076,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
     alpha = "skills/alpha/scripts/alpha.py"
     prefix = "a startswith of a folder and its separator"
     relpath = "a relpath checked for a parent segment"
+    folder = "a folder and its separator"
     found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
     assert found == [
         f"{alpha}:22 tests containment with is_relative_to{remedy}",
@@ -972,6 +1091,16 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         f"{alpha}:43 tests containment with commonprefix{remedy}",
         *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(44, 66)),
         *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in range(66, 70)),
+        f"{alpha}:79 tests containment with {prefix}{remedy}",
+        *(f"{alpha}:{line} tests containment with a search of a path's parents{remedy}" for line in range(81, 85)),
+        *(f"{alpha}:{line} tests containment with a removeprefix of {folder}{remedy}" for line in (85, 86)),
+        f"{alpha}:87 tests containment with a comparison of a leading slice{remedy}",
+        *(f"{alpha}:{line} tests containment with a check for a separator after a prefix{remedy}" for line in (88, 89)),
+        f"{alpha}:90 tests containment with a comparison of a path's leading parts{remedy}",
+        *(f"{alpha}:{line} tests containment with a search for {folder}{remedy}" for line in (91, 92)),
+        *(f"{alpha}:{line} tests containment with a regular expression of {folder}{remedy}" for line in (93, 94)),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (95, 96)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (97, 108, 111, 119, 123, 131, 135)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

@@ -304,6 +304,23 @@ def test_a_table_that_is_not_utf8_is_refused_by_name(tmp_path: Path) -> None:
         job_seconds(path)
 
 
+@pytest.mark.parametrize(
+    ("path", "prefix"),
+    [
+        ("skills/alpha/scripts/alpha.py", "skills/alpha/scripts/"),
+        ("skills/alpha/SKILL.md", "skills/alpha/scripts/"),
+        (".claude/skills/beta/scripts/beta.py", ".claude/skills/beta/scripts/"),
+        ("skills/alpha/", "skills/alpha/scripts/"),
+        ("skills/alpha", None),
+        ("skills", None),
+        ("skillset/alpha/scripts/alpha.py", None),
+        ("docs/skills/alpha.md", None),
+    ],
+)
+def test_a_path_names_the_scripts_folder_of_the_skill_it_sits_in(path: str, prefix: str | None) -> None:
+    assert job_selection.skill_scripts_prefix(path) == prefix
+
+
 class JobSelectionFixtures(unittest.TestCase):
     def test_suites_that_name_a_changed_document_still_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

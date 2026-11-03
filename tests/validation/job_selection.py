@@ -188,9 +188,9 @@ def importers(changed: Iterable[str], imports: Mapping[str, set[str]]) -> set[st
 def skill_scripts_prefix(path: str) -> str | None:
     """The scripts/ folder of the skill a path sits in, as a prefix, or None outside a skill."""
     for parent in SKILL_PARENTS:
-        rest = path.removeprefix(f"{parent}/")
-        if rest != path and "/" in rest:
-            return f"{parent}/{rest.split('/', 1)[0]}/scripts/"
+        if posix_within(path, parent, strict=True):
+            skill, inside, _ = path.removeprefix(f"{parent}/").partition("/")
+            return f"{parent}/{skill}/scripts/" if inside else None
     return None
 
 

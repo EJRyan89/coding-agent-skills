@@ -17,6 +17,7 @@ from path_containment import posix_within
 from python_checks import claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
 from validation_support import (
+    DEFINITIONS,
     MODULE_LOADERS,
     REPOSITORY_ROOT,
     VALIDATION_DOC,
@@ -690,9 +691,9 @@ def skill_script_import_problems(root: Path) -> list[str]:
 
 
 # ejryan89-skill-core's path_containment is the one test of whether a path lies in a tree, so a fix to it reaches every
-# caller. Any other containment test, an is_relative_to, a commonpath or commonprefix of any path module, a prefix test
-# written by hand, or a relpath checked for a parent segment, states why in a module-level
-# CONTAINMENT_ALLOWED = {scope: reason}.
+# caller. Any other containment test, an is_relative_to, a commonpath or commonprefix of any path module, a search of a
+# path's parents, a prefix test written by hand, or a relpath checked for a parent segment, states why in a
+# module-level CONTAINMENT_ALLOWED = {scope: reason}.
 PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
 CONTAINMENT_ALLOWANCE = "CONTAINMENT_ALLOWED"
 # os.path is ntpath or posixpath, and each takes commonprefix from genericpath, so a test is read under every name.
@@ -705,6 +706,14 @@ RELATIVE_PATHS = frozenset(f"{module}.relpath" for module in PATH_MODULES)
 SEPARATOR_NAMES = frozenset(f"{module}.{name}" for module in ("os", *PATH_MODULES) for name in ("sep", "altsep"))
 PARENT_NAMES = frozenset(f"{module}.pardir" for module in ("os", *PATH_MODULES))
 SEPARATORS = ("/", "\\")
+# The string methods that test a prefix or find where one starts, and the set and sequence methods that look for a
+# path among a path's parents.
+PREFIX_METHODS = frozenset({"startswith", "find", "index"})
+PARENT_SEARCHES = frozenset({"isdisjoint", "issubset", "issuperset", "intersection", "count", "index", "__contains__"})
+# Each function that matches a text against a pattern, by the position of its pattern: a regular expression's, and a
+# glob's, whose pattern may end in wildcards after the separator.
+REGULAR_EXPRESSIONS = {"re.match": 0, "re.fullmatch": 0, "re.search": 0, "re.compile": 0}
+GLOBS = {"fnmatch.fnmatch": 1, "fnmatch.fnmatchcase": 1, "fnmatch.filter": 1, "fnmatch.translate": 0}
 
 
 def _last_item(value: ast.expr) -> ast.expr | None:
@@ -714,20 +723,71 @@ def _last_item(value: ast.expr) -> ast.expr | None:
     return value
 
 
+def _never(_: ast.expr) -> bool:
+    """What a `+=` tells of a value that only a binding can give, such as a length or a stripped text: nothing."""
+    return False
+
+
+def _names_parents(value: ast.expr) -> bool:
+    """Whether `value` reads a path's `parents`."""
+    return any(isinstance(node, ast.Attribute) and node.attr == "parents" for node in ast.walk(value))
+
+
+def _returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.expr]:
+    """Each value a function returns, leaving out those of a function or class it defines."""
+    pending: list[ast.AST] = list(function.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Return) and node.value is not None:
+            yield node.value
+        if not isinstance(node, (*DEFINITIONS, ast.Lambda)):
+            pending.extend(ast.iter_child_nodes(node))
+
+
 class _ContainmentReader:
-    """Reads the containment tests a module writes, following each name to every value the module binds it to."""
+    """Reads the containment tests a module writes, following each name, attribute, and call of a function the module
+    defines to every value it is given."""
 
     def __init__(self, tree: ast.Module) -> None:
         self.resolver = CallableResolver(tree)
         self.imported = import_aliases(tree)
         # The names being followed, by the scope that owns each, so a name bound in a cycle is followed once.
         self.following: set[tuple[int, str]] = set()
-        # What `name += value` adds to a name, by the scope that owns the name, since it binds no value of its own.
+        # Trailing characters a pattern's text may end in after its separator, such as a glob's `*`.
+        self.trailing = ""
+        # What each name holds beyond its bindings, by its key: a parameter's default, keyed as its function's scope
+        # owns it, and what an attribute is assigned and a function the module defines returns, keyed by name alone.
+        self.held: dict[tuple[int, str], list[ast.expr]] = {}
+        # What `+=` adds to a name or an attribute, since it binds no value of its own.
         self.added: dict[tuple[int, str], list[ast.expr]] = {}
         for node in ast.walk(tree):
-            if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and isinstance(node.target, ast.Name):
-                key, _ = self._owner(node.target)
-                self.added.setdefault(key, []).append(node.value)
+            self._record(node)
+
+    def _record(self, node: ast.AST) -> None:
+        if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and (key := self._key(node.target)):
+            self.added.setdefault(key, []).append(node.value)
+        elif isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                if isinstance(target, ast.Attribute):
+                    self.held.setdefault((0, f".{target.attr}"), []).append(node.value)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            arguments = node.args
+            positional = [*arguments.posonlyargs, *arguments.args]
+            for argument, default in [
+                *zip(positional[len(positional) - len(arguments.defaults) :], arguments.defaults, strict=True),
+                *zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True),
+            ]:
+                if default is not None:
+                    scope = id(self.resolver.scopes[id(argument)])
+                    self.held.setdefault((scope, argument.arg), []).append(default)
+            if not isinstance(node, ast.Lambda):
+                self.held.setdefault((0, f"{node.name}()"), []).extend(_returns(node))
+
+    def _key(self, node: ast.expr) -> tuple[int, str] | None:
+        """The key a name or an attribute is followed by, or None for any other expression."""
+        if isinstance(node, ast.Attribute):
+            return 0, f".{node.attr}"
+        return self._owner(node)[0] if isinstance(node, ast.Name) else None
 
     def _owner(self, node: ast.Name) -> tuple[tuple[int, str], list[ast.expr]]:
         """The key of the scope that owns a name, with the name, and every expression that scope binds it to; a name
@@ -737,15 +797,23 @@ class _ContainmentReader:
             return (0, node.id), []
         return (id(owner), node.id), [value for value in owner.bindings[node.id] if isinstance(value, ast.expr)]
 
-    def _follow(self, node: ast.Name, read: Callable[[ast.expr], bool], added: Callable[[ast.expr], bool]) -> bool:
-        """Whether `read` holds for any expression the module binds a name to, or `added` for any it adds to it with
-        `+=`; False for a name already being followed, so a cycle of names ends."""
-        key, values = self._owner(node)
+    def _follow(self, node: ast.expr, read: Callable[[ast.expr], bool], added: Callable[[ast.expr], bool]) -> bool:
+        """Whether `read` holds for any value a name, an attribute, or a call of a function the module defines is
+        given, or `added` for any `+=` adds to it; False for one already being followed, so a cycle ends."""
+        if isinstance(node, ast.Name):
+            key, values = self._owner(node)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute):
+            called = node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+            key, values = (0, f"{called}()"), []
+        elif isinstance(node, ast.Attribute):
+            key, values = (0, f".{node.attr}"), []
+        else:
+            return False
         if key in self.following:
             return False
         self.following.add(key)
         try:
-            return any(map(read, values)) or any(map(added, self.added.get(key, [])))
+            return any(map(read, [*values, *self.held.get(key, [])])) or any(map(added, self.added.get(key, [])))
         finally:
             self.following.discard(key)
 
@@ -757,17 +825,20 @@ class _ContainmentReader:
     def ends(self, value: ast.expr | None) -> bool:
         """Whether the text `value` gives ends in a separator, a literal such as "/" or "skills/" included."""
         if isinstance(value, ast.Constant):
-            return isinstance(value.value, str) and value.value.endswith(SEPARATORS)
+            return isinstance(value.value, str) and value.value.rstrip(self.trailing).endswith(SEPARATORS)
         if isinstance(value, ast.NamedExpr):
             return self.ends(value.value)
-        if isinstance(value, ast.Name):
-            return self.name(value) in SEPARATOR_NAMES or self._follow(value, self.ends, self.ends)
-        return value is not None and (self.name(value) in SEPARATOR_NAMES or self.built(value))
+        if isinstance(value, ast.Name | ast.Attribute) and self.name(value) in SEPARATOR_NAMES:
+            return True
+        if isinstance(value, ast.Name | ast.Attribute):
+            return self._follow(value, self.ends, self.ends)
+        return value is not None and self.built(value)
 
     def built(self, value: ast.expr) -> bool:
         """Whether `value` builds a text ending in a separator from another, as a folder and its separator are built:
         by `+`, an f-string, `%` or `str.format`, a `join` of a path module or of a string, or any of these held in a
-        name, by its binding or a `+=`, or in an item of a tuple or list of prefixes. A literal alone is no folder."""
+        name, an attribute, a parameter's default, or what a function of the module returns, by a binding or a `+=`,
+        or in an item of a tuple or list of prefixes. A literal alone is no folder."""
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
             return self.ends(value.right)
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mod) and isinstance(value.left, ast.Constant):
@@ -784,9 +855,7 @@ class _ContainmentReader:
             return any(map(self.built, value.elts))
         if isinstance(value, ast.NamedExpr):
             return self.built(value.value)
-        if isinstance(value, ast.Name):
-            return self._follow(value, self.built, self.ends)
-        return False
+        return self._follow(value, self.built, self.ends)
 
     def _built_by_call(self, call: ast.Call) -> bool:
         function = self.name(call.func)
@@ -800,7 +869,7 @@ class _ContainmentReader:
         elif isinstance(call.func, ast.Attribute) and call.func.attr == "join":
             return any(self._joined(call.func.value, items) for items in call.args[:1])
         else:
-            return False
+            return self._follow(call, self.built, self.built)
         if not (isinstance(template, ast.Constant) and isinstance(template.value, str)):
             return False
         return template.value.endswith(SEPARATORS) or (template.value.endswith("{}") and any(map(self.ends, last)))
@@ -813,6 +882,19 @@ class _ContainmentReader:
         last = items.elts[-1]
         empty = isinstance(last, ast.Constant) and last.value == ""
         return self.ends(last) or (empty and self.ends(joiner))
+
+    def _pattern(self, call: ast.Call, positions: dict[str, int], trailing: str) -> bool:
+        """Whether `call` matches against a pattern holding a text built to end in a separator, followed by any of
+        `trailing`."""
+        position = positions.get(self.name(call.func))
+        pattern = call_argument(call, position, "pattern", "pat") if position is not None else None
+        if pattern is None:
+            return False
+        self.trailing = trailing
+        try:
+            return any(self.built(node) for node in ast.walk(pattern) if isinstance(node, ast.expr))
+        finally:
+            self.trailing = ""
 
     def _relative(self, value: ast.expr) -> bool:
         """Whether `value` holds a relpath's result: the call itself, or a name the module binds to one."""
@@ -837,10 +919,52 @@ class _ContainmentReader:
             return any(self._parent(item) for item in value.elts)
         return self.name(value) in PARENT_NAMES
 
+    def _length(self, value: ast.expr | None) -> bool:
+        """Whether `value` is a `len` call, or a name bound to one."""
+        if isinstance(value, ast.Call):
+            return self.name(value.func) == "len"
+        return isinstance(value, ast.Name) and self._follow(value, self._length, _never)
+
+    def _stripped(self, value: ast.expr) -> bool:
+        """Whether `value` is a text with a folder and its separator removed from its front, or a name bound to one."""
+        if isinstance(value, ast.Call):
+            method = value.func.attr if isinstance(value.func, ast.Attribute) else ""
+            return method == "removeprefix" and any(map(self.built, value.args))
+        return isinstance(value, ast.Name) and self._follow(value, self._stripped, _never)
+
+    def _leading(self, value: ast.expr) -> bool:
+        """Whether `value` slices a text or a path's parts up to the length of another."""
+        return (
+            isinstance(value, ast.Subscript)
+            and isinstance(value.slice, ast.Slice)
+            and (
+                value.slice.lower is None
+                or (isinstance(value.slice.lower, ast.Constant) and value.slice.lower.value == 0)
+            )
+            and self._length(value.slice.upper)
+        )
+
+    def _after_prefix(self, value: ast.expr) -> bool:
+        """Whether `value` reads a text from the length of another on: the character there, or the rest."""
+        if not isinstance(value, ast.Subscript):
+            return False
+        index = value.slice
+        return self._length(index.lower if isinstance(index, ast.Slice) else index)
+
+    def _holds_separator(self, value: ast.expr) -> bool:
+        """Whether `value` is a separator, a literal holding one, or a tuple, list, or set holding one."""
+        if isinstance(value, ast.Constant):
+            return isinstance(value.value, str) and any(separator in value.value for separator in SEPARATORS)
+        if isinstance(value, ast.Tuple | ast.List | ast.Set):
+            return any(map(self._holds_separator, value.elts))
+        return self.name(value) in SEPARATOR_NAMES
+
     def test(self, node: ast.AST) -> str | None:
         """The containment test `node` writes, or None: an is_relative_to, a commonpath or commonprefix of any path
-        module, a startswith of a text built to end in a separator, a relpath checked for a parent segment, or a
-        comparison of a path's leading parts."""
+        module, a search of a path's parents, a startswith, find, index, regular expression, or glob of a text built
+        to end in a separator, a comparison of what a removeprefix of one leaves, a check for a separator after a
+        prefix, a relpath checked for a parent segment, a comparison of a path's leading parts, or of a leading slice
+        with a folder and its separator."""
         if isinstance(node, ast.Attribute) and node.attr == "is_relative_to":
             return "is_relative_to"
         if (
@@ -849,30 +973,64 @@ class _ContainmentReader:
             and (function := self.name(node)) in COMMON_PATH_FUNCTIONS
         ):
             return function.rpartition(".")[2]
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "startswith":
-            subjects = [node.func.value, *node.args]
-            if any(self._relative(subject) for subject in subjects) and any(map(self._parent, node.args)):
-                return "a relpath checked for a parent segment"
-            if any(self.built(argument) for argument in node.args):
-                return "a startswith of a folder and its separator"
+        if isinstance(node, ast.Call):
+            return self._call_test(node)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitAnd) and _names_parents(node):
+            return "a search of a path's parents"
         if isinstance(node, ast.Compare):
-            sides = [node.left, *node.comparators]
-            if any(map(self._parent, sides)) and any(self._relative(side) for side in sides):
-                return "a relpath checked for a parent segment"
-            if any(self._leading_parts(side) for side in sides):
-                return "a comparison of a path's leading parts"
+            return self._comparison_test(node)
         return None
 
-    def _leading_parts(self, value: ast.expr) -> bool:
-        return (
-            isinstance(value, ast.Subscript)
-            and isinstance(value.value, ast.Attribute)
-            and value.value.attr == "parts"
-            and isinstance(value.slice, ast.Slice)
-            and value.slice.lower is None
-            and isinstance(value.slice.upper, ast.Call)
-            and self.name(value.slice.upper.func) == "len"
-        )
+    def _call_test(self, call: ast.Call) -> str | None:
+        method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+        subjects = [call.func.value, *call.args] if isinstance(call.func, ast.Attribute) else []
+        if method in PARENT_SEARCHES and any(map(_names_parents, subjects)):
+            return "a search of a path's parents"
+        if method == "startswith" and any(map(self._relative, subjects)) and any(map(self._parent, call.args)):
+            return "a relpath checked for a parent segment"
+        if (
+            method == "startswith"
+            and any(map(self._after_prefix, subjects))
+            and any(map(self._holds_separator, call.args))
+        ):
+            return "a check for a separator after a prefix"
+        if method in PREFIX_METHODS and any(map(self.built, call.args)):
+            return (
+                "a startswith of a folder and its separator"
+                if method == "startswith"
+                else "a search for a folder and its separator"
+            )
+        if self._pattern(call, REGULAR_EXPRESSIONS, ""):
+            return "a regular expression of a folder and its separator"
+        if self._pattern(call, GLOBS, "*"):
+            return "a glob of a folder and its separator"
+        return None
+
+    def _comparison_test(self, comparison: ast.Compare) -> str | None:
+        sides = [comparison.left, *comparison.comparators]
+        searched = [
+            side
+            for op, side in zip(comparison.ops, comparison.comparators, strict=True)
+            if isinstance(op, ast.In | ast.NotIn)
+        ]
+        if any(map(_names_parents, searched)):
+            return "a search of a path's parents"
+        if any(map(self._parent, sides)) and any(map(self._relative, sides)):
+            return "a relpath checked for a parent segment"
+        if any(map(self._after_prefix, sides)) and any(map(self._holds_separator, sides)):
+            return "a check for a separator after a prefix"
+        if any(map(self._stripped, sides)):
+            return "a removeprefix of a folder and its separator"
+        leading = next(filter(self._leading, sides), None)
+        if (
+            isinstance(leading, ast.Subscript)
+            and isinstance(leading.value, ast.Attribute)
+            and leading.value.attr == "parts"
+        ):
+            return "a comparison of a path's leading parts"
+        if leading is not None and any(map(self.built, sides)):
+            return "a comparison of a leading slice"
+        return None
 
 
 def containment_problems(root: Path, files: list[Path]) -> list[str]:
