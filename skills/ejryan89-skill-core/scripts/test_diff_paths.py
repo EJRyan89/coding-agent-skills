@@ -162,7 +162,7 @@ class SnapshotPathTests(unittest.TestCase):
         (self.outer / "outside.py").write_text("def private_name():\n    pass\n", encoding="utf-8")
 
     def test_a_path_inside_the_snapshot_is_where_it_lands(self) -> None:
-        for path in ("tools/inside.py", "tools/not yet here.py", "tools/ab:c.py", "tools/..x.py"):
+        for path in ("tools/inside.py", "tools/not yet here.py", "tools/..x.py", "tools/" + "n" * 255):
             with self.subTest(path=path):
                 self.assertEqual(self.root.resolve().joinpath(*path.split("/")), snapshot_path(self.root, path))
 
@@ -183,6 +183,25 @@ class SnapshotPathTests(unittest.TestCase):
             "tools/D:outside.py",
             "tools/in\nside.py",
             "tools/in\x00side.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(snapshot_path(self.root, path))
+
+    def test_a_reserved_device_name_or_a_segment_windows_drops_the_end_of_is_refused_on_every_platform(self) -> None:
+        # As path_containment refuses them: Windows opens a device for the first rows, and reads the last as another
+        # file, the snapshot's root among them for `.. `.
+        for path in (
+            "con",
+            "src/NUL",
+            "a/COM1:x",
+            "COM1.txt",
+            "src/aux.py",
+            "tools/lpt\u00b9.py",
+            "CONIN$",
+            ".. ",
+            ".../tools/inside.py",
+            "tools/inside.py.",
+            "tools /inside.py",
         ):
             with self.subTest(path=path):
                 self.assertIsNone(snapshot_path(self.root, path))
@@ -248,3 +267,54 @@ def test_the_family_is_the_path_error_and_covers_a_quoted_header_path_git_does_n
 
 def test_the_readers_that_raise_the_family_are_named() -> None:
     assert diff_paths.CONTENT_READERS == ("unquote", "header_path")
+
+
+UNSAFE_SNAPSHOT_NAMES = [
+    "con",
+    "src/NUL",
+    "a/COM1:x",
+    "COM1.txt",
+    "src/aux.py",
+    "a/CON.txt",
+    "a/conin$",
+    "a/CONOUT$",
+    "a/COM\u00b9",
+    "a/lpt\u00b2.y",
+    "a/con .txt",
+    "a/x.",
+    "a/x ",
+    ".. ",
+    ".../tools/inside.py",
+    "tools/./inside.py",
+    "tools\\inside.py",
+    "tools/in\nside.py",
+    "../outside.py",
+    "/etc/outside.py",
+    "C:/outside.py",
+    "",
+    # The characters the snapshot's writer leaves out, which a reader refuses alike.
+    "a/x?y.py",
+    "a/x<y",
+    "a/x>y",
+    "a/x|y",
+    'a/x"y',
+    "a/x*y",
+    "tools/ab:c.py",
+    "a/del\x7f.py",
+    "a/bad\udce2.py",
+    "a/" + "n" * 256,
+    "a/" + "\U0001f600" * 128,
+]
+
+
+@pytest.mark.parametrize("path", UNSAFE_SNAPSHOT_NAMES)
+def test_an_unsafe_snapshot_name_is_refused_by_the_shared_rule(path: str) -> None:
+    assert diff_paths.unsafe_snapshot_name(path)
+    assert snapshot_path(Path("root"), path) is None
+
+
+@pytest.mark.parametrize(
+    "path", ["a.py", "src/a b.py", "tools/..x.py", ".github/x.yml", "con_x/a", "a/" + "\U0001f600" * 127]
+)
+def test_a_safe_snapshot_name_passes_the_shared_rule(path: str) -> None:
+    assert not diff_paths.unsafe_snapshot_name(path)

@@ -1077,7 +1077,7 @@ def limits(path: Path, root: Path, name: str, top: str, words: list[str]) -> lis
     import re
 
     try:
-        relative = path.relative_to(root)  # Not read: a caught relative_to (#2195).
+        relative = path.relative_to(root)
     except ValueError:
         relative = None
     lambda_prefix = lambda folder: folder + "/"  # noqa: E731
@@ -1165,6 +1165,50 @@ def more(path: Path, root: Path, name: str, top: str, other: str, *rest: str) ->
     ]
 
 
+def caught_forms(path: Path, root: Path, walked: Path) -> list[object]:
+    import contextlib
+
+    found: list[object] = []
+    try:
+        found.append(path.relative_to(root))
+    except (OSError, ValueError):
+        found.append(None)
+    try:
+        path.relative_to(root)
+    except Exception:
+        found.append(None)
+    try:
+        path.relative_to(root)
+    except BaseException:
+        found.append(None)
+    try:
+        path.relative_to(root)
+    except:  # noqa: E722
+        found.append(None)
+    with contextlib.suppress(ValueError):
+        found.append(path.relative_to(root))
+    with contextlib.suppress(OSError, Exception):
+        found.append(path.relative_to(root))
+    found.append(path.relative_to(root, walk_up=True).parts[0] == "..")
+    found.append(str(path.relative_to(root, walk_up=True)).startswith(".."))
+    walked = path.relative_to(root, walk_up=True)
+    found.append(".." in walked.parts)
+    try:
+        found.append(path.relative_to(root))
+    except OSError:  # Not read: the ValueError escapes.
+        found.append(None)
+    with contextlib.suppress(OSError):  # Not read: the ValueError escapes.
+        found.append(path.relative_to(root))
+    try:
+        later = lambda: path.relative_to(root)  # noqa: E731 - Not read: it runs outside the handler.
+    except ValueError:
+        later = None
+    found.append(later)
+    found.append(path.relative_to(root, walk_up=False).parts[0] == "..")  # Not read: no walk up.
+    found.append(path.relative_to(root, walk_up=True))  # Not read: no parent segment checked.
+    return found
+
+
 def told_apart(name: str, top: str) -> bool:
     return name.startswith(top + "/")
 
@@ -1192,6 +1236,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
     relpath = "a relpath checked for a parent segment"
     folder = "a folder and its separator"
     parents = "a search of a path's parents"
+    caught = "a relative_to whose ValueError is caught"
     found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
     assert found == [
         f"{alpha}:23 tests containment with is_relative_to{remedy}",
@@ -1219,6 +1264,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
             f"{alpha}:{line} tests containment with {prefix}{remedy}"
             for line in (98, 109, 112, 120, 124, 132, 136, 254, 257, 258, 259)
         ),
+        f"{alpha}:271 tests containment with {caught}{remedy}",
         *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in range(310, 316)),
         *(
             f"{alpha}:{line} tests containment with a regular expression of {folder}{remedy}"
@@ -1226,6 +1272,8 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         ),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (319, 320, 321)),
         *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(322, 342)),
+        *(f"{alpha}:{line} tests containment with {caught}{remedy}" for line in (364, 368, 372, 376, 380, 382)),
+        *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in (384, 385, 387)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

@@ -309,7 +309,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2235, #2292
+- **Examples:** #1890, #1892, #2227, #2235, #2292
 
 ### A reader of another program's language reads it as that program does
 
@@ -402,12 +402,18 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   given.
 - **Use:** `path_containment:refusal`, which judges an entry from input as written, as resolved, and through the link
   probe, and names why; `path_containment:within`, the one comparison of a path with its tree, which every other
-  containment test calls on paths it has made absolute or resolved; `path_containment:posix_within` for a repository
-  path a listing gives; `dotnet_solution:refusal` and `dotnet_format_targets:listed_refusal`, which compare through it a
+  containment test calls on paths it has made absolute or resolved; `path_containment:relative_within`, the path
+  relative to its tree from the forms `path_containment:within` compares, never a relative_to of the paths as given; `path_containment:posix_within` for a repository
+  path a listing gives; `diff_paths:snapshot_path` and `diff_paths:unsafe_snapshot_name`, which hold a snapshot's
+  readers and its writer to the same written rules; `dotnet_solution:refusal` and
+  `dotnet_format_targets:listed_refusal`, which compare through it a
   path a solution or a file list names; `link_probe:is_plain_file`, `tools.checkout:checkout_root`,
   `memory_audit:bare_name`.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_path_containment_is_the_one_containment_test`,
   `skills/ejryan89-skill-core/scripts/test_path_containment.py::RefusalTests`,
+  `skills/ejryan89-skill-core/scripts/test_path_containment.py::ExtendedPrefixTests`,
+  `skills/ejryan89-skill-core/scripts/test_diff_paths.py::SnapshotPathTests`,
+  `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::test_the_writer_leaves_out_exactly_the_names_a_snapshot_reader_refuses`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ListedRefusalTests`,
   `skills/curate-agent-memory/scripts/test_memory_audit.py::ReindexTests::test_a_target_with_a_parent_segment_is_never_read`,
   `tests/tools/test_plugin_canary.py::test_an_installed_plugin_the_canary_cannot_place_in_the_home_is_refused_by_name`,
@@ -415,9 +421,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** `root / name` or `joinpath(*` where the operand comes from input and no `refusal` judged it first;
   `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, `in` a path's
   `.parents`, a `startswith(`, `find(`, `removeprefix(`, slice, regular expression, or glob of a folder built to end
-  in a separator, or a `relpath(` checked for `..`, outside `path_containment.py`, which the guard refuses unless a
-  `CONTAINMENT_ALLOWED` entry states why.
-- **Examples:** #1780, #1782, #1818, #1905, #2050
+  in a separator, a `relpath(` or a `relative_to(..., walk_up=True)` checked for `..`, or a `relative_to(` inside a
+  `try` or a `contextlib.suppress` that turns its `ValueError` into an answer, outside `path_containment.py`, which
+  the guard refuses unless a `CONTAINMENT_ALLOWED` entry states why; a second judge of a path from input, such as a
+  snapshot reader's own segment rules, that leaves out a rule `written_refusal` holds, a reserved device name or a
+  trailing dot or space, or a writer and its readers whose rules differ in either direction; a `.resolve()`
+  compared as text with a path that was not resolved, where Windows may add its extended-length prefix to one.
+- **Examples:** #1780, #1782, #1818, #1905, #2050, #2195, #2196, #2226
 
 ### Every check comes before the first write
 

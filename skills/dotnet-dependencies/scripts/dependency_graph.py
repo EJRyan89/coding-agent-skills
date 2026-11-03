@@ -176,6 +176,12 @@ class Project:
         return references_of(self.targets_for(framework))
 
 
+# The containment tests that are not decisions, each with why it does not call path_containment.
+CONTAINMENT_ALLOWED = {
+    "Graph.relative": "display only: a path outside the solution's directory is named absolute rather than refused",
+}
+
+
 @dataclass
 class Graph:
     root: Path

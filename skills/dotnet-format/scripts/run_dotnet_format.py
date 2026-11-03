@@ -203,6 +203,12 @@ def batches(prefix: Sequence[str], files: list[str], limit: int = COMMAND_LINE_L
     return runs
 
 
+# The containment tests that are not decisions, each with why it does not call path_containment.
+CONTAINMENT_ALLOWED = {
+    "display_path": "display only: a diagnostic's path outside the root is shown as dotnet format wrote it",
+}
+
+
 def display_path(path: str, root: Path) -> str:
     candidate = Path(path)
     if not candidate.is_absolute():
