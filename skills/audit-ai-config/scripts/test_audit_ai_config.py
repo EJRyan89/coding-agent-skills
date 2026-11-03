@@ -5635,6 +5635,8 @@ class UnexaminedPathTests(unittest.TestCase):
         ".github/instructions": {".github/instructions/a.instructions.md": "x"},
         ".github/workflows": {".github/workflows/parity.yml": "run: ai_config --check"},
         ".codex/rules": {".codex/rules/default.rules": "x"},
+        # A fixed file no check reads in the inventory, so only the fixed files' own examination reports it.
+        ".vscode/mcp.json": {".vscode/mcp.json": "{}"},
     }
 
     def test_a_path_the_inventory_reads_that_cannot_be_examined_is_an_inventory_error(self) -> None:
@@ -5798,6 +5800,42 @@ class UnexaminedPathTests(unittest.TestCase):
     @staticmethod
     def _paths_and_unread(listing: audit.Listing) -> tuple[list[Path], list[Path]]:
         return listing.paths, [path for path, _ in listing.unread]
+
+    def test_a_skill_listing_keeps_the_reason_it_could_not_list_or_examine(self) -> None:
+        skills = self.root / ".claude/skills"
+        skill = skills / "demo/SKILL.md"
+        _write_fixture(self.root, {".claude/skills/demo/SKILL.md": "x"})
+        with listing_denied(skills):
+            self.assertEqual([(skills, str(_denied_error(skills)))], audit.skill_files(self.root, skills).unread)
+        with stat_denied(skill, older=self.OLDER, walked=False):
+            self.assertEqual([(skill, str(_denied_error(skill)))], audit.skill_files(self.root, skills).unread)
+
+    def test_the_files_of_a_listing_keep_its_links_out_and_what_it_could_not_list_or_examine(self) -> None:
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        agents = self.root / ".claude/agents"
+        reviewer, nested = agents / "reviewer.md", agents / "nested"
+        _write_fixture(self.root, {".claude/agents/reviewer.md": "x", ".claude/agents/nested/helper.md": "x"})
+        _link_directory(Path(elsewhere.name).resolve(), agents / "linked")
+        # A folder is no file, a link out stays one, and an entry whose stat fails is kept with its reason.
+        with stat_denied(reviewer, older=self.OLDER, walked=False):
+            files = audit.regular_files(self.root, audit.list_directory(self.root, agents))
+        self.assertEqual(
+            ([reviewer], [agents / "linked"], [(reviewer, str(_denied_error(reviewer)))]),
+            (files.paths, files.outside, files.unread),
+        )
+        # A folder the walk it is given could not list stays one the inventory reports.
+        with listing_denied(nested):
+            walk = audit.walk_files(self.root, agents, lambda name: True)
+        self.assertIn(nested, [path for path, _ in walk.unread])
+        self.assertEqual(walk.unread, audit.regular_files(self.root, walk).unread)
+
+    def test_the_inventory_reads_a_nested_agents_md_and_only_examines_a_nested_override(self) -> None:
+        # No check reads a nested AGENTS.override.md, so one that cannot be decoded is no inventory ERROR.
+        _write_fixture(self.root, {"docs/AGENTS.md": b"\xff\xfe\x00bad", "docs/AGENTS.override.md": b"\xff\xfe\x00bad"})
+        rows = _finding_rows(audit.check_inventory(self.root))
+        self.assertEqual(["docs/AGENTS.md"], [row[2] for row in rows if row[0] == "ERROR"])
+        self.assertIn(("INFO", "inventory", "docs/AGENTS.override.md", "Found docs/AGENTS.override.md"), rows)
 
     def test_the_scope_of_a_repositorys_files_takes_a_path_it_cannot_examine_for_no_find(self) -> None:
         # Each path alone shows its runtime or surface, so an earlier one never answers for it.
@@ -6001,6 +6039,58 @@ class PresenceAnswerTests(unittest.TestCase):
         with stat_denied(self.root / ".github/skills", older=False):
             rows = _finding_rows(audit.check_limitations(self.root, {}))
         self.assertIn(note, [row[:3] for row in rows])
+
+    def test_a_path_reported_once_leaves_every_finding_after_its_repeat_kept(self) -> None:
+        unread = audit._unreadable_finding(self.root, self.root / "CLAUDE.md", "denied")
+        found = audit._inventory_finding("REVIEW.md", "Found REVIEW.md")
+        self.assertEqual([unread, found], audit._one_unread_error_per_path([unread, unread, found]))
+
+    def test_a_fixed_file_behind_a_link_out_leaves_the_fixed_files_after_it_found(self) -> None:
+        root, outside = self.root / "repo", self.root / "outside"
+        outside.mkdir()
+        _write_fixture(root, {"REVIEW.md": "x", ".mcp.json": "{}"})
+        _link_directory(outside, root / ".claude")
+        # .claude/CLAUDE.md and .claude/settings.json lie behind the link, and the files after them are found.
+        self.assertEqual(
+            [
+                ("WARNING", "inventory", ".claude", audit.OUTSIDE_LINK),
+                ("WARNING", "inventory", ".claude", audit.OUTSIDE_LINK),
+                ("INFO", "inventory", "REVIEW.md", "Found REVIEW.md"),
+                ("INFO", "inventory", ".mcp.json", "Found .mcp.json"),
+            ],
+            _finding_rows(audit._inventory_fixed_files(root)),
+        )
+
+    def test_a_skill_or_agent_folder_it_cannot_examine_leaves_the_next_folder_listed(self) -> None:
+        _write_fixture(
+            self.root,
+            {
+                ".claude/skills/first/SKILL.md": "x",
+                ".agents/skills/second/SKILL.md": "x",
+                ".github/agents/first.md": "x",
+                ".claude/agents/second.md": "x",
+            },
+        )
+        with stat_denied(self.root / ".claude/skills", older=False):
+            rows = _finding_rows(audit._inventory_skill_directories(self.root))
+        self.assertIn(("INFO", "inventory", ".agents/skills", "Skills found: second"), rows)
+        with stat_denied(self.root / ".github/agents", older=False):
+            rows = _finding_rows(audit._inventory_agent_directories(self.root))
+        self.assertIn(("INFO", "inventory", ".claude/agents", "Custom agent files found: second.md"), rows)
+
+    def test_an_import_that_names_a_file_leaves_the_next_import_checked(self) -> None:
+        _write_fixture(self.root, {"docs/guide.md": "x"})
+        self.assertEqual(
+            [
+                (
+                    "WARNING",
+                    "claude-memory",
+                    "CLAUDE.md",
+                    "Import @docs/missing.md names no file, so nothing loads for it",
+                )
+            ],
+            _finding_rows(audit._missing_imports(self.root, "CLAUDE.md", ["docs/guide.md", "docs/missing.md"])),
+        )
 
 
 class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
@@ -6615,6 +6705,17 @@ class CodexLayeringTests(unittest.TestCase):
             {"AGENTS.md": REDIRECTING_AGENTS, "sub/AGENTS.override.md": "Override.\n", "sub/AGENTS.md": PLAIN_AGENTS}
         )
         self.assertEqual(["sub/AGENTS.override.md"], [path for _, path, _ in rows if path])
+
+    def test_a_nested_agents_md_beside_an_override_leaves_the_next_nested_agents_md_checked(self) -> None:
+        rows = self._codex(
+            {
+                "AGENTS.md": REDIRECTING_AGENTS,
+                "a/AGENTS.override.md": "Override.\n",
+                "a/AGENTS.md": PLAIN_AGENTS,
+                "b/AGENTS.md": PLAIN_AGENTS,
+            }
+        )
+        self.assertEqual(["a/AGENTS.override.md", "b/AGENTS.md"], [path for _, path, _ in rows if path])
 
     def test_the_reported_repository_with_only_a_root_override_is_not_compliant(self) -> None:
         _setup_conforming_repo(self.root)

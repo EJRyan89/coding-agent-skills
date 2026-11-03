@@ -237,6 +237,15 @@ class SkillShimsTestCase(unittest.TestCase):
                 self.assertEqual((2, "", f"FAILED {denied}: {str(path)!r}\n"), (code, output, errors.getvalue()))
                 shutil.rmtree(self.root / ".agents")
 
+    def test_a_repository_with_no_skills_folder_has_no_skills_and_its_shims_are_strays(self) -> None:
+        # The command line refuses such a root as no checkout; the validation policy asks problems() directly.
+        self.write(SHIM_PATH.as_posix(), SHIM)
+        shutil.rmtree(self.root / ".claude")
+        self.assertEqual(
+            [f"{SHIM_PATH.as_posix()} has no .claude/skills/widget-check/SKILL.md; delete it"],
+            skill_shims.problems(self.root),
+        )
+
     def test_a_user_only_skill_gets_the_codex_policy_file_beside_its_shim(self) -> None:
         self.write(
             ".claude/skills/widget-check/SKILL.md",
