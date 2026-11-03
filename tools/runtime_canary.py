@@ -453,7 +453,7 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     Python's digit limit, raises RecordRefused, naming the file and the line."""
     records = []
     if is_present(path):
-        for number, line in enumerate(path.read_bytes().decode("utf-8", "replace").splitlines(), 1):
+        for number, line in enumerate(discovery.output_lines(path.read_bytes().decode("utf-8", "replace")), 1):
             try:
                 record = json_reader.loads(line)
             except json.JSONDecodeError:
@@ -725,7 +725,7 @@ def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
     """The skills Claude Code's init event lists, if it printed one, and the permissions its result denied."""
     skills: set[str] | None = None
     denials: list[str] = []
-    for line in output.splitlines():
+    for line in discovery.output_lines(output):
         with contextlib.suppress(ValueError):
             event = json_reader.loads(line)
             if not isinstance(event, dict):
@@ -778,7 +778,7 @@ def unread_rejections(runtime: str, completed: Completed) -> list[str]:
         return []
     return [
         line.strip()
-        for line in completed.stderr.splitlines()
+        for line in discovery.output_lines(completed.stderr)
         if CODEX_EXEC_FAILED.search(line) and not CODEX_REJECTED.search(line)
     ]
 
