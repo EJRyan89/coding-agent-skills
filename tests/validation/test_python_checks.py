@@ -3220,6 +3220,10 @@ PRESENCE_STAT_CALLS = {
     "file_presence.is_present": "file_presence.is_present(p)",
     "file_presence.matching": "file_presence.matching(p, '*')",
     "a path's is_file": "p.is_file()",
+    "os.path.getsize": "os.path.getsize(p)",
+    "os.path.getmtime": "os.path.getmtime(p)",
+    "os.path.getatime": "os.path.getatime(p)",
+    "os.path.getctime": "os.path.getctime(p)",
 }
 PRESENCE_HANDLERS = {
     "OSError": "except OSError:",
@@ -3228,6 +3232,7 @@ PRESENCE_HANDLERS = {
     "Exception": "except Exception:",
     "a bare except": "except:",
     "a tuple with OSError": "except (ValueError, OSError):",
+    "os.error": "except os.error:",
 }
 PRESENCE_HANDLED = {
     **{
@@ -3241,6 +3246,24 @@ PRESENCE_HANDLED = {
     "an OSError handler that logs and continues": (
         "import os\n\n\ndef f(ps):\n    for p in ps:\n        try:\n            os.stat(p)\n"
         "        except OSError:\n            print('skipped', p)\n            continue\n        print(p)\n"
+    ),
+    "a pass handler that falls through to return None": (
+        "def f(p):\n    try:\n        return p.stat().st_size\n    except OSError:\n        pass\n    return None\n"
+    ),
+    "a pass handler at the end of a function that returns a value": (
+        "def f(p):\n    try:\n        return p.stat()\n    except OSError:\n        pass\n"
+    ),
+    "a logging handler that falls through to return []": (
+        "def f(p):\n    try:\n        return list(p.iterdir())\n    except OSError:\n        print('skipped', p)\n"
+        "    return []\n"
+    ),
+    "a pass handler in a loop that falls through to return False": (
+        "import file_presence\n\n\ndef f(ps):\n    for p in ps:\n        try:\n"
+        "            if file_presence.is_present(p):\n                return True\n        except OSError:\n"
+        "            pass\n    return False\n"
+    ),
+    "a handler that binds an empty value its function returns": (
+        "def f(p):\n    try:\n        st = p.stat()\n    except OSError:\n        st = None\n    return st\n"
     ),
     "contextlib.suppress of OSError around a stat": (
         "import contextlib\n\n\ndef f(p):\n    with contextlib.suppress(OSError):\n        return p.stat()\n"
@@ -3361,6 +3384,19 @@ PRESENCE_PASSED = {
     ),
     "an OSError handler around a read": (
         "def f(p):\n    try:\n        return p.read_text()\n    except OSError:\n        return None\n"
+    ),
+    "a handler that binds a reason its function returns": (
+        "def f(p):\n    try:\n        st = p.stat()\n    except OSError as error:\n        st = str(error)\n"
+        "    return st\n"
+    ),
+    "a handler that logs and raises": (
+        "def f(p):\n    try:\n        return p.stat()\n    except OSError:\n        print('failed', p)\n        raise\n"
+    ),
+    "a pass handler that goes on to more work": (
+        "def f(p):\n    try:\n        p.stat()\n    except OSError:\n        pass\n    p.mkdir()\n    return 1\n"
+    ),
+    "a handler that binds an empty value its function does not return": (
+        "def f(p):\n    try:\n        st = p.stat()\n    except OSError:\n        st = None\n    return 1\n"
     ),
     "suppress of FileNotFoundError around a stat": (
         "import contextlib\n\n\ndef f(p):\n    with contextlib.suppress(FileNotFoundError):\n"

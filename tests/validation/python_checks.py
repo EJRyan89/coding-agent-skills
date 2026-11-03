@@ -755,9 +755,12 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # `any(map(os.path.exists, ps))`; a predicate bound to a name this does not follow or reached through getattr; a
 # returned sentinel name, as `result = []` then `if not P: return result`; `P == False` and `P is False`; an rmtree
 # onerror or onexc that swallows the error; a read whose OSError handler answers nothing; a branch that does work other
-# than logging before its empty answer, read as recording the case; and an `if P:` with no else guarding work whose
-# result is an answer, as `if path.is_file(): tokens.update(...)`. The link tests are no presence predicates here:
-# LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed stat through.
+# than logging before its empty answer, read as recording the case; an `if P:` with no else guarding work whose result
+# is an answer, as `if path.is_file(): tokens.update(...)`; an except naming its exceptions through a name bound to a
+# tuple, as `ERRS = (OSError,)` then `except ERRS:`, which this does not follow; and a `warn(...)` imported by `from
+# warnings import warn`, which this does not read as a log, so a branch or handler holding one passes. The link tests
+# are no presence predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe
+# lets a failed stat through.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )
@@ -953,10 +956,24 @@ def _empty_branch(body: list[ast.stmt]) -> bool:
     return isinstance(last, ast.Continue)
 
 
+def _returns_a_value(block: list[ast.stmt]) -> bool:
+    """Whether a block returns a value that is not empty anywhere in it, outside a function or class it defines."""
+    pending: list[ast.AST] = list(block)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Return) and not _empty(node.value):
+            return True
+        pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def _falling_ifs(tree: ast.Module) -> frozenset[int]:
     """Each if with no else whose branch ends by returning a value that is not empty, and whose False goes on to an
     empty return or the end of its function: the statement after it, or after the block, loop, `with`, or `try` that
-    holds it."""
+    holds it. And each try that returns a value that is not empty, and goes on to an empty return or the end of its
+    function when a handler takes its error, so a handler that only passes or logs answers nothing."""
     found: set[int] = set()
 
     def visit(block: list[ast.stmt], ends_empty: bool) -> None:
@@ -973,6 +990,8 @@ def _falling_ifs(tree: ast.Module) -> frozenset[int]:
                 visit(statement.body, empty_after)
                 visit(getattr(statement, "orelse", []), empty_after)
             elif isinstance(statement, (ast.Try, ast.TryStar)):
+                if empty_after and _returns_a_value(statement.body):
+                    found.add(id(statement))
                 visit(statement.body, empty_after and not statement.orelse)
                 for handler in statement.handlers:
                     visit(handler.body, empty_after)
@@ -1011,7 +1030,20 @@ def _bound_answers(tree: ast.Module, aliases: dict[str, str]) -> dict[str, dict[
 # The calls that stat or list a path, whose OSError a handler may read as nothing there: a path's stat, lstat, and
 # listings, os's, and file_presence's own readers, besides the presence predicates.
 STATTING_METHODS = frozenset({"stat", "lstat", "iterdir", "scandir", "listdir", "glob", "rglob"})
-STATTING_FUNCTIONS = frozenset({"os.stat", "os.lstat", "os.scandir", "os.listdir", "os.walk", "os.fwalk"})
+STATTING_FUNCTIONS = frozenset(
+    {
+        "os.stat",
+        "os.lstat",
+        "os.scandir",
+        "os.listdir",
+        "os.walk",
+        "os.fwalk",
+        "os.path.getsize",
+        "os.path.getmtime",
+        "os.path.getatime",
+        "os.path.getctime",
+    }
+)
 FILE_PRESENCE_READERS = frozenset({"is_present", "is_directory", "is_occupied", "matching"})
 # The exceptions whose handler takes a failed stat or listing, beyond "not found": OSError, its aliases and the
 # subclass a denied stat raises, and the classes above it.
@@ -1040,37 +1072,82 @@ def _stats_or_lists(body: list[ast.stmt], aliases: dict[str, str]) -> str | None
     return None
 
 
-def _swallows(types: ast.expr | None) -> bool:
+def _swallows(types: ast.expr | None, aliases: dict[str, str]) -> bool:
     """Whether an except clause, or a suppress, takes a failed stat's OSError: a bare except, or one of
-    SWALLOWING_ERRORS, alone or in a tuple."""
+    SWALLOWING_ERRORS or `os.error`, OSError's alias, alone or in a tuple."""
     if types is None:
         return True
     names = types.elts if isinstance(types, ast.Tuple) else [types]
     return any(
         (name.attr if isinstance(name, ast.Attribute) else getattr(name, "id", "")) in SWALLOWING_ERRORS
+        or qualified_name(name, aliases) == "os.error"
         for name in names
     )
 
 
-def _handled_answer(node: ast.AST, aliases: dict[str, str]) -> str | None:
-    """How a handler around a stat or listing reads its OSError as nothing there: an except clause that answers nothing,
-    as `_empty_branch` reads a branch, or a contextlib.suppress of it."""
+def _empty_assignment(body: list[ast.stmt]) -> str | None:
+    """The name a handler binds to an empty value, when it does that and otherwise only logs: `st = None`."""
+    assignments = [statement for statement in body if not _only_logs(statement)]
+    if len(assignments) != 1:
+        return None
+    statement = assignments[0]
     if (
-        isinstance(node, (ast.Try, ast.TryStar))
-        and (call := _stats_or_lists(node.body, aliases))
-        and any(_swallows(handler.type) and _empty_branch(handler.body) for handler in node.handlers)
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and _empty(statement.value)
     ):
-        return (
-            f"answers nothing from a handler of {call}'s OSError, which reads a path it cannot stat or list as "
-            "nothing there; let the error through, or report the path"
-        )
+        return statement.targets[0].id
+    return None
+
+
+def _returned_names(tree: ast.Module) -> dict[int, frozenset[str]]:
+    """For each try, the names its function returns as they are, `return name`, outside a function it defines."""
+    found: dict[int, frozenset[str]] = {}
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        names: set[str] = set()
+        tries: list[ast.AST] = []
+        pending: list[ast.AST] = list(function.body)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Name):
+                names.add(node.value.id)
+            if isinstance(node, (ast.Try, ast.TryStar)):
+                tries.append(node)
+            pending.extend(ast.iter_child_nodes(node))
+        for node in tries:
+            found[id(node)] = frozenset(names)
+    return found
+
+
+def _handled_answer(
+    node: ast.AST, aliases: dict[str, str], falling: frozenset[int], returned: Mapping[int, frozenset[str]]
+) -> str | None:
+    """How a handler around a stat or listing reads its OSError as nothing there: an except clause that answers nothing,
+    as `_empty_branch` reads a branch, one that only passes or logs where the try goes on to an empty return or its
+    function's end, one that binds an empty value to a name its function returns, or a contextlib.suppress of it."""
+    if isinstance(node, (ast.Try, ast.TryStar)) and (call := _stats_or_lists(node.body, aliases)):
+        for handler in node.handlers:
+            if not _swallows(handler.type, aliases):
+                continue
+            falls = id(node) in falling and all(_only_logs(statement) for statement in handler.body)
+            empty = _empty_assignment(handler.body)
+            if _empty_branch(handler.body) or falls or (empty is not None and empty in returned.get(id(node), ())):
+                return (
+                    f"answers nothing from a handler of {call}'s OSError, which reads a path it cannot stat or list "
+                    "as nothing there; let the error through, or report the path"
+                )
     if isinstance(node, (ast.With, ast.AsyncWith)) and (call := _stats_or_lists(node.body, aliases)):
         for item in node.items:
             context = item.context_expr
             if (
                 isinstance(context, ast.Call)
                 and qualified_name(context.func, aliases) == "contextlib.suppress"
-                and any(_swallows(argument) for argument in context.args)
+                and any(_swallows(argument, aliases) for argument in context.args)
             ):
                 return (
                     f"suppresses {call}'s OSError, which reads a path it cannot stat or list as nothing there; let "
@@ -1122,6 +1199,7 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
     """Each node where a failed stat, listing, or removal is read as nothing there, with its scope and its refusal."""
     bound = _bound_answers(tree, aliases)
     falling = _falling_ifs(tree)
+    returned = _returned_names(tree)
     readers: dict[str, _PresenceReader] = {}
     for node, scope in scoped_nodes(tree.body):
         reader = readers.setdefault(scope, _PresenceReader(aliases, bound.get(scope, {}), falling))
@@ -1135,7 +1213,7 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
             )
         elif listing := _listing_answer(node, aliases):
             yield node, scope, listing
-        elif handled := _handled_answer(node, aliases):
+        elif handled := _handled_answer(node, aliases, falling, returned):
             yield node, scope, handled
 
 

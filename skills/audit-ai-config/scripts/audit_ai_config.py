@@ -143,6 +143,8 @@ TRANSPORT_COMPATIBILITY: dict[str, set[str]] = {
 # The presence reads here that read a path they cannot stat or list as nothing there, each with why that is
 # the answer it should give.
 PRESENCE_ALLOWED = {
+    "_has_generator_script": "answers whether a generator naming CLAUDE.md is found; the inventory reports a "
+    "generator it cannot read as an ERROR",
     "found_file": "names or counts what it finds; the inventory, or the check that reads the path, reports one it "
     "cannot examine as an ERROR",
     "found_folder": "names or counts what it finds; the inventory, or the check that reads the path, reports one it "
