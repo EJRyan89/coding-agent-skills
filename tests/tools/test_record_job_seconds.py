@@ -364,6 +364,8 @@ class MainTests(unittest.TestCase):
         stub = Stub({"gh run view 38 --json": SUCCESS, "gh run view 38 --log": LOG})
         code, output, _, table = self.run_main(["38"], stub)
         self.assertEqual(0, code)
+        # The run's state is asked for by the three fields it is judged by, as gh names them.
+        self.assertIn(["gh", "run", "view", "38", "--json", "workflowName,status,conclusion"], stub.commands)
         self.assertEqual(
             {"runs": [38], "seconds": {"Linux": LINUX_SECONDS, "Windows": WINDOWS_SECONDS}},
             json.loads(table.read_text(encoding="utf-8")),
@@ -581,6 +583,23 @@ class MainTests(unittest.TestCase):
         )
         self.assertEqual((2, False), (code, table.exists()))
         self.assertIn("run 4's Linux legs reported no passing jobs", errors)
+
+    def test_an_answer_missing_a_field_is_runs_it_could_not_read_with_exit_2(self) -> None:
+        cases = {
+            "a listed run without its ID": ([], {"gh run list": json.dumps([{"id": 43}])}, "gh run list[0] must be "),
+            "a listed run ID that is text": (
+                [],
+                {"gh run list": json.dumps([{"databaseId": "43"}])},
+                "gh run list[0].databaseId must be an integer",
+            ),
+            "a listed run that is no object": ([], {"gh run list": json.dumps([43])}, "gh run list[0] must be "),
+            "a run's state that is no object": (["7"], {"gh run view 7 --json": "[]"}, "gh run view 7 must be "),
+        }
+        for name, (arguments, answers, message) in cases.items():
+            with self.subTest(name):
+                code, output, errors, table = self.run_main(arguments, Stub(dict(answers)))
+                self.assertEqual((2, "", False), (code, output, table.exists()), errors)
+                self.assertTrue(errors.startswith(f"Cannot read the validate runs: {message}"), errors)
 
     def test_the_table_it_writes_is_the_one_validation_reads(self) -> None:
         table = record_job_seconds.TABLE.relative_to(record_job_seconds.REPOSITORY_ROOT)
