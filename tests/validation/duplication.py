@@ -760,12 +760,16 @@ class _ContainmentReader:
         self.held: dict[tuple[int, str], list[ast.expr]] = {}
         # What `+=` adds to a name or an attribute, since it binds no value of its own.
         self.added: dict[tuple[int, str], list[ast.expr]] = {}
+        # What a loop or a comprehension iterates for each name it binds, whose items the name holds in turn.
+        self.looped: dict[tuple[int, str], list[ast.expr]] = {}
         for node in ast.walk(tree):
             self._record(node)
 
     def _record(self, node: ast.AST) -> None:
         if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add) and (key := self._key(node.target)):
             self.added.setdefault(key, []).append(node.value)
+        elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension) and isinstance(node.target, ast.Name):
+            self.looped.setdefault(self._owner(node.target)[0], []).append(node.iter)
         elif isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
             for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
                 if isinstance(target, ast.Attribute):
@@ -813,9 +817,24 @@ class _ContainmentReader:
             return False
         self.following.add(key)
         try:
-            return any(map(read, [*values, *self.held.get(key, [])])) or any(map(added, self.added.get(key, [])))
+            return (
+                any(map(read, [*values, *self.held.get(key, [])]))
+                or any(self._each(iterable, read) for iterable in self.looped.get(key, []))
+                or any(map(added, self.added.get(key, [])))
+            )
         finally:
             self.following.discard(key)
+
+    def _each(self, iterable: ast.expr, read: Callable[[ast.expr], bool]) -> bool:
+        """Whether `read` holds for an item of what a loop iterates: a literal tuple, list, or set, or one a name or
+        an attribute holds."""
+        if isinstance(iterable, ast.Tuple | ast.List | ast.Set):
+            return any(map(read, iterable.elts))
+
+        def each(held: ast.expr) -> bool:
+            return self._each(held, read)
+
+        return self._follow(iterable, each, each)
 
     def name(self, node: ast.AST) -> str:
         """The dotted name an expression stands for, through the names the module binds once, or else through its

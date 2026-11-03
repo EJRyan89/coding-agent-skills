@@ -1051,6 +1051,50 @@ def conforms(path: Path, root: Path, name: str, top: str, other: str, *rest: str
     ]
 
 
+PREFIXES = ("skills" + "/", ".claude/skills" + "/")
+
+
+def iterated(name: str, top: str, other: str) -> list[bool]:
+    prefixes = (top + "/", other + "/")
+    found = []
+    for prefix in prefixes:
+        found.append(name.startswith(prefix))
+    return [
+        *found,
+        any(name.startswith(item) for item in prefixes),
+        any(name.startswith(item) for item in PREFIXES),
+        any(name.startswith(item) for item in prefixes_of(top)),
+    ]
+
+
+def prefixes_of(top: str) -> list[str]:
+    return [top + "/"]
+
+
+def limits(path: Path, root: Path, name: str, top: str, words: list[str]) -> list[object]:
+    import fnmatch
+
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        relative = None
+    lambda_prefix = lambda folder: folder + "/"  # noqa: E731
+    return [
+        relative,
+        getattr(os.path, "commonpath")([path, root]) == root,
+        getattr(path, "is_relative_to")(root),
+        os.path.dirname(name) == top,
+        name.rfind(top + "/") == 0,
+        name.partition(top + "/")[0] == "",
+        name.split(top + "/")[0] == "",
+        name.startswith(lambda_prefix(top)),
+        fnmatch.fnmatch(name, top + "/*.py"),
+        any(name.startswith(item) for item in words),
+        any(name.startswith(item) for item in ("skills", top)),
+        [name.startswith(folder) for folder in path.parents],
+    ]
+
+
 def told_apart(name: str, top: str) -> bool:
     return name.startswith(top + "/")
 
@@ -1100,7 +1144,10 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         *(f"{alpha}:{line} tests containment with a search for {folder}{remedy}" for line in (91, 92)),
         *(f"{alpha}:{line} tests containment with a regular expression of {folder}{remedy}" for line in (93, 94)),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (95, 96)),
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (97, 108, 111, 119, 123, 131, 135)),
+        *(
+            f"{alpha}:{line} tests containment with {prefix}{remedy}"
+            for line in (97, 108, 111, 119, 123, 131, 135, 253, 256, 257, 258)
+        ),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]
