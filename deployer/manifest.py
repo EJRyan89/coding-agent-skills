@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
 import json_writer
+from atomic_file import is_read_only
 
 from . import fsops, platform_support, state_files
 from .errors import STATE_FILE, DeployError, os_error, see_recovery
@@ -244,6 +245,16 @@ class Manifest:
 
     def last_run_id(self) -> str:
         return self.data.get("last_run_id", "")
+
+    def refuse_read_only(self) -> None:
+        """Refuse a manifest that save could not replace, while nothing has changed: fsops.write_atomic refuses a
+        read-only target, by atomic_file's is_read_only, which this reads too, so a run that went on would change the
+        home and roll it all back at its commit."""
+        if is_read_only(self.path):
+            raise DeployError(
+                f"ERROR: The manifest is read-only: {platform_support.normalize(self.path)}",
+                "Make it writable, then retry.",
+            )
 
     def save(self) -> None:
         """Replace the manifest file. A value the JSON writer refuses is a DeployError naming the file, which the
