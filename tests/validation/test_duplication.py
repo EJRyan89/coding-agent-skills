@@ -806,12 +806,24 @@ def test_the_deployer_states_the_path_first_and_relative_to_itself(tmp_path: Pat
     assert expected == skill_core_import_problems(tmp_path)
 
 
-CONTAINMENT_SOURCE = """import os
+CONTAINMENT_SOURCE = """import ntpath
+import os
 import os.path as osp
+import posixpath
 from os.path import commonpath
 from pathlib import Path
+from posixpath import commonprefix as common
 
 from path_containment import posix_within, within
+
+try:
+    import genericpath
+except ImportError:
+    genericpath = None
+
+SEPARATOR = "/"
+join = os.path.join
+PROBES = ("".startswith(SEPARATOR + "/ "), "".startswith(SEPARATOR + "/X"))
 
 
 def hand_written(path: Path, root: Path, name: str, top: str) -> list[bool]:
@@ -827,8 +839,330 @@ def hand_written(path: Path, root: Path, name: str, top: str) -> list[bool]:
     ]
 
 
-def conforms(path: Path, root: Path, name: str, top: str) -> list[bool]:
-    return [within(path, root), posix_within(name, top), name.startswith(top), name.startswith("prefix-")]
+def widened(name: str, top: str, other: str, path: str, root: str, *rest: str) -> list[bool]:
+    prefix = top + "/"
+    added = top
+    added += os.sep
+    prefixes = (top + "/", other + "/")
+    relative = os.path.relpath(path, root)
+    return [
+        ntpath.commonpath([path, root]) == root,
+        posixpath.commonpath([path, root]) == root,
+        common([path, root]) == root,
+        genericpath.commonprefix([path, root]) == root,
+        name.startswith(prefix),
+        name.startswith((top + "/", other + "/")),
+        name.startswith(prefixes),
+        name.startswith("{}/".format(top)),
+        name.startswith("%s/" % top),
+        name.startswith(os.path.join(top, "")),
+        name.startswith(added),
+        name.startswith(f"{top}{os.sep}"),
+        name.startswith(top + SEPARATOR),
+        name.startswith("%s%s" % (top, os.sep)),
+        name.startswith("{}{}".format(top, os.sep)),
+        name.startswith(str.format("{}/", top)),
+        name.startswith("".join([top, "/"])),
+        name.startswith(os.sep.join([top, ""])),
+        str.startswith(name, top + "/"),
+        name.startswith(join(top, "sub/")),
+        name.startswith(os.path.join(top, *rest, "")),
+        name.startswith(top + os.path.altsep),
+        name.startswith(top + "\\\\"),
+        name.startswith(held := top + "/"),
+        name.startswith(top + (tail := "/")),
+        name.startswith(prefix),
+        relative.startswith(".."),
+        relative == os.pardir,
+        posixpath.relpath(path, root).startswith(os.pardir + os.sep),
+        ".." in Path(relative).parts,
+    ]
+
+
+def further(path: Path, root: Path, name: str, top: str) -> list[object]:
+    import fnmatch
+    import re
+
+    size = len(root.parts)
+    stripped = name.removeprefix(top + "/")
+    checker = lambda name, folder=top + "/": name.startswith(folder)  # noqa: E731
+    return [
+        Path(root) in Path(path).parents,
+        root not in [path, *path.parents],
+        {root}.isdisjoint(path.parents),
+        {root} & set(path.parents),
+        name.removeprefix(top + os.sep) != name,
+        stripped != name,
+        name[: len(top + "/")] == top + "/",
+        name.startswith(top) and name[len(top)] in "/\\\\",
+        name[len(top) :].startswith("\\\\"),
+        path.parts[:size] == root.parts,
+        name.find(top + os.sep) == 0,
+        name.index(top + "/"),
+        re.match(re.escape(top + os.sep), name),
+        re.search(pattern=f"^{top}/", string=name),
+        fnmatch.fnmatch(name, top + "/*"),
+        fnmatch.filter([name], pat=f"{top}/**"),
+        name.startswith(prefix_of(top)),
+    ]
+
+
+class Holder:
+    def __init__(self, top: str) -> None:
+        self.prefix = top + os.sep
+        self.grown = top
+        self.grown += "/"
+
+    def inside(self, name: str) -> bool:
+        return name.startswith(self.prefix)
+
+    def extended(self, name: str) -> bool:
+        return name.startswith(self.grown)
+
+
+def prefix_of(top: str) -> str:
+    return top + "/"
+
+
+def defaulted(name: str, folder: str = os.getcwd() + os.sep) -> bool:
+    return name.startswith(folder)
+
+
+def defaulted_by_keyword(name: str, *, folder: str = f"{os.getcwd()}/") -> bool:
+    return name.startswith(folder)
+
+
+class Annotated:
+    def __init__(self, top: str) -> None:
+        self.marked: str = top + "/"
+
+    def inside(self, name: str) -> bool:
+        return name.startswith(self.marked)
+
+    def suffixed(self, name: str, top: str) -> bool:
+        self.suffix = "/"
+        return name.startswith(top + self.suffix)
+
+
+def further_conforms(path: Path, root: Path, name: str, top: str, words: list[str], segment: str) -> list[object]:
+    import fnmatch
+    import re
+
+    size = 3
+    index = 0
+    index += len(top)
+    kept = name.removeprefix(top + "/")
+    unknown = name.removeprefix(top)
+    unknown += "/"
+    return [
+        root in path.parts,
+        [folder for folder in path.parents],
+        {root}.isdisjoint(path.parts),
+        {root} & set(path.parts),
+        {root} | set(path.parents),
+        name.removeprefix(top) != name,
+        kept,
+        unknown != name,
+        words[: len(top)] == words,
+        words[1 : len(top)] == top + "/",
+        path.parts[:size] == root.parts,
+        segment[index] == "\\\\",
+        name[len(top)] == "-",
+        name[len(top) :].startswith("-"),
+        name[1:].startswith("/"),
+        name.find(top) == 0,
+        re.match(re.escape(top), name),
+        re.match(r"^skills/", name),
+        re.sub(top + "/", "", name),
+        re.match(),
+        fnmatch.fnmatch(name, top + "*"),
+        fnmatch.fnmatch(name, "skills/*"),
+        name.startswith(outer(top)),
+        name.startswith(str(top)),
+        name.startswith(path.never_assigned),
+        name.startswith(top.upper()),
+        name.startswith(plain(name)),
+        name.startswith(top + "/*"),
+    ]
+
+
+def outer(top: str) -> str:
+    def inner() -> str:
+        return top + "/"
+
+    return top
+
+
+def plain(name: str, folder: str = "skills") -> str:
+    return folder
+
+
+def conforms(path: Path, root: Path, name: str, top: str, other: str, *rest: str) -> list[bool]:
+    first = top
+    second = first
+    first = second
+    looped = top + back
+    back = looped
+    added = top
+    label = top
+    label += "-"
+    fixed = "skills/"
+    relative = os.path.relpath(path, root)
+    return [
+        within(path, root),
+        posix_within(name, top),
+        name.startswith(top),
+        name.startswith("prefix-"),
+        name.startswith(("./", "../")),
+        name.startswith(fixed),
+        name.startswith(top + "-"),
+        name.startswith(label),
+        name.startswith(added),
+        name.startswith((top, other)),
+        name.startswith("{}-".format(top)),
+        name.startswith("%s-" % top),
+        name.startswith(os.path.join(top, "x")),
+        name.startswith(os.path.join(top, "sub/", "x")),
+        name.startswith(os.path.join()),
+        name.startswith(", ".join([top, other])),
+        relative == "docs",
+        relative.startswith("docs"),
+        ".." in name.split("/"),
+        name.startswith(*rest),
+        name.startswith("%s%s" % (top, other)),
+        name.startswith("%s%s%s" % (top, os.sep, other)),
+        name.startswith("%s" % ()),
+        name.startswith("%s/%s" % (top, *rest)),
+        name.startswith(f""),
+        name.startswith(f"{top}/{other}"),
+        name.startswith("{}{}".format(top, other)),
+        name.startswith("{}{}{}".format(top, os.sep, other)),
+        name.startswith(str.format("{}")),
+        name.startswith(str.format()),
+        name.startswith(str.format("{}{}", os.sep, other)),
+        name.startswith(top.format(other)),
+        name.startswith(make_prefix(top)),
+        name.startswith(os.sep.join([top, "x"])),
+        name.startswith("".join([top, *rest])),
+        name.startswith("".join([top, "/", other])),
+        name.startswith("".join([])),
+        name.startswith("".join(rest)),
+        name.startswith(first),
+        name.startswith(looped),
+    ]
+
+
+PREFIXES = ("skills" + "/", ".claude/skills" + "/")
+
+
+def iterated(name: str, top: str, other: str) -> list[bool]:
+    prefixes = (top + "/", other + "/")
+    found = []
+    for prefix in prefixes:
+        found.append(name.startswith(prefix))
+    return [
+        *found,
+        any(name.startswith(item) for item in prefixes),
+        any(name.startswith(item) for item in PREFIXES),
+        any(name.startswith(item) for item in prefixes_of(top)),
+    ]
+
+
+def prefixes_of(top: str) -> list[str]:
+    return [top + "/"]
+
+
+def limits(path: Path, root: Path, name: str, top: str, words: list[str]) -> list[object]:
+    import fnmatch
+    import re
+
+    try:
+        relative = path.relative_to(root)  # Not read: a caught relative_to (#2195).
+    except ValueError:
+        relative = None
+    lambda_prefix = lambda folder: folder + "/"  # noqa: E731
+    words[0] += "/"  # Not read: an item changed in place.
+    return [
+        relative,  # The caught relative_to's result.
+        getattr(os.path, "commonpath")([path, root]) == root,  # Not read: a function named by a string.
+        getattr(path, "is_relative_to")(root),  # Not read: a method named by a string.
+        os.path.dirname(name) == top,  # Not read: a direct child, not a tree.
+        name.rfind(top + "/") == 0,  # Not read: rfind.
+        name.partition(top + "/")[0] == "",  # Not read: partition.
+        name.split(top + "/")[0] == "",  # Not read: split.
+        name.startswith(lambda_prefix(top)),  # Not read: a lambda's prefix.
+        fnmatch.fnmatch(name, top + "/*.py"),  # Not read: more than wildcards after the separator.
+        any(name.startswith(item) for item in words),  # Not read: the item changed in place above.
+        any(name.startswith(item) for item in ("skills", top)),  # Plain prefixes, no separator.
+        [name.startswith(folder) for folder in path.parents],  # A parent as a plain prefix.
+        name.startswith(top + "/ "),  # Text after the separator.
+        name.startswith(top + "/X"),  # Text after the separator.
+        re.match(top + "/ ", name),  # Text after the separator.
+        re.match(top + "/X", name),  # Text after the separator.
+        fnmatch.fnmatch(name, top + "/X"),  # Text, not a wildcard, after the separator.
+        name.startswith(str.format("{}{}{}", top, os.sep, top)),  # The last field is top.
+        name.startswith("".join(words, [top, "/"])),  # A join reads its first argument alone.
+        prefixes_of(pattern=top + "/"),  # No pattern function; a keyword named pattern alone.
+    ]
+
+
+def more(path: Path, root: Path, name: str, top: str, other: str, *rest: str) -> list[object]:
+    import fnmatch
+    import re
+
+    grown = ""
+    grown += "/"
+    prefixes = []
+    prefixes += [top + "/"]
+    return [
+        {root}.issubset(path.parents),
+        {root}.issuperset(path.parents),
+        {root}.intersection(path.parents),
+        path.parents.count(root),
+        path.parents.index(root),
+        path.parents.__contains__(root),
+        re.fullmatch(top + "/", name),
+        re.compile(top + os.sep),
+        re.search(top + "/", name),
+        fnmatch.fnmatchcase(name, top + "/*"),
+        fnmatch.translate(top + "/*"),
+        fnmatch.filter([name], top + "/*"),
+        name.startswith(top + grown),
+        any(name.startswith(item) for item in prefixes),
+        name.startswith(top + os.path.join(other, "")),
+        name.startswith(str.format("{}", os.sep)),
+        name.startswith(tuple(PREFIXES)),
+        name.startswith(tuple(prefixes)),
+        name.startswith(frozenset(item for item in PREFIXES)),
+        name.startswith(tuple({top + "/"})),
+        name.startswith("{0}{1}".format(top, os.sep)),
+        name.startswith("{}{sep}".format(top, sep=os.sep)),
+        name.startswith(str.format("{1}", top, os.sep)),
+        name.startswith(top + "/" if top else other),
+        name.startswith(top and top + "/"),
+        name.startswith(list(PREFIXES)),
+        name.startswith(set(PREFIXES)),
+        name.startswith(sorted(PREFIXES)),
+        name.startswith(tuple([item for item in PREFIXES])),
+        name.startswith(tuple({item for item in PREFIXES})),
+        name.startswith("{0}".format(os.sep, *rest)),
+        name.startswith(other if top else top + "/"),
+        name.startswith("{0}{1}".format(os.sep, top)),  # The last field is top.
+        name.startswith("{sep}{}".format(top, sep=os.sep)),  # The last field is top.
+        name.startswith("{}/{0.name}".format(top)),  # Not read: a field's attribute.
+        name.startswith("{!r}".format(os.sep)),  # A conversion quotes the separator.
+        name.startswith("{}{}".format(*rest, os.sep)),  # Not read: a position an unpacking moves.
+        name.startswith("{x}".format(**rest)),  # Not read: a keyword an unpacking gives.
+        name.startswith("{".format(top)),  # A template that does not parse.
+        name.startswith("{}x".format(os.sep)),  # Text after the last field.
+        name.startswith(tuple(top)),  # A tuple of a plain name's characters.
+        name.startswith(tuple()),  # An empty tuple.
+        name.startswith(sorted(item.name for item in path.parents)),  # Plain names, no separator.
+        name.startswith(tuple(top, PREFIXES)),  # A collection is made of its first argument alone.
+        name.startswith("{1}".format(os.sep)),  # No argument fills the field.
+        name.startswith("%(top)s%(sep)s" % {"top": top, "sep": os.sep}),  # Not read: named % fields (#2320).
+        any(parent == root for parent in path.parents),  # Not read: parents compared by == (#2320).
+    ]
 
 
 def told_apart(name: str, top: str) -> bool:
@@ -855,14 +1189,43 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
     )
     alpha = "skills/alpha/scripts/alpha.py"
     prefix = "a startswith of a folder and its separator"
+    relpath = "a relpath checked for a parent segment"
+    folder = "a folder and its separator"
+    parents = "a search of a path's parents"
     found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
     assert found == [
-        f"{alpha}:11 tests containment with is_relative_to{remedy}",
-        f"{alpha}:12 tests containment with commonpath{remedy}",
-        f"{alpha}:13 tests containment with commonprefix{remedy}",
-        f"{alpha}:14 tests containment with commonpath{remedy}",
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (15, 16, 17)),
-        f"{alpha}:18 tests containment with a comparison of a path's leading parts{remedy}",
+        f"{alpha}:23 tests containment with is_relative_to{remedy}",
+        f"{alpha}:24 tests containment with commonpath{remedy}",
+        f"{alpha}:25 tests containment with commonprefix{remedy}",
+        f"{alpha}:26 tests containment with commonpath{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (27, 28, 29)),
+        f"{alpha}:30 tests containment with a comparison of a path's leading parts{remedy}",
+        f"{alpha}:41 tests containment with commonpath{remedy}",
+        f"{alpha}:42 tests containment with commonpath{remedy}",
+        f"{alpha}:43 tests containment with commonprefix{remedy}",
+        f"{alpha}:44 tests containment with commonprefix{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(45, 67)),
+        *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in range(67, 71)),
+        f"{alpha}:80 tests containment with {prefix}{remedy}",
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in range(82, 86)),
+        *(f"{alpha}:{line} tests containment with a removeprefix of {folder}{remedy}" for line in (86, 87)),
+        f"{alpha}:88 tests containment with a comparison of a leading slice{remedy}",
+        *(f"{alpha}:{line} tests containment with a check for a separator after a prefix{remedy}" for line in (89, 90)),
+        f"{alpha}:91 tests containment with a comparison of a path's leading parts{remedy}",
+        *(f"{alpha}:{line} tests containment with a search for {folder}{remedy}" for line in (92, 93)),
+        *(f"{alpha}:{line} tests containment with a regular expression of {folder}{remedy}" for line in (94, 95)),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (96, 97)),
+        *(
+            f"{alpha}:{line} tests containment with {prefix}{remedy}"
+            for line in (98, 109, 112, 120, 124, 132, 136, 254, 257, 258, 259)
+        ),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in range(310, 316)),
+        *(
+            f"{alpha}:{line} tests containment with a regular expression of {folder}{remedy}"
+            for line in (316, 317, 318)
+        ),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (319, 320, 321)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(322, 342)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

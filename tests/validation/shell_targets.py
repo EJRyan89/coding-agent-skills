@@ -14,6 +14,7 @@ from pathlib import Path
 import file_presence
 import frontmatter
 from job_pool import refuse_termination, run_process
+from path_containment import posix_within
 from toolchain import (
     VALIDATION_FLOORS,
     bash_syntax_job,
@@ -404,7 +405,7 @@ def powershell_targets(root: Path, files: list[Path]) -> list[PowerShellTarget]:
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         suffix = path.suffix.casefold()
-        if suffix == ".ps1" and name.startswith(tuple(f"{top}/" for top in SCRIPT_ANALYZER_ROOTS)):
+        if suffix == ".ps1" and any(posix_within(name, top, strict=True) for top in SCRIPT_ANALYZER_ROOTS):
             targets.append(PowerShellTarget(name, 1, path, None))
         elif suffix == ".md" and not name.startswith("tests/"):
             targets += [

@@ -185,12 +185,12 @@ def importers(changed: Iterable[str], imports: Mapping[str, set[str]]) -> set[st
     return reached
 
 
-def skill_scripts_prefix(path: str) -> str | None:
-    """The scripts/ folder of the skill a path sits in, as a prefix, or None outside a skill."""
+def skill_scripts_folder(path: str) -> str | None:
+    """The scripts folder of the skill a path sits in, or None outside a skill."""
     for parent in SKILL_PARENTS:
-        rest = path.removeprefix(f"{parent}/")
-        if rest != path and "/" in rest:
-            return f"{parent}/{rest.split('/', 1)[0]}/scripts/"
+        if posix_within(path, parent, strict=True):
+            skill, inside, _ = path.removeprefix(f"{parent}/").partition("/")
+            return f"{parent}/{skill}/scripts" if inside else None
     return None
 
 
@@ -211,7 +211,7 @@ def changed_suites(root: Path, paths: list[str], suites: list[Path], files: list
     affected = set(paths) | importers(paths, python_imports(root, files))
     counts = Counter(name.rsplit("/", 1)[-1] for name in files)
     named = suites_naming(sorted(affected), suites, frozenset(name for name, count in counts.items() if count > 1))
-    skills = tuple({prefix for path in affected if (prefix := skill_scripts_prefix(path))})
+    skills = {folder for path in affected if (folder := skill_scripts_folder(path))}
     reached = reached_suite_patterns(paths)
     selected = []
     for suite in suites:
@@ -219,7 +219,7 @@ def changed_suites(root: Path, paths: list[str], suites: list[Path], files: list
         if (
             label in affected
             or suite in named
-            or label.startswith(skills)
+            or any(posix_within(label, folder, strict=True) for folder in skills)
             or any(fnmatch.fnmatchcase(label, pattern) for pattern in reached)
         ):
             selected.append(suite)
