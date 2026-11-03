@@ -2590,7 +2590,7 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             "Copilot CLI/app folder trust status cannot be determined "
             "statically — .mcp.json silently skipped in untrusted directories",
         ),
-        ("INFO", "layering", None, "JetBrains: path-specific instructions only (no copilot-instructions.md)"),
+        ("INFO", "layering", None, "JetBrains: path-specific instructions without .github/copilot-instructions.md"),
         ("INFO", "layering", None, "Cloud agent: non-redirecting AGENTS.md — CLAUDE.md not loaded directly"),
         ("INFO", "layering", None, "Code review: effective sources: AGENTS.md, .github/instructions"),
         ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),

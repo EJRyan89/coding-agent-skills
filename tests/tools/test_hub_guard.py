@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
-import time
+import types
 import unittest
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
@@ -68,6 +68,11 @@ class GuardTestCase(HubTestCase):
 
     def setUp(self) -> None:
         super().setUp()
+        # The reading clock stands still unless a test moves it: a reading in this process ends with the reading time
+        # only where a test says when, never because a loaded runner was slow to start git or pwsh.
+        clock = mock.patch.object(hub_guard, "reading_clock", return_value=0.0)
+        clock.start()
+        self.addCleanup(clock.stop)
         # Bash checks every text a test hands the Bash reader at once, when the test ends, rather than one at a time.
         self.bash_texts: list[str] = []
         self.addCleanup(lambda: bash_agreement.assert_reader_agrees(self.bash_texts))
@@ -610,13 +615,26 @@ class ReadingBoundTests(GuardTestCase):
 
     def test_loops_nested_past_the_limit_are_refused_quickly_when_they_name_git(self) -> None:
         # Each level doubles the reading, so without the limit these would outlast the hook's timeout many times over.
+        # Each look at the clock is a millisecond later, so a reading the limit does not stop runs out of time after
+        # READING_SECONDS thousand looks, and is refused for that instead.
         for tool in ("Bash", "PowerShell"):
             for body, cwd in (("git commit -m x", self.hub), (f'git -C "{self.hub}" switch main', self.tree)):
-                with self.subTest(tool=tool, body=body):
-                    started = time.monotonic()
+                with (
+                    self.subTest(tool=tool, body=body),
+                    mock.patch.object(hub_guard, "reading_clock", side_effect=itertools.count(step=0.001)),
+                ):
                     self.assertEqual("deny", self.shell(tool, nested_loops(tool, body, 30), cwd))
-                    self.assertLess(time.monotonic() - started, 10)
                     self.assertIn("nest more than 8 deep", self.reason)
+                    self.assertNotIn("ReadingTimeout", self.reason)
+
+    def test_a_reading_in_this_process_takes_its_time_from_the_tests_clock_and_never_from_the_wall(self) -> None:
+        # Each look at the wall clock is a thousand seconds later, past any reading time; the readings, which start
+        # pwsh and look places up with git, are read and judged all the same, by the commit rule.
+        wall = types.SimpleNamespace(monotonic=itertools.count(step=1000).__next__)
+        for tool, command in (("Bash", "git commit -m x"), ("PowerShell", "time -p git commit -m x")):
+            with self.subTest(tool=tool), mock.patch.object(hub_guard, "time", wall):
+                self.assertEqual("deny", self.shell(tool, command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
 
     def test_loops_are_read_to_the_limit_and_refused_one_level_past_it(self) -> None:
         # A computed word after git starts pwsh, which a plain git status never waits for.
@@ -944,13 +962,19 @@ class PlaceLookupTests(GuardTestCase):
 
     def test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git(self) -> None:
         # The reading starts at 0 and its deadline is READING_SECONDS later; every later look at the clock leaves half
-        # a millisecond, so the lookup's own git call is the one that runs out of time, not a look between calls.
+        # a millisecond, so the lookup's own git call is the one that runs out of time, not a look between calls. The
+        # call given that half millisecond times out here as git_client times one out, since a real git can finish
+        # within it on a fast runner; the calls given their whole time run git.
         looks = iter([0.0])
         timeouts: list[float] = []
         find = worktrees.git
 
         def git(cwd: Path, *arguments: str, timeout: float | None = None) -> git_client.GitResult:
             timeouts.append(timeout or 0.0)
+            if timeout is not None and timeout < worktrees.GUARD_GIT_TIMEOUT_SECONDS:
+                raise git_client.GitError(
+                    f"git {' '.join(arguments)} did not finish within {timeout:g} seconds", kind="timeout"
+                )
             return find(cwd, *arguments, timeout=timeout)
 
         with (

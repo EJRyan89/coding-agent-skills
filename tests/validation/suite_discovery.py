@@ -1160,9 +1160,12 @@ PYTEST_CONFIGURATION = {
 }
 # The files pytest reads its configuration from, in the order it tries them in each folder, from the folder of the
 # suite it is given up to the root; the first match wins. pytest.toml takes precedence even when empty, and so does
-# pytest.ini; pyproject.toml, tox.ini, and setup.cfg match only with a pytest table. The root holds pyproject.toml
-# alone, so the configuration stays in one file, and no folder below it holds any of them, since the runner starts
-# `python -B -m pytest <suite>` with no -c or --rootdir and pytest would read a nearer one instead.
+# pytest.ini; pyproject.toml, tox.ini, and setup.cfg match with a pytest table, and when nothing matches, the nearest
+# pyproject.toml is the configuration file even without one. The root holds pyproject.toml alone, so the configuration
+# stays in one file, and no folder below it holds any of them, whatever it contains, since the runner starts
+# `python -B -m pytest <suite>` with no -c or --rootdir: pytest would read a nearer pytest.toml, .pytest.toml,
+# pytest.ini, or .pytest.ini instead even when it is empty, a nearer pyproject.toml, tox.ini, or setup.cfg when it
+# holds a pytest table, and a nearer pyproject.toml without one whenever the root's lost its table.
 PYTEST_CONFIGURATION_FILES = (
     "pytest.toml",
     ".pytest.toml",
@@ -1278,7 +1281,7 @@ def git_isolation_problems(root: Path) -> list[str]:
 
 def pytest_configuration_problems(root: Path) -> list[str]:
     """Report a pytest configuration other than PYTEST_CONFIGURATION, another configuration file at the root, or one
-    in a suite's folder or a folder between it and the root, which pytest would read instead.
+    in a suite's folder or a folder between it and the root, which pytest may read instead.
 
     A configuration could select, deselect, or skip tests, or turn the conftest plugin off, for every suite at once,
     so it is pinned here rather than read.
@@ -1302,7 +1305,7 @@ def pytest_configuration_problems(root: Path) -> list[str]:
                 }
             )
     problems += [
-        f"{path.relative_to(root).as_posix()} is a pytest configuration file pytest reads for "
+        f"{path.relative_to(root).as_posix()} is a pytest configuration file pytest may read for "
         f"{suite.relative_to(root).as_posix()} instead of the root's pyproject.toml; keep the configuration there"
         for path, suite in sorted(below.items())
     ]

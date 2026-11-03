@@ -584,6 +584,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   inside one.
 - **Examples:** #2031, #2087, #2092, #2132
 
+### A test's time-out is injected, never raced
+
+- **Rule:** A test that expects a step to run out of time makes it run out, by a stub that raises the time-out or a
+  clock the test moves, and a test of anything else reads with a clock that moves only when the test moves it.
+- **Why:** A real process given a limit it can beat, or a real clock a loaded runner can run out, decides the result
+  by the runner's speed, so the test fails at random on a change that touches nothing it reads.
+- **Guard:** `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_reading_in_this_process_takes_its_time_from_the_tests_clock_and_never_from_the_wall`,
+  which fails while the guard's tests read with the wall clock, and
+  `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`,
+  whose git stub raises the time-out of the call the reading time cuts short.
+- **Search for:** a stub that hands a real git or other process a timeout under a second and expects it to expire,
+  such as `READING_SECONDS - 0.0005`; `time.monotonic() - started` asserted below a bound when the process timed
+  can finish on its own, rather than one that sleeps far past the bound to show it was stopped; a test of a reason
+  other than the time-out that reads a command through a real clock while it starts pwsh, bash, or git.
+- **Examples:** #2256
+
 ### A check reaches its whole rule
 
 - **Rule:** A policy, an audit brief, or a gate reaches every place its rule covers, in every language the fact is
