@@ -703,7 +703,39 @@ class LockTests(DeployerTestCase):
         directory.mkdir(parents=True)
         self.deploy_fails("--all", pattern="Lock exists but has no metadata")
         self.write(directory / "info.json", json.dumps({"token": "x"}))
-        self.deploy_fails("--all", pattern="Lock metadata is malformed \\(no PID\\)")
+        self.deploy_fails("--all", pattern="Lock metadata is malformed \\(no valid PID\\)")
+
+    def test_a_lock_pid_outside_the_platforms_range_is_malformed_and_never_probed(self) -> None:
+        # Truncated to the 32 bits Windows' OpenProcess takes, 2**32 + this PID names this live process.
+        self.fixture()
+        maximum = process_identity.PID_MAXIMUM
+        probed: list[int] = []
+
+        def probe(pid: int) -> process_identity.ProcessStatus:
+            probed.append(pid)
+            return process_identity.process_status(pid)
+
+        for pid in (2**32 + os.getpid(), maximum + 1):
+            with self.subTest(pid=pid):
+                directory = self.write_lock({"pid": pid, "token": "x", "start_time": 7})
+                try:
+                    result = self.deploy_fails("--all", pattern="Lock metadata is malformed", probe=probe)
+                    self.assertIn(
+                        f"ERROR: Lock metadata is malformed (no valid PID): pid must be an integer from 1 to "
+                        f"{maximum}, found integer {pid}.",
+                        result.output,
+                    )
+                    self.assertEqual([], probed)
+                    self.assertFalse((self.skills_dir / "alpha").exists())
+                finally:
+                    # The next case writes its own lock, whatever this one found.
+                    shutil.rmtree(directory)
+
+    def test_a_token_file_that_is_not_utf_8_leaves_the_lock_in_place_without_an_error(self) -> None:
+        held = lock.acquire(self.paths)
+        (self.lock_dir / "token").write_bytes(b"\xff\xfe")
+        held.release()
+        self.assertTrue(self.lock_dir.is_dir())
 
     def test_failed_lock_initialization_removes_the_new_lock(self) -> None:
         self.fixture()
