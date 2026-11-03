@@ -292,6 +292,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `tools.hub_guard:powershell_reads_input`, `tools.hub_guard:powershell_arguments`, and
   `tools.hub_guard:powershell_directory`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
   `tests/tools/test_hub_guard_shells.py::StartDifferentialTests`,
   `tests/tools/test_hub_guard.py::test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call`,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
@@ -330,9 +331,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   where the paths differ; a refusal of an empty or absent member of another program's entries, such as
   `reported(..., empty=False)`, whose fixture rows give every kind of entry the member typed in, never read from
   what the program lists for each kind it reports, as gh lists a check run no workflow reports with an empty
-  `workflowName`.
+  `workflowName`; a refusal of a git command by its subcommand's name that a `-c alias.<name>`, `-c include.path`, or
+  `-c includeIf.<condition>.path` on the same command line can rename; a git option table that leaves out one git.c
+  reads a value after, as `--shallow-file` was.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140, #2232, #2233, #2234, #2276
+  #2137, #2138, #2139, #2140, #2188, #2232, #2233, #2234, #2262, #2276
 
 ### A recursive parser of input has a depth bound
 

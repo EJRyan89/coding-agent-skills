@@ -124,6 +124,18 @@ class ClientTests(unittest.TestCase):
             GitClient(runner).output(["fetch", "--all"])
         self.assertEqual("git fetch failed with exit code 5", str(context.exception))
 
+    def test_an_empty_stderr_names_the_subcommand_behind_git_s_own_options(self) -> None:
+        # Each failing call names its subcommand, never git's first option, and a call with none names git alone.
+        for arguments, message in (
+            (["--no-optional-locks", "merge-base", "a", "b"], "git merge-base failed with exit code 2"),
+            (["-C", "d", "--shallow-file", "s", "log"], "git log failed with exit code 2"),
+            (["--no-optional-locks"], "git failed with exit code 2"),
+        ):
+            for call in ("output", "quiet_output"):
+                with self.subTest(arguments=arguments, call=call), self.assertRaises(GitError) as context:
+                    getattr(GitClient(scripted(GitResult(2, "", ""))[0]), call)(arguments)
+                self.assertEqual(message, str(context.exception))
+
     def test_input_goes_to_the_input_runner_with_the_same_command_timeout_and_classifier(self) -> None:
         runner, plain = scripted(GitResult(0, "plain\n", ""))
         given: list[tuple[list[str], float, bytes]] = []
@@ -555,6 +567,17 @@ class NamesTests(unittest.TestCase):
             ],
             calls,
         )
+
+    def test_names_keeps_status_porcelain_s_status_and_path_in_one_field(self) -> None:
+        # status --porcelain -z prints "XY path", then a rename's original path as a field of its own.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base, _head = awkward_history(root)
+            plumbing(root, "reset", "--quiet", "--hard", base)
+            plumbing(root, "mv", "README.md", "renamed.md")
+            self.assertEqual(
+                ["R  renamed.md", "README.md"], GitClient().names(["status", "--porcelain"], directory=root)
+            )
 
     def test_names_raises_a_failed_listing_as_output_does(self) -> None:
         runner, _calls = scripted(GitResult(128, "", NOT_A_REPOSITORY))
@@ -1188,6 +1211,49 @@ class IsolatedClientTests(unittest.TestCase):
                 GitClient(runner).run(arguments)
                 self.assertEqual(["git", *arguments], calls[0][0])
 
+    def test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias(self) -> None:
+        # Written out here rather than read from ALIAS_SECTIONS: an alias, and the two ways to include a file of them.
+        self.assertEqual(frozenset({"alias", "include", "includeif"}), git_client.ALIAS_SECTIONS)
+        refused = (
+            ["-c", "alias.s=grep", "s", "--no-index", "-e", "x"],
+            ["-c", "ALIAS.s=grep", "s", "-e", "x"],
+            ["-c", "Alias.s", "status"],
+            ["--config-env", "alias.s=GREP", "s", "--no-index"],
+            ["--config-env=alias.s=GREP", "s"],
+            ["-C", "d", "-c", "core.x=y", "-c", "alias.s=grep", "s"],
+            ["-c", "include.path=/x/aliases", "s"],
+            ["-c", "includeIf.onbranch:main.path=/x/aliases", "s"],
+            ["--config-env", "IncludeIf.gitdir:/x/.path=FILE", "status"],
+        )
+        refusal = r"^an alias set on git's command line can run grep or diff --no-index unseen; "
+        for arguments in refused:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).run(arguments)
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).stream(arguments).__enter__()
+                self.assertEqual([], calls, "refused before git starts")
+        allowed = (
+            ["-c", "core.alias=x", "status"],
+            ["-c", "aliases.s=grep", "status"],
+            ["--config-env=core.editor=EDITOR", "status"],
+            ["grep", "-c", "-e", "alias.s=grep"],
+            ["log", "-c", "alias.s=x"],
+            ["--git-dir", "alias.s", "status"],
+        )
+        for arguments in allowed:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_a_command_line_alias_runs_on_an_isolated_client(self) -> None:
+        # The alias reaches grep --no-index, which an isolated client runs.
+        (self.inner / "f.txt").write_bytes(b"needle\n")
+        arguments = ["-c", "alias.s=grep", "s", "--no-index", "-l", "-e", "needle"]
+        self.assertEqual("f.txt\n", GitClient(isolated=True).output(arguments, directory=self.inner))
+
     def test_a_pattern_goes_right_after_the_subcommand_and_any_spelling_of_no_index_is_searched_for(self) -> None:
         for spelling in ("--no-i", "--no-index", "-e", "--"):
             with self.subTest(pattern=spelling):
@@ -1352,6 +1418,7 @@ def test_push_and_every_other_subcommand_are_never_retried(arguments: list[str])
         ["--git-dir", "push", "ls-remote", "origin"],
         ["--config-env", "core.x=HOME", "fetch", "origin"],
         ["--attr-source", "HEAD", "fetch", "origin"],
+        ["--shallow-file", "push", "fetch", "origin"],
         ["--super-prefix", "sub/", "fetch", "origin"],
         ["--work-tree", "push", "--namespace", "push", "-C", "push", "fetch"],
     ],
