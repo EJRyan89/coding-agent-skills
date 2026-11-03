@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
-from reader_table import REPOSITORY, Reader, Refused, module_at, text_of
+from reader_table import REPOSITORY, NotText, Reader, Refused, module_at, text_of
 
 sys.path.insert(0, str(REPOSITORY))
 sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -349,13 +349,19 @@ def _coverage_report(path: Path) -> object:
 
 
 class _ProtectionGh:
-    """gh answering every api call with the case's file as its output, decoded as the client decodes it."""
+    """gh answering every api call with the case's file as its output, decoded as GitHubClient decodes gh's output:
+    UTF-8 with each byte that is not kept as a lone surrogate, never refused."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
 
     def run(self, arguments: list[str]) -> CommandResult:
-        return CommandResult(0, text_of(self.path), "")
+        # gh's output is never a directory or a file it cannot open, so the case's own read failing is no answer.
+        try:
+            output = self.path.read_bytes()
+        except OSError as error:
+            raise NotText(f"{type(error).__name__}: {error}") from error
+        return CommandResult(0, output.decode("utf-8", "surrogateescape"), "")
 
 
 def _protection(path: Path) -> object:

@@ -1,6 +1,6 @@
-"""Every function in the repository's code that reads a record through one of the shared readers, found by reading
-the code, so test_malformed_input.py can fail one that no reader table holds and no entry names as owed or as no
-reader.
+"""Every function in the repository's code and validation's policies that reads a record through one of the shared
+readers, found by reading the code, so test_malformed_input.py can fail one that no reader table holds and no entry
+names as owed.
 
 A call counts when it names a reader of ejryan89-skill-core's on its module, as `json_reader.loads(...)`, or by a name
 imported from it, as `from json_reader import loads`: `json_reader.loads`, `json_reader.raw_decode`, and
@@ -8,7 +8,7 @@ imported from it, as `from json_reader import loads`: `json_reader.loads`, `json
 and `xml_reader.read_xml`. A call is the function's that holds it: a method by `Class.method`, and a function nested in
 another by the outermost function, since that is the reader a table calls. A function is named as its table entry names
 it: `tools.<module>.<function>` under tools/, `deployer.<module>.<function>` under deployer/, and `<module>.<function>`
-under a skill's or a repository skill's scripts/, whose folder its callers put on `sys.path`.
+under a skill's or a repository skill's scripts/ or tests/validation/, whose folder its callers put on `sys.path`.
 """
 
 from __future__ import annotations
@@ -35,6 +35,8 @@ def code_files(root: Path = REPOSITORY) -> Iterator[tuple[str, Path]]:
         ("deployer.", root / "deployer"),
         *(("", folder) for folder in sorted(root.glob("skills/*/scripts"))),
         *(("", folder) for folder in sorted(root.glob(".claude/skills/*/scripts"))),
+        # Validation's policies read the repository's tables and records too, such as the known-failure list.
+        ("", root / "tests" / "validation"),
     ]
     for prefix, folder in folders:
         for path in sorted(folder.glob("*.py")):

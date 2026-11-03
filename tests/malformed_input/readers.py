@@ -86,6 +86,39 @@ PENDING: dict[str, int] = {
     "change_skill.frontmatter_value": 2345,
     "change_skill.user_only": 2345,
     "conditions.snapshot_exclusions": 2345,
+    (
+        "repository_hygiene.RepositoryHygienePolicies."
+        "test_tracked_claude_settings_hold_schema_hooks_and_no_attribution_only"
+    ): 2345,
+    (
+        "repository_hygiene.RepositoryHygienePolicies.test_hub_guard_hook_sees_every_tool_that_edits_files_or_runs_git"
+    ): 2345,
+    "shell_targets.interpreter_problems": 2345,
+    "skill_grants.root_option_problems": 2345,
+    "skill_layout.deploy_variable_problems": 2345,
+    "skill_layout.metadata_format_problems": 2345,
+    "skill_layout.hooked_agents": 2345,
+    "skill_layout.own_needs": 2345,
+    "skill_layout.runtime_support_problems": 2345,
+    "skill_layout.runtime_page_problems": 2345,
+    "skill_layout.capability_guide_problems": 2345,
+    "skill_layout._path_documents": 2345,
+    "skill_layout.script_dependency_problems": 2345,
+    "skill_layout.fixture_source_problems": 2345,
+    "skill_layout._hook_problems": 2345,
+    "skill_layout._manifest_problems": 2345,
+    "skill_layout.marketplace_problems": 2345,
+    "skill_layout.trigger_scenario_problems": 2345,
+    "skill_layout.skill_tree_problems": 2345,
+    "skill_layout.repository_skill_name_problems": 2345,
+    "skill_layout.shared_guidance_problems": 2345,
+    "skill_layout.SkillLayoutPolicies.test_skills_leave_shared_runtime_guidance_to_their_adapters": 2345,
+    "skill_scripts.skill_command_problems": 2345,
+    "skill_scripts.optional_tool_placement_problems": 2345,
+    "toolchain.powershell_json": 2345,
+    "upgrade_notes._required_variables": 2345,
+    "upgrade_notes._review_schemas": 2345,
+    "validation_support.skill_dependency_closure": 2345,
 }
 
 __all__ = ["PENDING", "READERS", "NotText", "Reader", "applicable_cases"]

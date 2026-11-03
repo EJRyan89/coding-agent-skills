@@ -287,7 +287,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/deployer/test_state_files.py::ReaderTests::test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error`,
   which gives every key of each journal entry the deployer writes a list, an object, and a number, and
   `tests/malformed_input/test_malformed_input.py::test_every_function_that_calls_a_shared_reader_is_held_reached_or_pending`,
-  which fails a function calling a shared reader that no table holds and the pending list does not name
+  which fails a function calling a shared reader that no table holds, no held reader of its own module reaches, and
+  the pending list does not name, passes a helper a held reader reaches, and fails a pending name the scan no longer
+  finds unheld
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
   without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;
