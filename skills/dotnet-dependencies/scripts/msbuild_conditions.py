@@ -13,10 +13,17 @@ give `True` or `False`; and `$([MSBuild]::GetPathOfFileAbove('file', 'dir'))` an
 `$([MSBuild]::GetDirectoryNameOfFileAbove('dir', 'file'))`, which search the folders above for a file as MSBuild
 does. Any other property function, an item list `@(...)`, or metadata `%(...)` cannot be settled.
 
-What a condition may hold: `==` and `!=`, which compare without regard to case; `<`, `>`, `<=`, and `>=` between two
-numbers; `!`, `and`, `or` (the keywords in any case), and parentheses, with `or` over `and` over `!`; a quoted or a
-bare operand; a lone operand read as a boolean (`true`, `on`, `yes`, `false`, `off`, `no`, each optionally after `!`);
-and the functions `Exists('path')` and `HasTrailingSlash('text')`. One operand decides an `or` that holds or an `and`
+What a condition may hold: `==` and `!=`, which compare two numbers as numbers, two booleans as booleans, and any
+other two values as text without regard to case, as .NET's ordinal comparison ignores case; `<`, `>`, `<=`, and `>=`
+between two numbers; `!`, `and`, `or` (the keywords in any case), and parentheses, with `or` over `and` over `!`; a
+quoted or a bare operand; a lone operand read as a boolean (`true`, `on`, `yes`, `false`, `off`, `no`, in any case and
+each optionally after `!`, with nothing around it); and the functions `Exists('path')` and `HasTrailingSlash('text')`.
+A number is what MSBuild reads as one: ASCII digits with an optional leading sign and at most one `.`, such as `+5`,
+`.5`, or `5.`, that a double holds finitely; `NaN` in any case, with an optional sign, which no comparison finds equal
+or ordered; or `0x` followed by ASCII hexadecimal digits, read as the bits of a 32-bit integer, so `0xFFFFFFFF` is -1
+and nine significant digits are none. An exponent, an underscore, a thousands separator, whitespace, a sign before
+`0x`, `Infinity`, and any other digit than ASCII's make no number, and a comparison of versions, which MSBuild also
+orders, is unsettled. One operand decides an `or` that holds or an `and`
 that fails whatever the others are. Any other function, a malformed condition, or a lone operand that is not a
 boolean is unsettled. So is a condition whose negations and parentheses, or a property function whose arguments,
 nest deeper than ejryan89-skill-core's `nesting_depth.DEPTH_LIMIT`, which the reader stops at rather than recursing
@@ -25,6 +32,7 @@ without bound.
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 from collections.abc import Callable, Iterable
@@ -48,15 +56,25 @@ COMBINATION_LIMIT = 64
 PROPERTY_REFERENCE = re.compile(r"\$\(\s*([A-Za-z_][A-Za-z0-9_-]*)")
 PLAIN_PROPERTY = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_-]*)\s*")
 STRING_METHOD = re.compile(
-    r"\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\.\s*(StartsWith|EndsWith|Contains)\s*\(\s*'([^']*)'\s*\)\s*", re.IGNORECASE
+    r"\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\.\s*(StartsWith|EndsWith|Contains)\s*\(\s*'([^']*)'\s*\)\s*",
+    # ASCII: without it, a pattern ignoring case also matches the long s, the dotless i, and the Kelvin sign.
+    re.IGNORECASE | re.ASCII,
 )
 FILE_ABOVE = re.compile(
     r"\s*\[MSBuild\]::(GetPathOfFileAbove|GetDirectoryNameOfFileAbove)\s*\((?P<arguments>.*)\)\s*",
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE | re.ASCII | re.DOTALL,
 )
 TRUE_WORDS = frozenset({"true", "on", "yes", "!false", "!off", "!no"})
 FALSE_WORDS = frozenset({"false", "off", "no", "!true", "!on", "!yes"})
 COMPARISONS = ("==", "!=", "<=", ">=", "<", ">")
+# The numbers MSBuild's ConversionUtilities.TryConvertDecimalOrHexToDouble reads: a decimal, as Double.TryParse reads
+# one with AllowLeadingSign and AllowDecimalPoint in the invariant culture, NaN, which that parse also reads, and a
+# hexadecimal, as Int32.TryParse reads its digits with AllowHexSpecifier.
+DECIMAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
+NOT_A_NUMBER = re.compile(r"[+-]?nan", re.IGNORECASE | re.ASCII)
+HEXADECIMAL = re.compile(r"0[xX]([0-9A-Fa-f]+)")
+# The bits a hexadecimal number fills: past them Int32.TryParse refuses it, and from the sign bit on it is negative.
+INT32_BITS = 32
 
 
 def union(*values: Value) -> Value:
@@ -357,25 +375,76 @@ def parsed(text: str) -> tuple[Node | None, tuple[str, ...]]:
 
 
 def boolean(text: str | None) -> bool | None:
-    """A string read as a boolean, as MSBuild reads a lone operand; None when it is not one."""
-    if text is None:
+    """A string read as a boolean, as MSBuild reads a lone operand, the whole string one of its words in any case,
+    which only ASCII letters spell under .NET's ordinal comparison; None when it is not one."""
+    if text is None or not text.isascii():
         return None
-    word = text.strip().casefold()
+    word = text.lower()
     return True if word in TRUE_WORDS else False if word in FALSE_WORDS else None
 
 
 def number(text: str) -> float | None:
-    try:
-        return float(int(text, 16)) if text.casefold().startswith("0x") else float(text)
-    except ValueError:
+    """A string read as a number, as MSBuild reads one in a comparison; None when it is not one."""
+    if DECIMAL.fullmatch(text):
+        value = float(text)
+        return value if math.isfinite(value) else None
+    if NOT_A_NUMBER.fullmatch(text):
+        return math.nan
+    hexadecimal = HEXADECIMAL.fullmatch(text)
+    if hexadecimal is None:
         return None
+    value = int(hexadecimal.group(1), 16)
+    if value >= 1 << INT32_BITS:
+        return None
+    return float(value - (1 << INT32_BITS) if value >= 1 << (INT32_BITS - 1) else value)
+
+
+def _case_folded(character: str) -> str | None:
+    """A character as .NET's ordinal comparison ignoring case compares it, its simple uppercase, which never maps a
+    character beyond ASCII onto an ASCII one. Python gives only the full uppercase: where that is several characters,
+    as for `ß` or `ﬀ`, the simple one is the character itself, except where its titlecase is one character, as for a
+    Greek letter with a subscript iota, whose simple uppercase this cannot tell, so None."""
+    upper = character.upper()
+    if len(upper) != 1:
+        return None if len(character.title()) == 1 else character
+    return character if upper.isascii() and not character.isascii() else upper
+
+
+def same_text(left: str, right: str) -> bool | None:
+    """Whether two strings are equal as MSBuild's `==` compares two that are neither both numbers nor both booleans,
+    .NET's ordinal comparison ignoring case; None when a character's simple uppercase cannot be told."""
+    if left.isascii() and right.isascii():
+        return left.lower() == right.lower()
+    if len(left) != len(right):
+        return False
+    folded = [
+        (_case_folded(first), _case_folded(second))
+        for first, second in zip(left, right, strict=True)
+        if first != second
+    ]
+    if any(first is not None and second is not None and first != second for first, second in folded):
+        return False
+    return None if any(None in pair for pair in folded) else True
+
+
+def equal(left: str, right: str) -> bool | None:
+    """Whether MSBuild's `==` finds two values equal: as numbers when both are, else as booleans when both are, else
+    as text."""
+    first, second = number(left), number(right)
+    if first is not None and second is not None:
+        return first == second
+    truth = boolean(left), boolean(right)
+    if truth[0] is not None and truth[1] is not None:
+        return truth[0] == truth[1]
+    return same_text(left, right)
 
 
 def compared(operator: str, left: str | None, right: str | None) -> bool | None:
     if left is None or right is None:
         return None
     if operator in ("==", "!="):
-        return (left.casefold() == right.casefold()) == (operator == "==")
+        same = equal(left, right)
+        return None if same is None else same == (operator == "==")
     first, second = number(left), number(right)
     if first is None or second is None:
         return None

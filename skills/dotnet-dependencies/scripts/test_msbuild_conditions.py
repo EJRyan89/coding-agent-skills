@@ -243,3 +243,174 @@ def test_the_operators_and_functions_the_reader_reads(expected: bool | None, tex
 )
 def test_a_reference_the_reader_cannot_settle_leaves_the_text_unsettled(text: str) -> None:
     assert expand(text, a="a") == UNKNOWN
+
+
+# MSBuild's verdicts, captured from the .NET 10 SDK's MSBuild (`dotnet msbuild -getProperty`) on a project holding
+# `'<spelling>' > '0'` and `'<spelling>' < '0'` as conditions: "greater" or "less" for the one that held, "neither"
+# when both failed, MSB4086 for a comparison MSBuild refuses as not numeric, and "version" for a spelling MSBuild orders
+# as a version, which the reader leaves unsettled. The reader settles exactly what MSBuild settles as a number.
+NUMBER_VERDICTS = [
+    ("5", "greater"),
+    ("+5", "greater"),
+    ("-5", "less"),
+    ("05", "greater"),
+    (".5", "greater"),
+    ("5.", "greater"),
+    ("-.5", "less"),
+    ("+.5", "greater"),
+    ("-0", "neither"),
+    ("NaN", "neither"),
+    ("nan", "neither"),
+    ("-NaN", "neither"),
+    ("0x10", "greater"),
+    ("0X10", "greater"),
+    ("0x7FFFFFFF", "greater"),
+    ("0x80000000", "less"),
+    ("0xFFFFFFFF", "less"),
+    ("0x00000000F", "greater"),
+    (".", "MSB4086"),
+    ("-", "MSB4086"),
+    ("+", "MSB4086"),
+    ("", "MSB4086"),
+    ("1e3", "MSB4086"),
+    ("1E3", "MSB4086"),
+    ("1_0", "MSB4086"),
+    ("0x1_0", "MSB4086"),
+    ("inf", "MSB4086"),
+    ("Infinity", "MSB4086"),
+    ("-Infinity", "MSB4086"),
+    ("\u0665", "MSB4086"),
+    ("\uff15", "MSB4086"),
+    (" 5", "MSB4086"),
+    ("5 ", "MSB4086"),
+    ("\u00a05", "MSB4086"),
+    ("1,000", "MSB4086"),
+    ("0x", "MSB4086"),
+    ("-0x10", "MSB4086"),
+    ("+0x10", "MSB4086"),
+    ("0x100000000", "MSB4086"),
+    ("0xg", "MSB4086"),
+    ("0x\uff11", "MSB4086"),
+    ("0x-1", "MSB4086"),
+    ("9" * 400, "MSB4086"),
+    ("--5", "MSB4086"),
+    ("5-", "MSB4086"),
+    ("(5)", "MSB4086"),
+    ("0b1", "MSB4086"),
+    ("1d", "MSB4086"),
+    ("5f", "MSB4086"),
+    ("1.2.3", "version"),
+    ("1.5.0", "version"),
+    (" 5.0", "version"),
+]
+
+
+@pytest.mark.parametrize(("spelling", "verdict"), NUMBER_VERDICTS)
+def test_a_number_is_read_as_msbuild_reads_one_and_any_other_spelling_leaves_the_comparison_unsettled(
+    spelling: str, verdict: str
+) -> None:
+    expected = {
+        "greater": (True, False),
+        "less": (False, True),
+        "neither": (False, False),
+        "MSB4086": (None, None),
+        "version": (None, None),
+    }[verdict]
+    assert expected == (holds("'$(Level)' > '0'", Level=spelling), holds("'$(Level)' < '0'", Level=spelling))
+
+
+# MSBuild's `==` verdicts, captured the same way: it compares two numbers as numbers, two booleans as booleans, and
+# anything else as text with .NET's ordinal comparison ignoring case, which folds no character beyond ASCII onto an
+# ASCII one and none onto several.
+EQUALITY_VERDICTS = [
+    ("1.0", "1", True),
+    ("0x10", "16", True),
+    ("1.0", "01", True),
+    ("+1", "1", True),
+    (".5", "0.5", True),
+    ("-0", "0", True),
+    ("5.", "5", True),
+    ("0x0F", "0xf", True),
+    ("0x80000000", "-2147483648", True),
+    ("NaN", "NaN", False),
+    ("nan", "NaN", False),
+    ("-NaN", "NaN", False),
+    ("+NaN", "1", False),
+    ("NaN", "x", False),
+    ("yes", "true", True),
+    ("on", "!false", True),
+    ("no", "!yes", True),
+    ("ON", "on", True),
+    ("true", "TRUE", True),
+    ("yes", "YES", True),
+    ("yes", "1", False),
+    (" 1", "1", False),
+    ("1.2.3", "1.2.3", True),
+    ("1.0.0", "1.0", False),
+    ("1e3", "1000", False),
+    ("\u00c4", "\u00e4", True),
+    ("\u01c5", "\u01c6", True),
+    ("\u01c5", "\u01c4", True),
+    ("\u03c2", "\u03c3", True),
+    ("\u03c2", "\u03a3", True),
+    ("\u00b5", "\u03bc", True),
+    ("\u00b5", "\u039c", True),
+    ("\U00010400", "\U00010428", True),
+    ("\u03d0", "\u03b2", True),
+    ("\u03a9", "\u03c9", True),
+    ("\u0131", "I", False),
+    ("\u0131", "i", False),
+    ("\u017f", "s", False),
+    ("\u017f", "S", False),
+    ("\u00df", "ss", False),
+    ("\u00df", "\u1e9e", False),
+    ("\u212a", "k", False),
+    ("\u212a", "K", False),
+    ("\ufb00", "ff", False),
+    ("\u0130", "i", False),
+    ("\u2126", "\u03c9", False),
+]
+
+
+@pytest.mark.parametrize(("left", "right", "verdict"), EQUALITY_VERDICTS)
+def test_equality_compares_numbers_booleans_and_text_as_msbuild_does(left: str, right: str, verdict: bool) -> None:
+    assert verdict is holds("'$(Left)' == '$(Right)'", Left=left, Right=right)
+    assert (not verdict) is holds("'$(Left)' != '$(Right)'", Left=left, Right=right)
+
+
+def test_text_whose_simple_uppercase_python_cannot_tell_leaves_equality_unsettled() -> None:
+    # A Greek letter with a subscript iota: Python's uppercase of it is two letters, so its simple one is not known.
+    assert holds("'$(Left)' == '$(Right)'", Left="\u1fb3", Right="\u1fbc") is None
+    assert holds("'$(Left)' == '$(Right)'", Left="\u1fb3x", Right="\u1fbcy") is False
+
+
+# MSBuild's verdicts on a lone operand, captured the same way: only the whole value, in any case, is a boolean, and any
+# other is MSB4113, a condition MSBuild refuses.
+BOOLEAN_VERDICTS = [
+    ("TRUE", True),
+    ("!FALSE", True),
+    ("On", True),
+    ("nO", False),
+    (" true", None),
+    ("true ", None),
+    ("\ttrue", None),
+    ("! false", None),
+    ("ye\u017f", None),
+]
+
+
+@pytest.mark.parametrize(("value", "verdict"), BOOLEAN_VERDICTS)
+def test_a_lone_operand_is_a_boolean_only_as_msbuild_reads_one(value: str, verdict: bool | None) -> None:
+    assert verdict is holds("'$(Flag)'", Flag=value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$(A.\u017ftartsWith('a'))",
+        "$(A.Contain\u017f('a'))",
+        "$([M\u017fBuild]::GetPathOfFileAbove('Directory.Build.props', '/repo'))",
+    ],
+)
+def test_a_method_or_function_name_is_matched_in_ascii_letters_alone(text: str) -> None:
+    assert expand(text, a="a") == UNKNOWN

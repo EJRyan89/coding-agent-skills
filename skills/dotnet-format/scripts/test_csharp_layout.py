@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import errno
 import io
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -422,6 +424,36 @@ class FileTests(unittest.TestCase):
         ):
             layout.read_source(path)
         self.assertEqual("it cannot be read: Permission denied", str(raised.exception))
+
+    def test_a_listed_file_that_cannot_be_read_is_unreadable_and_the_rest_are_checked_as_the_docstring_says(
+        self,
+    ) -> None:
+        # The module docstring names a file the script cannot read among the UNREADABLE ones, and the run goes on.
+        doc = " ".join((layout.__doc__ or "").split())
+        self.assertIn("`UNREADABLE <file> <reason>` per listed file it cannot read", doc)
+        self.assertIn("a listed file it cannot read is UNREADABLE instead, and the run goes on", doc)
+        held = self.root / "Held.cs"
+        held.write_bytes(b"class A {}\n")
+        (self.root / "Good.cs").write_bytes(b"#region R\n\n#endregion R\n")
+        file_list = self.file_list("Held.cs", "Good.cs")
+        read_bytes = Path.read_bytes
+
+        def locked(path: Path) -> bytes:
+            if path == held:
+                raise PermissionError(errno.EACCES, "The process cannot access the file")
+            return read_bytes(path)
+
+        with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=locked):
+            status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list))
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [
+                ["UNREADABLE", "Held.cs", "it cannot be read: The process cannot access the file"],
+                ["VIOLATION", "Good.cs", "3", "warning", "endregion-description"],
+                ["SUMMARY", "1", "1", "endregion-description"],
+            ],
+            [fields[:5] for fields in lines],
+        )
 
     def test_a_listed_file_that_does_not_exist_fails_before_any_check_or_fix(self) -> None:
         fixable = self.root / "Fixable.cs"
@@ -1084,6 +1116,17 @@ class ConfigTests(unittest.TestCase):
             ("", "present"),
             ("global_level = 99\n", "present"),
             ("global_level = high\n", "present"),
+            # The compiler reads the level with .NET's int.TryParse, which takes a sign and ASCII digits alone, within
+            # a 32-bit integer; any other spelling sets no level, so the file keeps its default of 0.
+            ("global_level = +200\n", "other:none"),
+            ("global_level = 0200\n", "other:none"),
+            ("global_level = -5\n", "present"),
+            ("global_level = 2_00\n", "present"),
+            ("global_level = ٢٠٠\n", "present"),
+            ("global_level = 2147483647\n", "other:none"),
+            ("global_level = 2147483648\n", "present"),
+            ("global_level = 2e2\n", "present"),
+            ("global_level = 2 00\n", "present"),
         )
         for level, state in cases:
             with self.subTest(level=level):
@@ -1672,3 +1715,62 @@ class CheckFilesPresenceTests(unittest.TestCase):
         with stat_failing_at(self.root / "A.cs"), self.assertRaises(PermissionError) as raised:
             self.check("A.cs")
         self.assertEqual(str(self.root / "A.cs"), raised.exception.filename)
+
+
+SCRIPTS = Path(__file__).resolve().parent
+# A status word as a docstring names one: opening a backquoted line, as in `FAILED <reason>`, or heading a row of a
+# table of lines indented by four spaces.
+DOCUMENTED_WORD = re.compile(r"`([A-Z][A-Z_]{2,})\b|^ {4}([A-Z][A-Z_]{2,})\s", re.MULTILINE)
+PRINTED_WORD = re.compile(r"([A-Z][A-Z_]{2,})(?: |$)")
+
+
+def documented_words(source: str) -> set[str]:
+    """The status words a module's docstring names."""
+    doc = ast.get_docstring(ast.parse(source), clean=False) or ""
+    return {backquoted or tabled for backquoted, tabled in DOCUMENTED_WORD.findall(doc)}
+
+
+def printed_words(source: str) -> set[str]:
+    """The status words a module prints: the first argument of each `fact_line` call, and the word a text passed to
+    `print` or `emit` opens with."""
+    words: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or not node.args:
+            continue
+        first = node.args[0]
+        if node.func.id == "fact_line" and isinstance(first, ast.Constant) and isinstance(first.value, str):
+            words.add(first.value)
+        elif node.func.id in ("print", "emit"):
+            opening = first.values[0] if isinstance(first, ast.JoinedStr) and first.values else first
+            if isinstance(opening, ast.Constant) and isinstance(opening.value, str):
+                words.update(PRINTED_WORD.findall(opening.value)[:1])
+    return words
+
+
+def printed_by(module: str) -> set[str]:
+    """The status words a script prints, itself or through a sibling script whose functions it calls."""
+    source = (SCRIPTS / f"{module}.py").read_text(encoding="utf-8")
+    siblings = {
+        node.module
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.module and (SCRIPTS / f"{node.module}.py").is_file()
+    }
+    words = printed_words(source)
+    for sibling in siblings:
+        words |= printed_words((SCRIPTS / f"{sibling}.py").read_text(encoding="utf-8"))
+    return words
+
+
+@pytest.mark.parametrize("module", ["csharp_layout", "dotnet_format_targets", "run_dotnet_format"])
+def test_each_status_word_a_scripts_docstring_names_is_one_it_prints(module: str) -> None:
+    named = documented_words((SCRIPTS / f"{module}.py").read_text(encoding="utf-8"))
+    assert "FAILED" in named, "the docstring names its failure line"
+    assert named - printed_by(module) == set()
+
+
+def test_a_docstring_naming_a_status_word_nothing_prints_is_told_apart() -> None:
+    source = (
+        '"""It prints `DONE <file>`, `GHOST <file>`, and:\n\n    TABLED <x>\n"""\n'
+        'print(fact_line("DONE", name))\nprint(f"TABLED {x}")\n'
+    )
+    assert documented_words(source) - printed_words(source) == {"GHOST"}

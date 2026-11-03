@@ -11,9 +11,10 @@
     endregion-brace-spacing no blank line between an #endregion and a directly following closing brace
 
 It prints `VIOLATION <file> <line> <severity> <rule> <message>` per violation, `FIXED <file> <line> <rule>` per fix with
---fix (preserving line endings, BOM, and encoding), `UNREADABLE <file> <reason>` per file whose byte order mark names an
-encoding its bytes are not in, which it neither checks nor fixes, and `SUMMARY <violations> <files> <rules>`. It exits 1
-when a VIOLATION remains, a file was UNREADABLE, or a listed entry was REFUSED (findings), 0 otherwise. Every line of
+--fix (preserving line endings, BOM, and encoding), `UNREADABLE <file> <reason>` per listed file it cannot read, such as
+one another process holds open without sharing it, or whose byte order mark names an encoding its bytes are not in,
+which it neither checks nor fixes before going on to the next file, and `SUMMARY <violations> <files> <rules>`. It exits
+1 when a VIOLATION remains, a file was UNREADABLE, or a listed entry was REFUSED (findings), 0 otherwise. Every line of
 either command is tab separated, and each value it holds, and a FAILED line's reason, is flattened by
 ejryan89-skill-core's `fact_line` or `flat_text`, so a tab, a control character, or a line break in a file name prints
 as a space and one fact stays one line.
@@ -28,13 +29,16 @@ when dotnet is not installed or MSBuild cannot evaluate a project. A setting is 
 before its first section, sets `root = true`; and below them from the global analyzer configs, the nearest
 `.globalconfig` at or above the file's project folder within the repository and any .editorconfig whose preamble sets
 `is_global = true`, each giving its preamble to every file and a section only to the file whose absolute path it names,
-the higher `global_level` winning (100 for a `.globalconfig` that sets none, 0 for any other file) and a key two files
-at one level both set left unset. A global config a project names in `GlobalAnalyzerConfigFiles` is not read. With
---apply it adds only the missing settings, as a `[*.cs]` section placed first in the outermost .editorconfig that
-applies, so every existing section, and every value a global config sets, still holds, and prints `ADDED <.editorconfig>
-<key> <value>`; it never changes a value the repository already sets and never adds a package reference. It exits 1 when
-a setting is still missing, because --apply was not given or could not write it, or a listed entry was REFUSED
-(findings), 0 otherwise: another value is the repository's choice, and the package is advice the skill cannot act on.
+the higher `global_level` winning, read as .NET's int.TryParse reads it, an optional sign and ASCII digits within a
+32-bit integer (100 for a `.globalconfig` that sets none or another value, 0 for any other file) and a key two files at
+one level both set left unset. A global config a project names in `GlobalAnalyzerConfigFiles` is not read. With --apply
+it adds only the missing settings, as a `[*.cs]` section placed first in the outermost .editorconfig that applies, so
+every existing section, and every value a global config sets, still holds, and prints `ADDED <.editorconfig> <key>
+<value>`, or `UNREADABLE <.editorconfig> <reason>` for one whose byte order mark names an encoding its bytes are not in,
+to which it adds nothing, so its settings stay missing; it never changes a value the repository already sets and never
+adds a package reference. It exits 1 when a setting is still missing, because --apply was not given or could not write
+it, or a listed entry was REFUSED (findings), 0 otherwise: another value is the repository's choice, and the package is
+advice the skill cannot act on.
 
 Both act only inside the repository. Each reads a FILE_LIST entry only when it lies inside the repository root, judged
 from its text before anything touches it and then as resolved: an absolute entry, one whose `..` segments leave the
@@ -52,10 +56,11 @@ prints `REFUSED <.editorconfig> <reason>`, adds nothing there, adds the rest, an
 replaces a file it writes whole, keeping its encoding, byte order mark, and permissions, so a write that fails part way
 leaves the file as it was.
 
-A failure, such as a listed file that does not exist or a file it cannot read or write, prints `FAILED <reason>`
-as the last line and exits 1. A write that fails after the checks, such as a full disk, a folder the script may not
-create a file in, or a file another process holds or made read-only since, ends the run there: the `FIXED` or `ADDED`
-lines before the `FAILED` line name changes already written, and the files after it are unchanged. A usage error
+A failure, such as a listed entry that names no regular file, a FILE_LIST, solution, or analyzer configuration it cannot
+read, or a write that fails, prints `FAILED <reason>` as the last line and exits 1; a listed file it cannot read is
+UNREADABLE instead, and the run goes on. A write that fails after the checks, such as a full disk, a folder the script
+may not create a file in, or a file another process holds or made read-only since, ends the run there: the `FIXED` or
+`ADDED` lines before the `FAILED` line name changes already written, and the files after it are unchanged. A usage error
 exits 2.
 """
 
@@ -100,6 +105,11 @@ GLOBAL_CONFIG = ".globalconfig"
 NEW_FILE_MODE = 0o644
 # The global_level the compiler gives a global analyzer config that sets none: 100 for a file named .globalconfig.
 NAMED_GLOBAL_LEVEL = 100
+# A global_level as the compiler reads it, with .NET's int.TryParse: an optional sign and ASCII digits, the value a
+# 32-bit integer holds. Any other text, such as an underscore, another script's digits, or a value past that range,
+# sets no level.
+GLOBAL_LEVEL = re.compile(r"([+-]?)([0-9]+)")
+INT32_LIMIT = 1 << 31
 # The layout rules the analyzers enforce; the dotnet-format section of docs/skills.md says which rule each covers.
 SETTINGS = (
     ("insert_final_newline", "true"),
@@ -810,10 +820,13 @@ class AnalyzerConfig:
 
     @property
     def global_level(self) -> int:
-        try:
-            return int(self.preamble["global_level"])
-        except (KeyError, ValueError):
-            return NAMED_GLOBAL_LEVEL if self.named_global else 0
+        written = GLOBAL_LEVEL.fullmatch(self.preamble.get("global_level", ""))
+        digits = None if written is None else whole_number.parse(written.group(2))
+        if written is not None and digits is not None:
+            level = -digits if written.group(1) == "-" else digits
+            if -INT32_LIMIT <= level < INT32_LIMIT:
+                return level
+        return NAMED_GLOBAL_LEVEL if self.named_global else 0
 
 
 def read_analyzer_config(path: Path) -> AnalyzerConfig:
