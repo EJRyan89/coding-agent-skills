@@ -442,9 +442,10 @@ if [ "$ANCESTOR" -eq 1 ]; then
 fi
 
 # The branch or, when HEAD is detached, the commit the clone was found on, to return to if the fast-forward fails.
-# Neither answering leaves nothing to return to, so the update stops before it switches branches.
+# Neither answering leaves nothing to return to, so the update stops before it switches branches, with the error of
+# the commit lookup, which runs without --quiet so git names why it cannot resolve HEAD.
 if ! FOUND_ON=$(git -C "$CLONE" symbolic-ref --quiet --short HEAD 2>/dev/null ||
-  git -C "$CLONE" rev-parse --verify --quiet HEAD 2>&1); then
+  git -C "$CLONE" rev-parse --verify HEAD 2>&1); then
   echo "FAILED cannot read the branch or the commit the clone is on: $(one_line "$FOUND_ON")"
   exit 1
 fi
