@@ -23,23 +23,25 @@ client given a `runner` alone refuses a call with input rather than run real git
 environment; there the time limit bounds each wait for output rather than the whole command.
 
 An `isolated` client is for git run against content it did not write, such as `grep --no-index` over a review's
-snapshot. Each of its commands names the null device as its repository (`NO_REPOSITORY`), so git discovers none, in
-the folder or above it, and reads no repository's configuration, and runs with
-`bounded_process.isolated_git_environment`, so no system, global, or command-scope setting from the environment shapes
-what it prints. Only its arguments and the files it reads decide its output. Its caller asks for it; a client that
-is not isolated refuses a `grep` or `diff` any of whose arguments spells `--no-index` or an abbreviation git accepts
-for it (`reads_no_repository`), wherever it stands, since that form reads files rather than a repository, so a caller
-that forgets to ask fails instead of running git unisolated. The refusal reads no option grammar: a search pattern is
-never among the arguments but the client's own `pattern`, which it gives git as `-e <pattern>` right after the
-subcommand, so a pattern that reads `--no-index` is searched for, and a caller that needs one inside its own arguments
-uses an isolated client. The subcommand is read by name, so a plain client also refuses a `-c` or `--config-env` among
-git's own options that sets anything in a section that can define an alias (`ALIAS_SECTIONS`): an alias, or a file
-included from the command line, could make another name run `grep` or `diff`. It cannot see an alias that git's
+snapshot. Each of its commands names the null device as its repository (`NO_REPOSITORY`), so git discovers none, in the
+folder or above it, and reads no repository's configuration, and runs with `bounded_process.isolated_git_environment`,
+so no system, global, or command-scope setting from the environment shapes what it prints. Only its arguments and the
+files it reads decide its output. Its caller asks for it; a client that is not isolated refuses a `grep`, `diff`, or
+`difftool` any of whose arguments spells `--no-index` or an abbreviation git accepts for it (`reads_no_repository`),
+wherever it stands, since that form reads files rather than a repository, so a caller that forgets to ask fails instead
+of running git unisolated. The refusal reads no option grammar: a search pattern is never among the arguments but the
+client's own `pattern`, which it gives git as `-e <pattern>` right after the subcommand, so a pattern that reads
+`--no-index` is searched for, and a caller that needs one inside its own arguments uses an isolated client. The
+subcommand is read by name, so a plain client also refuses a `-c` or `--config-env` among git's own options that sets
+anything in a section that can define an alias (`ALIAS_SECTIONS`): an alias, or a file included from the command line,
+could make another name run `grep` or `diff`. For the same reason it refuses an `--exec-path=<folder>`, which makes git
+run a `git-<name>` program from that folder under a name the client cannot read. It cannot see an alias that git's
 configuration files or the environment's `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` define, nor tell a folder of
 content it did not write from a repository, so a command that reads the surrounding repository by design, such as
-`ls-files --others`, `grep --untracked`, or `check-ignore --no-index`, runs on a plain client; a caller over such
-content asks for an isolated client. An isolated client refuses a test's runner, which could not start git with the
-isolated environment.
+`ls-files --others`, `grep --untracked`, or `check-ignore --no-index`, runs on a plain client, and so does a `diff` or
+`difftool` run outside any repository, which git reads as `--no-index` without the option; a caller over such content
+asks for an isolated client. Of git's commands, `grep`, `diff`, `difftool`, and `check-ignore` take `--no-index`. An
+isolated client refuses a test's runner, which could not start git with the isolated environment.
 
 Both hold git in a process tree (`job_tree`), because git starts programs of its own: Git for Windows' launcher starts
 the real git, a fetch starts its transport and pack programs, and a command may run a credential helper, a hook, or an
@@ -85,7 +87,11 @@ MISSING_GIT = "Git executable 'git' was not found; install Git first"
 NO_REPOSITORY = f"--git-dir={os.devnull}"
 # The subcommands that, given `--no-index`, read the files they are pointed at rather than a repository, which only an
 # isolated client runs. `check-ignore --no-index` still reads its repository's ignore rules, so it is not one.
-ISOLATED_SUBCOMMANDS = frozenset({"grep", "diff"})
+ISOLATED_SUBCOMMANDS = frozenset({"grep", "diff", "difftool"})
+# git's option that runs its `git-<name>` programs from another folder, given as `--exec-path=<folder>`; alone, it
+# prints the folder and runs nothing.
+EXEC_PATH_OPTION = "--exec-path="
+
 # Every spelling git may take for --no-index: the option and each abbreviation of it from `--no-i` upward. git refuses
 # the shorter ones it finds ambiguous, such as `--no-i` beside grep's `--no-ignore-case`, so refusing them too costs
 # nothing, and git takes no abbreviation shorter than `--no-`. A plain client refuses each wherever it stands.
@@ -293,11 +299,16 @@ def output_lines(output: str) -> list[str]:
     return output.removesuffix("\n").split("\n") if output else []
 
 
+def command_name(arguments: Sequence[str]) -> str:
+    """`git` and the subcommand `arguments` run, past git's own options, the name a failure is labelled with; `git`
+    alone when they name none."""
+    return " ".join(["git", *filter(None, [subcommand(arguments)])])
+
+
 def failure_message(arguments: Sequence[str], result: GitResult) -> str:
     """What a failed `git <arguments>` says: git's stderr, or, when it printed none, the subcommand and the exit
     code."""
-    named = " ".join(["git", *filter(None, [subcommand(arguments)])])
-    return result.stderr.strip() or f"{named} failed with exit code {result.returncode}"
+    return result.stderr.strip() or f"{command_name(arguments)} failed with exit code {result.returncode}"
 
 
 def transient_failure(result: GitResult) -> bool:
@@ -357,8 +368,12 @@ def configured_sections(arguments: Sequence[str]) -> list[str]:
 
 def defines_alias(arguments: Sequence[str]) -> bool:
     """Whether `arguments` set, among git's own options, anything in a section that can define an alias
-    (`ALIAS_SECTIONS`)."""
-    return any(section in ALIAS_SECTIONS for section in configured_sections(arguments))
+    (`ALIAS_SECTIONS`), or name another folder of git programs with `--exec-path=`."""
+    end = subcommand_index(arguments)
+    own = arguments if end is None else arguments[:end]
+    return any(section in ALIAS_SECTIONS for section in configured_sections(arguments)) or any(
+        argument.startswith(EXEC_PATH_OPTION) for argument in own
+    )
 
 
 def _command(arguments: Sequence[str], directory: str | Path | None, *, isolated: bool) -> list[str]:
@@ -486,7 +501,8 @@ class GitClient:
             )
         if not self.isolated and defines_alias(arguments):
             raise ValueError(
-                "an alias set on git's command line can run grep or diff --no-index unseen; "
+                "an alias or a folder of git programs set on git's command line can run grep or diff --no-index "
+                "unseen; "
                 "run it on GitClient(isolated=True)"
             )
         given = list(arguments)

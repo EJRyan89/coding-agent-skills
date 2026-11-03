@@ -713,3 +713,11 @@ def test_a_closing_line_must_name_one_issue_with_closes(line: str) -> None:
 def test_a_closing_line_by_repository_or_url_must_be_written_closes_number(line: str) -> None:
     body = FILLED.replace("Closes #34", line)
     assert [f"CLOSES_LINE 2 {line}"] == pull_request.body_problems(body, TEMPLATE)
+
+
+def test_a_failed_git_call_is_named_by_its_subcommand_behind_git_s_options() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(1, "", "fatal: no\n")
+
+    with pytest.raises(pull_request.PullRequestError, match=r"^git rev-parse: fatal: no$"):
+        pull_request.git_output(GitClient(run), Path("r"), ["-c", "a=b", "rev-parse", "HEAD"])

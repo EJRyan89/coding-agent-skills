@@ -277,7 +277,7 @@ def git(services: Services, directory: str | Path, *arguments: str) -> GitResult
 def git_output(services: Services, directory: str | Path, *arguments: str) -> str:
     result = git(services, directory, *arguments)
     if result.returncode != 0:
-        raise CleanupError(f"git {arguments[0]} failed in {directory}: {reason(result)}")
+        raise CleanupError(f"{git_client.command_name(arguments)} failed in {directory}: {reason(result)}")
     return result.stdout
 
 

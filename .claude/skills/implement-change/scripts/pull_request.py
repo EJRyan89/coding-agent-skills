@@ -67,7 +67,7 @@ from closing_references import (
 from console import run_main
 from file_presence import NotADirectory, is_directory, is_present
 from flat_text import flat_text
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, command_name
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from markdown_sections import HTML_COMMENT
 from typed_text import read_typed
@@ -235,7 +235,7 @@ def git_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> st
     try:
         return git.output(arguments, directory=repository)
     except GitError as exc:
-        raise PullRequestError(f"git {arguments[0]}: {flat_text(str(exc))}") from exc
+        raise PullRequestError(f"{command_name(arguments)}: {flat_text(str(exc))}") from exc
 
 
 def quiet_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> str | None:
@@ -244,7 +244,7 @@ def quiet_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> 
     try:
         return git.quiet_output(arguments, directory=repository)
     except GitError as exc:
-        raise PullRequestError(f"git {arguments[0]}: {flat_text(str(exc))}") from exc
+        raise PullRequestError(f"{command_name(arguments)}: {flat_text(str(exc))}") from exc
 
 
 def commit_of(git: GitClient, repository: Path, reference: str) -> str | None:

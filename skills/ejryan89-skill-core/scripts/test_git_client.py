@@ -1174,7 +1174,8 @@ class IsolatedClientTests(unittest.TestCase):
         GitClient(git_client.subprocess_runner, isolated=True, input_runner=git_client.subprocess_runner)
 
     def test_a_plain_client_refuses_every_spelling_of_no_index_in_every_position(self) -> None:
-        self.assertEqual(frozenset({"grep", "diff"}), git_client.ISOLATED_SUBCOMMANDS)
+        # Of git 2.56's commands, `git <command> -h` names --no-index for these and check-ignore alone.
+        self.assertEqual(frozenset({"grep", "diff", "difftool"}), git_client.ISOLATED_SUBCOMMANDS)
         # Written out here rather than read from NO_INDEX_SPELLINGS: each abbreviation from --no-i to the whole option.
         spellings = ["--no-i", "--no-in", "--no-ind", "--no-inde", "--no-index"]
         self.assertEqual(frozenset(spellings), git_client.NO_INDEX_SPELLINGS)
@@ -1186,6 +1187,7 @@ class IsolatedClientTests(unittest.TestCase):
             "after --": lambda flag: ["grep", "-n", "-e", "needle", "--", flag],
             "behind git's options": lambda flag: ["-c", "a.b=c", "grep", flag, "-e", "needle"],
             "diff": lambda flag: ["diff", "--stat", flag, "a", "b"],
+            "difftool": lambda flag: ["difftool", flag, "-y", "-x", "cat", "a", "b"],
         }
         refusal = r"^git grep or diff --no-index reads files no repository holds; run it on GitClient\(isolated=True\)$"
         for spelling in spellings:
@@ -1224,8 +1226,10 @@ class IsolatedClientTests(unittest.TestCase):
             ["-c", "include.path=/x/aliases", "s"],
             ["-c", "includeIf.onbranch:main.path=/x/aliases", "s"],
             ["--config-env", "IncludeIf.gitdir:/x/.path=FILE", "status"],
+            ["--exec-path=/x/programs", "s", "--no-index"],
+            ["-C", "d", "--exec-path=C:/x", "status"],
         )
-        refusal = r"^an alias set on git's command line can run grep or diff --no-index unseen; "
+        refusal = r"^an alias or a folder of git programs set on git's command line can run grep or diff --no-index "
         for arguments in refused:
             with self.subTest(arguments=arguments):
                 runner, calls = scripted(GitResult(0, "", ""))
@@ -1241,6 +1245,8 @@ class IsolatedClientTests(unittest.TestCase):
             ["grep", "-c", "-e", "alias.s=grep"],
             ["log", "-c", "alias.s=x"],
             ["--git-dir", "alias.s", "status"],
+            ["--exec-path"],
+            ["log", "--exec-path=x"],
         )
         for arguments in allowed:
             with self.subTest(arguments=arguments):
@@ -1432,3 +1438,9 @@ def test_the_subcommand_is_found_after_git_options(arguments: list[str]) -> None
 
 def test_a_git_error_names_one_of_the_classes_its_documentation_gives() -> None:
     assert get_args(git_client.GitErrorKind) == ("git", "prerequisite", "execution", "timeout", "not_repository")
+
+
+def test_a_command_is_named_by_its_subcommand_behind_git_s_own_options() -> None:
+    assert git_client.command_name(["--no-optional-locks", "-c", "a=b", "status"]) == "git status"
+    assert git_client.command_name(["--shallow-file", "s", "log"]) == "git log"
+    assert git_client.command_name(["--no-optional-locks"]) == "git"

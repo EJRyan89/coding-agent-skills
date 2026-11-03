@@ -2355,3 +2355,11 @@ def test_the_main_checkout_is_known_however_git_spells_its_top_or_common_directo
     ):
         with mock.patch.object(audit, "git_output", return_value=f"{top}\n{common}\n"):
             assert audit.checkout_top(GitClient(), real) == (top, main), (top, common)
+
+
+def test_a_failed_git_call_is_named_by_its_subcommand_behind_git_s_options() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(1, "", "fatal: no\n")
+
+    with pytest.raises(audit.AuditError, match=r"^git log: fatal: no$"):
+        audit.git_output(GitClient(run), Path("r"), ["-c", "a=b", "log"])
