@@ -717,15 +717,18 @@ class LockTests(DeployerTestCase):
         for pid in (2**32 + os.getpid(), maximum + 1):
             with self.subTest(pid=pid):
                 directory = self.write_lock({"pid": pid, "token": "x", "start_time": 7})
-                result = self.deploy_fails("--all", pattern="Lock metadata is malformed", probe=probe)
-                self.assertIn(
-                    f"ERROR: Lock metadata is malformed (no valid PID): pid must be an integer from 1 to {maximum}, "
-                    f"found integer {pid}.",
-                    result.output,
-                )
-                self.assertEqual([], probed)
-                self.assertFalse((self.skills_dir / "alpha").exists())
-                shutil.rmtree(directory)
+                try:
+                    result = self.deploy_fails("--all", pattern="Lock metadata is malformed", probe=probe)
+                    self.assertIn(
+                        f"ERROR: Lock metadata is malformed (no valid PID): pid must be an integer from 1 to "
+                        f"{maximum}, found integer {pid}.",
+                        result.output,
+                    )
+                    self.assertEqual([], probed)
+                    self.assertFalse((self.skills_dir / "alpha").exists())
+                finally:
+                    # The next case writes its own lock, whatever this one found.
+                    shutil.rmtree(directory)
 
     def test_a_token_file_that_is_not_utf_8_leaves_the_lock_in_place_without_an_error(self) -> None:
         held = lock.acquire(self.paths)

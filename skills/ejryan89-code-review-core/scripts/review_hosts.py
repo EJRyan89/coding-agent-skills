@@ -28,7 +28,7 @@ from bounded_process import run_bounded, without_repository_variables
 from executable_locator import find_executables
 from job_tree import JobRefused, process_tree
 from path_containment import within
-from process_identity import ProcessStatus
+from process_identity import ProcessStatus, read_pid
 from review_config import REVIEWER_EFFORTS
 from review_io import (
     CONTENT_ERRORS,
@@ -51,6 +51,7 @@ from review_runtime import (
     verify_stamped_snapshot,
 )
 from review_specialists import parse_unified_diff, render_entrypoint_prompt, symbolic_links
+from typed_fields import FieldError
 
 
 @dataclass(frozen=True)
@@ -192,14 +193,24 @@ def host_state(run: Path, *, probe: Callable[[int], ProcessStatus], now: float) 
     if claim is None:
         return HostState("none", reason="no Copilot CLI host was dispatched for this run")
     elapsed = max(0, round(now - claim["claimed_at"]))
-    pid = claim["pid"]
     log = host_log_path(run, claim["attempt"])
+    pid: int | None = None
+    malformed = ""
+    if claim["pid"] is not None:
+        try:
+            # A PID no process can have names none, and is never probed, nor truncated to another process's.
+            pid = read_pid(claim["pid"], f"{HOST_CLAIM} pid")
+        except FieldError as exc:
+            malformed = f"the Copilot CLI host's claim is malformed: {exc}; see {log}"
     identity = None if pid is None else same_process(probe(pid), claim["start_time"])
     # Read after the probe, so a host that recorded its outcome and then exited is done, not gone.
     outcome_path = _outcome_path(run, claim["attempt"])
     outcome = read_json(outcome_path) if file_presence.is_present(outcome_path) else None
     if outcome is not None and outcome.get("token") == claim["token"]:
         return HostState("done", elapsed, pid, outcome["status"], outcome["reason"])
+    if malformed:
+        # No process can be followed by this claim, so it is gone, as a host that ended without a result is.
+        return HostState("gone", elapsed, reason=malformed)
     if pid is None:
         if elapsed < HOST_START_GRACE_SECONDS:
             return HostState("starting", elapsed)

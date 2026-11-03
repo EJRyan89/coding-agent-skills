@@ -346,16 +346,19 @@ class MetadataValidationTests(DeployerTestCase):
                 interim = spelled.with_name(spelled.name + ".renaming")
                 spelled.rename(interim)
                 interim.rename(other)
-                for arguments in (("--all", "--dry-run"), ("--all",)):
-                    result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
-                    self.assert_lines(
-                        result.output,
-                        f"{refusal}spelled in another case than {name}.",
-                        f"Rename it {name}, then retry.",
-                    )
-                    self.assertNotIn("Traceback", result.output)
-                other.rename(interim)
-                interim.rename(spelled)
+                try:
+                    for arguments in (("--all", "--dry-run"), ("--all",)):
+                        result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
+                        self.assert_lines(
+                            result.output,
+                            f"{refusal}spelled in another case than {name}.",
+                            f"Rename it {name}, then retry.",
+                        )
+                        self.assertNotIn("Traceback", result.output)
+                finally:
+                    # The next row starts from the source as spelled, whatever this one found.
+                    other.rename(interim)
+                    interim.rename(spelled)
 
     def test_a_flat_skills_directory_deploys_each_skill_beside_a_shared_asset(self) -> None:
         self.make_source_json(shared_assets={"guide.md": "owner"})
