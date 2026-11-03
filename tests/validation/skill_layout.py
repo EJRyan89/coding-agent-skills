@@ -533,7 +533,9 @@ def _sibling_path_files(root: Path) -> list[Path]:
     for top in SIBLING_PATH_ROOTS:
         files += [
             path
-            for path in file_presence.matching(root / top, "**/*.py")
+            for path in file_presence.matching(
+                root / top, "**/*.py", skip=lambda folder: folder == root / "tests" / "fixtures"
+            )
             if not within(path, root / "tests" / "fixtures")
         ]
     return sorted(files)
@@ -946,7 +948,7 @@ def script_layout_problems(root: Path) -> list[str]:
     one level deep."""
     problems: list[str] = []
     for skill in all_skill_directories(root):
-        for path in file_presence.matching(skill, "**/*"):
+        for path in file_presence.matching(skill, "**/*", skip=lambda folder: folder.name == BYTECODE_FOLDER):
             inside = path.relative_to(skill)
             if not file_presence.is_present(path, other_is_absent=True) or BYTECODE_FOLDER in inside.parts:
                 continue

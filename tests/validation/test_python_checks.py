@@ -3166,6 +3166,18 @@ PRESENCE_SHAPES = {
         "import logging\n\n\ndef f(ps):\n    for p in ps:\n        if not {call}:\n"
         "            logging.warning('missing %s', p)\n            continue\n        print(p)\n"
     ),
+    "if not P: warnings.warn, return E": (
+        "import warnings\n\n\ndef f(p):\n    if not {call}:\n        warnings.warn('missing')\n        return {empty}\n"
+        "    return 1\n"
+    ),
+    "if not P: sys.stderr.write, return E": (
+        "import sys\n\n\ndef f(p):\n    if not {call}:\n        sys.stderr.write('missing')\n        return {empty}\n"
+        "    return 1\n"
+    ),
+    "if not P: sys.stdout.write, continue": (
+        "import sys\n\n\ndef f(ps):\n    for p in ps:\n        if not {call}:\n"
+        "            sys.stdout.write('skipped')\n            continue\n        print(p)\n"
+    ),
     "if P: ... else: log, return E": (
         "def f(p, log):\n    if {call}:\n        return 1\n    else:\n        log.info('gone')\n        pass\n"
         "        return {empty}\n"
@@ -3220,6 +3232,15 @@ PRESENCE_STAT_CALLS = {
     "file_presence.is_present": "file_presence.is_present(p)",
     "file_presence.matching": "file_presence.matching(p, '*')",
     "a path's is_file": "p.is_file()",
+    "a path's scandir": "list(p.scandir())",
+    "a path's listdir": "p.listdir()",
+    "a path's glob": "list(p.glob('*'))",
+    "a path's rglob": "list(p.rglob('*'))",
+    "os.lstat": "os.lstat(p)",
+    "os.walk": "list(os.walk(p, onerror=fail))",
+    "os.fwalk": "list(os.fwalk(p, onerror=fail))",
+    "file_presence.is_directory": "file_presence.is_directory(p)",
+    "file_presence.is_occupied": "file_presence.is_occupied(p)",
     "os.path.getsize": "os.path.getsize(p)",
     "os.path.getmtime": "os.path.getmtime(p)",
     "os.path.getatime": "os.path.getatime(p)",
@@ -3229,6 +3250,8 @@ PRESENCE_HANDLERS = {
     "OSError": "except OSError:",
     "PermissionError": "except PermissionError:",
     "IOError": "except IOError:",
+    "EnvironmentError": "except EnvironmentError:",
+    "BaseException": "except BaseException:",
     "Exception": "except Exception:",
     "a bare except": "except:",
     "a tuple with OSError": "except (ValueError, OSError):",
@@ -3237,7 +3260,7 @@ PRESENCE_HANDLERS = {
 PRESENCE_HANDLED = {
     **{
         f"{handler} around {call}": (
-            f"import os\nimport file_presence\n\n\ndef f(p):\n    try:\n        x = {expression}\n    {clause}\n"
+            f"import os\nimport file_presence\n\n\ndef f(p, fail):\n    try:\n        x = {expression}\n    {clause}\n"
             "        return []\n    return x\n"
         )
         for call, expression in PRESENCE_STAT_CALLS.items()
@@ -3287,6 +3310,9 @@ PRESENCE_LISTINGS = {
     "walk by its name": "from os import walk\n\n\ndef f(p):\n    return list(walk(p))\n",
     "os.walk given an unpacking": "import os\n\n\ndef f(p, k):\n    return list(os.walk(p, **k))\n",
     "os.fwalk with no onerror": "import os\n\n\ndef f(p):\n    return list(os.fwalk(p))\n",
+    "a path's walk with no on_error": "def f(p):\n    return list(p.walk())\n",
+    "a path's walk given on_error None": "def f(p):\n    return list(p.walk(on_error=None))\n",
+    "a path's walk given None by position": "def f(p):\n    return list(p.walk(True, None))\n",
     "shutil.rmtree given ignore_errors": "import shutil\n\n\ndef f(p):\n    shutil.rmtree(p, ignore_errors=True)\n",
     "shutil.rmtree given it by position": "import shutil\n\n\ndef f(p):\n    shutil.rmtree(p, True)\n",
     "shutil.rmtree given a name for it": "import shutil\n\n\ndef f(p, q):\n    shutil.rmtree(p, ignore_errors=q)\n",
@@ -3420,10 +3446,48 @@ PRESENCE_PASSED = {
     # A predicate stored in a container or handed to a call other than a filter is read where that is read.
     "a predicate stored": "def f(p):\n    return {'present': p.exists()}\n",
     "a predicate handed to a call": "def f(p, report):\n    report(p.exists())\n    return 1\n",
-    # A predicate that is not a presence test, and a walk the repository's oldest Python has no Path.walk for, which
+    # A predicate that is not a presence test, and a walk that is a module's function or a class's own method, never a
+    # path's.
     # no module can call.
     "another method": "def f(p):\n    return p.read_text() if p.is_absolute() else None\n",
-    "a method named walk": "def f(tree):\n    return list(tree.walk())\n",
+    "ast.walk": "import ast\n\n\ndef f(tree):\n    return list(ast.walk(tree))\n",
+    "a class's own walk": "class Walker:\n    def f(self, tree):\n        return list(self.walk(tree))\n",
+    "a path's walk given an on_error": "def f(p, fail):\n    return list(p.walk(on_error=fail))\n",
+    # Each stated limit, which the policy's next widening reads; until then each passes.
+    "limit: not P as an operand of an and": (
+        "def f(p, q):\n    if not p.is_file() and q:\n        return None\n    return 1\n"
+    ),
+    "limit: a predicate handed to map": "import os\n\n\ndef f(ps):\n    return any(map(os.path.exists, ps))\n",
+    "limit: a predicate bound to a name it does not follow": (
+        "from pathlib import Path\n\n\ndef f(p):\n    check = Path.exists\n    if not check(p):\n"
+        "        return None\n    return 1\n"
+    ),
+    "limit: a predicate reached through getattr": (
+        "def f(p):\n    if not getattr(p, 'exists')():\n        return None\n    return 1\n"
+    ),
+    "limit: a returned sentinel name": (
+        "def f(p):\n    result = []\n    if not p.is_dir():\n        return result\n    return list(p.iterdir())\n"
+    ),
+    "limit: P == False": "def f(p):\n    if p.is_file() == False:\n        return None\n    return 1\n",
+    "limit: P is False": "def f(p):\n    if p.is_file() is False:\n        return None\n    return 1\n",
+    "limit: an rmtree onerror that swallows the error": (
+        "import shutil\n\n\ndef f(p):\n    shutil.rmtree(p, onerror=lambda *error: None)\n"
+    ),
+    "limit: a branch that does other work before its empty answer": (
+        "def f(p):\n    if not p.is_file():\n        count = 1\n        return None\n    return 1\n"
+    ),
+    "limit: an if P guard around work whose result is an answer": (
+        "def f(ps, tokens):\n    for p in ps:\n        if p.is_file():\n            tokens.update(p.read_text())\n"
+        "    return tokens\n"
+    ),
+    "limit: a handler tuple bound to a name": (
+        "ERRS = (OSError,)\n\n\ndef f(p):\n    try:\n        return p.stat()\n    except ERRS:\n        return None\n"
+    ),
+    "limit: a warn imported from warnings": (
+        "from warnings import warn\n\n\ndef f(p):\n    if not p.is_file():\n        warn('missing')\n"
+        "        return None\n    return 1\n"
+    ),
+    "limit: a link test, which the link-test policy holds": "def f(p):\n    return p.is_symlink()\n",
 }
 
 
@@ -3685,3 +3749,79 @@ def test_a_validation_reader_refuses_a_path_whose_stat_fails_rather_than_reading
     failing, read = _validation_readers()[reader]
     with _stat_failing(failing), pytest.raises(PermissionError):
         read()
+
+
+def _pruning_readers() -> dict[str, tuple[dict[str, str], str, str, Callable[[Path], object]]]:
+    """Each validation reader that lists a tree and leaves a folder out: the files of its tree, a folder inside the
+    left-out one, a folder elsewhere, and its call over the tree's root."""
+    import skill_layout
+    import suite_discovery
+
+    suites = {"tests/fixtures/deep/test_fixture.py": "pass\n", "tests/other/test_real.py": "pass\n"}
+    return {
+        "skill_layout._sibling_path_files": (
+            {"tests/fixtures/deep/fixture.py": "", "tests/other/real.py": ""},
+            "tests/fixtures/deep",
+            "tests/other",
+            skill_layout._sibling_path_files,
+        ),
+        "skill_layout.script_layout_problems": (
+            {
+                "skills/alpha/SKILL.md": "---\nname: alpha\n---\n",
+                "skills/alpha/scripts/__pycache__/deep/alpha.pyc": "",
+                "skills/alpha/references/deep/notes.md": "",
+            },
+            "skills/alpha/scripts/__pycache__/deep",
+            "skills/alpha/references/deep",
+            skill_layout.script_layout_problems,
+        ),
+        "suite_discovery.regression_suites": (
+            suites,
+            "tests/fixtures/deep",
+            "tests/other",
+            suite_discovery.regression_suites,
+        ),
+        "suite_discovery.suite_python_modules": (
+            suites,
+            "tests/fixtures/deep",
+            "tests/other",
+            suite_discovery.suite_python_modules,
+        ),
+        "suite_discovery._suite_python_files": (
+            {**suites, "tests/__pycache__/deep/cached.py": ""},
+            "tests/__pycache__/deep",
+            "tests/other",
+            suite_discovery._suite_python_files,
+        ),
+    }
+
+
+@contextlib.contextmanager
+def _listing_refused(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused: os.scandir and os.listdir raise PermissionError naming it."""
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any = ".", *rest: Any, **options: Any) -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == folder:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real(path, *rest, **options)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name))))
+        yield
+
+
+@pytest.mark.parametrize("reader", sorted(_pruning_readers()))
+def test_a_validation_reader_never_lists_the_folder_it_leaves_out_and_refuses_another_it_cannot_list(
+    reader: str, tmp_path: Path
+) -> None:
+    files, left_out, elsewhere, read = _pruning_readers()[reader]
+    write_fixture_tree(tmp_path, files)
+    with _listing_refused(tmp_path / left_out):
+        read(tmp_path)
+    with _listing_refused(tmp_path / elsewhere), pytest.raises(PermissionError) as raised:
+        read(tmp_path)
+    assert raised.value.filename == str(tmp_path / elsewhere)

@@ -745,12 +745,12 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # p.is_dir(): continue`, `if not (p.is_file() and q): continue`, `while not p.is_dir(): p = p.parent`, `v if p.exists()
 # else []`, `return p.exists()`, `if p.is_file(): return p` falling through to `return None`, `[e for e in es if
 # e.is_file()]`, `filter(os.path.isfile, es)`, or `p.exists() and any(p.iterdir())`, a name bound only to a predicate's
-# answer included, and a branch that only logs before its empty answer. So does a glob, an os.walk that ignores the
-# folders it cannot list, a removal that discards its errors, and an except clause or a contextlib.suppress that answers
-# a failed stat or listing with nothing. An if on a predicate with no else is left out unless its branch returns a value
-# and its False goes on to an empty return or the function's end, since its False otherwise goes on to code that meets
-# the same path or gives a value. Any such site outside file_presence and link_probe states why in a module-level
-# PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
+# answer included, and a branch that only logs before its empty answer. So does a glob, an os.walk or a path's walk that
+# ignores the folders it cannot list, a removal that discards its errors, and an except clause or a contextlib.suppress
+# that answers a failed stat or listing with nothing. An if on a predicate with no else is left out unless its branch
+# returns a value and its False goes on to an empty return or the function's end, since its False otherwise goes on to
+# code that meets the same path or gives a value. Any such site outside file_presence and link_probe states why in a
+# module-level PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
 # Stated limits, which the policy's next widening reads: `if not P and Q: return None`; a predicate handed to map, as
 # `any(map(os.path.exists, ps))`; a predicate bound to a name this does not follow or reached through getattr; a
 # returned sentinel name, as `result = []` then `if not P: return result`; `P == False` and `P is False`; an rmtree
@@ -778,6 +778,10 @@ GLOB_FUNCTIONS = frozenset({"glob.glob", "glob.iglob"})
 # The walks whose onerror, at this position or by keyword, is None unless given, so a folder they cannot list is passed
 # by.
 WALKS = {"os.walk": 2, "os.fwalk": 2}
+# A path's walk, from Python 3.12, whose on_error is the first argument after its top_down: any `walk` method but a
+# module's function, as ast.walk is, or a class's own method, called on self or cls.
+PATH_WALK_ERROR = (1, "on_error")
+MODULE_WALKS = frozenset({"ast.walk", "os.walk", "os.fwalk"})
 # The removals that discard every error when given this flag, at this position or by keyword.
 DISCARDING_REMOVALS = {
     "shutil.rmtree": (1, "ignore_errors"),
@@ -1173,17 +1177,28 @@ def _listing_answer(node: ast.AST, aliases: dict[str, str]) -> str | None:
             "cannot list; call ejryan89-skill-core's file_presence.matching, which raises there, or list it with "
             "iterdir or an os.walk whose onerror raises"
         )
-    if named in WALKS:
-        onerror = call_argument(node, WALKS[named], "onerror")
+    path_walk = (
+        method == "walk"
+        and named not in MODULE_WALKS
+        and not (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in ("self", "cls")
+        )
+    )
+    if named in WALKS or path_walk:
+        onerror = call_argument(node, *PATH_WALK_ERROR) if path_walk else call_argument(node, WALKS[named], "onerror")
         # An unpacking may not hold one, so it shows no onerror.
         if (
             onerror is None
             or isinstance(onerror, ast.Starred)
             or (isinstance(onerror, ast.Constant) and onerror.value is None)
         ):
+            walk = "a path's walk" if path_walk else named
+            keyword = "on_error" if path_walk else "onerror"
             return (
-                f"walks a folder with {named} and no onerror, which passes by a folder it cannot list; give it an "
-                "onerror that raises"
+                f"walks a folder with {walk} and no {keyword}, which passes by a folder it cannot list; give it an "
+                f"{keyword} that raises"
             )
     if named in DISCARDING_REMOVALS:
         position, keyword = DISCARDING_REMOVALS[named]

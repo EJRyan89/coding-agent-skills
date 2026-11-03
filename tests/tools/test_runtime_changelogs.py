@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from guidance_record import GUIDANCE_PATH, Changelog
+from presence_denial import denied
 
 from tools import runtime_changelogs as watch
 from tools.runtime_changelogs import Fetched, Term
@@ -698,3 +699,17 @@ def test_the_help_names_the_timeout_in_seconds(capsys: pytest.CaptureFixture[str
         watch.main(["--help"])
     assert exited.value.code == 0
     assert "--timeout SECONDS" in " ".join(capsys.readouterr().out.split())
+
+
+def test_the_python_files_never_list_a_fixtures_folder_and_refuse_another_folder_they_cannot_list(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "tools" / "fixtures" / "deep").mkdir(parents=True)
+    (tmp_path / "tools" / "fixtures" / "deep" / "fixture.py").write_text("", encoding="utf-8")
+    (tmp_path / "tools" / "deep").mkdir()
+    (tmp_path / "tools" / "deep" / "tool.py").write_text("", encoding="utf-8")
+    with denied(tmp_path / "tools" / "fixtures" / "deep", stat=False):
+        assert watch.python_files(tmp_path) == [tmp_path / "tools" / "deep" / "tool.py"]
+    with denied(tmp_path / "tools" / "deep", stat=False), pytest.raises(PermissionError) as raised:
+        watch.python_files(tmp_path)
+    assert raised.value.filename == str(tmp_path / "tools" / "deep")

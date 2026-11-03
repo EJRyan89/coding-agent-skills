@@ -517,7 +517,10 @@ def suites(root: Path) -> dict[str, str]:
     """Each suite the snapshot holds, by its repository path, and its text."""
     found: dict[str, str] = {}
     for suite_root in SUITE_ROOTS:
-        for path in file_presence.matching(root, f"{suite_root}/**/*"):
+        # The fixtures are never listed, so a folder it cannot list inside them is never met.
+        for path in file_presence.matching(
+            root, f"{suite_root}/**/*", skip=lambda folder: f"{folder.relative_to(root).as_posix()}/" == FIXTURES
+        ):
             relative = path.relative_to(root).as_posix()
             if (
                 relative.startswith(FIXTURES)

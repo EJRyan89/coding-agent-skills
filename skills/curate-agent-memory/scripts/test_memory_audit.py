@@ -2522,3 +2522,38 @@ def test_memory_entries_refuses_a_store_it_cannot_list_never_reads_it_as_empty(t
     with mock.patch.object(os, "scandir", scandir), pytest.raises(PermissionError) as raised:
         memory_audit.memory_entries(store)
     assert raised.value.filename == str(store)
+
+
+@contextmanager
+def listing_refused(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused: os.scandir and os.listdir raise PermissionError naming it. Every
+    other folder is listed as it is."""
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any = ".", *rest: Any, **options: Any) -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == folder:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *rest, **options)
+
+        return call
+
+    with ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name))))
+        yield
+
+
+def test_a_destination_pattern_never_lists_a_skipped_folder_so_one_it_cannot_list_inside_it_is_passed_over(
+    tmp_path: Path,
+) -> None:
+    guide = write(tmp_path / "docs" / "guide.md", "rules\n")
+    write(tmp_path / "docs" / "node_modules" / "deep" / "vendored.md", "rules\n")
+    with listing_refused(tmp_path / "docs" / "node_modules" / "deep"):
+        assert memory_audit.destination_files(tmp_path, []) == [guide]
+
+
+def test_a_destination_folder_it_cannot_list_outside_a_skipped_one_fails_the_audit(tmp_path: Path) -> None:
+    write(tmp_path / "docs" / "notes" / "deep.md", "rules\n")
+    with listing_refused(tmp_path / "docs" / "notes"), pytest.raises(PermissionError) as raised:
+        memory_audit.destination_files(tmp_path, [])
+    assert raised.value.filename == str(tmp_path / "docs" / "notes")

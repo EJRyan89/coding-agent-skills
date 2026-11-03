@@ -193,7 +193,7 @@ def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
         path
         for top in roots
         if file_presence.is_directory(top, other_is_absent=True)
-        for path in file_presence.matching(top, "**/*")
+        for path in file_presence.matching(top, "**/*", skip=lambda folder: folder == root / FIXTURE_ROOT)
         if file_presence.is_present(path, other_is_absent=True)
         and is_test_script(path)
         and not within(path, root / FIXTURE_ROOT)
@@ -933,7 +933,7 @@ def suite_python_modules(root: Path) -> list[Path]:
     if file_presence.is_directory(tests):
         found |= {
             path
-            for path in file_presence.matching(tests, "**/*.py")
+            for path in file_presence.matching(tests, "**/*.py", skip=lambda folder: folder == root / FIXTURE_ROOT)
             if file_presence.is_present(path, other_is_absent=True) and not within(path, root / FIXTURE_ROOT)
         }
     found |= {path for path in regression_suites(root) if path.suffix.casefold() == ".py"}
@@ -1194,7 +1194,9 @@ def _suite_python_files(root: Path) -> list[Path]:
         path
         for top in tops
         if file_presence.is_directory(top, other_is_absent=True)
-        for path in file_presence.matching(top, "**/*.py")
+        for path in file_presence.matching(
+            top, "**/*.py", skip=lambda folder: folder == root / FIXTURE_ROOT or folder.name == "__pycache__"
+        )
         if not within(path, root / FIXTURE_ROOT) and "__pycache__" not in path.parts
     )
 

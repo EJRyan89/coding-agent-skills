@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -343,6 +344,33 @@ class MatchingTests(unittest.TestCase):
             ):
                 matching(self.root, "*")
             self.assertIs(failure, raised.exception)
+
+    def test_a_skipped_folder_is_never_listed_and_one_it_cannot_list_elsewhere_still_raises(self) -> None:
+        (self.root / "sub" / "node_modules" / "deep").mkdir(parents=True)
+        (self.root / "sub" / "node_modules" / "deep" / "x.py").write_text("", encoding="utf-8")
+        real = os.scandir
+
+        def refusing(folder: Path) -> Any:
+            def listing(path: Any = ".") -> Any:
+                if Path(path) == folder:
+                    raise PermissionError(errno.EACCES, "denied", str(folder))
+                return real(path)
+
+            return listing
+
+        def skip(folder: Path) -> bool:
+            return folder.name == "node_modules"
+
+        with mock.patch.object(os, "scandir", refusing(self.root / "sub" / "node_modules" / "deep")):
+            found = matching(self.root, "**/*.py", skip=skip)
+            self.assertNotIn(self.root / "sub" / "node_modules" / "deep" / "x.py", found)
+            self.assertIn(self.root / "sub" / "c.py", found)
+            self.assertIn(self.root / "sub" / "node_modules", matching(self.root, "sub/*", skip=skip))
+        with (
+            mock.patch.object(os, "scandir", refusing(self.root / "sub" / "deep")),
+            self.assertRaises(PermissionError),
+        ):
+            matching(self.root, "**/*.py", skip=skip)
 
     def test_a_pattern_it_cannot_read_alike_on_every_python_is_refused(self) -> None:
         for pattern in ("", "/abs", "a//b", "./a", "../a", "a/..", "**", "sub/**"):

@@ -531,7 +531,12 @@ def destination_files(repo: Path | None, instructions: list[Path], user_dir: Pat
         if root is None:
             continue
         for pattern in patterns:
-            found = matching(root, pattern) if "*" in pattern else [root / pattern]
+            # A skipped folder is never listed, so a folder it cannot list inside one is never met.
+            found = (
+                matching(root, pattern, skip=lambda folder: folder.name in SKIPPED_DIRECTORIES)
+                if "*" in pattern
+                else [root / pattern]
+            )
             files.extend(
                 path
                 for path in found

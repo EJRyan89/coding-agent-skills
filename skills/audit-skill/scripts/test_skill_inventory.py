@@ -3468,3 +3468,15 @@ def test_folder_files_refuses_a_folder_below_the_skill_it_cannot_list(tmp_path: 
     with unlistable(skill / "references"), pytest.raises(PermissionError) as raised:
         skill_inventory.folder_files(skill)
     assert raised.value.filename == str(skill / "references")
+
+
+def test_folder_files_never_lists_a_skipped_folder_so_one_it_cannot_list_inside_it_is_passed_over(
+    tmp_path: Path,
+) -> None:
+    skill = tmp_path / "skill"
+    (skill / "node_modules" / "deep").mkdir(parents=True)
+    (skill / "node_modules" / "deep" / "x.js").write_text("", encoding="utf-8")
+    (skill / "SKILL.md").write_text("", encoding="utf-8")
+    with unlistable(skill / "node_modules" / "deep"):
+        listed = [path.relative_to(skill).as_posix() for path in skill_inventory.folder_files(skill)]
+    assert listed == ["SKILL.md"]

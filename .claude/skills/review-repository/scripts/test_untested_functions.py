@@ -692,6 +692,14 @@ class PresenceReadTests(unittest.TestCase):
             self.module.suites(self.root)
         self.assertEqual(str(deep), raised.exception.filename)
 
+    def test_suites_never_lists_the_fixtures_so_a_folder_it_cannot_list_inside_them_is_passed_over(self) -> None:
+        fixture = self.root / "tests" / "fixtures" / "deep"
+        fixture.mkdir(parents=True)
+        (fixture / "test_fixture.py").write_text("pass\n", encoding="utf-8", newline="\n")
+        (self.root / "tests" / "test_real.py").write_text("pass\n", encoding="utf-8", newline="\n")
+        with unlistable(fixture):
+            self.assertEqual({"tests/test_real.py": "pass\n"}, self.module.suites(self.root))
+
     def test_entries_refuses_a_head_it_cannot_stat_never_counts_it_absent(self) -> None:
         head = self.root / "tool.py"
         head.write_text("def run():\n    return 1\n", encoding="utf-8")

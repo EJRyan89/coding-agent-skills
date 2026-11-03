@@ -215,7 +215,11 @@ def python_files(top: Path) -> list[Path]:
     files: list[Path] = []
     for root in PYTHON_ROOTS:
         path = top / root
-        found = [path] if path.is_file() else file_presence.matching(path, "**/*.py")
+        found = (
+            [path]
+            if path.is_file()
+            else file_presence.matching(path, "**/*.py", skip=lambda folder: folder.name == "fixtures")
+        )
         files += [file for file in found if not is_suite_name(file.name) and "fixtures" not in file.parts]
     return files
 

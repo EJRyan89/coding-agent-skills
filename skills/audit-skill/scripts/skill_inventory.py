@@ -1183,11 +1183,12 @@ def normalized_blocks(text: str) -> list[tuple[int, tuple[str, ...]]]:
 
 def folder_files(directory: Path) -> list[Path]:
     """Every file of a skill folder that inventory sizes, in the order it lists them."""
+    # A skipped folder is never listed, so a folder it cannot list inside one is never met.
     return sorted(
         (
             path
-            for path in matching(directory, "**/*")
-            if not SKIPPED_DIRECTORIES.intersection(path.relative_to(directory).parts[:-1]) and is_listed_file(path)
+            for path in matching(directory, "**/*", skip=lambda folder: folder.name in SKIPPED_DIRECTORIES)
+            if is_listed_file(path)
         ),
         key=lambda path: posix(path.relative_to(directory)).casefold(),
     )
