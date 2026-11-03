@@ -259,7 +259,7 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
     under a directory holding none. A solution that cannot be read is reported unreadable and lists no project, so
     the answer says why it is empty, and an entry `refusal` refuses is reported before anything looks it up."""
     path = path.resolve()
-    if path.is_file():
+    if file_presence.is_present(path, other_is_absent=True):
         if not is_solution(path):
             raise Failed(f"{path} is not a .sln or .slnx solution")
         projects: list[Path] = []
@@ -276,7 +276,13 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
             refused = refusal(candidate, tree)
             if refused is not None:
                 graph_unreadable.append((candidate, refused))
-            elif candidate.exists():
+                continue
+            try:
+                present = file_presence.is_occupied(candidate)
+            except OSError as error:
+                graph_unreadable.append((candidate, error.strerror or str(error)))
+                continue
+            if present:
                 projects.append(candidate)
             else:
                 graph_unreadable.append((candidate, "listed by the solution but not found"))
@@ -488,7 +494,7 @@ def closure_from_assets(graph: Graph, project: Project, assets_path: Path, servi
 def build_closure(graph: Graph, project: Project, services: Services) -> None:
     """Fill the project's targets: the direct packages, their package nodes, and where their edges came from."""
     config = project.file.path.parent / PACKAGES_CONFIG
-    if config.is_file():
+    if file_presence.is_present(config, other_is_absent=True):
         direct: list[PackageRef] = []
         try:
             direct = read_packages_config(config)
@@ -500,7 +506,7 @@ def build_closure(graph: Graph, project: Project, services: Services) -> None:
         return
     project.targets = [file_target(project, list(project.file.packages))]
     assets_path = project.file.path.parent / "obj" / ASSETS_FILE
-    if project.file.style == "sdk" and assets_path.is_file():
+    if project.file.style == "sdk" and file_presence.is_present(assets_path, other_is_absent=True):
         closure_from_assets(graph, project, assets_path, services)
     if project.targets[0].framework == NO_FRAMEWORK:
         refuse_file_unevaluated(graph, project, packages=True)

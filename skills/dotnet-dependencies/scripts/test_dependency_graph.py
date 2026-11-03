@@ -14,8 +14,9 @@ import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -2859,6 +2860,26 @@ class MSBuildEvaluationTests(Fixture):
         self.assertEqual([[label, "net8.0;net9.0", "Lantern.Json", "1"]], self.lines(rows, "TRUNCATED"))
 
 
+@contextlib.contextmanager
+def unlistable(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused: os.scandir and os.listdir raise PermissionError naming it, so
+    Path.iterdir raises on every supported Python, through os.listdir on 3.11 and os.scandir from 3.12. Its stat, and
+    every other folder, are read as they are."""
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any = ".", *rest: Any, **options: Any) -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == folder:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real(path, *rest, **options)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name))))
+        yield
+
+
 class PresenceReadTests(Fixture):
     """Each reader that chooses among a folder's entries, or walks up for one, tells a file, a folder, and nothing
     apart, and refuses an entry it cannot stat or a folder it cannot list rather than reading it as absent."""
@@ -2916,20 +2937,61 @@ class PresenceReadTests(Fixture):
             packages / "Lantern.Core.2.0.0",
             dependency_graph.package_directory([other, packages], "Lantern.Core", "2.0.0"),
         )
-        real = os.scandir
-
-        def scandir(path: object = ".") -> object:
-            if isinstance(path, (str, os.PathLike)) and Path(path) == packages:
-                raise PermissionError(13, "Access is denied", str(path))
-            return real(path)  # type: ignore[call-overload]  # the path a test hands on
-
-        with mock.patch.object(os, "scandir", scandir), self.assertRaises(msbuild_reader.Unreadable) as raised:
+        with unlistable(packages), self.assertRaises(msbuild_reader.Unreadable) as raised:
             dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0")
         self.assertEqual((packages, "Access is denied"), (raised.exception.file, raised.exception.reason))
         unpacked = packages / "Lantern.Core.2.0.0"
         with stat_failing_at(unpacked), self.assertRaises(msbuild_reader.Unreadable) as raised:
             dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0")
         self.assertEqual(unpacked, raised.exception.file)
+
+    def test_a_package_folder_it_cannot_read_is_an_unreadable_row_and_its_nuspec_edges_are_left_out(self) -> None:
+        root = self.mixed_solution()
+        through_nuspec = ["src/Harbor.Web/Harbor.Web.csproj", "-", "Lantern.Json", "graph"]
+        nuspec_path = [*through_nuspec, "Lantern.Core (v2.0.0) > Lantern.Json (v13.0.1)"]
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertIn(nuspec_path, self.lines(rows, "PATH"))
+        packages = self.root / "packages"
+        unpacked = packages / "Lantern.Core.2.0.0"
+        # A folder it cannot list leaves the project no nuspec node at all; one package it cannot stat leaves out that
+        # package's node, and the edges through it, while the other package's node stays.
+        for label, failing, shown, source in (
+            ("listing", unlistable(packages), "packages", "direct"),
+            ("stat", stat_failing_at(unpacked), "packages/Lantern.Core.2.0.0", "nuspec"),
+        ):
+            with self.subTest(label), failing:
+                code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+            self.assertEqual(1, code)
+            self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))
+            web = ["src/Harbor.Web/Harbor.Web.csproj", "legacy", source, "listed"]
+            self.assertIn(web, self.lines(rows, "PROJECT"))
+            self.assertNotIn(nuspec_path, self.lines(rows, "PATH"))
+
+    def test_a_packages_config_or_assets_file_it_cannot_stat_fails_the_graph(self) -> None:
+        root = self.mixed_solution()
+        for path in (
+            self.root / "src" / "Harbor.Web" / "packages.config",
+            self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json",
+        ):
+            with (
+                self.subTest(path.name),
+                stat_failing_at(path),
+                self.assertRaises(PermissionError) as raised,
+            ):
+                dependency_graph.build_graph(root, self.without_dotnet)
+            self.assertEqual(str(path), raised.exception.filename)
+
+    def test_a_root_or_listed_project_it_cannot_stat_is_refused_with_its_reason(self) -> None:
+        root = self.mixed_solution()
+        with stat_failing_at(root), self.assertRaises(PermissionError) as raised:
+            dependency_graph.resolve_root(root, [])
+        self.assertEqual(str(root), raised.exception.filename)
+        listed = self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj"
+        unreadable: list[tuple[Path, str]] = []
+        with stat_failing_at(listed):
+            _, _, projects = dependency_graph.resolve_root(root, unreadable)
+        self.assertNotIn(listed, projects)
+        self.assertEqual([(listed, "Access is denied")], unreadable)
 
     def test_a_config_it_cannot_stat_fails_the_graph_and_a_folder_of_its_name_is_passed_over(self) -> None:
         root = self.mixed_solution()

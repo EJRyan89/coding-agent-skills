@@ -479,6 +479,19 @@ class PathBoundTests(unittest.TestCase):
             (base / marker).mkdir()
             self.assertEqual(base, examined_tree(base))
 
+    def test_a_checkout_marker_it_cannot_stat_is_refused_never_read_as_no_checkout(self) -> None:
+        base = self.root / "repo" / "src"
+        base.mkdir(parents=True)
+        marker = ".dotnet-dependencies-test-checkout"
+        (self.root / marker).mkdir()
+        with (
+            mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker),
+            stat_failing_at(self.root / "repo" / marker),
+            self.assertRaises(PermissionError) as raised,
+        ):
+            examined_tree(base)
+        self.assertEqual(str(self.root / "repo" / marker), raised.exception.filename)
+
     def test_a_read_takes_a_regular_file_within_the_bound_and_refuses_any_other(self) -> None:
         path = self.root / "Lib.csproj"
         path.write_bytes(b"x" * 16)
