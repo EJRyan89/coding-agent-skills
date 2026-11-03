@@ -23,17 +23,28 @@ client given a `runner` alone refuses a call with input rather than run real git
 environment; there the time limit bounds each wait for output rather than the whole command.
 
 An `isolated` client is for git run against content it did not write, such as `grep --no-index` over a review's
-snapshot. Each of its commands names the null device as its repository (`NO_REPOSITORY`), so git discovers none, in
-the folder or above it, and reads no repository's configuration, and runs with
-`bounded_process.isolated_git_environment`, so no system, global, or command-scope setting from the environment shapes
-what it prints. Only its arguments and the files it reads decide its output. Its caller asks for it; a client that
-is not isolated refuses a `grep` or `diff` any of whose arguments spells `--no-index` or an abbreviation git accepts
-for it (`reads_no_repository`), wherever it stands, since that form reads files rather than a repository, so a caller
-that forgets to ask fails instead of running git unisolated. The refusal reads no option grammar: a search pattern is
-never among the arguments but the client's own `pattern`, which it gives git as `-e <pattern>` right after the
-subcommand, so a pattern that reads `--no-index` is searched for, and a caller that needs one inside its own arguments
-uses an isolated client. An isolated client refuses a test's runner, which could not start git with the isolated
-environment.
+snapshot. Each of its commands names the null device as its repository (`NO_REPOSITORY`), so git discovers none, in the
+folder or above it, and reads no repository's configuration, and runs with `bounded_process.isolated_git_environment`,
+so no system, global, or command-scope setting from the environment shapes what it prints. Only its arguments and the
+files it reads decide its output. Its caller asks for it; a client that is not isolated refuses a `grep`, `diff`, or
+`difftool` any of whose arguments spells `--no-index` or an abbreviation git accepts for it (`reads_no_repository`),
+wherever it stands, since that form reads files rather than a repository, so a caller that forgets to ask fails instead
+of running git unisolated. The refusal reads no option grammar: a search pattern is never among the arguments but the
+client's own `pattern`, which it gives git as `-e <pattern>` right after the subcommand, so a pattern that reads
+`--no-index` is searched for, and a caller that needs one inside its own arguments uses an isolated client. The
+subcommand is read by name, so a plain client also refuses a `-c` or `--config-env` among git's own options that sets
+anything in a section that can define an alias (`ALIAS_SECTIONS`): an alias, or a file included from the command line,
+could make another name run `grep` or `diff`, and so does a `help.autocorrect` that runs the command git guesses a
+misspelled name meant (`SUBCOMMAND_KEYS`). For the same reason it refuses an `--exec-path=<folder>`, which makes git run
+a `git-<name>` program from that folder under a name the client cannot read. It does not refuse a subcommand it does not
+know, since the commands git runs depend on the installed git and on the `git-<name>` programs on PATH, which it cannot
+read without starting git; a misspelled name a caller writes is its own literal, which its tests run. It cannot see an
+alias or an autocorrection that git's configuration files or the environment's `GIT_CONFIG_PARAMETERS` and
+`GIT_CONFIG_COUNT` define, nor tell a folder of content it did not write from a repository, so a command that reads the
+surrounding repository by design, such as `ls-files --others`, `grep --untracked`, or `check-ignore --no-index`, runs on
+a plain client, and so does a `diff` run outside any repository, which git reads as `--no-index` without the option; a
+caller over such content asks for an isolated client. Of git's commands, `grep`, `diff`, `difftool`, and `check-ignore`
+take `--no-index`. An isolated client refuses a test's runner, which could not start git with the isolated environment.
 
 Both hold git in a process tree (`job_tree`), because git starts programs of its own: Git for Windows' launcher starts
 the real git, a fetch starts its transport and pack programs, and a command may run a credential helper, a hook, or an
@@ -79,11 +90,24 @@ MISSING_GIT = "Git executable 'git' was not found; install Git first"
 NO_REPOSITORY = f"--git-dir={os.devnull}"
 # The subcommands that, given `--no-index`, read the files they are pointed at rather than a repository, which only an
 # isolated client runs. `check-ignore --no-index` still reads its repository's ignore rules, so it is not one.
-ISOLATED_SUBCOMMANDS = frozenset({"grep", "diff"})
+ISOLATED_SUBCOMMANDS = frozenset({"grep", "diff", "difftool"})
+# git's option that runs its `git-<name>` programs from another folder, given as `--exec-path=<folder>`; alone, it
+# prints the folder and runs nothing.
+EXEC_PATH_OPTION = "--exec-path="
+
 # Every spelling git may take for --no-index: the option and each abbreviation of it from `--no-i` upward. git refuses
 # the shorter ones it finds ambiguous, such as `--no-i` beside grep's `--no-ignore-case`, so refusing them too costs
 # nothing, and git takes no abbreviation shorter than `--no-`. A plain client refuses each wherever it stands.
 NO_INDEX_SPELLINGS = frozenset("--no-index"[:length] for length in range(len("--no-i"), len("--no-index") + 1))
+# git's options that set a configuration value for one command, each spelled `<name>=<value>` or
+# `<name>=<variable>`, and the settings, case-folded as git reads them, that can make a command line run another
+# subcommand than the one it names: an alias (`alias.*`), a file `include.path` or an `includeIf.<condition>.path`
+# includes, whose own settings may hold one, and `help.autocorrect`, which runs the command git guesses a misspelled
+# name meant. Every other setting leaves the subcommand as named; one that changes a program it starts, such as
+# `diff.external` or `core.hooksPath`, does not make another subcommand read files rather than a repository.
+CONFIGURATION_OPTIONS = frozenset({"-c", "--config-env"})
+ALIAS_SECTIONS = frozenset({"alias", "include", "includeif"})
+SUBCOMMAND_KEYS = frozenset({"help.autocorrect"})
 # A full object name, SHA-1 or SHA-256, as `rev-parse --verify` prints it.
 OBJECT_NAME = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -94,7 +118,17 @@ RETRIED_SUBCOMMANDS = frozenset({"fetch", "ls-remote"})
 # git's options that take their value as the next argument, so the subcommand is never read from a value: every one
 # git.c reads that way.
 GLOBAL_VALUE_OPTIONS = frozenset(
-    {"-c", "-C", "--attr-source", "--config-env", "--git-dir", "--namespace", "--super-prefix", "--work-tree"}
+    {
+        "-c",
+        "-C",
+        "--attr-source",
+        "--config-env",
+        "--git-dir",
+        "--namespace",
+        "--shallow-file",
+        "--super-prefix",
+        "--work-tree",
+    }
 )
 # A dropped connection, a failed handshake, a host briefly not found, or a gateway briefly down clears in seconds; a
 # longer outage should fail fast rather than hold a skill for minutes, leaving the rerun to the user.
@@ -272,6 +306,18 @@ def output_lines(output: str) -> list[str]:
     return output.removesuffix("\n").split("\n") if output else []
 
 
+def command_name(arguments: Sequence[str]) -> str:
+    """`git` and the subcommand `arguments` run, past git's own options, the name a failure is labelled with; `git`
+    alone when they name none."""
+    return " ".join(["git", *filter(None, [subcommand(arguments)])])
+
+
+def failure_message(arguments: Sequence[str], result: GitResult) -> str:
+    """What a failed `git <arguments>` says: git's stderr, or, when it printed none, the subcommand and the exit
+    code."""
+    return result.stderr.strip() or f"{command_name(arguments)} failed with exit code {result.returncode}"
+
+
 def transient_failure(result: GitResult) -> bool:
     """Whether a git command's result is a transport failure that may clear on its own.
 
@@ -309,6 +355,33 @@ def reads_no_repository(arguments: Sequence[str]) -> bool:
         and arguments[index] in ISOLATED_SUBCOMMANDS
         and any(argument in NO_INDEX_SPELLINGS for argument in arguments[index + 1 :])
     )
+
+
+def configured_keys(arguments: Sequence[str]) -> list[str]:
+    """The name, case-folded, of each setting a `-c` or `--config-env` among git's own options in `arguments` makes,
+    in either spelling: the value as the next word or attached after `=`."""
+    end = subcommand_index(arguments)
+    index, keys = 0, []
+    while index < (len(arguments) if end is None else end):
+        argument = arguments[index]
+        option, attached, value = argument.partition("=")
+        if argument in CONFIGURATION_OPTIONS and index + 1 < len(arguments):
+            keys.append(arguments[index + 1].partition("=")[0].casefold())
+        elif attached and option == "--config-env":
+            keys.append(value.partition("=")[0].casefold())
+        index += 2 if argument in GLOBAL_VALUE_OPTIONS else 1
+    return keys
+
+
+def defines_alias(arguments: Sequence[str]) -> bool:
+    """Whether `arguments` set, among git's own options, anything that can make the command line run another
+    subcommand than it names, a key in a section of `ALIAS_SECTIONS` or one of `SUBCOMMAND_KEYS`, or name another
+    folder of git programs with `--exec-path=`."""
+    end = subcommand_index(arguments)
+    own = arguments if end is None else arguments[:end]
+    return any(
+        key.partition(".")[0] in ALIAS_SECTIONS or key in SUBCOMMAND_KEYS for key in configured_keys(arguments)
+    ) or any(argument.startswith(EXEC_PATH_OPTION) for argument in own)
 
 
 def _command(arguments: Sequence[str], directory: str | Path | None, *, isolated: bool) -> list[str]:
@@ -369,8 +442,9 @@ class GitClient:
     With `isolated`, every command names `NO_REPOSITORY`, and the real runners and `stream` start it with
     `bounded_process.isolated_git_environment`, as the module's docstring describes; such a client takes only the real
     runners, and refuses another with a TypeError. Without it, a command `reads_no_repository` names is refused with a
-    ValueError before git starts. `run`, `output`, and `stream` take a search's `pattern` apart from its arguments and
-    give it to git as `-e <pattern>` right after the subcommand, where the refusal never reads it.
+    ValueError before git starts, and so is one `defines_alias` names. `run`, `output`, and `stream` take a search's
+    `pattern` apart from its arguments and give it to git as `-e <pattern>` right after the subcommand, where the
+    refusal never reads it.
     """
 
     def __init__(
@@ -431,7 +505,14 @@ class GitClient:
         subcommand to follow."""
         if not self.isolated and reads_no_repository(arguments):
             raise ValueError(
-                "git grep or diff --no-index reads files no repository holds; run it on GitClient(isolated=True)"
+                "git grep, diff, or difftool --no-index reads files no repository holds; "
+                "run it on GitClient(isolated=True)"
+            )
+        if not self.isolated and defines_alias(arguments):
+            raise ValueError(
+                "an alias, autocorrection, or a folder of git programs set on git's command line can run grep, "
+                "diff, or difftool --no-index unseen; "
+                "run it on GitClient(isolated=True)"
             )
         given = list(arguments)
         if pattern is not None:
@@ -478,10 +559,9 @@ class GitClient:
         """Run `git <arguments>` as `run` does and return its stdout; a nonzero exit raises a classified GitError."""
         result = self.run(arguments, directory=directory, timeout=timeout, input_bytes=input_bytes, pattern=pattern)
         if result.returncode != 0:
-            message = (
-                result.stderr.strip() or f"git {' '.join(arguments[:1])} failed with exit code {result.returncode}"
+            raise GitError(
+                failure_message(arguments, result), kind=classify_failure(result.stderr), returncode=result.returncode
             )
-            raise GitError(message, kind=classify_failure(result.stderr), returncode=result.returncode)
         return result.stdout
 
     def names(
@@ -492,7 +572,9 @@ class GitClient:
 
         Runs the command as `output` does with `-z` after its subcommand, so git neither quotes a name holding a
         non-ASCII byte or a newline nor ends a field on a byte a name can hold, and splits on NUL, the one byte git
-        refuses in a name. A status or a rename's old name is a field of its own, in the order git prints it.
+        refuses in a name. Fields come in the order git prints them, in the command's own shape: `diff --name-status`
+        gives a status as a field of its own, before its path or a rename's two, while `status --porcelain` gives its
+        two-letter status, a space, and the path in one field, followed by a rename's original path in another.
         """
         index = subcommand_index(arguments)
         position = len(arguments) if index is None else index + 1
@@ -548,8 +630,9 @@ class GitClient:
             return result.stdout
         if result.returncode == 1 and not result.stderr.strip():
             return None
-        message = result.stderr.strip() or f"git {' '.join(arguments[:1])} failed with exit code {result.returncode}"
-        raise GitError(message, kind=classify_failure(result.stderr), returncode=result.returncode)
+        raise GitError(
+            failure_message(arguments, result), kind=classify_failure(result.stderr), returncode=result.returncode
+        )
 
     def commit_of(self, reference: str, *, directory: str | Path) -> str | None:
         """The full name of the commit `reference` names in `directory`'s repository, or None when git answers that it
@@ -563,11 +646,11 @@ class GitClient:
         name = self._object_of(f"{commit}:{path}", directory)
         if name is None:
             return None
-        result = self.run(["cat-file", "blob", name], directory=directory)
+        arguments = ["cat-file", "blob", name]
+        result = self.run(arguments, directory=directory)
         if result.returncode != 0:
-            message = result.stderr.strip() or f"git cat-file failed with exit code {result.returncode}"
-            kind = classify_failure(result.stderr)
-            raise GitError(f"{commit}:{path}: {message}", kind=kind, returncode=result.returncode)
+            message = f"{commit}:{path}: {failure_message(arguments, result)}"
+            raise GitError(message, kind=classify_failure(result.stderr), returncode=result.returncode)
         return result.output_bytes()
 
     def _object_of(self, name: str, directory: str | Path) -> str | None:

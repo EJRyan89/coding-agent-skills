@@ -271,9 +271,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   finally starts, and a relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the
   store of refs and objects every worktree shares, so it does not change which checkout a call writes. The guard
   reads git's own options as git does, with no abbreviation and with a value attached after `=` or as the next word
-  (`-C`, `-c`, `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--super-prefix`, `--work-tree`), and
-  `core.worktree` and `alias.<name>` among the command-line configuration a call sees: `GIT_CONFIG_PARAMETERS`,
-  `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`.
+  (`-C`, `-c`, `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--shallow-file`, `--super-prefix`,
+  `--work-tree`), and `core.worktree` and `alias.<name>` among the command-line configuration a call sees:
+  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`.
 - **Location variables.** `GIT_DIR`, `GIT_WORK_TREE`, and the two configuration variables reach a git call from
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,

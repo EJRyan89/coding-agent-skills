@@ -116,7 +116,7 @@ import whole_number
 from atomic_file import UnfinishedCopyError
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError, output_lines
+from git_client import GitClient, GitError, command_name, output_lines
 from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
@@ -454,17 +454,17 @@ def area_of(path: str) -> Area:
 # --- git ------------------------------------------------------------------------------------------
 
 
-def git_failure(repository: Path, subcommand: str, exc: GitError) -> AuditError:
+def git_failure(repository: Path, command: str, exc: GitError) -> AuditError:
     if exc.kind == "not_repository":
         return AuditError(f"{repository.as_posix()} is not a Git repository")
-    return AuditError(f"git {subcommand}: {exc}")
+    return AuditError(f"{command}: {exc}")
 
 
 def git_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> str:
     try:
         return git.output(arguments, directory=repository)
     except GitError as exc:
-        raise git_failure(repository, arguments[0], exc) from exc
+        raise git_failure(repository, command_name(arguments), exc) from exc
 
 
 def commit_of(git: GitClient, repository: Path, ref: str) -> str:
@@ -489,7 +489,7 @@ def released_tag(git: GitClient, repository: Path, head: str) -> str | None:
     try:
         return last_release(git, repository, head)
     except GitError as exc:
-        raise git_failure(repository, "for-each-ref", exc) from exc
+        raise git_failure(repository, "git for-each-ref", exc) from exc
 
 
 def checkout_top(git: GitClient, repository: Path) -> tuple[Path, bool]:
@@ -1145,7 +1145,7 @@ def search_construct(git: GitClient, repository: Path, head: str, construct: Seq
     try:
         found = git.quiet_output(arguments, directory=repository, input_bytes=patterns)
     except GitError as exc:
-        raise git_failure(repository, "grep", exc) from exc
+        raise git_failure(repository, "git grep", exc) from exc
     if found is None:
         return [], False
     hits = []
