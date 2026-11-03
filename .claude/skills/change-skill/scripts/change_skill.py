@@ -63,7 +63,7 @@ import json_reader
 from console import run_main
 from file_presence import NotAFile, is_directory, is_present, matching
 from flat_text import flat_text
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, output_line
 from markdown_sections import find_fences
 from path_containment import within
 
@@ -450,7 +450,7 @@ def owed(tree: Tree, changed: Iterable[str]) -> Owed:
 
 
 def print_gates(root: Path, base: str, client: GitClient) -> int:
-    commit = client.output(["merge-base", base, "HEAD"], directory=root).strip()
+    commit = output_line(client.output(["merge-base", base, "HEAD"], directory=root))
     listings = (
         client.output(["diff", "--name-only", "--no-renames", "-z", commit, "--"], directory=root),
         client.output(["ls-files", "--others", "--exclude-standard", "-z"], directory=root),

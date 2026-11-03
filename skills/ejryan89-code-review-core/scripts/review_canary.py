@@ -33,7 +33,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-from git_client import GitClient, GitError, Runner, command_name
+from git_client import GitClient, GitError, Runner, command_name, output_line, output_lines
 from github_client import replace_undecodable
 from link_probe import is_link_or_junction
 from review_config import ConfigurationError, validate_repository_identity
@@ -231,7 +231,7 @@ class _Repository:
         paths = [_index_path(relative) for relative, _ in files]
         stream = _blob_stream(files)
         self.git("read-tree", "--empty")
-        blobs = self.git("fast-import", "--quiet", "--cat-blob-fd=1", input_bytes=stream).split()
+        blobs = output_lines(self.git("fast-import", "--quiet", "--cat-blob-fd=1", input_bytes=stream))
         if len(blobs) != len(files):
             raise FixtureError("git fast-import printed an unexpected listing")
         entries = b"".join(
@@ -239,14 +239,14 @@ class _Repository:
         )
         added = self.git("update-index", "--verbose", "-z", "--add", "--index-info", input_bytes=entries)
         if added != "".join(f"add '{relative}'\n" for relative, _ in files):
-            listed = set(added.splitlines())
+            listed = set(output_lines(added))
             refused = next((relative for relative, _ in files if f"add '{relative}'" not in listed), None)
             if refused is None:
                 raise FixtureError("git update-index printed an unexpected listing")
             raise FixtureError(f"git update-index refused the fixture path {refused}")
-        tree_id = self.git("write-tree").strip()
+        tree_id = output_line(self.git("write-tree"))
         parents = ("-p", parent) if parent else ()
-        return self.git(*IDENTITY, "commit-tree", "--no-gpg-sign", tree_id, *parents, "-m", message).strip()
+        return output_line(self.git(*IDENTITY, "commit-tree", "--no-gpg-sign", tree_id, *parents, "-m", message))
 
 
 def _comments(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:

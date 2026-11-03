@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import pr_status
 from bounded_process import Finished
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult, GitHubError
@@ -1770,3 +1771,19 @@ def test_every_file_with_its_content_before_and_after_counts_and_only_their_orde
 def test_a_listing_in_any_other_shape_fails_closed(listed: bytes) -> None:
     with pytest.raises(QueryError, match="unexpected shape"):
         change_identity(listed)
+
+
+def test_a_wrong_shaped_answer_git_gave_is_a_failure_to_resolve_never_git_not_running() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(0, "not an object name\n", "")
+
+    with pytest.raises(pr_status.QueryError, match=r"^cannot resolve the tip: git rev-parse --verify answered"):
+        pr_status._commit_of(GitClient(run), "r", "HEAD", "the tip")
+
+
+def test_a_failure_to_run_git_is_said_as_one() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        raise GitError("did not finish", kind="timeout")
+
+    with pytest.raises(pr_status.QueryError, match=r"^could not run git: did not finish$"):
+        pr_status._commit_of(GitClient(run), "r", "HEAD", "the tip")

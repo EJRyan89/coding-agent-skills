@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from flat_text import flat_text
-from git_client import GitClient, GitError, GitResult
+from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 from pull_carried import InBase, carried
@@ -87,7 +87,7 @@ def _commit_of(git: GitClient, repository_root: str, reference: str, what: str) 
     try:
         return git.commit_of(reference, directory=repository_root)
     except GitError as exc:
-        if exc.returncode is None:
+        if not exc.answered:
             raise QueryError(f"could not run git: {exc}") from exc
         raise QueryError(f"cannot resolve {what}: {flat_text(str(exc))}") from exc
 
@@ -98,7 +98,7 @@ def _quiet(git: GitClient, repository_root: str, arguments: list[str], cannot: s
     try:
         return git.quiet_output(arguments, directory=repository_root)
     except GitError as exc:
-        if exc.returncode is None:
+        if not exc.answered:
             raise QueryError(f"could not run git: {exc}") from exc
         raise QueryError(f"{cannot}: {flat_text(str(exc))}") from exc
 
@@ -119,7 +119,7 @@ def branch_tips(repository_root: str, branch: str, git: GitClient | None = None)
     )
     if configured.returncode != 0 or "\0" not in configured.stdout:
         raise QueryError(f"cannot read the upstream of {branch!r}: {(configured.stderr or '').strip()}")
-    upstream_ref, track = configured.stdout.strip().split("\0", 1)
+    upstream_ref, track = output_line(configured.stdout).split("\0", 1)
     if not upstream_ref or track == "[gone]":
         return head, None
     what = f"upstream {upstream_ref!r} of {branch!r}"
@@ -194,7 +194,7 @@ def change_match(repository_root: str, base_ref: str, git: GitClient | None = No
         found = _quiet(client, repository_root, ["merge-base", base_ref, tip], cannot)
         if found is None:
             return None  # no merge base: the tip never left base_ref, so no change of it is a change since then
-        fork_point = found.strip()
+        fork_point = output_line(found)
         if not SHA_PATTERN.fullmatch(fork_point):
             raise QueryError(f"{cannot}: git answered {fork_point!r}, not a commit")
         return change(fork_point, tip)

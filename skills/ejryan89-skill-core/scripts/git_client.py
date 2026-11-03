@@ -299,6 +299,12 @@ def subcommand(arguments: Sequence[str]) -> str | None:
     return None if index is None else arguments[index]
 
 
+def output_line(output: str) -> str:
+    """The one line git wrote, with only the "\\n" that ends it taken off: never the spaces, tabs, or other
+    characters str.strip() also drops, such as U+00A0 and U+2028, which a ref name or a path can hold."""
+    return output.removesuffix("\n")
+
+
 def output_lines(output: str) -> list[str]:
     """The lines git wrote, split on "\\n" alone, the one byte that ends a line of its output: never on the other
     characters str.splitlines() breaks on, such as U+0085 and U+2028, which a ref name or a path can hold. A last

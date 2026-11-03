@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import git_worktrees
 from console import run_main
-from git_client import GitClient, GitError, GitResult, output_lines
+from git_client import GitClient, GitError, GitResult, output_line, output_lines
 
 from deployer import platform_support
 
@@ -235,14 +235,14 @@ def row(hub: Path, tree: git_worktrees.Worktree) -> Row:
     if not file_presence.is_directory(path, other_is_absent=True):
         return Row(branch, "missing", "-", "-", "-", shown)
     counted = git(hub, "rev-list", "--left-right", "--count", f"{MAIN}...{tree.head or 'HEAD'}", timeout=None)
-    counts = counted.stdout.split()
+    counts = output_line(counted.stdout).split("\t")
     # A count git could not take is unknown, never read as a branch with commits of its own.
     known = counted.returncode == 0 and len(counts) == 2 and all(count.isdigit() for count in counts)
     behind, ahead = counts if known else (UNKNOWN, UNKNOWN)
     try:
         dirty = git_worktrees.changed_paths(CLIENT, path)
     except GitError as exc:
-        if exc.returncode is None:
+        if not exc.answered:
             raise
         # Git ran and could not read the checkout, as when its .git file names a folder that is gone.
         return Row(branch, "unreadable", ahead, behind, "-", shown)

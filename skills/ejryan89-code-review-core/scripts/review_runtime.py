@@ -27,7 +27,7 @@ import file_presence
 from device_names import is_reserved_device_name
 from executable_locator import find_executable
 from git_client import OBJECT_NAME as GIT_OBJECT_ID
-from git_client import GitClient, GitError, GitResult, GitStream, Runner, command_name, subprocess_runner
+from git_client import GitClient, GitError, GitResult, GitStream, Runner, command_name, output_line, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
 from link_probe import is_link_or_junction
@@ -2084,9 +2084,9 @@ def read_blob(
         raise RuntimeContractError(f"Blob {abbreviation} did not resolve exactly")
     if maximum is not None:
         size = git_in(checkout, runner, "cat-file", "-s", blob)
-        if size.returncode != 0 or not re.fullmatch(r"[0-9]+", size.stdout.strip()):
+        if size.returncode != 0 or not re.fullmatch(r"[0-9]+", output_line(size.stdout)):
             raise RuntimeContractError(f"The checkout did not return the size of blob {blob}")
-        if int(size.stdout.strip()) > maximum:
+        if int(output_line(size.stdout)) > maximum:
             return None
     result = git_in(checkout, runner, "cat-file", "blob", blob)
     content = result.output_bytes()

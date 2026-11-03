@@ -120,7 +120,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import whole_number
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError, output_lines
+from git_client import GitClient, GitError, output_line, output_lines
 from git_worktrees import Worktree, list_worktrees
 from github_client import GitHubClient, GitHubError
 from github_remote import github_repository
@@ -322,14 +322,14 @@ def hub_line(git: GitClient, place: Place, dry_run: bool) -> tuple[str, bool]:
 def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
     """Fast-forward the hub to origin's main, or with `dry_run` compare it with origin's main, and say what happened."""
     # None only for a detached HEAD; a HEAD git cannot read raises, which the HUB line names.
-    name = (git.quiet_output(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=hub) or "").strip()
+    name = output_line(git.quiet_output(["symbolic-ref", "--quiet", "--short", "HEAD"], directory=hub) or "")
     if name != BASE:
         return f"not fast-forwarded: it is on {name or 'a detached HEAD'}, not {BASE}"
     if git.names(["status", "--porcelain", "--untracked-files=no"], directory=hub):
         return "not fast-forwarded: it has uncommitted changes"
-    before = git.output(["rev-parse", "HEAD"], directory=hub).strip()
+    before = output_line(git.output(["rev-parse", "HEAD"], directory=hub))
     if dry_run:
-        listed = git.output(["ls-remote", REMOTE, f"refs/heads/{BASE}"], directory=hub).split()
+        listed = output_line(git.output(["ls-remote", REMOTE, f"refs/heads/{BASE}"], directory=hub)).split("\t")
         if not listed:
             return f"not fast-forwarded: {REMOTE} has no {BASE}"
         return (
@@ -342,7 +342,7 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
     if merged.returncode != 0:
         reason = flat_text(merged.stderr) or f"git merge --ff-only exited {merged.returncode}"
         return f"not fast-forwarded: {reason}"
-    after = git.output(["rev-parse", "HEAD"], directory=hub).strip()
+    after = output_line(git.output(["rev-parse", "HEAD"], directory=hub))
     return f"current at {short(after)}" if after == before else f"fast-forwarded {short(before)} to {short(after)}"
 
 

@@ -175,7 +175,7 @@ from console import run_main
 from duplication import SANCTION_SUFFIX
 from flat_text import flat_text
 from fsops_platform import ATTRIBUTE_BY_NAME, PLATFORM_ALLOWANCE, platform_tokens_named
-from git_client import GitClient
+from git_client import GitClient, output_line
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, reached_suites
 from suite_discovery import pytest_command
@@ -2118,7 +2118,7 @@ class Gate:
         problem = generator_problem(self.generate)
         if problem:
             raise RuntimeError(problem)
-        head = self.git.output(["rev-parse", "HEAD"], directory=self.root).strip()
+        head = output_line(self.git.output(["rev-parse", "HEAD"], directory=self.root))
         return replace(self.choose(self.root, modules), head=head)
 
     def leg(self, selected: Selected) -> LegRun:
@@ -2131,7 +2131,7 @@ class Gate:
             return LegRun(name, self.minutes, 0.0, 0, {}, {}, [])
         if not selected.head:
             raise RuntimeError(f"{MUTANTS_FILE} records no commit the select step made its mutants at")
-        head = self.git.output(["rev-parse", "HEAD"], directory=self.root).strip()
+        head = output_line(self.git.output(["rev-parse", "HEAD"], directory=self.root))
         if head != selected.head:
             raise RuntimeError(
                 f"HEAD is {head}, not {selected.head}, the commit the select step made the mutants at, so this leg's "
@@ -2179,7 +2179,7 @@ class Gate:
             )
         if not selected.head:
             raise RuntimeError(f"{MUTANTS_FILE} records no commit the run tested, so its suites cannot be matched")
-        head = self.git.output(["rev-parse", "HEAD"], directory=self.root).strip()
+        head = output_line(self.git.output(["rev-parse", "HEAD"], directory=self.root))
         if head != selected.head:
             raise RuntimeError(
                 f"HEAD is {head}, not {selected.head}, the commit the run tested, whose suites judged its other "

@@ -283,7 +283,7 @@ def git_output(services: Services, directory: str | Path, *arguments: str) -> st
 
 def git_failure(root: str | Path, command: str, exc: git_client.GitError) -> GitUnavailable | CleanupError:
     """GitUnavailable when git could not run or finish, else a CleanupError naming git's reason."""
-    if exc.returncode is None:
+    if not exc.answered:
         return GitUnavailable(f"could not run git: {exc}")
     return CleanupError(f"{command} failed in {root}: {one_line(str(exc)).strip()}")
 
@@ -318,11 +318,13 @@ def reachable(services: Services, root: str | Path, sha: str, *refs: str) -> boo
     """Whether one of `refs` contains `sha`; a ref names itself or, as `refs/remotes` does, every ref below it. A git
     failure raises, so a commit git cannot test is never taken for one no ref contains."""
     listed = git_output(services, root, "for-each-ref", "--count=1", f"--contains={sha}", "--format=%(refname)", *refs)
-    return bool(listed.strip())
+    return bool(listed)
 
 
 def ahead_behind(services: Services, root: str | Path, local: str, upstream: str) -> tuple[int, int]:
-    ahead, behind = git_output(services, root, "rev-list", "--left-right", "--count", f"{local}...{upstream}").split()
+    ahead, behind = git_client.output_line(
+        git_output(services, root, "rev-list", "--left-right", "--count", f"{local}...{upstream}")
+    ).split("\t")
     return int(ahead), int(behind)
 
 
@@ -335,7 +337,7 @@ def read_worktree(
     try:
         return reader(services.git, directory, *options)
     except git_client.GitError as exc:
-        if exc.returncode is None:
+        if not exc.answered:
             raise GitUnavailable(f"could not run git: {exc}") from exc
         raise CleanupError(f"git {subcommand} failed in {directory}: {one_line(exc).strip()}") from exc
 
@@ -400,7 +402,7 @@ def origin_has(services: Services, root: str | Path, name: str) -> bool:
 def origin_head(services: Services, root: str | Path) -> str | None:
     """The branch refs/remotes/origin/HEAD names, whether or not origin has it, or None when it is unset."""
     head = quiet(services, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-    target = (head or "").strip()
+    target = git_client.output_line(head or "")
     name = target.removeprefix("refs/remotes/origin/")
     return name if name and name != target else None
 
@@ -422,7 +424,7 @@ def refresh_origin_head(services: Services, root: str | Path) -> tuple[str | Non
 
 
 def current_branch(services: Services, root: str | Path) -> str:
-    head = (quiet(services, root, "symbolic-ref", "--quiet", "--short", "HEAD") or "").strip()
+    head = git_client.output_line(quiet(services, root, "symbolic-ref", "--quiet", "--short", "HEAD") or "")
     return head or "a detached HEAD"
 
 
@@ -496,7 +498,7 @@ def fast_forward(services: Services, root: str, branch: str, old: str, new: str,
         result = git(services, root, "update-ref", "-m", "repo-cleanup: fast-forward", f"refs/heads/{branch}", new, old)
     else:
         try:
-            head = (quiet(services, worktree, "symbolic-ref", "--quiet", "HEAD") or "").strip()
+            head = git_client.output_line(quiet(services, worktree, "symbolic-ref", "--quiet", "HEAD") or "")
         except CleanupError as exc:
             return str(exc)
         if head != f"refs/heads/{branch}":
@@ -588,7 +590,10 @@ def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] |
     if skip_checkout:
         checkout = "skipped"
         emit("CHECKOUT", checkout)
-    elif (quiet(services, root, "symbolic-ref", "--quiet", "HEAD") or "").strip() == f"refs/heads/{default.name}":
+    elif (
+        git_client.output_line(quiet(services, root, "symbolic-ref", "--quiet", "HEAD") or "")
+        == f"refs/heads/{default.name}"
+    ):
         checkout = "current"
         emit("CHECKOUT", checkout)
     else:
@@ -1385,7 +1390,7 @@ def hidden_edits(services: Services, path: str) -> list[str]:
             edited.append(name)
     for start in range(0, len(compared), HASHED_PER_CALL):
         batch = compared[start : start + HASHED_PER_CALL]
-        hashes = git_output(services, path, "hash-object", "--", *(name for name, _ in batch)).split()
+        hashes = git_client.output_lines(git_output(services, path, "hash-object", "--", *(name for name, _ in batch)))
         if len(hashes) != len(batch):
             raise CleanupError(f"git hash-object did not hash each marked file of worktree {path}")
         edited += [name for (name, indexed), hashed in zip(batch, hashes, strict=True) if hashed != indexed]

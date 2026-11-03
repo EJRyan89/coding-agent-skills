@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
-from git_client import GitError
+from git_client import GitError, output_line
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from validation_support import (
     OPERATIONS_CONTRACT,
@@ -89,7 +89,7 @@ def last_release_tag(root: Path) -> tuple[str | None, str | None]:
                 "fetch it with `git fetch origin main --tags`"
             )
         # output raises on a failure, so a clone git cannot read is named, never taken for one that is not shallow.
-        if CLIENT.output(["rev-parse", "--is-shallow-repository"], directory=root).strip() == "true":
+        if output_line(CLIENT.output(["rev-parse", "--is-shallow-repository"], directory=root)) == "true":
             return None, (
                 "this clone is shallow, so the upgrade-notes check cannot see the last tag; "
                 "fetch the history with `git fetch --unshallow --tags`"

@@ -464,12 +464,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `pr_status:branch_tips`, `dotnet_format_targets:git_paths`; a for-each-ref format joined by %00 and a log format
   joined by %x00; and `git_client:output_lines`, which splits git's output on a newline alone, the one byte that ends
   a line of it, where splitlines() also breaks on U+0085, U+2028, and other characters a ref name or a path holds;
+  `git_client:output_line`, which takes off only the newline ending a one-line answer, where strip() also drops
+  U+00A0 and U+2028;
   `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
   `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason; and
   `flat_text:fact_line`, which flattens every field of a tab-separated fact line.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_git_listing_and_format_separates_on_nul`,
   which refuses a git name listing without -z, a for-each-ref or log format whose fields a byte but NUL joins, and a
-  split of git's output with splitlines() unless its module states why,
+  split of git's output with splitlines(), or a strip() or split() of it given no argument, unless its module
+  states why,
+  `tests/validation/test_python_checks.py::test_each_policy_refuses_every_form_its_documentation_names`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::LastReleaseTests::test_a_tag_whose_name_holds_a_character_splitlines_breaks_on_is_one_name`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests::test_a_path_holding_a_character_splitlines_breaks_on_is_one_path`,
   `tests/tools/test_worktrees.py::CheckoutTests::test_a_checkout_whose_path_holds_a_character_splitlines_breaks_on_is_found`,
@@ -490,8 +494,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   output passed into a function that splits it; `.split()[` or `.partition(" ")` on a line the same module wrote,
   beside a `startswith("<FACT> ")`, where a field before the one read is a path or other text that can hold a space;
   `emit(f"` and `print(f"` in a script whose output is one fact per line, formatting a path, a name, a title, an
-  exception, or another program's output without `fact_line` or `flat_text`.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2206, #2211
+  exception, or another program's output without `fact_line` or `flat_text`; `.strip()` or `.split()` with no
+  argument on git's output, a ref name read from `symbolic-ref` or `config` most of all; a git subcommand left out of
+  the policy's catalogue and run through a wrapper whose name does not say git.
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211
 
 ### Two spellings are compared as their consumer compares them
 

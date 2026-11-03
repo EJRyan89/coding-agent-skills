@@ -43,6 +43,7 @@ from call_tables import (
 from git_client import GLOBAL_VALUE_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from path_containment import posix_within, within
+from runtime_support import names_git
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
@@ -2643,8 +2644,10 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # hold, so git's output, a call's result, its stdout, or a name a scope binds to either, is split on "\n" or on NUL,
 # never with splitlines(), bound or unbound as str.splitlines(out), nor after what keeps its text, as
 # out.strip().splitlines() does: a string method, a str() or a bytes(), a slice, a formatted string, a format(), a %,
-# a concatenation, or a join. A listing, a format, or a split that must stay states why in a
-# module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
+# a concatenation, or a join. Nor is it trimmed or split by strip(), lstrip(), rstrip(), or split() with no argument,
+# which drop or break on U+00A0, U+2028, and the other whitespace such a name can hold: git_client.output_line takes
+# off the one "\n" that ends a line git wrote. Every subcommand's output counts. A listing, a format, a split, or a
+# trim that must stay states why in a module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
 # The options that make a diff, or a log or a show of a commit's changes, list the paths it touches.
@@ -2675,6 +2678,8 @@ GIT_SILENT_OPTIONS = frozenset({"-q", "--quiet"})
 # beside an error does, is no such command.
 GIT_ARGUMENT_LISTINGS = frozenset({"check-attr", "check-ignore", "grep"})
 GIT_FORMAT_COMMANDS = frozenset({"for-each-ref", "log"})
+# The str methods that, given no argument, drop or split on any whitespace, U+00A0 and U+2028 among it.
+GIT_WHITESPACE_TRIMS = frozenset({"lstrip", "rstrip", "split", "strip"})
 # The options a format follows, after = or as the next argument, and the prefixes --pretty's form may give it.
 GIT_FORMAT_OPTIONS = frozenset({"--format", "--pretty"})
 GIT_FORMAT_PREFIXES = ("format:", "tformat:")
@@ -2698,26 +2703,34 @@ TEXT_KEEPING_METHODS = frozenset(
         "upper",
     }
 )
-# The git subcommands whose output names a ref, a path, or a commit, which a split of that output reads.
+# The git subcommands whose output names a ref, a path, an object, or a commit, which a split or a trim of that output
+# reads when the call that runs them is not named for git, as a wrapper such as quiet(services, root, ...) is not. A
+# call whose function's name has the word git in it, as runtime_support.names_git reads it, counts whatever its
+# subcommand.
 GIT_OUTPUT_COMMANDS = frozenset(
     {
         "branch",
         "cat-file",
         "check-attr",
         "check-ignore",
+        "check-ref-format",
+        "commit-tree",
         "config",
         "describe",
         "diff",
         "diff-files",
         "diff-index",
         "diff-tree",
+        "fast-import",
         "for-each-ref",
         "grep",
+        "hash-object",
         "log",
         "ls-files",
         "ls-remote",
         "ls-tree",
         "merge-base",
+        "mktree",
         "name-rev",
         "remote",
         "rev-list",
@@ -2727,7 +2740,9 @@ GIT_OUTPUT_COMMANDS = frozenset(
         "status",
         "symbolic-ref",
         "tag",
+        "update-index",
         "worktree",
+        "write-tree",
     }
 )
 GIT_FORMAT_ESCAPES = re.compile(r"%%|%x[0-9a-fA-F]{2}|%n")
@@ -2737,6 +2752,11 @@ TEXT_TYPES = frozenset({"str", "bytes", "builtins.str", "builtins.bytes"})
 # The str and bytes methods whose result holds the text of its receiver and of each argument it is given, through the
 # items of a literal sequence or mapping, as `"{}".format(out)` and `"".join([out])` hold out's.
 TEXT_JOINING_METHODS = frozenset({"format", "format_map", "join"})
+
+
+def _literal(node: ast.expr) -> object:
+    """A constant's value, or None for anything else."""
+    return node.value if isinstance(node, ast.Constant) else None
 
 
 def _git_command(elements: Sequence[ast.expr]) -> tuple[str, list[str]] | None:
@@ -2931,7 +2951,10 @@ class _GitOutputs:
             else:
                 elements.append(argument)
         started = _git_command(elements)
-        return started[0] if started is not None and started[0] in GIT_OUTPUT_COMMANDS else None
+        if started is None:
+            return None
+        named = names_git(node.func) or (bool(elements) and _literal(elements[0]) == "git")
+        return started[0] if named or started[0] in GIT_OUTPUT_COMMANDS else None
 
     def split(self, node: ast.AST) -> str | None:
         """The git subcommand whose output a splitlines() call splits, bound or unbound as `str.splitlines(out)`, or
@@ -2941,6 +2964,39 @@ class _GitOutputs:
         if self._unbound(node.func):
             return self.command(node.args[0]) if node.args else None
         return self.command(node.func.value)
+
+    def trim(self, node: ast.AST) -> str | None:
+        """The git subcommand whose output a strip(), lstrip(), rstrip(), or split() given no argument trims or splits
+        on whitespace, bound or unbound as `str.strip(out)`, or None."""
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in GIT_WHITESPACE_TRIMS
+            and not node.keywords
+        ):
+            return None
+        if self._unbound(node.func):
+            return self.command(node.args[0]) if len(node.args) == 1 else None
+        if node.args or isinstance(node.func.value, ast.Constant):
+            return None
+        return self.command(node.func.value)
+
+
+def _git_output_trims(tree: ast.Module) -> list[tuple[int, str, str]]:
+    """Each strip(), lstrip(), rstrip(), or split() of git's output given no argument, by its line, its scope, and its
+    refusal."""
+    outputs = _GitOutputs(tree, CallableResolver(tree))
+    return [
+        (
+            node.lineno,
+            scope,
+            f"trims or splits the output of git {command} on any whitespace, which also takes U+00A0, U+2028, and "
+            'other characters a ref name or a path can hold; take off its last "\\n" with git_client.output_line, '
+            f'split on "\\n" or NUL, or state why in {GIT_SEPARATOR_ALLOWANCE}',
+        )
+        for node, scope in scoped_nodes(tree.body)
+        if isinstance(node, ast.Call) and (command := outputs.trim(node)) is not None
+    ]
 
 
 def _git_output_splits(tree: ast.Module) -> list[tuple[int, str, str]]:
@@ -2981,7 +3037,69 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
             and (refusal := _separator_refusal(node.args if isinstance(node, ast.Call) else node.elts)) is not None
         ]
         found += _git_output_splits(tree)
+        found += _git_output_trims(tree)
         problems += sanctioned_problems(name, tree, GIT_SEPARATOR_ALLOWANCE, sorted(found))
+    return problems
+
+
+# A GitError whose returncode is None is not one git could not run: git_client raises it, with no exit code, for an
+# answer git gave in the wrong shape, such as a rev-parse that printed no object name. Whether git ran and finished is
+# GitError.answered, so a handler of a GitError reads that, never `returncode is None`. A read that must stay states
+# why in a module-level GIT_ANSWERED_ALLOWED = {scope: reason}.
+GIT_ERROR = "git_client.GitError"
+GIT_ANSWERED_ALLOWANCE = "GIT_ANSWERED_ALLOWED"
+
+
+def _none_returncode_reads(tree: ast.Module, aliases: dict[str, str]) -> set[int]:
+    """The comparisons, by id, that set the returncode of the GitError an `except` clause catches, alone or among
+    others, beside None, inside that clause's own body."""
+    found: set[int] = set()
+    for handler in ast.walk(tree):
+        if not isinstance(handler, ast.ExceptHandler) or handler.name is None or handler.type is None:
+            continue
+        caught = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        if not any(resolves_to(qualified_name(kind, aliases), GIT_ERROR) for kind in caught):
+            continue
+        for statement in handler.body:
+            for node in ast.walk(statement):
+                if isinstance(node, ast.Compare) and _compares_returncode_with_none(node, handler.name):
+                    found.add(id(node))
+    return found
+
+
+def _compares_returncode_with_none(node: ast.Compare, name: str) -> bool:
+    """Whether a comparison sets `name`'s returncode beside None."""
+    sides = [node.left, *node.comparators]
+    returncode = any(
+        isinstance(side, ast.Attribute)
+        and side.attr == "returncode"
+        and isinstance(side.value, ast.Name)
+        and side.value.id == name
+        for side in sides
+    )
+    return returncode and any(isinstance(side, ast.Constant) and side.value is None for side in sides)
+
+
+def git_answered_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each comparison of a caught GitError's returncode with None outside git_client.py that no GIT_ANSWERED_ALLOWED
+    entry sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        if name == GIT_STATUS_OWNER:
+            continue
+        reads = _none_returncode_reads(tree, import_aliases(tree))
+        found = [
+            (
+                node.lineno,
+                scope,
+                "reads a GitError's returncode is None as git not running, though git_client raises one without an "
+                f"exit code for an answer in the wrong shape; read GitError.answered, or state why in "
+                f"{GIT_ANSWERED_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Compare) and id(node) in reads
+        ]
+        problems += sanctioned_problems(name, tree, GIT_ANSWERED_ALLOWANCE, found)
     return problems
 
 
@@ -3745,6 +3863,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_every_git_listing_and_format_separates_on_nul(self) -> None:
         self.assertEqual([], git_separator_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_whether_git_answered_is_read_through_git_error_answered(self) -> None:
+        self.assertEqual([], git_answered_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_every_time_option_refuses_what_is_no_limit(self) -> None:
         self.assertEqual([], time_option_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
