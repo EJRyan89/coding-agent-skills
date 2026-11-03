@@ -2081,6 +2081,27 @@ RETIRED_CLAIM_SPELLINGS = [
     ("the legs' token is given to no step", NO_STEP),
     ("the only job given the repository's token", ONLY_JOB),
     ("each leg held no validate.yml's read only token", NO_TOKEN),
+    # The plural and possessive token.
+    ("the legs hold no tokens", NO_TOKEN),
+    ("no step is given any tokens", NO_STEP),
+    ("no step is given the run's tokens", NO_STEP),
+    ("no job receives the tokens' values", NO_STEP),
+    # An auxiliary before the verb, and each negated.
+    ("no step has been given the token", NO_STEP),
+    ("no step will be given the token", NO_STEP),
+    ("no step should hold the token", NO_STEP),
+    ("no job is being given the token", NO_STEP),
+    ("no leg has held the token", NO_STEP),
+    ("the legs have not been given the token", NO_STEP),
+    ("the legs won't be given the token", NO_STEP),
+    ("the legs should not hold the token", NO_STEP),
+    ("the legs will be given no token", NO_TOKEN),
+    ("the token has been given to no step", NO_STEP),
+    ("the token will be passed to no job", NO_STEP),
+    ("the token has not been given to any step", NO_STEP),
+    ("the token will not reach any step", NO_STEP),
+    ("the only job that has been given the token", ONLY_JOB),
+    ("only the known-failures job will be given the token", ONLY_JOB),
 ]
 
 # The true statements the repository makes about the token, each of which names the command or program that holds it
@@ -2112,6 +2133,10 @@ TRUE_TOKEN_STATEMENTS = [
     # "Only" opening a condition, not closing the holder.
     "The token reaches a step only as one of `token_steps` names",
     "the token reaches a job only through its one sanctioned step",
+    # The same true statements with an auxiliary before the verb.
+    "no command a step runs has been given the token",
+    "the token will reach no step's command",
+    "the tokens a contributor's shell holds reach no suite",
 ]
 
 

@@ -539,11 +539,12 @@ REACH_STATEMENTS = (PULL_REQUEST_CODE_STATEMENT, SAME_REPOSITORY_STATEMENT)
 # token" is true only of the steps that run a command.
 ACTION_INPUT_STATEMENT = "the pinned actions take the run's token as the default of their `token` input"
 # The words the retired claims below are written in, matched in text _claim_text has folded. The token by any of its
-# names, an expression that reads it included, after any of the words that qualify it: any possessive, as "the
-# workflow's token" and "the legs' token" are, and "read-only" spelled with a hyphen, a space, or neither.
+# names, an expression that reads it included, singular, plural, or possessive, after any of the words that qualify
+# it: any possessive, as "the workflow's token" and "the legs' token" are, and "read-only" spelled with a hyphen,
+# a space, or neither.
 _CREDENTIAL = (
     r"(?:(?:(?:[\w.-]+'s?|read(?:-| )?only|workflow|github|actions|repository|repo|default|own|automatic|built-in) )*"
-    r"(?:token|github_token|gh_token)(?!\w)"
+    r"(?:tokens?|github_token|gh_token)(?:'s?)?(?!\w)"
     r"|\$\{\{ ?(?:secrets\.github_token|github\.token) ?\}\}|(?:secrets\.github_token|github\.token)(?!\w))"
 )
 _CREDENTIAL_PHRASE = rf"(?:(?:the|a|an|any|its|their|this|that) )?{_CREDENTIAL}"
@@ -559,25 +560,43 @@ _HOLDER = (
 )
 # The words that say none: "no", "none of the", "not one", "not a single", "zero", "neither".
 _NONE = r"(?:no|none(?: of(?: the| its| these)?)?|not (?:one|a single|any)(?: of(?: the| its| these)?)?|zero|neither)"
-# Each verb that gives the token to a holder, and each that withholds it.
+# Each verb that gives the token to a holder, and each that withholds it, after any auxiliary: "is given", "has been
+# given", "will be given", "is being given"; "holds", "should hold", "has held"; and each negated.
 _GIVE = r"(?:given|passed|handed|granted|sent)"
-_GIVEN = (
-    rf"(?:(?:is|are|was|were|gets?) {_ADVERB}{_GIVE}|{_ADVERB}(?:holds?|has|have|receives?|gets?|sees?|uses?|runs? with"
-    rf"|(?:can|could|may) {_ADVERB}(?:read|use|see|reach|access)|ha(?:s|ve) access to|gets? access to))"
+_MODALS = r"(?:will|would|shall|should|can|could|may|might|must)"
+_PASSIVE = (
+    rf"(?:(?:is|are|was|were)(?: being)?|gets?|got|(?:has|have|had) been|{_MODALS} (?:be|get)|(?:does|do|did) get)"
 )
+_ACTIVE = (
+    r"(?:holds?|has|have|receives?|gets?|sees?|uses?|runs? with|read|reach|access|ha(?:s|ve) access to|gets? access to)"
+)
+_PERFECT = r"(?:has|have|had) (?:held|had|received|got|gotten|seen|used|run with|read|reached|accessed|had access to)"
+_GIVEN = (
+    rf"(?:{_PASSIVE} {_ADVERB}{_GIVE}|{_ADVERB}(?:(?:{_MODALS}|does|do|did) {_ADVERB})?{_ACTIVE}|{_ADVERB}{_PERFECT})"
+)
+_NOT = r"(?: not|n't| never)"
+_NEGATED_PASSIVE = (
+    rf"(?:(?:is|are|was|were){_NOT}(?: being)?|(?:has|have|had){_NOT} been|{_MODALS}{_NOT} (?:be|get)"
+    r"|(?:won't|can't|cannot|shan't) (?:be|get)|(?:does|do|did){_NOT} get)"
+)
+_NEGATED_ACTIVE = rf"(?:(?:do|does|did|{_MODALS}){_NOT}|won't|can't|cannot|shan't|never)"
 _NOT_GIVEN = (
-    rf"(?:(?:is|are|was|were)(?: not|n't| never) {_ADVERB}{_GIVE}"
-    r"|(?:(?:do|does|did)(?: not|n't)|never|cannot|can't|can not|could not|couldn't|may not) "
-    rf"{_ADVERB}(?:hold|have|receive|get|see|use|read|reach|access|run with|have access to)"
+    rf"(?:{_NEGATED_PASSIVE} {_ADVERB}{_GIVE}"
+    rf"|{_NEGATED_ACTIVE} {_ADVERB}(?:hold|have|receive|get|see|use|read|reach|access|run with|have access to)"
+    rf"|(?:has|have|had){_NOT} (?:held|had|received|got|gotten|seen|used|read|reached|accessed|run with)"
     r"|never (?:holds?|has|receives?|gets?|sees?|uses?)|runs? without)"
 )
-# The token named first: "the token is given to", "reaches", "goes to", or "is available to".
-_TOKEN_GOES = rf"(?:(?:is|are|was|were) {_ADVERB}(?:{_GIVE}|available|visible) to|reaches|goes to)"
-# The token named first with its verb negated: "is not given to", "is never passed to", "does not reach", "never goes
-# to", before "any", "a", or "the" and the holder.
+# The token named first: "the token is given to", "has been passed to", "reaches", "will reach", "goes to", or "is
+# available to".
+_TOKEN_GOES = (
+    rf"(?:{_PASSIVE} {_ADVERB}(?:{_GIVE}|available|visible) to|(?:(?:{_MODALS}|does|do|did) )?(?:reach|go to)"
+    r"|reaches|goes to|(?:has|have|had) (?:reached|gone to))"
+)
+# The token named first with its verb negated: "is not given to", "has never been passed to", "does not reach", "will
+# not go to", before "any", "a", or "the" and the holder.
 _TOKEN_KEPT = (
-    rf"(?:(?:is|are|was|were)(?: not|n't| never) {_ADVERB}(?:{_GIVE}|available|visible) to"
-    r"|(?:(?:does|do|did)(?: not|n't)|never) (?:reach|go to)|never (?:reaches|goes to))"
+    rf"(?:{_NEGATED_PASSIVE} {_ADVERB}(?:{_GIVE}|available|visible) to|{_NEGATED_ACTIVE} (?:reach|go to)"
+    rf"|(?:has|have|had){_NOT} (?:reached|gone to)|never (?:reaches|goes to))"
     r"(?: (?:any|a|an|the|one)(?: single)?)?"
 )
 # The end of a holder named after the token: no letter or apostrophe follows, so "no step's command", whose
@@ -594,7 +613,7 @@ RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
     "no step is given the token": re.compile(
         rf"\b{_NONE} {_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|\b{_HOLDER} {_NOT_GIVEN} {_CREDENTIAL_PHRASE}"
-        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_TOKEN_GOES}|(?:is|are|was|were) {_ADVERB}{_GIVE}) {_NONE} "
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_TOKEN_GOES}|{_PASSIVE} {_ADVERB}{_GIVE}) {_NONE} "
         rf"{_HOLDER}{_HOLDER_END}"
         rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_KEPT} {_HOLDER}{_HOLDER_END}"
     ),
@@ -606,7 +625,7 @@ RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
         rf"|\bonly (?:the |one |this |that )?(?:[\w-]+ )?{_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_GOES} (?:the |this |that |one |a )?(?:[\w-]+ )?"
         rf"{_HOLDER_NOUN} {_ALONE}"
-        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:(?:is|are|was|were) {_ADVERB}{_GIVE} |reaches |goes )?"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_PASSIVE} {_ADVERB}{_GIVE} |reaches |goes )?"
         r"(?:only|solely|exclusively) "
         rf"(?:to )?(?:the |this |that |one )?(?:[\w-]+ )?{_HOLDER_NOUN}{_HOLDER_END}"
     ),
