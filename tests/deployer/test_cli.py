@@ -108,6 +108,18 @@ class SingleEntryPointTests(DeployerTestCase):
                 "  --debug     print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
                 "\n"
             ),
+            ("check", "--help"): (
+                "\n"
+                f"usage: {DEPLOY_COMMAND} check [-h] [--debug]\n"
+                "\n"
+                "List the tools the deployer and the skills need, with their versions,\n"
+                "and which are missing, outdated, or unusable. Nothing is changed.\n"
+                "\n"
+                "options:\n"
+                "  -h, --help  show this help message and exit\n"
+                "  --debug     print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
+                "\n"
+            ),
             ("verify", "--help"): (
                 "\n"
                 f"usage: {DEPLOY_COMMAND} verify [-h] [--debug]\n"
