@@ -69,7 +69,7 @@ import json_reader
 import json_writer
 from console import run_main
 from executable_locator import PYTHON
-from path_containment import within
+from path_containment import relative_within, within
 from path_keys import path_key
 from skill_roots import plugin_name
 from typed_fields import FieldError, FieldReader
@@ -211,9 +211,10 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
     source = run / SOURCE
     snapshot = source.resolve(strict=False)
     entry: str | dict[str, str]
-    if tool != "Glob" and within(path, snapshot) and path.is_file():
-        root = Path(path_key(source, resolve=True))
-        entry = Path(os.path.normcase(str(path))).relative_to(root).as_posix()
+    relative = relative_within(path, snapshot)
+    if tool != "Glob" and relative is not None and path.is_file():
+        # Case-folded where the platform folds case, as the snapshot's own listing names its files.
+        entry = Path(os.path.normcase(str(relative))).as_posix()
     elif tool != "Read" and (within(path, snapshot) or within(snapshot, path)) and path.is_dir():
         entry = search_entry(tool)
     else:

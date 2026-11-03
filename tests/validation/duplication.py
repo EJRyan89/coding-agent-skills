@@ -694,11 +694,14 @@ def skill_script_import_problems(root: Path) -> list[str]:
 
 # ejryan89-skill-core's path_containment is the one test of whether a path lies in a tree, so a fix to it reaches every
 # caller. Any other containment test, an is_relative_to, a commonpath or commonprefix of any path module, a search of a
-# path's parents, a prefix test written by hand, or a relpath checked for a parent segment, states why in a
+# path's parents, a prefix test written by hand, a relpath or a relative_to that walks up checked for a parent segment,
+# or a relative_to whose ValueError a handler or a contextlib.suppress turns into an answer, states why in a
 # module-level CONTAINMENT_ALLOWED = {scope: reason}.
 PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
 CONTAINMENT_ALLOWANCE = "CONTAINMENT_ALLOWED"
 # os.path is ntpath or posixpath, and each takes commonprefix from genericpath, so a test is read under every name.
+# The exceptions whose handler catches the ValueError relative_to raises, by the names a module reads them under.
+VALUE_ERROR_CATCHERS = frozenset({"ValueError", "Exception", "BaseException"})
 PATH_MODULES = ("os.path", "ntpath", "posixpath", "genericpath")
 COMMON_PATH_FUNCTIONS = frozenset(
     f"{module}.{name}" for module in PATH_MODULES for name in ("commonpath", "commonprefix")
@@ -957,9 +960,10 @@ class _ContainmentReader:
             self.trailing = ""
 
     def _relative(self, value: ast.expr) -> bool:
-        """Whether `value` holds a relpath's result: the call itself, or a name the module binds to one."""
+        """Whether `value` holds a relpath's result, or a relative_to's that walks up with `..` segments: the call
+        itself, or a name the module binds to one."""
         return any(
-            (isinstance(node, ast.Call) and self.name(node.func) in RELATIVE_PATHS)
+            (isinstance(node, ast.Call) and (self.name(node.func) in RELATIVE_PATHS or _walks_up(node)))
             or (
                 isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)
@@ -1023,10 +1027,22 @@ class _ContainmentReader:
         """The containment test `node` writes, or None: an is_relative_to, a commonpath or commonprefix of any path
         module, a search of a path's parents, a startswith, find, index, regular expression, or glob of a text built
         to end in a separator, a comparison of what a removeprefix of one leaves, a check for a separator after a
-        prefix, a relpath checked for a parent segment, a comparison of a path's leading parts, or of a leading slice
-        with a folder and its separator."""
+        prefix, a relpath or a relative_to that walks up checked for a parent segment, a comparison of a path's
+        leading parts, or of a leading slice with a folder and its separator, or a `try` or a `with` whose body calls
+        relative_to and whose handler catches, or whose `contextlib.suppress` suppresses, the ValueError it raises for
+        a path outside the folder, which turns that error into an answer."""
         if isinstance(node, ast.Attribute) and node.attr == "is_relative_to":
             return "is_relative_to"
+        if (
+            isinstance(node, ast.Try | ast.TryStar)
+            and _calls_relative_to(node.body)
+            and any(self._catches_value_error(handler.type) for handler in node.handlers)
+        ) or (
+            isinstance(node, ast.With)
+            and _calls_relative_to(node.body)
+            and any(self._suppresses_value_error(item.context_expr) for item in node.items)
+        ):
+            return "a relative_to whose ValueError is caught"
         if (
             isinstance(node, ast.Attribute | ast.Name)
             and isinstance(node.ctx, ast.Load)
@@ -1040,6 +1056,22 @@ class _ContainmentReader:
         if isinstance(node, ast.Compare):
             return self._comparison_test(node)
         return None
+
+    def _catches_value_error(self, caught: ast.expr | None) -> bool:
+        """Whether an `except` clause's type catches ValueError: bare, ValueError itself or a base of it, alone or in a
+        tuple."""
+        if caught is None:
+            return True
+        kinds = caught.elts if isinstance(caught, ast.Tuple) else [caught]
+        return any(self.name(kind).removeprefix("builtins.") in VALUE_ERROR_CATCHERS for kind in kinds)
+
+    def _suppresses_value_error(self, context: ast.expr) -> bool:
+        """Whether a `with` item is a `contextlib.suppress` given ValueError or a base of it."""
+        return (
+            isinstance(context, ast.Call)
+            and self.name(context.func) == "contextlib.suppress"
+            and any(self._catches_value_error(kind) for kind in context.args)
+        )
 
     def _call_test(self, call: ast.Call) -> str | None:
         method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
@@ -1093,6 +1125,33 @@ class _ContainmentReader:
         return None
 
 
+def _calls_relative_to(statements: list[ast.stmt]) -> bool:
+    """Whether `statements` call `relative_to` as they run, not inside a function, lambda, or class they define, which
+    runs later, outside their handlers."""
+
+    def calls(node: ast.AST) -> bool:
+        if isinstance(node, (*DEFINITIONS, ast.Lambda)):
+            return False
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "relative_to":
+            return True
+        return any(calls(child) for child in ast.iter_child_nodes(node))
+
+    return any(calls(statement) for statement in statements)
+
+
+def _walks_up(call: ast.Call) -> bool:
+    """Whether a call is a relative_to given `walk_up` as anything but a false literal, which puts `..` segments in
+    its result for a path outside the folder rather than raising."""
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "relative_to"
+        and any(
+            keyword.arg == "walk_up" and not (isinstance(keyword.value, ast.Constant) and not keyword.value.value)
+            for keyword in call.keywords
+        )
+    )
+
+
 def containment_problems(root: Path, files: list[Path]) -> list[str]:
     """Each containment test outside path_containment that no CONTAINMENT_ALLOWED entry sanctions."""
     problems: list[str] = []
@@ -1107,7 +1166,7 @@ def containment_problems(root: Path, files: list[Path]) -> list[str]:
                 f"test, or state why in {CONTAINMENT_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.expr) and (test := reader.test(node))
+            if isinstance(node, ast.expr | ast.Try | ast.TryStar | ast.With) and (test := reader.test(node))
         ]
         problems += sanctioned_problems(name, tree, CONTAINMENT_ALLOWANCE, found)
     return problems
