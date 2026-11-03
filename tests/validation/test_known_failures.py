@@ -296,6 +296,11 @@ class PendingShapeTests(KnownFailureFixture):
         )
         self.assertEqual({"a.reader": 1}, read_pending(self.root / PENDING_MODULE))
 
+    def test_an_import_of_a_module_named_for_the_table_under_a_package_passes(self) -> None:
+        # `import package.PENDING` binds package, so the table it runs with is the one read.
+        self.write_pending('import package.PENDING\n\nPENDING = {"a.reader": 1}\n')
+        self.assertEqual({"a.reader": 1}, read_pending(self.root / PENDING_MODULE))
+
 
 class OpenIssueTests(KnownFailureFixture):
     """Each issue an entry names is open, as GitHub answers through gh; an empty list asks GitHub nothing."""

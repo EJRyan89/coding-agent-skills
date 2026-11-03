@@ -1,8 +1,8 @@
-"""The one reader of a module-level assignment to a single name, for every reader that takes a table from a module's
-syntax tree without running it, such as validation's PENDING table and audit-repository's runtime catalogue.
-
-A reader that must know the value a module runs with takes the one statement `sole_assignment` returns for the name
-and refuses every other place the module may change it; this module only says which statements assign one name.
+"""Which module-level statements assign one name and nothing else, for the readers that take a table from a
+module's syntax tree without running it and refuse every other place the module may change it: validation's PENDING
+table (tests/validation/known_failures.py) and audit-repository's runtime catalogue. validation_support's
+module_allowance, which reads the `*_ALLOWED` sanctions, keeps a reader of its own; this module only says which
+statements assign one name.
 """
 
 from __future__ import annotations
