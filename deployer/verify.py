@@ -39,7 +39,10 @@ VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "EXPOSED", "OMITTED", "FO
 EXPOSED_DETAIL = f"Codex offers it to the model, though only the user starts it; check its {CODEX_METADATA}"
 # What an adapter the model may start is, where Codex lists it but leaves it out of the model's catalog, as its skills
 # budget does once the skills' names and paths alone overrun it.
-OMITTED_DETAIL = "Codex lists it but leaves it out of the model's catalog; check its skills.max_context_tokens"
+OMITTED_DETAIL = (
+    "Codex lists it but leaves it out of the model's catalog; offer it fewer skills, or raise "
+    "skills.max_context_tokens, which Codex caps at 10000"
+)
 # The lines of an adapter Copilot CLI did not list: it lists one copy per name, the one it will use, so a SHADOWED
 # adapter is one it listed another copy in place of, as it does for a same-named skill under COPILOT_HOME.
 UNLISTED = ("NOT FOUND", "SHADOWED")
