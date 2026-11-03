@@ -2135,14 +2135,37 @@ def test_a_retired_token_claim_far_into_a_long_text_fails_and_each_is_found_once
     ]
 
 
-def test_the_parts_the_token_claim_policy_leaves_out_are_pinned() -> None:
-    assert sorted(TOKEN_CLAIM_OMISSIONS) == [
-        "agents/",
-        "skills/",
-        "tests/fixtures/",
-        "tests/validation/test_workflows.py",
-        "tests/validation/workflows.py",
-    ]
+def test_the_parts_the_token_claim_policy_leaves_out_are_pinned_with_their_reasons() -> None:
+    assert TOKEN_CLAIM_OMISSIONS == {
+        "tests/validation/workflows.py": "it names the retired claims it refuses",
+        "tests/validation/test_workflows.py": "its fixture rows write each retired claim",
+        "skills/": "a shipped skill speaks of the user's repository, its jobs and steps, and the user's own gh token",
+        "agents/": "a shipped agent speaks of the user's repository, as a shipped skill does",
+        "tests/fixtures/": "a fixture stands for another repository, not this one's workflows",
+    }
+
+
+@pytest.mark.parametrize(
+    ("character", "claim", "retired"),
+    [
+        *(
+            pytest.param(chr(point), "no step is given the read{}only token", NO_STEP, id=f"dash-{point:04X}")
+            for point in (0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212)
+        ),
+        *(
+            pytest.param(chr(point), "the only job given the run{}s token", ONLY_JOB, id=f"apostrophe-{point:04X}")
+            for point in (0x2018, 0x2019, 0x02BC, 0x2032)
+        ),
+        *(
+            pytest.param(chr(point), "no step is gi{}ven the token", NO_STEP, id=f"dropped-{point:04X}")
+            for point in (ord("`"), ord("*"), 0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF)
+        ),
+    ],
+)
+def test_each_character_the_claim_text_folds_still_reads_the_claim(character: str, claim: str, retired: str) -> None:
+    problems = token_claim_problems({"validate.yml": claim.format(character)}, REACH_DESIGN)
+    assert len(problems) == 1, problems
+    assert f", the retired claim {retired!r}," in problems[0], problems
 
 
 def test_the_token_claim_policy_reads_every_file_but_the_design_document_and_its_omissions(tmp_path: Path) -> None:

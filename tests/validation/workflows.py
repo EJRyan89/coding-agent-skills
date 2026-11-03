@@ -611,11 +611,11 @@ _CLAIM_REACH = 300
 # A comment or quotation marker opening a line, which _claim_text drops so a claim wrapped across such lines reads
 # whole.
 _LINE_MARKER = re.compile(r"^\s*[#>]+")
-# What _claim_text folds after NFKC: each hyphen and dash variant and the minus sign to a hyphen, each typographic
-# apostrophe to a straight one, Markdown's backtick and asterisk markers dropped, and the soft hyphen and the
-# zero-width characters, which NFKC keeps, dropped.
+# What _claim_text folds after NFKC: each hyphen and dash variant and the minus sign to a hyphen, the non-breaking
+# hyphen among them, which NFKC makes U+2010; each typographic apostrophe to a straight one; and Markdown's backtick
+# and asterisk markers, the soft hyphen, and the zero-width characters, which NFKC keeps, dropped.
 _CLAIM_FOLD: dict[int, str | None] = {
-    **dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212), "-"),
+    **dict.fromkeys((0x2010, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212), "-"),
     **dict.fromkeys((0x2018, 0x2019, 0x02BC, 0x2032), "'"),
     **dict.fromkeys((ord("`"), ord("*"), 0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF), None),
 }
