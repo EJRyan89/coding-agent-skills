@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from harness import ALLOWED_TOOLS, DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase, Deployment, forward
+from harness import ALLOWED_TOOLS, DEPLOY_COMMAND, REPOSITORY_ROOT, ZERO_HASH, DeployerTestCase, Deployment, forward
 
 from deployer import hashing, manifest, migrate, plan, report, selection
 from deployer.context import Context, Options, Selection
@@ -403,7 +403,8 @@ def test_every_action_has_one_label_in_each_report() -> None:
 
 class UnmanagedDiffTests(DeployerTestCase):
     """The diff "Skipped items" in docs/installation.md promises for an unmanaged skill that differs: the whole of it
-    under CONFLICT in a dry run, its first forty lines under SKIPPED in a deployment, and none for a managed skill."""
+    under CONFLICT in a dry run, its first forty lines under SKIPPED in a deployment and a line saying how many more
+    the dry run shows, and none for a managed skill."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -456,8 +457,29 @@ class UnmanagedDiffTests(DeployerTestCase):
         self.assertEqual(f"Only in {destination}: extra.txt", whole[-2], dry)
         applied = self.deploy_ok("--all").output
         shown = self.detail(applied, "DEPLOYED", "SKIPPED (1):", UNMANAGED_ALPHA)
-        self.assertEqual(whole[:40], shown, applied)
-        self.assertEqual("-Local line 34", shown[-1], applied)
+        self.assertEqual([*whole[:40], plan.DIFF_CUT.format(count="19 more lines")], shown, applied)
+        self.assertEqual("-Local line 34", shown[-2], applied)
+
+    def test_a_deployment_shows_a_diff_of_exactly_forty_lines_whole_with_no_cut_line(self) -> None:
+        # Three header lines, three of context, thirty-one removed, one added, and the two Only in lines.
+        self.place_unmanaged("".join(f"Local line {number}\n" for number in range(1, 32)))
+        whole = self.detail(self.deploy_ok("--all", "--dry-run").output, "DRY RUN", "CONFLICT (1):", UNMANAGED_ALPHA)
+        self.assertEqual(40, len(whole))
+        applied = self.deploy_ok("--all").output
+        self.assertEqual(whole, self.detail(applied, "DEPLOYED", "SKIPPED (1):", UNMANAGED_ALPHA), applied)
+
+    def test_the_cut_line_is_the_one_skipped_items_quotes_and_counts_one_line_alone(self) -> None:
+        # A pinned contract value: the line docs/installation.md quotes under "Skipped items".
+        self.assertEqual("... {count}; run with --dry-run for the whole diff", plan.DIFF_CUT)
+        guide = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+        section = guide.split("\n### Skipped items\n", 1)[1].split("\n### ", 1)[0]
+        self.assertIn(f"`{plan.DIFF_CUT.format(count='<count> more lines')}`", section)
+        diff = tuple(f"line {number}" for number in range(plan.DIFF_LINES_REPORTED + 1))
+        self.assertEqual(
+            (*diff[: plan.DIFF_LINES_REPORTED], plan.DIFF_CUT.format(count="1 more line")), plan.reported_diff(diff)
+        )
+        self.assertEqual(diff[:-1], plan.reported_diff(diff[:-1]))
+        self.assertEqual((), plan.reported_diff(()))
 
     def test_a_locally_modified_managed_skill_gets_its_label_and_no_diff(self) -> None:
         self.deploy_ok("--all")
@@ -522,10 +544,74 @@ class ValidateSharedAssetsTests(unittest.TestCase):
     def installed_dependency(self) -> None:
         (self.paths.dest_dir / "d.md").write_bytes(DEPENDENCY_BYTES)
 
-    def refusal(self, context: Context, selected: list[str]) -> str:
+    def refused(self, context: Context, selected: list[str]) -> tuple[str, ...]:
         with self.assertRaises(DeployError) as caught:
             plan.validate_shared_assets(context, selected)
-        return str(caught.exception)
+        return caught.exception.lines
+
+    def refusal(self, context: Context, selected: list[str]) -> str:
+        """The refusal's first line, which names the fault; test_each_refusal_ends_with_the_step_to_take pins the
+        rest."""
+        return self.refused(context, selected)[0]
+
+    def test_each_refusal_ends_with_the_step_to_take(self) -> None:
+        # Pinned against literals, not plan's constants: each is the remedy line a user reads (#2181).
+        first = "Deploy 'd.md' from the source that owns it first, then rerun with --dry-run."
+        redeploy = (
+            f"Deploy 'd.md' again from source '{OTHER_SOURCE}', which the manifest names as its owner, then rerun with "
+            "--dry-run."
+        )
+        cases: list[tuple[Context, list[str], str]] = [
+            (self.context({"d.md": "dependency"}, {"alpha": ["d.md"]}), ["alpha"], first),
+            (
+                self.context({}, {"alpha": ["x.md"]}),
+                ["alpha"],
+                "Add 'x.md' to shared_assets in source.json, or remove it from alpha's shared_deps.",
+            ),
+            (
+                self.context({"beta": "owner"}, {"beta": []}),
+                [],
+                "Rename one of them.",
+            ),
+            (
+                self.context({"a.md": "Owner"}, {}),
+                [],
+                "Give 'a.md' the role 'owner' or 'dependency' in source.json.",
+            ),
+            (
+                self.context({"o.md": "owner"}, {}),
+                [],
+                "Add the file to the source, or give 'o.md' the role 'dependency' when another source owns it.",
+            ),
+        ]
+        for context, selected, remedy in cases:
+            with self.subTest(remedy=remedy):
+                lines = self.refused(context, selected)
+                self.assertEqual(2, len(lines), lines)
+                self.assertEqual(remedy, lines[1])
+        self.installed_dependency()
+        good = {"role": "owner", "hash": DEPENDENCY_HASH}
+        recorded: list[tuple[dict[str, Any], str]] = [
+            ({}, first),
+            (
+                {"owners": {"d.md": OWN_SOURCE}, "sources": {OWN_SOURCE: {"shared": {"d.md": good}}}},
+                "Give 'd.md' the role 'owner' in this source's source.json, since the manifest records this source "
+                "owning it.",
+            ),
+            (self.owned_by_other({"role": "dependency", "hash": DEPENDENCY_HASH}), redeploy),
+            (self.owned_by_other({"role": "owner"}), redeploy),
+            (
+                self.owned_by_other({"role": "owner", "hash": ZERO_HASH}),
+                f"Put back the copy source '{OTHER_SOURCE}' deployed, for example by deploying 'd.md' again from that "
+                "source, then rerun with --dry-run.",
+            ),
+        ]
+        for manifest_state, remedy in recorded:
+            with self.subTest(recorded=manifest_state):
+                context = self.context({"d.md": "dependency"}, {"alpha": ["d.md"]}, **manifest_state)
+                lines = self.refused(context, ["alpha"])
+                self.assertEqual(2, len(lines), lines)
+                self.assertEqual(remedy, lines[1])
 
     def test_valid_assets_are_returned_in_source_order(self) -> None:
         (self.paths.skills_src / "o.md").write_text("owned\n", encoding="utf-8")

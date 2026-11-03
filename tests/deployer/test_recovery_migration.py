@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -478,15 +479,16 @@ def denied(path: Path) -> PermissionError:
 
 
 def failing_at(
-    function: str, path: Path, module: str = "deployer.fsops"
+    function: str, path: Path, module: str = "deployer.fsops", error: Exception | None = None
 ) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
-    """Patch one function so it raises PermissionError for one path and behaves normally for every other."""
+    """Patch one function so it raises error, by default the PermissionError of a held file, for one path and behaves
+    normally for every other."""
     owner = {"deployer.fsops": fsops, "deployer.hashing": hashing}[module]
     real = getattr(owner, function)
 
     def fail(target: Path, *rest: object) -> object:
         if target == path:
-            raise denied(path)
+            raise denied(path) if error is None else error
         return real(target, *rest)
 
     return mock.patch(f"{module}.{function}", side_effect=fail)
@@ -658,6 +660,79 @@ class RecoveryFailureTests(RecoveryTestCase):
         with failing_at("remove", journal_file):
             result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, journal_file)
+
+    def assert_sent_to_the_manual_steps(self, output: str) -> None:
+        """A committed run's completion stopped by a failure a rerun would meet again: the report gives the manual steps
+        and promises no retry (#2294)."""
+        run = self.staging_run(self.HELD)
+        self.assert_lines(
+            output,
+            f"Recovering committed run {self.HELD} (completing finalization)...",
+            f"  Run {self.HELD} was committed to the manifest, so keep the copies it installed. A replaced copy sits "
+            f"beside its item as <name>.deploying-bak; a retained backup is under .backups/{self.HELD}/ in the same "
+            "root.",
+            f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
+            f"Recovering uncommitted run {self.NEXT} (rolling back)...",
+            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
+        )
+        self.assertNotIn(RECOVERY_STOPPED, output)
+        self.assertNotIn("Unexpected", output)
+        self.assertNotIn("Traceback", output)
+        self.assertTrue((run / "journal.jsonl").is_file())
+        self.assertFalse((self.home / ".claude" / "deployer" / "staging" / self.NEXT).exists())
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_an_installed_copy_holding_a_name_that_is_not_utf8_sends_a_committed_run_to_the_manual_steps(self) -> None:
+        # The name tree_hash could not encode raised a UnicodeEncodeError no recovery handler caught, so the report
+        # promised a retry that would meet the same name forever.
+        self.committed_fixture(retain=False)
+        self.later_run()
+        unencodable = self.skills_dir / "alpha" / "note\udcff.md"
+        unencodable.write_text("kept by the user\n", encoding="utf-8")
+        result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
+        self.assert_sent_to_the_manual_steps(result.output)
+        self.assert_lines(
+            result.output,
+            f"  ERROR: Cannot hash alpha: the name of {forward(self.skills_dir / 'alpha')}/note\\udcff.md is not valid "
+            "UTF-8",
+        )
+        self.assertTrue(unencodable.is_file())
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
+
+    def test_each_failure_other_than_an_os_error_a_rerun_repeats_sends_a_committed_run_to_the_manual_steps(
+        self,
+    ) -> None:
+        # The catalogue is journal.RECOVERY_FAILURES past OSError: a refusal of what stands on disk, and a name or text
+        # the deployer cannot encode or decode. Each is injected into both steps of a committed run's completion: the
+        # check of what it installed, and the settling of the copy it replaced.
+        failures: list[tuple[Exception, str]] = [
+            (DeployError("ERROR: synthetic refusal", "Synthetic remedy."), "synthetic refusal"),
+            (
+                UnicodeEncodeError("utf-8", "note\udcff.md", 4, 5, "surrogates not allowed"),
+                "UnicodeEncodeError: 'utf-8' codec can't encode character '\\udcff' in position 4: surrogates not "
+                "allowed",
+            ),
+            (
+                UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+                "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte",
+            ),
+        ]
+        # The table covers every class the catalogue names but OSError, which the suites above inject.
+        for expected in journal.RECOVERY_FAILURES:
+            if expected is not OSError:
+                self.assertTrue(any(isinstance(error, expected) for error, _ in failures), expected)
+        steps = (("hash_path", "alpha", "deployer.hashing"), ("remove", "alpha.deploying-bak", "deployer.fsops"))
+        for error, named in failures:
+            for function, item, module in steps:
+                with self.subTest(error=type(error).__name__, step=function):
+                    self.start(Path(self.enterContext(tempfile.TemporaryDirectory(prefix="deploy-test."))))
+                    self.committed_fixture(retain=False)
+                    self.later_run()
+                    with failing_at(function, self.skills_dir / item, module, error):
+                        result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
+                    self.assert_sent_to_the_manual_steps(result.output)
+                    self.assertIn(named, result.output)
+                    self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
 
     def test_an_unlistable_staging_root_fails_recovery_and_releases_the_lock(self) -> None:
         self.deployed(("alpha", "Alpha content"))
@@ -1092,6 +1167,8 @@ class RecoveryBranchTests(RecoveryTestCase):
             result.output,
             f"Recovering committed run {self.RUN} (completing finalization)...",
             f"  ERROR: Refusing to hash content containing a symlink or junction: {forward(link)}",
+            # Pinned against a literal: the step a user reads (#2181).
+            "  Remove the link, or replace it with a copy of what it points to, then rerun with --dry-run.",
             f"  WARNING: Installed alpha hash mismatch (expected {installed}, got unsafe)",
             f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
             "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
