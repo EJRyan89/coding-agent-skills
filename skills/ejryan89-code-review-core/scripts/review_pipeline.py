@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import file_presence
 import json_writer
+import whole_number
 from console import run_main
 from review_archive import archive_head, commit_record, pull_records
 from review_batches import (
@@ -785,20 +786,6 @@ def _prepare_run(
     return {"status": "ready", "run": run, **state}
 
 
-def wait_seconds(value: str) -> int:
-    seconds = int(value)
-    if not 1 <= seconds <= MAX_WAIT_SECONDS:
-        raise argparse.ArgumentTypeError(f"must be from 1 to {MAX_WAIT_SECONDS} seconds")
-    return seconds
-
-
-def positive_integer(value: str) -> int:
-    number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError("must be at least 1")
-    return number
-
-
 def remove_recorded_run(run: Path, recorded: dict[str, str], sleep: Callable[[float], None]) -> str | None:
     """Remove a run finalize recorded, retrying while another process holds one of its files.
 
@@ -972,7 +959,7 @@ def _build_parser() -> argparse.ArgumentParser:
     enumerate_parser.add_argument("--force", action="store_true")
     enumerate_parser.add_argument(
         "--batch-size",
-        type=positive_integer,
+        type=whole_number.argument(1),
         help="the most pull requests each repository's batch takes; overrides its configured batch_size",
     )
     enumerate_parser.add_argument("--output", type=Path, help="batch file; defaults to a new temporary directory")
@@ -1032,7 +1019,10 @@ def _build_parser() -> argparse.ArgumentParser:
     wait_parser = commands.add_parser("wait")
     wait_parser.add_argument("--run", required=True, type=Path)
     wait_parser.add_argument(
-        "--timeout", required=True, type=wait_seconds, help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}"
+        "--timeout",
+        required=True,
+        type=whole_number.argument(1, MAX_WAIT_SECONDS),
+        help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}",
     )
     # Run only by dispatch, as the detached host process; never by an orchestrator.
     host_parser = commands.add_parser("host", help=argparse.SUPPRESS)
@@ -1042,7 +1032,10 @@ def _build_parser() -> argparse.ArgumentParser:
     wait_reviewers_parser = commands.add_parser("wait-reviewers")
     _add_runs(wait_reviewers_parser)
     wait_reviewers_parser.add_argument(
-        "--timeout", required=True, type=wait_seconds, help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}"
+        "--timeout",
+        required=True,
+        type=whole_number.argument(1, MAX_WAIT_SECONDS),
+        help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}",
     )
     validate_result_parser = commands.add_parser("validate-result")
     validate_result_parser.add_argument("--run", required=True, type=Path)
@@ -1058,7 +1051,12 @@ def _build_parser() -> argparse.ArgumentParser:
     validate_parser = commands.add_parser("validate-reviewer")
     validate_parser.add_argument("--repository", required=True)
     validate_parser.add_argument(
-        "--pull", action="append", type=int, default=[], dest="pulls", help="pull request number to route; repeatable"
+        "--pull",
+        action="append",
+        type=whole_number.argument(1),
+        default=[],
+        dest="pulls",
+        help="pull request number to route; repeatable",
     )
     validate_parser.add_argument("--ref", help="commit to read the reviewer from when no --pull is given")
     validate_parser.add_argument(

@@ -1410,6 +1410,81 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     "int() of findall's count": _form(
         int_parse_problems, "import re\n\n\ndef f(t):\n    return int(len(re.findall('[0-9]+', t)))\n", refused=False
     ),
+    # "an `add_argument` ... whose `type` is `int` or `float`, by name, through an alias, a `getattr` of a constant
+    # name, or a `functools.partial` of one", read each way the call may run.
+    **{
+        f"an option read with {form}": _form(int_parse_problems, f"{imports}\n\n{body}\n")
+        for form, imports, body in (
+            ("type=int", "import argparse", "argparse.ArgumentParser().add_argument('--pull', type=int)"),
+            ("type=float", "import argparse", "argparse.ArgumentParser().add_argument('--ratio', type=float)"),
+            ("type=builtins.int", "import builtins", "PARSER.add_argument('--pull', type=builtins.int)"),
+            ("an imported alias of int", "from builtins import int as whole", "P.add_argument('--n', type=whole)"),
+            ("a name bound to int", "WHOLE = int", "P.add_argument('--n', type=WHOLE)"),
+            ("a getattr of int", "import builtins", "P.add_argument('--n', type=getattr(builtins, 'int'))"),
+            ("a partial of int", "import functools", "P.add_argument('--n', type=functools.partial(int, base=10))"),
+            ("a ** of a literal", "import argparse", "P.add_argument('--n', **{'type': int})"),
+            ("a dict() of keywords", "import argparse", "P.add_argument('--n', **dict(type=float))"),
+            (
+                "a partial of add_argument",
+                "import functools",
+                "add = functools.partial(P.add_argument, type=int)\nadd('--n')",
+            ),
+            ("getattr of add_argument", "import argparse", "getattr(P, 'add_argument')('--n', type=int)"),
+            (
+                "a subparser's add_argument",
+                "import argparse",
+                "argparse.ArgumentParser().add_subparsers().add_parser('a').add_argument('--n', type=int)",
+            ),
+        )
+    },
+    # "and on an `int()` or `float()` of its own parameter, stripped or not, in a function or a lambda the module
+    # gives an `add_argument` as its `type`".
+    **{
+        f"an option's type function that converts its parameter {form}": _form(
+            int_parse_problems, f"import argparse\n\n{body}\n"
+        )
+        for form, body in (
+            ("with int()", "def count(value):\n    return int(value)\n\n\nP.add_argument('--n', type=count)"),
+            ("stripped", "def count(value):\n    return int(value.strip())\n\n\nP.add_argument('--n', type=count)"),
+            ("with a base", "def count(value):\n    return int(value, 10)\n\n\nP.add_argument('--n', type=count)"),
+            ("with float()", "def ratio(value):\n    return float(value)\n\n\nP.add_argument('--r', type=ratio)"),
+            ("in a lambda", "P.add_argument('--n', type=lambda value: int(value))"),
+            ("in a lambda bound to a name", "COUNT = lambda value: int(value)\nP.add_argument('--n', type=COUNT)"),
+            (
+                "in a function defined in a function",
+                "def build(p):\n    def count(value):\n        return int(value)\n\n"
+                "    p.add_argument('--n', type=count)",
+            ),
+        )
+    },
+    **{
+        f"an option {form}": _form(
+            int_parse_problems, f"import argparse\n\nimport whole_number\n\n{body}\n", refused=False
+        )
+        for form, body in (
+            ("read with whole_number.argument", "P.add_argument('--pull', type=whole_number.argument(1))"),
+            ("read with type=str", "P.add_argument('--name', type=str)"),
+            ("whose default is an int()", "P.add_argument('--n', default=int('3'), type=whole_number.argument())"),
+            ("type keyword of a call that is no add_argument", "P.set_defaults(type=int)"),
+            (
+                "type function that reads through whole_number",
+                "def count(value):\n    return whole_number.read(value, ValueError(value))\n\n\n"
+                "P.add_argument('--n', type=count)",
+            ),
+            (
+                "type function that converts what is not its parameter",
+                "def count(value):\n    return int(len(value))\n\n\nP.add_argument('--n', type=count)",
+            ),
+            # A function the module never gives as a type is held only to the group and digit-test rules.
+            ("function given to no add_argument", "def count(value):\n    return int(value)"),
+            # The parameter is the type function's own, not a name an inner function binds over it.
+            (
+                "type function whose inner function converts its own name",
+                "def count(value):\n    def inner():\n        value = '1'\n        return int(value)\n\n"
+                "    return inner()\n\n\nP.add_argument('--n', type=count)",
+            ),
+        )
+    },
     # "an `add_argument` whose `type` is `float` and whose option string, `dest`, or `metavar` names a time".
     **{
         f"a float time by its {where}": _form(
@@ -2550,6 +2625,63 @@ def test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_
         *(f"{alpha}:34 {group}" for _ in range(2)),
         f"{alpha}:41 converts a value a regular-expression fullmatch() admitted{remedy}",
         f"{alpha}:41 converts a value a regular-expression match() admitted{remedy}",
+        f"{alpha}: INT_PARSE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: INT_PARSE_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+OPTION_SOURCE = """\
+import argparse
+import functools
+
+import whole_number
+
+READ = functools.partial(int, base=10)
+
+
+def count(value):
+    return int(value.strip())
+
+
+def build():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pull", type=int)
+    parser.add_argument("--ratio", type=float)
+    parser.add_argument("--base", type=READ)
+    parser.add_argument("--count", type=count)
+    parser.add_argument("--size", type=lambda text: float(text))
+    parser.add_argument("--version", type=whole_number.argument(1))
+    return parser
+
+
+def sanctioned(parser):
+    parser.add_argument("--exit", type=int)
+
+
+INT_PARSE_ALLOWED = {"sanctioned": "the workflow passes the code it was given", "stale": "a reason"}
+"""
+
+
+def test_int_parse_policy_refuses_an_option_read_with_int_or_float() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.int_parse_problems,
+        "INT_PARSE_ALLOWED",
+        OPTION_SOURCE,
+        "skills/ejryan89-skill-core/scripts/whole_number.py",
+    )
+    use = (
+        "; call ejryan89-skill-core's whole_number.argument, or seconds_option.positive_seconds for a time, as the "
+        "option's type, or state why in INT_PARSE_ALLOWED"
+    )
+    reads_int = "a sign, spaces, underscores, and every Unicode decimal digit"
+    reads_float = "a sign, spaces, underscores, every Unicode decimal digit, nan, and inf"
+    assert found == [
+        f"{alpha}:10 converts value with int() in count, an option's argparse type, which reads {reads_int}{use}",
+        f"{alpha}:15 reads an option with type=int, which reads {reads_int}{use}",
+        f"{alpha}:16 reads an option with type=float, which reads {reads_float}{use}",
+        f"{alpha}:17 reads an option with type=int, which reads {reads_int}{use}",
+        f"{alpha}:19 converts text with float() in a lambda, an option's argparse type, which reads {reads_float}{use}",
         f"{alpha}: INT_PARSE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: INT_PARSE_ALLOWED must map each function, class, or assignment to its reason",
     ]

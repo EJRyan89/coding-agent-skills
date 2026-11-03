@@ -49,6 +49,7 @@ from validation_support import (
     ATTRIBUTE_LOOKUPS,
     DEFINITIONS,
     MODULE_SCOPE,
+    PARTIAL_CALLS,
     REPOSITORY_ROOT,
     CallableResolver,
     ResolvedCall,
@@ -1306,10 +1307,19 @@ def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
 # past the interpreter's digit limit raises a ValueError that names no input. So int() never converts a
 # regular-expression group, an item of a findall() list or of one of its tuples among them, or a value an isdigit(),
 # isdecimal(), or isnumeric() test admitted, which passes a digit such as a superscript two that int() then refuses.
-# Any other conversion states why in a module-level INT_PARSE_ALLOWED = {scope: reason}, as where the pattern itself
-# bounds the digits.
+# Nor does an argparse option read its number with int() or float(): an add_argument's type is never int or float,
+# through an alias, a getattr, a functools.partial, or a `**` literal (resolved_calls), and a function or lambda the
+# module gives an add_argument as its type never converts its own parameter with int() or float(); the option takes
+# whole_number.argument, or seconds_option.positive_seconds for a time. Any other conversion states why in a
+# module-level INT_PARSE_ALLOWED = {scope: reason}, as where the pattern itself bounds the digits. A type built by a
+# call, as a factory's inner function, and one another module defines, are read only by what they resolve to.
 WHOLE_NUMBER_READER = "skills/ejryan89-skill-core/scripts/whole_number.py"
 INT_PARSE_ALLOWANCE = "INT_PARSE_ALLOWED"
+# What each number type an argparse option may name reads beyond a number's ASCII digits.
+ARGUMENT_NUMBER_TYPES = {
+    "int": "a sign, spaces, underscores, and every Unicode decimal digit",
+    "float": "a sign, spaces, underscores, every Unicode decimal digit, nan, and inf",
+}
 
 
 # The objects whose functions and methods a call may name through the re module: a call on either names its pattern or
@@ -1490,13 +1500,101 @@ class _ModuleNumbers:
         return f"a value {test} admitted" if test else None
 
 
+def _number_types(given: ast.expr, resolver: CallableResolver) -> set[str]:
+    """The number types of ARGUMENT_NUMBER_TYPES an add_argument's type may be: one it names, through the module's
+    imports and bindings, a getattr of builtins included, or the function a functools.partial of one binds."""
+    kinds = {reference.name.removeprefix("builtins.") for reference in resolved_references(given, resolver)}
+    for value in bound_values(given, resolver):
+        if (
+            isinstance(value, ast.Call)
+            and value.args
+            and any(reference.name in PARTIAL_CALLS for reference in resolved_references(value.func, resolver))
+        ):
+            kinds |= _number_types(value.args[0], resolver)
+    return kinds & set(ARGUMENT_NUMBER_TYPES)
+
+
+def _type_functions(
+    given: ast.expr, resolver: CallableResolver, functions: list[ast.FunctionDef | ast.AsyncFunctionDef]
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda]:
+    """The functions and lambdas of this module an add_argument's type may be: a lambda given or bound to a name, and a
+    function the module defines in the scope that owns the name the type reads."""
+    found: list[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda] = []
+    for value in bound_values(given, resolver):
+        if isinstance(value, ast.Lambda):
+            found.append(value)
+        elif isinstance(value, ast.Name) and (scope := resolver.scopes.get(id(value))) is not None:
+            owner = scope.owner(value.id)
+            found += [
+                function
+                for function in functions
+                if function.name == value.id and owner is not None and resolver.scopes.get(id(function)) is owner
+            ]
+    return found
+
+
+def _argument_conversions(
+    tree: ast.Module, resolver: CallableResolver
+) -> tuple[dict[int, str], dict[int, tuple[str, str, str]]]:
+    """Each add_argument call whose type is a number type, by the call, with the type; and each int() or float() call
+    in a function or lambda the module gives an add_argument as its type that converts one of that function's own
+    parameters, stripped or not, by the call, with the builtin, the parameter, and the function's name."""
+    functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)]
+    typed: dict[int, str] = {}
+    converted: dict[int, tuple[str, str, str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for read in resolved_calls(node, resolver):
+            if read.attribute != "add_argument":
+                continue
+            for given in read.keywords.get("type", []):
+                if kinds := _number_types(given, resolver):
+                    typed.setdefault(id(node), sorted(kinds)[-1])
+                for function in _type_functions(given, resolver, functions):
+                    converted |= _parameter_conversions(function, resolver)
+    return typed, converted
+
+
+def _parameter_conversions(
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, resolver: CallableResolver
+) -> dict[int, tuple[str, str, str]]:
+    """Each int() or float() call in a function that converts one of its own parameters, stripped or not, by the call,
+    with the builtin, the parameter, and the function's name."""
+    arguments = function.args
+    parameters = {
+        argument.arg: resolver.scopes.get(id(argument))
+        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    }
+    label = function.name if not isinstance(function, ast.Lambda) else "a lambda"
+    found: dict[int, tuple[str, str, str]] = {}
+    for call in ast.walk(function):
+        if not isinstance(call, ast.Call) or not call.args:
+            continue
+        builtin = resolver.name(call.func).removeprefix("builtins.")
+        argument = _unstripped(call.args[0])
+        if builtin not in ARGUMENT_NUMBER_TYPES or not isinstance(argument, ast.Name) or argument.id not in parameters:
+            continue
+        scope = resolver.scopes.get(id(argument))
+        if scope is not None and scope.owner(argument.id) is parameters[argument.id]:
+            found[id(call)] = (builtin, argument.id, label)
+    return found
+
+
 def int_parse_problems(root: Path, files: list[Path]) -> list[str]:
     """Each one-argument int() call outside whole_number that converts a regular-expression group or a value a digit
-    test admitted, that no INT_PARSE_ALLOWED entry sanctions."""
+    test admitted, each add_argument whose type is int or float, and each int() or float() of its own parameter in a
+    function the module gives an add_argument as its type, that no INT_PARSE_ALLOWED entry sanctions."""
     problems: list[str] = []
     paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != WHOLE_NUMBER_READER]
+    use = (
+        "call ejryan89-skill-core's whole_number.argument, or seconds_option.positive_seconds for a time, as the "
+        f"option's type, or state why in {INT_PARSE_ALLOWANCE}"
+    )
     for _, name, tree in python_trees(paths, root, problems):
-        numbers = _ModuleNumbers(tree, CallableResolver(tree))
+        resolver = CallableResolver(tree)
+        numbers = _ModuleNumbers(tree, resolver)
+        typed, converted = _argument_conversions(tree, resolver)
         found = [
             (
                 node.lineno,
@@ -1506,9 +1604,30 @@ def int_parse_problems(root: Path, files: list[Path]) -> list[str]:
                 f"number from text, or state why in {INT_PARSE_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Call) and (what := numbers.refusal(node))
+            if isinstance(node, ast.Call) and id(node) not in converted and (what := numbers.refusal(node))
         ]
-        problems += sanctioned_problems(name, tree, INT_PARSE_ALLOWANCE, found)
+        found += [
+            (
+                node.lineno,
+                scope,
+                f"reads an option with type={typed[id(node)]}, which reads "
+                f"{ARGUMENT_NUMBER_TYPES[typed[id(node)]]}; {use}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call) and id(node) in typed
+        ]
+        found += [
+            (
+                node.lineno,
+                scope,
+                f"converts {parameter} with {builtin}() in {function}, an option's argparse type, which reads "
+                f"{ARGUMENT_NUMBER_TYPES[builtin]}; {use}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call) and id(node) in converted
+            for builtin, parameter, function in [converted[id(node)]]
+        ]
+        problems += sanctioned_problems(name, tree, INT_PARSE_ALLOWANCE, sorted(found, key=lambda item: item[0]))
     return problems
 
 

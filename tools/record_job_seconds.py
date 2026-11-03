@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_writer
+import whole_number
 from console import run_main
 from github_client import GitHubClient, GitHubError, subprocess_runner
 
@@ -215,16 +216,19 @@ def main(arguments: list[str] | None = None, client: GitHubClient | None = None,
     parser = argparse.ArgumentParser(
         description="Record each validation job's median seconds on each platform from validate runs."
     )
-    parser.add_argument("runs", nargs="*", type=int, help="the runs' IDs; the latest successful main push runs if none")
+    parser.add_argument(
+        "runs",
+        nargs="*",
+        type=whole_number.argument(1),
+        help="the runs' IDs; the latest successful main push runs if none",
+    )
     parser.add_argument(
         "--count",
-        type=int,
+        type=whole_number.argument(1),
         default=DEFAULT_RUN_COUNT,
         help=f"how many of the latest runs to read when none are named (default {DEFAULT_RUN_COUNT})",
     )
     options = parser.parse_args(arguments)
-    if options.count < 1:
-        parser.error("--count must be at least 1")
     client = client or GitHubClient(runner=functools.partial(subprocess_runner, cwd=REPOSITORY_ROOT))
     try:
         runs = sorted(set(options.runs)) if options.runs else latest_runs(client, options.count)

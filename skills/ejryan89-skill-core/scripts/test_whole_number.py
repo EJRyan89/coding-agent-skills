@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -67,3 +70,98 @@ class ReadTests(unittest.TestCase):
             self.refused("9" * 641)
         finally:
             sys.set_int_max_str_digits(configured)
+
+
+# What int() reads, or str.isdigit() passes, that is no whole number in ASCII digits: the non-ASCII ones are an
+# Arabic-Indic three, a fullwidth one, and a superscript two.
+NOT_ASCII_DIGITS = (
+    "",
+    " 1",
+    "1 ",
+    "+1",
+    "1_0",
+    "1.0",
+    "0x1",
+    "1e3",
+    chr(0x0663),
+    chr(0xFF11),
+    chr(0x00B2),
+    "1" + chr(0x00B2),
+)
+
+
+class ArgumentTests(unittest.TestCase):
+    def refused(self, read: object, value: str, message: str) -> None:
+        assert callable(read)
+        with self.assertRaises(argparse.ArgumentTypeError) as raised:
+            read(value)
+        self.assertEqual(message, str(raised.exception))
+
+    def test_a_whole_number_within_the_bounds_is_read(self) -> None:
+        read = whole_number.argument(1, 300)
+        for value, number in (("1", 1), ("007", 7), ("300", 300)):
+            with self.subTest(value=value):
+                self.assertEqual(number, read(value))
+        self.assertEqual(0, whole_number.argument()("0"))
+        self.assertEqual(10**50, whole_number.argument(1)("1" + "0" * 50))
+
+    def test_what_int_reads_beyond_ascii_digits_is_refused_naming_the_value(self) -> None:
+        for value in (*NOT_ASCII_DIGITS, "-1", "twelve"):
+            with self.subTest(value=ascii(value)):
+                # The message is pinned here once against a literal; the sites' suites take it from a refusal.
+                self.refused(
+                    whole_number.argument(1),
+                    value,
+                    f"must be a whole number of at least 1 in ASCII digits, not {value!r}",
+                )
+
+    def test_a_number_outside_the_bounds_is_refused(self) -> None:
+        for value in ("0", "301", "1000"):
+            with self.subTest(value=value):
+                self.refused(
+                    whole_number.argument(1, 300),
+                    value,
+                    f"must be a whole number from 1 to 300 in ASCII digits, not {value!r}",
+                )
+        self.refused(whole_number.argument(5), "4", "must be a whole number of at least 5 in ASCII digits, not '4'")
+
+    def test_the_digits_are_capped_at_the_larger_bounds_and_otherwise_at_the_cap(self) -> None:
+        # "0300" has four digits, one more than 300; the cap holds an unbounded option to DIGIT_LIMIT digits.
+        self.refused(
+            whole_number.argument(1, 300), "0300", "must be a whole number from 1 to 300 in ASCII digits, not '0300'"
+        )
+        self.assertEqual(300, whole_number.argument(1, 300)("300"))
+        self.assertEqual(9, whole_number.argument(-10, 9)("09"))
+        cap = whole_number.DIGIT_LIMIT
+        self.assertEqual(10 ** (cap - 1), whole_number.argument()("1" + "0" * (cap - 1)))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            whole_number.argument()("1" * (cap + 1))
+
+    def test_a_sign_is_read_only_where_the_minimum_is_below_zero(self) -> None:
+        read = whole_number.argument(-(2**31), 2**31 - 1)
+        for value, number in (("-1073741819", -1073741819), ("-0", 0), ("0", 0), ("2147483647", 2**31 - 1)):
+            with self.subTest(value=value):
+                self.assertEqual(number, read(value))
+        span = "an integer from -2147483648 to 2147483647 in ASCII digits"
+        for value in ("-", "--1", "+1", "- 1", "-1_0", "-" + chr(0x0663), "-2147483649", "2147483648"):
+            with self.subTest(value=value):
+                self.refused(read, value, f"must be {span}, not {value!r}")
+        self.refused(whole_number.argument(0), "-0", "must be a whole number of at least 0 in ASCII digits, not '-0'")
+
+    def test_a_maximum_below_the_minimum_is_a_programming_error(self) -> None:
+        with self.assertRaises(ValueError):
+            whole_number.argument(2, 1)
+        self.assertEqual(3, whole_number.argument(3, 3)("3"))
+
+    def test_argparse_ends_a_refused_value_with_a_usage_error(self) -> None:
+        parser = argparse.ArgumentParser(prog="tool")
+        parser.add_argument("--pull", type=whole_number.argument(1))
+        self.assertEqual(12, parser.parse_args(["--pull", "12"]).pull)
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as exited:
+            parser.parse_args(["--pull", "1_0"])
+        self.assertEqual(2, exited.exception.code)
+        self.assertEqual(
+            "tool: error: argument --pull: must be a whole number of at least 1 in ASCII digits, not '1_0'",
+            errors.getvalue().splitlines()[-1],
+        )

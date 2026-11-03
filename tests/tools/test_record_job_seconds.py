@@ -526,9 +526,22 @@ class MainTests(unittest.TestCase):
         code, _, _, _ = self.run_main(["--count", "1"], stub)
         self.assertEqual(0, code)
         self.assertEqual("2", stub.commands[0][stub.commands[0].index("--limit") + 1])
-        for arguments in (["--count", "0"], ["--count", "-2"]):
-            with self.subTest(arguments=arguments), self.assertRaises(SystemExit):
-                self.run_main(arguments, Stub({}))
+        # int() read "1_0" as 10 and an Arabic-Indic three as 3, as a count and as a run's ID.
+        for option, value in (
+            ("--count", "0"),
+            ("--count", "-2"),
+            ("--count", "1_0"),
+            ("--count", chr(0x0663)),
+            ("runs", "0"),
+            ("runs", "3_8"),
+            ("runs", chr(0x0663)),
+        ):
+            stub = Stub({})
+            arguments = [f"--count={value}"] if option == "--count" else ["--", value]
+            with self.subTest(option=option, value=ascii(value)), self.assertRaises(SystemExit) as raised:
+                run_record(arguments, stub, Path(self.enterContext(tempfile.TemporaryDirectory())))
+            self.assertEqual(2, raised.exception.code)
+            self.assertEqual([], stub.commands)
 
     def test_one_refused_run_among_good_ones_refuses_the_record(self) -> None:
         stub = runs_stub({1: LOG, 3: LOG})

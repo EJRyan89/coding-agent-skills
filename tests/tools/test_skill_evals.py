@@ -1142,14 +1142,23 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual("| defects | 4/4 (2/2 runs) | 0/4 (0/2 runs) |", lines[-1])
 
     def test_runs_are_a_positive_count(self) -> None:
-        for value in ("0", "-1", "two"):
-            with (
-                self.subTest(value=value),
-                contextlib.redirect_stderr(io.StringIO()),
-                self.assertRaises(SystemExit) as raised,
-            ):
-                run_main(["demo", "--records", str(self.records), "--runs", value], self.scenarios)
-            self.assertEqual(2, raised.exception.code)
+        # int() read "1_0" as 10 and an Arabic-Indic three as 3.
+        for option in ("--runs", "--jobs"):
+            for value in ("0", "-1", "two", "1_0", " 2", chr(0x0663)):
+                errors = io.StringIO()
+                with (
+                    self.subTest(option=option, value=ascii(value)),
+                    contextlib.redirect_stderr(errors),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    run_main(["demo", "--records", str(self.records), f"{option}={value}"], self.scenarios)
+                self.assertEqual(2, raised.exception.code)
+                self.assertTrue(
+                    errors.getvalue().endswith(
+                        f"error: argument {option}: must be a whole number of at least 1 in ASCII digits, "
+                        f"not {value!r}\n"
+                    )
+                )
 
     def test_a_record_lacking_what_an_expectation_reads_is_a_judgment(self) -> None:
         again = write_scenario(
