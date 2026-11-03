@@ -187,6 +187,25 @@ class SnapshotPathTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNone(snapshot_path(self.root, path))
 
+    def test_a_reserved_device_name_or_a_segment_windows_drops_the_end_of_is_refused_on_every_platform(self) -> None:
+        # As path_containment refuses them: Windows opens a device for the first rows, and reads the last as another
+        # file, the snapshot's root among them for `.. `.
+        for path in (
+            "con",
+            "src/NUL",
+            "a/COM1:x",
+            "COM1.txt",
+            "src/aux.py",
+            "tools/lpt\u00b9.py",
+            "CONIN$",
+            ".. ",
+            ".../tools/inside.py",
+            "tools/inside.py.",
+            "tools /inside.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(snapshot_path(self.root, path))
+
     def test_this_platform_s_absolute_path_to_a_file_outside_is_refused(self) -> None:
         outside = (self.outer / "outside.py").resolve()
         self.assertTrue(outside.is_file())

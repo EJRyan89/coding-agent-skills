@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from path_containment import within
+from path_containment import within, written_refusal
 
 # The bytes git escapes by a letter or by themselves rather than in octal.
 ESCAPED_BYTES = {"a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A, "v": 0x0B, "f": 0x0C, "r": 0x0D, '"': 0x22, "\\": 0x5C}
@@ -108,14 +108,12 @@ def header_path(value: str) -> str | None:
 
 
 def snapshot_path(root: Path, path: str) -> Path | None:
-    """Where a decoded diff path lands in the snapshot at `root`, resolved, or None when it could land outside it: a
-    path holding a backslash or a control character, one with an empty, `.`, or `..` segment, which an absolute path
-    has first, or a segment that starts with a drive, which Windows joins as a new root, and one that resolves outside
-    the resolved root, as through a link, or cannot be resolved. The rule is the same on every platform, so a path
-    refused on one is refused on all."""
-    if UNSAFE_CHARACTERS.search(path):
-        return None
-    if any(segment in {"", ".", ".."} or DRIVE.match(segment) for segment in path.split("/")):
+    """Where a decoded diff path lands in the snapshot at `root`, resolved, or None when it could land outside it or
+    open something other than a file there: a path holding a backslash or a control character, one with a `.`
+    segment, one ejryan89-skill-core's `path_containment.written_refusal` refuses, as an absolute, drive, empty, `..`,
+    reserved-device, or trailing dot or space segment, and one that resolves outside the resolved root, as through a
+    link, or cannot be resolved. The rule is the same on every platform, so a path refused on one is refused on all."""
+    if UNSAFE_CHARACTERS.search(path) or "." in path.split("/") or written_refusal(path) is not None:
         return None
     try:
         base = root.resolve()

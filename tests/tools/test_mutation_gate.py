@@ -407,6 +407,8 @@ class ReachFixtures(unittest.TestCase):
                     "tools/unchanged.py": {"executed_lines": [1]},
                     "tools/unrun.py": ["not", "an", "entry"],
                     str(Path(temporary) / "elsewhere.py"): {"executed_lines": [9]},
+                    # A sibling folder whose name starts with the tree's is outside it.
+                    str(Path(temporary) / "tree with spaces2" / "tools" / "calc.py"): {"executed_lines": [4]},
                 }
             }
             lines = executed_lines(report, tree, ["tools/calc.py", "deployer/a.py", "tools/unrun.py"])

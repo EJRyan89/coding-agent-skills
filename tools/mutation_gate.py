@@ -178,6 +178,7 @@ from fsops_platform import ATTRIBUTE_BY_NAME, PLATFORM_ALLOWANCE, platform_token
 from git_client import GitClient
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, reached_suites
+from path_containment import within
 from suite_discovery import pytest_command
 from suite_names import is_suite_name
 from typed_fields import FieldError, FieldReader
@@ -935,11 +936,10 @@ def module_entries(
     path into the worktree."""
     files = report.get("files")
     for name, entry in files.items() if isinstance(files, dict) else ():
-        path = Path(name) if Path(name).is_absolute() else tree / name
-        try:
-            module = path.resolve().relative_to(tree.resolve()).as_posix()
-        except ValueError:
+        path, root = (Path(name) if Path(name).is_absolute() else tree / name).resolve(), tree.resolve()
+        if not within(path, root):
             continue
+        module = path.relative_to(root).as_posix()
         if module in modules and isinstance(entry, dict):
             yield module, entry, len((tree / module).read_bytes().splitlines())
 

@@ -2138,6 +2138,12 @@ def command_scripts(
     return list(dict.fromkeys(found)), list(dict.fromkeys(missing))
 
 
+# The containment tests that are not decisions, each with why it does not call path_containment.
+CONTAINMENT_ALLOWED = {
+    "shown_path": "display only: a path outside the skill folder is shown resolved rather than refused",
+}
+
+
 def shown_path(folder: Path, path: Path) -> str:
     """A script's path under the skill folder as it was given, or its resolved path outside it."""
     try:

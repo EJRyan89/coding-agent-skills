@@ -835,7 +835,51 @@ def told_apart(name: str, top: str) -> bool:
     return name.startswith(top + "/")
 
 
-CONTAINMENT_ALLOWED = {"told_apart": "a reason", "stale": "a reason"}
+def caught(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return ""
+
+
+def caught_among(path: Path, root: Path) -> str | None:
+    try:
+        parts = path.resolve().relative_to(root).parts
+    except (OSError, ValueError):
+        return None
+    return "/".join(parts)
+
+
+def caught_by_a_base(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except Exception:
+        return False
+    return True
+
+
+def not_a_decision(path: Path, root: Path) -> list[object]:
+    try:
+        name = path.relative_to(root).as_posix()
+    except OSError:
+        name = ""
+    try:
+        later = lambda: path.relative_to(root)  # noqa: E731
+        def deferred() -> Path:
+            return path.relative_to(root)
+    except ValueError:
+        later = deferred = None
+    return [name, later, deferred, path.relative_to(root)]
+
+
+def shown(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+CONTAINMENT_ALLOWED = {"told_apart": "a reason", "shown": "a reason", "stale": "a reason"}
 """
 
 
@@ -863,6 +907,10 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         f"{alpha}:14 tests containment with commonpath{remedy}",
         *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (15, 16, 17)),
         f"{alpha}:18 tests containment with a comparison of a path's leading parts{remedy}",
+        *(
+            f"{alpha}:{line} tests containment with a relative_to whose ValueError is caught{remedy}"
+            for line in (31, 38, 46)
+        ),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

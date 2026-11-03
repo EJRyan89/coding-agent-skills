@@ -70,6 +70,44 @@ class WithinTests(unittest.TestCase):
         self.assertFalse(within("//host/share/tree/x", "C:/tree"))
 
 
+class ExtendedPrefixTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
+    def test_within_compares_a_path_and_a_tree_without_the_extended_length_prefix(self) -> None:
+        # Path.resolve gives a long path, or one whose last segment Windows rewrites, with the prefix and a tree
+        # without it, so either spelling on either side compares as the plain path.
+        for path, tree in (
+            ("\\\\?\\C:\\tree\\a", "C:\\tree"),
+            ("C:\\tree\\a", "\\\\?\\C:\\tree"),
+            ("\\\\?\\c:\\TREE\\a", "\\\\?\\C:\\tree"),
+            ("\\\\?\\UNC\\host\\share\\a", "\\\\host\\share"),
+        ):
+            with self.subTest(path=path, tree=tree):
+                self.assertTrue(within(path, tree))
+                self.assertFalse(within(path, tree.replace("tree", "other").replace("share", "other")))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
+    def test_the_prefix_is_removed_before_a_drive_letter_or_a_share_and_kept_before_anything_else(self) -> None:
+        volume = "\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\skills"
+        cases = {
+            "\\\\?\\C:\\skills\\x": "C:\\skills\\x",
+            "\\\\?\\c:\\skills": "c:\\skills",
+            "\\\\?\\UNC\\host\\share\\skills\\x": "\\\\host\\share\\skills\\x",
+            "\\\\?\\unc\\host\\share\\skills": "\\\\host\\share\\skills",
+            "C:\\skills\\x": "C:\\skills\\x",
+            "\\\\host\\share\\skills": "\\\\host\\share\\skills",
+            volume: volume,
+        }
+        for spelled, plain in cases.items():
+            with self.subTest(path=spelled):
+                self.assertEqual(Path(plain), path_containment.without_extended_prefix(Path(spelled)))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows reads the prefix as part of a drive")
+    def test_elsewhere_the_prefix_characters_are_an_ordinary_name(self) -> None:
+        for spelled in ("\\\\?\\C:\\skills", "/home/a/\\\\?\\C:\\skills"):
+            with self.subTest(path=spelled):
+                self.assertEqual(Path(spelled), path_containment.without_extended_prefix(Path(spelled)))
+
+
 class PosixWithinTests(unittest.TestCase):
     def test_a_name_in_the_folder_is_within_and_the_folder_itself_only_when_not_strict(self) -> None:
         self.assertTrue(posix_within("skills/a/b.py", "skills"))
@@ -108,9 +146,17 @@ class WrittenRefusalTests(unittest.TestCase):
             "docs//a.md": "the entry holds an empty segment",
             "docs/": "the entry holds an empty segment",
         }
+        trailing = "the entry has a segment ending in a dot or a space, which Windows drops, so it names another file"
+        for entry in ("a.", "a ", "docs./a.md", "docs /a.md", "...", ".. ", ". ", ".. /Roaming", "docs\\a. "):
+            cases[entry] = trailing
         for entry, reason in cases.items():
             with self.subTest(entry=entry):
                 self.assertEqual(reason, written_refusal(entry))
+
+    def test_a_dot_or_a_space_inside_a_name_and_a_lone_dot_segment_are_accepted(self) -> None:
+        for entry in (".", "./a", "a/./b", ".a", "a.b", "a b", "..a", "a/.github/b"):
+            with self.subTest(entry=entry):
+                self.assertIsNone(written_refusal(entry))
 
     def test_a_reserved_device_name_in_any_segment_is_refused_on_every_platform(self) -> None:
         for entry in (
@@ -162,6 +208,14 @@ class RefusalTests(unittest.TestCase):
         self.outside = base / "outside"
         self.outside.mkdir()
         (self.outside / "a.md").write_text("outside\n", encoding="utf-8")
+
+    def test_a_segment_windows_drops_the_end_of_is_refused_for_that_never_for_a_link(self) -> None:
+        # Windows reads `.. /docs` as `docs` and `.../a.md` as `a.md`, a file inside the tree, so the refusal names the
+        # spelling, not a link that does not exist.
+        trailing = "the entry has a segment ending in a dot or a space, which Windows drops, so it names another file"
+        for entry in (".. /docs", ".../a.md", "docs/a.md."):
+            with self.subTest(entry=entry):
+                self.assertEqual(trailing, refusal(entry, self.tree))
 
     def test_a_file_inside_the_tree_and_one_not_yet_written_are_accepted(self) -> None:
         self.assertIsNone(refusal("docs/a.md", self.tree))

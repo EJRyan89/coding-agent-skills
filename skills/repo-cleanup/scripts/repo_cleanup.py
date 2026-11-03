@@ -1632,16 +1632,15 @@ def linkless_below(path: str, anchor: str) -> bool:
     plain directory: no link or junction, so the path resolves where it reads."""
     # Lexical, like prune_empty_parents: Path.resolve would follow the very links this looks for.
     path, anchor = os.path.abspath(path), os.path.abspath(anchor)  # noqa: PTH100 - lexical, as the comment says
-    try:
-        parts = Path(path).relative_to(anchor).parts
-    except ValueError:
+    if not within(path, anchor, strict=True):
         return False
+    parts = Path(path).parts[len(Path(anchor).parts) :]
     current = Path(anchor)
     for part in parts:
         current /= part
         if not is_plain_directory(current):
             return False
-    return bool(parts)
+    return True
 
 
 def searchable_areas(areas: list[str], anchors: list[str]) -> list[str]:
