@@ -8,8 +8,10 @@ or changed: neither may escape as an unclassified failure, nor be read as no fil
 from __future__ import annotations
 
 import errno
+import functools
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +19,7 @@ from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journ
 
 from deployer import discovery, manifest, platform_support, render, state_files
 from deployer.errors import DeployError
+from deployer.journal import Journal, valid_entry
 
 # An integer past the digit limit, which json.loads raises ValueError for, and lists nested past the recursion limit,
 # which it raises RecursionError for.
@@ -61,6 +64,22 @@ class ReaderTests(DeployerTestCase):
             (f"ERROR: The state at {platform_support.normalize(path)} is not a file.", "Move it aside.", "Then retry."),
             raised.exception.lines,
         )
+
+    def test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error(self) -> None:
+        # Each entry as the deployer writes it, in a root it records and kept, so a key a writer adds gets its rows.
+        record = Journal(self.root / "journal.jsonl", RUN_ID)
+        record.create()
+        record.backup("agents", "alpha", ZERO_HASH, retain=True)
+        record.install("agents", "alpha", ZERO_HASH)
+        record.preserve("agents", "alpha")
+        for entry in record.entries:
+            self.assertTrue(valid_entry(entry, RUN_ID), entry)
+            for key, kept in entry.items():
+                for value in ([], ["agents"], {}, {"agents": 1}, 1, None, True):
+                    if type(value) is type(kept):
+                        continue
+                    with self.subTest(op=entry["op"], key=key, value=value):
+                        self.assertFalse(valid_entry({**entry, key: value}, RUN_ID))
 
     def test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent(self) -> None:
         path = self.root / "state.json"
@@ -200,6 +219,65 @@ class StateFileTests(DeployerTestCase):
         self.assertNotIn("FAILED", result.output)
         self.assertTrue(journal.is_file())
         self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: Run {RUN_ID} cannot be recovered")
+
+    def test_a_journal_entry_whose_root_or_from_is_a_list_an_object_or_a_number_stops_recovery_as_malformed(
+        self,
+    ) -> None:
+        self.deploy_ok("--all")
+        journal = self.staging_run(RUN_ID) / "journal.jsonl"
+        for key, value in (("root", []), ("root", {}), ("root", 1), ("from", []), ("from", {})):
+            with self.subTest(key=key, value=value):
+                entry = install_entry("alpha", ZERO_HASH)
+                entry[key] = value
+                self.write(journal, journal_line(entry))
+                # The second deployment meets the same run, which recovery kept for the user rather than retrying.
+                for _ in range(2):
+                    result = self.deploy_fails("--all", pattern=f"Malformed journal entry in run {RUN_ID}")
+                    self.assertNotIn("the next deployment retries it", result.output)
+                    self.assertNotIn("TypeError", result.output)
+                dry = self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: Run {RUN_ID} cannot be recovered")
+                self.assertNotIn("FAILED", dry.output)
+                self.assertTrue(journal.is_file())
+
+    def test_a_dry_run_beside_a_pending_recovery_refuses_each_state_file_the_deployment_refuses(self) -> None:
+        # The deployment reads the manifest and the configuration before it recovers anything, so a dry run reads them
+        # before it reports a pending recovery. A journal it cannot read is the journal's own refusal, held above; the
+        # lock's info.json is read only by a run that takes the lock, which a dry run never does.
+        self.deploy_ok("--all")
+        saved = self.manifest_file.read_bytes()
+        config_file = self.config_file()
+        configured = config_file.read_bytes()
+
+        def damage_manifest(directory: bool) -> None:
+            self.manifest_file.unlink()
+            if directory:
+                self.manifest_file.mkdir()
+            else:
+                self.write(self.manifest_file, "{")
+
+        def damage_configuration() -> None:
+            config_file.unlink()
+            config_file.mkdir()
+
+        rows: dict[str, tuple[Callable[[], None], str]] = {
+            "malformed manifest": (functools.partial(damage_manifest, False), "ERROR: Manifest is malformed: "),
+            "manifest not a file": (functools.partial(damage_manifest, True), "ERROR: The manifest at "),
+            "configuration not a file": (damage_configuration, "ERROR: The configuration at "),
+        }
+        for case, (damage, refusal) in rows.items():
+            with self.subTest(case=case):
+                self.write(self.staging_run(RUN_ID) / "journal.jsonl", journal_line(install_entry("ghost", ZERO_HASH)))
+                damage()
+                answers = []
+                for arguments in (("--all",), ("--all", "--dry-run")):
+                    result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
+                    self.assertNotIn("Pending recovery", result.output)
+                    answers.append([line for line in result.output.splitlines() if line.startswith("ERROR: ")])
+                self.assertEqual(answers[0], answers[1])
+                for path, content in ((self.manifest_file, saved), (config_file, configured)):
+                    if path.is_dir():
+                        path.rmdir()
+                    path.write_bytes(content)
 
     def test_a_directory_in_place_of_a_journal_stops_recovery_and_keeps_what_the_run_holds(self) -> None:
         self.deploy_ok("--all")

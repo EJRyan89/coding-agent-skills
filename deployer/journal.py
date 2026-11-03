@@ -157,8 +157,9 @@ class Journal:
 def valid_entry(entry: object, run_id: str) -> TypeGuard[JournalEntry]:
     if not isinstance(entry, dict):
         return False
+    # Every field is read from the file, so its type is checked before a hashed lookup, which a list or an object fails.
     root = entry.get("root", DEFAULT_ROOT)
-    if root not in ROOT_PREFIXES:
+    if not isinstance(root, str) or root not in ROOT_PREFIXES:
         return False
     destination, staging = ROOT_PREFIXES[root]
     op, item = entry.get("op"), entry.get("item")
@@ -184,8 +185,10 @@ def valid_entry(entry: object, run_id: str) -> TypeGuard[JournalEntry]:
             if not hashing.HASH_PATTERN.fullmatch(str(entry.get("staged_hash", ""))):
                 return False
             stagings = (staging, *LEGACY_STAGING.get(root, ()))
+            origin = entry.get("from")
             return (
-                entry.get("from") in {f"{label}/{item}" for label in stagings}
+                isinstance(origin, str)
+                and origin in {f"{label}/{item}" for label in stagings}
                 and entry.get("to") == f"{destination}/{item}"
             )
         case "preserve":
@@ -417,27 +420,61 @@ def keep_backup(
     return kept_at
 
 
-def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
-    """Delete an unchanged transient backup the committed run did not keep, or keep it, through keep_backup."""
+def finish_backup(
+    paths: Paths, run_id: str, entry: BackupEntry, before_move: Callable[[], None] | None = None
+) -> tuple[Literal["delete", "keep", "gone"], str | None]:
+    """Settle a committed run's transient backup, the one rule finalization and recovery share, and return what
+    backup_disposition decided with where the copy was kept, or None when it was not moved under .backups.
+
+    A copy the run does not keep is deleted while it matches the hash the plan recorded. Any other copy is moved to
+    .backups/<run-id>/ by keep_backup, whatever its content: one the run keeps, as a forced replacement's, one changed
+    after the plan read it, and one whose stat fails. Only once keep_backup says where the copy went does a warning say
+    that a changed or unreadable copy was kept there; when it stays beside its item, keep_backup's warning says so.
+
+    The run is committed, so a deletion that fails, such as of a file another program holds open, does not fail it:
+    the copy stays beside its item, named with the reason, as one keep_backup cannot move does.
+    """
     item = entry["item"]
     transient = _item_path(paths, entry, BACKUP_SUFFIX)
-    kept_at = f".backups/{run_id}/{item}"
-    if not entry["retain"]:
-        if backup_unchanged(paths, entry):
+    disposition, unreadable = backup_disposition(paths, entry)
+    if disposition == "delete":
+        try:
             fsops.remove(transient)
-            return True
+        except OSError as error:
+            _warn(
+                f"{item}'s previous copy could not be deleted, so it stays at {platform_support.normalize(transient)}: "
+                f"{error.strerror or error}. Delete it once nothing holds it open. {see_recovery('Backups')}"
+            )
+        return disposition, None
+    if disposition == "gone":
+        return disposition, None
+    kept_at = keep_backup(paths, run_id, entry, before_move)
+    if kept_at is None:
+        return disposition, None
+    if unreadable:
         _warn(
-            f"{item} changed after run {run_id} planned it, so its previous copy is kept at {kept_at} "
+            f"Could not tell whether {item}'s previous copy changed after run {run_id} planned it ({unreadable}), "
+            f"so it was kept at {kept_at}."
+        )
+    elif not entry["retain"]:
+        _warn(
+            f"{item} changed after run {run_id} planned it, so its previous copy was kept at {kept_at} "
             "instead of being deleted."
         )
-    if file_presence.is_occupied(transient):
-        if entry["retain"] and _hash_existing(transient) != entry["backup_hash"]:
-            _warn(f"Backup hash mismatch for {item}")
-            return False
-        if keep_backup(paths, run_id, entry) is not None:
-            print(f"  Preserved backup: {item} -> {kept_at}")
+    return disposition, kept_at
+
+
+def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
+    """Settle a committed run's transient backup through finish_backup, or, for a kept one already gone, check the copy
+    an earlier attempt moved to .backups/<run-id>/."""
+    item = entry["item"]
+    disposition, kept_at = finish_backup(paths, run_id, entry)
+    if kept_at is not None:
+        print(f"  Preserved backup: {item} -> {kept_at}")
+    if disposition != "gone":
         return True
-    # Only a kept backup an earlier attempt moved gets here: one the run did not keep and that is gone returned above.
+    # Only a kept backup gets here: one the run did not keep and that is gone has nothing left to delete.
+    kept_at = f".backups/{run_id}/{item}"
     destination = root_directory(paths, entry_root(entry)) / ".backups" / run_id / item
     if file_presence.is_occupied(destination):
         if _hash_existing(destination) != entry["backup_hash"]:
@@ -597,6 +634,29 @@ def _read_entries(journal_file: Path, run_id: str) -> Entries:
     return Entries(entries, torn=torn or None)
 
 
+def clear_run(run_dir: Path) -> None:
+    """Delete a reconciled run's journal, then the rest of its staging folder.
+
+    A journal that cannot be deleted raises its OSError, which fails the run: one left behind would be replayed after a
+    later commit, as a run that was not committed. The rest holds no record, so a folder that cannot be deleted, such as
+    one holding a file another program has open, is left, named with the reason, and the next deployment's recovery
+    deletes it as a run with no journal.
+    """
+    fsops.remove(run_dir / "journal.jsonl")
+    _remove_leftover_run(run_dir)
+
+
+def _remove_leftover_run(run_dir: Path) -> None:
+    """Delete a staging folder that holds no journal, or say why it stays, since nothing is left in it to recover."""
+    try:
+        fsops.remove(run_dir)
+    except OSError as error:
+        _warn(
+            f"Could not delete the staging folder {platform_support.normalize(run_dir)}: {error.strerror or error}. "
+            "It holds no journal, so the next deployment deletes it."
+        )
+
+
 def _recover_run(paths: Paths, run_dir: Path) -> bool:
     """Reconcile one interrupted run; return False when it needs manual inspection."""
     if platform_support.is_link_or_junction(run_dir):
@@ -610,7 +670,7 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
     # A journal whose stat fails raises here, failing the run, so a run is never deleted with a journal it could not
     # read.
     if not file_presence.is_occupied(journal_file):
-        fsops.remove(run_dir)
+        _remove_leftover_run(run_dir)
         return True
     run_id = run_dir.name
     committed = _committed_run_id(paths)
@@ -648,7 +708,7 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
         _print_manual_steps(run_dir, run_id, committed == run_id)
         return False
     if not entries:
-        fsops.remove(run_dir)
+        clear_run(run_dir)
         return True
     if committed == run_id:
         reconciled = _complete_committed(paths, run_id, entries)
@@ -662,7 +722,7 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
         )
         _print_manual_steps(run_dir, run_id, committed == run_id)
         return False
-    fsops.remove(run_dir)
+    clear_run(run_dir)
     print("  Recovery complete.")
     return True
 

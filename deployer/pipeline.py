@@ -37,7 +37,6 @@ from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
 from .manifest import ItemEntry, source_entry
-from .names import transient_name
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import PlanEntry
 from .report import DEPLOY_ACTIONS, DEPLOYED
@@ -81,7 +80,7 @@ def _apply(
         plan.carry_out(record, paths, staging_dir, entry)
     _commit_manifest(context, entries, run_id, context.commit)
     backups = _finalize(context, record, run_id)
-    fsops.remove(staging_dir)
+    journal.clear_run(staging_dir)
     _summary(context, run_id, entries, backups, replaced_pin)
 
 
@@ -132,40 +131,21 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
 
 
 def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tuple[str, str]]:
-    """Move kept backups to permanent storage, delete the others, and return each (item, backup destination).
+    """Settle each transient backup by journal.finish_backup, the rule recovery shares, and return each (item, backup
+    destination) kept under .backups.
 
-    A backup the run does not keep is deleted only while it matches the hash the plan recorded; one changed after the
-    plan read it is kept like a modified item's, with a warning.
+    After the commit nothing refuses: a copy that cannot be deleted or moved under .backups stays beside its item,
+    named with a warning.
     """
     backups: list[tuple[str, str]] = []
-    unkept: list[journal.BackupEntry] = []
     for entry in list(record.entries):
         if entry["op"] != "backup":
             continue
-        root = journal.entry_root(entry)
         item = entry["item"]
-        disposition, unreadable = journal.backup_disposition(context.paths, entry)
-        if disposition == "delete":
-            unkept.append(entry)
-        elif disposition == "keep":
-            # After the commit nothing refuses: a copy that cannot be kept under .backups stays beside its item.
-            preserve = functools.partial(record.preserve, root, item)
-            kept_at = journal.keep_backup(context.paths, run_id, entry, preserve)
-            if kept_at is None:
-                continue
+        preserve = functools.partial(record.preserve, journal.entry_root(entry), item)
+        _, kept_at = journal.finish_backup(context.paths, run_id, entry, preserve)
+        if kept_at is not None:
             backups.append((item, kept_at))
-            if unreadable:
-                why = f"Could not tell whether {item}'s previous copy changed after this deployment planned it"
-                why = f"{why} ({unreadable})"
-                print(f"WARNING: {why}, so it was kept at {kept_at}.", file=sys.stderr)
-            elif not entry["retain"]:
-                print(
-                    f"WARNING: {item} changed after this deployment planned it, so its previous copy was kept at "
-                    f"{kept_at} instead of being deleted.",
-                    file=sys.stderr,
-                )
-    for entry in unkept:
-        fsops.remove(journal.root_directory(context.paths, journal.entry_root(entry)) / transient_name(entry["item"]))
     return backups
 
 
@@ -497,6 +477,9 @@ def _dry_run(
 ) -> int:
     """Report what a deployment would do, holding no lock and changing nothing, unless a recovery is pending."""
     try:
+        # Read first, as the deployment reads it before recovering, so a manifest it refuses is refused here too
+        # rather than answered with a pending recovery the deployment would never reach.
+        manifest.load(paths.manifest_file)
         if _stop_for_pending_recovery(paths):
             return 0
         return _deploy(paths, options, src, values, stdin, None, pin)
