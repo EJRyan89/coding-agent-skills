@@ -661,8 +661,19 @@ class MainTests(unittest.TestCase):
                 self.assertEqual({c.subject for c in record.changelogs} - {failing.subject}, listed)
                 self.assertIn(f"GONE {record.pages[1].url} 404", lines)
                 text = summary.read_text(encoding="utf-8")
-                self.assertIn(f"### {failing.subject}: not read", text)
-                self.assertIn("HTTP 504 Gateway Timeout", text)
+                reason = watch.markdown_cell(json.loads(unreadable[0].split(" ", 2)[2]))
+                self.assertIn("HTTP 504 Gateway Timeout", reason)
+                # The section comes first, under the summary's heading, set apart by blank lines.
+                self.assertTrue(
+                    text.startswith(
+                        f"## Runtime changelogs and guidance pages\n\n\n### {failing.subject}: not read\n\n{reason}\n\n"
+                    ),
+                    text[:300],
+                )
+
+    def test_each_terms_line_counts_the_watched_terms_of_its_kind(self) -> None:
+        lines = watch.watch(REPOSITORY, StubFetcher(self.table()), 1.0, WATCHED)
+        self.assertEqual(["TERMS flag 3", "TERMS variable 1", "TERMS path 1", "TERMS frontmatter 2"], lines[:4])
 
     def test_a_watch_that_cannot_run_prints_one_failed_line_and_exits_1(self) -> None:
         top = Path(self.enterContext(tempfile.TemporaryDirectory()))
