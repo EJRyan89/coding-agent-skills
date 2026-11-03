@@ -44,6 +44,7 @@ LOADED = sorted(
                 "json_reader",
                 "link_probe",
                 "markdown_sections",
+                "module_assignments",
                 "nesting_depth",
                 "path_containment",
                 "path_keys",

@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from literal_escapes import escape_files, literal_escape_problems
+from literal_escapes import escape_files, literal_escape_problems, unread_python
 
 # Pinned here as a literal, not read back from the policy.
 REFUSAL = (
@@ -143,6 +143,7 @@ def test_the_policy_reads_every_formatted_file_suites_included(tmp_path: Path) -
         ".claude/skills/y/scripts/y.py",
         "deploy.py",
         "conftest.py",
+        "tools/stubs.pyi",
     ]
     outside = ["docs/example.py", "tests/notes.txt"]
     files = []
@@ -153,3 +154,17 @@ def test_the_policy_reads_every_formatted_file_suites_included(tmp_path: Path) -
         files.append(path)
     assert sorted(path.relative_to(tmp_path).as_posix() for path in escape_files(tmp_path, files)) == sorted(names)
     assert len(literal_escape_problems(tmp_path, files)) == len(names)
+
+
+def test_the_scope_check_holds_what_the_policy_reads_against_every_file_ruff_formats(tmp_path: Path) -> None:
+    read = ["tools/b.py", "tools/stubs.pyi", "deploy.py"]
+    files = [tmp_path / name for name in read]
+    assert unread_python(tmp_path, files) == []
+    # A module and a stub outside the roots the policy reads by, and a notebook ruff formats and the policy cannot
+    # parse.
+    unread = ["docs/example.py", "docs/stubs.pyi", "tools/notes.ipynb"]
+    files += [tmp_path / name for name in [*unread, "tools/notes.txt"]]
+    assert unread_python(tmp_path, files) == [
+        f"the literal policy does not read {name}; add its root to the policy's scope, or state why it is left out"
+        for name in unread
+    ]

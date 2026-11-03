@@ -95,7 +95,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import contextlib
 import json
 import re
 import sys
@@ -120,6 +119,7 @@ from git_client import GitClient, GitError, command_name, output_lines
 from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
+from module_assignments import sole_assignment
 from path_keys import path_key
 from release_tags import is_release_tag, last_release, release_order
 from suite_names import is_suite_name
@@ -689,24 +689,121 @@ def write_json(path: Path, document: object) -> None:
 # --- the guidance record --------------------------------------------------------------------------
 
 
+# The names the runtime catalogue holds the runtimes and their titles under, and the methods of a tuple or a dict that
+# read it without changing it, the only attributes the catalogue may take of either.
+CATALOGUE_NAMES = ("RUNTIMES", "RUNTIME_TITLES")
+READING_METHODS = frozenset({"copy", "count", "get", "index", "items", "keys", "values"})
+
+
+def _binds(node: ast.AST, name: str) -> bool:
+    """Whether a node binds or rebinds `name` in a form Python spells outside a Name node: a parameter, an import, a
+    definition, an exception or match capture, a match mapping's rest, a type parameter, a global or nonlocal
+    declaration, or a keyword, as `globals().update(RUNTIMES=...)` writes one."""
+    if isinstance(node, ast.alias):
+        return (node.asname or node.name.partition(".")[0]) == name
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return name in node.names
+    if isinstance(node, ast.arg):
+        return node.arg == name
+    if isinstance(node, ast.keyword):
+        return node.arg == name
+    if isinstance(node, ast.MatchMapping):
+        return node.rest == name
+    return getattr(node, "name", None) == name
+
+
+def _changes(node: ast.AST, name: str, exported: set[int]) -> bool:
+    """Whether a node may give `name` another value than its one assignment: a binding, a store or a delete of the
+    name, of an attribute named for it, or of an item or attribute of its value, a method of its value that is not one
+    that reads it, or the name as a string, which `globals()` and `setattr` take, outside `__all__`."""
+    if isinstance(node, ast.Name):
+        return node.id == name and not isinstance(node.ctx, ast.Load)
+    if isinstance(node, (ast.Attribute, ast.Subscript)) and not isinstance(node.ctx, ast.Load):
+        return (isinstance(node, ast.Attribute) and node.attr == name) or (
+            isinstance(node.value, ast.Name) and node.value.id == name
+        )
+    if isinstance(node, ast.Attribute):
+        return isinstance(node.value, ast.Name) and node.value.id == name and node.attr not in READING_METHODS
+    if isinstance(node, ast.Constant):
+        return node.value == name and id(node) not in exported
+    return _binds(node, name)
+
+
+def _exported(tree: ast.Module) -> set[int]:
+    """The string constants a module's `__all__` lists, which name a value without changing it."""
+    return {
+        id(node)
+        for statement in tree.body
+        if (assignment := sole_assignment(statement)) is not None and assignment[0].id == "__all__"
+        for node in ast.walk(assignment[1])
+        if isinstance(node, ast.Constant)
+    }
+
+
+def _hands_on(tree: ast.Module, name: str) -> list[int]:
+    """The line of each read of `name` that may hand its value to code that changes it: any read but an item's, a
+    reading method's, a membership test's, or an iteration's, since a dict handed to a call or bound to another name
+    can be changed there."""
+    kept: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Subscript, ast.Attribute)):
+            kept.add(id(node.value))
+        elif isinstance(node, ast.Compare) and all(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
+            kept.update(id(part) for part in node.comparators)
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            kept.add(id(node.iter))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load) and id(node) not in kept
+    ]
+
+
+def catalogue_value(tree: ast.Module, name: str, path: str) -> object:
+    """The value of the catalogue's one module-level literal assignment to `name`, read without running the module;
+    AuditError when the module assigns it other than once there, when anything else may change it, a rebinding or
+    a store anywhere, a mutating method, or, for a value that can be changed in place, a read that hands it on, so
+    the value read is the one the deployer runs with, or when the value is not a literal. A change through a string
+    the module builds, or from another module, is not seen."""
+    assignments = [
+        assignment
+        for node in tree.body
+        if (assignment := sole_assignment(node)) is not None and assignment[0].id == name
+    ]
+    if len(assignments) != 1:
+        raise AuditError(f"{path} must assign {name} once at module level")
+    [(target, value)] = assignments
+    exported = _exported(tree)
+    lines = {
+        getattr(node, "lineno", 0) for node in ast.walk(tree) if node is not target and _changes(node, name, exported)
+    }
+    try:
+        literal = ast.literal_eval(value)
+    # ValueError for a node that is no literal, TypeError for an unhashable key, and the rest for nesting past what
+    # literal_eval recurses through
+    except (ValueError, TypeError, MemoryError, RecursionError) as exc:
+        raise AuditError(f"{path} must assign {name} a literal") from exc
+    if isinstance(literal, (dict, list, set)):
+        lines.update(_hands_on(tree, name))
+    if lines:
+        raise AuditError(
+            f"{path} must change {name} nowhere but its one literal assignment, but may change it on line "
+            f"{', '.join(str(line) for line in sorted(lines))}"
+        )
+    return literal
+
+
 def supported_runtimes(top: Path) -> dict[str, str]:
     """The runtimes the deployer supports, with their titles, read as the literal RUNTIMES and RUNTIME_TITLES of its
-    catalogue in the checkout. Any other assignment literal_eval cannot evaluate, such as a call or a dict keyed by a
-    list, is passed over; RUNTIMES and RUNTIME_TITLES themselves are then refused when they are not literals."""
+    catalogue in the checkout, each assigned once and changed nowhere else, as catalogue_value reads them; any other
+    assignment is passed over."""
     path = top / RUNTIME_CATALOGUE
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     # MemoryError and RecursionError, source nested past the parser's limits
     except (OSError, UnicodeDecodeError, SyntaxError, ValueError, MemoryError, RecursionError) as exc:
         raise AuditError(f"cannot read the runtime catalogue {path.as_posix()}: {exc}") from exc
-    values: dict[str, object] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            # ValueError for a node that is no literal, TypeError for an unhashable key, and the rest for nesting
-            # past what literal_eval recurses through
-            with contextlib.suppress(ValueError, TypeError, MemoryError, RecursionError):
-                values[node.targets[0].id] = ast.literal_eval(node.value)
-    runtimes, titles = values.get("RUNTIMES"), values.get("RUNTIME_TITLES")
+    runtimes, titles = (catalogue_value(tree, name, path.as_posix()) for name in CATALOGUE_NAMES)
     if (
         not isinstance(runtimes, tuple)
         or not runtimes
