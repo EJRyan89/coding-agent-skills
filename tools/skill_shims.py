@@ -24,6 +24,7 @@ UTF-8 included, ends the run with a FAILED line and exit 2.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -32,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 from console import run_main
-from file_presence import is_present
+from file_presence import is_directory, is_present
 
 from deployer.render import CODEX_METADATA, CODEX_USER_ONLY
 from tools.checkout import ROOT_HELP, checkout_root
@@ -118,7 +119,11 @@ class ShimError(Exception):
 
 
 def _skills(root: Path) -> dict[str, Path]:
-    return {path.parent.name: path for path in (root / SKILLS).glob(f"*/{SKILL_FILE}")}
+    """Each repository skill's SKILL.md, by the skill's folder. Raises OSError for the skills folder, or a SKILL.md,
+    that cannot be examined or listed, which it lists with iterdir, where glob would match nothing."""
+    skills = root / SKILLS
+    folders = sorted(skills.iterdir()) if is_directory(skills) else []
+    return {folder.name: folder / SKILL_FILE for folder in folders if is_present(folder / SKILL_FILE)}
 
 
 def _expected(root: Path) -> dict[str, dict[str, str] | str | None]:
@@ -147,20 +152,32 @@ def _current(path: Path, text: str) -> bool:
         return False
 
 
+def _raise(error: OSError) -> None:
+    raise error
+
+
 def _folder_files(folder: Path) -> list[str]:
-    return sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*") if not path.is_dir())
+    """Every entry below a shim folder that is not a folder; os.walk raises for a folder below it it cannot list, where
+    rglob would match nothing."""
+    return sorted(
+        Path(base, name).relative_to(folder).as_posix()
+        for base, _, names in os.walk(folder, onerror=_raise)
+        for name in names
+    )
 
 
 def _stray_problems(root: Path, expected: dict[str, dict[str, str] | str | None]) -> list[str]:
-    """Each entry under .agents/skills that is not a shim folder, and each shim folder whose skill is gone."""
+    """Each entry under .agents/skills that is not a shim folder, and each shim folder whose skill is gone. Raises
+    OSError, NotADirectory for a file in its place, for an .agents/skills it cannot examine, and for an entry in it it
+    cannot examine, which it never tells to be deleted."""
     found = []
     shims = root / SHIMS
-    for entry in sorted(shims.iterdir()) if shims.is_dir() else []:
+    for entry in sorted(shims.iterdir()) if is_directory(shims) else []:
         relative = (SHIMS / entry.name).as_posix()
-        if not entry.is_dir():
+        if not is_directory(entry, other_is_absent=True):
             found.append(f"{relative} is not a shim folder; delete it")
         elif entry.name not in expected:
-            shown = shim_path(entry.name) if (entry / SKILL_FILE).is_file() else SHIMS / entry.name
+            shown = shim_path(entry.name) if is_present(entry / SKILL_FILE) else SHIMS / entry.name
             found.append(f"{shown.as_posix()} has no {(SKILLS / entry.name / SKILL_FILE).as_posix()}; delete it")
     return found
 
@@ -180,12 +197,14 @@ def problems(root: Path) -> list[str]:
         if isinstance(files, str):
             found.append(f"{skill} has frontmatter its shim cannot carry: {files}")
             continue
-        if not (folder / SKILL_FILE).is_file():
+        # A shim file whose stat fails, or a folder in its place, raises OSError, ending the run as FAILED, since
+        # --write could not write it either.
+        if not is_present(folder / SKILL_FILE):
             found.append(f"{skill} has no {shim_path(name).as_posix()} shim; run {WRITE_COMMAND}")
             continue
         for relative, text in sorted(files.items()):
             path = (SHIMS / name / relative).as_posix()
-            if not (folder / relative).is_file():
+            if not is_present(folder / relative):
                 found.append(f"{path} is missing from the shim; run {WRITE_COMMAND}")
             elif not _current(folder / relative, text):
                 found.append(f"{path} differs from what {WRITE_COMMAND} writes; run it")
@@ -203,7 +222,7 @@ def write(root: Path, names: list[str] | None = None) -> list[Path]:
             continue
         for relative, text in sorted(files.items()):
             path = root / SHIMS / name / relative
-            if path.is_file() and _current(path, text):
+            if is_present(path) and _current(path, text):
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8", newline="\n")

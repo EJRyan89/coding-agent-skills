@@ -615,7 +615,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A fix that reaches only the reported instance leaves the rest to be found again; the twin sweep before each
   tag searches every fix since the last one again, for the twins its own search missed.
 - **Guard:** `.claude/skills/implement-change/SKILL.md#3-bug-class`,
-  `.claude/skills/audit-repository/SKILL.md#4-confirm-before-filing`,
+  `.claude/skills/audit-repository/SKILL.md#4-confirm-before-filing`, the fix body's Forms considered section,
+  `tests/validation/pull_request_body.py::PullRequestBodyPolicies::test_a_fix_body_fills_its_forms_considered_section`,
+  and the fix reviewer given the closing issue,
   `.claude/skills/review-repository/scripts/test_review_repository.py::SiblingSpellingsTests`
 - **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
   and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the **Search for** of the
@@ -721,11 +723,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   pull request that touches it.
 - **Use:** `tools.mutation_gate:sanction_table`, `tools.mutation_gate:policy_tables`, which find a module-level
   sanction table and the validation policy that reads it.
-- **Guard:** `tests/tools/test_mutation_gate.py::SanctionTableFixtures`
+- **Guard:** `tests/tools/test_mutation_gate.py::SanctionTableFixtures`,
+  `tests/tools/test_mutation_gate.py::test_every_validation_policy_is_mutated_and_its_fixture_suite_reaches_it`,
+  `tests/tools/test_mutation_gate.py::test_every_validation_program_is_mutated_and_its_own_suite_reaches_it`
 - **Search for:** a mutant of a module-level `*_ALLOWED` table in the `Mutation gate` step summary; a gate or audit
   that runs a module's suites on what only a policy under `tests/validation/` reads; a new `*_ALLOWED` name with no
-  `*_ALLOWANCE` constant naming it in a policy.
-- **Examples:** #1933, #1938
+  `*_ALLOWANCE` constant naming it in a policy; a folder of checked code, such as the policies under
+  `tests/validation/`, that `is_gate_module` leaves out; a "Mutation survivors" comment that applied mutants by hand
+  rather than through the gate's `unrun` step.
+- **Examples:** #1933, #1938, #2174
 
 ### A gate runs where the behavior it judges differs
 

@@ -1,7 +1,7 @@
 """Mutate the lines a pull request changes in its Python modules and report the mutants its suites leave alive.
 
 Usage:
-  python -B tools/mutation_gate.py [--base REF] [--minutes N] [select FOLDER | leg FOLDER | join FOLDER]
+  python -B tools/mutation_gate.py [--base REF] [--minutes N] [select FOLDER | leg FOLDER | join FOLDER | unrun FOLDER]
 
 The `Mutation` workflow runs it on every pull request, where requirements-mutation.txt installs mutmut and coverage.py;
 it is not a required check, and it calls no model and reads no secret. Without a step it runs a whole run in one
@@ -17,7 +17,10 @@ os.altsep. A mutant either leg killed counts as killed, and the summary names th
 mutant one leg alone killed, so a mutant whose effect shows only on Windows is judged where it shows. It mutates the
 lines the pull request's commits add or change since the base (`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base
 names another), as `git diff -U0` names them, in each module under deployer/, tools/, a skill's scripts/, or a
-repository skill's scripts/, leaving out suites, conftest.py, and deleted files. mutmut's operators make the mutants,
+repository skill's scripts/, in each validation policy directly under tests/validation/, whose fixture suite,
+tests/validation/test_<module>.py, reaches it as any suite reaches a module, and in each validation program directly
+under tests/, such as tests/run_validation.py, beside its own suite, leaving out suites, conftest.py, the suites'
+own fixtures elsewhere under tests/, and deleted files. mutmut's operators make the mutants,
 string literals included, each one mutation of the whole module, and mutmut's own line filter (the `covered_lines` of
 its `create_mutations`) makes them only of a node that starts on a changed line. The gate keeps a mutant only when the
 first line it changes is a changed line too, so a mutation anchored on an expression that starts on an unchanged line,
@@ -48,7 +51,12 @@ while they ran, alone did, and the whole suite when anything else ran it too, si
 process started outside a test's call phase records no test of its own; a context naming no collected test of the
 suite, or a test function name more than one collected class holds, which an inherited test method would be, and a
 suite pytest cannot list run whole as well. The mutant is killed, or timed out when a suite
-runs past three times its unmutated time. A mutant every one of those suites passes survived. A mutant in a statement no
+runs past three times its unmutated time. A timeout on a CI leg is read as timed out unconfirmed, which judges nothing,
+since a runner's load can stretch a suite past its limit as surely as a mutant that makes a loop endless; only a local
+run that times out on the mutant too confirms it, under that run's own measured limits. A whole run in one process,
+without a step, runs on this machine, so its own timeouts stand as timed out. Each leg step refuses a HEAD that is not
+the commit the select step recorded. A mutant every one of those
+suites passes survived. A mutant in a statement no
 suite executed is not reached, and a suite that fails unmutated, or whose coverage data `coverage combine` or `coverage
 json` fails or times out on, or whose report holds no files object, is left out and named with the step and its
 output, never read as a suite that reached nothing. The Bash and PowerShell suites run no Python module and are not
@@ -79,12 +87,35 @@ suites while a mutant that leg ran survived or went unreached, since one of them
 on either leg keeps its verdict, so unmeasured suites beside only such mutants leave the run finished, and the summary
 says so beside their names. An unfinished run's summary says so on its first line, naming each module's mutants not
 run and how many of them lie on lines that run at import, and each such leg's count of unmeasured suites and of the
-mutants they leave open. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
+mutants they leave open, then each module's mutants a CI leg timed out on with no local run to confirm it, which leave
+the run unfinished too. The summary's table counts confirmed and unconfirmed timeouts apart, and each module's kill
+ratio is its killed and confirmed timed-out mutants over every mutant it judged.
 pytest's exit for a failed test kills a mutant, and so does its interrupted exit when it failed to collect a test
 module, as a mutant that breaks an import does, or its usage error then, which it exits with instead when the run
 named the module's tests by node id. Any other nonzero exit, an interruption, an internal error, a usage error such as
 a node id it cannot resolve, or no test collected, judges nothing: the mutant runs against the next suite, and is
 errored when none killed it, which leaves the run unfinished too, naming each such mutant.
+
+Once a leg's reach pass ends, before its mutants run, it estimates what they need: each mutant at its first suite's
+unmutated seconds, shared out by the count of that suite's tests it runs when it runs only some, summed by module, in
+worker-seconds, against the cap's time left times the workers. When they need more, the leg's log gets a warning
+annotation naming the modules to move into pull requests of their own, the costliest first, until the rest fit, and
+each whose changed lines alone need more, whose change is split; the leg's record keeps the estimate, and an unfinished
+run's summary repeats the advice under its first line. A finished run's summary leaves it out, since the estimate was
+then wrong.
+
+`unrun`, on a contributor's machine, completes a CI run's leg of this platform from FOLDER, which holds the run's
+mutants.json and every needed leg's outcomes, as the run's artifacts hold them: it runs again, in worktrees of HEAD,
+each mutant no leg killed or confirmed timing out that the leg left not run, errored, or timed out, and, while suites
+of the leg's reach went unmeasured, each it left surviving or unreached. HEAD must be the commit the select step's
+checkout held, as the selection records it, since that commit's suites judged the leg's other mutants, and each module
+it runs must be the text the mutants were made from, as the selection's SHA-256 of it records, or it stops. The leg's
+own outcomes stay as it wrote them; the leg's record, written back over the leg's file, adds the local run, its
+places, its own failed and unmeasured suites, and its outcome of each mutant it ran, which the report reads in place
+of the leg's at those places and no other, so a mutant it leaves untested is still not run. read_local holds each
+place to one the leg's own outcome left without a verdict, and each local outcome to the local run's suites. It then
+reports as the join does, and exits as the join does. A leg's record a local run already completed stops it, and so
+does a leg of another platform.
 
 While the mutants run, the log gets a line for each one a suite ran against and each one no suite reached, with its
 outcome, module, line, and mutation. The report, each module's changed lines, counts, and kill ratio, each changed
@@ -95,7 +126,10 @@ saying so. A run, or its join, exits 0 once the gate has run to its end, whateve
 unfinished, on any leg, after its summary and an error annotation repeating its first line; `select` and `leg` exit 0
 once they wrote their file. Any step exits 1 when it cannot run: the join finds no selection, no outcomes from a leg
 that had mutants to run, or a record that is not as its step writes it, such as a leg's naming another leg or leaving
-out a module that leg had mutants for, mutmut no longer makes the mutant its
+out a module that leg had mutants for, or a local run's naming a place outside a module's mutants, a module the leg
+does not run, or a place whose leg outcome was a verdict, `unrun` finds no leg of this platform, a completed one, a
+HEAD that is not the commit the run tested, or a module whose text is not the selection's,
+mutmut no longer makes the mutant its
 canary expects on the canary's line alone, the reach run no longer measures its canary suite's own process and the
 process the suite's test starts, each line named with that test, which a missing coverage.py .pth file would cause, a
 changed sanction table is one no policy reads, or a git command fails.
@@ -108,6 +142,7 @@ import ast
 import contextlib
 import difflib
 import functools
+import hashlib
 import importlib
 import importlib.metadata
 import io
@@ -124,7 +159,7 @@ import tokenize
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
@@ -168,6 +203,10 @@ NO_DATA_TO_REPORT = "No data to report."
 
 KILLED = "killed"
 TIMED_OUT = "timed out"
+# A CI leg's timeout no local run confirmed: a runner's load can stretch a suite past its limit as surely as a mutant
+# that makes a loop endless, so it judges nothing until a local run times out on the mutant too. No leg writes it; the
+# report reads a CI leg's timeout so.
+UNCONFIRMED = "timed out unconfirmed"
 SURVIVED = "survived"
 NOT_REACHED = "not reached"
 NOT_RUN = "not run"
@@ -226,6 +265,8 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 # bound to a name ending in POLICY_TABLE_SUFFIX, such as FSOPS_ALLOWANCE = "FSOPS_ALLOWED".
 POLICY_FOLDER = "tests/validation"
 POLICY_TABLE_SUFFIX = "ALLOWANCE"
+# The folder of the validation programs, the runner and the known-failure check, each beside its own suite.
+VALIDATION_FOLDER = "tests"
 # The legs, each a runner of one platform, by the name platform_support.PLATFORM_NAME gives it. The Linux leg runs
 # every module's mutants and the Windows leg those runs_on_windows selects.
 LINUX_LEG = "Linux"
@@ -303,6 +344,8 @@ class Reach:
     seconds: float
     lines: Mapping[str, frozenset[int]]
     tests: Mapping[str, Mapping[int, frozenset[str]]] = field(default_factory=dict)
+    # How many tests pytest listed for the suite, 0 when it could not list them, which runs it whole.
+    collected: int = 0
 
 
 @dataclass(frozen=True)
@@ -317,28 +360,51 @@ class Outcome:
 @dataclass(frozen=True)
 class SelectedModule:
     """A changed module: how many lines the pull request adds or changes in it, the mutants of those lines, each
-    sanction table holding one with the policy that reads it, and whether the Windows leg runs its mutants too."""
+    sanction table holding one with the policy that reads it, whether the Windows leg runs its mutants too, and the
+    SHA-256 of the text the mutants were made from, by which a local run checks it runs them against the same module."""
 
     module: str
     lines: int
     mutants: tuple[Mutant, ...]
     tables: tuple[tuple[str, str], ...]
     windows: bool
+    digest: str = ""
 
 
 @dataclass(frozen=True)
 class Selected:
-    """What a run mutates: the base it diffs against, the mutmut release that made the mutants, and each module."""
+    """What a run mutates: the base it diffs against, the mutmut release that made the mutants, each module, and the
+    commit the select step's checkout held, whose suites the legs run, which a local run must run at too."""
 
     base: str
     mutmut: str
     modules: tuple[SelectedModule, ...]
+    head: str = ""
+
+
+@dataclass(frozen=True)
+class LocalRun:
+    """A run on a contributor's machine of the mutants a CI leg left without a verdict, which completes that leg's
+    record: its cap, its seconds and workers, the places in each module's list of the mutants it ran, the suites that
+    failed unmutated or whose reach its cap left unmeasured there, and its outcome of each mutant it ran, in the order
+    of the places. The CI leg's own outcomes stay as the leg wrote them."""
+
+    minutes: int
+    seconds: float
+    workers: int
+    mutants: dict[str, list[int]]
+    failed_suites: dict[str, str]
+    unmeasured_suites: list[str]
+    outcomes: dict[str, list[Outcome]] = field(default_factory=dict)
 
 
 @dataclass
 class LegRun:
-    """One leg's run: its cap, its seconds and workers, each module's outcomes in the order of its mutants, and the
-    suites that failed unmutated or whose reach its cap left unmeasured."""
+    """One leg's run: its cap, its seconds and workers, each module's outcomes in the order of its mutants, the
+    suites that failed unmutated or whose reach its cap left unmeasured, each module's estimated worker-seconds of
+    mutant runs and the worker-seconds the cap left for them once the reach pass ended, the local run that
+    completed it, if one did, and whether the leg is itself a run on this machine, the whole gate in one process,
+    whose timeouts confirm themselves. Every leg the leg step writes is a CI leg's, and no record holds the flag."""
 
     name: str
     minutes: int
@@ -347,14 +413,44 @@ class LegRun:
     outcomes: dict[str, list[Outcome]]
     failed_suites: dict[str, str]
     unmeasured_suites: list[str]
+    needed: dict[str, float] = field(default_factory=dict)
+    available: float = 0.0
+    local: LocalRun | None = None
+    confirms: bool = False
+
+    @property
+    def open_suites(self) -> list[str]:
+        """The suites whose reach went unmeasured where the leg's open mutants last ran: the local run's when one
+        completed the leg, since it ran again every mutant those of the CI run could have killed."""
+        return self.local.unmeasured_suites if self.local else self.unmeasured_suites
+
+
+def judged_outcomes(leg: LegRun) -> dict[str, list[Outcome]]:
+    """Each module's outcomes as the report reads a leg: the local run's at each place it ran, and the leg's own at
+    every other, a CI leg's timeout read as UNCONFIRMED, since only a run on this machine confirms one: a local run
+    that completed the leg, or a leg that is itself such a run."""
+    local = leg.local
+    found = {}
+    for module, outcomes in leg.outcomes.items():
+        ran = dict(zip(local.mutants.get(module, ()), local.outcomes.get(module, ()), strict=True)) if local else {}
+        found[module] = [
+            ran[place]
+            if place in ran
+            else replace(outcome, status=UNCONFIRMED)
+            if outcome.status == TIMED_OUT and not leg.confirms
+            else outcome
+            for place, outcome in enumerate(outcomes)
+        ]
+    return found
 
 
 def verdict(outcomes: Sequence[Outcome]) -> Outcome:
-    """One mutant's outcome from each leg that ran it: killed or timed out when any leg's suites failed on it, not run
-    when none did and a leg left it untested, or errored when a leg's suite ended with neither a pass nor a test
-    failure, either of which that leg might have killed, survived when a leg's suites all passed, and not reached when
-    no leg's suites executed its statement."""
-    for status in (KILLED, TIMED_OUT, NOT_RUN, ERRORED, SURVIVED, NOT_REACHED):
+    """One mutant's outcome from each leg that ran it: killed or timed out when any leg's suites failed on it, a timeout
+    counting only once a local run confirmed it, not run when none did and a leg left it untested, timed out
+    unconfirmed when a CI leg's suite ran past its limit and no local run confirmed it, or errored when a leg's suite
+    ended with neither a pass nor a test failure, any of which that leg might have killed, survived when a leg's suites
+    all passed, and not reached when no leg's suites executed its statement."""
+    for status in (KILLED, TIMED_OUT, NOT_RUN, UNCONFIRMED, ERRORED, SURVIVED, NOT_REACHED):
         for outcome in outcomes:
             if outcome.status == status:
                 return outcome
@@ -407,14 +503,19 @@ Selection = tuple[int, list[Mutant], tuple[tuple[str, str], ...]]
 
 
 def is_gate_module(path: str) -> bool:
-    """Whether the gate mutates a changed file: a Python module under deployer/ or tools/, or in a skill's or a
-    repository skill's scripts/, that is not a suite or a conftest.py."""
+    """Whether the gate mutates a changed file: a Python module under deployer/ or tools/, in a skill's or a
+    repository skill's scripts/, a validation policy directly under POLICY_FOLDER, or a validation program directly
+    under tests/, such as tests/run_validation.py, that is not a suite or a conftest.py. A policy's or a program's
+    mutants run, as any module's do, against the suites that executed their lines, its own suite,
+    test_<module>.py beside it, among them. The other modules under tests/ are the suites' own fixtures, which those
+    suites alone use."""
     pure = PurePosixPath(path)
     if pure.suffix != ".py" or is_suite_name(pure.name) or pure.name == "conftest.py":
         return False
     parts = pure.parts
     return (
         parts[0] in ("deployer", "tools")
+        or pure.parent.as_posix() in (VALIDATION_FOLDER, POLICY_FOLDER)
         or (parts[0] == "skills" and len(parts) > 3 and parts[2] == "scripts")
         or (parts[:2] == (".claude", "skills") and len(parts) > 4 and parts[3] == "scripts")
     )
@@ -962,6 +1063,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
             seconds,
             executed_lines(recorded, tree, modules),
             executed_tests(recorded, tree, modules, suite, collected) if collected else {},
+            len(collected),
         )
 
 
@@ -1168,15 +1270,75 @@ def reach_deadline(started: float, deadline: float) -> float:
     return started + REACH_SHARE * (deadline - started)
 
 
+def estimated_seconds(mutant: Mutant, reach: Mapping[str, Reach]) -> float:
+    """What a mutant's run is estimated to take: its first suite's unmutated seconds, shared out by the count of that
+    suite's tests the mutant runs when it runs only some, and nothing for a mutant no suite reached. A mutant every
+    suite passes runs each of them, so the estimate is what a mutant the first suite kills at its last test costs."""
+    plan = suite_plan(mutant, reach)
+    if not plan:
+        return 0.0
+    suite, tests = plan[0]
+    measured = reach[suite]
+    # The tests a mutant runs are among those pytest listed, so their share is at most the whole suite.
+    return measured.seconds * len(tests) / measured.collected if tests and measured.collected else measured.seconds
+
+
+def left_worker_seconds(deadline: float, now: float, workers: int) -> float:
+    """The worker-seconds a leg's cap leaves from `now`: its time left, none once the cap is past, times its
+    workers."""
+    return max(0.0, deadline - now) * workers
+
+
+def modules_to_split(needed: Mapping[str, float], available: float) -> list[str]:
+    """The modules to move out of the pull request, the costliest first, until what the rest need fits in what the
+    leg has; none when every module fits."""
+    left = sum(needed.values())
+    moved: list[str] = []
+    for module, seconds in sorted(needed.items(), key=lambda item: (-item[1], item[0])):
+        if left <= available:
+            break
+        moved.append(module)
+        left -= seconds
+    return moved
+
+
+def worker_minutes(seconds: float) -> str:
+    return f"{seconds / 60:.0f} worker-{'minute' if round(seconds / 60) == 1 else 'minutes'}"
+
+
+def too_large_line(leg: LegRun) -> str | None:
+    """What a leg's estimate says when its mutants need more worker-seconds than its cap left once the reach pass
+    ended: each module to move into a pull request of its own, and each whose changed lines alone need more, whose
+    change is split; None when they fit."""
+    moved = modules_to_split(leg.needed, leg.available)
+    if not moved:
+        return None
+    named = {module: f"`{module}` ({worker_minutes(leg.needed[module])})" for module in moved}
+    alone = [named[module] for module in moved if leg.needed[module] > leg.available]
+    move = [named[module] for module in moved if leg.needed[module] <= leg.available]
+    advice = []
+    if move:
+        own = "a pull request of its own" if len(move) == 1 else "pull requests of their own"
+        advice.append(f"move {', '.join(move)} into {own}")
+    if alone:
+        advice.append(f"split the change to {', '.join(alone)}, whose changed lines alone need more than that")
+    return (
+        f"Too large for the {leg.name} leg's cap: its mutants were estimated to need "
+        f"{worker_minutes(sum(leg.needed.values()))} once its reach was measured, each at its first suite's unmutated "
+        f"time, and its cap left {worker_minutes(leg.available)}, so {' and '.join(advice)}."
+    )
+
+
 def counts(outcomes: Iterable[Outcome]) -> dict[str, int]:
-    found = dict.fromkeys((KILLED, TIMED_OUT, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED), 0)
+    found = dict.fromkeys((KILLED, TIMED_OUT, UNCONFIRMED, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED), 0)
     for outcome in outcomes:
         found[outcome.status] += 1
     return found
 
 
 def kill_ratio(found: Mapping[str, int]) -> str:
-    """Killed and timed-out mutants over every mutant tested, as a percentage and the counts it is made of."""
+    """Killed and confirmed timed-out mutants over every mutant tested, as a percentage and the counts it is made of;
+    an unconfirmed timeout judged nothing, so it is in neither."""
     killed = found[KILLED] + found[TIMED_OUT]
     tested = killed + found[SURVIVED]
     return f"{100 * killed / tested:.0f}% ({killed} of {tested})" if tested else "none tested"
@@ -1225,7 +1387,9 @@ def leg_kill_lines(module: ModuleReport) -> list[str]:
     for index, outcome in enumerate(module.outcomes):
         ran = module.ran(index)
         others = [
-            f"{found.status} on {leg}" for leg, found in ran.items() if found.status in (SURVIVED, NOT_REACHED, ERRORED)
+            f"{found.status} on {leg}"
+            for leg, found in ran.items()
+            if found.status in (SURVIVED, NOT_REACHED, ERRORED, UNCONFIRMED)
         ]
         if outcome.status in (KILLED, TIMED_OUT) and others:
             killer = next(leg for leg, found in ran.items() if found is outcome)
@@ -1246,23 +1410,33 @@ def leg_kill_lines(module: ModuleReport) -> list[str]:
     ]
 
 
-def errored_lines(module: ModuleReport) -> list[str]:
-    """Each mutant no leg killed and some leg's suite ended with neither a pass nor a test failure on, with the suites
-    it ran against, by the leg that ran them."""
-    errored = [index for index, outcome in enumerate(module.outcomes) if outcome.status == ERRORED]
-    if not errored:
+def unjudged_lines(module: ModuleReport, status: str, heading: str) -> list[str]:
+    """Each mutant whose verdict is `status`, one no suite judged, under `heading`, with the suites it ran against, by
+    the leg that left it so."""
+    found = [index for index, outcome in enumerate(module.outcomes) if outcome.status == status]
+    if not found:
         return []
-    noun = "mutant" if len(errored) == 1 else "mutants"
-    lines = ["", f"### `{module.module}`: {len(errored)} errored {noun}, which no suite judged", ""]
-    for index in errored:
+    noun = "mutant" if len(found) == 1 else "mutants"
+    lines = ["", f"### `{module.module}`: {len(found)} {heading.format(noun=noun)}", ""]
+    for index in found:
         mutant = module.outcomes[index].mutant
         ran = "; ".join(
-            f"{suite_names(outcome)} on {leg}"
-            for leg, outcome in module.ran(index).items()
-            if outcome.status == ERRORED
+            f"{suite_names(outcome)} on {leg}" for leg, outcome in module.ran(index).items() if outcome.status == status
         )
         lines.append(f"- Line {mutant.line}: {code(mutant.before)} became {code(mutant.after)}; ran {ran}")
     return lines
+
+
+def errored_lines(module: ModuleReport) -> list[str]:
+    """Each mutant no leg killed and some leg's suite ended with neither a pass nor a test failure on, with the suites
+    it ran against, by the leg that ran them."""
+    return unjudged_lines(module, ERRORED, "errored {noun}, which no suite judged")
+
+
+def unconfirmed_lines(module: ModuleReport) -> list[str]:
+    """Each mutant no leg killed that a CI leg's suite ran past its limit on, which no local run confirmed, with the
+    suites it ran against, by the leg that ran them."""
+    return unjudged_lines(module, UNCONFIRMED, "{noun} timed out in CI with no local run to confirm it")
 
 
 def unreached_lines(module: ModuleReport) -> list[str]:
@@ -1314,20 +1488,22 @@ def unfinished_line(report: Report) -> str | None:
                 + (f" ({at_import} on lines that run at import)" if at_import else "")
             )
     for leg in report.legs:
-        count, opened = len(leg.unmeasured_suites), left_open(report, leg)
+        count, opened = len(leg.open_suites), left_open(report, leg)
         if count and opened:
             parts.append(
                 f"the reach of {count} {'suite' if count == 1 else 'suites'} was not measured on {leg.name}, which "
                 f"leaves {opened} {'mutant' if opened == 1 else 'mutants'} that survived or no suite reached open there"
             )
-    errored = []
+    errored: list[str] = []
+    unconfirmed: list[str] = []
     for module in report.modules:
-        found = [index for index, outcome in enumerate(module.outcomes) if outcome.status == ERRORED]
-        if found:
-            errored.append(
-                f"{len(found)} of the {len(module.outcomes)} mutants of `{module.module}` errored on "
-                + legs_leaving(module, found, ERRORED)
-            )
+        for status, named, kept in ((ERRORED, "errored", errored), (UNCONFIRMED, "timed out", unconfirmed)):
+            found = [index for index, outcome in enumerate(module.outcomes) if outcome.status == status]
+            if found:
+                kept.append(
+                    f"{len(found)} of the {len(module.outcomes)} mutants of `{module.module}` {named} on "
+                    + legs_leaving(module, found, status)
+                )
     sentences = []
     if parts:
         sentences.append(
@@ -1338,6 +1514,11 @@ def unfinished_line(report: Report) -> str | None:
         sentences.append(
             f"A suite ended with neither a pass nor a test failure, so it judged nothing: {'; '.join(errored)}. Rerun "
             "the gate, and fix what its log shows the suite stopped on."
+        )
+    if unconfirmed:
+        sentences.append(
+            f"A CI timeout may be the runner's load rather than the mutant, so it judged nothing until a local run "
+            f"confirms it: {'; '.join(unconfirmed)}. Run the gate's `unrun` step on each such leg's platform."
         )
     return f"**Unfinished, so not a verdict:** {' '.join(sentences)}" if sentences else None
 
@@ -1361,7 +1542,40 @@ def legs_leaving(module: ModuleReport, indices: Iterable[int], status: str = NOT
 
 
 def leg_line(leg: LegRun) -> str:
-    return f"{leg.name}, {leg.workers} workers ran for {leg.seconds / 60:.0f} of its {leg.minutes} minutes"
+    """A leg's workers and time, and those of the local run that completed it, if one did."""
+    line = f"{leg.name}, {leg.workers} workers ran for {leg.seconds / 60:.0f} of its {leg.minutes} minutes"
+    if leg.local is None:
+        return line
+    local = leg.local
+    count = sum(len(places) for places in local.mutants.values())
+    return (
+        f"{line}, and a local run on {leg.name} then ran the {count} {'mutant' if count == 1 else 'mutants'} it left "
+        f"without a verdict, {local.workers} workers for {local.seconds / 60:.0f} of its {local.minutes} minutes"
+    )
+
+
+def suite_lines(report: Report, leg: LegRun) -> list[str]:
+    """The summary's lines naming a leg's suites whose reach went unmeasured where its open mutants last ran, and the
+    suites that failed unmutated on the leg and in the local run that completed it."""
+    lines = []
+    if leg.open_suites:
+        names = ", ".join(f"`{suite}`" for suite in leg.open_suites)
+        closed = (
+            ""
+            if left_open(report, leg)
+            else " No mutant it ran survived or went unreached, so they leave no verdict open."
+        )
+        where = f"the local run on {leg.name}" if leg.local else leg.name
+        lines += [
+            "",
+            f"The cap left these suites' reach unmeasured on {where}, so no mutant ran against them there: "
+            f"{names}.{closed}",
+        ]
+    for suite, reason in leg.failed_suites.items():
+        lines += ["", f"`{suite}` {reason} on {leg.name}, so no mutant ran against it there."]
+    for suite, reason in leg.local.failed_suites.items() if leg.local else ():
+        lines += ["", f"`{suite}` {reason} in the local run on {leg.name}, so no mutant ran against it there."]
+    return lines
 
 
 def windows_rule_line() -> str:
@@ -1379,8 +1593,10 @@ def windows_rule_line() -> str:
 def summary(report: Report) -> str:
     """The Markdown the run's summary page shows: a first line saying so when a cap cut the run short, then each
     module's legs, changed lines, counts, and kill ratio, each module with no mutant, then each surviving mutant, each
-    mutant one leg alone killed, and each mutant not reached."""
+    mutant one leg alone killed, and each mutant not reached. An unfinished run's first line is followed by each leg's
+    estimate that its mutants needed more than its cap left, naming the modules to split."""
     unfinished = unfinished_line(report)
+    too_large = [advice for leg in report.legs if (advice := too_large_line(leg))] if unfinished else []
     ran = (
         f"- On {'; on '.join(leg_line(leg) for leg in report.legs)}; a mutant ran against the suites that executed its "
         "statement unmutated, fastest first, until one failed."
@@ -1389,6 +1605,7 @@ def summary(report: Report) -> str:
     )
     lines = [
         *([unfinished, ""] if unfinished else []),
+        *(line for advice in too_large for line in (advice, "")),
         "## Mutation gate",
         "",
         f"- Modules changed since `{report.base}`: {len(report.modules)}; mutants made by mutmut {report.mutmut} on "
@@ -1396,9 +1613,9 @@ def summary(report: Report) -> str:
         ran,
         windows_rule_line(),
         "",
-        "| Module | Legs | Changed lines | Mutants | Killed | Timed out | Survived | Not reached | Not run "
-        "| Errored | Kill ratio |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Module | Legs | Changed lines | Mutants | Killed | Timed out | Timed out unconfirmed | Survived "
+        "| Not reached | Not run | Errored | Kill ratio |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for module in report.modules:
         found = counts(module.outcomes)
@@ -1416,28 +1633,17 @@ def summary(report: Report) -> str:
             where = legs_leaving(module, left)
             lines += ["", f"The cap cut `{module.module}` short on {where}: {len(left)} mutants did not run."]
     for leg in report.legs:
-        if leg.unmeasured_suites:
-            names = ", ".join(f"`{suite}`" for suite in leg.unmeasured_suites)
-            closed = (
-                ""
-                if left_open(report, leg)
-                else " No mutant it ran survived or went unreached, so they leave no verdict open."
-            )
-            lines += [
-                "",
-                f"The cap left these suites' reach unmeasured on {leg.name}, so no mutant ran against them there: "
-                f"{names}.{closed}",
-            ]
-        for suite, reason in leg.failed_suites.items():
-            lines += ["", f"`{suite}` {reason} on {leg.name}, so no mutant ran against it there."]
+        lines += suite_lines(report, leg)
     for module in report.modules:
-        lines += survivor_lines(module) + errored_lines(module) + leg_kill_lines(module) + unreached_lines(module)
+        lines += survivor_lines(module) + errored_lines(module) + unconfirmed_lines(module)
+        lines += leg_kill_lines(module) + unreached_lines(module)
     return "\n".join(lines) + "\n"
 
 
 def no_module_line(base: str) -> str:
     return (
-        f"**Mutation gate:** no Python module under `deployer/`, `tools/`, or a skill's `scripts/` changed since "
+        f"**Mutation gate:** no Python module under `deployer/`, `tools/`, a skill's `scripts/`, or "
+        f"`{POLICY_FOLDER}/`, and no validation program directly under `{VALIDATION_FOLDER}/`, changed since "
         f"`{base}`, so no mutant ran.\n"
     )
 
@@ -1471,14 +1677,15 @@ def outcomes_name(leg: str) -> str:
 
 def joined(selected: Selected, legs: Sequence[LegRun]) -> Report:
     """The report of a run from its selection and each leg's run, the legs in LEGS order: each module's outcomes are
-    those of every leg that ran it."""
+    those of every leg that ran it, as judged_outcomes reads them."""
     ordered = sorted(legs, key=lambda leg: LEGS.index(leg.name) if leg.name in LEGS else len(LEGS))
+    judged = {leg.name: judged_outcomes(leg) for leg in ordered}
     modules = [
         ModuleReport(
             chosen.module,
             chosen.lines,
             chosen.tables,
-            {leg.name: leg.outcomes[chosen.module] for leg in ordered if chosen.module in leg.outcomes},
+            {leg.name: judged[leg.name][chosen.module] for leg in ordered if chosen.module in leg.outcomes},
         )
         for chosen in selected.modules
     ]
@@ -1502,12 +1709,14 @@ def selection_record(selected: Selected) -> dict[str, Any]:
     return {
         "base": selected.base,
         "mutmut": selected.mutmut,
+        "head": selected.head,
         "modules": [
             {
                 "module": chosen.module,
                 "lines": chosen.lines,
                 "tables": [list(table) for table in chosen.tables],
                 "windows": chosen.windows,
+                "digest": chosen.digest,
                 "mutants": [mutant_record(mutant) for mutant in chosen.mutants],
             }
             for chosen in selected.modules
@@ -1552,21 +1761,28 @@ def read_table(value: object, where: str) -> tuple[str, str]:
 
 
 def read_selected_module(value: object, where: str) -> SelectedModule:
-    entry = READ.json_object(value, where, required=("module", "lines", "tables", "windows", "mutants"))
+    entry = READ.json_object(value, where, required=("module", "lines", "tables", "windows", "digest", "mutants"))
     module = READ.string(entry["module"], f"{where}.module")
+    # The select step records every module's digest; a selection made without one reads back as empty, which a
+    # local run refuses.
+    digest = "" if entry["digest"] == "" else READ.hex_digest(entry["digest"], f"{where}.digest", 64)
     return SelectedModule(
         module,
         READ.integer(entry["lines"], f"{where}.lines", minimum=0),
         tuple(READ.array(entry["mutants"], f"{where}.mutants", functools.partial(read_mutant, module))),
         tuple(READ.array(entry["tables"], f"{where}.tables", read_table)),
         READ.boolean(entry["windows"], f"{where}.windows"),
+        digest,
     )
 
 
 def read_selection(path: Path) -> Selected:
     """The selection the select step wrote; a field of a kind the step does not write stops the join."""
-    record = read_record(path, ("base", "mutmut", "modules"))
+    record = read_record(path, ("base", "mutmut", "head", "modules"))
     modules = tuple(READ.array(record["modules"], f"{path.name}.modules", read_selected_module))
+    # The select step records the commit it ran at; a selection made without one reads back as empty, which a local
+    # run refuses. Git names a commit by SHA-1, or by SHA-256 in a repository that uses it.
+    head = "" if record["head"] == "" else READ.hex_digest(record["head"], f"{path.name}.head", 40, 64)
     seen: set[str] = set()
     for index, chosen in enumerate(modules):
         # A leg's outcomes are keyed by module, so a module listed twice would give both entries one list.
@@ -1574,8 +1790,15 @@ def read_selection(path: Path) -> Selected:
             raise READ.fail(f"{path.name}.modules[{index}].module", "a module no earlier entry names", chosen.module)
         seen.add(chosen.module)
     return Selected(
-        READ.string(record["base"], f"{path.name}.base"), READ.string(record["mutmut"], f"{path.name}.mutmut"), modules
+        READ.string(record["base"], f"{path.name}.base"),
+        READ.string(record["mutmut"], f"{path.name}.mutmut"),
+        modules,
+        head,
     )
+
+
+def outcome_record(outcome: Outcome) -> dict[str, Any]:
+    return {"status": outcome.status, "suites": list(outcome.suites), "tests": list(outcome.tests)}
 
 
 def leg_record(leg: LegRun) -> dict[str, Any]:
@@ -1587,12 +1810,24 @@ def leg_record(leg: LegRun) -> dict[str, Any]:
         "workers": leg.workers,
         "failed_suites": leg.failed_suites,
         "unmeasured_suites": leg.unmeasured_suites,
+        "needed": leg.needed,
+        "available": leg.available,
+        "local": None if leg.local is None else local_record(leg.local),
+        "outcomes": {module: [outcome_record(outcome) for outcome in found] for module, found in leg.outcomes.items()},
+    }
+
+
+def local_record(local: LocalRun) -> dict[str, Any]:
+    """A local run as the unrun step writes it into the leg's record it completed."""
+    return {
+        "minutes": local.minutes,
+        "seconds": local.seconds,
+        "workers": local.workers,
+        "mutants": local.mutants,
+        "failed_suites": local.failed_suites,
+        "unmeasured_suites": local.unmeasured_suites,
         "outcomes": {
-            module: [
-                {"status": outcome.status, "suites": list(outcome.suites), "tests": list(outcome.tests)}
-                for outcome in outcomes
-            ]
-            for module, outcomes in leg.outcomes.items()
+            module: [outcome_record(outcome) for outcome in found] for module, found in local.outcomes.items()
         },
     }
 
@@ -1646,14 +1881,26 @@ def read_leg(path: Path, selected: Selected, leg: str) -> LegRun:
     """The run the leg step of `leg` wrote, each outcome given the mutant at its place in the selection; a record that
     names another leg, whose outcomes are not one for each mutant of each module the leg runs, or one of whose
     outcomes names a suite the same record lists as failed unmutated or left unmeasured, which ran against no mutant,
-    stops the join."""
-    fields = ("leg", "minutes", "seconds", "workers", "failed_suites", "unmeasured_suites", "outcomes")
+    stops the join. A local run's record, which read_local reads, is held to the leg's outcomes and to its own
+    suites."""
+    fields = (
+        "leg",
+        "minutes",
+        "seconds",
+        "workers",
+        "failed_suites",
+        "unmeasured_suites",
+        "needed",
+        "available",
+        "local",
+        "outcomes",
+    )
     record = read_record(path, fields)
     name = READ.one_of(record["leg"], f"{path.name}.leg", LEGS)
     if name != leg:
         raise RecordError(f"{path.name} holds the {name} leg's run, not the {leg} leg's")
     mutants = {chosen.module: chosen.mutants for chosen in leg_modules(leg, selected)}
-    failed = READ.json_object(record["failed_suites"], f"{path.name}.failed_suites")
+    needed = READ.json_object(record["needed"], f"{path.name}.needed")
     run = LegRun(
         name,
         # The cap, which --minutes holds to at least 1; a leg with nothing to run writes no worker.
@@ -1661,23 +1908,96 @@ def read_leg(path: Path, selected: Selected, leg: str) -> LegRun:
         READ.number(record["seconds"], f"{path.name}.seconds"),
         READ.integer(record["workers"], f"{path.name}.workers", minimum=0),
         read_outcomes(path, record["outcomes"], mutants, leg),
-        {suite: READ.string(reason, f"{path.name}.failed_suites.{suite}") for suite, reason in failed.items()},
+        read_failed(record["failed_suites"], f"{path.name}.failed_suites"),
         READ.array(record["unmeasured_suites"], f"{path.name}.unmeasured_suites", READ.string),
+        {module: READ.number(seconds, f"{path.name}.needed.{module}") for module, seconds in needed.items()},
+        READ.number(record["available"], f"{path.name}.available"),
     )
-    unjudged = {
-        **dict.fromkeys(run.failed_suites, "failed_suites"),
-        **dict.fromkeys(run.unmeasured_suites, "unmeasured_suites"),
-    }
-    for module, outcomes in run.outcomes.items():
-        for index, outcome in enumerate(outcomes):
+    refuse_unjudged_suites(path.name, "leg", run.outcomes, run.failed_suites, run.unmeasured_suites)
+    run.local = READ.optional(read_local, record["local"], f"{path.name}.local", run)
+    return run
+
+
+def refuse_unjudged_suites(
+    where: str,
+    who: str,
+    outcomes: Mapping[str, Sequence[Outcome]],
+    failed: Mapping[str, str],
+    unmeasured: Sequence[str],
+) -> None:
+    """Stop the join at an outcome naming a suite its own run lists as failed unmutated or left unmeasured, which ran
+    against no mutant there."""
+    unjudged = {**dict.fromkeys(failed, "failed_suites"), **dict.fromkeys(unmeasured, "unmeasured_suites")}
+    for module, found in outcomes.items():
+        for index, outcome in enumerate(found):
             for suite in outcome.suites:
                 if suite in unjudged:
                     raise READ.fail(
-                        f"{path.name}.outcomes.{module}[{index}].suites",
-                        f"suites the leg ran, none of them in its {unjudged[suite]}",
-                        f"{suite}, which {path.name}.{unjudged[suite]} lists",
+                        f"{where}.outcomes.{module}[{index}].suites",
+                        f"suites the {who} ran, none of them in its {unjudged[suite]}",
+                        f"{suite}, which {where}.{unjudged[suite]} lists",
                     )
-    return run
+
+
+def left_without_verdict(leg: LegRun) -> frozenset[str]:
+    """The statuses of a CI leg's outcomes a local run may run again: not run, errored, or timed out, and, while a
+    suite's reach went unmeasured on the leg, survived or not reached, which that suite might have killed."""
+    return frozenset({NOT_RUN, ERRORED, TIMED_OUT, *((SURVIVED, NOT_REACHED) if leg.unmeasured_suites else ())})
+
+
+def read_failed(value: object, where: str) -> dict[str, str]:
+    """The suites a run lists as failed unmutated, each with why."""
+    failed = READ.json_object(value, where)
+    return {suite: READ.string(reason, f"{where}.{suite}") for suite, reason in failed.items()}
+
+
+def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
+    """The local run a leg's record holds, with its outcome of each mutant it ran. A module the leg holds no outcomes
+    of, a place past the end of a module's outcomes, a place named twice, a place whose CI outcome left_without_verdict
+    does not let a local run replace, a count of outcomes that is not the count of places, or an outcome naming a
+    suite the local run judged nothing with stops the join, so a local outcome stands only where the CI leg left no
+    verdict."""
+    fields = ("minutes", "seconds", "workers", "mutants", "failed_suites", "unmeasured_suites", "outcomes")
+    found = READ.json_object(value, where, required=fields)
+    places = READ.json_object(found["mutants"], f"{where}.mutants")
+    listed = READ.json_object(found["outcomes"], f"{where}.outcomes")
+    if set(listed) != set(places):
+        raise RecordError(f"{where}.outcomes holds {sorted(listed)}, not the modules {where}.mutants names")
+    replaceable = left_without_verdict(leg)
+    mutants: dict[str, list[int]] = {}
+    outcomes: dict[str, list[Outcome]] = {}
+    for module, named in places.items():
+        if module not in leg.outcomes:
+            raise RecordError(f"{where}.mutants names {module}, whose mutants the leg does not run")
+        ci = leg.outcomes[module]
+        at = READ.array(named, f"{where}.mutants.{module}", at_least(0))
+        if any(place >= len(ci) for place in at) or len(set(at)) != len(at):
+            raise RecordError(f"{where}.mutants.{module} names {at}, not distinct places among its {len(ci)} mutants")
+        judged = [place for place in at if ci[place].status not in replaceable]
+        if judged:
+            raise RecordError(
+                f"{where}.mutants.{module} names {judged}, whose CI outcomes "
+                f"({', '.join(ci[place].status for place in judged)}) left no mutant without a verdict"
+            )
+        entries = READ.array(listed[module], f"{where}.outcomes.{module}")
+        if len(entries) != len(at):
+            raise RecordError(f"{where}.outcomes.{module} holds {len(entries)} outcomes, not one for each place")
+        mutants[module] = at
+        outcomes[module] = [
+            read_outcome(ci[place].mutant, entry, f"{where}.outcomes.{module}[{index}]")
+            for index, (place, entry) in enumerate(zip(at, entries, strict=True))
+        ]
+    local = LocalRun(
+        READ.integer(found["minutes"], f"{where}.minutes", minimum=1),
+        READ.number(found["seconds"], f"{where}.seconds"),
+        READ.integer(found["workers"], f"{where}.workers", minimum=1),
+        mutants,
+        read_failed(found["failed_suites"], f"{where}.failed_suites"),
+        READ.array(found["unmeasured_suites"], f"{where}.unmeasured_suites", READ.string),
+        outcomes,
+    )
+    refuse_unjudged_suites(where, "local run", local.outcomes, local.failed_suites, local.unmeasured_suites)
+    return local
 
 
 @dataclass(frozen=True)
@@ -1737,14 +2057,18 @@ class Gate:
         selected = self.select(tree, modules)
         chosen = []
         for module, (lines, mutants, tables) in selected.items():
-            windows = runs_on_windows(module, (tree / module).read_bytes().decode("utf-8"))
-            chosen.append(SelectedModule(module, lines, tuple(mutants), tables, windows))
+            text = (tree / module).read_bytes()
+            windows = runs_on_windows(module, text.decode("utf-8"))
+            digest = hashlib.sha256(text).hexdigest()
+            chosen.append(SelectedModule(module, lines, tuple(mutants), tables, windows, digest))
         return Selected(self.base, self.version(), tuple(chosen))
 
     def mutate(self, trees: Sequence[Path], modules: Sequence[str], started: float) -> Report:
         """Select the mutants of the changed lines, then run every module's mutants as one leg, this platform's."""
         selected = self.choose(trees[0], modules)
-        return joined(selected, [self.run_leg(platform_support.PLATFORM_NAME, trees, selected.modules, started)])
+        # The whole run in one process runs on this machine, so its timeouts confirm themselves, as a local run's do.
+        ran = self.run_leg(platform_support.PLATFORM_NAME, trees, selected.modules, started)
+        return joined(selected, [replace(ran, confirms=True)])
 
     def run_leg(self, name: str, trees: Sequence[Path], modules: Sequence[SelectedModule], started: float) -> LegRun:
         """Measure the reach of the suites that reach a module with a mutant, then test the mutants from one queue
@@ -1767,9 +2091,20 @@ class Gate:
             reach, failed, unmeasured = measure_reach(
                 workers, suites, mutated, reach_deadline(started, deadline), self.reach
             )
+        needed = {
+            chosen.module: sum(estimated_seconds(mutant, reach) for mutant in chosen.mutants)
+            for chosen in modules
+            if chosen.mutants
+        }
+        available = left_worker_seconds(deadline, self.clock(), len(trees))
+        too_large = too_large_line(LegRun(name, self.minutes, 0.0, len(trees), {}, {}, [], needed, available))
+        if too_large:
+            # A workflow command, which puts the estimate on the run's annotations while the mutants still run.
+            print(f"::warning title=Mutation gate too large::{too_large}", flush=True)
         outcomes = try_mutants(workers, queue_order(chosen.mutants for chosen in modules), reach, deadline, self.run)
         found = {module: [outcome for outcome in outcomes if outcome.mutant.module == module] for module in mutated}
-        return LegRun(name, self.minutes, self.clock() - started, len(trees), found, failed, unmeasured)
+        seconds = self.clock() - started
+        return LegRun(name, self.minutes, seconds, len(trees), found, failed, unmeasured, needed, available)
 
     def selection(self) -> Selected:
         """The select step: the mutants of the changed lines of each changed module, made in the checkout itself, none
@@ -1780,15 +2115,25 @@ class Gate:
         problem = generator_problem(self.generate)
         if problem:
             raise RuntimeError(problem)
-        return self.choose(self.root, modules)
+        head = self.git.output(["rev-parse", "HEAD"], directory=self.root).strip()
+        return replace(self.choose(self.root, modules), head=head)
 
     def leg(self, selected: Selected) -> LegRun:
-        """The leg step: this platform's leg of the mutants the select step made, run in worktrees of HEAD."""
+        """The leg step: this platform's leg of the mutants the select step made, run in worktrees of HEAD, which must
+        be the commit the select step's checkout held, as every job of the workflow checks out the same one."""
         name = platform_support.PLATFORM_NAME
         modules = leg_modules(name, selected)
         started = self.clock()
         if not modules:
             return LegRun(name, self.minutes, 0.0, 0, {}, {}, [])
+        if not selected.head:
+            raise RuntimeError(f"{MUTANTS_FILE} records no commit the select step made its mutants at")
+        head = self.git.output(["rev-parse", "HEAD"], directory=self.root).strip()
+        if head != selected.head:
+            raise RuntimeError(
+                f"HEAD is {head}, not {selected.head}, the commit the select step made the mutants at, so this leg's "
+                "suites would judge them at another commit"
+            )
         with (
             tempfile.TemporaryDirectory(prefix="mutation-gate-") as temporary,
             worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
@@ -1812,24 +2157,104 @@ class Gate:
             report = self.mutate(trees, modules, started)
         return Result(summary(report), unfinished_line(report) is None)
 
+    def unrun(self, folder: Path) -> LegRun:
+        """The unrun step: this platform's leg of a CI run, as `folder` holds the run's selection and every leg's
+        outcomes, completed by running here each mutant `unjudged` finds the leg left without a verdict, in worktrees
+        of HEAD, which must be the commit the run tested, as must each module's text be the one the mutants were made
+        from. The leg's own outcomes stay as it wrote them, and the local run's are kept beside them, which the report
+        reads in place of the leg's at the places it ran, so a mutant this run leaves untested is still not run."""
+        selected, legs = read_run(folder)
+        name = platform_support.PLATFORM_NAME
+        leg = next((found for found in legs if found.name == name), None)
+        if leg is None:
+            others = ", ".join(found.name for found in legs) or "no leg"
+            raise RuntimeError(f"the {name} leg ran no mutant of this run, so none is left to run here: {others} did")
+        if leg.local is not None:
+            raise RuntimeError(
+                f"{outcomes_name(name)} was already completed by a local run: download the leg's outcomes again to "
+                "run its mutants anew"
+            )
+        if not selected.head:
+            raise RuntimeError(f"{MUTANTS_FILE} records no commit the run tested, so its suites cannot be matched")
+        head = self.git.output(["rev-parse", "HEAD"], directory=self.root).strip()
+        if head != selected.head:
+            raise RuntimeError(
+                f"HEAD is {head}, not {selected.head}, the commit the run tested, whose suites judged its other "
+                f"mutants: check that commit out, fetching it with `git fetch origin {selected.head}` if this clone "
+                "lacks it, and run the step there"
+            )
+        places = unjudged(joined(selected, legs), leg)
+        modules = []
+        for chosen in leg_modules(name, selected):
+            if chosen.module not in places:
+                continue
+            if not chosen.digest:
+                raise RuntimeError(f"{MUTANTS_FILE} records no digest of {chosen.module}, so it cannot be checked")
+            mutants = tuple(chosen.mutants[place] for place in places[chosen.module])
+            modules.append(
+                SelectedModule(chosen.module, chosen.lines, mutants, chosen.tables, chosen.windows, chosen.digest)
+            )
+        print(f"{sum(map(len, places.values()))} mutants of the {name} leg are left without a verdict", flush=True)
+        if not modules:
+            return leg
+        started = self.clock()
+        with (
+            tempfile.TemporaryDirectory(prefix="mutation-gate-") as temporary,
+            worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
+        ):
+            for chosen in modules:
+                if hashlib.sha256((trees[0] / chosen.module).read_bytes()).hexdigest() != chosen.digest:
+                    raise RuntimeError(
+                        f"{chosen.module} at HEAD is not the text the run made its mutants from: check out the commit "
+                        "the run tested"
+                    )
+            ran = self.run_leg(name, trees, modules, started)
+        local = LocalRun(
+            self.minutes, ran.seconds, ran.workers, places, ran.failed_suites, ran.unmeasured_suites, ran.outcomes
+        )
+        return replace(leg, local=local)
 
-def join(folder: Path) -> Result:
-    """The join step: the summary of the select step's mutants and each leg's outcomes in `folder`, and whether the
-    run finished. A missing file, the selection's or a leg's that had mutants to run, stops it, since that leg's
-    mutants then have no verdict, and so does a leg's file that read_leg refuses, such as one naming another leg or
-    leaving out a module."""
+
+def unjudged(report: Report, leg: LegRun) -> dict[str, list[int]]:
+    """The places of each module's mutants a leg left without a verdict that running them again on its platform could
+    give: each no leg killed or confirmed outlasting whose outcome on the leg left_without_verdict names, a CI timeout
+    among them, which the report reads as UNCONFIRMED."""
+    statuses = {UNCONFIRMED if status == TIMED_OUT else status for status in left_without_verdict(leg)}
+    found = {}
+    for module in report.modules:
+        places = [
+            place
+            for place, (outcome, judged) in enumerate(zip(module.legs.get(leg.name, ()), module.outcomes, strict=False))
+            if outcome.status in statuses and judged.status not in (KILLED, TIMED_OUT)
+        ]
+        if places:
+            found[module.module] = places
+    return found
+
+
+def read_run(folder: Path) -> tuple[Selected, list[LegRun]]:
+    """The select step's mutants and each needed leg's outcomes in `folder`. A missing file, the selection's or a
+    leg's that had mutants to run, stops it, since that leg's mutants then have no verdict, and so does a leg's file
+    that read_leg refuses, such as one naming another leg or leaving out a module."""
     mutants = folder / MUTANTS_FILE
     if not mutants.is_file():
         raise RuntimeError(f"the select job wrote no {MUTANTS_FILE}, so no leg ran: read that job's log")
     selected = read_selection(mutants)
-    if not selected.modules:
-        return Result(no_module_line(selected.base))
     legs = []
     for name in needed_legs(selected):
         path = folder / outcomes_name(name)
         if not path.is_file():
             raise RuntimeError(f"the {name} leg wrote no {path.name}, so its mutants have no verdict: read its log")
         legs.append(read_leg(path, selected, name))
+    return selected, legs
+
+
+def join(folder: Path) -> Result:
+    """The join step: the summary of the select step's mutants and each leg's outcomes in `folder`, as read_run reads
+    them, and whether the run finished."""
+    selected, legs = read_run(folder)
+    if not selected.modules:
+        return Result(no_module_line(selected.base))
     report = joined(selected, legs)
     return Result(summary(report), unfinished_line(report) is None)
 
@@ -1869,6 +2294,12 @@ def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) 
         ("select", "make the mutants and write them to the folder"),
         ("leg", "run this platform's leg of the folder's mutants and write its outcomes beside them"),
         ("join", "report the folder's mutants and every leg's outcomes"),
+        (
+            "unrun",
+            "run here the mutants this platform's leg of a CI run left without a verdict, from the run's mutants and "
+            "outcomes in the folder, at the commit the run tested, write its outcomes beside the leg's in the leg's "
+            "file, and report as the join does",
+        ),
     ):
         steps.add_parser(name, help=text).add_argument("folder", type=Path, help="the folder the steps hand on")
     arguments = parser.parse_args(argv)
@@ -1887,7 +2318,10 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] = os.
         leg = gate.leg(read_selection(arguments.folder / MUTANTS_FILE))
         json_writer.write(arguments.folder / outcomes_name(leg.name), leg_record(leg))
         return 0
-    result = join(arguments.folder) if arguments.step == "join" else gate.report()
+    if arguments.step == "unrun":
+        completed = gate.unrun(arguments.folder)
+        json_writer.write(arguments.folder / outcomes_name(completed.name), leg_record(completed))
+    result = join(arguments.folder) if arguments.step in ("join", "unrun") else gate.report()
     print(result.text, end="", flush=True)
     append_step_summary(environment, result.text)
     if result.finished:

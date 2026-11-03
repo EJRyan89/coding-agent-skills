@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -16,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import skill_menu
+from presence_denial import denied as stat_denied
 from skill_roots import SKILLS_ROOT, sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
@@ -384,6 +387,16 @@ def test_a_source_tree_holding_a_plugin_manifest_is_refused(source: Source) -> N
         plugin_build.load_catalogue(source.root)
 
 
+def test_a_plugin_manifest_it_cannot_examine_is_refused_never_taken_for_none(source: Source) -> None:
+    manifest = source.root / ".claude-plugin" / "plugin.json"
+    with stat_denied(manifest), pytest.raises(plugin_build.BuildError) as raised:
+        plugin_build.load_catalogue(source.root)
+    assert (
+        str(raised.value)
+        == f"{manifest} cannot be examined: [Errno {errno.EACCES}] Access is denied: {str(manifest)!r}"
+    )
+
+
 def test_a_source_the_deployer_refuses_is_a_build_error(source: Source) -> None:
     source.skill("alpha", skill_deps=["missing"])
     with pytest.raises(plugin_build.BuildError, match="missing"):
@@ -428,6 +441,19 @@ def test_an_output_that_is_a_file_or_holds_files_is_refused_and_an_absent_one_is
     assert (tmp_path / "full" / "kept.txt").read_text(encoding="utf-8") == "kept"
     made = plugin_build.output_directory(tmp_path / "new folder" / "plugins", source_root)
     assert made.is_dir()
+
+
+@pytest.mark.parametrize("stat", [True, False])
+def test_an_output_it_cannot_examine_or_list_is_refused_never_taken_for_an_empty_one(
+    tmp_path: Path, stat: bool
+) -> None:
+    target = (tmp_path / "out").resolve()
+    target.mkdir()
+    with stat_denied(target, stat=stat), pytest.raises(plugin_build.BuildError) as raised:
+        plugin_build.output_directory(target, tmp_path / "source")
+    assert str(raised.value).startswith(
+        f"--output {target} cannot be examined: [Errno {errno.EACCES}] Access is denied"
+    )
 
 
 def run(arguments: list[str]) -> tuple[int, list[str]]:
@@ -508,6 +534,24 @@ def test_the_sources_readme_is_each_plugins_readme_and_a_source_without_one_give
     catalogue = plugin_build.load_catalogue(source.root)
     plugins = plugin_build.assemble(plugin_build.load_source(source.root), catalogue, readme=readme).plugins
     assert [plugin.files["README.md"] for plugin in plugins] == [b"# Fixture\n", b"# Fixture\n"]
+
+
+@pytest.mark.parametrize("place", ["folder", "unexamined"])
+def test_a_readme_that_is_a_folder_or_cannot_be_examined_fails_the_build_never_builds_without_it(
+    source: Source, tmp_path: Path, place: str
+) -> None:
+    source.skill("alpha")
+    readme = source.root / ".claude-plugin" / "README.md"
+    if place == "folder":
+        readme.mkdir()
+    else:
+        readme.write_bytes(b"# Fixture\n")
+    with stat_denied(readme) if place == "unexamined" else contextlib.nullcontext():
+        code, lines = run(["--source", str(source.root), "--output", str(tmp_path / "out")])
+    assert (code, len(lines)) == (1, 1)
+    assert lines[0].startswith(f"FAILED {readme} cannot be read: ")
+    assert ("Access is denied" if place == "unexamined" else "not a file") in lines[0]
+    assert not (tmp_path / "out").exists()
 
 
 def test_audit_skill_locates_each_skill_a_built_plugin_carries_and_measures_its_hooks(

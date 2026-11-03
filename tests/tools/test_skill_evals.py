@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import datetime
+import errno
 import hashlib
 import io
 import json
@@ -42,6 +43,7 @@ import review_source
 import review_specialists
 import skill_inventory
 from git_client import GitClient, GitError, GitResult, subprocess_runner
+from presence_denial import denied
 from review_config import write_config
 from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
@@ -379,6 +381,46 @@ class LoaderTests(unittest.TestCase):
             skill_evals_scenarios.load_scenarios("demo", ["one", "one", "three"], root=self.root)
         with self.assertRaisesRegex(ScenarioError, "no scenarios for other"):
             skill_evals_scenarios.load_scenarios("other", root=self.root)
+
+    def test_a_skill_folder_misplaced_or_unexamined_is_refused_by_its_reason_never_as_no_scenarios(self) -> None:
+        write_scenario(self.root, "one", scenario_spec())
+        folder = self.root / "demo"
+        real = Path.stat
+
+        def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+            if path == folder:
+                raise PermissionError(errno.EACCES, "Access is denied", str(path))
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", stat), self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        self.assertEqual(
+            f"cannot read the scenarios for demo at {folder}: [Errno {errno.EACCES}] Access is denied: {str(folder)!r}",
+            str(raised.exception),
+        )
+        (self.root / "other").write_text("not a folder\n", encoding="utf-8")
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("other", root=self.root)
+        other = self.root / "other"
+        self.assertEqual(
+            f"cannot read the scenarios for other at {other}: [Errno {errno.ENOTDIR}] not a directory: {str(other)!r}",
+            str(raised.exception),
+        )
+
+    def test_a_scenario_folder_it_cannot_list_is_loaded_and_one_it_cannot_examine_is_refused(self) -> None:
+        write_scenario(self.root, "one", scenario_spec())
+        folder, spec = self.root / "demo", self.root / "demo" / "one" / "scenario.json"
+        # A glob for */scenario.json lists each scenario folder, so it matches nothing in one it cannot list.
+        with denied(folder / "one", stat=False):
+            self.assertEqual(["one"], [s.name for s in skill_evals_scenarios.load_scenarios("demo", root=self.root)])
+        for path, stat in ((folder, False), (spec, True)):
+            with self.subTest(path=path.name), denied(path, stat=stat), self.assertRaises(ScenarioError) as raised:
+                skill_evals_scenarios.load_scenarios("demo", root=self.root)
+            self.assertEqual(
+                f"cannot read the scenarios for demo at {folder}: [Errno {errno.EACCES}] Access is denied: "
+                f"{str(path)!r}",
+                str(raised.exception),
+            )
 
     def test_a_skill_with_no_scenario_fails_and_nothing_runs(self) -> None:
         (self.root / "empty-skill" / "not-a-scenario").mkdir(parents=True)
@@ -1848,6 +1890,44 @@ class ReviewerScenarioTests(unittest.TestCase):
         directory = write_reviewer_scenario(self.root, reviewer_spec())
         (directory / "head" / "CLAUDE.md").write_text("# A stale copy\n", encoding="utf-8")
         self.assertEqual("case: its head/ tree holds CLAUDE.md, which the run places from the checkout", self.refusal())
+
+    def test_a_reviewer_folder_or_file_it_cannot_list_or_examine_is_refused_never_left_unplaced(self) -> None:
+        write_reviewer_scenario(self.root, reviewer_spec())
+        reviewer = skill_evals_scenarios.REPOSITORY_ROOT / REVIEWER_FOLDER
+        references = reviewer / "references"
+        # A file whose stat fails is still one the run places, so the check of the checkout's files refuses it.
+        script = next(path for path in sorted((reviewer / "scripts").iterdir()) if path.suffix == ".py")
+        rows: list[tuple[Path, bool, str]] = [
+            (references, False, f"case: cannot read {references}: [Errno {errno.EACCES}] Access is denied"),
+            (
+                script,
+                True,
+                f"case: review-repository declares {REVIEWER_FOLDER}/scripts/{script.name}, which the checkout",
+            ),
+        ]
+        for path, stat, message in rows:
+            with self.subTest(path=path.name), denied(path, stat=stat):
+                self.assertIn(message, self.refusal())
+
+    def test_a_fixture_file_it_cannot_examine_is_refused_and_a_held_one_is_held(self) -> None:
+        directory = write_reviewer_scenario(self.root, reviewer_spec())
+        placed = directory / "head" / "CLAUDE.md"
+        placed.write_text("# A stale copy\n", encoding="utf-8")
+        with denied(placed):
+            self.assertIn(f"case: cannot examine {placed}: [Errno {errno.EACCES}] Access is denied", self.refusal())
+        placed.unlink()
+        held = directory / "base" / "tools" / "a.py.fixture"
+        held.parent.mkdir(parents=True)
+        held.write_text("", encoding="utf-8")
+        restored = held.with_name("a.py")
+        restored.write_text("", encoding="utf-8")
+        with denied(restored):
+            self.assertIn(f"case: cannot examine {restored}: [Errno {errno.EACCES}] Access is denied", self.refusal())
+        restored.unlink()
+        with denied(held):
+            self.assertEqual([("base", "tools/a.py.fixture")], skill_evals_scenarios.held_files(directory))
+        with denied(held.parent, stat=False):
+            self.assertIn(f"case: cannot read {directory / 'base'}: [Errno {errno.EACCES}]", self.refusal())
 
 
 class NoGitHub:

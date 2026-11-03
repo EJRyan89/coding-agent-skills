@@ -14,7 +14,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from review_config import validate_repository_identity
-from review_io import ResourceLock, atomic_write_json, read_json
+from review_io import ResourceLock, atomic_write_json, read_json, record_present
 from typed_fields import FieldError, FieldReader
 
 SCHEMA_VERSION = 1
@@ -90,8 +90,11 @@ def empty_state() -> dict[str, Any]:
 
 
 def load_state(path: Path | None = None) -> dict[str, Any]:
+    """The validated batch state, or an empty one before the first batch run writes it. A state file it cannot stat,
+    or anything else in its place, is the FileUnreadable `record_present` raises, never a first run's empty state, which
+    would start every repository's watermark over."""
     selected = path or default_state_path()
-    if not selected.exists():
+    if not record_present(selected):
         return empty_state()
     return validate_state(read_json(selected))
 

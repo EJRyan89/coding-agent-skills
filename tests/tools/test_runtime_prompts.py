@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
+import shutil
 import sys
 import tempfile
 import unittest
@@ -20,6 +22,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import review_dispatch
 import review_hosts
+from presence_denial import denied as stat_denied
 from review_run import Services
 
 from tools import runtime_prompts
@@ -176,6 +179,71 @@ class RuntimePromptsTestCase(unittest.TestCase):
         self.assertEqual(
             (2, "", "FAILED cannot write docs/runtime-prompts/alpha/reviewer.txt: denied\n"), (code, stdout, stderr)
         )
+
+    def test_a_sample_or_the_samples_folder_misplaced_or_unexamined_exits_2_never_reads_as_missing(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        samples = self.root / "docs" / "runtime-prompts"
+        sample = samples / "alpha" / "reviewer.txt"
+
+        def folder_at_sample() -> Path:
+            sample.mkdir(parents=True)
+            return sample
+
+        def file_at_samples() -> Path:
+            samples.parent.mkdir(parents=True)
+            samples.write_text("not a folder\n", encoding="utf-8")
+            return samples
+
+        def current_sample() -> Path:
+            runtime_prompts.write(self.root, renderers)
+            return sample
+
+        def current_samples() -> Path:
+            runtime_prompts.write(self.root, renderers)
+            return samples
+
+        # Each row: what stands at the path, whether its stat is refused, the arguments, and the error the FAILED
+        # line ends with.
+        rows: list[tuple[Callable[[], Path], bool, tuple[str, ...], str]] = [
+            (folder_at_sample, False, (), f"[Errno {errno.EISDIR}] not a file"),
+            (file_at_samples, False, (), f"[Errno {errno.ENOTDIR}] not a directory"),
+            (current_sample, True, (), f"[Errno {errno.EACCES}] Access is denied"),
+            (current_samples, True, (), f"[Errno {errno.EACCES}] Access is denied"),
+            (current_samples, True, ("--write",), f"[Errno {errno.EACCES}] Access is denied"),
+        ]
+        for make, denied, arguments, error in rows:
+            with self.subTest(make=make.__name__, denied=denied, arguments=arguments):
+                path = make()
+                with stat_denied(path) if denied else contextlib.nullcontext():
+                    code, stdout, stderr = self.run_main(renderers, *arguments)
+                relative = path.relative_to(self.root).as_posix()
+                self.assertEqual(
+                    (2, "", f"FAILED cannot read {relative}: {error}: {str(path)!r}\n"), (code, stdout, stderr)
+                )
+                if (self.root / "docs").is_dir():
+                    shutil.rmtree(self.root / "docs")
+
+    def test_an_extra_sample_it_cannot_examine_is_reported_and_removed_and_an_unlisted_folder_exits_2(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        runtime_prompts.write(self.root, renderers)
+        folder = self.root / "docs" / "runtime-prompts" / "gamma"
+        extra = folder / "old.txt"
+        folder.mkdir()
+        extra.write_text("Gone.\n", encoding="utf-8")
+        with stat_denied(extra):
+            self.assertEqual(
+                [f"docs/runtime-prompts/gamma/old.txt is no rendered prompt; {runtime_prompts.WRITE_HINT}"],
+                runtime_prompts.problems(self.root, renderers),
+            )
+            runtime_prompts.write(self.root, renderers)
+        self.assertEqual((False, False), (extra.exists(), folder.exists()), "the extra sample and its folder go")
+        # A folder below the samples it cannot list could hold an extra sample, which rglob would pass by.
+        folder.mkdir()
+        refused = f"[Errno {errno.EACCES}] Access is denied: {str(folder)!r}"
+        for arguments in ((), ("--write",)):
+            with self.subTest(arguments=arguments), stat_denied(folder, stat=False):
+                code, stdout, stderr = self.run_main(renderers, *arguments)
+            self.assertEqual((2, "", f"FAILED cannot read docs/runtime-prompts: {refused}\n"), (code, stdout, stderr))
 
     def test_each_skill_renders_its_prompts_without_a_model_and_bounds_their_replies(self) -> None:
         # The real renderers, into a throwaway root: every prompt the skills' scripts write today.

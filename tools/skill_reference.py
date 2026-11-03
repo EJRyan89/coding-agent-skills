@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import frontmatter
 import runtime_support
 import skill_menu
@@ -344,7 +345,8 @@ def problems(root: Path) -> list[str]:
     source = load_source(root)
     skills = entries(source)
     reference = root / REFERENCE
-    if not reference.is_file():
+    # A reference or README whose stat fails, or a folder in its place, raises OSError, ending the run as FAILED.
+    if not file_presence.is_present(reference):
         return [f"{REFERENCE.as_posix()} does not exist"]
     document = _read(root, reference)
     found: list[str] = []
@@ -380,7 +382,7 @@ def problems(root: Path) -> list[str]:
         found.append(f"{REFERENCE.as_posix()}: generated content is stale; run python tools/skill_reference.py --write")
     roots = sorted([*deploy_source.root_names(source), *source.bundles])
     readme = root / README
-    if not readme.is_file():
+    if not file_presence.is_present(readme):
         return [*found, f"{README.as_posix()} does not exist"]
     found.extend(readme_problems(_read(root, readme), roots, sorted(names)))
     return found

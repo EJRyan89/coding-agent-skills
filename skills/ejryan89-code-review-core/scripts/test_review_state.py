@@ -23,8 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import review_io
 from process_identity import ProcessStatus
-from review_io import PersistenceError, PersistenceFieldError, ResourceLock, atomic_write_json, read_json
+from review_io import (
+    FileUnreadable,
+    PersistenceError,
+    PersistenceFieldError,
+    ResourceLock,
+    atomic_write_json,
+    read_json,
+)
 from review_state import StateError, StateFieldError, empty_state, load_state, update_state, validate_state
+from test_review_archive import unstatable
 
 
 @contextlib.contextmanager
@@ -70,6 +78,26 @@ class StateAndLockTests(unittest.TestCase):
             ):
                 update_state(path, lambda state: {**state, "extra": True})
             self.assertEqual(updated, load_state(path), "a refused replacement leaves the state as it was")
+
+    def test_a_state_file_it_cannot_stat_is_refused_naming_it_never_read_as_a_first_run(self) -> None:
+        # Read as no state, a batch run would take the first-run path and the update would write every repository's
+        # merged_since over.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            atomic_write_json(
+                path, {"schema_version": 1, "repositories": {"example/one": {"merged_since": "2026-01-01"}}}
+            )
+            before = path.read_bytes()
+            calls: dict[str, Callable[[], object]] = {
+                "load": lambda: load_state(path),
+                "update": lambda: update_state(path, lambda state: {**state, "repositories": {}}),
+            }
+            for name, call in calls.items():
+                with self.subTest(name), unstatable(path), self.assertRaises(FileUnreadable) as caught:
+                    call()
+                reason = f"[Errno 13] Permission denied: {str(path)!r}"
+                self.assertEqual(f"Cannot read valid JSON from {path}: {reason}", str(caught.exception))
+                self.assertEqual(before, path.read_bytes())
 
     def test_a_watermark_must_begin_with_a_calendar_date(self) -> None:
         def state(value: str) -> dict[str, Any]:
