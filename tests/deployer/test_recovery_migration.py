@@ -1286,6 +1286,33 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertEqual([], list((self.home / ".claude" / "deployer" / "staging").iterdir()))
         self.assertFalse(self.lock_dir.exists())
 
+    def test_a_staging_folder_the_run_cannot_delete_after_its_commit_is_named_and_the_run_finishes(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.make_skill("alpha", "Updated alpha")
+        staging = self.home / ".claude" / "deployer" / "staging"
+        real_remove = fsops.remove
+
+        # Its journal goes first, so only the rest of the folder, holding no record, is held.
+        def held_folder(path: Path) -> None:
+            if path.parent == staging:
+                raise denied(path)
+            real_remove(path)
+
+        with mock.patch("deployer.fsops.remove", side_effect=held_folder):
+            result = self.deploy_ok("--all")
+        run_id = self.manifest()["last_run_id"]
+        run = staging / run_id
+        self.assert_lines(
+            result.output,
+            f"  WARNING: Could not delete the staging folder {forward(run)}: Access is denied. It holds no journal, "
+            "so the next deployment deletes it.",
+        )
+        self.assertNotIn("failed", result.output)
+        self.assertFalse((run / "journal.jsonl").exists())
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+        self.deploy_ok("--all")
+        self.assertFalse(run.exists())
+
     def test_a_finalization_failure_after_the_commit_is_completed_before_exit(self) -> None:
         self.deployed(("alpha", "Alpha content"))
         self.write(self.skills_dir / "alpha" / "SKILL.md", "edited by hand\n")

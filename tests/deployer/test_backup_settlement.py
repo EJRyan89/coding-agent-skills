@@ -8,6 +8,7 @@ docs/recovery.md names every stop recovery makes.
 from __future__ import annotations
 
 import ast
+import contextlib
 import errno
 import itertools
 from collections.abc import Callable, Iterator
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
+import file_presence
 from harness import REPOSITORY_ROOT, DeployerTestCase, backup_entry, make_directory_link
 
 from deployer import fsops, hashing, journal, pipeline
@@ -186,19 +188,32 @@ class SettlementTests(DeployerTestCase):
             self.write(self.skills_dir / "alpha", "an installed file\n")
             self.write(self.destination / "SKILL.md", "a folder where a file was kept\n")
 
+        def neither_file_nor_folder() -> None:
+            self.write(self.destination, "read as a device or a pipe\n")
+
+        real_is_present = file_presence.is_present
+
+        def is_present(path: Path, *rest: Any, **options: Any) -> bool:
+            # A device or a pipe, which no fixture makes on every platform, reads as neither a file nor a folder.
+            if path == self.destination:
+                raise file_presence.NotAFile(path)
+            return real_is_present(path, *rest, **options)
+
+        something_else = mock.patch.object(file_presence, "is_present", side_effect=is_present)
         cases = {
-            "a junction in its place": (junction, "is a symlink or junction"),
-            "its run folder a junction": (run_folder_junction, "sits under a symlink or junction"),
-            "a file for a folder": (file_for_a_folder, "is a file, not a folder as alpha is"),
-            "a folder for a file": (folder_for_a_file, "is a folder, not a file as alpha is"),
+            "a junction in its place": (junction, "is a symlink or junction", None),
+            "its run folder a junction": (run_folder_junction, "sits under a symlink or junction", None),
+            "a file for a folder": (file_for_a_folder, "is a file, not a folder as alpha is", None),
+            "a folder for a file": (folder_for_a_file, "is a folder, not a file as alpha is", None),
+            "neither a file nor a folder": (neither_file_nor_folder, "is something else, not a folder", something_else),
         }
-        for case, (stand_in, says) in cases.items():
+        for case, (stand_in, says, reads) in cases.items():
             with self.subTest(case=case):
                 entry = self.backup(ROWS["kept unchanged"])
                 try:
                     fsops.remove(self.transient)
                     stand_in()
-                    with self.faulted(ROWS["kept unchanged"]) as warnings:
+                    with self.faulted(ROWS["kept unchanged"]) as warnings, reads or contextlib.nullcontext():
                         reconciled = journal._finish_backup(self.paths, RUN, cast(journal.BackupEntry, entry))
                     self.assertFalse(reconciled)
                     self.assertEqual(1, len(warnings), warnings)
@@ -228,7 +243,7 @@ STOPS = {
     "Backup hash mismatch for {} during rollback": "a backup changed before a rollback could put it back",
     "Both {} and {} exist during rollback": "an item and its `.deploying-bak` both exist",
     # _undo_preserve reports the DeployError prepare_backup_destination raises.
-    "_report": "the `.backups` path a rollback reads is a link or not a folder",
+    "_report": "the `.backups` path a rollback moves a kept copy back from is unusable",
 }
 
 
