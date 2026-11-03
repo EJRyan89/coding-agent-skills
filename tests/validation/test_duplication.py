@@ -1160,6 +1160,8 @@ def more(path: Path, root: Path, name: str, top: str, other: str, *rest: str) ->
         name.startswith(sorted(item.name for item in path.parents)),  # Plain names, no separator.
         name.startswith(tuple(top, PREFIXES)),  # A collection is made of its first argument alone.
         name.startswith("{1}".format(os.sep)),  # No argument fills the field.
+        name.startswith("%(top)s%(sep)s" % {"top": top, "sep": os.sep}),  # Not read: named % fields (#2320).
+        any(parent == root for parent in path.parents),  # Not read: parents compared by == (#2320).
     ]
 
 
