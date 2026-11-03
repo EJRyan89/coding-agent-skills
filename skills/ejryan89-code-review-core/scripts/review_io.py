@@ -24,7 +24,7 @@ import file_presence
 import json_reader
 import json_writer
 from atomic_file import UnfinishedCopyError, replace_bytes
-from process_identity import ProcessStatus, process_status
+from process_identity import ProcessStatus, process_status, read_pid
 from review_process import same_process
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader
@@ -393,7 +393,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
                 return f"its owner file has not been a valid owner record for {int(age)} seconds"
             return f"it has had no owner file for {int(age)} seconds"
         try:
-            pid = READ.integer(owner.get("pid"), "lock owner.pid", minimum=1)
+            pid = read_pid(owner.get("pid"), "lock owner.pid", READ)
         except FieldError:
             return None
         try:
