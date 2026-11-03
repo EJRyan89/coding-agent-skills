@@ -2446,15 +2446,16 @@ REQUEST_KINDS: list[tuple[str, dict[str, Any], str]] = [
         {"head_sha": "A" * 40},
         f"request.pull_request.head_sha must be {COMMIT_KIND}, found {NOT_HEX}",
     ),
+    # The description's length, given beside its file as `body`.
     (
         "body characters",
         {"body_characters": "10"},
-        _wrong("request.pull_request.body_characters", "an integer of at least 0 or null", "10"),
+        _wrong("request.pull_request.body_characters", "an integer of at least 0", "10"),
     ),
     (
         "negative body characters",
         {"body_characters": -1},
-        "request.pull_request.body_characters must be an integer of at least 0 or null, found integer -1",
+        "request.pull_request.body_characters must be an integer of at least 0, found integer -1",
     ),
 ]
 
@@ -2478,13 +2479,15 @@ class AdapterRequestArgumentTests(unittest.TestCase):
                 "diff_path": diff,
                 "source_snapshot_root": root / "source",
                 "snapshot": _snapshot().metadata,
-                "body_file": body,
-                "body_characters": 4,
+                "body": (body, 4),
             }
             self.assertEqual(7, review_runtime.build_adapter_request(**arguments)["pull_number"])
             for name, changes, message in REQUEST_KINDS:
+                given = {key: value for key, value in changes.items() if key != "body_characters"}
+                if "body_characters" in changes:
+                    given["body"] = (body, changes["body_characters"])
                 with self.subTest(name), self.assertRaises(Exception) as caught:
-                    review_runtime.build_adapter_request(**{**arguments, **changes})
+                    review_runtime.build_adapter_request(**{**arguments, **given})
                 self.assertIs(F, type(caught.exception))
                 self.assertEqual(message, str(caught.exception))
 

@@ -1141,6 +1141,8 @@ def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         "uncovered_files": [],
         "archive_base": NO_REVIEW,
         "documents": {},
+        # No file only some roles are given: a review without closing issues restricts nothing.
+        "restricted": {},
         **changes,
     }
 

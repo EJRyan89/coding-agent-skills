@@ -512,6 +512,36 @@ class GitHubClient:
 
         return self.request(arguments, parse, retry=retry)
 
+    def partial_graphql(self, arguments: Sequence[str], accept: Callable[[Any], bool], *, retry: bool = True) -> Any:
+        """Run a GraphQL `gh api graphql` query and return its JSON body, whose `data` holds null where GitHub could
+        not resolve something, when every error the body reports is one `accept` takes, such as a node the viewer may
+        not read. gh exits 1 on such a body; only that exit, with a JSON body holding `data` and errors `accept` takes
+        them all, is a result. Any other failure, an error `accept` refuses, or a body without `data`, raises as
+        `json(..., graphql=True)` raises."""
+
+        def tolerate(command: Sequence[str]) -> CommandResult:
+            result = self.runner(command)
+            if result.returncode == 1:
+                try:
+                    payload = json_reader.loads(result.stdout)
+                except ValueError:
+                    return result
+                errors = payload.get("errors") if isinstance(payload, dict) else None
+                if isinstance(errors, list) and errors and payload.get("data") is not None and all(map(accept, errors)):
+                    return CommandResult(0, result.stdout, result.stderr, result.replaced)
+            return result
+
+        def parse(result: CommandResult) -> Any:
+            payload = json_body(result)
+            errors = payload.get("errors") if isinstance(payload, dict) else None
+            accepted = isinstance(errors, list) and payload.get("data") is not None and all(map(accept, errors))
+            problem = None if accepted else graphql_failure(payload)
+            if problem is not None:
+                raise problem
+            return payload
+
+        return self._attempts(tolerate, arguments, parse, retry=retry, headers=False, pacer=None)
+
     def capped_list(self, arguments: Sequence[str], limit: int, *, retry: bool = True) -> Listing:
         """Run `gh <arguments> --limit <limit + 1>`, a listing such as `pr list --json ...`, and return its first
         `limit` items with whether GitHub held more, so a listing cut at its limit says so rather than reading as
