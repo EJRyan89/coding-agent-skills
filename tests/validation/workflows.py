@@ -577,7 +577,7 @@ _GIVEN = (
 _NOT = r"(?: not|n't| never)"
 _NEGATED_PASSIVE = (
     rf"(?:(?:is|are|was|were){_NOT}(?: being)?|(?:has|have|had){_NOT} been|{_MODALS}{_NOT} (?:be|get)"
-    r"|(?:won't|can't|cannot|shan't) (?:be|get)|(?:does|do|did){_NOT} get)"
+    rf"|(?:won't|can't|cannot|shan't) (?:be|get)|(?:does|do|did){_NOT} get)"
 )
 _NEGATED_ACTIVE = rf"(?:(?:do|does|did|{_MODALS}){_NOT}|won't|can't|cannot|shan't|never)"
 _NOT_GIVEN = (

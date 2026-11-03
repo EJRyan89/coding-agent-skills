@@ -23,6 +23,7 @@ from workflows import (
     IMAGE_MODULE_STEP,
     PINNED_TOOL_LINES,
     PULL_REQUEST_CODE_STATEMENT,
+    RETIRED_TOKEN_CLAIMS,
     SAME_REPOSITORY_STATEMENT,
     TOKEN_CLAIM_OMISSIONS,
     TOKEN_CLAIM_SPANS,
@@ -2102,6 +2103,7 @@ RETIRED_CLAIM_SPELLINGS = [
     ("the token will not reach any step", NO_STEP),
     ("the only job that has been given the token", ONLY_JOB),
     ("only the known-failures job will be given the token", ONLY_JOB),
+    ("the legs did not get passed the token", NO_STEP),
 ]
 
 # The true statements the repository makes about the token, each of which names the command or program that holds it
@@ -2275,6 +2277,11 @@ def test_the_token_claim_policy_reads_every_file_but_the_design_document_and_its
         "tests/validation/workflows_support.py": "text",
         "tests/validation/workflows.py": "text",
     }
+
+
+def test_every_word_class_a_claim_pattern_names_is_filled_in() -> None:
+    # A class named in a plain string rather than an f-string stays as its literal name, which matches nothing.
+    assert [claim for claim, pattern in RETIRED_TOKEN_CLAIMS.items() if "{_" in pattern.pattern] == []
 
 
 def test_the_span_the_token_claim_policy_blanks_is_pinned_with_its_reason() -> None:
