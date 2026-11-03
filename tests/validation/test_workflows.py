@@ -2071,6 +2071,14 @@ RETIRED_CLAIM_SPELLINGS = [
     ("the token isn't handed to the legs", NO_STEP),
     ("the token does not reach any step", NO_STEP),
     ("the token never goes to a leg", NO_STEP),
+    # Any possessive before the token, and "read-only" with a space, no space, or a hyphen variant.
+    ("no step is given the workflow's token", NO_STEP),
+    ("no step is given the run's read only token", NO_STEP),
+    ("no job is given the run's readonly token", NO_STEP),
+    ("no leg is given the run's read\N{EN DASH}only token", NO_STEP),
+    ("the legs' token is given to no step", NO_STEP),
+    ("the only job given the repository's token", ONLY_JOB),
+    ("each leg held no validate.yml's read only token", NO_TOKEN),
 ]
 
 # The true statements the repository makes about the token, each of which names the command or program that holds it

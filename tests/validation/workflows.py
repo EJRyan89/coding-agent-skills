@@ -539,9 +539,10 @@ REACH_STATEMENTS = (PULL_REQUEST_CODE_STATEMENT, SAME_REPOSITORY_STATEMENT)
 # token" is true only of the steps that run a command.
 ACTION_INPUT_STATEMENT = "the pinned actions take the run's token as the default of their `token` input"
 # The words the retired claims below are written in, matched in text _claim_text has folded. The token by any of its
-# names, an expression that reads it included, after any of the words that qualify it.
+# names, an expression that reads it included, after any of the words that qualify it: any possessive, as "the
+# workflow's token" and "the legs' token" are, and "read-only" spelled with a hyphen, a space, or neither.
 _CREDENTIAL = (
-    r"(?:(?:(?:run's|read-only|workflow|github|actions|repository|repo|job's|default|own|automatic|built-in) )*"
+    r"(?:(?:(?:[\w.-]+'s?|read(?:-| )?only|workflow|github|actions|repository|repo|default|own|automatic|built-in) )*"
     r"(?:token|github_token|gh_token)(?!\w)"
     r"|\$\{\{ ?(?:secrets\.github_token|github\.token) ?\}\}|(?:secrets\.github_token|github\.token)(?!\w))"
 )
