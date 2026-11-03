@@ -39,6 +39,11 @@
       "date": "2026-10-23",
       "tag": "v0.11.1",
       "area": "infrastructure"
+    },
+    {
+      "date": "2026-11-03",
+      "tag": "v0.12.0",
+      "area": "deployer"
     }
   ]
 }
