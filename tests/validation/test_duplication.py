@@ -879,6 +879,14 @@ def shown(path: Path, root: Path) -> str:
         return str(path)
 
 
+def caught_by_the_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except BaseException:
+        return False
+    return True
+
+
 CONTAINMENT_ALLOWED = {"told_apart": "a reason", "shown": "a reason", "stale": "a reason"}
 """
 
@@ -909,7 +917,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
         f"{alpha}:18 tests containment with a comparison of a path's leading parts{remedy}",
         *(
             f"{alpha}:{line} tests containment with a relative_to whose ValueError is caught{remedy}"
-            for line in (31, 38, 46)
+            for line in (31, 38, 46, 75)
         ),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",

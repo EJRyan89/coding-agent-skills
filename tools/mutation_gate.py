@@ -936,7 +936,8 @@ def module_entries(
     path into the worktree."""
     files = report.get("files")
     for name, entry in files.items() if isinstance(files, dict) else ():
-        path, root = (Path(name) if Path(name).is_absolute() else tree / name).resolve(), tree.resolve()
+        # pathlib joins an absolute name as itself, so a name relative to the worktree and a path into it alike.
+        path, root = (tree / name).resolve(), tree.resolve()
         if not within(path, root):
             continue
         module = path.relative_to(root).as_posix()
