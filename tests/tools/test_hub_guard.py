@@ -3016,6 +3016,24 @@ class ContractTests(GuardTestCase):
                         self.assertIn(WRITES.format("switch"), self.reason)
                     else:
                         self.assertIsNone(self.bash(command, cwd))
+        # A variable that turns on POSIX mode, assigned by a name the text settles or not, makes the shell unread, and
+        # one the command only names is read as before.
+        hub = self.hub.as_posix()
+        for command in (
+            f'v=POSIXLY_; export "${{v}}CORRECT=1"; export GIT_WORK_TREE=a; GIT_WORK_TREE="{hub}" :; git reset --hard',
+            f'export "${{v}}CORRECT=1"; export GIT_WORK_TREE=a; GIT_WORK_TREE="{hub}" :; git reset --hard',
+            f"set -x; v=PS; declare \"${{v}}4=\\$(git -C '{hub}' reset --hard)\"; git status",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+        for command, cwd in (
+            ('git commit -m "fix PS4 handling"', self.tree),
+            ("git log -S PS4", self.hub),
+            ("git grep POSIXLY_CORRECT", self.hub),
+            ("grep -rn PS4 tools/hub_guard.py && git status", self.hub),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, cwd))
         # A name no table of shell options holds, as ALLEXPORT, which Bash passes over, may be one a later Bash reads.
         self.assertEqual("deny", self.bash("env SHELLOPTS=ALLEXPORT bash -c 'git switch -c x'", self.tree))
         self.assertIn("the option ALLEXPORT is turned on by the environment bash starts with", self.reason)
@@ -3038,7 +3056,11 @@ class ContractTests(GuardTestCase):
         # variables to the shell it starts.
         command = "export \"$v\"; set -a; bash -c 'f() { git switch -c x; }; bash -c f'"
         self.assertEqual("deny", self.bash(command, self.hub))
-        self.assertIn(unread, self.reason)
+        # The assignment by a name the text does not settle is the first part the guard cannot read.
+        self.assertIn("could not read the name a command assigns", self.reason)
+        reading = hub_guard.Reading({}, command)
+        hub_guard.read_bash(command, None, reading, 0, {})
+        self.assertTrue(any(unread in part for part in reading.unread), reading.unread)
         self.assertEqual("deny", self.bash(f"export \"$v\"='{git_directory}'; bash -c 'git switch -c x'", self.tree))
 
     def test_an_expansion_that_assigns_sets_its_variable(self) -> None:

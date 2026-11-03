@@ -997,6 +997,12 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
             "export POSIXLY_CORRECT=1; bash -c 'PROBE'",
             "env POSIXLY_CORRECT= bash -c 'PROBE'",
             "POSIXLY_CORRECT=1 bash -c 'PROBE'",
+            # A name the guard settles, and names it does not, each of which Bash assigns.
+            'v=POSIXLY_; export "${v}CORRECT=1"; PROBE',
+            'read -r v <<< POSIXLY_; export "${v}CORRECT=1"; PROBE',
+            'read -r v <<< POSIXLY_; declare "${v}CORRECT=1"; PROBE',
+            "read -r v <<< POSIXLY_; declare -n r=${v}CORRECT; r=1; PROBE",
+            'read -r v <<< POSIXLY_; printf -v "${v}CORRECT" 1; PROBE',
         )
     ),
     *(
@@ -1039,6 +1045,8 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
             ("env SHELLOPTS=braceexpand:hashall bash -c 'PROBE'", "keyword"),
             ("set -euo pipefail; PROBE", "keyword"),
             ("set +o posix; PROBE", "posix"),
+            ("echo PS4 POSIXLY_CORRECT $BASH_COMPAT; unset POSIXLY_CORRECT; PROBE", "posix"),
+            ("echo $(( POSIXLY_CORRECT == 1 )); PROBE", "posix"),
             ("bash -c 'PROBE'", "posix"),
             ("bash -lc 'PROBE'", "posix"),
             ("bash --norc --noprofile -c 'PROBE'", "posix"),

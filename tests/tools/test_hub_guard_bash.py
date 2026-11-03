@@ -629,6 +629,13 @@ SET_OPTION_LETTERS = {
 }
 
 
+ANY_NAME = (
+    "could not read the name a command assigns, which may be any variable, one that turns on a shell option or PS4 "
+    "among them"
+)
+ASSIGNS_PS4 = "the command assigns PS4 a value that may hold an expansion, run by xtrace"
+
+
 def refused(source: str, name: str, state: str = "on") -> str:
     return f"{name} is turned {state} by {source}, under which the guard cannot read the shell"
 
@@ -750,12 +757,12 @@ class ShellOptionTableTests(unittest.TestCase):
                 self.assertEqual(["status"], subcommands(command))
         # A shell the text does not settle may hold any PS4, which a nested bash under -x expands.
         self.assertEqual(
-            ["xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs"],
+            [ANY_NAME, "xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs"],
             bash_reading("declare $n=1; bash -x -c 'git status'").unread,
         )
 
     def test_xtrace_is_refused_where_ps4_may_hold_an_expansion(self) -> None:
-        names = "the command names PS4, which xtrace expands before each command, running what it holds"
+        assigns_any = ANY_NAME
         for command, environment, unread in (
             ("set -x; git status", {}, []),
             ("bash -x -c 'git status'", {}, []),
@@ -777,11 +784,13 @@ class ShellOptionTableTests(unittest.TestCase):
                 ["xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs"],
             ),
             ("bash -c 'git status'", {"PS4": "$(cmd)"}, []),
-            ("PS4=+; git status", {}, [names]),
+            ("PS4=+; git status", {}, []),
+            ("PS4='$(cmd)'; git status", {}, [ASSIGNS_PS4]),
+            ("declare PS4='`cmd`'; git status", {}, [ASSIGNS_PS4]),
             (
                 "declare $n=1; set -x; git status",
                 {},
-                ["xtrace is turned on by set where PS4 may hold an expansion, which it runs"],
+                [assigns_any, "xtrace is turned on by set where PS4 may hold an expansion, which it runs"],
             ),
         ):
             with self.subTest(command=command, environment=environment):
@@ -854,10 +863,56 @@ class ShellOptionTableTests(unittest.TestCase):
             reading = hub_guard.Reading({}, "git")
             hub_guard.started_options({"posixly_correct": "1"}, names_folded, reading)
             self.assertEqual(count, len(reading.unread))
-        for command in ("unset POSIXLY_CORRECT; git status", "echo $BASH_COMPAT; git status"):
+
+    def test_an_assignment_is_judged_by_the_name_it_assigns_and_one_the_text_does_not_settle_is_unread(self) -> None:
+        posix = "the command assigns POSIXLY_CORRECT, which turns on posix; the guard does not read it"
+        compat = (
+            "the command assigns BASH_COMPAT, which turns on an earlier Bash's behavior; the guard does not read it"
+        )
+        by_arithmetic = (
+            "the command assigns POSIXLY_CORRECT by arithmetic, which turns on posix; the guard does not read it"
+        )
+        for command, unread in (
+            # Each way a literal name is assigned, by every builtin that assigns and before a command.
+            ("POSIXLY_CORRECT=1; git status", [posix]),
+            ("POSIXLY_CORRECT=; git status", [posix]),
+            ("POSIXLY_CORRECT=1 :; git status", [posix]),
+            ("export POSIXLY_CORRECT=1; git status", [posix]),
+            ("declare -x POSIXLY_CORRECT=1; git status", [posix]),
+            ("typeset POSIXLY_CORRECT=1; git status", [posix]),
+            ("readonly POSIXLY_CORRECT=1; git status", [posix]),
+            ("f() { local POSIXLY_CORRECT=1; }; f; git status", [posix]),
+            ("read -r POSIXLY_CORRECT <<< 1; git status", [posix]),
+            ("printf -v POSIXLY_CORRECT 1; git status", [posix]),
+            ("for POSIXLY_CORRECT in 1; do :; done; git status", [posix]),
+            ("declare -n r=POSIXLY_CORRECT; r=1; git status", [posix]),
+            ('v=POSIXLY_; export "${v}CORRECT=1"; git status', [posix]),
+            ("declare BASH_COMPAT=44; git status", [compat]),
+            # By arithmetic, which assigns a number.
+            ("(( POSIXLY_CORRECT = 1 )); git status", [by_arithmetic]),
+            ("(( POSIXLY_CORRECT++ )); git status", [by_arithmetic]),
+            ("(( --POSIXLY_CORRECT )); git status", [by_arithmetic]),
+            ("let POSIXLY_CORRECT+=1; git status", [by_arithmetic]),
+            ("echo $(( POSIXLY_CORRECT = 1 )); git status", [by_arithmetic]),
+            ("for (( POSIXLY_CORRECT=1; 0; )); do :; done; git status", [by_arithmetic]),
+            # A name the text does not settle, in each builtin that assigns, may be any variable.
+            ('export "${v}CORRECT=1"; git status', [ANY_NAME]),
+            ('declare "${v}COMPAT=44"; git status', [ANY_NAME]),
+            ("declare -n r=${v}CORRECT; r=1; git status", [ANY_NAME]),
+            ('printf -v "${v}CORRECT" 1; git status', [ANY_NAME]),
+            ("read -r $v <<< 1; git status", [ANY_NAME]),
+            ('set -x; declare "${v}4=x"; git status', [ANY_NAME]),
+            # Naming them without assigning them is read as before.
+            ('git commit -m "fix PS4 handling"', []),
+            ("git log -S PS4", []),
+            ("git grep POSIXLY_CORRECT", []),
+            ("grep -rn PS4 tools/hub_guard.py && git status", []),
+            ('git commit -m "POSIXLY_CORRECT=1 docs"', []),
+            ("echo $BASH_COMPAT; unset POSIXLY_CORRECT; git status", []),
+            ("echo $(( POSIXLY_CORRECT == 1 )); git status", []),
+            ("XPOSIXLY_CORRECT=1; BASH_COMPATS=1; git status", []),
+        ):
             with self.subTest(command=command):
-                self.assertEqual(
-                    ["the command names a variable that turns on a shell option the guard does not read"],
-                    bash_reading(command).unread,
-                )
-        self.assertEqual([], bash_reading("XPOSIXLY_CORRECT=1; BASH_COMPATS=1; git status").unread)
+                self.assertEqual(unread, bash_reading(command).unread)
+        reading = bash_reading('set -x; v=PS; declare "${v}4=\\$(git -C /hub reset --hard)"; git status')
+        self.assertEqual([ASSIGNS_PS4], reading.unread)

@@ -256,8 +256,14 @@ BASH_LONG_OPTIONS = {
 # assigned or that its environment hands one: POSIXLY_CORRECT turns on POSIX mode, whatever its value, and BASH_COMPAT
 # an earlier Bash's behavior. Bash reads each by its exact name.
 OPTION_SETTING_VARIABLES = {"POSIXLY_CORRECT": "posix", "BASH_COMPAT": "an earlier Bash's behavior"}
-OPTION_SETTING_TEXT = re.compile(r"\b(?:POSIXLY_CORRECT|BASH_COMPAT)\b")
-PS4_TEXT = re.compile(r"\bPS4\b")
+# An arithmetic expression's assignment to one of them, by =, an operator before =, ++, or --, as `(( ))`, `$(( ))`,
+# `let`, and an arithmetic for's header write it; arithmetic assigns a number, which turns either on all the same.
+ARITHMETIC_OPTION_ASSIGNMENT = re.compile(
+    r"\b(POSIXLY_CORRECT|BASH_COMPAT)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))"
+    r"|(?:\+\+|--)\s*(POSIXLY_CORRECT|BASH_COMPAT)\b"
+)
+# The first word of `(( ))` that assigns one of them, which the grammar reads as a command in nested subshells.
+ARITHMETIC_COMMAND = re.compile(r"(?:\+\+|--)?(?:POSIXLY_CORRECT|BASH_COMPAT)\b")
 # A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry a
 # leading backslash or, without one, the provider's module. A variable may follow a separator on the drive only: after
 # Environment:: PowerShell keeps the separator as part of the variable's name.
@@ -1288,6 +1294,31 @@ class Shell:
         if table in NAME_TABLES and self.reading is not None:
             self.reading.cannot_read(f"{NAME_TABLES[table]} the command defines ({table})")
 
+    def may_assign_any(self) -> None:
+        """An assignment whose name the text does not settle: it may set any variable, so the shell is one the text
+        does not settle, and it may set one that turns on a shell option, or PS4, which the guard cannot read."""
+        self.opaque = True
+        if self.reading is not None:
+            self.reading.cannot_read(
+                "could not read the name a command assigns, which may be any variable, one that turns on a shell "
+                "option or PS4 among them"
+            )
+
+    def note_option_variable(self, name: str, value: Word) -> None:
+        """Tells the reading of an assignment to a variable that turns on a shell option as it is made, whatever its
+        value (OPTION_SETTING_VARIABLES), and of a PS4 that may hold an expansion, which xtrace runs."""
+        if self.reading is None:
+            return
+        found = None
+        if name in OPTION_SETTING_VARIABLES:
+            effect = OPTION_SETTING_VARIABLES[name]
+            found = f"the command assigns {name}, which turns on {effect}; the guard does not read it"
+        elif name == PS4 and expanding_ps4((value,)):
+            found = f"the command assigns {PS4} a value that may hold an expansion, run by {XTRACE}"
+        # A loop's body is read twice, so an assignment in it is told once.
+        if found is not None and found not in (*self.reading.unread, *self.reading.notes):
+            self.reading.cannot_read(found)
+
     def function_named(self, name: str) -> str | None:
         """The function a command by this name calls: one the shell defines by it, or, where environment names fold
         case, one its environment handed it whose name matches in any case; None for none."""
@@ -1320,10 +1351,11 @@ class Shell:
             return
         target = self.target(name)
         if target is None:
-            self.opaque = True
+            self.may_assign_any()
             return
         if target in SHELL_OPTION_VARIABLES:
             return  # read-only: Bash refuses the assignment
+        self.note_option_variable(target, value)
         self.variables[target] = value
         if export or self.allexport:
             self.exported.add(target)
@@ -1546,6 +1578,7 @@ class BashReader:
         if node.words is not None:
             self.read_substitutions(node.words, [], shell)
         self.read_substitutions(node.header, [], shell)
+        self.note_arithmetic([" ".join(word.raw for word in node.header)])
         if self.reading.loops >= LOOP_NESTING_LIMIT:
             self.reading.cannot_read(f"loops nest more than {LOOP_NESTING_LIMIT} deep")
             lost = shell.copy()
@@ -1593,9 +1626,29 @@ class BashReader:
             self.run_text(text, shell.copy())
         assign_expanded(shell, assigns)
 
+    def note_arithmetic(self, texts: Iterable[str]) -> None:
+        """Tells the reading of an arithmetic assignment to a variable that turns on a shell option."""
+        for text in texts:
+            found = ARITHMETIC_OPTION_ASSIGNMENT.search(text)
+            if found is not None:
+                name = found.group(1) or found.group(2)
+                self.reading.cannot_read(
+                    f"the command assigns {name} by arithmetic, which turns on {OPTION_SETTING_VARIABLES[name]}; "
+                    "the guard does not read it"
+                )
+                return
+
     def run_simple(self, node: bash_syntax.Simple, shell: Shell) -> Outcome:
         self.read_substitutions(node.words, node.redirects, shell)
         words = node.words
+        # Arithmetic: each $(( )) in a word or redirection, let's operands, and `(( ))`, which the grammar reads as a
+        # command in nested subshells whose first word is the expression's.
+        raws = [word.raw for word in words] + [each.target.raw for each in node.redirects if each.target is not None]
+        self.note_arithmetic(raw[raw.index("$((") :] for raw in raws if "$((" in raw)
+        if words and (
+            words[0].literal == "let" or (words[0].assignment is None and ARITHMETIC_COMMAND.match(words[0].raw))
+        ):
+            self.note_arithmetic([" ".join(word.raw for word in words)])
         if words and words[0].literal == "[[":
             return certain(shell)
         index = 0
@@ -1620,9 +1673,11 @@ class BashReader:
             target = shell.target(assignment.name)
             if target is None:
                 # One through a reference the text does not settle may give the command any variable.
-                shell.opaque = True
+                shell.may_assign_any()
             elif not assignment.element:
                 local[target] = assigned_value(assignment, shell)
+                # Before a builtin or a function, Bash sets it in the shell while the command runs.
+                shell.note_option_variable(target, local[target])
         return self.run_words(values, node.redirects, shell, local)
 
     def run_words(
@@ -1757,7 +1812,7 @@ def assign_expanded(shell: Shell, names: Iterable[str]) -> None:
         if name.startswith("!"):
             named = shell.lookup(name[1:])
             if named is None:
-                shell.opaque = True
+                shell.may_assign_any()
             else:
                 assign_unsettled(shell, [named])
         elif "[" in name or not shell.lookup(name):
@@ -2021,7 +2076,7 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
     referencing: bool | None = None
     for word in arguments:
         if word is None:
-            shell.opaque = True
+            shell.may_assign_any()
             continue
         if is_declare_option(word):
             flags = word[1:]
@@ -2043,6 +2098,7 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
                 shell.exported.add(subject)
             continue
         if has_value and not referencing:
+            shell.note_option_variable(subject, value)
             shell.variables[subject] = value
         if unexporting:
             shell.exported.discard(subject)
@@ -2095,6 +2151,7 @@ def declared_name(shell: Shell, name: str, value: str | None, referencing: bool 
         shell.references[name] = value
         if value or name in shell.variables:
             # The reference's own value, which a program sees when it is exported.
+            shell.note_option_variable(name, value)
             shell.variables[name] = value
         return name
     if referencing is False and name in shell.references:
@@ -2105,7 +2162,7 @@ def declared_name(shell: Shell, name: str, value: str | None, referencing: bool 
         return None
     target = shell.target(name)
     if target is None:
-        shell.opaque = True
+        shell.may_assign_any()
     return target
 
 
@@ -2151,7 +2208,7 @@ def bash_read(reader: BashReader, arguments: list[Word], _: object, shell: Shell
     is left unsettled, and a word the text does not settle may name any variable."""
     parsed = builtin_operands(arguments, "adinNptu")
     if parsed is None:
-        shell.opaque = True
+        shell.may_assign_any()
         return certain(shell)
     options, operands = parsed
     names: list[Word] = [value for flag, value in options if flag == "a"]
@@ -2165,7 +2222,7 @@ def bash_mapfile(reader: BashReader, arguments: list[Word], _: object, shell: Sh
     runs as a command of this shell, where the guard does not read it."""
     parsed = builtin_operands(arguments, "dnOsuCc")
     if parsed is None:
-        shell.opaque = True
+        shell.may_assign_any()
         return certain(shell)
     options, operands = parsed
     if any(flag == "C" for flag, _ in options):
@@ -2180,7 +2237,7 @@ def bash_wait(reader: BashReader, arguments: list[Word], _: object, shell: Shell
     name any variable."""
     parsed = builtin_operands(arguments, "p")
     if parsed is None:
-        shell.opaque = True
+        shell.may_assign_any()
         return certain(shell)
     options, _operands = parsed
     assign_unsettled(shell, [value for flag, value in options if flag == "p"])
@@ -2220,7 +2277,7 @@ def assign_unsettled(shell: Shell, names: Iterable[Word]) -> None:
     array. A name the text does not settle may be any variable."""
     for name in names:
         if name is None:
-            shell.opaque = True
+            shell.may_assign_any()
         elif name:
             shell.assign(name.partition("[")[0], None, export=False)
 
@@ -2815,15 +2872,6 @@ def read_bash(
     if started == "unsettled":
         reading.cannot_read(f"could not read the {SHELLOPTS} its environment hands bash, which may turn on allexport")
     started_options(inherited, names_folded, reading)
-    if OPTION_SETTING_TEXT.search(command):
-        # Assigned in the text, by any builtin, an arithmetic expression, or before a command, each turns its option
-        # on as Bash makes the assignment, and unset turns it off.
-        reading.cannot_read("the command names a variable that turns on a shell option the guard does not read")
-    if PS4_TEXT.search(command):
-        # Whatever the command sets PS4 to, xtrace, now or later, expands it before each command it traces.
-        reading.cannot_read(
-            f"the command names {PS4}, which {XTRACE} expands before each command, running what it holds"
-        )
     allexport = allexport or started == "on"
     shell = Shell(cwd, dict(inherited), set(inherited), allexport=allexport, opaque=opaque, reading=reading)
     shell.functions.update(functions or {})
