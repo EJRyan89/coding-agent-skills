@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
+import file_presence
 from path_containment import posix_within
 from python_checks import claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
@@ -399,7 +400,7 @@ def shared_fact_owner_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for fact in _shared_facts():
         path = root / fact.owner
-        trees = list(python_trees([path] if path.is_file() else [], root, problems))
+        trees = list(python_trees([path] if file_presence.is_present(path) else [], root, problems))
         if not trees or _fact_members(trees[0][2], fact.name) is None:
             problems.append(
                 f"{fact.owner} no longer holds {fact.name} as a literal or a function; name its new home in the shared "
@@ -465,7 +466,12 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     copies: dict[str, list[Copy]] = {}
     allowances: dict[str, dict[str, str]] = {}
     problems: list[str] = []
-    files = [path for top in DUPLICATION_ROOTS for path in (root / top).rglob("*.py") if not is_test_script(path)]
+    files = [
+        path
+        for top in DUPLICATION_ROOTS
+        for path in file_presence.matching(root / top, "**/*.py")
+        if not is_test_script(path)
+    ]
     ordered = sorted(files, key=lambda path: path.relative_to(root).as_posix())
     trees: list[tuple[str, ast.Module]] = []
     for _, name, tree in python_trees(ordered, root, problems):
@@ -523,7 +529,7 @@ DEPLOYER_PACKAGE = "deployer/__init__.py"
 
 def skill_core_modules(root: Path) -> set[str]:
     """The names of ejryan89-skill-core's shared modules, which skill scripts, the deployer, and tools/ import."""
-    return {path.stem for path in (root / SKILL_CORE_SCRIPTS).glob("*.py") if not is_test_script(path)}
+    return {path.stem for path in file_presence.matching(root / SKILL_CORE_SCRIPTS, "*.py") if not is_test_script(path)}
 
 
 def skill_core_copy_problems(root: Path) -> list[str]:
@@ -536,7 +542,7 @@ def skill_core_copy_problems(root: Path) -> list[str]:
     shared = skill_core_modules(root)
     problems: list[str] = []
     for top in DUPLICATION_ROOTS:
-        for path in sorted((root / top).rglob("*.py")):
+        for path in file_presence.matching(root / top, "**/*.py"):
             name = path.relative_to(root).as_posix()
             if (
                 path.stem in shared
@@ -603,7 +609,7 @@ def skill_core_import_problems(root: Path) -> list[str]:
     package = root / DEPLOYER_PACKAGE
     package_lines = [
         line
-        for _, _, tree in python_trees([package] if package.is_file() else [], root, [])
+        for _, _, tree in python_trees([package] if file_presence.is_present(package) else [], root, [])
         for line in _skill_core_statement_lines(tree)
     ]
     if not package_lines:
@@ -613,7 +619,7 @@ def skill_core_import_problems(root: Path) -> list[str]:
         )
     allowed = set(sys.stdlib_module_names) | shared | {"deployer"}
     for top in ("deployer", "tools", SKILL_CORE_SCRIPTS):
-        for path, name, tree in python_trees(sorted((root / top).rglob("*.py")), root, problems):
+        for path, name, tree in python_trees(file_presence.matching(root / top, "**/*.py"), root, problems):
             statements = _skill_core_statement_lines(tree)
             if top == "deployer" and name != DEPLOYER_PACKAGE:
                 problems += [
@@ -645,7 +651,7 @@ def skill_core_import_problems(root: Path) -> list[str]:
 
 
 def _module_names(scripts: Path) -> set[str]:
-    return {path.stem for path in scripts.glob("*.py") if not is_test_script(path)}
+    return {path.stem for path in file_presence.matching(scripts, "*.py") if not is_test_script(path)}
 
 
 def skill_script_import_problems(root: Path) -> list[str]:
@@ -659,14 +665,18 @@ def skill_script_import_problems(root: Path) -> list[str]:
     allowed = set(sys.stdlib_module_names) | skill_core_modules(root)
     problems: list[str] = []
     skills = root / "skills"
-    for scripts in sorted(path for path in skills.glob("*/scripts") if (path.parent / "SKILL.md").is_file()):
+    for scripts in sorted(
+        path
+        for path in file_presence.matching(skills, "*/scripts")
+        if file_presence.is_present(path.parent / "SKILL.md", other_is_absent=True)
+    ):
         skill = scripts.parent.name
         if skill == SKILL_CORE:
             continue
         reachable = allowed | _module_names(scripts)
         for dependency in skill_dependency_closure(root, skill):
             reachable |= _module_names(skills / dependency / "scripts")
-        files = sorted(path for path in scripts.glob("*.py") if not is_test_script(path))
+        files = sorted(path for path in file_presence.matching(scripts, "*.py") if not is_test_script(path))
         for _, name, tree in python_trees(files, root, problems):
             for line, module in _imported_modules(tree):
                 if not module:

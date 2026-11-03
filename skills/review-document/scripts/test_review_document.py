@@ -2048,3 +2048,13 @@ class FixtureRefusalTests(DocumentTestCase):
                 str(raised.exception),
             )
             self.assertFalse(fixture.exists())
+
+
+def test_a_document_path_holding_a_hash_it_cannot_stat_is_refused_never_read_as_a_pull_request(
+    tmp_path: Path,
+) -> None:
+    document = tmp_path / "notes#2.md"
+    document.write_text("# Notes\n", encoding="utf-8")
+    with stat_failing_at(document), pytest.raises(review_document.DocumentError) as raised:
+        review_document.pull_reference(str(document))
+    assert str(raised.value).startswith(f"cannot tell whether {document} is a file: ")

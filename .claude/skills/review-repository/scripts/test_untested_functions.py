@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
 import os
@@ -8,7 +9,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parent / "untested_functions.py"
 
@@ -635,3 +639,85 @@ class ConditionTests(unittest.TestCase):
         code, out, _ = self.run_condition({}, {}, environment=missing)
         self.assertEqual(2, code)
         self.assertTrue(out.startswith("FAILED FileNotFoundError: "), out)
+
+
+@contextlib.contextmanager
+def unlistable(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused: os.scandir and os.listdir raise PermissionError naming it, so
+    Path.iterdir raises on every supported Python, while Path.glob and Path.rglob match nothing in it. Its stat, and
+    every other folder, are read as they are."""
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any = ".", *rest: Any, **options: Any) -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == folder:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *rest, **options)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name))))
+        yield
+
+
+class PresenceReadTests(unittest.TestCase):
+    """suites() lists the suite roots through file_presence.matching, and entries() asks file_presence whether each
+    changed script is at its head, so a folder it cannot list or a head it cannot stat raises rather than reading as
+    no suite or as a script the snapshot lacks."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(SCRIPT.parent))
+        sys.path.insert(0, str(SCRIPT.parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
+        import untested_functions
+
+        self.module = untested_functions
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_suites_keeps_each_suite_file_and_passes_over_a_folder_named_like_one(self) -> None:
+        (self.root / "tests" / "deep").mkdir(parents=True)
+        (self.root / "tests" / "deep" / "test_real.py").write_text(
+            "def test_x():\n    pass\n", encoding="utf-8", newline="\n"
+        )
+        (self.root / "tests" / "test_folder.py").mkdir()
+        self.assertEqual({"tests/deep/test_real.py": "def test_x():\n    pass\n"}, self.module.suites(self.root))
+
+    def test_suites_refuses_a_folder_it_cannot_list(self) -> None:
+        deep = self.root / "tests" / "deep"
+        deep.mkdir(parents=True)
+        (deep / "test_real.py").write_text("pass\n", encoding="utf-8", newline="\n")
+        with unlistable(deep), self.assertRaises(PermissionError) as raised:
+            self.module.suites(self.root)
+        self.assertEqual(str(deep), raised.exception.filename)
+
+    def test_suites_never_lists_the_fixtures_so_a_folder_it_cannot_list_inside_them_is_passed_over(self) -> None:
+        fixture = self.root / "tests" / "fixtures" / "deep"
+        fixture.mkdir(parents=True)
+        (fixture / "test_fixture.py").write_text("pass\n", encoding="utf-8", newline="\n")
+        (self.root / "tests" / "test_real.py").write_text("pass\n", encoding="utf-8", newline="\n")
+        with unlistable(fixture):
+            self.assertEqual({"tests/test_real.py": "pass\n"}, self.module.suites(self.root))
+
+    def test_entries_refuses_a_head_it_cannot_stat_never_counts_it_absent(self) -> None:
+        head = self.root / "tool.py"
+        head.write_text("def run():\n    return 1\n", encoding="utf-8")
+        change = self.module.FileChange("tool.py", head)
+        real_stat, real_is_file = Path.stat, Path.is_file
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == head:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        def is_file(path: Path, *rest: Any, **options: Any) -> bool:
+            return False if path == head else real_is_file(path, *rest, **options)
+
+        with (
+            mock.patch.object(Path, "stat", stat),
+            mock.patch.object(Path, "is_file", is_file),
+            self.assertRaises(PermissionError) as raised,
+        ):
+            self.module.entries(self.root, [change])
+        self.assertEqual(str(head), raised.exception.filename)

@@ -466,3 +466,40 @@ class TrustModelAreaPolicy(unittest.TestCase):
             [f"{SECURITY_DOC} has no '## Security-sensitive areas' section"],
             self.problems({TRUST_MODEL_DOC: self.DESIGN, SECURITY_DOC: "# Security policy\n"}),
         )
+
+
+class LinkDestinationStatTests(unittest.TestCase):
+    def test_a_link_destination_whose_stat_fails_is_refused_never_reported_missing(self) -> None:
+        import contextlib
+        import os
+        from unittest import mock
+
+        import markdown_links
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "a.md").write_text("[b](b.md#heading)\n", encoding="utf-8")
+            (root / "b.md").write_text("# Heading\n", encoding="utf-8")
+            target = root / "b.md"
+            real_stat, real_exists, real_is_file = Path.stat, Path.exists, Path.is_file
+
+            def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+                if path == target:
+                    raise PermissionError(13, "Access is denied", str(path))
+                return real_stat(path, follow_symlinks=follow_symlinks)
+
+            def exists(path: Path, *rest: object, **options: object) -> bool:
+                return False if path == target else real_exists(path)
+
+            def is_file(path: Path, *rest: object, **options: object) -> bool:
+                return False if path == target else real_is_file(path)
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.object(markdown_links, "repository_files", return_value=[root / "a.md", target])
+                )
+                for name, replacement in (("stat", stat), ("exists", exists), ("is_file", is_file)):
+                    stack.enter_context(mock.patch.object(Path, name, replacement))
+                with self.assertRaises(PermissionError) as raised:
+                    markdown_links.markdown_link_problems(root)
+            self.assertEqual(str(target), raised.exception.filename)

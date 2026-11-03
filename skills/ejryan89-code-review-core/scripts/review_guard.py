@@ -124,6 +124,15 @@ DUPLICATION_ALLOWED = {
 Claim = tuple[Path, dict[str, Any]]
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "_log_read": "counts a read the guard already allowed; a path it cannot stat goes uncounted, as one the JSON "
+    "writer refuses does, and never turns the read into a denial",
+    "_prune_claims": "a claim whose run.json it cannot stat or read is kept, never pruned as one whose run is gone",
+}
+
+
 def _spellings(root: Path) -> tuple[Path, ...]:
     """A trusted local folder as it is given and as it resolves, each in the case the file system compares, so a path
     in either spelling is held to it by its text."""
@@ -155,7 +164,7 @@ def read_log(run: Path, role: str) -> Path:
 def claimed(run: Path, role: str) -> bool:
     """Whether the guard claimed this role of the run and its log is still there to show it: the claim creates the
     log, and `check` deletes it once it has counted it."""
-    return read_log(run, role).is_file()
+    return file_presence.is_present(read_log(run, role), other_is_absent=True)
 
 
 # Why a result is refused on Claude Code when the guard never claimed its role, ending with the remedy, which names how
@@ -254,7 +263,7 @@ def run_root(path: Path) -> Path | None:
         for candidate in (path, *path.parents)
         if candidate.name.startswith(RUN_PREFIX)
         and any(within(candidate, root) for root in TEMPORARY_ROOTS)
-        and (candidate / RUN_FILE).is_file()
+        and file_presence.is_present(candidate / RUN_FILE, other_is_absent=True)
     ]
     if len(runs) > 1:
         raise Denied(f"{runs[0]} sits inside the review run {runs[-1]}, so it is not a review run")
@@ -310,7 +319,7 @@ def _load_claim(agent: str) -> Claim | None:
 def _prune_claims() -> None:
     """Remove each claim whose run is gone: finalize removes a run's folder, run.json with it. A claim whose run.json
     it cannot stat, or finds something else in place of, is kept: the error leaves it, as one it cannot read is."""
-    for path in CLAIMS.glob("*.json"):
+    for path in file_presence.matching(CLAIMS, "*.json"):
         with contextlib.suppress(OSError, ValueError, RecursionError):
             claim = json_reader.read_file(path)
             try:

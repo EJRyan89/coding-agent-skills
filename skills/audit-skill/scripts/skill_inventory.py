@@ -171,7 +171,7 @@ import runtime_support
 import skill_menu
 import whole_number
 from console import run_main
-from file_presence import NotAFile, is_directory, is_occupied, is_present
+from file_presence import NotAFile, is_directory, is_occupied, is_present, matching
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
@@ -1042,7 +1042,8 @@ def search_roots(home: Path, repo: Path | None, plugin: str, folder: Path | None
     """Where locate looks: the plugins under a folder the user names, or the skill roots and then Claude Code's plugin
     cache, which alone is searched for a skill named with its plugin."""
     if folder is not None:
-        if not folder.is_dir():
+        # A path whose stat fails raises, never reported as one that is not there.
+        if not is_directory(folder, other_is_absent=True):
             raise InputError(f"plugin folder not found: {posix(folder)}")
         return plugin_skill_roots(folder, plugin)
     cache = plugin_skill_roots(home / PLUGIN_CACHE, plugin)
@@ -1183,18 +1184,20 @@ def normalized_blocks(text: str) -> list[tuple[int, tuple[str, ...]]]:
 
 def folder_files(directory: Path) -> list[Path]:
     """Every file of a skill folder that inventory sizes, in the order it lists them."""
+    # A skipped folder is never listed, so a folder it cannot list inside one is never met.
     return sorted(
         (
             path
-            for path in directory.rglob("*")
-            if not SKIPPED_DIRECTORIES.intersection(path.relative_to(directory).parts[:-1]) and is_listed_file(path)
+            for path in matching(directory, "**/*", skip=lambda folder: folder.name in SKIPPED_DIRECTORIES)
+            if is_listed_file(path)
         ),
         key=lambda path: posix(path.relative_to(directory)).casefold(),
     )
 
 
 def inventory(directory: Path) -> list[str]:
-    if not directory.is_dir():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not is_directory(directory, other_is_absent=True):
         raise InputError(f"skill directory not found: {directory}")
     files = folder_files(directory)
     lines: list[str] = []
@@ -1596,7 +1599,8 @@ def affirmed(pattern: re.Pattern[str], line: str) -> bool:
 
 
 def tools(path: Path) -> list[str]:
-    if not path.is_file():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not is_present(path, other_is_absent=True):
         raise InputError(f"skill file not found: {path}")
     lines = require_text(path).splitlines()
     try:
@@ -1771,7 +1775,7 @@ def scanned_files(path: Path) -> list[Path]:
 
 def scan(given: list[Path]) -> list[str]:
     paths = [file for path in given for file in scanned_files(path)]
-    missing = [posix(path) for path in paths if not path.is_file()]
+    missing = [posix(path) for path in paths if not is_present(path, other_is_absent=True)]
     if missing:
         raise InputError("file not found: " + ", ".join(missing))
     texts = [require_text(path) for path in paths]
@@ -1820,9 +1824,9 @@ def scan(given: list[Path]) -> list[str]:
             runtime_prompts += [(path, line) for line in prompts]
     return (
         output
-        + [line for path in given if path.is_dir() for line in agent_lines(path)]
+        + [line for path in given if is_directory(path, other_is_absent=True) for line in agent_lines(path)]
         + sample_lines(runtime_prompts)
-        + [line for path in given if path.is_dir() for line in status_lines(path)]
+        + [line for path in given if is_directory(path, other_is_absent=True) for line in status_lines(path)]
     )
 
 

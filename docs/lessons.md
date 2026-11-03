@@ -43,13 +43,21 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   absent or that nothing was wrong.
 - **Why:** An unreadable path, a failed command, or a git error read as "not found" otherwise reads as a clean pass.
 - **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart, and lets a stat that
-  fails with anything but "not found" through as the error the stat raised;
+  fails with anything but "not found" through as the error the stat raised; `file_presence:is_directory`, which
+  answers the same for a folder; `file_presence:is_occupied`, which answers whether anything is at a path, a link
+  to nothing included, in place of lexists; `file_presence:matching`, which lists what a glob pattern matches but
+  raises for a folder it cannot list;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
   `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read; and git's found,
   absent, and could-not-tell lookups, `git_client:GitClient.rev_parse_paths` for a path query,
   `git_client:GitClient.commit_of` for a ref, `git_client:GitClient.file_at` for a file at a commit, and
   `git_client:GitClient.quiet_output` for any command run quiet, each None only for what git reports as absent.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_git_exit_status_is_read_outside_the_client`,
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_file_presence_is_the_one_reader_of_absence`,
+  which refuses a presence predicate whose False is the answer, a glob, an os.walk with no onerror, and a removal
+  that discards its errors, outside file_presence unless its module states why,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::MatchingTests`,
+  `tests/tools/test_hub_guard.py::UnstatablePlaceTests`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_no_git_exit_status_is_read_outside_the_client`,
   which refuses a git exit status read outside the git client unless its module states why,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::ThreeAnswerTests`,
   `skills/audit-skill/scripts/test_skill_inventory.py::LocateTests::test_a_checkout_git_cannot_read_fails_naming_git_instead_of_searching_no_repository`,
@@ -61,6 +69,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
   `tests/tools/test_hub_guard.py::PlaceLookupTests`,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::FilePresenceTests::test_a_stat_that_fails_with_anything_but_not_found_reaches_the_caller`,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::EveryHelperTests`,
+  `tests/deployer/test_presence_reads.py::PresenceReadTests`,
   `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`,
   `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
@@ -68,7 +78,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
   `return False`, `return None`, or `return []`; `rg -n "if not \w+(\.\w+)*\.(is_file|exists)\(\):\s*$" -A1`
   followed by a `return None`, `return []`, or `return False`, where `is_present` should probe, and its expression
-  form, `... if path.is_file() else None`; `exists()`, `is_file()`, `is_dir()`, `os.path.exists`, `os.path.lexists`,
+  form, `... if path.is_file() else None`, its loop forms, `if not path.is_file(): continue` and
+  `while not path.is_dir():`, its return forms, `return path.exists()` and `if path.is_file(): return path`
+  falling through to `return None` or the end of the function, its parenthesised form,
+  `if not (path.is_file() and ...): continue`, its filter forms,
+  `[e for e in entries if e.is_file()]`, `any(p.exists() for p in paths)`, and `filter(os.path.isfile, paths)`,
+  and an emptiness check that passes a folder it cannot stat by, `path.exists() and any(path.iterdir())`; a
+  `glob` or `rglob`, which matches nothing in a folder it cannot list from Python 3.15, an `os.walk` with no
+  `onerror`, and an `rmtree(ignore_errors=True)` or `TemporaryDirectory(ignore_cleanup_errors=True)`, which reads a
+  folder it could not remove as gone; `exists()`, `is_file()`, `is_dir()`, `os.path.exists`, `os.path.lexists`,
   `os.path.isfile`, or `os.path.isdir` anywhere a False must mean nothing is there, since from Python 3.14 each
   returns False on every `OSError`, and `lexists` on a `ValueError` too; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
@@ -78,7 +96,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   other than absence, such as a start inside a git directory, which has no work tree to show; `.wait()` or a
   `returncode` of a command that reports a per-file error on stderr and goes on, such as `git grep`, read as the whole
   answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match".
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2205, #2236
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2182, #2185, #2205, #2236, #2245
 
 ### Evidence that was never produced is never a pass
 

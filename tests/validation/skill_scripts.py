@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import file_presence
 import git_client
 import json_reader
 import whole_number
@@ -1222,7 +1223,11 @@ def _file_commands(path: Path, known: set[str], powershell: dict[str, set[str]])
 
 def _skill_files(directory: Path) -> list[Path]:
     """A skill's files, without its tests."""
-    return sorted(path for path in directory.rglob("*") if path.is_file() and not is_test_script(path))
+    return sorted(
+        path
+        for path in file_presence.matching(directory, "**/*")
+        if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)
+    )
 
 
 NAMED_SCRIPT = re.compile(r"/([a-z0-9-]+)/scripts/([A-Za-z_]\w*)\.py\b")
@@ -1273,7 +1278,7 @@ def _reached_dependency_scripts(root: Path, skill: str, own: list[Path]) -> list
     scripts: dict[str, Path] = {}
     skills = skills_by_name(root)
     for dependency in skill_dependency_closure(root, skill):
-        found = sorted((skills[dependency] / "scripts").glob("*.py")) if dependency in skills else []
+        found = file_presence.matching(skills[dependency] / "scripts", "*.py") if dependency in skills else []
         for path in found:
             if not is_test_script(path):
                 scripts.setdefault(path.stem, path)
@@ -1298,7 +1303,7 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     """
     skills: list[tuple[str, set[str], list[Path], list[Path]]] = []
     directories = skills_by_name(root)
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         document = json_reader.loads(metadata.read_text(encoding="utf-8"))
         declared = set(document.get("tools", [])) | set(document.get("optional_tools", []))
         own = _skill_files(directories[metadata.stem]) if metadata.stem in directories else []
@@ -1349,7 +1354,7 @@ def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> l
     the declaration says so too and the metadata and the catalogue cannot disagree.
     """
     problems: list[str] = []
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         document = json_reader.loads(metadata.read_text(encoding="utf-8"))
         problems.extend(
             f"skill {metadata.stem} lists {name} under tools, which the catalogue makes optional for every "
@@ -1409,8 +1414,8 @@ def gh_filter_problems(root: Path) -> list[str]:
     is a second language that only gh itself can run.
     """
     problems: list[str] = []
-    for path in sorted((root / "skills").glob("**/scripts/*")):
-        if not path.is_file() or is_test_script(path):
+    for path in file_presence.matching(root / "skills", "**/scripts/*"):
+        if not file_presence.is_present(path, other_is_absent=True) or is_test_script(path):
             continue
         name = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -1439,11 +1444,15 @@ def console_entry_points(root: Path) -> list[Path]:
         path
         for scripts in skill_script_directories(root)
         if scripts.parent.name != SKILL_CORE
-        for path in scripts.glob("*.py")
+        for path in file_presence.matching(scripts, "*.py")
     ]
-    files += [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
+    files += [
+        root / "deploy.py",
+        *file_presence.matching(root / "deployer", "**/*.py"),
+        *file_presence.matching(root / "tools", "**/*.py"),
+    ]
     return sorted(
-        (path for path in files if path.is_file() and not is_test_script(path)),
+        (path for path in files if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)),
         key=lambda path: path.relative_to(root).as_posix(),
     )
 
@@ -1870,11 +1879,16 @@ CODEQL_SECRET_NAME = re.compile(r"secret|(?<!un)(?<!un_)(?<!is)(?<!is_)trusted",
 
 def secret_named_function_problems(root: Path) -> list[str]:
     """Report each function in shipped or deployer code whose name CodeQL reads as returning a secret."""
-    files = [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
-    files += [path for scripts in skill_script_directories(root) for path in scripts.rglob("*.py")]
+    files = [
+        root / "deploy.py",
+        *file_presence.matching(root / "deployer", "**/*.py"),
+        *file_presence.matching(root / "tools", "**/*.py"),
+    ]
+    files += [path for scripts in skill_script_directories(root) for path in file_presence.matching(scripts, "**/*.py")]
     problems: list[str] = []
     ordered = sorted(
-        (path for path in files if path.is_file() and not is_test_script(path)), key=lambda p: p.as_posix()
+        (path for path in files if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)),
+        key=lambda p: p.as_posix(),
     )
     for _, name, tree in python_trees(ordered, root, problems):
         problems.extend(
@@ -1891,8 +1905,10 @@ def script_contract_problems(root: Path) -> list[str]:
     or an exit code other than 0, 1, and 2. A module that must speak another protocol says why in
     EXIT_CONTRACT_EXEMPT."""
     problems: list[str] = []
-    for path in sorted(path for scripts in skill_script_directories(root) for path in scripts.glob("*")):
-        if not path.is_file() or is_test_script(path):
+    for path in sorted(
+        path for scripts in skill_script_directories(root) for path in file_presence.matching(scripts, "*")
+    ):
+        if not file_presence.is_present(path, other_is_absent=True) or is_test_script(path):
             continue
         name = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -1944,7 +1960,9 @@ def client_command_problems(root: Path) -> list[str]:
     a command a script starts itself has none of that, so a sweep can wait forever on a credential prompt.
     """
     problems: list[str] = []
-    for path in sorted(path for scripts in skill_script_directories(root) for path in scripts.rglob("*.py")):
+    for path in sorted(
+        path for scripts in skill_script_directories(root) for path in file_presence.matching(scripts, "**/*.py")
+    ):
         name = path.relative_to(root).as_posix()
         if is_test_script(path) or posix_within(name, SKILL_CORE_SCRIPTS, strict=True):
             continue

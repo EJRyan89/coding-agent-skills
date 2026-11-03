@@ -12,6 +12,7 @@
     "skills/ejryan89-skill-core/scripts/console.py",
     "skills/ejryan89-skill-core/scripts/device_names.py",
     "skills/ejryan89-skill-core/scripts/diff_paths.py",
+    "skills/ejryan89-skill-core/scripts/file_presence.py",
     "skills/ejryan89-skill-core/scripts/flat_text.py",
     "skills/ejryan89-skill-core/scripts/json_reader.py",
     "skills/ejryan89-skill-core/scripts/link_probe.py",

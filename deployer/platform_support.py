@@ -100,6 +100,14 @@ PYTHON = executable_locator.PYTHON
 STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"}) if WINDOWS else frozenset({PYTHON})
 
 
+# The presence reads here that read a path they cannot stat or list as nothing there, each with why that is
+# the answer it should give.
+PRESENCE_ALLOWED = {
+    "_asked_folds_case": "None is its answer when no entry can tell whether the file system folds case, and an entry "
+    "it cannot stat is passed for the next, which the caller reads as folding case",
+}
+
+
 def ensure_supported() -> None:
     if sys.platform not in SUPPORTED_PLATFORMS:
         raise DeployError(

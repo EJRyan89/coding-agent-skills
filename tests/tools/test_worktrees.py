@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 import git_client
 import git_worktrees
 import skill_scripts
+from presence_denial import denied
 from worktree_fixture import (
     GUARD_SCRIPT,
     HUB,
@@ -96,6 +97,17 @@ class NewWorktreeTests(WorktreesTestCase):
         result = self.run_script(["new", "fix", "second"], cwd=self.tree)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertTrue((self.worktrees / "fix-second" / "README.md").is_file())
+
+    def test_new_refuses_a_worktree_path_it_cannot_stat_never_reads_it_as_free(self) -> None:
+        path = self.worktrees / "fix-locked"
+        with (
+            mock.patch.object(worktrees, "current_hub", return_value=self.hub),
+            denied(path),
+            self.assertRaises(PermissionError) as raised,
+        ):
+            worktrees.new("fix", "locked")
+        self.assertEqual(str(path), raised.exception.filename)
+        self.assertFalse(path.exists())
 
     def test_new_rejects_unsafe_names_and_existing_branches_or_paths(self) -> None:
         (self.worktrees / "fix-taken").mkdir()
@@ -305,6 +317,18 @@ class CheckoutFailureTests(unittest.TestCase):
                 mock.patch.object(git_worktrees, "changed_paths", return_value=0),
             ):
                 return worktrees.row(hub, git_worktrees.Worktree(str(tree), head, "feat/x", False)), calls
+
+    def test_list_refuses_a_worktree_it_cannot_stat_never_shows_it_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            hub, tree = Path(folder) / "hub", Path(folder) / "tree"
+            tree.mkdir()
+            with (
+                mock.patch.object(worktrees, "git", side_effect=AssertionError("counted a tree it cannot stat")),
+                denied(tree),
+                self.assertRaises(PermissionError) as raised,
+            ):
+                worktrees.row(hub, git_worktrees.Worktree(str(tree), "abc", "feat/x", False))
+            self.assertEqual(str(tree), raised.exception.filename)
 
     def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
         row, calls = self.counted_row("abc", git_client.GitResult(0, "2\t3\n", ""))

@@ -310,6 +310,16 @@ class DeployableReportTests(unittest.TestCase):
         self.assertIn("alpha/SKILL.md missing or empty", result.detail)
         self.assertIn("beta/SKILL.md missing or empty", result.detail)
 
+    def test_a_skill_file_or_agent_it_cannot_stat_is_a_layout_failure_naming_it_never_raised(self) -> None:
+        for target, problem in (
+            (self.paths.dest_dir / "alpha" / "SKILL.md", "alpha/SKILL.md cannot be examined: Access is denied"),
+            (self.paths.agent_dest_dir / AGENT, f"agent {AGENT} cannot be examined: Access is denied"),
+        ):
+            with self.subTest(problem), denied(target):
+                result = self.layout()
+            self.assertEqual(report.FAILED, result.status)
+            self.assertEqual(problem, result.detail)
+
     def test_a_missing_agent_fails(self) -> None:
         (self.paths.agent_dest_dir / AGENT).unlink()
         result = self.layout()

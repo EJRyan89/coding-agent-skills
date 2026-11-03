@@ -349,8 +349,22 @@ class MemoryAuditTests(unittest.TestCase):
                 "or `skills/<name>/SKILL.md`.",
             ),
         )
-        cited = {item["path"]: item["exists"] for item in self.by_file(self.run_audit())["paths.md"]["cited_paths"]}
-        self.assertEqual({"docs/guide.md": True, "docs/removed.md": False}, cited)
+        cited = {
+            item["path"]: (item["exists"], item["unreadable"])
+            for item in self.by_file(self.run_audit())["paths.md"]["cited_paths"]
+        }
+        self.assertEqual({"docs/guide.md": (True, None), "docs/removed.md": (False, None)}, cited)
+
+    def test_a_cited_path_it_cannot_stat_is_unreadable_never_not_found(self) -> None:
+        write(self.repo / "tools" / "run.py", "print()\n")
+        write(self.memory_dir / "paths.md", memory("paths", "Run `tools/run.py`."))
+        with stat_failing_at(self.repo / "tools" / "run.py"):
+            report = self.run_audit()
+        cited = {
+            item["path"]: (item["exists"], item["unreadable"])
+            for item in self.by_file(report)["paths.md"]["cited_paths"]
+        }
+        self.assertEqual({"tools/run.py": (None, "Permission denied")}, cited)
 
     def test_overlaps_point_at_matching_destination_text(self) -> None:
         write(
@@ -2308,6 +2322,19 @@ def test_a_missing_memory_directory_is_a_failed_line(tmp_path: Path, arguments: 
     )
 
 
+@pytest.mark.parametrize(
+    "arguments", [["audit"], ["reindex"], ["delete", "keep.md"]], ids=["audit", "reindex", "delete"]
+)
+def test_a_memory_directory_whose_stat_fails_is_refused_rather_than_not_found(
+    tmp_path: Path, arguments: list[str]
+) -> None:
+    locked = tmp_path / "locked dir"
+    locked.mkdir()
+    command, *rest = arguments
+    with stat_failing_at(locked):
+        assert (1, f"FAILED Permission denied: {locked}\n", "") == run_main(command, "--memory-dir", str(locked), *rest)
+
+
 # Pinned while parse_frontmatter is kept instead of ejryan89-skill-core's frontmatter.py; see the comment above it.
 @pytest.mark.parametrize(
     ("text", "values", "body"),
@@ -2481,3 +2508,65 @@ def test_a_folder_a_destination_pattern_matches_is_passed_over(tmp_path: Path) -
     (tmp_path / "AGENTS.md").mkdir()
     (tmp_path / "README.md").mkdir()
     assert memory_audit.destination_files(tmp_path, []) == [guide]
+
+
+def test_memory_entries_lists_the_memory_files_and_names_what_is_none(tmp_path: Path) -> None:
+    store = tmp_path / "memory"
+    store.mkdir()
+    for name in ("MEMORY.md", "beta.md", "alpha.md", "notes.txt"):
+        (store / name).write_text("", encoding="utf-8")
+    (store / "folder.md").mkdir()
+    files, others = memory_audit.memory_entries(store)
+    assert [path.name for path in files] == ["alpha.md", "beta.md"]
+    assert others == [("folder.md", "not a regular file")]
+
+
+def test_memory_entries_refuses_a_store_it_cannot_list_never_reads_it_as_empty(tmp_path: Path) -> None:
+    store = tmp_path / "memory"
+    store.mkdir()
+    (store / "alpha.md").write_text("", encoding="utf-8")
+    real = os.scandir
+
+    def scandir(path: Any = ".") -> Any:
+        if isinstance(path, (str, os.PathLike)) and Path(path) == store:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path)
+
+    with mock.patch.object(os, "scandir", scandir), pytest.raises(PermissionError) as raised:
+        memory_audit.memory_entries(store)
+    assert raised.value.filename == str(store)
+
+
+@contextmanager
+def listing_refused(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused: os.scandir and os.listdir raise PermissionError naming it. Every
+    other folder is listed as it is."""
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any = ".", *rest: Any, **options: Any) -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == folder:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *rest, **options)
+
+        return call
+
+    with ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name))))
+        yield
+
+
+def test_a_destination_pattern_never_lists_a_skipped_folder_so_one_it_cannot_list_inside_it_is_passed_over(
+    tmp_path: Path,
+) -> None:
+    guide = write(tmp_path / "docs" / "guide.md", "rules\n")
+    write(tmp_path / "docs" / "node_modules" / "deep" / "vendored.md", "rules\n")
+    with listing_refused(tmp_path / "docs" / "node_modules" / "deep"):
+        assert memory_audit.destination_files(tmp_path, []) == [guide]
+
+
+def test_a_destination_folder_it_cannot_list_outside_a_skipped_one_fails_the_audit(tmp_path: Path) -> None:
+    write(tmp_path / "docs" / "notes" / "deep.md", "rules\n")
+    with listing_refused(tmp_path / "docs" / "notes"), pytest.raises(PermissionError) as raised:
+        memory_audit.destination_files(tmp_path, [])
+    assert raised.value.filename == str(tmp_path / "docs" / "notes")

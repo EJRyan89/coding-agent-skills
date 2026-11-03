@@ -53,6 +53,7 @@ from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WOR
 from check_provenance import Source
 from console import run_main
 from file_presence import NotAFile, is_directory, is_occupied, is_present
+from flat_text import flat_text
 from folder_walk import LINKED, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
 from frontmatter import (
     COMMENT,
@@ -136,6 +137,25 @@ TRANSPORT_COMPATIBILITY: dict[str, set[str]] = {
     "local": {"copilot_local", "copilot_repository"},
     "http": {"claude", "codex", "copilot_local", "vscode", "copilot_repository"},
     "sse": {"claude", "copilot_local", "vscode", "copilot_repository"},
+}
+
+
+# The presence reads here that read a path they cannot stat or list as nothing there, each with why that is
+# the answer it should give.
+PRESENCE_ALLOWED = {
+    "_has_generator_script": "answers whether a generator naming CLAUDE.md is found; the inventory reports a "
+    "generator it cannot read as an ERROR",
+    "found_file": "names or counts what it finds; the inventory, or the check that reads the path, reports one it "
+    "cannot examine as an ERROR",
+    "found_folder": "names or counts what it finds; the inventory, or the check that reads the path, reports one it "
+    "cannot examine as an ERROR",
+    "_has_ci_parity_workflow": "answers whether a parity workflow is found; the inventory, or the check that reads the"
+    " path, reports one it cannot examine as an ERROR",
+    "_expected_skill_shim": "the .claude/skills checks report a canonical skill they cannot read",
+    "check_orphans": "the check that reads each candidate reports one it cannot read",
+    "_claude_rules": "lists the rules it can read; the inventory, or the check that reads the path, reports one it "
+    "cannot examine as an ERROR",
+    "check_limitations": "check_copilot_configuration reports a folder it cannot list as an ERROR",
 }
 
 
@@ -2553,14 +2573,20 @@ def _layering_codex(root: Path, sources: InstructionSources) -> list[Finding]:
 
 def _codex_size(root: Path, name: str) -> list[Finding]:
     """A root file over the cap is read in part. A user's own Codex configuration may raise the cap, so the finding is
-    a warning; a file behind a link that leads out of the root, or one that cannot be read, is not measured."""
+    a warning; a file behind a link that leads out of the root is not measured, and one whose size cannot be read is
+    an ERROR, never measured as within the cap."""
     path = root / name
     if outside_link(root, path) is not None:
         return []
     try:
         size = path.stat().st_size
-    except OSError:
-        return []
+    except OSError as error:
+        return _codex_layering_finding(
+            "ERROR",
+            f"Codex: the size of the root {name} cannot be read ({flat_text(error.strerror or str(error))}), so whether"
+            " Codex reads it whole is not known",
+            name,
+        )
     cap = _codex_max_bytes(root)
     if size <= cap:
         return []

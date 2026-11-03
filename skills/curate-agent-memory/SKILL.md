@@ -30,7 +30,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" audit --memory-dir "<memory dir>" --repo "<repository>"
 ```
 
-It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. `FAILED <reason>` means it wrote no report; show the reason. A `FAILED <memory dir> ...` line means the later steps would refuse the directory too, so go back to Step 1 before changing anything. Its overlaps (up to three passages in the repository's or the user's guidance per memory) are candidates only; the script cannot tell whether a passage states the same rule.
+It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. `FAILED <reason>` means it wrote no report; show the reason. A `FAILED <memory dir> ...` line means the later steps would refuse the directory too, so go back to Step 1 before changing anything. Its overlaps (up to three passages in the repository's or the user's guidance per memory) are candidates only; the script cannot tell whether a passage states the same rule. Each cited path gives `"exists": true` or `false` for a path that is there or is not; `"exists": null` with an `"unreadable"` reason means the path could not be examined, which is no evidence that it is gone: report it as unreadable, and never take the memory for obsolete on it.
 
 ## Step 3: Verify and classify every memory
 

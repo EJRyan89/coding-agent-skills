@@ -50,6 +50,18 @@ Item = TypeVar("Item")
 Value = TypeVar("Value")
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "ResourceLock.__enter__": "removes the lock folder it just made when writing its owner failed, before raising that"
+    " failure, which an error of the removal must not replace",
+    "ResourceLock._reclaim_stale": "removes a stale lock already moved aside under a name no lock takes; what a failed"
+    " removal leaves is debris, never a lock",
+    "ResourceLock._inspect": "None is its answer when a lock's owner cannot be told, apart from RELEASED, and the "
+    "caller then takes no lock and reclaims none",
+}
+
+
 class PersistenceError(RuntimeError):
     """Raised when durable state cannot be read or committed safely."""
 

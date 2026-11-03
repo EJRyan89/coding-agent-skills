@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import frontmatter as fm
 from module_closure import copy_with_imports
+from presence_denial import denied
 from skill_grants import skill_grant_problems
 from skill_layout import script_dependency_problems, sibling_path_problems
 
@@ -379,6 +380,29 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
                     new_skill.main(["widget-check", "--description", DESCRIPTION, "--root", str(self.root), *arguments])
                 self.assertEqual(2, raised.exception.code)
                 self.assertIn(f"argument --root: {self.root} is not a checkout of this repository", stderr.getvalue())
+                self.assertEqual(before, self.snapshot())
+
+    def test_a_place_it_cannot_stat_refuses_the_scaffold_never_reads_it_as_free(self) -> None:
+        before = self.snapshot()
+        shipped = (
+            self.root / "skills" / "fresh",
+            self.root / "deploy-meta" / "fresh.json",
+            self.root / skill_shims.SKILLS / "fresh",
+            self.root / skill_reference.REFERENCE,
+        )
+        repository = (self.root / skill_shims.SKILLS / "fresh", self.root / skill_shims.shim_path("fresh").parent)
+        for scaffold, places in (
+            (lambda: new_skill.scaffold(self.root, "fresh", "Fresh. Use it when testing."), shipped),
+            (lambda: new_skill.scaffold_repository(self.root, "fresh", "Fresh. Use it when testing."), repository),
+        ):
+            for place in places:
+                with (
+                    self.subTest(place=place.relative_to(self.root).as_posix()),
+                    denied(place),
+                    self.assertRaises(PermissionError) as raised,
+                ):
+                    scaffold()
+                self.assertEqual(str(place), raised.exception.filename)
                 self.assertEqual(before, self.snapshot())
 
 

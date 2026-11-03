@@ -57,6 +57,14 @@ CLOSING_ISSUE_FIELDS = frozenset({"number", "state", "title", "body"})
 IDENTITY = ("-c", "user.name=code-review fixture", "-c", "user.email=fixture@example.invalid")
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "fixture_change": "a throwaway folder under the temporary directory, whose read-only git objects Windows may "
+    "refuse to delete; nothing reads it after the fixture runs",
+}
+
+
 class FixtureError(ValueError):
     pass
 

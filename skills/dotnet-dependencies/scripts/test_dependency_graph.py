@@ -14,8 +14,9 @@ import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,6 +30,7 @@ from dependency_graph import main
 from dotnet_solution import same_path
 from flat_text import flat_text
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, Completed, SdkPath, Services
+from test_msbuild_reader import stat_failing_at
 
 SCRIPT = Path(__file__).resolve().parent / "dependency_graph.py"
 CSHARP = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
@@ -2856,3 +2858,301 @@ class MSBuildEvaluationTests(Fixture):
             self.lines(rows, "PATH"),
         )
         self.assertEqual([[label, "net8.0;net9.0", "Lantern.Json", "1"]], self.lines(rows, "TRUNCATED"))
+
+
+@contextlib.contextmanager
+def unlistable(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused: os.scandir and os.listdir raise PermissionError naming it, so
+    Path.iterdir raises on every supported Python, through os.listdir on 3.11 and os.scandir from 3.12. Its stat, and
+    every other folder, are read as they are."""
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any = ".", *rest: Any, **options: Any) -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == folder:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real(path, *rest, **options)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name))))
+        yield
+
+
+@contextlib.contextmanager
+def stat_through_fails(target: Path) -> Iterator[None]:
+    """A stat through links of `target` alone fails, while its own link state still reads, so the tree's containment
+    check passes it and the reader's own stat is the one that fails; Path's presence predicates answer False for it,
+    as Python 3.14 and later do there."""
+    real_stat, real_exists, real_is_file = Path.stat, Path.exists, Path.is_file
+
+    def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == target and follow_symlinks:
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_stat(path, follow_symlinks=follow_symlinks)
+
+    def exists(path: Path, *rest: Any, **options: Any) -> bool:
+        return False if path == target else real_exists(path, *rest, **options)
+
+    def is_file(path: Path, *rest: Any, **options: Any) -> bool:
+        return False if path == target else real_is_file(path, *rest, **options)
+
+    with (
+        mock.patch.object(Path, "stat", stat),
+        mock.patch.object(Path, "exists", exists),
+        mock.patch.object(Path, "is_file", is_file),
+    ):
+        yield
+
+
+EVALUATED_PROJECT = (
+    '<Project Sdk="Microsoft.NET.Sdk">\n'
+    '  <Import Project="Local.props" />\n'
+    "  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n"
+    '  <ItemGroup><PackageReference Include="Quill.Http" Version="1.2.0" /></ItemGroup>\n'
+    "  <ItemGroup Condition=\"Exists('extra.marker')\">"
+    '<PackageReference Include="Quill.Extra" Version="1.0.0" /></ItemGroup>\n'
+    "</Project>\n"
+)
+
+
+class PresenceReadTests(Fixture):
+    """Each reader that chooses among a folder's entries, or walks up for one, tells a file, a folder, and nothing
+    apart, and refuses an entry it cannot stat or a folder it cannot list rather than reading it as absent."""
+
+    def test_the_root_chooses_the_one_solution_file_and_refuses_a_child_it_cannot_stat(self) -> None:
+        (self.root / "Folder.sln").mkdir()
+        solution = self.write("Real.sln", "")
+        resolved, base, projects = dependency_graph.resolve_root(self.root, [])
+        self.assertEqual((solution, self.root, []), (resolved, base, projects))
+        locked = self.write("Locked.sln", "")
+        with stat_failing_at(locked), self.assertRaises(PermissionError) as raised:
+            dependency_graph.resolve_root(self.root, [])
+        self.assertEqual(str(locked), raised.exception.filename)
+
+    def test_the_cache_keeps_a_folder_drops_a_file_or_nothing_and_refuses_one_it_cannot_stat(self) -> None:
+        home = self.root / "home"
+        (home / ".nuget" / "packages").mkdir(parents=True)
+        configured = self.root / "configured"
+        configured.mkdir()
+        file = self.write("cache.txt", "")
+        with mock.patch.object(Path, "home", return_value=home):
+            for value, expected in (
+                (str(configured), [configured, home / ".nuget" / "packages"]),
+                (str(file), [home / ".nuget" / "packages"]),
+                (str(self.root / "missing"), [home / ".nuget" / "packages"]),
+            ):
+                with self.subTest(value=value), mock.patch.dict(os.environ, {"NUGET_PACKAGES": value}):
+                    self.assertEqual(expected, dependency_graph.nuget_cache())
+            with (
+                mock.patch.dict(os.environ, {"NUGET_PACKAGES": str(configured)}),
+                stat_failing_at(configured),
+                self.assertRaises(msbuild_reader.Unreadable) as raised,
+            ):
+                dependency_graph.nuget_cache()
+        self.assertEqual((configured, "Access is denied"), (raised.exception.file, raised.exception.reason))
+
+    def test_the_packages_folder_passes_over_a_file_and_refuses_one_it_cannot_stat(self) -> None:
+        project = self.root / "src" / "App"
+        project.mkdir(parents=True)
+        (self.root / "packages").mkdir()
+        self.write("src/packages", "not a folder")
+        self.assertEqual(self.root / "packages", dependency_graph.packages_folder(project, self.root))
+        nearer = project / "packages"
+        with stat_failing_at(nearer), self.assertRaises(msbuild_reader.Unreadable) as raised:
+            dependency_graph.packages_folder(project, self.root)
+        self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
+
+    def test_a_package_folder_it_cannot_list_or_stat_is_unreadable_never_a_package_not_unpacked(self) -> None:
+        packages = self.root / "packages"
+        (packages / "Lantern.Core.2.0.0").mkdir(parents=True)
+        other = self.root / "other"
+        other.mkdir()
+        self.write("other/Lantern.Core.2.0.0", "a file of the folder's name")
+        self.assertEqual(
+            packages / "Lantern.Core.2.0.0",
+            dependency_graph.package_directory([other, packages], "Lantern.Core", "2.0.0"),
+        )
+        with unlistable(packages), self.assertRaises(msbuild_reader.Unreadable) as raised:
+            dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0")
+        self.assertEqual((packages, "Access is denied"), (raised.exception.file, raised.exception.reason))
+        unpacked = packages / "Lantern.Core.2.0.0"
+        with stat_failing_at(unpacked), self.assertRaises(msbuild_reader.Unreadable) as raised:
+            dependency_graph.package_directory([packages], "Lantern.Core", "2.0.0")
+        self.assertEqual(unpacked, raised.exception.file)
+
+    def test_a_package_folder_it_cannot_read_is_an_unreadable_row_and_its_nuspec_edges_are_left_out(self) -> None:
+        root = self.mixed_solution()
+        through_nuspec = ["src/Harbor.Web/Harbor.Web.csproj", "-", "Lantern.Json", "graph"]
+        nuspec_path = [*through_nuspec, "Lantern.Core (v2.0.0) > Lantern.Json (v13.0.1)"]
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertIn(nuspec_path, self.lines(rows, "PATH"))
+        packages = self.root / "packages"
+        unpacked = packages / "Lantern.Core.2.0.0"
+        # A folder it cannot list leaves the project no nuspec node at all; one package it cannot stat leaves out that
+        # package's node, and the edges through it, while the other package's node stays.
+        for label, failing, shown, source in (
+            ("listing", unlistable(packages), "packages", "direct"),
+            ("stat", stat_failing_at(unpacked), "packages/Lantern.Core.2.0.0", "nuspec"),
+            ("nuspec listing", unlistable(unpacked), "packages/Lantern.Core.2.0.0", "nuspec"),
+            (
+                "packages folder",
+                stat_failing_at(self.root / "src" / "Harbor.Web" / "packages"),
+                "src/Harbor.Web/packages",
+                "direct",
+            ),
+        ):
+            with self.subTest(label), failing:
+                code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+            self.assertEqual(1, code)
+            self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))
+            web = ["src/Harbor.Web/Harbor.Web.csproj", "legacy", source, "listed"]
+            self.assertIn(web, self.lines(rows, "PROJECT"))
+            self.assertNotIn(nuspec_path, self.lines(rows, "PATH"))
+
+    def answered(self, root: Path, failing: Any) -> list[list[str]]:
+        """The rows `why Lantern.Json` gives with `failing` in force, after holding that the query still answered:
+        every project row, no FAILED line, and a path for the package."""
+        with failing:
+            code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertEqual(1, code)
+        self.assertEqual([], self.lines(rows, "FAILED"))
+        self.assertEqual(
+            [
+                "src/Harbor.Core/Harbor.Core.csproj",
+                "src/Harbor.Tests/Harbor.Tests.csproj",
+                "src/Harbor.Web/Harbor.Web.csproj",
+            ],
+            [row[0] for row in self.lines(rows, "PROJECT")],
+        )
+        self.assertTrue(self.lines(rows, "PATH"))
+        return rows
+
+    def test_a_packages_config_or_assets_file_it_cannot_stat_is_an_unreadable_row(self) -> None:
+        root = self.mixed_solution()
+        for path, shown in (
+            (self.root / "src" / "Harbor.Web" / "packages.config", "src/Harbor.Web/packages.config"),
+            (
+                self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json",
+                "src/Harbor.Core/obj/project.assets.json",
+            ),
+        ):
+            with self.subTest(shown):
+                rows = self.answered(root, stat_failing_at(path))
+                self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))
+
+    def test_an_assets_file_whose_age_cannot_be_told_is_an_unreadable_row_and_its_targets_stay(self) -> None:
+        # Its presence and its read are answered; only the stat closure_from_assets itself makes, which compares its
+        # age with the project's, fails. The failure is keyed on that caller, never on a count of stats, which differs
+        # between Python versions: 3.11's Path.resolve stats the path it resolves.
+        root = self.mixed_solution()
+        assets = self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json"
+        real = Path.stat
+        failed: list[Path] = []
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == assets and sys._getframe(1).f_code is dependency_graph.closure_from_assets.__code__:
+                failed.append(path)
+                raise PermissionError(13, "Access is denied", str(path))
+            return real(path, follow_symlinks=follow_symlinks)
+
+        rows = self.answered(root, mock.patch.object(Path, "stat", stat))
+        self.assertEqual([assets], failed)
+        self.assertEqual(
+            [["src/Harbor.Core/obj/project.assets.json", "Access is denied"]], self.lines(rows, "UNREADABLE")
+        )
+        self.assertIn(["src/Harbor.Core/Harbor.Core.csproj", "sdk", "assets", "listed"], self.lines(rows, "PROJECT"))
+
+    def test_an_assembly_folder_it_cannot_list_is_an_unreadable_row_against_its_package(self) -> None:
+        root = self.mixed_solution()
+        lib = self.root / "packages" / "Lantern.Core.2.0.0" / "lib" / "net45"
+        rows = self.answered(root, unlistable(lib))
+        self.assertEqual(
+            [["packages/Lantern.Core.2.0.0/lib/net45", "Access is denied"]], self.lines(rows, "UNREADABLE")
+        )
+
+    def test_a_file_above_a_project_a_property_function_cannot_stat_is_an_unreadable_row(self) -> None:
+        self.write(
+            "src/App/App.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <Import Project=\"$([MSBuild]::GetPathOfFileAbove('Shared.props', '$(MSBuildThisFileDirectory)'))\" />\n"
+            "  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n"
+            '  <ItemGroup><PackageReference Include="Quill.Http" Version="1.2.0" /></ItemGroup>\n'
+            "</Project>\n",
+        )
+        self.write("Shared.props", "<Project />")
+        with stat_failing_at(self.root / "src" / "App" / "Shared.props"):
+            code, rows = self.run_main("why", "Quill.Http", "--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertEqual([], self.lines(rows, "FAILED"))
+        self.assertIn(["src/App/Shared.props", "Access is denied"], self.lines(rows, "UNREADABLE"))
+        self.assertEqual([["src/App/App.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual(
+            [["src/App/App.csproj", "-", "Quill.Http", "graph", "Quill.Http (v1.2.0)"]], self.lines(rows, "PATH")
+        )
+
+    def test_an_import_or_an_exists_condition_it_cannot_stat_is_an_unreadable_row_never_not_found(self) -> None:
+        # An Import whose file it cannot stat names the stat's reason, never "not found"; an Exists() condition on a
+        # path it cannot stat is reported and left unsettled, never answered False.
+        self.write("src/App/App.csproj", EVALUATED_PROJECT)
+        self.write("src/App/Local.props", "<Project />")
+        self.write("src/App/extra.marker", "")
+        for shown in ("src/App/Local.props", "src/App/extra.marker"):
+            with self.subTest(shown), stat_through_fails(self.root / shown):
+                code, rows = self.run_main("why", "Quill.Http", "--root", str(self.root))
+            self.assertEqual(1, code)
+            self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))
+            self.assertEqual([["src/App/App.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+            self.assertEqual(
+                [["src/App/App.csproj", "-", "Quill.Http", "graph", "Quill.Http (v1.2.0)"]], self.lines(rows, "PATH")
+            )
+
+    def test_a_props_file_above_a_project_it_cannot_stat_is_an_unreadable_row(self) -> None:
+        root = self.mixed_solution()
+        self.write("Directory.Build.props", "<Project />")
+        props = self.root / "src" / "Directory.Build.props"
+        rows = self.answered(root, stat_failing_at(props))
+        self.assertEqual([["src/Directory.Build.props", "Access is denied"]], self.lines(rows, "UNREADABLE"))
+        # Each project is still read from its own file, never left as one that could not be read.
+        self.assertEqual(
+            [
+                ["src/Harbor.Core/Harbor.Core.csproj", "sdk", "assets", "listed"],
+                ["src/Harbor.Tests/Harbor.Tests.csproj", "sdk", "direct", "listed"],
+                ["src/Harbor.Web/Harbor.Web.csproj", "legacy", "nuspec", "listed"],
+            ],
+            self.lines(rows, "PROJECT"),
+        )
+
+    def test_a_root_or_listed_project_it_cannot_stat_is_refused_with_its_reason(self) -> None:
+        root = self.mixed_solution()
+        with stat_failing_at(root), self.assertRaises(PermissionError) as raised:
+            dependency_graph.resolve_root(root, [])
+        self.assertEqual(str(root), raised.exception.filename)
+        listed = self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj"
+        unreadable: list[tuple[Path, str]] = []
+        with stat_failing_at(listed):
+            _, _, projects = dependency_graph.resolve_root(root, unreadable)
+        self.assertNotIn(listed, projects)
+        self.assertEqual([(listed, "Access is denied")], unreadable)
+
+    def test_a_config_or_project_folder_it_cannot_read_is_an_unreadable_row_and_a_folder_config_is_passed_over(
+        self,
+    ) -> None:
+        root = self.mixed_solution()
+        project = self.root / "src" / "Harbor.Web"
+        redirects = {
+            name: graph.projects[name].file.redirects
+            for graph in [dependency_graph.build_graph(root, self.without_dotnet)]
+            for name in graph.projects
+        }
+        (project / "app.config").mkdir()
+        again = dependency_graph.build_graph(root, self.without_dotnet)
+        self.assertEqual(redirects, {name: again.projects[name].file.redirects for name in again.projects})
+        for failing, shown in (
+            (stat_failing_at(project / "Web.config"), "src/Harbor.Web/Web.config"),
+            (unlistable(project), "src/Harbor.Web"),
+        ):
+            with self.subTest(shown):
+                rows = self.answered(root, failing)
+                self.assertIn([shown, "Access is denied"], self.lines(rows, "UNREADABLE"))

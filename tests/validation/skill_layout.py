@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import file_presence
 import frontmatter
 import json_reader
 import skill_menu
@@ -82,7 +83,9 @@ def find_executable_fences(lines: list[str]) -> list[ExecutableFence]:
 def embedded_program_problems(root: Path, tree: str = "skills") -> list[str]:
     """Report executable fences in a skill tree's Markdown that are programs rather than short command examples."""
     problems: list[str] = []
-    for markdown in sorted((root / tree).rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
+    for markdown in sorted(
+        file_presence.matching(root / tree, "**/*.md"), key=lambda path: path.relative_to(root).as_posix()
+    ):
         name = markdown.relative_to(root).as_posix()
         problems.extend(
             f"{name}:{fence.line_number} contains a {fence.language} fence with {fence.body_line_count} "
@@ -96,8 +99,8 @@ def embedded_program_problems(root: Path, tree: str = "skills") -> list[str]:
 
 def _template_tokens(directory: Path) -> set[str]:
     tokens: set[str] = set()
-    for path in directory.rglob("*"):
-        if path.is_file():
+    for path in file_presence.matching(directory, "**/*"):
+        if file_presence.is_present(path, other_is_absent=True):
             tokens.update(TEMPLATE_TOKEN.findall(path.read_text(encoding="utf-8", errors="replace")))
     return tokens
 
@@ -117,7 +120,7 @@ def deploy_variable_problems(
     required_anywhere: set[str] = set()
     used_anywhere: set[str] = set()
     skills = skills_by_name(root)
-    for metadata in sorted((root / "deploy-meta").glob("*.json"), key=path_order):
+    for metadata in sorted(file_presence.matching(root / "deploy-meta", "*.json"), key=path_order):
         skill = metadata.stem
         required = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("required_vars", []))
         required_anywhere |= required
@@ -140,7 +143,12 @@ def deploy_variable_problems(
     shared = json_reader.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
     for asset in sorted(shared):
         path = root / "skills" / asset
-        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+        # A declared asset that is not there is named; one whose stat fails raises.
+        if not file_presence.is_occupied(path):
+            problems.append(f"source.json declares shared asset {asset}, which skills/ does not hold")
+            continue
+        # A shared asset is a file or a folder; a folder's files are read where its skills are.
+        text = "" if file_presence.is_directory(path, other_is_absent=True) else path.read_text(encoding="utf-8")
         tokens = set(TEMPLATE_TOKEN.findall(text))
         used_anywhere |= tokens
         problems.extend(f"shared asset {asset} uses non-derived variable {key}" for key in sorted(tokens - derived))
@@ -159,7 +167,7 @@ def metadata_format_problems(root: Path) -> list[str]:
     from tools import new_skill
 
     problems: list[str] = []
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         text = metadata.read_bytes().decode("utf-8")
         if text != new_skill.metadata_text(json_reader.loads(text)):
             problems.append(f"deploy-meta/{metadata.name} is not in the canonical metadata format; see {METADATA_DOC}")
@@ -168,7 +176,7 @@ def metadata_format_problems(root: Path) -> list[str]:
 
 def hooked_agents(root: Path) -> set[str]:
     """The agents under agents/ whose definition declares hooks, such as the code-review reviewer's guard."""
-    return {path.stem for path in (root / "agents").glob("*.md") if "hooks" in frontmatter.read(path)}
+    return {path.stem for path in file_presence.matching(root / "agents", "*.md") if "hooks" in frontmatter.read(path)}
 
 
 def user_only(document: frontmatter.Frontmatter) -> bool:
@@ -194,7 +202,7 @@ def own_needs(root: Path, name: str) -> set[str]:
     granted = document.value("allowed-tools") or []
     starts_hooked = any(f"`{agent}`" in text for agent in hooked_agents(root))
     metadata = root / "deploy-meta" / f"{name}.json"
-    declared = json_reader.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
+    declared = json_reader.loads(metadata.read_text(encoding="utf-8")) if file_presence.is_present(metadata) else {}
     tools = frozenset([*declared.get("tools", []), *declared.get("optional_tools", [])])
     scripts = skills[name] / "scripts"
     readers = {
@@ -204,7 +212,7 @@ def own_needs(root: Path, name: str) -> set[str]:
     }
     git_subcommands = frozenset(
         subcommand
-        for script in (sorted(scripts.iterdir()) if scripts.is_dir() else [])
+        for script in (sorted(scripts.iterdir()) if file_presence.is_directory(scripts) else [])
         if script.suffix in readers and not is_test_script(script)
         for subcommand in readers[script.suffix](script.read_text(encoding="utf-8"))
     )
@@ -240,7 +248,7 @@ def runtime_support_problems(root: Path) -> list[str]:
     import runtime_support
 
     problems: list[str] = []
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         name = f"deploy-meta/{metadata.name}"
         document = json_reader.loads(metadata.read_text(encoding="utf-8"))
         if "runtime_support" not in document:
@@ -293,12 +301,12 @@ def runtime_page_problems(root: Path) -> list[str]:
     levels = {runtime_support.FULL, runtime_support.PARTIAL, runtime_support.NONE}
     declared = {
         metadata.stem: json_reader.loads(metadata.read_text(encoding="utf-8")).get("runtime_support")
-        for metadata in sorted((root / "deploy-meta").glob("*.json"))
+        for metadata in file_presence.matching(root / "deploy-meta", "*.json")
     }
     problems: list[str] = []
     for runtime, page in pages.items():
         path = root / page
-        if not path.is_file():
+        if not file_presence.is_present(path):
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         fenced = {index for fence in find_fences(lines) for index in fence.lines()}
@@ -340,7 +348,7 @@ def capability_guide_problems(root: Path) -> list[str]:
         path = root / document
         if not path.is_file() or markdown_section(path.read_text(encoding="utf-8"), f"## {heading}") is None:
             problems.append(f'{document} has no "## {heading}" section, which runtime_support.CAPABILITY_GUIDES names')
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         try:
             declared = runtime_support.parse(json_reader.loads(metadata.read_text(encoding="utf-8"))["runtime_support"])
         except (KeyError, runtime_support.RuntimeSupportError):
@@ -384,7 +392,7 @@ AGENTS_DOC = '"Subagent definitions" in docs/adding-a-skill.md'
 
 def skill_path_problems(root: Path) -> list[str]:
     """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}."""
-    skills = {path.parent.name for path in (root / "skills").glob("*/SKILL.md")}
+    skills = {path.parent.name for path in file_presence.matching(root / "skills", "*/SKILL.md")}
     problems: list[str] = []
     for path, dependencies, directory in _path_documents(root):
         name = path.relative_to(root).as_posix()
@@ -405,14 +413,15 @@ def skill_path_problems(root: Path) -> list[str]:
 def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None]]:
     """Each agent, then each skill's Markdown with the skills it declares and its directory."""
     documents: list[tuple[Path, set[str] | None, Path | None]] = [
-        (path, None, None) for path in sorted((root / "agents").glob("*.md"), key=path_order)
+        (path, None, None) for path in sorted(file_presence.matching(root / "agents", "*.md"), key=path_order)
     ]
     skills = skills_by_name(root)
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         declared: set[str] = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         if (skill_directory := skills.get(metadata.stem)) is not None:
             documents += [
-                (path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"), key=path_order)
+                (path, declared, skill_directory)
+                for path in sorted(file_presence.matching(skill_directory, "**/*.md"), key=path_order)
             ]
     return documents
 
@@ -473,7 +482,9 @@ def output_placeholder_problems(root: Path, tree: str = "skills") -> list[str]:
     then sees the installed skill as modified and stops updating it.
     """
     problems: list[str] = []
-    for path in sorted((root / tree).rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
+    for path in sorted(
+        file_presence.matching(root / tree, "**/*.md"), key=lambda path: path.relative_to(root).as_posix()
+    ):
         name = path.relative_to(root).as_posix()
         lines = path.read_text(encoding="utf-8").splitlines()
         for number, (line, holder) in enumerate(zip(lines, fence_holders(lines), strict=True), start=1):
@@ -499,10 +510,10 @@ def script_dependency_problems(root: Path) -> list[str]:
     """
     problems: list[str] = []
     skills = skills_by_name(root)
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         skill = metadata.stem
         declared = set(json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
-        scripts = sorted((skills[skill] / "scripts").glob("*.py")) if skill in skills else []
+        scripts = file_presence.matching(skills[skill] / "scripts", "*.py") if skill in skills else []
         for path, _, tree in python_trees([path for path in scripts if not is_test_script(path)], root, problems):
             problems.extend(
                 f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
@@ -518,9 +529,15 @@ SIBLING_LOOKUP_DOC = VALIDATION_DOC
 
 def _sibling_path_files(root: Path) -> list[Path]:
     """The Python under the roots a sibling lookup applies to, outside tests/fixtures, which are other trees."""
-    files = [root / "deploy.py"] if (root / "deploy.py").is_file() else []
+    files = [root / "deploy.py"] if file_presence.is_present(root / "deploy.py") else []
     for top in SIBLING_PATH_ROOTS:
-        files += [path for path in (root / top).rglob("*.py") if not within(path, root / "tests" / "fixtures")]
+        files += [
+            path
+            for path in file_presence.matching(
+                root / top, "**/*.py", skip=lambda folder: folder == root / "tests" / "fixtures"
+            )
+            if not within(path, root / "tests" / "fixtures")
+        ]
     return sorted(files)
 
 
@@ -562,9 +579,11 @@ def fixture_source_problems(root: Path) -> list[str]:
     source ID and skill names, the shipped source must never name it, and its skills follow the path contract.
     """
     shipped = json_reader.loads((root / "source.json").read_text(encoding="utf-8"))
-    names = {path.stem for path in (root / "deploy-meta").glob("*.json")} | set(shipped.get("bundles", {}))
+    names = {path.stem for path in file_presence.matching(root / "deploy-meta", "*.json")} | set(
+        shipped.get("bundles", {})
+    )
     found: list[str] = []
-    for source_file in sorted((root / "tests" / "fixtures").glob("*/source.json")):
+    for source_file in file_presence.matching(root / "tests" / "fixtures", "*/source.json"):
         fixture = source_file.parent
         label = fixture.relative_to(root).as_posix()
         try:
@@ -579,7 +598,7 @@ def fixture_source_problems(root: Path) -> list[str]:
                 found.append(f"{label}/source.json reuses the shipped source ID")
         found.extend(
             f"{label} skill {metadata.stem} shares its name with a shipped skill or bundle"
-            for metadata in sorted((fixture / "deploy-meta").glob("*.json"))
+            for metadata in file_presence.matching(fixture / "deploy-meta", "*.json")
             if metadata.stem in names
         )
         found += [f"{label}: {problem}" for problem in skill_path_problems(fixture)]
@@ -588,8 +607,8 @@ def fixture_source_problems(root: Path) -> list[str]:
         *(
             path
             for folder in ("skills", "deploy-meta", "agents")
-            for path in (root / folder).rglob("*")
-            if path.is_file()
+            for path in file_presence.matching(root / folder, "**/*")
+            if file_presence.is_present(path, other_is_absent=True)
         ),
     ]
     for path in shipped_files:
@@ -719,7 +738,7 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]],
     token left; a file of a carried skill, as the builder reads it, that the plugin leaves out; a manifest that is not
     its marketplace entry with the plugin's name and `version`, the one it was built with; and a hooks file that is not
     its agents' hooks. `plugins` maps each plugin's name to its files, by path in the plugin."""
-    if (root / PLUGIN_MANIFEST).exists():
+    if file_presence.is_occupied(root / PLUGIN_MANIFEST):
         return [f"{PLUGIN_MANIFEST} makes the checkout's skills read as a plugin's"]
     found: list[str] = []
     for name, files in sorted(plugins.items()):
@@ -727,10 +746,11 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]],
         agents = [path[len("agents/") : -len(".md")] for path in files if path.startswith("agents/")]
         declared = ""
         readme = root / PLUGIN_README
-        if readme.is_file() and files.get("README.md") != readme.read_bytes():
+        has_readme = file_presence.is_present(readme, other_is_absent=True)
+        if has_readme and files.get("README.md") != readme.read_bytes():
             found.append(f"plugin {name}: README.md is not {PLUGIN_README.as_posix()}")
         for path, content in sorted(files.items()):
-            if path in (PLUGIN_MANIFEST, PLUGIN_HOOKS) or (path == "README.md" and readme.is_file()):
+            if path in (PLUGIN_MANIFEST, PLUGIN_HOOKS) or (path == "README.md" and has_readme):
                 continue
             origin = _plugin_source(root, path)
             if isinstance(origin, str) or not origin[0].is_file():
@@ -834,7 +854,7 @@ def trigger_scenario_problems(root: Path) -> list[str]:
     scenarios = root / "tests" / "fixtures" / "skill-evals"
     problems: list[str] = []
     covered: set[str] = set()
-    for spec_file in sorted(scenarios.glob("*/*/scenario.json")):
+    for spec_file in file_presence.matching(scenarios, "*/*/scenario.json"):
         label = spec_file.parent.relative_to(root).as_posix()
         try:
             spec = json_reader.loads(spec_file.read_text(encoding="utf-8"))
@@ -869,7 +889,12 @@ def unsupported_script_problems(root: Path) -> list[str]:
     skill, scripts/ included, and each file that starts with #! without an executable extension, which runs as a
     program no analyzer or command policy reads."""
     problems: list[str] = []
-    files = [path for skill in all_skill_directories(root) for path in skill.rglob("*") if path.is_file()]
+    files = [
+        path
+        for skill in all_skill_directories(root)
+        for path in file_presence.matching(skill, "**/*")
+        if file_presence.is_present(path, other_is_absent=True)
+    ]
     for path in sorted(files, key=lambda p: p.as_posix()):
         name = path.relative_to(root).as_posix()
         if path.suffix.casefold() in UNSUPPORTED_SCRIPT_EXTENSIONS:
@@ -923,9 +948,9 @@ def script_layout_problems(root: Path) -> list[str]:
     one level deep."""
     problems: list[str] = []
     for skill in all_skill_directories(root):
-        for path in sorted(skill.rglob("*")):
+        for path in file_presence.matching(skill, "**/*", skip=lambda folder: folder.name == BYTECODE_FOLDER):
             inside = path.relative_to(skill)
-            if not path.is_file() or BYTECODE_FOLDER in inside.parts:
+            if not file_presence.is_present(path, other_is_absent=True) or BYTECODE_FOLDER in inside.parts:
                 continue
             if is_executable_script(path) and inside.parts[0] != "scripts":
                 problems.append(
@@ -947,18 +972,24 @@ def skill_tree_problems(root: Path) -> list[str]:
     SKILL.md deeper than skills/<name>, is a folder whose files and suites nothing would find.
     """
     skills = root / "skills"
-    if not skills.is_dir():
+    if not file_presence.is_directory(skills):
         return []
     source = root / "source.json"
-    shared = json_reader.loads(source.read_text(encoding="utf-8")).get("shared_assets", {}) if source.is_file() else {}
+    shared = (
+        json_reader.loads(source.read_text(encoding="utf-8")).get("shared_assets", {})
+        if file_presence.is_present(source)
+        else {}
+    )
     problems = [
         f"{directory.relative_to(root).as_posix()} holds no SKILL.md and source.json declares no such shared asset"
-        for directory in sorted(path for path in skills.iterdir() if path.is_dir())
-        if not (directory / "SKILL.md").is_file() and directory.name not in shared
+        for directory in sorted(
+            path for path in skills.iterdir() if file_presence.is_directory(path, other_is_absent=True)
+        )
+        if not file_presence.is_present(directory / "SKILL.md", other_is_absent=True) and directory.name not in shared
     ]
     problems += [
         f"{skill_md.relative_to(root).as_posix()} is deeper than skills/<name>"
-        for skill_md in sorted(skills.rglob("SKILL.md"))
+        for skill_md in file_presence.matching(skills, "**/SKILL.md")
         if len(skill_md.relative_to(skills).parts) > 2
     ]
     return problems
@@ -980,7 +1011,7 @@ def repository_skill_name_problems(root: Path) -> list[str]:
 
     problems: list[str] = []
     for tree in (REPOSITORY_SKILLS, REPOSITORY_SKILL_SHIMS):
-        for skill_md in sorted((root / tree).glob("*/SKILL.md"), key=lambda path: path.parent.name):
+        for skill_md in sorted(file_presence.matching(root / tree, "*/SKILL.md"), key=lambda path: path.parent.name):
             name, where = skill_md.parent.name, skill_md.relative_to(root).as_posix()
             if not deploy_source.is_valid_name(name):
                 problems.append(
@@ -1027,7 +1058,7 @@ class SkillLayoutPolicies(unittest.TestCase):
         self.assertEqual([], skill_tree_problems(REPOSITORY_ROOT))
 
     def test_repository_skills_and_their_shims_are_named_as_skills_and_as_their_folders(self) -> None:
-        self.assertTrue(list((REPOSITORY_ROOT / REPOSITORY_SKILL_SHIMS).glob("*/SKILL.md")))
+        self.assertTrue(list(file_presence.matching(REPOSITORY_ROOT / REPOSITORY_SKILL_SHIMS, "*/SKILL.md")))
         self.assertEqual([], repository_skill_name_problems(REPOSITORY_ROOT))
 
     def test_skill_markdown_does_not_embed_programs(self) -> None:
@@ -1052,7 +1083,7 @@ class SkillLayoutPolicies(unittest.TestCase):
         )
 
     def test_fixture_sources_never_ship_or_collide_with_what_ships(self) -> None:
-        self.assertTrue(list((REPOSITORY_ROOT / "tests" / "fixtures").glob("*/source.json")))
+        self.assertTrue(list(file_presence.matching(REPOSITORY_ROOT / "tests" / "fixtures", "*/source.json")))
         self.assertEqual([], fixture_source_problems(REPOSITORY_ROOT))
 
     def test_plugins_hold_their_sources_and_nothing_else(self) -> None:

@@ -109,6 +109,14 @@ UNQUOTABLE = frozenset('"$`\\')
 REVIEWED_FIELDS = ("number", "title", "base_ref", "head_ref")
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "output_root": "removes the folder it made, part way filled, before raising the failure that stopped it, which an "
+    "error of the removal must not replace",
+}
+
+
 class DocumentError(ValueError):
     pass
 
@@ -551,6 +559,15 @@ def build(
         return [*write_fixture(root / "fixture", document, pull, stage), prepare_arguments([root / "fixture"])]
 
 
+def _is_a_path(argument: str) -> bool:
+    """Whether anything is at the path `argument` names; a DocumentError when that cannot be told, never read as no
+    file there and so as a pull request."""
+    try:
+        return file_presence.is_occupied(Path(argument))
+    except OSError as exc:
+        raise DocumentError(f"cannot tell whether {argument} is a file: {exc.strerror or exc}") from exc
+
+
 def pull_reference(argument: str) -> tuple[str, int] | None:
     """The pull request `argument` names, as owner/repo#number or its URL, or None for a path. A file that exists is
     always a path; any other argument holding a `#`, and any URL, must name a pull request."""
@@ -558,7 +575,7 @@ def pull_reference(argument: str) -> tuple[str, int] | None:
     if url is None:
         if argument.casefold().startswith(("http://", "https://")):
             raise DocumentError(f"{argument} is not a pull request URL; name one as {PULL_URL_FORM}")
-        if "#" not in argument or Path(argument).exists():
+        if "#" not in argument or _is_a_path(argument):
             return None
     try:
         return parse_pull_selector(f"{url.group(1)}#{url.group(2)}" if url else argument)

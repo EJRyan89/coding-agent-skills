@@ -537,7 +537,12 @@ def discover(target: str | None, repos_root: str, services: Services) -> list[st
         if not root.is_dir():
             raise CleanupError(f"{repos_root} is not a directory")
         entries = sorted(root.iterdir(), key=lambda path: path.name.casefold())
-        repositories = [path for path in entries if path.is_dir() and (path / ".git").is_dir()]
+        repositories = [
+            path
+            for path in entries
+            if file_presence.is_directory(path, other_is_absent=True)
+            and file_presence.is_directory(path / ".git", other_is_absent=True)
+        ]
     # Not `gh auth status`: it reports every failure but a timeout as an invalid token, and fails for any stale account
     # on the host. The rate_limit endpoint costs no quota and answers for the account gh uses.
     try:

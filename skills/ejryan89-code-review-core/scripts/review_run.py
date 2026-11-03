@@ -18,6 +18,7 @@ from typing import Any, NotRequired, TypedDict, TypeVar, cast, get_origin, get_t
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from executable_locator import PYTHON
 from git_client import Runner, subprocess_runner
 from github_client import GitHubError
@@ -74,11 +75,20 @@ MAX_RETRIES = 1
 SELF_CHECK_COMMAND = PYTHON + ' -B "{script}" validate-result --run "{run}" --role "{role}"'
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "remove_run": "making the source repository's read-only files writable is a best effort before the removal, and "
+    "its caller passes ignore_errors only for a run it made and is removing because preparing it failed, before "
+    "raising that failure, which an error of the removal must not replace",
+}
+
+
 def remove_run(run: Path, *, ignore_errors: bool = False) -> None:
     """Remove a run folder, its fixture repository included, whose object files git leaves read-only, which Windows
     will not delete until they are writable again."""
     with contextlib.suppress(OSError):
-        for path in (run / SOURCE_REPOSITORY).rglob("*"):
+        for path in file_presence.matching(run / SOURCE_REPOSITORY, "**/*"):
             if is_plain_file(path):
                 path.chmod(stat.S_IREAD | stat.S_IWRITE)
     shutil.rmtree(run, ignore_errors=ignore_errors)
@@ -544,7 +554,9 @@ def verify_seal(run: Path, state: RunState) -> None:
     expected = [(run.joinpath(*relative.split("/")), digest) for relative, digest in seal["files"].items()]
     expected.extend((results[identity], digest) for identity, digest in seal["results"].items())
     changed = [
-        path.relative_to(run).as_posix() for path, digest in expected if not path.is_file() or _sha256(path) != digest
+        path.relative_to(run).as_posix()
+        for path, digest in expected
+        if not file_presence.is_present(path, other_is_absent=True) or _sha256(path) != digest
     ]
     if changed:
         raise PipelineError(f"{state['selector']}: run files changed during the inline review: {', '.join(changed)}")

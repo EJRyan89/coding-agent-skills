@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -367,6 +368,26 @@ class ReadTests(unittest.TestCase):
                 self.assertEqual(rg.WorkingCopy(None), rg.read_working_copy(self.checkout, f"{name}/checklist.md"))
         self.assertEqual(digest(CHECKLIST), rg.read_working_copy(self.checkout, "docs/checklist.md").digest)
 
+    def test_a_working_copy_whose_stat_fails_is_unreadable_never_no_file(self) -> None:
+        # Its link state reads, so the stat through it is the one that fails, and is_file answers False for it, as
+        # Python 3.14 and later do.
+        target = self.checkout.resolve() / "docs" / "checklist.md"
+        real_stat, real_is_file = Path.stat, Path.is_file
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == target and follow_symlinks:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        def is_file(path: Path, *rest: Any, **options: Any) -> bool:
+            return False if path == target else real_is_file(path, *rest, **options)
+
+        with mock.patch.object(Path, "stat", stat), mock.patch.object(Path, "is_file", is_file):
+            copy = rg.read_working_copy(self.checkout, "docs/checklist.md")
+        self.assertEqual(rg.WorkingCopy(None, None, "PermissionError: Permission denied"), copy)
+        (self.checkout / "docs" / "folder.md").mkdir()
+        self.assertEqual(rg.WorkingCopy(None), rg.read_working_copy(self.checkout, "docs/folder.md"))
+
     def test_an_unreadable_working_copy_falls_back_to_the_commit_and_says_why(self) -> None:
         git = GitClient()
         git.output(["init", "--quiet"], directory=self.checkout)
@@ -385,12 +406,13 @@ class ReadTests(unittest.TestCase):
 
     def test_any_os_error_while_checking_the_working_copy_is_named_not_raised(self) -> None:
         cases: dict[str, tuple[dict[str, OSError | bool], str]] = {
-            "is_file": (
-                {"is_file": OSError(errno.EIO, "Input/output error")},
+            "stat": (
+                {"stat": OSError(errno.EIO, "Input/output error")},
                 "OSError: Input/output error",
             ),
-            "stat": (
-                {"is_file": True, "stat": FileNotFoundError(errno.ENOENT, "No such file or directory")},
+            # The file goes between the check and the read.
+            "read_bytes": (
+                {"read_bytes": FileNotFoundError(errno.ENOENT, "No such file or directory")},
                 "FileNotFoundError: No such file or directory",
             ),
         }

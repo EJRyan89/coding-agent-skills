@@ -243,7 +243,7 @@ def _is_file(path: Path) -> bool:
 def _discover_directories(paths: Paths) -> dict[str, Path]:
     skills_src = paths.skills_src
     directories: dict[str, Path] = {}
-    for skill_md in sorted(skills_src.rglob("SKILL.md")):
+    for skill_md in file_presence.matching(skills_src, "**/SKILL.md"):
         if not _is_file(skill_md):
             continue
         found_dir = skill_md.parent
@@ -460,8 +460,8 @@ def discover(paths: Paths, source_id: str) -> Source:
 def _metadata_files(meta_dir: Path) -> list[Path]:
     """deploy-meta's *.json entries, sorted, matched as a glob of them matches, or none when there is no deploy-meta.
     It is listed with iterdir, whose listing error raises, where Path.glob answers a folder it cannot list with no
-    entries, which would drop every skill from the source and remove each deployed one. The skills folder's rglob needs
-    no such listing: _reject_links lists every folder under it first and refuses one it cannot list."""
+    entries, which would drop every skill from the source and remove each deployed one. The skills folder is listed with
+    file_presence.matching, which raises for a folder it cannot list too."""
     if not file_presence.is_directory(meta_dir):
         return []
     return sorted(entry for entry in meta_dir.iterdir() if fnmatch.fnmatch(entry.name, "*.json"))

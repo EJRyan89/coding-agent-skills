@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import git_worktrees
 from console import run_main
 from git_client import GitClient, GitError, GitResult, output_lines
@@ -139,10 +140,22 @@ def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Check
     return Checkout(Path(lines[0]), common.parent)
 
 
+def is_folder(path: Path) -> bool:
+    """Whether a folder is at path, through links: False for nothing there or something else. A path whose stat fails
+    raises GitError naming the stat's error, so a place that cannot be looked at is a place git cannot read, never one
+    that is not there."""
+    try:
+        return file_presence.is_directory(path, other_is_absent=True)
+    except OSError as exc:
+        raise GitError(f"could not look at {path}: {exc}") from exc
+
+
 def existing_directory(path: Path) -> Path | None:
-    """path, or the nearest directory above it that exists, where git is started to look it up; None when none does."""
+    """path, or the nearest directory above it that exists, where git is started to look it up; None when none does.
+    A directory whose stat fails raises GitError, as is_folder does, rather than being passed over for the one above
+    it."""
     directory = path
-    while not directory.is_dir():
+    while not is_folder(directory):
         if directory.parent == directory:
             return None
         directory = directory.parent
@@ -151,11 +164,15 @@ def existing_directory(path: Path) -> Path | None:
 
 def below_a_checkout(directory: Path) -> bool:
     """Whether a `.git` in directory or above it marks it as part of a checkout, outside any git directory, where git
-    has no work tree to show."""
+    has no work tree to show. A `.git` whose stat fails raises GitError naming the stat's error, never reads as no
+    mark."""
     absolute = directory.absolute()
     if any(os.path.normcase(part) == ".git" for part in absolute.parts):
         return False
-    return any((folder / ".git").exists() for folder in (absolute, *absolute.parents))
+    try:
+        return any(file_presence.is_occupied(folder / ".git") for folder in (absolute, *absolute.parents))
+    except OSError as exc:
+        raise GitError(f"could not tell whether a .git marks {directory} as a checkout: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -188,7 +205,7 @@ def new(kind: str, name: str) -> int:
     path = hub / WORKTREES / f"{kind}-{name}"
     if CLIENT.quiet_output(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], directory=hub) is not None:
         raise UsageError(f"Branch {branch} already exists.")
-    if path.exists():
+    if file_presence.is_occupied(path):
         raise UsageError(f"{platform_support.normalize(path)} already exists.")
     if git(hub, "check-ignore", "-q", "--no-index", str(path)).returncode != 0:
         raise UsageError(f"{WORKTREES.as_posix()}/ must be ignored in the hub's .gitignore before it holds worktrees.")
@@ -214,7 +231,8 @@ def row(hub: Path, tree: git_worktrees.Worktree) -> Row:
     path = Path(tree.path)
     branch = tree.branch or "(detached)"
     shown = platform_support.normalize(path)
-    if not path.is_dir():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not file_presence.is_directory(path, other_is_absent=True):
         return Row(branch, "missing", "-", "-", "-", shown)
     counted = git(hub, "rev-list", "--left-right", "--count", f"{MAIN}...{tree.head or 'HEAD'}", timeout=None)
     counts = counted.stdout.split()

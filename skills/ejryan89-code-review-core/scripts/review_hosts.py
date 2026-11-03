@@ -151,7 +151,7 @@ def new_claim(run: Path, *, generation: int, now: float) -> dict[str, Any]:
     The generation is the role's retry count when the claim is made: check raises it when it sets the role aside.
     """
     previous = read_claim(run) or {}
-    earlier = sum(1 for _ in run.glob("copilot-isolation-*"))
+    earlier = sum(1 for _ in file_presence.matching(run, "copilot-isolation-*"))
     claim = {
         "attempt": max(previous.get("attempt", 0), earlier) + 1,
         "token": secrets.token_hex(16),
@@ -286,9 +286,12 @@ def isolated_copilot_environment(
     newer package it has downloaded."""
     if not isolation_root.is_absolute():
         raise RuntimeContractError("Copilot isolation root must be absolute")
-    if isolation_root.exists() and not isolation_root.is_dir():
-        raise RuntimeContractError("Copilot isolation root must be a directory")
-    if isolation_root.exists() and any(isolation_root.iterdir()):
+    # A root whose stat fails raises, never reads as no root and so as empty.
+    try:
+        present = file_presence.is_directory(isolation_root)
+    except file_presence.NotADirectory as exc:
+        raise RuntimeContractError("Copilot isolation root must be a directory") from exc
+    if present and any(isolation_root.iterdir()):
         raise RuntimeContractError("Copilot isolation root must be empty")
     home = isolation_root / "home"
     copilot_home = isolation_root / "copilot-home"

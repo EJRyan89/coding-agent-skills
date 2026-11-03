@@ -104,7 +104,7 @@ import json_writer
 from atomic_file import replace_text
 from console import run_main
 from executable_locator import environment_path
-from file_presence import is_directory, is_present
+from file_presence import is_directory, is_present, matching
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
@@ -215,8 +215,11 @@ SKIPPED_DIRECTORIES = frozenset({".git", "node_modules", "bin", "obj", ".venv", 
 
 @dataclass
 class CitedPath:
+    """A path a memory cites: whether anything is there, or None with the reason when that cannot be told."""
+
     path: str
-    exists: bool
+    exists: bool | None
+    unreadable: str | None = None
 
 
 @dataclass
@@ -419,7 +422,7 @@ def memory_entries(memory_dir: Path) -> tuple[list[Path], list[tuple[str, str]]]
     index_identity = target_identity(memory_dir, INDEX_NAME)
     files: list[Path] = []
     others: list[tuple[str, str]] = []
-    for path in sorted(memory_dir.glob("*.md")):
+    for path in matching(memory_dir, "*.md"):
         if target_identity(memory_dir, path.name) == index_identity:
             continue
         problem = entry_problem(path)
@@ -454,9 +457,24 @@ def cited_paths(body: str, bases: list[Path]) -> list[CitedPath]:
             continue
         seen.add(candidate)
         expanded = Path(candidate.replace("~", str(Path.home()), 1)) if candidate.startswith("~") else Path(candidate)
-        exists = expanded.exists() if expanded.is_absolute() else any((base / expanded).exists() for base in bases)
-        cited.append(CitedPath(candidate, exists))
+        exists, unreadable = cited_presence(
+            [expanded] if expanded.is_absolute() else [base / expanded for base in bases]
+        )
+        cited.append(CitedPath(candidate, exists, unreadable))
     return cited
+
+
+def cited_presence(places: list[Path]) -> tuple[bool | None, str | None]:
+    """Whether a file or a folder is at one of the places a cited path may name, following links; None with the
+    reason when none is found and a stat failed, so a path it cannot examine is never reported as not found."""
+    reason: str | None = None
+    for place in places:
+        try:
+            if is_present(place, other_is_absent=True) or is_directory(place, other_is_absent=True):
+                return True, None
+        except OSError as error:
+            reason = reason or flat_text(error.strerror or str(error))
+    return (None, reason) if reason is not None else (False, None)
 
 
 def destination_blocks(files: list[Path]) -> list[tuple[str, int, str, set[str]]]:
@@ -513,7 +531,12 @@ def destination_files(repo: Path | None, instructions: list[Path], user_dir: Pat
         if root is None:
             continue
         for pattern in patterns:
-            found = root.glob(pattern) if "*" in pattern else [root / pattern]
+            # A skipped folder is never listed, so a folder it cannot list inside one is never met.
+            found = (
+                matching(root, pattern, skip=lambda folder: folder.name in SKIPPED_DIRECTORIES)
+                if "*" in pattern
+                else [root / pattern]
+            )
             files.extend(
                 path
                 for path in found
@@ -1225,7 +1248,8 @@ def run(args: argparse.Namespace) -> tuple[int, list[str]]:
         refused = output_refusal(args.output, args.memory_dir, projects)
         if refused:
             return 1, [f"FAILED {refused}"]
-    if not args.memory_dir.is_dir():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not is_directory(args.memory_dir, other_is_absent=True):
         return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
     refused = store_refusal(args.memory_dir)
     if refused:

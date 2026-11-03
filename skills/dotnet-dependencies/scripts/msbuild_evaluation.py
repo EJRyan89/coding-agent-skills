@@ -58,6 +58,7 @@ from xml.etree.ElementTree import Element
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from dotnet_solution import project_path, refusal, same_path
+from file_presence import is_directory, is_present
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
     ASSEMBLY_VERSION,
@@ -70,6 +71,7 @@ from msbuild_reader import (
     item_specs,
     matching_framework,
     nearest_file,
+    os_unreadable,
     parse_xml,
 )
 from msbuild_xml import implicit_sdk, is_sdk_style, local_name
@@ -321,14 +323,27 @@ class Evaluation:
         return self.state.get(key)
 
     def exists(self, text: str) -> bool | None:
+        """MSBuild's `Exists()`: whether a file or a folder is at the path, following links; None, unsettled, for a path
+        the tree refuses or one whose stat fails, which is reported, never answered as not there."""
         path = project_path(self.project.path.parent, text)
-        return None if refusal(path, self.project.sources.tree) is not None else path.exists()
+        if refusal(path, self.project.sources.tree) is not None:
+            return None
+        try:
+            return is_present(path, other_is_absent=True) or is_directory(path, other_is_absent=True)
+        except OSError as error:
+            self.reports.append(os_unreadable(error, path))
+            return None
 
     def folder_above(self, name: str, start: str) -> str | None:
         directory = project_path(self.project.path.parent, start)
         if refusal(directory, self.project.sources.tree) is not None:
             return None
-        found = nearest_file(directory, name)
+        try:
+            found = nearest_file(directory, name)
+        except Unreadable as error:
+            # A candidate it cannot stat leaves the folder unsettled, never read as none above.
+            self.reports.append(error)
+            return None
         return "" if found is None else found.parent.as_posix()
 
     def holds(self, text: str | None) -> bool | None:
@@ -461,7 +476,15 @@ class Evaluation:
         if refused is not None:
             self.not_read(written, refused)
             return
-        if not path.is_file():
+        try:
+            present = is_present(path, other_is_absent=True)
+        except OSError as error:
+            # A file it cannot stat is reported with the stat's reason, as import_nearest reports one, never as not
+            # found.
+            self.reports.append(os_unreadable(error, path))
+            self.state.unsettle()
+            return
+        if not present:
             self.not_read(written, "the file it names is not found")
             return
         try:
@@ -482,19 +505,27 @@ class Evaluation:
             return
         self.points.add("props")
         for name in (BUILD_PROPS, CENTRAL_VERSIONS):
-            found = nearest_file(self.project.path.parent, name)
-            if found is not None:
-                self.import_file(found, found.as_posix())
+            self.import_nearest(name)
 
     def targets_point(self) -> None:
         """Where the common targets import Directory.Build.targets, and NuGet's add the GlobalPackageReference items."""
         if "targets" in self.points:
             return
         self.points.add("targets")
-        found = nearest_file(self.project.path.parent, BUILD_TARGETS)
+        self.import_nearest(BUILD_TARGETS)
+        self.items.append(Placed(GLOBAL_PACKAGES, "Include", None))
+
+    def import_nearest(self, name: str) -> None:
+        """Import the nearest file named `name` at or above the project; a candidate it cannot stat is reported and
+        unsettles what follows, as an import it cannot read does."""
+        try:
+            found = nearest_file(self.project.path.parent, name)
+        except Unreadable as error:
+            self.reports.append(error)
+            self.state.unsettle()
+            return
         if found is not None:
             self.import_file(found, found.as_posix())
-        self.items.append(Placed(GLOBAL_PACKAGES, "Include", None))
 
     def target(self, target: Element) -> None:
         """Report each item inside a Target, which MSBuild defines only when the target runs."""

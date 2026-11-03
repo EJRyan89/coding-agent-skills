@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import file_presence
 import json_reader
 import json_writer
 from job_pool import Terminated, refuse_termination, run_process
@@ -501,7 +502,7 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertEqual([], lock_problems(mutation_lock, development + mutation, locked))
         # Every workflow is read, and one that installs no lock may run no pip install.
         expected = {"validate.yml": (("requirements-dev.txt",), 2), "mutation.yml": (("requirements-mutation.txt",), 3)}
-        workflows = sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.y*ml"))
+        workflows = file_presence.matching(REPOSITORY_ROOT / ".github" / "workflows", "*.y*ml")
         self.assertLessEqual(set(expected), {workflow.name for workflow in workflows})
         for workflow in workflows:
             locks, installs = expected.get(workflow.name, ((), 0))

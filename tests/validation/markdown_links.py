@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import file_presence
 from validation_support import (
     COMMONMARK_CODE_SPAN,
     OPERATIONS_CONTRACT,
@@ -72,11 +73,13 @@ def markdown_link_problems(root: Path) -> list[str]:
                     continue
                 location, _, fragment = target.partition("#")
                 destination = path.parent / unquote(location) if location else path
-                if not destination.exists():
+                # A destination whose stat fails raises, never reads as one that does not exist or holds no heading.
+                is_file = file_presence.is_present(destination, other_is_absent=True)
+                if not is_file and not file_presence.is_directory(destination, other_is_absent=True):
                     problems.append(f"{name}:{number} links to {target}, which does not exist")
                 elif (
                     fragment
-                    and destination.is_file()
+                    and is_file
                     and destination.suffix.casefold() == ".md"
                     and unquote(fragment) not in heading_slugs(destination.read_text(encoding="utf-8"))
                 ):
@@ -185,7 +188,7 @@ class _TestIndex:
         """Where a document's cited suite is, as the citation's message names it, and the files there."""
         if "/" in suite or document in BARE_SUITE_HOMES:
             location = suite if "/" in suite else f"{BARE_SUITE_HOMES[document]}/{suite}"
-            return location, [self.root / location] if (self.root / location).is_file() else []
+            return location, [self.root / location] if file_presence.is_present(self.root / location) else []
         return f"any file named {suite}", [path for path in self.python if path.name == suite]
 
     def defined_anywhere(self, name: str) -> bool:
@@ -273,13 +276,15 @@ def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> s
         return _id_problem(index, document, citation)
     if step := skill_step.fullmatch(span):
         path = root / step.group(1)
-        if not path.is_file():
+        # A file whose stat fails raises, never reported as one that does not exist.
+        if not file_presence.is_present(path, other_is_absent=True):
             return f"cites {span}, but {step.group(1)} does not exist"
         if step.group(2) not in heading_slugs(path.read_text(encoding="utf-8")):
             return f"cites {span}, which names no heading of {step.group(1)}"
         return None
     if workflow.fullmatch(span):
-        return None if (root / span).is_file() else f"cites {span}, but {span} does not exist"
+        present = file_presence.is_present(root / span, other_is_absent=True)
+        return None if present else f"cites {span}, but {span} does not exist"
     return f"names {span}, which is not a test ID, a skill's step, or a workflow by its path from the repository root"
 
 
@@ -305,12 +310,20 @@ def _use_problem(root: Path, span: str) -> str | None:
         return f"names {span}, which is not a module and a name, <module>:<name> or <module>:<class>.<name>"
     module, name, member = use.groups()
     parts = module.split(".")
-    bases = [root, *sorted((*root.glob("skills/*/scripts"), *root.glob(".claude/skills/*/scripts")))]
+    bases = [
+        root,
+        *sorted(
+            (
+                *file_presence.matching(root, "skills/*/scripts"),
+                *file_presence.matching(root, ".claude/skills/*/scripts"),
+            )
+        ),
+    ]
     found = [
         candidate
         for base in bases
         for candidate in (base / Path(*parts[:-1]) / f"{parts[-1]}.py", base / Path(*parts) / "__init__.py")
-        if candidate.is_file()
+        if file_presence.is_present(candidate, other_is_absent=True)
     ]
     if not found:
         return f"uses {span}, but no module {module} is importable from the repository root or a skill's scripts"
@@ -420,7 +433,8 @@ def lessons_ledger_problems(root: Path) -> list[str]:
     repository root and the skills' scripts, and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
     document = "docs/lessons.md"
     path = root / document
-    if not path.is_file():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not file_presence.is_present(path, other_is_absent=True):
         return [f"{document} does not exist"]
     lines = _outside_fences(path.read_text(encoding="utf-8"))
     start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Patterns"), None)

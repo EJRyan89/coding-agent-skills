@@ -11,6 +11,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+import file_presence
 import frontmatter
 from job_pool import refuse_termination, run_process
 from toolchain import (
@@ -221,7 +222,9 @@ def _executed_shell_tokens(root: Path, unreadable: list[str]) -> set[tuple[str, 
     the rendered result with that context's finder through run_tool, and asserts the run's output against that value.
     """
     executed: set[tuple[str, str]] = set()
-    suites = sorted(path for path in (root / "tests" / "deployer").glob("*.py") if is_test_script(path))
+    suites = sorted(
+        path for path in file_presence.matching(root / "tests" / "deployer", "*.py") if is_test_script(path)
+    )
     for _, _, tree in python_trees(suites, root, unreadable):
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -242,7 +245,11 @@ def shell_token_problems(root: Path) -> list[str]:
     unquoted: list[str] = []
     first: dict[tuple[str, str], tuple[str, int]] = {}
     files = sorted(
-        (path for path in (root / "skills").rglob("*") if path.is_file()),
+        (
+            path
+            for path in file_presence.matching(root / "skills", "**/*")
+            if file_presence.is_present(path, other_is_absent=True)
+        ),
         key=lambda path: path.relative_to(root).as_posix(),
     )
     for path in files:
@@ -287,7 +294,9 @@ def interpreter_problems(root: Path) -> list[str]:
     A script under scripts/ runs from the checkout in its suite, unrendered, so it names the interpreter itself.
     """
     problems: list[str] = []
-    for path in sorted((root / "skills").rglob("*.md"), key=lambda found: found.relative_to(root).as_posix()):
+    for path in sorted(
+        file_presence.matching(root / "skills", "**/*.md"), key=lambda found: found.relative_to(root).as_posix()
+    ):
         name = path.relative_to(root).as_posix()
         for context, start, text in _shell_units(path):
             for offset, line in enumerate(text.split("\n")):
@@ -328,9 +337,17 @@ def run_bash_suite(target: str) -> None:
 
 def shell_script_targets(root: Path) -> list[Path]:
     """Every Bash script under skills/, and under each repository skill's scripts/."""
-    scripts = [path for path in (root / "skills").rglob("*") if path.is_file() and is_shell_script(path)]
+    scripts = [
+        path
+        for path in file_presence.matching(root / "skills", "**/*")
+        if file_presence.is_present(path, other_is_absent=True) and is_shell_script(path)
+    ]
     for skill in repository_skill_directories(root):
-        scripts += [path for path in (skill / "scripts").rglob("*") if path.is_file() and is_shell_script(path)]
+        scripts += [
+            path
+            for path in file_presence.matching(skill / "scripts", "**/*")
+            if file_presence.is_present(path, other_is_absent=True) and is_shell_script(path)
+        ]
     return sorted(scripts, key=lambda path: path.relative_to(root).as_posix().casefold())
 
 

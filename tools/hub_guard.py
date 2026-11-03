@@ -358,10 +358,11 @@ def guarded_hub_of_repository(path: Path) -> Path | None:
     """The guarded hub whose own git directory path names, as --git-dir or GIT_DIR does; None for a worktree's, another
     repository's, or a path git answers names no repository, where git runs nothing.
 
-    Raises GitError when git cannot tell, so each caller refuses rather than read the path as no guarded hub's.
+    Raises GitError when git cannot tell, or the path or the folder above it cannot be looked at, so each caller
+    refuses rather than read the path as no guarded hub's.
     """
-    directory = path if path.is_dir() else path.parent
-    if not directory.is_dir():
+    directory = path if worktrees.is_folder(path) else path.parent
+    if not worktrees.is_folder(directory):
         return None
     arguments = ["--git-dir", str(path), "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]
     try:
@@ -1080,9 +1081,10 @@ def may_be_alias(call: GitCall) -> bool:
 
 def alias_lookups(place: Place) -> list[AliasLookup]:
     """Where git reads the aliases of a call at a settled place: the configuration of the repository it uses, found
-    from where it starts or named, which a worktree shares with its hub. A place that does not exist runs nothing."""
+    from where it starts or named, which a worktree shares with its hub. A place that does not exist runs nothing; one
+    that cannot be looked at raises GitError, as a place git cannot read does, never reads as one that runs nothing."""
     directory = place.start or place.tree
-    if directory is None or not directory.is_dir():
+    if directory is None or not worktrees.is_folder(directory):
         return []
     checkout = checkout_of(place.tree) if place.tree is not None and place.tree == place.start else None
     top = checkout.toplevel if checkout is not None else place.tree

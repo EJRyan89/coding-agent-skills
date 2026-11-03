@@ -65,7 +65,7 @@ from closing_references import (
     reference_digits,
 )
 from console import run_main
-from file_presence import NotADirectory, is_directory
+from file_presence import NotADirectory, is_directory, is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -131,9 +131,12 @@ def find_template(top: Path) -> Path | None:
             continue
         except OSError as exc:
             raise PullRequestError(f'cannot read "{directory}": {flat_text(str(exc))}') from exc
-        for entry in sorted(directory.iterdir()):
-            if entry.name.casefold() == TEMPLATE_NAME and entry.is_file():
-                return entry
+        try:
+            for entry in sorted(directory.iterdir()):
+                if entry.name.casefold() == TEMPLATE_NAME and is_present(entry, other_is_absent=True):
+                    return entry
+        except OSError as exc:
+            raise PullRequestError(f'cannot read "{exc.filename or directory}": {flat_text(str(exc))}') from exc
     return None
 
 

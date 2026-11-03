@@ -9,11 +9,12 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from file_presence import NotADirectory, NotAFile, is_directory, is_occupied, is_present
+from file_presence import NotADirectory, NotAFile, is_directory, is_occupied, is_present, matching
 
 # The errno values Python gives a directory and an invalid argument on Windows and on Linux alike, written out so the
 # refusal is held to them, not to the constants it uses.
@@ -259,3 +260,125 @@ class EveryHelperTests(unittest.TestCase):
             with self.subTest(helper=helper.__name__), self.assertRaises(OSError) as raised:
                 helper(Path("a\0b"))
             self.assertEqual(EINVAL, raised.exception.errno)
+
+
+# The glob patterns the repository lists folders with, each matched over a tree that holds a hidden file, a name a
+# bracket and a question mark tell apart, a nested folder, and a file whose name is one of the folders'.
+MATCHED_PATTERNS = (
+    "*",
+    "*.py",
+    "**/*",
+    "**/*.py",
+    "*/SKILL.md",
+    "**/scripts/*",
+    "sub/*",
+    "s?b/*.py",
+    "[ab].*",
+    "**/deep/*.py",
+    "*.y*ml",
+)
+TREE = (
+    "a.py",
+    "b.txt",
+    ".hidden.py",
+    "ci.yaml",
+    "sub/c.py",
+    "sub/SKILL.md",
+    "sub/deep/d.py",
+    "sub/scripts/e.py",
+    "other/SKILL.md",
+    "other/scripts/deep/f.py",
+)
+
+
+class MatchingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        for name in TREE:
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text("", encoding="utf-8")
+
+    def test_it_matches_what_path_glob_matches_in_a_folder_it_can_list(self) -> None:
+        for pattern in MATCHED_PATTERNS:
+            with self.subTest(pattern=pattern):
+                self.assertEqual(sorted(self.root.glob(pattern)), matching(self.root, pattern))
+
+    def test_nothing_at_the_folder_matches_nothing_and_something_else_is_refused(self) -> None:
+        self.assertEqual([], matching(self.root / "missing", "*"))
+        self.assertEqual([], matching(self.root / "a.py" / "below", "*"))
+        with self.assertRaises(NotADirectory):
+            matching(self.root / "a.py", "*")
+
+    def test_a_folder_it_cannot_list_raises_where_glob_would_match_nothing(self) -> None:
+        # The folder itself, one a wildcard part enters, and one a `**` part enters, each by every pattern form.
+        real = os.scandir
+        for unreadable, pattern in (
+            (self.root, "*.py"),
+            (self.root / "sub", "*/SKILL.md"),
+            (self.root / "sub" / "deep", "**/*.py"),
+            (self.root / "other" / "scripts", "**/scripts/*"),
+        ):
+            failure = PermissionError(errno.EACCES, "denied", str(unreadable))
+
+            def listing(path: Path, unreadable: Path = unreadable, failure: OSError = failure) -> object:
+                if Path(path) == unreadable:
+                    raise failure
+                return real(path)
+
+            with (
+                self.subTest(folder=unreadable.relative_to(self.root).as_posix(), pattern=pattern),
+                mock.patch.object(os, "scandir", side_effect=listing),
+                self.assertRaises(PermissionError) as raised,
+            ):
+                matching(self.root, pattern)
+            self.assertIs(failure, raised.exception)
+
+    def test_a_stat_of_the_folder_that_fails_reaches_the_caller(self) -> None:
+        for failure in STAT_FAILURES:
+            with (
+                self.subTest(failure=failure),
+                mock.patch.object(Path, "stat", side_effect=failure),
+                self.assertRaises(OSError) as raised,
+            ):
+                matching(self.root, "*")
+            self.assertIs(failure, raised.exception)
+
+    def test_a_skipped_folder_is_never_listed_and_one_it_cannot_list_elsewhere_still_raises(self) -> None:
+        (self.root / "sub" / "node_modules" / "deep").mkdir(parents=True)
+        (self.root / "sub" / "node_modules" / "deep" / "x.py").write_text("", encoding="utf-8")
+        real = os.scandir
+
+        def refusing(folder: Path) -> Any:
+            def listing(path: Any = ".") -> Any:
+                if Path(path) == folder:
+                    raise PermissionError(errno.EACCES, "denied", str(folder))
+                return real(path)
+
+            return listing
+
+        def skip(folder: Path) -> bool:
+            return folder.name == "node_modules"
+
+        with mock.patch.object(os, "scandir", refusing(self.root / "sub" / "node_modules" / "deep")):
+            found = matching(self.root, "**/*.py", skip=skip)
+            self.assertNotIn(self.root / "sub" / "node_modules" / "deep" / "x.py", found)
+            self.assertIn(self.root / "sub" / "c.py", found)
+            self.assertIn(self.root / "sub" / "node_modules", matching(self.root, "sub/*", skip=skip))
+        with (
+            mock.patch.object(os, "scandir", refusing(self.root / "sub" / "deep")),
+            self.assertRaises(PermissionError),
+        ):
+            matching(self.root, "**/*.py", skip=skip)
+
+    def test_a_pattern_it_cannot_read_alike_on_every_python_is_refused(self) -> None:
+        for pattern in ("", "/abs", "a//b", "./a", "../a", "a/..", "**", "sub/**"):
+            with self.subTest(pattern=pattern), self.assertRaises(ValueError):
+                matching(self.root, pattern)
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_double_star_enters_no_link_to_a_folder_but_a_wildcard_part_does(self) -> None:
+        (self.root / "linked").symlink_to(self.root / "sub", target_is_directory=True)
+        self.assertEqual(sorted(self.root.glob("**/c.py")), matching(self.root, "**/c.py"))
+        self.assertIn(self.root / "linked" / "c.py", matching(self.root, "*/c.py"))

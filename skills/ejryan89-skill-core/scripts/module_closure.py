@@ -13,6 +13,8 @@ import ast
 import shutil
 from pathlib import Path
 
+import file_presence
+
 # This module's own directory: ejryan89-skill-core's scripts, in the checkout or wherever it was deployed.
 SCRIPTS = Path(__file__).resolve().parent
 # The calls that import a module named by a string, whose literal argument counts as an import.
@@ -38,7 +40,7 @@ def imported_names(source: str) -> set[str]:
 def imports_of(path: Path, scripts: Path = SCRIPTS) -> list[str]:
     """The modules of `scripts` the file at `path`, such as another skill's script, imports directly, sorted."""
     names = imported_names(path.read_text(encoding="utf-8"))
-    return sorted(name for name in names if (scripts / f"{name}.py").is_file())
+    return sorted(name for name in names if file_presence.is_present(scripts / f"{name}.py", other_is_absent=True))
 
 
 def closure(*modules: str, scripts: Path = SCRIPTS) -> list[str]:
@@ -52,7 +54,11 @@ def closure(*modules: str, scripts: Path = SCRIPTS) -> list[str]:
             continue
         found.add(module)
         source = (scripts / f"{module}.py").read_text(encoding="utf-8")
-        pending += [name for name in imported_names(source) if (scripts / f"{name}.py").is_file()]
+        pending += [
+            name
+            for name in imported_names(source)
+            if file_presence.is_present(scripts / f"{name}.py", other_is_absent=True)
+        ]
     return sorted(found)
 
 

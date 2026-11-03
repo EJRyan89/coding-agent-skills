@@ -9,6 +9,7 @@ import unittest
 from collections.abc import Collection, Mapping
 from pathlib import Path
 
+import file_presence
 from python_checks import MYPY_CACHE_VARIABLE
 from validation_support import REPOSITORY_ROOT
 
@@ -639,7 +640,7 @@ def token_claim_problems(texts: Mapping[str, str], design: str) -> list[str]:
 def unknown_workflow_problems(directory: Path, known: Collection[str]) -> list[str]:
     """Every entry of the workflows directory the policy does not know by name, which GitHub may run unguarded, and
     every known workflow the directory lacks."""
-    entries = {entry.name for entry in directory.iterdir()} if directory.is_dir() else set()
+    entries = {entry.name for entry in directory.iterdir()} if file_presence.is_directory(directory) else set()
     problems = [
         f"{WORKFLOWS_DIRECTORY}/{name} is not a workflow the policy knows; add it to WORKFLOW_GUARDS with its triggers,"
         " actions, and crons"

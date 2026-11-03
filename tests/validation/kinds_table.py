@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
 
+import file_presence
 from validation_support import (
     REPOSITORY_ROOT,
     docstring_ids,
@@ -56,8 +57,12 @@ KINDS_MODULE = "deployer/kinds.py"
 
 def _scanned_files(root: Path) -> list[Path]:
     """The deployer's code, other than the table."""
-    files = [root / "deploy.py", *(root / "deployer").rglob("*.py")]
-    return [path for path in files if path.is_file() and path.relative_to(root).as_posix() != KINDS_MODULE]
+    files = [root / "deploy.py", *file_presence.matching(root / "deployer", "**/*.py")]
+    return [
+        path
+        for path in files
+        if file_presence.is_present(path, other_is_absent=True) and path.relative_to(root).as_posix() != KINDS_MODULE
+    ]
 
 
 def _relative_import_aliases(tree: ast.Module, package: str) -> dict[str, str]:

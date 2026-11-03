@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import os
 import stat
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -223,6 +226,15 @@ class ReaderTests(unittest.TestCase):
         nearer = self.write("src/Directory.Packages.props", "<Project />")
         self.assertEqual(nearer, nearest_file(self.root / "src" / "App", "Directory.Packages.props"))
         self.assertIsNone(nearest_file(self.root / "src" / "App", "Nothing.Above.props"))
+
+    def test_the_nearest_file_passes_over_a_folder_of_its_name_and_refuses_one_it_cannot_stat(self) -> None:
+        props = self.write("Directory.Packages.props", "<Project />")
+        (self.root / "src" / "App" / "Directory.Packages.props").mkdir(parents=True)
+        self.assertEqual(props, nearest_file(self.root / "src" / "App", "Directory.Packages.props"))
+        nearer = self.root / "src" / "Directory.Packages.props"
+        with stat_failing_at(nearer), self.assertRaises(msbuild_reader.Unreadable) as raised:
+            nearest_file(self.root / "src" / "App", "Directory.Packages.props")
+        self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_packages_config_lists_each_package_with_its_version_and_framework(self) -> None:
         self.assertEqual(
@@ -467,6 +479,19 @@ class PathBoundTests(unittest.TestCase):
             (base / marker).mkdir()
             self.assertEqual(base, examined_tree(base))
 
+    def test_a_checkout_marker_it_cannot_stat_is_refused_never_read_as_no_checkout(self) -> None:
+        base = self.root / "repo" / "src"
+        base.mkdir(parents=True)
+        marker = ".dotnet-dependencies-test-checkout"
+        (self.root / marker).mkdir()
+        with (
+            mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker),
+            stat_failing_at(self.root / "repo" / marker),
+            self.assertRaises(PermissionError) as raised,
+        ):
+            examined_tree(base)
+        self.assertEqual(str(self.root / "repo" / marker), raised.exception.filename)
+
     def test_a_read_takes_a_regular_file_within_the_bound_and_refuses_any_other(self) -> None:
         path = self.root / "Lib.csproj"
         path.write_bytes(b"x" * 16)
@@ -546,3 +571,37 @@ def test_a_framework_is_one_framework_whichever_form_names_it(expected: bool, fi
 
 def test_a_framework_key_is_the_name_case_folded() -> None:
     assert framework_key(".NETFoo,Version=v1.0") == ".netfoo,version=v1.0"
+
+
+@contextlib.contextmanager
+def stat_failing_at(target: Path) -> Iterator[None]:
+    """A stat of `target` alone fails, as on a path the script may not examine: Path.stat, os.stat, and os.lstat raise
+    PermissionError for it, and Path's and os.path's presence predicates answer False for it, as Python 3.14 and later
+    do there, so a predicate left on the path reads it as absent. Every other path is read as it is."""
+
+    def refused(name: object) -> bool:
+        return isinstance(name, (str, os.PathLike)) and Path(name) == target
+
+    def raising(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(name: Any, *rest: Any, **options: Any) -> Any:
+            if refused(name):
+                raise PermissionError(errno.EACCES, "Access is denied", str(name))
+            return real(name, *rest, **options)
+
+        return call
+
+    def answering_false(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(name: Any, *rest: Any, **options: Any) -> Any:
+            return False if refused(name) else real(name, *rest, **options)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", raising(Path.stat)))
+        for name in ("stat", "lstat"):
+            stack.enter_context(mock.patch.object(os, name, raising(getattr(os, name))))
+        for name in ("exists", "is_file", "is_dir"):
+            stack.enter_context(mock.patch.object(Path, name, answering_false(getattr(Path, name))))
+        for name in ("exists", "lexists", "isfile", "isdir"):
+            stack.enter_context(mock.patch.object(os.path, name, answering_false(getattr(os.path, name))))
+        yield

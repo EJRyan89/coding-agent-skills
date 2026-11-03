@@ -23,6 +23,7 @@ from typing import IO, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from device_names import is_reserved_device_name
 from executable_locator import find_executable
 from git_client import OBJECT_NAME as GIT_OBJECT_ID
@@ -212,6 +213,18 @@ GIT_STATUS_ALLOWED = {
     "_run_git": "fails closed: any failure raises a RuntimeContractError naming git's stderr",
     "_runner_blob_reader.read": "fails closed: a blob git cannot print fails the runtime contract",
     "read_blob": "fails closed: a size or a blob git cannot give fails the runtime contract",
+}
+
+
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "materialize_reviewer": "removes the folder it made, part way filled, before raising the failure that stopped it, "
+    "which an error of the removal must not replace",
+    "materialize_source_snapshot": "removes the folder it made, part way filled, before raising the failure that "
+    "stopped it, which an error of the removal must not replace",
+    "materialize_source_snapshot_from_github": "removes the folder it made, part way filled, before raising the "
+    "failure that stopped it, which an error of the removal must not replace",
 }
 
 
@@ -1019,7 +1032,8 @@ def load_manifest_from_file(path: Path) -> dict[str, Any]:
     manifest = validate_adapter_manifest(value)
     for relative in local_reviewer_files(manifest):
         target = path.parent.joinpath(*PurePosixPath(relative).parts)
-        if not target.is_file():
+        # A path whose stat fails raises, never reported as one that is not there.
+        if not file_presence.is_present(target, other_is_absent=True):
             raise RuntimeContractError(f"Local condition script is missing beside the manifest: {relative}")
         _require_safe_snapshot_path(path.parent, target)
     return manifest
@@ -1108,7 +1122,7 @@ def materialize_reviewer(
     hash under suite_profiles, and the hashes returned, which the record keeps, name it by its `suite:` reference.
     """
     normalized = validate_adapter_manifest(manifest)
-    if destination.exists() and any(destination.iterdir()):
+    if file_presence.is_directory(destination) and any(destination.iterdir()):
         raise RuntimeContractError("Reviewer materialization destination must be empty")
     if guideline_commit is not None:
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", guideline_commit):
@@ -1974,7 +1988,7 @@ def snapshot_bytes(root: Path, metadata: dict[str, Any]) -> int:
 
 
 def _prepare_destination(destination: Path) -> None:
-    if destination.exists() and any(destination.iterdir()):
+    if file_presence.is_directory(destination) and any(destination.iterdir()):
         raise RuntimeContractError("Source snapshot destination must be empty")
     destination.mkdir(parents=True, exist_ok=True)
 

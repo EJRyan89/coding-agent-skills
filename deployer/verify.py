@@ -21,6 +21,13 @@ from .paths import Paths, copilot_home
 from .render import CODEX_METADATA
 from .report import ReportLine, copilot_home_note, paragraph, print_report
 
+# The removals here that read a folder they could not remove as gone, each with why that is the answer it should
+# give.
+PRESENCE_ALLOWED = {
+    "_verify": "removes its throwaway work folder under the temporary directory once the runtimes are listed; "
+    "nothing reads it after, and an error of the removal must not replace the report",
+}
+
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.mkdtemp": "verify starts each runtime in an empty directory under the system temporary directory, "

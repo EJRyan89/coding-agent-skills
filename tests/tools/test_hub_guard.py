@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -322,6 +322,89 @@ class UnreadableCheckoutFileTests(GuardTestCase):
             with self.subTest(kind=kind), mock.patch.object(worktrees.CLIENT, "output", side_effect=failure):
                 self.assertIsNone(self.edit(target))
                 self.assertIn(f"hub guard skipped: GitError: git failed as {kind}", self.stderr)
+
+
+@contextlib.contextmanager
+def unstatable(*paths: Path) -> Iterator[None]:
+    """Each of paths as one whose stat is refused looks to Python 3.14 and later: Path.stat, os.stat, and os.lstat
+    raise a permission error naming it, and Path's and os.path's presence tests answer False. Every other path is read
+    as it is."""
+    keys = {os.path.normcase(os.path.normpath(path)) for path in paths}
+
+    def refused(candidate: Any) -> bool:
+        return isinstance(candidate, str | os.PathLike) and os.path.normcase(os.path.normpath(candidate)) in keys
+
+    def raising(original: Any) -> Any:
+        def call(candidate: Any, *args: Any, **kwargs: Any) -> Any:
+            if refused(candidate):
+                raise PermissionError(13, "Permission denied", str(candidate))
+            return original(candidate, *args, **kwargs)
+
+        return call
+
+    def answering_false(original: Any) -> Any:
+        def call(candidate: Any, *args: Any, **kwargs: Any) -> Any:
+            return False if refused(candidate) else original(candidate, *args, **kwargs)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", raising(Path.stat)))
+        for name in ("stat", "lstat"):
+            stack.enter_context(mock.patch.object(os, name, raising(getattr(os, name))))
+        for name in ("exists", "is_dir", "is_file"):
+            stack.enter_context(mock.patch.object(Path, name, answering_false(getattr(Path, name))))
+        for name in ("exists", "lexists", "isdir", "isfile"):
+            stack.enter_context(mock.patch.object(os.path, name, answering_false(getattr(os.path, name))))
+        yield
+
+
+class UnstatablePlaceTests(GuardTestCase):
+    """A place whose stat fails is one the guard cannot look at, which may be a guarded hub's: it is never read as a
+    place that is not there, passed over for the folder above it, or read as one that runs nothing, so a command naming
+    git there is refused and an edit there is protected."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.outside = self.root / "outside"
+        self.outside.mkdir()
+        self.place = self.root / "unreadable"
+        self.place.mkdir()
+        self.unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        hub_guard.guarded_hub_at.cache_clear()
+        hub_guard.guarded_hub_of_repository.cache_clear()
+        self.addCleanup(hub_guard.guarded_hub_at.cache_clear)
+        self.addCleanup(hub_guard.guarded_hub_of_repository.cache_clear)
+
+    def test_a_start_that_cannot_be_looked_at_is_never_passed_over_for_the_folder_above_it(self) -> None:
+        with unstatable(self.place), self.assertRaises(git_client.GitError) as raised:
+            worktrees.existing_directory(self.place / "below")
+        self.assertIn("Permission denied", str(raised.exception))
+
+    def test_a_git_mark_that_cannot_be_looked_at_is_never_read_as_none(self) -> None:
+        with unstatable(self.place / ".git"), self.assertRaises(git_client.GitError):
+            worktrees.below_a_checkout(self.place)
+
+    def test_a_git_directory_and_the_folder_above_it_that_cannot_be_looked_at_are_no_place_without_a_hub(self) -> None:
+        repository = self.hub / ".git"
+        with unstatable(repository, self.hub), self.assertRaises(git_client.GitError) as raised:
+            hub_guard.guarded_hub_of_repository(repository)
+        self.assertTrue(raised.exception.answered)
+
+    def test_a_start_that_cannot_be_looked_at_is_never_read_as_one_that_reads_no_alias(self) -> None:
+        place = hub_guard.Place(self.place, self.place)
+        with unstatable(self.place), self.assertRaises(git_client.GitError):
+            hub_guard.alias_lookups(place)
+
+    def test_a_command_naming_git_at_a_place_that_cannot_be_looked_at_is_refused(self) -> None:
+        with unstatable(self.place):
+            self.assertEqual("deny", self.bash(f'git -C "{self.place.as_posix()}" status', self.outside, self.unshared))
+        self.assertIn("GitError", self.reason)
+
+    def test_an_edit_in_a_hub_git_directory_that_cannot_be_looked_at_is_refused(self) -> None:
+        with unstatable(self.hub / ".git", self.hub):
+            self.assertEqual("deny", self.edit(self.hub / ".git" / "config"))
+        self.assertEqual(hub_guard.DENY_REASON, self.reason)
 
 
 class EndToEndTests(GuardTestCase):
