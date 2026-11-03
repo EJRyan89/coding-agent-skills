@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from git_client import GitError
+from git_client import GitError, output_line
 from markdown_sections import HTML_COMMENT
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
@@ -102,7 +102,7 @@ def window_start(root: Path, merge_base: str) -> str | None:
     """The commit COMMITS_BEFORE_MERGE_BASE first-parent steps before the merge base, or None when the history is
     shorter, so the walk reaches the first commit."""
     found = _git(root, "rev-list", "--first-parent", f"--skip={COMMITS_BEFORE_MERGE_BASE}", "--max-count=1", merge_base)
-    return found.strip() or None
+    return output_line(found) or None
 
 
 def earlier_states(root: Path, main: str, start: str | None, paths: list[str]) -> dict[str, list[tuple[str, str, str]]]:
@@ -146,7 +146,7 @@ def find_reverts(root: Path, head: str = "HEAD", main: str = RELEASE_BRANCH) -> 
     main's first-parent line, from main's tip back to COMMITS_BEFORE_MERGE_BASE commits before that merge base, and
     differs from main's current version. The tree is compared, never the branch's history, so a branch that merged
     main in is judged by what it holds. The newest such commit is the one named."""
-    merge_base = _git(root, "merge-base", head, main).strip()
+    merge_base = output_line(_git(root, "merge-base", head, main))
     changed = changed_blobs(root, merge_base, head)
     current = current_blobs(root, main, sorted(changed))
     candidates = sorted(path for path, blob in changed.items() if current.get(path) != blob)
@@ -185,7 +185,7 @@ def silent_revert_problems(root: Path, body: str | None = None) -> list[str]:
                 "history; fetch it with `git fetch origin main`"
             ]
         # git_output raises on a failure, so a clone git cannot read is named, never taken for one that is not shallow.
-        if git_output(root, "rev-parse", "--is-shallow-repository").strip() == "true":
+        if output_line(git_output(root, "rev-parse", "--is-shallow-repository")) == "true":
             return [
                 "this clone is shallow, so the silent-revert check cannot read main's history; fetch it with "
                 "`git fetch --unshallow`"
@@ -194,7 +194,7 @@ def silent_revert_problems(root: Path, body: str | None = None) -> list[str]:
         if not reverts:
             return []
         if body is None:
-            merge_base = _git(root, "merge-base", "HEAD", RELEASE_BRANCH).strip()
+            merge_base = output_line(_git(root, "merge-base", "HEAD", RELEASE_BRANCH))
             body = _git(root, "log", "--format=%B", f"{merge_base}..HEAD")
     except (GitError, ReleaseNotesError) as error:
         return [f"the silent-revert check cannot read the history: {error}"]

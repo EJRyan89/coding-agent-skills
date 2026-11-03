@@ -250,7 +250,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from bounded_process import without_repository_variables
 from console import run_main
-from git_client import GitClient, GitError, output_lines
+from git_client import GitClient, GitError, output_line, output_lines
 from seconds_option import positive_seconds
 
 from deployer import fsops, platform_support
@@ -391,9 +391,9 @@ def foreign_checkout(git: GitClient, directory: Path) -> str | None:
         if origin_branches_holding_head(git, directory):
             return None
         return "its HEAD is detached at a commit no branch of origin holds"
-    name = branch.strip()
-    remote = (git.quiet_output(["config", "--get", f"branch.{name}.remote"], directory=directory) or "").strip()
-    merge = (git.quiet_output(["config", "--get", f"branch.{name}.merge"], directory=directory) or "").strip()
+    name = output_line(branch)
+    remote = output_line(git.quiet_output(["config", "--get", f"branch.{name}.remote"], directory=directory) or "")
+    merge = output_line(git.quiet_output(["config", "--get", f"branch.{name}.merge"], directory=directory) or "")
     if merge.startswith("refs/pull/"):
         return f"its branch {name} follows {merge}, a pull request's ref"
     if remote not in OWN_REMOTES:

@@ -7,6 +7,7 @@ as the entry recovery stops at, which the adapter raises as Refused.
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -142,12 +143,18 @@ def _copilot_listing(path: Path) -> object:
     return discovery.parse_copilot(text_of(path))
 
 
+def _app_server_lines(path: Path) -> list[str]:
+    """The lines discovery's converse reads from the app server: a text stream's, which end at a newline alone, never at
+    U+2028 or the other characters splitlines() also breaks on, which a skill's path or description can hold."""
+    return list(io.StringIO(text_of(path), newline=None))
+
+
 def _codex_listing(path: Path) -> object:
-    return discovery.parse_codex(text_of(path).splitlines())
+    return discovery.parse_codex(_app_server_lines(path))
 
 
 def _codex_refusals(path: Path) -> object:
-    return discovery.parse_codex_refusals(text_of(path).splitlines())
+    return discovery.parse_codex_refusals(_app_server_lines(path))
 
 
 # The app server writes one JSON-RPC message a line, and the readers take the last answer to their request.

@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
-from git_client import GitClient, GitError, GitResult
+from git_client import GitClient, GitError, GitResult, output_lines
 from markdown_sections import HTML_COMMENT, markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 from release_tags import is_release_tag, last_release
@@ -205,7 +205,7 @@ def _notes_at(root: Path, revision: str) -> str | None:
     """The notes file as the revision holds it, or None when the revision holds no such file. ReleaseNotesError, with
     git's reason, when git cannot read the revision, so a failure never reads as a missing file."""
     listed = git_output(root, "ls-tree", "-z", "--name-only", revision, "--", UPGRADE_NOTES)
-    if not listed.strip():
+    if not listed:
         return None
     return git_output(root, "show", f"{revision}:{UPGRADE_NOTES}")
 
@@ -218,7 +218,9 @@ def added_unreleased_entries(root: Path, sha: str) -> list[NotesEntry]:
 
 def notes_commits(root: Path, start: str, end: str) -> set[str]:
     """The commits reachable from end and not from start that change the notes file, merge commits left out."""
-    return set(git_output(root, "log", "--no-merges", "--format=%H", f"{start}..{end}", "--", UPGRADE_NOTES).split())
+    return set(
+        output_lines(git_output(root, "log", "--no-merges", "--format=%H", f"{start}..{end}", "--", UPGRADE_NOTES))
+    )
 
 
 def range_entries(root: Path, start: str, end: str) -> list[SourcedEntry]:

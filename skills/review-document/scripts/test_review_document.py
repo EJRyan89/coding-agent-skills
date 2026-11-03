@@ -2058,3 +2058,16 @@ def test_a_document_path_holding_a_hash_it_cannot_stat_is_refused_never_read_as_
     with stat_failing_at(document), pytest.raises(review_document.DocumentError) as raised:
         review_document.pull_reference(str(document))
     assert str(raised.value).startswith(f"cannot tell whether {document} is a file: ")
+
+
+def test_an_unborn_branch_is_looked_up_by_its_whole_name() -> None:
+    asked: list[list[str]] = []
+
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        asked.append(list(command))
+        if "symbolic-ref" in command:
+            return GitResult(0, "refs/heads/draft\u00a0\n", "")
+        return GitResult(1, "", "")
+
+    assert review_document.unborn(Path("r"), GitClient(run))
+    assert asked[-1][-1] == "refs/heads/draft\u00a0^{commit}"

@@ -41,7 +41,7 @@ import whole_number
 from bounded_process import run_bounded
 from console import run_main
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
-from git_client import GitError, GitResult, output_lines
+from git_client import GitError, GitResult, output_line, output_lines
 from job_tree import process_tree
 
 from deployer import platform_support
@@ -314,7 +314,7 @@ def guard_enabled(hub: Path) -> bool:
     if result.returncode not in (0, 1):
         said = " ".join(result.stderr.split()) or f"git config exited with {result.returncode}"
         print(f"hub guard skipped: the opt-in of {hub} could not be read: {said}", file=sys.stderr)
-    return result.returncode == 0 and result.stdout.strip() == "true"
+    return result.returncode == 0 and output_line(result.stdout) == "true"
 
 
 @functools.cache
@@ -392,7 +392,7 @@ def resolve(value: str, cwd: Path) -> Path:
 def git_builtins() -> frozenset[str]:
     """The subcommands git runs itself, which no alias can stand for; empty when git cannot list them."""
     result = git(Path(__file__).resolve().parent, "--list-cmds=builtins")
-    return frozenset(result.stdout.split()) if result.returncode == 0 else frozenset()
+    return frozenset(output_lines(result.stdout)) if result.returncode == 0 else frozenset()
 
 
 def hub_protected(path: Path) -> bool:

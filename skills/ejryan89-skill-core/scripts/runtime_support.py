@@ -150,30 +150,36 @@ def frontmatter_needs(
     return needs | {"user-only-start"} if user_only else needs
 
 
+def names_git(function: ast.expr) -> bool:
+    """Whether a called function's dotted name has a part with the word git in it, such as services.git.run, git_in,
+    or GitClient(runner).output, read through attributes and calls. GitHub is a word of its own, so a GitHubClient or a
+    github_client call is not one."""
+    parts: list[str] = []
+    while isinstance(function, (ast.Attribute, ast.Call)):
+        if isinstance(function, ast.Attribute):
+            parts.append(function.attr)
+            function = function.value
+        else:
+            function = function.func
+    if isinstance(function, ast.Name):
+        parts.append(function.id)
+    words = (
+        word for part in parts for word in re.split(r"_|(?<=[a-z])(?=[A-Z])", re.sub("github", "", part, flags=re.I))
+    )
+    return any(word.casefold() == "git" for word in words)
+
+
 def python_git_subcommands(source: str) -> set[str]:
     """The subcommand each git call in a Python script names. A skill's Python runs git through git_client's GitClient,
     often behind a function of its own or a sibling module's, so the call is read by its name, not its import.
 
-    A git call is one whose function's dotted name has a part with the word git in it, such as services.git.run, git_in,
-    or GitClient(runner).output. Its words are the string literals among its positional arguments and among the items
-    of a list or tuple literal there, in order, any other value after the first literal standing as a placeholder, and
+    A git call is one `names_git` reads as one, a function whose dotted name has a part with the word git in it. Its
+    words are the string literals among its positional arguments and among the items of a list or tuple literal there,
+    in order, any other value after the first literal standing as a placeholder, and
     git_client.subcommand reads past git's own options to the subcommand. A script that does not parse raises what
     ast.parse raises.
     """
     tree = ast.parse(source)
-
-    def names_git(function: ast.expr) -> bool:
-        parts: list[str] = []
-        while isinstance(function, (ast.Attribute, ast.Call)):
-            if isinstance(function, ast.Attribute):
-                parts.append(function.attr)
-                function = function.value
-            else:
-                function = function.func
-        if isinstance(function, ast.Name):
-            parts.append(function.id)
-        return any(word.casefold() == "git" for part in parts for word in re.split(r"_|(?<=[a-z])(?=[A-Z])", part))
-
     found: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not names_git(node.func):

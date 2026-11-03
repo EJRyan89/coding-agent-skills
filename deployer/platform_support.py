@@ -22,6 +22,7 @@ import path_keys
 import process_identity
 from bounded_process import ProcessTree, run_bounded, without_repository_variables
 from flat_text import flat_text
+from git_client import output_line
 from job_tree import JobRefused
 
 from .errors import DeployError, os_error, see_recovery
@@ -478,7 +479,7 @@ def _bash_beside_git() -> str | None:
             "Put right what Git reports, or set GIT_BASH to the absolute path of Git Bash, then retry.",
         )
     # Git for Windows reports <root>/mingw64/libexec/git-core; its Bash is <root>/bin/bash.exe.
-    parents = Path(result.output.strip()).parents
+    parents = Path(output_line(result.output)).parents
     if len(parents) < 3:
         return None
     candidate = parents[2] / "bin" / "bash.exe"

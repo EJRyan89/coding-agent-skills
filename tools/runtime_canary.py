@@ -142,7 +142,7 @@ import runtime_support
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 from file_presence import is_present
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, output_line
 from link_probe import is_plain_directory
 from path_containment import within
 from release_tags import last_release
@@ -1297,7 +1297,7 @@ def changed_skills(
 def changed_paths(root: Path, ref: str, client: GitClient = GIT) -> tuple[str, list[str]]:
     """The commit `ref` and HEAD share, and every path changed since it: committed, staged, unstaged, or untracked,
     both sides of a rename."""
-    base = client.output(["merge-base", ref, "HEAD"], directory=root).strip()
+    base = output_line(client.output(["merge-base", ref, "HEAD"], directory=root))
     tracked = client.output(["diff", "--name-only", "--no-renames", "-z", base, "--"], directory=root)
     untracked = client.output(["ls-files", "--others", "--exclude-standard", "-z"], directory=root)
     return base, sorted({path for path in (tracked + untracked).split("\0") if path})

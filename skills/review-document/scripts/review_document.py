@@ -67,7 +67,7 @@ import json_reader
 import json_writer
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from path_containment import within
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
@@ -258,7 +258,7 @@ def unborn(checkout: Path, git: GitClient) -> bool:
     """Whether HEAD names a branch that has no commit yet, as before a checkout's first commit. A detached HEAD is
     none; any git failure raises GitError."""
     branch = git.quiet_output(["symbolic-ref", "--quiet", "HEAD"], directory=checkout)
-    return branch is not None and git.commit_of(branch.strip(), directory=checkout) is None
+    return branch is not None and git.commit_of(output_line(branch), directory=checkout) is None
 
 
 def committed_blob(commit: str, relative: str, checkout: Path, git: GitClient) -> str | None:
