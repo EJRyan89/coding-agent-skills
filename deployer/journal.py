@@ -476,12 +476,46 @@ def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
         return True
     # Only a kept backup gets here: one the run did not keep and that is gone has nothing left to delete. A kept copy is
     # kept whatever its content, so the one an earlier attempt moved is not judged by its hash: a retry after that move
-    # completes as the attempt itself would have.
-    destination = root_directory(paths, entry_root(entry)) / ".backups" / run_id / item
-    if file_presence.is_occupied(destination):
-        return True
-    _warn(f"Cannot find backup for {item}")
-    return False
+    # completes as the attempt itself would have. What stands in its place is judged as the copy the run moved could
+    # be, though: a real folder or file, as the item the run installed in its place is, reached through no link.
+    base = root_directory(paths, entry_root(entry))
+    destination = base / ".backups" / run_id / item
+    kept_at = f".backups/{run_id}/{item}"
+    if any(platform_support.is_link_or_junction(path) for path in (destination.parent.parent, destination.parent)):
+        _warn(
+            f"The kept backup of {item} at {kept_at} sits under a symlink or junction, so it is not the copy run "
+            f"{run_id} kept"
+        )
+        return False
+    if platform_support.is_link_or_junction(destination):
+        _warn(
+            f"The kept backup of {item} at {kept_at} is a symlink or junction, so it is not the copy run {run_id} kept"
+        )
+        return False
+    found = _kind_of(destination)
+    if found == "nothing":
+        _warn(f"Cannot find backup for {item}")
+        return False
+    # A retained backup is written only by a replacement, which installs the item, so the installed copy is the kind
+    # the run replaced.
+    expected = _kind_of(_item_path(paths, entry))
+    if found != expected:
+        _warn(
+            f"The kept backup of {item} at {kept_at} is {found}, not {expected} as {item} is, so it is not the copy "
+            f"run {run_id} kept"
+        )
+        return False
+    return True
+
+
+def _kind_of(path: Path) -> Literal["a folder", "a file", "something else", "nothing"]:
+    """What stands at path, following no link: the caller has refused one already."""
+    if file_presence.is_directory(path, other_is_absent=True):
+        return "a folder"
+    try:
+        return "a file" if file_presence.is_present(path) else "nothing"
+    except file_presence.NotAFile:
+        return "something else"
 
 
 def _complete_committed(paths: Paths, run_id: str, entries: list[JournalEntry]) -> bool:

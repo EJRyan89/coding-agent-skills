@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
-from harness import REPOSITORY_ROOT, DeployerTestCase, backup_entry
+from harness import REPOSITORY_ROOT, DeployerTestCase, backup_entry, make_directory_link
 
 from deployer import fsops, hashing, journal, pipeline
 from deployer.context import Context
@@ -69,7 +69,9 @@ class SettlementTests(DeployerTestCase):
         self.destination = self.skills_dir / ".backups" / RUN / "alpha"
 
     def backup(self, row: Row) -> dict[str, Any]:
-        """The row's transient backup on disk, and the entry the run journaled for it."""
+        """The row's transient backup on disk beside the copy the run installed, and the entry the run journaled for
+        it."""
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "installed alpha\n")
         self.write(self.transient / "SKILL.md", PREVIOUS)
         entry = backup_entry("alpha", hashing.hash_path(self.transient), row.retain, RUN)
         if row.changed:
@@ -161,9 +163,57 @@ class SettlementTests(DeployerTestCase):
                         fsops.remove(self.skills_dir)
                         fsops.remove(self.staging_run(RUN))
 
+    def test_a_retry_refuses_what_stands_in_for_the_kept_copy(self) -> None:
+        # A kept copy is kept whatever its content, but only the copy the run moved: a link, a link above it, or an item
+        # of another kind than the one the run replaced stops recovery, as a missing copy does.
+        outside = self.root / "outside"
+
+        def junction() -> None:
+            self.write(outside / "unrelated" / "SKILL.md", "unrelated\n")
+            self.destination.parent.mkdir(parents=True)
+            make_directory_link(self.destination, outside / "unrelated")
+
+        def run_folder_junction() -> None:
+            self.write(outside / "run" / "alpha" / "SKILL.md", "unrelated\n")
+            self.destination.parent.parent.mkdir(parents=True)
+            make_directory_link(self.destination.parent, outside / "run")
+
+        def file_for_a_folder() -> None:
+            self.write(self.destination, "a file where a folder was kept\n")
+
+        def folder_for_a_file() -> None:
+            fsops.remove(self.skills_dir / "alpha")
+            self.write(self.skills_dir / "alpha", "an installed file\n")
+            self.write(self.destination / "SKILL.md", "a folder where a file was kept\n")
+
+        cases = {
+            "a junction in its place": (junction, "is a symlink or junction"),
+            "its run folder a junction": (run_folder_junction, "sits under a symlink or junction"),
+            "a file for a folder": (file_for_a_folder, "is a file, not a folder as alpha is"),
+            "a folder for a file": (folder_for_a_file, "is a folder, not a file as alpha is"),
+        }
+        for case, (stand_in, says) in cases.items():
+            with self.subTest(case=case):
+                entry = self.backup(ROWS["kept unchanged"])
+                try:
+                    fsops.remove(self.transient)
+                    stand_in()
+                    with self.faulted(ROWS["kept unchanged"]) as warnings:
+                        reconciled = journal._finish_backup(self.paths, RUN, cast(journal.BackupEntry, entry))
+                    self.assertFalse(reconciled)
+                    self.assertEqual(1, len(warnings), warnings)
+                    self.assertIn(says, warnings[0])
+                finally:
+                    fsops.remove(self.skills_dir)
+                    fsops.remove(outside)
+
 
 # Each stop recovery makes, by the text of the WARNING it gives before it answers False, mapped to the words "When
 # recovery fails" in docs/recovery.md names it by. A stop added without its row fails the test below.
+KEPT_STAND_IN = (
+    "what stands where a copy was kept in `.backups/<run-id>/` is a link, sits under one, or is not the kind of item "
+    "the run replaced"
+)
 STOPS = {
     "Installed destination missing for {}": "an item changed or went missing after the run installed it",
     "Installed {} hash mismatch (expected {}, got {})": "an item changed or went missing after the run installed it",
@@ -171,6 +221,9 @@ STOPS = {
     "Cannot rollback install of {} (hash mismatch)": "an item changed or went missing after the run installed it",
     "Cannot find backup for {}": "a backup is missing",
     "Both {} and backup are missing during rollback": "a backup is missing",
+    "The kept backup of {} at {} sits under a symlink or junction, so it is not the copy run {} kept": KEPT_STAND_IN,
+    "The kept backup of {} at {} is a symlink or junction, so it is not the copy run {} kept": KEPT_STAND_IN,
+    "The kept backup of {} at {} is {}, not {} as {} is, so it is not the copy run {} kept": KEPT_STAND_IN,
     "Backup hash mismatch for {} during rollback": "a backup changed before a rollback could put it back",
     "Both {} and {} exist during rollback": "an item and its `.deploying-bak` both exist",
     # _undo_preserve reports the DeployError prepare_backup_destination raises.

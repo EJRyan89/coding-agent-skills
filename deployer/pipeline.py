@@ -396,7 +396,7 @@ def _execute(
     if pin is not None:
         print(f"At: {pin.ref} ({pin.commit})")
     if options.dry_run:
-        return _dry_run(paths, options, src, values, stdin, debug, pin)
+        return _dry_run(paths, options, src, values, stdin, debug, pin, probe)
     try:
         values, held = _claim(paths, options, source_id, values, probe)
     except (DeployError, OSError, KeyboardInterrupt) as exc:
@@ -473,12 +473,15 @@ def _dry_run(
     values: dict[str, str],
     stdin: TextIO,
     debug: bool,
-    pin: source_ref.Pin | None = None,
+    pin: source_ref.Pin | None,
+    probe: lock.ProcessProbe,
 ) -> int:
     """Report what a deployment would do, holding no lock and changing nothing, unless a recovery is pending."""
     try:
-        # The deployment's own check before it recovers, so a manifest or a checkout it refuses is refused here too,
-        # rather than answered with a pending recovery or a plan the deployment would never reach.
+        # The deployment's own checks before it recovers, in its order, so a lock, a manifest, or a checkout it refuses
+        # is refused here too, rather than answered with a pending recovery or a plan the deployment would never
+        # reach. A live deployment's own journal is never reported as pending: its lock refuses the dry run first.
+        lock.check_holder(paths, probe)
         _reject_other_checkout(paths, src.source_id, options.take_over_source)
         if _stop_for_pending_recovery(paths):
             return 0

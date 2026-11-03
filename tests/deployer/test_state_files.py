@@ -13,9 +13,10 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
-from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line
+from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line, probe_returning
 
 from deployer import discovery, fsops, manifest, platform_support, render, state_files
 from deployer.errors import DeployError
@@ -240,9 +241,10 @@ class StateFileTests(DeployerTestCase):
                 self.assertTrue(journal.is_file())
 
     def test_a_dry_run_refuses_each_state_the_deployment_refuses_before_recovery_pending_run_or_not(self) -> None:
-        # The deployment reads the manifest and the configuration before it recovers anything, so a dry run reads them
-        # before it reports a pending recovery. A journal it cannot read is the journal's own refusal, held above; the
-        # lock's info.json is read only by a run that takes the lock, which a dry run never does.
+        # The deployment judges the lock, reads the configuration and the manifest, and checks the recorded checkout
+        # before it recovers anything, so a dry run makes the same checks before it reports a pending recovery or plans.
+        # A journal it cannot read is the journal's own refusal, held above. A live holder's own journal is never
+        # reported as pending: the lock refuses first.
         self.deploy_ok("--all")
         saved = self.manifest_file.read_bytes()
         config_file = self.config_file()
@@ -266,14 +268,28 @@ class StateFileTests(DeployerTestCase):
             data["sources"][SOURCE_ID]["source_dir"] = platform_support.normalize(other)
             self.write(self.manifest_file, json.dumps(data))
 
-        rows: dict[str, tuple[Callable[[], None], str]] = {
-            "malformed manifest": (functools.partial(damage_manifest, False), "ERROR: Manifest is malformed: "),
-            "manifest not a file": (functools.partial(damage_manifest, True), "ERROR: The manifest at "),
-            "configuration not a file": (damage_configuration, "ERROR: The configuration at "),
-            "another checkout recorded": (other_checkout, f"ERROR: Source '{SOURCE_ID}' is deployed from "),
+        def held_lock(info: str) -> None:
+            self.write(self.lock_dir / "info.json", info)
+
+        live = probe_returning(alive=True, start_time=1)
+        rows: dict[str, tuple[Callable[[], None], str, dict[str, Any]]] = {
+            "malformed manifest": (functools.partial(damage_manifest, False), "ERROR: Manifest is malformed: ", {}),
+            "manifest not a file": (functools.partial(damage_manifest, True), "ERROR: The manifest at ", {}),
+            "configuration not a file": (damage_configuration, "ERROR: The configuration at ", {}),
+            "another checkout recorded": (other_checkout, f"ERROR: Source '{SOURCE_ID}' is deployed from ", {}),
+            "lock metadata with no PID": (
+                functools.partial(held_lock, '{"token": "x"}'),
+                "ERROR: Lock metadata is malformed (no PID).",
+                {},
+            ),
+            "lock held by a live deployment": (
+                functools.partial(held_lock, '{"pid": 4242, "start_time": 1, "token": "4242-1-ab12"}'),
+                "ERROR: Another deployment is running (PID 4242).",
+                {"probe": live},
+            ),
         }
         # Each row with a pending run beside it, and with none, where the dry run would otherwise plan.
-        for case, (damage, refusal) in rows.items():
+        for case, (damage, refusal, options) in rows.items():
             for pending in (True, False):
                 with self.subTest(case=case, pending=pending):
                     if pending:
@@ -282,7 +298,7 @@ class StateFileTests(DeployerTestCase):
                     damage()
                     answers = []
                     for arguments in (("--all",), ("--all", "--dry-run")):
-                        result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
+                        result = self.deploy_fails(*arguments, pattern=re.escape(refusal), **options)
                         self.assertNotIn("Pending recovery", result.output)
                         self.assertNotIn("UNCHANGED", result.output)
                         answers.append([line for line in result.output.splitlines() if line.startswith("ERROR: ")])
@@ -292,6 +308,7 @@ class StateFileTests(DeployerTestCase):
                             path.rmdir()
                         path.write_bytes(content)
                     fsops.remove(self.staging_run(RUN_ID))
+                    fsops.remove(self.lock_dir)
 
     def test_a_directory_in_place_of_a_journal_stops_recovery_and_keeps_what_the_run_holds(self) -> None:
         self.deploy_ok("--all")

@@ -123,6 +123,7 @@ class ExecuteTests(unittest.TestCase):
             (config, "canary"): {"VALUE": "canary"},
             (source, "reject_linked_worktree"): None,
             (lock, "acquire"): held,
+            (lock, "check_holder"): None,
             (pipeline, "_reject_other_checkout"): None,
             (journal, "recover_incomplete"): True,
             # A list outcome is a sequence of returns, so the one return, a list of runs, is wrapped.
@@ -155,6 +156,11 @@ class ExecuteTests(unittest.TestCase):
     @staticmethod
     def probe(pid: int) -> Any:
         raise AssertionError("the probe is only passed on")
+
+    @staticmethod
+    def dry_run_checks() -> list[str]:
+        """The checks a dry run makes before it reports a pending recovery: the deployment's own before it recovers."""
+        return ["check_holder(paths(home), probe)", f"_reject_other_checkout(paths(home), '{SOURCE_ID}', False)"]
 
     def prepared(self, home: str = "home") -> list[str]:
         """The calls of a run that prepares, discovers, and prints its source."""
@@ -320,6 +326,8 @@ class ExecuteTests(unittest.TestCase):
                 4,
                 [
                     *self.prepared(),
+                    "check_holder(paths(home), probe)",
+                    f"_reject_other_checkout(paths(home), '{SOURCE_ID}', False)",
                     "_stop_for_pending_recovery(paths(home))",
                     "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None, None)",
                 ],
@@ -330,12 +338,12 @@ class ExecuteTests(unittest.TestCase):
 
     def test_a_dry_run_stops_for_a_pending_recovery(self) -> None:
         self.assertEqual(
-            (0, [*self.prepared(), "_stop_for_pending_recovery(paths(home))"], []),
+            (0, [*self.prepared(), *self.dry_run_checks(), "_stop_for_pending_recovery(paths(home))"], []),
             self.execute(Options(dry_run=True), stdin=self.stdin, _stop_for_pending_recovery=True),
         )
 
     def test_a_dry_run_that_fails_names_the_dry_run(self) -> None:
-        stopped = [*self.prepared(), "_stop_for_pending_recovery(paths(home))"]
+        stopped = [*self.prepared(), *self.dry_run_checks(), "_stop_for_pending_recovery(paths(home))"]
         deploy = "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None, None)"
         cases: list[tuple[dict[str, Any], int, list[str], list[str]]] = [
             (
