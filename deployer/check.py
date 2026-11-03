@@ -54,6 +54,9 @@ def _deploy_lines(checkout: bool) -> list[ReportLine]:
     for tool in tools.DEPLOY_TOOLS:
         try:
             probe = tools.probe(tool)
+        except platform_support.ToolTimedOut:
+            # A probe that hangs stops the check, as every hung probe does, once its processes are ended.
+            raise
         except (DeployError, OSError) as exc:
             # A tool that cannot be located, such as Git Bash beside a git whose exec path fails, is reported, and the
             # check goes on to the others.
