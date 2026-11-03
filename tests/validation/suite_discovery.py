@@ -1163,8 +1163,9 @@ PYTEST_CONFIGURATION = {
 # pytest.ini; pyproject.toml, tox.ini, and setup.cfg match with a pytest table, and when nothing matches, the nearest
 # pyproject.toml is the configuration file even without one. The root holds pyproject.toml alone, so the configuration
 # stays in one file, and no folder below it holds any of them, whatever it contains, since the runner starts
-# `python -B -m pytest <suite>` with no -c or --rootdir and pytest would read a nearer one with a pytest table
-# instead, and a nearer pyproject.toml without one whenever the root's lost its table.
+# `python -B -m pytest <suite>` with no -c or --rootdir: pytest would read a nearer pytest.toml, .pytest.toml,
+# pytest.ini, or .pytest.ini instead even when it is empty, a nearer pyproject.toml, tox.ini, or setup.cfg when it
+# holds a pytest table, and a nearer pyproject.toml without one whenever the root's lost its table.
 PYTEST_CONFIGURATION_FILES = (
     "pytest.toml",
     ".pytest.toml",
@@ -1280,7 +1281,7 @@ def git_isolation_problems(root: Path) -> list[str]:
 
 def pytest_configuration_problems(root: Path) -> list[str]:
     """Report a pytest configuration other than PYTEST_CONFIGURATION, another configuration file at the root, or one
-    in a suite's folder or a folder between it and the root, which pytest would read instead.
+    in a suite's folder or a folder between it and the root, which pytest may read instead.
 
     A configuration could select, deselect, or skip tests, or turn the conftest plugin off, for every suite at once,
     so it is pinned here rather than read.

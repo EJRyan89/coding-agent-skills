@@ -2731,7 +2731,7 @@ def _layering_jetbrains(sources: InstructionSources) -> list[Finding]:
             Finding(
                 severity="INFO",
                 check="layering",
-                message="JetBrains: path-specific instructions only (no copilot-instructions.md)",
+                message="JetBrains: path-specific instructions without .github/copilot-instructions.md",
             )
         ]
     return [

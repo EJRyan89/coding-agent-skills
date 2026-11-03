@@ -141,7 +141,7 @@ def parser() -> _Parser:
         top,
         commands,
         CHECK_COMMAND,
-        "list the tools needed and which are missing",
+        "list the tools and any missing, outdated, or unusable",
         "List the tools the deployer and the skills need, with their versions,\n"
         "and which are missing, outdated, or unusable. Nothing is changed.",
     )

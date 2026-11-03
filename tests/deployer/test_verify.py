@@ -66,7 +66,7 @@ def catalog_answer(*skills: tuple[str, str]) -> str:
 EXPOSED_DETAIL = "Codex offers it to the model, though only the user starts it; check its agents/openai.yaml"
 OMITTED_DETAIL = (
     "Codex lists it but leaves it out of the model's catalog; offer it fewer skills, or raise "
-    "skills.max_context_tokens, which Codex caps at 10000"
+    "skills.max_context_tokens up to the cap Codex sets"
 )
 # A skill Codex ships, which its catalog offers the model beside the deployed ones.
 SYSTEM_SKILL = ("skill-creator", "C:/Profiles/YourName/.codex/skills/.system/skill-creator/SKILL.md")

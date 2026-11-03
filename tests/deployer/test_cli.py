@@ -89,7 +89,7 @@ class SingleEntryPointTests(DeployerTestCase):
             "commands:\n"
             "  COMMAND             run one of these instead of deploying\n"
             "    configure         set the values skills need; see its --help\n"
-            "    check             list the tools needed and which are missing\n"
+            "    check             list the tools and any missing, outdated, or unusable\n"
             "    verify            check that Codex and Copilot CLI find the adapters\n"
             "\n"
         )
