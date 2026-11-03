@@ -2345,6 +2345,30 @@ class RunPieceTests(unittest.TestCase):
         self.assertEqual(["effort: high"], [line for line in lines if line.startswith("effort:")])
         self.assertEqual(lines.index("model: claude-opus-5-5") + 1, lines.index("effort: high"))
 
+    def test_an_agent_that_does_not_read_back_as_both_the_model_and_the_effort_is_a_reason(self) -> None:
+        fake_deploy(self.root, self.root)
+        agent = self.root / skill_evals_runs.REVIEWER_AGENT
+        deployed = agent.read_bytes()
+        for key, wrong in (("model", "claude-other"), ("effort", "low")):
+
+            def misread(path: Path, key: str = key, wrong: str = wrong) -> frontmatter.Frontmatter:
+                # The reader answers one of the two keys as another value, as a reader that disagreed with the write.
+                text = path.read_text(encoding="utf-8").replace(f"\n{key}: ", f"\n{key}: {wrong}\nignored_{key}: ", 1)
+                return frontmatter.parse(text)
+
+            agent.write_bytes(deployed)
+            with self.subTest(key=key), mock.patch.object(frontmatter, "read", misread):
+                reason = skill_evals_runs.set_reviewer_model(self.root, "opus")
+                self.assertEqual("the reviewer agent does not read as claude-opus-5-5 at high effort", reason)
+
+    def test_the_agent_copy_is_written_as_utf_8_whatever_the_platforms_codec(self) -> None:
+        fake_deploy(self.root, self.root)
+        agent = self.root / skill_evals_runs.REVIEWER_AGENT
+        agent.write_bytes(agent.read_bytes() + "Reviews été — 中.\n".encode())
+        self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "haiku"))
+        written = agent.read_bytes().decode("utf-8").replace("\r\n", "\n")
+        self.assertTrue(written.endswith("Reviews été — 中.\n"), written[-80:])
+
     def test_the_effort_variable_that_outranks_an_agent_s_effort_is_left_out(self) -> None:
         run, config = self.root / "run", self.root / "config.json"
         environment = skill_evals_runs.run_environment(
