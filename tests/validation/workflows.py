@@ -580,6 +580,11 @@ _TOKEN_KEPT = (
     r"|(?:(?:does|do|did)(?: not|n't)|never) (?:reach|go to)|never (?:reaches|goes to))"
     r"(?: (?:any|a|an|the|one)(?: single)?)?"
 )
+# The end of a holder named after the token: no letter or apostrophe follows, so "no step's command", whose
+# holder owns what the token reaches, is not read as the holder.
+_HOLDER_END = r"(?![\w'])"
+# "Alone" or "only" closing a holder, and not opening a condition, as "only as", "only through", or "only when" does.
+_ALONE = r"(?:alone|only)(?! (?:as|through|by|via|when|if|where|while|in|from|with|under|after|before|because)\b)"
 # Claims a workflow comment, the row, or the runner's docstring made before the actions' default input was counted,
 # each false while ACTION_INPUT_STATEMENT holds, by the meaning each is named for: that a step, job, leg, or workflow
 # is given no token, or that one job alone is given it. A true statement about a step's command names the command, as
@@ -589,8 +594,9 @@ RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
     "no step is given the token": re.compile(
         rf"\b{_NONE} {_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|\b{_HOLDER} {_NOT_GIVEN} {_CREDENTIAL_PHRASE}"
-        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_TOKEN_GOES}|(?:is|are|was|were) {_ADVERB}{_GIVE}) {_NONE} {_HOLDER}"
-        rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_KEPT} {_HOLDER}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_TOKEN_GOES}|(?:is|are|was|were) {_ADVERB}{_GIVE}) {_NONE} "
+        rf"{_HOLDER}{_HOLDER_END}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_KEPT} {_HOLDER}{_HOLDER_END}"
     ),
     "the legs hold no token": re.compile(
         rf"\b(?:holds?|held|holding) no {_CREDENTIAL}|\b{_HOLDER} {_GIVEN} no {_CREDENTIAL}"
@@ -599,20 +605,28 @@ RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
         rf"\bthe (?:only|one|sole|single) {_HOLDER} (?:(?:that|which) {_GIVEN}|given|holding|with) {_CREDENTIAL_PHRASE}"
         rf"|\bonly (?:the |one |this |that )?(?:[\w-]+ )?{_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_GOES} (?:the |this |that |one |a )?(?:[\w-]+ )?"
-        rf"{_HOLDER_NOUN} (?:alone|only)"
+        rf"{_HOLDER_NOUN} {_ALONE}"
         rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:(?:is|are|was|were) {_ADVERB}{_GIVE} |reaches |goes )?"
         r"(?:only|solely|exclusively) "
-        rf"(?:to )?(?:the |this |that |one )?(?:[\w-]+ )?{_HOLDER_NOUN}"
+        rf"(?:to )?(?:the |this |that |one )?(?:[\w-]+ )?{_HOLDER_NOUN}{_HOLDER_END}"
     ),
 }
 # The parts of the repository token_claim_texts leaves out, by path or folder, each with why no claim about this
 # repository's workflows is read there. Every other file a commit could include is read whole.
 TOKEN_CLAIM_OMISSIONS = {
-    "tests/validation/workflows.py": "it names the retired claims it refuses",
     "tests/validation/test_workflows.py": "its fixture rows write each retired claim",
     "skills/": "a shipped skill speaks of the user's repository, its jobs and steps, and the user's own gh token",
     "agents/": "a shipped agent speaks of the user's repository, as a shipped skill does",
     "tests/fixtures/": "a fixture stands for another repository, not this one's workflows",
+}
+# The part of a file token_claim_texts blanks rather than reads, by the openings of its first line and of the line
+# after its last, with why: the rest of the file, its docstrings among them, is read.
+TOKEN_CLAIM_SPANS = {
+    "tests/validation/workflows.py": (
+        "# What every job's pinned actions do with the run's token",
+        "# The parts of the repository token_claim_texts leaves out",
+        "the claim list and the patterns that spell each claim, which quote the claims they refuse",
+    ),
 }
 # The files besides the workflows where a retired claim was made, which token_claim_read_problems requires read.
 TOKEN_CLAIM_REQUIRED = (
@@ -762,8 +776,23 @@ def token_claim_texts(root: Path, files: Iterable[Path]) -> dict[str, str]:
         if name != "docs/design.md" and not any(
             name == omitted or (omitted.endswith("/") and name.startswith(omitted)) for omitted in TOKEN_CLAIM_OMISSIONS
         ):
-            texts[name] = path.read_bytes().decode("utf-8", errors="replace")
+            texts[name] = _outside_claim_span(name, path.read_bytes().decode("utf-8", errors="replace"))
     return texts
+
+
+def _outside_claim_span(name: str, text: str) -> str:
+    """`text` with the lines of its TOKEN_CLAIM_SPANS entry blanked, from the line opening with its first marker to the
+    line before the one opening with its second; the whole text when `name` has no entry or a marker is missing, so a
+    moved marker reads the claims and fails rather than leaving the file unread."""
+    if name not in TOKEN_CLAIM_SPANS:
+        return text
+    first, after = TOKEN_CLAIM_SPANS[name][:2]
+    lines = text.split("\n")
+    start = next((index for index, line in enumerate(lines) if line.startswith(first)), None)
+    end = next((index for index, line in enumerate(lines) if line.startswith(after)), None)
+    if start is None or end is None or end <= start:
+        return text
+    return "\n".join(lines[:start] + [""] * (end - start) + lines[end:])
 
 
 def unknown_workflow_problems(directory: Path, known: Collection[str]) -> list[str]:

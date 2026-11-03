@@ -25,6 +25,7 @@ from workflows import (
     PULL_REQUEST_CODE_STATEMENT,
     SAME_REPOSITORY_STATEMENT,
     TOKEN_CLAIM_OMISSIONS,
+    TOKEN_CLAIM_SPANS,
     WorkflowSyntaxError,
     changelog_job_problems,
     codex_settings_problems,
@@ -2101,6 +2102,16 @@ TRUE_TOKEN_STATEMENTS = [
     "no command or program a step runs is given the token",
     "the token reaches that program and the modules it imports alone",
     "validation and every workflow run without a model, a token beyond the read-only default, or a signed-in runtime",
+    # A holder that owns what the token reaches, named after the token.
+    "the token is not given to any step's command",
+    "the token is given to no step's command",
+    "the token reaches no step's command",
+    "the token does not reach any step's command",
+    "the token reaches no steps' commands",
+    "the token goes only to the query job's command",
+    # "Only" opening a condition, not closing the holder.
+    "The token reaches a step only as one of `token_steps` names",
+    "the token reaches a job only through its one sanctioned step",
 ]
 
 
@@ -2181,7 +2192,6 @@ def test_a_token_claim_read_that_found_nothing_fails_and_one_that_read_each_plac
 
 def test_the_parts_the_token_claim_policy_leaves_out_are_pinned_with_their_reasons() -> None:
     assert TOKEN_CLAIM_OMISSIONS == {
-        "tests/validation/workflows.py": "it names the retired claims it refuses",
         "tests/validation/test_workflows.py": "its fixture rows write each retired claim",
         "skills/": "a shipped skill speaks of the user's repository, its jobs and steps, and the user's own gh token",
         "agents/": "a shipped agent speaks of the user's repository, as a shipped skill does",
@@ -2238,7 +2248,51 @@ def test_the_token_claim_policy_reads_every_file_but_the_design_document_and_its
         "notes.txt": "caf\N{REPLACEMENT CHARACTER}",
         ".claude/skills/review-repository/SKILL.md": "text",
         "tests/validation/workflows_support.py": "text",
+        "tests/validation/workflows.py": "text",
     }
+
+
+def test_the_span_the_token_claim_policy_blanks_is_pinned_with_its_reason() -> None:
+    assert TOKEN_CLAIM_SPANS == {
+        "tests/validation/workflows.py": (
+            "# What every job's pinned actions do with the run's token",
+            "# The parts of the repository token_claim_texts leaves out",
+            "the claim list and the patterns that spell each claim, which quote the claims they refuse",
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "read"),
+    [
+        pytest.param(
+            "a docstring\n# What every job's pinned actions do with the run's token\nno step is given the token\n"
+            "# The parts of the repository token_claim_texts leaves out\nmore\n",
+            "a docstring\n\n\n# The parts of the repository token_claim_texts leaves out\nmore\n",
+            id="the span blanked, the rest read",
+        ),
+        pytest.param("no step is given the token\n", "no step is given the token\n", id="no markers: read whole"),
+        pytest.param(
+            "# What every job's pinned actions do with the run's token\nno step is given the token\n",
+            "# What every job's pinned actions do with the run's token\nno step is given the token\n",
+            id="no closing marker: read whole",
+        ),
+        pytest.param(
+            "# The parts of the repository token_claim_texts leaves out\nno step is given the token\n"
+            "# What every job's pinned actions do with the run's token\n",
+            "# The parts of the repository token_claim_texts leaves out\nno step is given the token\n"
+            "# What every job's pinned actions do with the run's token\n",
+            id="markers reversed: read whole",
+        ),
+    ],
+)
+def test_the_policy_module_is_read_but_for_its_claim_span(tmp_path: Path, source: str, read: str) -> None:
+    module = tmp_path / "tests" / "validation" / "workflows.py"
+    module.parent.mkdir(parents=True)
+    module.write_bytes(source.encode("utf-8"))
+    other = tmp_path / "other.py"
+    other.write_bytes(source.encode("utf-8"))
+    assert token_claim_texts(tmp_path, [module, other]) == {"tests/validation/workflows.py": read, "other.py": source}
 
 
 def test_a_row_silent_on_the_actions_default_input_fails() -> None:
