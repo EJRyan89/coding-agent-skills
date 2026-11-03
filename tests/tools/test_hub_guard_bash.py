@@ -588,3 +588,214 @@ class OptionReaderTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual(expected, subcommands(command))
+
+
+# The set and shopt options under which the guard cannot read a shell, by the state that refuses it, written out apart
+# from SET_OPTIONS and SHOPT_OPTIONS so that a changed decision there fails a row.
+REFUSED_SET_OPTIONS = {
+    "keyword": "on",
+    "posix": "on",
+    "physical": "on",
+    "privileged": "on",
+    "xtrace": "on",
+    "igncr": "on",
+    "interactive-comments": "off",
+}
+REFUSED_SHOPT_OPTIONS = {
+    **dict.fromkeys(("cdable_vars", "lastpipe", "autocd", "cdspell", "extdebug", "localvar_inherit"), "on"),
+    **dict.fromkeys(("localvar_unset", "nocasematch", "array_expand_once", "assoc_expand_once"), "on"),
+    **dict.fromkeys(("compat31", "compat32", "compat40", "compat41", "compat42", "compat43", "compat44"), "on"),
+    "interactive_comments": "off",
+}
+SET_OPTION_LETTERS = {
+    "a": "allexport",
+    "b": "notify",
+    "e": "errexit",
+    "f": "noglob",
+    "h": "hashall",
+    "k": "keyword",
+    "m": "monitor",
+    "n": "noexec",
+    "p": "privileged",
+    "t": "onecmd",
+    "u": "nounset",
+    "v": "verbose",
+    "x": "xtrace",
+    "B": "braceexpand",
+    "C": "noclobber",
+    "E": "errtrace",
+    "H": "histexpand",
+    "P": "physical",
+    "T": "functrace",
+}
+
+
+def refused(source: str, name: str, state: str = "on") -> str:
+    return f"{name} is turned {state} by {source}, under which the guard cannot read the shell"
+
+
+def unknown(source: str, name: str, state: str = "on") -> str:
+    return f"the option {name} is turned {state} by {source}, and the guard does not read it"
+
+
+class ShellOptionTableTests(unittest.TestCase):
+    """Each source of shell options read through SET_OPTIONS and SHOPT_OPTIONS: set, shopt, a nested bash's own
+    options and the environment it starts with, and exec -a; an option no table names is unread."""
+
+    def test_the_tables_refuse_exactly_the_options_written_out_here(self) -> None:
+        self.assertEqual(
+            REFUSED_SET_OPTIONS, {name: state for name, (_, state) in hub_guard.SET_OPTIONS.items() if state}
+        )
+        self.assertEqual(
+            REFUSED_SHOPT_OPTIONS, {name: state for name, state in hub_guard.SHOPT_OPTIONS.items() if state}
+        )
+        self.assertEqual(SET_OPTION_LETTERS, hub_guard.SET_LETTERS)
+
+    def test_set_and_a_starting_bash_name_each_option_they_change_in_order(self) -> None:
+        for arguments, starting, expected in (
+            (["-ek"], False, [("set", "errexit", True), ("set", "keyword", True)]),
+            (["+k", "-o", "posix"], False, [("set", "keyword", False), ("set", "posix", True)]),
+            (["-oo", "posix", "keyword", "x"], False, [("set", "posix", True), ("set", "keyword", True)]),
+            (["-eo", "posix", "--", "-k"], False, [("set", "errexit", True), ("set", "posix", True)]),
+            (["-o"], False, []),
+            (["+o"], False, []),
+            (["-", "-k"], False, []),
+            (["+", "-k"], False, []),
+            (["x", "-k"], False, []),
+            (["-y"], False, [("set", "-y", True)]),
+            (["-O", "lastpipe"], False, [("set", "-O", True)]),
+            (["-c"], False, [("set", "-c", True)]),
+            (["-O", "lastpipe", "-c", "s"], True, [("shopt", "lastpipe", True)]),
+            (["+O", "lastpipe"], True, [("shopt", "lastpipe", False)]),
+            (["-Oo", "lastpipe", "posix"], True, [("shopt", "lastpipe", True), ("set", "posix", True)]),
+            (["-cilrsD", "s"], True, []),
+            (["--posix", "-c", "s"], True, [("set", "posix", True)]),
+            (["--debugger"], True, [("shopt", "extdebug", True)]),
+            (["--verbose"], True, [("set", "verbose", True)]),
+            (["--rcfile", "-k", "-c", "s"], True, []),
+            (["--norc", "--noprofile", "--login", "-c", "s"], True, []),
+            (["--bogus"], True, [("set", "--bogus", True)]),
+        ):
+            with self.subTest(arguments=arguments, starting=starting):
+                self.assertEqual(expected, hub_guard.option_changes(list(arguments), starting))
+        for unsettled in ([None], ["-e", None], ["-o", None], ["-eo", None, "-c"]):
+            with self.subTest(arguments=unsettled):
+                self.assertIsNone(hub_guard.option_changes(list(unsettled), starting=False))
+
+    def test_each_change_is_judged_by_its_table_and_allexport_is_followed(self) -> None:
+        reading = hub_guard.Reading({}, "git")
+        changes: list[hub_guard.OptionChange] = [
+            ("set", "allexport", True),
+            ("set", "keyword", False),
+            ("set", "interactive-comments", False),
+            ("shopt", "lastpipe", True),
+            ("shopt", "extglob", True),
+            ("set", "lastpipe", True),
+            ("shopt", "posix", True),
+            ("set", "allexport", False),
+        ]
+        self.assertFalse(hub_guard.judge_options(changes, reading, "S"))
+        self.assertEqual(
+            [
+                refused("S", "interactive-comments", "off"),
+                refused("S", "lastpipe"),
+                unknown("S", "lastpipe"),
+                unknown("S", "posix"),
+            ],
+            reading.unread,
+        )
+        self.assertIsNone(hub_guard.judge_options([("set", "errexit", True)], reading, "S"))
+        self.assertTrue(hub_guard.judge_options([("set", "allexport", True)], reading, "S"))
+
+    def test_shopt_judges_what_it_sets_and_unsets_and_refuses_flags_it_does_not_take(self) -> None:
+        for command, unread in (
+            ("shopt -s lastpipe", [refused("shopt", "lastpipe")]),
+            ("shopt -u lastpipe", []),
+            ("shopt -u interactive_comments", [refused("shopt", "interactive_comments", "off")]),
+            ("shopt -so keyword", [refused("shopt", "keyword")]),
+            ("shopt -uo keyword", []),
+            ("shopt -s nosuch", [unknown("shopt", "nosuch")]),
+            ("shopt lastpipe; shopt -p; shopt -q lastpipe; shopt -po posix", []),
+            ("shopt -x lastpipe", ["could not read the options passed to shopt"]),
+            ("shopt -su lastpipe", ["could not read the options passed to shopt"]),
+            ("shopt -s $o", ["could not read the options passed to shopt"]),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(unread, bash_reading(f"{command}; git status").unread)
+        self.assertEqual(START / "after", git_dir_reaching_git("unset GIT_DIR; shopt -so allexport; GIT_DIR=after"))
+        self.assertEqual(UNSET, git_dir_reaching_git("unset GIT_DIR; set -a; shopt -uo allexport; GIT_DIR=after"))
+
+    def test_a_nested_bash_judges_its_own_options_and_sh_runs_in_posix_mode(self) -> None:
+        for command, unread in (
+            ("bash -k -c 'git status'", [refused("bash's own options", "keyword")]),
+            ("sh -c 'git status'", [refused("sh's own options", "posix")]),
+            ("sh +o posix -c 'git status'", [refused("sh's own options", "posix")]),
+            ("bash -euo pipefail -c 'git status'", []),
+            ("exec -a sh bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a /bin/sh bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a -sh bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -ash bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a $n bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a bash sh -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a shell bash -c 'git status'", []),
+            ("exec -a sh git status", []),
+            ("exec bash -c 'git status'", []),
+            ("command -p bash -c 'git status'", []),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(unread, bash_reading(command).unread)
+                self.assertEqual(["status"], subcommands(command))
+
+    def test_the_environment_a_bash_starts_with_is_judged_by_each_variable_that_sets_options(self) -> None:
+        source = "the environment bash starts with"
+        for environment, unread in (
+            ({"SHELLOPTS": "braceexpand:hashall:interactive-comments"}, []),
+            ({"SHELLOPTS": "keyword:allexport"}, [refused(source, "keyword")]),
+            ({"SHELLOPTS": "nosuch"}, [unknown(source, "nosuch")]),
+            ({"BASHOPTS": "checkwinsize:extglob"}, []),
+            ({"BASHOPTS": "lastpipe"}, [refused(source, "lastpipe")]),
+            ({"BASHOPTS": "posix"}, [unknown(source, "posix")]),
+            (
+                {"POSIXLY_CORRECT": ""},
+                ["the POSIXLY_CORRECT its environment hands bash turns on posix, which the guard does not read"],
+            ),
+            (
+                {"BASH_COMPAT": "44"},
+                [
+                    "the BASH_COMPAT its environment hands bash turns on an earlier Bash's behavior, "
+                    "which the guard does not read"
+                ],
+            ),
+        ):
+            with self.subTest(environment=environment):
+                # As a nested bash's starter hands them.
+                reading = hub_guard.Reading({}, "git status")
+                hub_guard.read_bash("git status", START, reading, 1, environment)
+                self.assertEqual(unread, reading.unread)
+        reading = hub_guard.Reading({}, "git")
+        hub_guard.started_options({"BASHOPTS": None}, False, reading)
+        self.assertEqual(
+            ["could not read the BASHOPTS its environment hands bash, which may turn on any option"], reading.unread
+        )
+        # A starter that holds names folded hands each by a name in any case.
+        # A PowerShell session the text does not settle may have set either variable to anything.
+        reading = hub_guard.Reading({}, "bash -c 'git status'")
+        hub_guard.PowerShellReader(reading, 0).run_program("bash", ["-c", "git status"], START, {}, opaque=True)
+        self.assertEqual(
+            [
+                "could not read the SHELLOPTS its environment hands bash, which may turn on allexport",
+                "could not read the BASHOPTS its environment hands bash, which may turn on any option",
+            ],
+            reading.unread,
+        )
+        for names_folded, count in ((True, 1), (False, 0)):
+            reading = hub_guard.Reading({}, "git")
+            hub_guard.started_options({"posixly_correct": "1"}, names_folded, reading)
+            self.assertEqual(count, len(reading.unread))
+        for command in ("unset POSIXLY_CORRECT; git status", "echo $BASH_COMPAT; git status"):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    ["the command names a variable that turns on a shell option the guard does not read"],
+                    bash_reading(command).unread,
+                )
+        self.assertEqual([], bash_reading("XPOSIXLY_CORRECT=1; BASH_COMPATS=1; git status").unread)

@@ -139,6 +139,121 @@ CONFIGURATION_PAIR = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+")
 SHELLOPTS, BASHOPTS = "SHELLOPTS", "BASHOPTS"
 SHELL_OPTION_VARIABLES = (SHELLOPTS, BASHOPTS)
 ALLEXPORT = "allexport"
+# The shell options the guard reads, one table for set's and one for shopt's, through which every source of options
+# is read: set, shopt, a nested bash's own options, and the SHELLOPTS, BASHOPTS, and POSIXLY_CORRECT its environment
+# hands it. Each set option has the letter that names it in a bundle, or none, and each option of either the state in
+# which the guard cannot read a shell that holds it, "on" or "off", or "" where neither changes what the guard reads.
+# allexport, which the guard follows, is read apart. An option no table names is one the guard cannot read.
+SET_OPTIONS: dict[str, tuple[str, str]] = {
+    ALLEXPORT: ("a", ""),
+    # Off, a brace stays as written; on or off, an unquoted brace leaves a word unsettled (word_value).
+    "braceexpand": ("B", ""),
+    # Line editing, history, and job notices, which a command run as a script never uses: Bash expands no history in
+    # a -c script, even with -H.
+    **dict.fromkeys(("emacs", "vi", "history", "ignoreeof", "nolog"), ("", "")),
+    "histexpand": ("H", ""),
+    "notify": ("b", ""),
+    # Each ends the shell sooner, runs nothing, or fails a command the guard reads as running either way.
+    "errexit": ("e", ""),
+    "noexec": ("n", ""),
+    "onecmd": ("t", ""),
+    "nounset": ("u", ""),
+    "noclobber": ("C", ""),
+    "pipefail": ("", ""),
+    # Traps, which the guard does not read ("What it does not see").
+    "errtrace": ("E", ""),
+    "functrace": ("T", ""),
+    "hashall": ("h", ""),
+    # Job control, which only turns lastpipe off, and lastpipe is refused on.
+    "monitor": ("m", ""),
+    # Off, a glob stays as written; on or off, an unquoted glob leaves a word unsettled (word_value).
+    "noglob": ("f", ""),
+    "verbose": ("v", ""),
+    # On, every assignment word after a command's name goes into its environment.
+    "keyword": ("k", "on"),
+    # On, an assignment before a special builtin stays in the shell, special builtins come before functions, and
+    # tilde and alias expansion change.
+    "posix": ("", "on"),
+    # On, cd resolves symbolic links, so `cd <link>/..` leaves for another directory.
+    "physical": ("P", "on"),
+    # On, a nested bash ignores the SHELLOPTS and functions its environment hands it.
+    "privileged": ("p", "on"),
+    # On, each command's trace expands PS4, which may hold a command substitution.
+    "xtrace": ("x", "on"),
+    # Off in a script, Bash reads a word starting with # as a comment all the same; in an interactive bash, -i, it
+    # does not.
+    "interactive-comments": ("", "off"),
+    # Git Bash's, on which a carriage return at a line's end is dropped where the guard reads it as text.
+    "igncr": ("", "on"),
+}
+SHOPT_OPTIONS: dict[str, str] = {
+    # On, a cd to a name that is no directory takes the variable by that name as one.
+    "cdable_vars": "on",
+    # On, the last command of a pipeline runs in the shell itself, while job control is off.
+    "lastpipe": "on",
+    # On in an interactive bash, a command that names a directory changes to it, and cd corrects a misspelled one.
+    "autocd": "on",
+    "cdspell": "on",
+    # On, an earlier Bash's behavior, in ways the guard does not follow.
+    **dict.fromkeys(("compat31", "compat32", "compat40", "compat41", "compat42", "compat43", "compat44"), "on"),
+    # On at a bash's start, it runs the debugger's profile first.
+    "extdebug": "on",
+    # On, a local variable starts with its caller's value, or unset reveals its caller's.
+    "localvar_inherit": "on",
+    "localvar_unset": "on",
+    # On, case and [[ ]] match patterns in any case.
+    "nocasematch": "on",
+    # On, a subscript is expanded once, which changes what a subscript's substitution runs.
+    "array_expand_once": "on",
+    "assoc_expand_once": "on",
+    # Off in an interactive bash, a word starting with # is no comment.
+    "interactive_comments": "off",
+    # Globs, which leave a word unsettled however they expand (word_value); extglob only makes more text one word,
+    # which the guard reads as more commands or cannot read.
+    **dict.fromkeys(
+        ("dotglob", "extglob", "failglob", "globasciiranges", "globskipdots", "globstar", "nocaseglob", "nullglob"), ""
+    ),
+    # Expansions inside ${...} and translated strings, which leave a word unsettled either way.
+    **dict.fromkeys(("extquote", "patsub_replacement", "noexpand_translation"), ""),
+    # Aliases, whose definitions the guard refuses (bash_alias).
+    "expand_aliases": "",
+    # A sourced file, which the guard does not read; exec, after which the guard reads on either way; and errors.
+    **dict.fromkeys(("sourcepath", "execfail", "inherit_errexit", "gnu_errfmt", "shift_verbose"), ""),
+    # Completion, history, prompts, job and window handling, mail, and output, none of which a script uses or which
+    # change nothing a git call sees.
+    **dict.fromkeys(
+        (
+            *("checkhash", "checkjobs", "checkwinsize", "cmdhist", "complete_fullquote", "completion_strip_exe"),
+            *("direxpand", "dirspell", "force_fignore", "histappend", "histreedit", "histverify", "hostcomplete"),
+            *("huponexit", "lithist", "mailwarn", "no_empty_cmd_completion", "progcomp", "progcomp_alias"),
+            *("promptvars", "varredir_close", "xpg_echo", "bash_source_fullpath"),
+        ),
+        "",
+    ),
+    # Read-only, saying how the shell started.
+    **dict.fromkeys(("login_shell", "restricted_shell"), ""),
+}
+SET_LETTERS = {letter: name for name, (letter, _) in SET_OPTIONS.items() if letter}
+# Each table's options by the state that refuses a shell holding one.
+OPTION_STATES = {"set": {name: state for name, (_, state) in SET_OPTIONS.items()}, "shopt": SHOPT_OPTIONS}
+# The letters only a bash takes as it starts, beside set's: -c and -s say where its script comes from (bash_script),
+# -i makes it interactive, -l a login shell, -r restricted, and -D lists its strings and runs nothing.
+BASH_START_LETTERS = set("cilrsD")
+# A bash's long options, each with the set option it turns on or "" for none; --rcfile and --init-file take the next
+# word (BASH_LONG_OPTIONS_WITH_VALUE). --debugger turns on extdebug, which the guard cannot read.
+BASH_LONG_OPTIONS = {
+    **dict.fromkeys(("--norc", "--noprofile", "--login", "--noediting", "--restricted", "--rcfile"), ""),
+    **dict.fromkeys(("--init-file", "--dump-strings", "--dump-po-strings", "--help", "--version", "--debug"), ""),
+    "--pretty-print": "",
+    "--verbose": "verbose",
+    "--posix": "posix",
+    "--debugger": "extdebug",
+}
+# The variables whose assignment turns a shell option on as it is made, so the guard cannot read a shell where one is
+# assigned or that its environment hands one: POSIXLY_CORRECT turns on POSIX mode, whatever its value, and BASH_COMPAT
+# an earlier Bash's behavior. Bash reads each by its exact name.
+OPTION_SETTING_VARIABLES = {"POSIXLY_CORRECT": "posix", "BASH_COMPAT": "an earlier Bash's behavior"}
+OPTION_SETTING_TEXT = re.compile(r"\b(?:POSIXLY_CORRECT|BASH_COMPAT)\b")
 # A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry a
 # leading backslash or, without one, the provider's module. A variable may follow a separator on the drive only: after
 # Environment:: PowerShell keeps the separator as part of the variable's name.
@@ -1586,7 +1701,7 @@ class BashReader:
             read = functools.partial(
                 read_bash,
                 functions=exported_functions(shell),
-                allexport=bash_allexport(arguments),
+                allexport=bash_allexport(program, arguments, self.reading),
                 opaque=shell.opaque,
             )
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read)
@@ -2156,54 +2271,103 @@ def may_unset_function(shell: Shell, name: str) -> None:
 
 
 def bash_set(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """set -a, set -o allexport, and their + forms, which export every variable assigned while they hold; each o in a
-    bundle, as in `set -eo allexport`, takes the next word as the option it sets."""
-    allexport = options_allexport(arguments)
-    if allexport == "unsettled":
+    """set's options, each read through SET_OPTIONS (judge_options): -a, -o allexport, and their + forms export every
+    variable assigned while they hold; each o in a bundle, as in `set -eo allexport`, takes the next word as the
+    option it sets."""
+    changes = option_changes(arguments, starting=False)
+    if changes is None:
         reader.reading.cannot_read("could not read the options passed to set")
-    elif allexport is not None:
-        shell.allexport = allexport == "on"
+        return certain(shell)
+    allexport = judge_options(changes, reader.reading, "set")
+    if allexport is not None:
+        shell.allexport = allexport
     return certain(shell)
 
 
-def options_allexport(arguments: list[Word]) -> Literal["on", "off", "unsettled"] | None:
-    """What the options of set, or of a bash it starts, do to allexport, as -a, -o allexport, or a bundle holding
-    either, the last winning: on, off, or None when they leave it as it was; unsettled when a word the text does not
-    settle stands among them, which may be any option."""
-    found: Literal["on", "off"] | None = None
+# One change a source of options makes: the table its option is in, "set" or "shopt", the option's name, and whether
+# it turns the option on.
+OptionChange = tuple[Literal["set", "shopt"], str, bool]
+
+
+def option_changes(arguments: list[Word], starting: bool) -> list[OptionChange] | None:
+    """The options set, or a bash as it starts, turns on and off, in order: each letter of a bundle, the next word
+    for each o, and as a bash starts the shopt option for each O and its long options (BASH_LONG_OPTIONS); None when a
+    word the text does not settle stands among them, which may be any option. A letter or long option no table names
+    is a change to an option by that spelling, which no table names either. The options end at the first word that is
+    none, at `--`, and at a lone - or +."""
+    changes: list[OptionChange] = []
     index = 0
     while index < len(arguments):
         word = arguments[index]
         if word is None:
-            return "unsettled"
-        if word == "--" or len(word) < 2 or word[0] not in "-+" or not word[1:].isalpha():
+            return None
+        if word in ("--", "-", "+") or word[:1] not in ("-", "+"):
             break
-        values = bash_option_values(word)
-        named = arguments[index + 1 : index + 1 + values]
-        if None in named:
-            return "unsettled"
-        if "a" in word[1:] or "allexport" in named:
-            found = "on" if word[0] == "-" else "off"
-        index += 1 + values
-    return found
+        if starting and word.startswith("--"):
+            option = BASH_LONG_OPTIONS.get(word, word)
+            if option:
+                changes.append(("shopt" if option in SHOPT_OPTIONS else "set", option, True))
+            index += 1 + bash_option_values(word)
+            continue
+        on = word.startswith("-")
+        values = iter(arguments[index + 1 :])
+        for letter in word[1:]:
+            if letter in "oO" and (letter == "o" or starting):
+                index += 1
+                named = next(values, "")
+                if named is None:
+                    return None
+                if named:
+                    changes.append(("set" if letter == "o" else "shopt", named, on))
+            elif not (starting and letter in BASH_START_LETTERS):
+                changes.append(("set", SET_LETTERS.get(letter, f"-{letter}"), on))
+        index += 1
+    return changes
 
 
-def bash_allexport(arguments: list[Word]) -> bool:
-    """Whether a bash starts with allexport on, by its own options before its script: -a or -o allexport. An option
-    word the text does not settle makes the script one the text does not hold (bash_script)."""
-    return options_allexport(arguments) == "on"
+def judge_options(changes: Iterable[OptionChange], reading: Reading, source: str) -> bool | None:
+    """Records as a part the guard cannot read each change to an option no table names, and each that leaves an
+    option in the state SET_OPTIONS or SHOPT_OPTIONS names; returns what the changes leave allexport, the last
+    winning, or None when they leave it as it was."""
+    allexport: bool | None = None
+    for table, name, on in changes:
+        state = "on" if on else "off"
+        if table == "set" and name == ALLEXPORT:
+            allexport = on
+        refused = OPTION_STATES[table].get(name)
+        if refused is None:
+            reading.cannot_read(f"the option {name} is turned {state} by {source}, and the guard does not read it")
+        elif refused == state:
+            reading.cannot_read(f"{name} is turned {state} by {source}, under which the guard cannot read the shell")
+    return allexport
+
+
+def bash_allexport(program: str | None, arguments: list[Word], reading: Reading) -> bool:
+    """Whether a bash starts with allexport on, by its own options before its script, as -a or -o allexport; each
+    other option is judged (judge_options), and sh, which Bash runs in POSIX mode, is a shell the guard cannot read.
+    An option word the text does not settle makes the script one the text does not hold (bash_script)."""
+    changes = option_changes(arguments, starting=True)
+    if changes is None:
+        return False
+    if program == "sh":
+        changes.insert(0, ("set", "posix", True))
+    return judge_options(changes, reading, f"{program}'s own options") is True
 
 
 def bash_shopt(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """shopt -o sets set's options by name, as `shopt -so allexport` does; a word the text does not settle may be
-    any option."""
+    """shopt -s and -u, each operand read through SHOPT_OPTIONS, or with -o through SET_OPTIONS, as `shopt -so
+    allexport` turns allexport on (judge_options); without either it only lists or tests options. A word the text does
+    not settle may be any option, and so may a flag shopt does not take, which makes it set none."""
     read = builtin_operands(arguments, "")
-    if read is None:
+    flags = None if read is None else {flag for flag, _ in read[0]}
+    if read is None or flags is None or not flags <= set("supqo") or {"s", "u"} <= flags:
         reader.reading.cannot_read("could not read the options passed to shopt")
         return certain(shell)
-    flags, operands = {flag for flag, _ in read[0]}, read[1]
-    if "o" in flags and "allexport" in operands and flags & {"s", "u"}:
-        shell.allexport = "s" in flags
+    if flags & {"s", "u"}:
+        table: Literal["set", "shopt"] = "set" if "o" in flags else "shopt"
+        allexport = judge_options([(table, name, "s" in flags) for name in read[1]], reader.reading, "shopt")
+        if allexport is not None:
+            shell.allexport = allexport
     return certain(shell)
 
 
@@ -2254,8 +2418,10 @@ def bash_exec(
     local: dict[str, Word],
 ) -> Outcome:
     """exec, command, and builtin run the command after their own options, read as Bash's option reader takes them:
-    exec's -a takes the rest of its word or the next word, in a bundle as in -ca NAME."""
+    exec's -a takes the rest of its word or the next word, in a bundle as in -ca NAME, as the name the program is
+    started by, and Bash started by the name sh, or one the text does not settle, runs in POSIX mode."""
     index = 0
+    started_as: list[Word] = []
     while index < len(arguments) and (word := arguments[index]) is not None and word.startswith("-"):
         if word == "--":
             index += 1
@@ -2263,6 +2429,8 @@ def bash_exec(
         flags, value = bundle_flags(word, "a" if reader.current_builtin == "exec" else "")
         if reader.current_builtin == "command" and set(flags) & {"v", "V"}:
             return certain(shell)
+        if value is not None:
+            started_as = [value or (arguments[index + 1] if index + 1 < len(arguments) else "")]
         index += 2 if value == "" else 1
     rest = arguments[index:]
     if not rest:
@@ -2274,8 +2442,16 @@ def bash_exec(
         return certain(shell)
     if rest[0] in BASH_BUILTINS:
         return BASH_BUILTINS[rest[0]](reader.with_builtin(rest[0]), rest[1:], redirects, shell, local)
-    reader.run_program(command_name(rest[0]), rest[1:], redirects, shell, shell.program_variables(local))
+    program = command_name(rest[0])
+    if program in BASH_NAMES and started_as and (started_as[0] is None or started_name(started_as[0]) == "sh"):
+        program = "sh"
+    reader.run_program(program, rest[1:], redirects, shell, shell.program_variables(local))
     return certain(shell)
+
+
+def started_name(name: str) -> str:
+    """The name Bash takes itself to be started by: that of the program, past the - a login shell's name starts with."""
+    return (command_name(name) or "").lstrip("-")
 
 
 BuiltinReader = Callable[[BashReader, list[Word], list[bash_syntax.Redirect], Shell, dict[str, Word]], Outcome]
@@ -2546,13 +2722,35 @@ def started_allexport(environment: Mapping[str, Word], names_folded: bool) -> Li
     name, whatever its own options say: on when it lists allexport, off without it, and unsettled when the text does
     not settle its value, or its name, which a starter that holds names folded to one case does not keep.
 
-    BASHOPTS hands shopt's options the same way, none of which changes what the guard reads."""
+    BASHOPTS hands shopt's options the same way, which started_options judges with SHELLOPTS's others."""
     value = environment.get(SHELLOPTS, "")
     if value is None:
         return "unsettled"
     if ALLEXPORT not in value.split(":"):
         return "off"
     return "unsettled" if names_folded else "on"
+
+
+def started_options(environment: Mapping[str, Word], names_folded: bool, reading: Reading) -> None:
+    """Judges each option other than allexport the environment hands a bash as it starts (judge_options): set's that
+    SHELLOPTS lists, shopt's that BASHOPTS lists, and POSIX mode or an earlier Bash's behavior that POSIXLY_CORRECT or
+    BASH_COMPAT turns on whatever its value. A BASHOPTS whose value the text does not settle may list any option; one
+    that SHELLOPTS lists is read by started_allexport. A starter that holds names folded to one case hands each by a
+    name in any case, which Bash may read."""
+    shellopts = environment.get(SHELLOPTS, "") or ""
+    changes: list[OptionChange] = [("set", name, True) for name in shellopts.split(":") if name]
+    bashopts = environment.get(BASHOPTS, "")
+    if bashopts is None:
+        reading.cannot_read(f"could not read the {BASHOPTS} its environment hands bash, which may turn on any option")
+    else:
+        changes.extend(("shopt", name, True) for name in bashopts.split(":") if name)
+    judge_options(changes, reading, "the environment bash starts with")
+    handed = {name.upper() if names_folded else name for name in environment}
+    for name, effect in OPTION_SETTING_VARIABLES.items():
+        if name in handed:
+            reading.cannot_read(
+                f"the {name} its environment hands bash turns on {effect}, which the guard does not read"
+            )
 
 
 def read_bash(
@@ -2574,6 +2772,11 @@ def read_bash(
     started = started_allexport(inherited, names_folded)
     if started == "unsettled":
         reading.cannot_read(f"could not read the {SHELLOPTS} its environment hands bash, which may turn on allexport")
+    started_options(inherited, names_folded, reading)
+    if OPTION_SETTING_TEXT.search(command):
+        # Assigned in the text, by any builtin, an arithmetic expression, or before a command, each turns its option
+        # on as Bash makes the assignment, and unset turns it off.
+        reading.cannot_read("the command names a variable that turns on a shell option the guard does not read")
     allexport = allexport or started == "on"
     shell = Shell(cwd, dict(inherited), set(inherited), allexport=allexport, opaque=opaque, reading=reading)
     shell.functions.update(functions or {})
@@ -3010,11 +3213,11 @@ class PowerShellReader:
             read = functools.partial(
                 read_bash,
                 functions=self.bash_functions,
-                allexport=bash_allexport(arguments),
+                allexport=bash_allexport(name, arguments, self.reading),
                 opaque=opaque,
                 names_folded=platform_support.ENVIRONMENT_NAMES_FOLD_CASE,
             )
-            handed = {**variables, SHELLOPTS: None} if opaque else variables
+            handed = {**variables, SHELLOPTS: None, BASHOPTS: None} if opaque else variables
             follow(name, script, cwd, handed, self.reading, self.depth, read)
         elif name in POWERSHELL_NAMES:
             follow_powershell(

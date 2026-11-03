@@ -929,12 +929,181 @@ class ShellOptionsDifferentialTests(unittest.TestCase):
                 hub_guard.read_bash(guarded, start, reading, 0, {})
                 calls = [call for call in reading.calls if call.subcommand == subcommand]
                 with self.subTest(form=form, script=script, exported=exported):
-                    self.assertEqual([], reading.unread)
+                    # An option no table names, as ALLEXPORT, which Bash passes over, may be one a later Bash reads.
+                    unknown = "ALLEXPORT" in form
+                    unread = [UNKNOWN_OPTION.format("ALLEXPORT", "on", ENVIRONMENT_SOURCE)] if unknown else []
+                    self.assertEqual(unread, reading.unread)
                     if "f()" in script:
                         self.assertEqual(exported, bool(calls))
                     else:
                         [call] = calls
                         self.assertEqual(start / "after" if exported else UNSET, guard_place(call))
+
+
+UNKNOWN_OPTION = "the option {0} is turned {1} by {2}, and the guard does not read it"
+ENVIRONMENT_SOURCE = "the environment bash starts with"
+# Each shell option the guard cannot read a shell in, by what shows Bash holds it, as a test that prints ON.
+OPTION_PROBES = {
+    "keyword": "[[ -o keyword ]] && echo ON",
+    "posix": "[[ -o posix ]] && echo ON",
+    # lastpipe holds only while job control is off.
+    "lastpipe": "shopt -q lastpipe && [[ ! -o monitor ]] && echo ON",
+    "cdable_vars": "shopt -q cdable_vars && echo ON",
+    "physical": "[[ -o physical ]] && echo ON",
+    "xtrace": "[[ -o xtrace ]] && echo ON",
+}
+# Each spelling that turns an option on or leaves it off, with PROBE standing for what is run where it holds, the
+# option, and the verdict: "holds" where Bash holds it and the guard refuses the shell, "refused" where the guard
+# refuses a shell Bash need not hold it in, and "off" where it holds nowhere and the guard reads the shell.
+OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
+    *(
+        (spelling, "keyword", "holds")
+        for spelling in (
+            "set -k; PROBE",
+            "set -ek; PROBE",
+            "set -o keyword; PROBE",
+            "set -eo keyword; PROBE",
+            "set -o errexit -o keyword; PROBE",
+            "shopt -so keyword; PROBE",
+            "shopt -s -o keyword; PROBE",
+            "bash -k -c 'PROBE'",
+            "bash -ek -c 'PROBE'",
+            "bash -o keyword -c 'PROBE'",
+            "bash -oc keyword 'PROBE'",
+            "env SHELLOPTS=keyword bash -c 'PROBE'",
+            "env SHELLOPTS=braceexpand:keyword bash -c 'PROBE'",
+            "export SHELLOPTS; set -k; bash -c 'PROBE'",
+        )
+    ),
+    *(
+        (spelling, "posix", "holds")
+        for spelling in (
+            "set -o posix; PROBE",
+            "set -eo posix; PROBE",
+            "shopt -so posix; PROBE",
+            "bash --posix -c 'PROBE'",
+            "bash -o posix -c 'PROBE'",
+            "exec -a sh bash -c 'PROBE'",
+            "exec -a -sh bash -c 'PROBE'",
+            "exec -la sh bash -c 'PROBE'",
+            "env SHELLOPTS=posix bash -c 'PROBE'",
+            "POSIXLY_CORRECT=1; PROBE",
+            "POSIXLY_CORRECT=; PROBE",
+            "POSIXLY_CORRECT=1 :; PROBE",
+            "declare POSIXLY_CORRECT=1; PROBE",
+            "read -r POSIXLY_CORRECT <<< 1; PROBE",
+            "(( POSIXLY_CORRECT = 1 )); PROBE",
+            "let POSIXLY_CORRECT=1; PROBE",
+            "printf -v POSIXLY_CORRECT 1; PROBE",
+            "export POSIXLY_CORRECT=1; bash -c 'PROBE'",
+            "env POSIXLY_CORRECT= bash -c 'PROBE'",
+            "POSIXLY_CORRECT=1 bash -c 'PROBE'",
+        )
+    ),
+    *(
+        (spelling, "lastpipe", "holds")
+        for spelling in (
+            "shopt -s lastpipe; PROBE",
+            "shopt -s extglob lastpipe; PROBE",
+            "shopt -s nosuch lastpipe; PROBE",
+            "bash -O lastpipe -c 'PROBE'",
+            "bash -O extglob -O lastpipe -c 'PROBE'",
+            "env BASHOPTS=lastpipe bash -c 'PROBE'",
+            "env BASHOPTS=extglob:lastpipe bash -c 'PROBE'",
+            "export BASHOPTS; shopt -s lastpipe; bash -c 'PROBE'",
+        )
+    ),
+    *(
+        (spelling, "cdable_vars", "holds")
+        for spelling in (
+            "shopt -s cdable_vars; PROBE",
+            "bash -O cdable_vars -c 'PROBE'",
+            "env BASHOPTS=cdable_vars bash -c 'PROBE'",
+        )
+    ),
+    *(
+        (spelling, "physical", "holds")
+        for spelling in ("set -P; PROBE", "set -o physical; PROBE", "bash -P -c 'PROBE'")
+    ),
+    *((spelling, "xtrace", "holds") for spelling in ("set -x; PROBE", "bash -x -c 'PROBE'", "bash --norc -xc 'PROBE'")),
+    # The guard refuses sh, which Bash runs in POSIX mode and a system may provide as another shell, such as dash,
+    # which has no [[; and lastpipe turned on beside job control, which keeps it from holding.
+    ("sh -c 'PROBE'", "posix", "refused"),
+    ("set -m; shopt -s lastpipe; PROBE", "lastpipe", "refused"),
+    # Spellings that leave each option off.
+    *(
+        (spelling, option, "off")
+        for spelling, option in (
+            ("set +k; PROBE", "keyword"),
+            ("set +o keyword; PROBE", "keyword"),
+            ("shopt -uo keyword; PROBE", "keyword"),
+            ("bash +k -c 'PROBE'", "keyword"),
+            ("env SHELLOPTS=braceexpand:hashall bash -c 'PROBE'", "keyword"),
+            ("set -euo pipefail; PROBE", "keyword"),
+            ("set +o posix; PROBE", "posix"),
+            ("bash -c 'PROBE'", "posix"),
+            ("bash -lc 'PROBE'", "posix"),
+            ("bash --norc --noprofile -c 'PROBE'", "posix"),
+            ("exec -a bash bash -c 'PROBE'", "posix"),
+            ("shopt -u lastpipe; PROBE", "lastpipe"),
+            ("shopt lastpipe; shopt -p lastpipe; shopt -q lastpipe; PROBE", "lastpipe"),
+            ("bash +O lastpipe -c 'PROBE'", "lastpipe"),
+            ("env BASHOPTS=extglob bash -c 'PROBE'", "lastpipe"),
+            ("shopt -u cdable_vars; PROBE", "cdable_vars"),
+            ("set +P; PROBE", "physical"),
+            ("set +x; PROBE", "xtrace"),
+        )
+    ),
+)
+
+
+class ShellOptionSpellingTests(unittest.TestCase):
+    """Each spelling that turns on a shell option under which the guard cannot read a shell, run by Bash with a
+    probe that shows the option holds, and read by the guard, which refuses each shell where Bash holds it."""
+
+    def test_the_guard_refuses_each_shell_where_bash_holds_an_option_it_cannot_read(self) -> None:
+        bash = find_bash()
+        texts = [spelling.replace("PROBE", OPTION_PROBES[option]) for spelling, option, _ in OPTION_SPELLINGS]
+        with tempfile.TemporaryDirectory() as folder:
+            start = Path(folder).resolve()
+            # Each spelling runs in a subshell of its own, and a line `=== <index>` follows what it printed.
+            body = "".join(f"( {text} ) 2>/dev/null; echo '=== {index}'\n" for index, text in enumerate(texts))
+            path = start / "spellings.sh"
+            path.write_text(body, encoding="utf-8", newline="\n")
+            environment = {name: value for name, value in os.environ.items() if name not in ("SHELLOPTS", "BASHOPTS")}
+            output = platform_support.run_tool(
+                [bash, "--norc", "--noprofile", platform_support.normalize(path)], environment
+            ).output
+            printed: list[set[str]] = [set()]
+            for line in output.splitlines():
+                if line.startswith("=== "):
+                    printed.append(set())
+                else:
+                    printed[-1].add(line.strip())
+            self.assertEqual(len(texts) + 1, len(printed))
+            for (spelling, option, verdict), lines in zip(OPTION_SPELLINGS, printed, strict=False):
+                text = spelling.replace("PROBE", "git status")
+                reading = hub_guard.Reading({}, text)
+                hub_guard.read_bash(text, start, reading, 0, {})
+                with self.subTest(spelling=spelling, option=option, bash="ON" in lines):
+                    # Bash holds the option where the row says so, and not where it says off; the guard refuses each
+                    # shell but those that leave it off, and reads git in each.
+                    if verdict != "refused":
+                        self.assertEqual(verdict == "holds", "ON" in lines)
+                    self.assertEqual(verdict != "off", bool(reading.unread), reading.unread)
+                    self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
+    def test_every_option_bash_lists_is_one_the_guard_reads(self) -> None:
+        bash = find_bash()
+        result = platform_support.run_tool([bash, "--norc", "--noprofile", "-c", "set -o; echo ===; shopt"])
+        set_options, _, shopt_options = result.output.partition("===")
+        self.assertEqual(
+            set(), {line.split()[0] for line in set_options.splitlines() if line} - set(hub_guard.SET_OPTIONS)
+        )
+        self.assertEqual(
+            set(),
+            {line.split()[0] for line in shopt_options.splitlines() if line.strip()} - set(hub_guard.SHOPT_OPTIONS),
+        )
 
 
 def guard_place(call: hub_guard.GitCall) -> Path | str | None:

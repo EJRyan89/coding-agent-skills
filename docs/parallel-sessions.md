@@ -416,8 +416,15 @@ refused while a guarded hub is in view, and what they do not see at all is named
   names; `env -u` and `env -i` remove it, and `export -n` stops exporting it. A `SHELLOPTS` whose value the text does
   not settle, or one listing `allexport` from a PowerShell session, which holds environment names folded where the
   platform folds them, so that Bash may not read it, is a part the guard cannot read. `BASHOPTS` hands on `shopt`'s
-  options the same way. Of the options either hands on, the guard follows allexport alone, though `keyword`, `posix`,
-  `lastpipe`, and `cdable_vars` change where a command runs or what reaches git, as "What it does not see" says. An
+  options the same way. Every source of a shell option is read through one table of `set`'s options and one of
+  `shopt`'s (`SET_OPTIONS` and `SHOPT_OPTIONS` in `tools/hub_guard.py`): `set` and `shopt -s`, `-u`, and `-o`, a
+  nested `bash`'s own letters, `-o`, `-O`, and long options, `sh`, which Bash runs in POSIX mode, a `bash` that
+  `exec -a sh` starts by that name, the `SHELLOPTS` and `BASHOPTS` its environment hands it, and a `POSIXLY_CORRECT`
+  or `BASH_COMPAT` it is handed or the command names. Each table names each option Bash lists and whether a shell
+  holding it is one the guard reads: the guard follows allexport, reads a shell under an option that changes nothing
+  it reads, such as `errexit`, `pipefail`, `nounset`, or `extglob`, and cannot read one under `keyword`, `posix`,
+  `lastpipe`, `cdable_vars`, `physical`, `privileged`, `xtrace`, or the others its table marks, nor an option it
+  does not name. An
   `env` word the text does not settle, as in `env FOO=$(cmd)`, may assign any variable, so the guard cannot read it,
   and every variable git or a nested bash reads is unsettled for the command after it. A shell the text does not settle may have exported any
   variable, so a shell it starts is one the text does not settle either. Nesting of shells, `eval`, function calls,
@@ -450,7 +457,9 @@ the hubs they reach stay in view. While one is, the guard refuses:
   and script blocks nested more than eight deep, a script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression`
   that the text does not settle or that nests more than four deep, a `bash` with a word the text does not settle
   among its options, as in `bash -c"$x"` or `bash $x -c`, which may be `-c`, an option word of `set` or `shopt`
-  the text does not settle, which may turn on allexport, a `BASH_FUNC_<name>%%` a PowerShell cmdlet writes,
+  the text does not settle, which may turn on allexport, a shell where an option the guard's tables mark as unread
+  holds or one they do not name is turned on, by any source above, `sh` and a `POSIXLY_CORRECT` the command names or
+  its environment hands it among them, a `BASH_FUNC_<name>%%` a PowerShell cmdlet writes,
   whose body the text does not settle, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
   inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
   lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline
@@ -512,18 +521,9 @@ The hook sees the command text. It does not see:
 - a variable an arithmetic expression assigns, in `(( ))`, `let`, or an arithmetic `for`, which holds a number,
   and a builtin `enable -f` loads from a shared object;
 - a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
-- an assignment word after a command's name under the `keyword` option, which Bash puts in the command's
-  environment, so `git switch -c x GIT_DIR=<dir>` hands `GIT_DIR` to git; it is turned on by `set -k`,
-  `set -o keyword`, `shopt -so keyword`, `bash -k`, `bash -o keyword`, or a `SHELLOPTS` listing it that a nested
-  bash's starter hands it;
-- in POSIX mode an assignment before a special builtin such as `:` or `eval`, which Bash keeps in the shell after the
-  builtin ends; it is turned on by `set -o posix`, `shopt -so posix`, `bash --posix`, `bash -o posix`, `sh`, a
-  `POSIXLY_CORRECT` assigned or in the environment, or a `SHELLOPTS` listing `posix`;
-- the last command of a pipeline under the `lastpipe` option, which Bash runs in the shell itself, so after
-  `true | cd <dir>` a git call runs at `<dir>`; it is turned on by `shopt -s lastpipe`, `bash -O lastpipe`, or a
-  `BASHOPTS` listing it that a nested bash's starter hands it, PowerShell's `$env:BASHOPTS` included;
-- a `cd` to a name that is no directory under the `cdable_vars` option, which Bash takes as a variable holding one;
-  it is turned on by `shopt -s cdable_vars`, `bash -O cdable_vars`, or a `BASHOPTS` listing it;
+- a shell option turned on through a variable whose name the text does not settle, as `declare "$n=1"` may assign
+  `POSIXLY_CORRECT`, beyond what a shell the text does not settle already leaves unsettled, or by an arithmetic
+  assignment through such a name, and one a shell's startup files turn on;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
 - text run as commands through an object of PowerShell's engine the text does not type, such as one a variable
