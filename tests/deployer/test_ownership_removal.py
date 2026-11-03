@@ -638,7 +638,7 @@ class UnlistedFolderTests(DeployerTestCase):
         self.assertEqual(
             (
                 f"ERROR: Cannot list {forward(self.unlisted)} to hash it or check it for links: Permission denied",
-                # Pinned against a literal: the step a user reads (#2181).
+                # Pinned against a literal: the step a user reads.
                 "Give your account read access to it, or move it out of the way, then rerun with --dry-run.",
             ),
             raised.exception.lines,
@@ -661,7 +661,7 @@ UNENCODABLE_NAME = "note\udcff.md"
 
 class UnencodableNameTests(DeployerTestCase):
     """A deployed file whose name is not valid UTF-8 cannot be hashed: the dry run and the deployment refuse it as a
-    DeployError naming the item and the path, never an uncaught UnicodeEncodeError (#2294)."""
+    DeployError naming the item and the path, never an uncaught UnicodeEncodeError."""
 
     def setUp(self) -> None:
         super().setUp()

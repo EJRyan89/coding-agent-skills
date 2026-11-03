@@ -663,7 +663,7 @@ class RecoveryFailureTests(RecoveryTestCase):
 
     def assert_sent_to_the_manual_steps(self, output: str) -> None:
         """A committed run's completion stopped by a failure a rerun would meet again: the report gives the manual steps
-        and promises no retry (#2294)."""
+        and promises no retry."""
         run = self.staging_run(self.HELD)
         self.assert_lines(
             output,
@@ -1167,7 +1167,7 @@ class RecoveryBranchTests(RecoveryTestCase):
             result.output,
             f"Recovering committed run {self.RUN} (completing finalization)...",
             f"  ERROR: Refusing to hash content containing a symlink or junction: {forward(link)}",
-            # Pinned against a literal: the step a user reads (#2181).
+            # Pinned against a literal: the step a user reads.
             "  Remove the link, or replace it with a copy of what it points to, then rerun with --dry-run.",
             f"  WARNING: Installed alpha hash mismatch (expected {installed}, got unsafe)",
             f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",

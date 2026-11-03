@@ -555,7 +555,7 @@ class ValidateSharedAssetsTests(unittest.TestCase):
         return self.refused(context, selected)[0]
 
     def test_each_refusal_ends_with_the_step_to_take(self) -> None:
-        # Pinned against literals, not plan's constants: each is the remedy line a user reads (#2181).
+        # Pinned against literals, not plan's constants: each is the remedy line a user reads.
         first = "Deploy 'd.md' from the source that owns it first, then rerun with --dry-run."
         redeploy = (
             f"Deploy 'd.md' again from source '{OTHER_SOURCE}', which the manifest names as its owner, then rerun with "
