@@ -15,9 +15,10 @@ no option of its name, which is added in the field's settings, when the options 
 order, or when the token in use cannot read an item, as one in a repository it has no access to: that line names each
 such item by its node id, since nothing here can say whether its Release matches. With `--check` it changes nothing
 and prints IN_SYNC (exit 0), or DRIFTED (exit 1) with one line per item whose Release does not match its milestone as
-well. It exits 2 when `gh` cannot read or change the board, or the board has no
-Release field; setting a value twice changes nothing, so a run cut short is rerun. CONTRIBUTING.md runs it after an
-issue is filed or moved between milestones, and the release procedure in docs/releasing.md runs it with `--check`.
+well. It exits 2 when `gh` cannot read or change the board, the board has no Release field, or its answer lacks a
+field the query asks for or holds one of another kind; setting a value twice changes nothing, so a run cut short is
+rerun. CONTRIBUTING.md runs it after an issue is filed or moved between milestones, and the release procedure in
+docs/releasing.md runs it with `--check`.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 from console import run_main
 from github_client import GitHubClient, GitHubError
 from release_tags import release_order
+from typed_fields import FieldReader
 
 PROJECT_NUMBER = 1
 FIELD_NAME = "Release"
@@ -43,6 +45,8 @@ PAGE_SIZE = 50
 BATCH_SIZE = 20
 # A batch whose answer was lost is sent again, since each mutation sets a value and setting it twice changes nothing.
 BATCH_ATTEMPTS = 3
+# Reads the board's answer; a field of another kind raises FieldError, a ValueError main ends with exit 2.
+READ = FieldReader()
 
 ITEMS_QUERY = """
 query($owner: String!, $number: Int!, $field: String!, $first: Int!, $after: String) {
@@ -104,30 +108,50 @@ def _get(document: Any, *path: str) -> Any:
     return document
 
 
-def _item(node: Mapping[str, Any]) -> Item | None:
-    """The item a node describes, or None for one whose content this reader cannot see."""
-    content = node.get("content")
-    if not isinstance(content, Mapping):
+def _item(node: object, path: str) -> Item | None:
+    """The item a node describes, or None for one whose content this reader cannot see; a node of any other shape
+    than the query asks for raises FieldError. Only a node it can see needs its Release, which a write is decided by."""
+    node = READ.json_object(node, path, required=("id", "content"), optional=("release",))
+    identifier = READ.string(node["id"], f"{path}.id")
+    if node["content"] is None:
         return None
-    number = content.get("number")
-    label = f"#{number}" if isinstance(number, int) else f"draft {content.get('title')!r}"
-    milestone = _get(content, "milestone", "title")
-    release = _get(node, "release", "name")
-    return Item(
-        str(node["id"]),
-        label,
-        milestone if isinstance(milestone, str) else None,
-        release if isinstance(release, str) else None,
-    )
+    node = READ.json_object(node, path, required=("id", "content", "release"))
+    content = READ.json_object(node["content"], f"{path}.content")
+    if "number" in content:
+        content = READ.json_object(content, f"{path}.content", required=("number", "milestone"))
+        label = f"#{READ.integer(content['number'], f'{path}.content.number')}"
+        milestone = READ.optional(
+            READ.json_object, content["milestone"], f"{path}.content.milestone", required=("title",)
+        )
+        title = None if milestone is None else READ.string(milestone["title"], f"{path}.content.milestone.title")
+    else:
+        content = READ.json_object(content, f"{path}.content", required=("title",))
+        label = f"draft {READ.string(content['title'], f'{path}.content.title', empty=True)!r}"
+        title = None
+    release = READ.optional(READ.json_object, node["release"], f"{path}.release", required=("name",))
+    name = None if release is None else READ.string(release["name"], f"{path}.release.name")
+    return Item(identifier, label, title, name)
+
+
+def _options(field: dict[str, Any], path: str) -> dict[str, str]:
+    """The field's options, option name to option id, in the field's order."""
+    options: dict[str, str] = {}
+    for index, option in enumerate(READ.array(field["options"], f"{path}.options")):
+        option = READ.json_object(option, f"{path}.options[{index}]", required=("id", "name"))
+        name = READ.string(option["name"], f"{path}.options[{index}].name")
+        options[name] = READ.string(option["id"], f"{path}.options[{index}].id")
+    return options
 
 
 def read_board(client: GitHubClient) -> Board:
-    """Every item of the board with its milestone and Release, and the field's options, through every page."""
+    """Every item of the board with its milestone and Release, and the field's options, through every page; an answer
+    of another shape than the query asks for raises FieldError, a ValueError, so it ends as a board not read."""
     project = field = None
     options: dict[str, str] = {}
     items: list[Item] = []
     unseen: list[str] = []
     after: str | None = None
+    path = "data.repositoryOwner.projectV2"
     while True:
         arguments = ["api", "graphql", "-f", f"query={ITEMS_QUERY}", "-F", "owner={owner}"]
         arguments += ["-F", f"number={PROJECT_NUMBER}", "-f", f"field={FIELD_NAME}", "-F", f"first={PAGE_SIZE}"]
@@ -135,21 +159,24 @@ def read_board(client: GitHubClient) -> Board:
         board = _get(client.json(arguments, graphql=True), "data", "repositoryOwner", "projectV2")
         if not isinstance(board, Mapping):
             raise ValueError(f"the repository owner has no project {PROJECT_NUMBER} this token can read")
-        project = str(board["id"])
+        board = READ.json_object(board, path, required=("id", "field", "items"))
+        project = READ.string(board["id"], f"{path}.id")
         if not isinstance(_get(board, "field", "id"), str):
             raise ValueError(f"project {PROJECT_NUMBER} has no single-select field named {FIELD_NAME!r}")
-        field = board["field"]["id"]
-        options = {option["name"]: option["id"] for option in board["field"]["options"]}
-        page = board["items"]
-        for node in page["nodes"]:
-            item = _item(node)
+        single_select = READ.json_object(board["field"], f"{path}.field", required=("id", "options"))
+        field = READ.string(single_select["id"], f"{path}.field.id")
+        options = _options(single_select, f"{path}.field")
+        page = READ.json_object(board["items"], f"{path}.items", required=("pageInfo", "nodes"))
+        for index, node in enumerate(READ.array(page["nodes"], f"{path}.items.nodes")):
+            item = _item(node, f"{path}.items.nodes[{index}]")
             if item is None:
-                unseen.append(str(node["id"]))
+                unseen.append(node["id"])
             else:
                 items.append(item)
-        if not page["pageInfo"]["hasNextPage"]:
+        info = READ.json_object(page["pageInfo"], f"{path}.items.pageInfo", required=("hasNextPage", "endCursor"))
+        if not READ.boolean(info["hasNextPage"], f"{path}.items.pageInfo.hasNextPage"):
             return Board(project, field, options, items, unseen)
-        after = page["pageInfo"]["endCursor"]
+        after = READ.string(info["endCursor"], f"{path}.items.pageInfo.endCursor")
 
 
 def order_problem(options: Sequence[str]) -> str | None:
