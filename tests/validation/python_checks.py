@@ -360,9 +360,10 @@ def type_check_skipped_problems(root: Path, files: list[Path]) -> list[str]:
         checked_from = _type_check_root(root, path, skill_scripts) if path.suffix == ".py" else None
         if checked_from is None or path == checked_from:
             continue
+        relative = relative_within(path.parent, checked_from)
         skipped = [
             part
-            for part in path.parent.relative_to(checked_from).parts
+            for part in (() if relative is None else relative.parts)
             if part in MYPY_SKIPPED_FOLDERS or part.startswith(".")
         ]
         if skipped:

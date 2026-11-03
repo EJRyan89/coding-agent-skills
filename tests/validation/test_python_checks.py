@@ -4461,3 +4461,19 @@ def test_a_validation_reader_never_lists_the_folder_it_leaves_out_and_refuses_an
     with _listing_refused(tmp_path / elsewhere), pytest.raises(PermissionError) as raised:
         read(tmp_path)
     assert raised.value.filename == str(tmp_path / elsewhere)
+
+
+def test_the_type_check_cache_is_keyed_by_the_check_s_place_under_the_repository(tmp_path: Path) -> None:
+    import hashlib
+
+    def key(place: str) -> Path:
+        return tmp_path / hashlib.sha256(f"{place}\0a.py\0default".encode()).hexdigest()[:16]
+
+    inside = python_checks.REPOSITORY_ROOT / "skills" / "x"
+    outside = tmp_path / "elsewhere"
+    assert python_checks.mypy_cache_directory(tmp_path, inside, ["a.py"], strict=False) == key("skills/x")
+    assert python_checks.mypy_cache_directory(tmp_path, outside, ["a.py"], strict=False) == key(outside.as_posix())
+    if sys.platform == "win32":
+        # A run from the repository spelled with the extended-length prefix shares the plain spelling's cache.
+        prefixed = Path("\\\\?\\" + str(inside))
+        assert python_checks.mypy_cache_directory(tmp_path, prefixed, ["a.py"], strict=False) == key("skills/x")
