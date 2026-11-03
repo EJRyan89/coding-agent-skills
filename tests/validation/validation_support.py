@@ -781,11 +781,15 @@ def _shape(resolver: CallableResolver) -> _ModuleShape:
     return resolver.shape
 
 
+# The statements that run their body again, so a binding late in it reaches a read early in it.
+LOOPS = (ast.For, ast.AsyncFor, ast.While)
+
+
 def _reaches(binding: ast.AST, others: list[ast.expr], use: ast.AST, shape: _ModuleShape) -> bool:
     """Whether a binding's value may reach a use in the same scope: unless it comes after the use in the statement list
-    that holds both, or another binding of the name in the same list comes after it and before the use, as a second
-    assignment in straight-line code replaces the first. A binding in a branch, a try, or a handler is not replaced by
-    one outside it."""
+    that holds both, outside any loop, or another binding of the name in the same list comes after it and before the
+    use, as a second assignment in straight-line code replaces the first. A binding in a branch, a try, or a handler
+    is not replaced by one outside it, and one after the use inside a loop reaches the use's next pass."""
     # Every binding's value and every read lie in a statement, and every statement in a list of its parent's.
     place = shape.places[id(shape.statements(binding)[0])]
     holder = next(
@@ -795,7 +799,14 @@ def _reaches(binding: ast.AST, others: list[ast.expr], use: ast.AST, shape: _Mod
         return True
     use_index = shape.places[id(holder)][1]
     if place[1] > use_index:
-        return False
+        # A binding after the read reaches it on a loop's next pass, unless one before the read replaces it.
+        looped = any(isinstance(statement, LOOPS) for statement in shape.statements(holder)[1:])
+        return looped and not any(
+            other is not binding
+            and shape.places[id(shape.statements(other)[0])][0] == place[0]
+            and shape.places[id(shape.statements(other)[0])][1] < use_index
+            for other in others
+        )
     for other in others:
         other_place = shape.places[id(shape.statements(other)[0])]
         # A binding in the statement that holds the read, as a loop's target, is not one before it.

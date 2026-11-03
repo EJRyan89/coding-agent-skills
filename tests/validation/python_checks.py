@@ -1936,7 +1936,7 @@ class _ForeignLibraries:
         ]
         returns = [
             (f"<local>.{function.name}", node.value)
-            for function in tree.body
+            for function in _top_level(tree.body)
             if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
             for node in ast.walk(function)
             if isinstance(node, ast.Return) and node.value is not None

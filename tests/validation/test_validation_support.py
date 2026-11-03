@@ -849,6 +849,14 @@ def test_bound_values_follow_a_with_target_and_an_assignment_expression() -> Non
         ),
         pytest.param("x, x = a, b\nx\n", ["a", "b"], id="one statement's bindings are not ordered"),
         pytest.param("x = x\nx\n", [], id="a name bound to itself is followed once"),
+        pytest.param(
+            "x = a\nwhile c:\n    x\n    x = b\n", ["a", "b"], id="a loop's later binding reaches its next pass"
+        ),
+        pytest.param(
+            "while c:\n    x = a\n    x\n    x = b\n",
+            ["a"],
+            id="a loop's binding before the read replaces its later one",
+        ),
     ],
 )
 def test_bound_values_read_every_binding_that_may_reach_the_read(source: str, expected: list[str]) -> None:

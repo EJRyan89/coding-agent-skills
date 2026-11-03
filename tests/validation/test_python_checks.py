@@ -3155,6 +3155,11 @@ def marked_rows(body: str) -> list[str]:
             "    p.add_argument('--timeout', **options)\n",
             id="a key added before the dict is bound again passes",
         ),
+        pytest.param(
+            "def f(p):\n    kind = str\n    for _ in range(2):\n"
+            "        p.add_argument('--timeout', type=kind)  # read\n        kind = float\n",
+            id="a type a loop binds after the read",
+        ),
     ],
 )
 def test_time_option_policy_reads_each_form_resolved_call_follows(body: str) -> None:
@@ -3289,6 +3294,14 @@ def test_time_words_hold_each_limit_word_and_unit() -> None:
             "def f(s):\n    t = json.dumps({})\n    t = 'x'\n    s.write(t)\n",
             id="text bound again to plain text passes",
         ),
+        pytest.param(
+            "def f(s, d):\n    t = ''\n    for _ in range(2):\n        s.write(t)  # read\n        t = json.dumps(d)\n",
+            id="text a loop binds after the write",
+        ),
+        pytest.param(
+            "def f(s, d):\n    for _ in range(2):\n        t = 'x'\n        s.write(t)\n        t = json.dumps(d)\n",
+            id="text a loop binds after the write but before it again passes",
+        ),
     ],
 )
 def test_json_write_policy_reads_each_form_resolved_call_follows(body: str) -> None:
@@ -3392,6 +3405,16 @@ DECLARED = "    lib.CloseHandle.argtypes = [wintypes.HANDLE]\n    lib.CloseHandl
             "def f():\n    lib = ctypes.WinDLL('k')\n"
             "    functools.partial(operator.attrgetter('CloseHandle')(lib), 1)()  # read\n",
             id="a partial over an attrgetter of a foreign function",
+        ),
+        pytest.param(
+            "def f(h):\n    lib = None\n    for _ in range(2):\n        if lib:\n"
+            "            lib.CloseHandle(h)  # read\n        lib = ctypes.WinDLL('k')\n",
+            id="a library a loop binds after the call",
+        ),
+        pytest.param(
+            "if True:\n\n    def load():\n        return ctypes.WinDLL('k')\n\n\n"
+            "def f(h):\n    load().CloseHandle(h)  # read\n",
+            id="a loader defined under a top-level block",
         ),
     ],
 )
