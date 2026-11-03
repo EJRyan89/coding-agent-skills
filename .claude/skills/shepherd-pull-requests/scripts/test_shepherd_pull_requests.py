@@ -549,6 +549,17 @@ class HubTest(FixtureTestCase):
         self.assertEqual(before, git("rev-parse", "HEAD", directory=self.hub))
         self.assertEqual(tracking, git("rev-parse", "origin/main", directory=self.hub))
 
+    def test_a_dry_run_names_an_origin_with_no_main(self) -> None:
+        # git ls-remote exits 0 and prints nothing when the remote has no such branch.
+        output = GitClient.output
+
+        def no_main(client: GitClient, arguments: Sequence[str], **options: Any) -> str:
+            return "" if arguments[0] == "ls-remote" else output(client, arguments, **options)
+
+        with mock.patch.object(GitClient, "output", no_main):
+            _, lines = self.tick(StubGh(), dry_run=True)
+        self.assertTrue(self.line(lines, "HUB ").endswith("not fast-forwarded: origin has no main"), lines)
+
     def test_a_tick_in_a_linked_worktree_leaves_the_hub_to_its_own_session(self) -> None:
         before = git("rev-parse", "HEAD", directory=self.hub)
         self.advance_origin()

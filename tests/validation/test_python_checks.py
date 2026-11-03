@@ -1129,8 +1129,28 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("strip() of the call", "client.output(['rev-parse', 'HEAD']).strip()"),
             ("strip() of a stdout", "client.run(['config', '--get', 'x']).stdout.strip()"),
             ("strip() of an answer or nothing", "(client.quiet_output(['symbolic-ref', 'HEAD']) or '').strip()"),
+            ("rsplit()", "out.rsplit()"),
+            ("strip(None)", "out.strip(None)"),
+            ("split(None)", "out.split(None)"),
+            ("split(maxsplit=1)", "out.split(maxsplit=1)"),
+            ("split(None, 1)", "out.split(None, 1)"),
+            ("split(sep=None)", "out.split(sep=None)"),
+            ("strip(chars=None)", "out.strip(chars=None)"),
+            ("str.split(out, None)", "str.split(out, None)"),
+            ("str.rsplit(out)", "str.rsplit(out)"),
         )
     },
+    # "a call whose first argument is a literal `git`, or whose function's name has the word git in it, counts for
+    # any subcommand", one its arguments name only at run time included.
+    "a trim of a git-named call's output whose subcommand its arguments name at run time": _form(
+        git_separator_problems, "def f(git_in, arguments):\n    return git_in(*arguments).stdout.strip()\n"
+    ),
+    "a trim of a call starting with a literal git": _form(
+        git_separator_problems, "def f(run):\n    return run(['git', 'update-ref', 'x']).strip()\n"
+    ),
+    "a trim of a call whose arguments run no git at all": _form(
+        git_separator_problems, "def f(run, arguments):\n    return run(*arguments).stdout.strip()\n", refused=False
+    ),
     **{
         f"a {form} of git's output that keeps what a name holds": _form(
             git_separator_problems,
@@ -1140,6 +1160,8 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         for form, trim in (
             ("strip('\\n')", "out.strip('\\n')"),
             ("split on a tab", "out.split('\\t')"),
+            ("split on a tab once", "out.split('\\t', maxsplit=1)"),
+            ("rsplit on a tab", "out.rsplit(sep='\\t')"),
             ("split on NUL", "str.split(out, '\\0')"),
             ("removesuffix", "out.removesuffix('\\n')"),
             ("strip() of a literal", "' x '.strip()"),

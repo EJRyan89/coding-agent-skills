@@ -329,7 +329,8 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
         return "not fast-forwarded: it has uncommitted changes"
     before = output_line(git.output(["rev-parse", "HEAD"], directory=hub))
     if dry_run:
-        listed = output_line(git.output(["ls-remote", REMOTE, f"refs/heads/{BASE}"], directory=hub)).split("\t")
+        line = output_line(git.output(["ls-remote", REMOTE, f"refs/heads/{BASE}"], directory=hub))
+        listed = line.split("\t") if line else []  # git prints nothing when origin has no such branch
         if not listed:
             return f"not fast-forwarded: {REMOTE} has no {BASE}"
         return (

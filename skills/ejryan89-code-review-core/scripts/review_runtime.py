@@ -844,11 +844,13 @@ class PrepareGitRunner:
 
 
 def _run_git(checkout: Path, runner: Runner, *arguments: str) -> str:
+    """What git printed on stdout, whole, so a name it lists keeps every character; a one-line answer is read through
+    git_client.output_line."""
     result = git_in(checkout, runner, *arguments)
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
+        detail = result.stderr.strip() or output_line(result.stdout) or "git command failed"
         raise RuntimeContractError(output_bytes(detail).decode("utf-8", "replace"))
-    return result.stdout.strip()
+    return result.stdout
 
 
 def _normalize_remote(value: str) -> str:
@@ -860,7 +862,7 @@ def _normalize_remote(value: str) -> str:
 
 def verify_checkout_remote(checkout: Path, repository: str, runner: Runner = subprocess_runner) -> None:
     expected = validate_repository_identity(repository)
-    actual = _normalize_remote(_run_git(checkout, runner, "remote", "get-url", "origin"))
+    actual = _normalize_remote(output_line(_run_git(checkout, runner, "remote", "get-url", "origin")))
     if actual != expected:
         raise RuntimeContractError(f"Checkout origin mismatch: expected {expected}, found {actual}")
 
@@ -874,7 +876,7 @@ def resolve_reviewer_commit(
 ) -> str:
     if not trusted_ref or trusted_ref.startswith("refs/pull/"):
         raise RuntimeContractError("Pull-request refs cannot be trusted reviewer sources")
-    commit = _run_git(checkout, runner, "rev-parse", "--verify", f"{trusted_ref}^{{commit}}")
+    commit = output_line(_run_git(checkout, runner, "rev-parse", "--verify", f"{trusted_ref}^{{commit}}"))
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
         raise RuntimeContractError("Trusted ref did not resolve to a commit")
     if commit.lower() == head_sha.lower():
@@ -921,7 +923,7 @@ def _tree_entries(checkout: Path, commit: str, paths: Iterable[str], runner: Run
     wildcard; a path it does not hold is left out. A call per batch of paths, not per path."""
     entries: dict[str, TreeEntry] = {}
     for call in _ls_tree_calls(paths):
-        # -z ends each entry with NUL and quotes no name, so stripping the listing's whitespace never touches a path.
+        # -z ends each entry with NUL and quotes no name, and the listing is read whole, so no path loses a character.
         listing = _run_git(checkout, runner, "ls-tree", "-z", commit, "--", *call)
         for record in listing.split("\0"):
             if not record:
@@ -1127,7 +1129,9 @@ def materialize_reviewer(
     if guideline_commit is not None:
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", guideline_commit):
             raise RuntimeContractError("Guideline commit is invalid")
-        resolved = _run_git(checkout, runner, "rev-parse", "--verify", f"{guideline_commit}^{{commit}}").lower()
+        resolved = output_line(
+            _run_git(checkout, runner, "rev-parse", "--verify", f"{guideline_commit}^{{commit}}")
+        ).lower()
         if resolved != guideline_commit:
             raise RuntimeContractError("Guideline commit did not resolve exactly")
     guidelines = specialist_guidelines(normalized) if guideline_commit is not None else set()
@@ -1835,7 +1839,7 @@ def _commit_members(
     A changed file over the size limit that `probed` accepts has only its first BINARY_PROBE_BYTES read, through
     `prefix_reader`, and is `binary` when they are (see `_size_limit_reason`).
     """
-    # -z ends each entry with NUL and quotes no name, so stripping the listing's whitespace never touches a path.
+    # -z ends each entry with NUL and quotes no name, and the listing is read whole, so no path loses a character.
     listing = _run_git(checkout, runner, "ls-tree", "-r", "-z", "-l", "--full-tree", commit)
     pending: list[tuple[str, str, int]] = []
     for record in listing.split("\0"):
@@ -2021,7 +2025,7 @@ def materialize_source_snapshot(
     if not GIT_OBJECT_ID.fullmatch(commit):
         raise RuntimeContractError("Source snapshot commit is invalid")
     verify_checkout_remote(checkout, repository, runner)
-    resolved_commit = _run_git(checkout, runner, "rev-parse", "--verify", f"{commit}^{{commit}}").lower()
+    resolved_commit = output_line(_run_git(checkout, runner, "rev-parse", "--verify", f"{commit}^{{commit}}")).lower()
     if resolved_commit != commit:
         raise RuntimeContractError("Source snapshot commit did not resolve exactly")
     _prepare_destination(destination)
@@ -2079,7 +2083,7 @@ def read_blob(
     """
     if not ABBREVIATED_OBJECT_ID.fullmatch(abbreviation):
         raise RuntimeContractError(f"Not an abbreviated blob id: {abbreviation!r}")
-    blob = _run_git(checkout, runner, "rev-parse", "--verify", f"{abbreviation}^{{blob}}").lower()
+    blob = output_line(_run_git(checkout, runner, "rev-parse", "--verify", f"{abbreviation}^{{blob}}")).lower()
     if not blob.startswith(abbreviation) or not GIT_OBJECT_ID.fullmatch(blob):
         raise RuntimeContractError(f"Blob {abbreviation} did not resolve exactly")
     if maximum is not None:

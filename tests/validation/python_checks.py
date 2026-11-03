@@ -2644,9 +2644,11 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # hold, so git's output, a call's result, its stdout, or a name a scope binds to either, is split on "\n" or on NUL,
 # never with splitlines(), bound or unbound as str.splitlines(out), nor after what keeps its text, as
 # out.strip().splitlines() does: a string method, a str() or a bytes(), a slice, a formatted string, a format(), a %,
-# a concatenation, or a join. Nor is it trimmed or split by strip(), lstrip(), rstrip(), or split() with no argument,
-# which drop or break on U+00A0, U+2028, and the other whitespace such a name can hold: git_client.output_line takes
-# off the one "\n" that ends a line git wrote. Every subcommand's output counts. A listing, a format, a split, or a
+# a concatenation, or a join. Nor is it trimmed or split by strip(), lstrip(), rstrip(), split(), or rsplit() given no
+# separator or characters, or None for them, which drop or break on U+00A0, U+2028, and the other whitespace such a
+# name can hold: git_client.output_line takes off the one "\n" that ends a line git wrote. Every subcommand's output
+# counts for a call whose first argument is a literal "git" or whose function's name says git, one whose subcommand
+# its arguments name only at run time included. A listing, a format, a split, or a
 # trim that must stay states why in a module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
@@ -2678,8 +2680,11 @@ GIT_SILENT_OPTIONS = frozenset({"-q", "--quiet"})
 # beside an error does, is no such command.
 GIT_ARGUMENT_LISTINGS = frozenset({"check-attr", "check-ignore", "grep"})
 GIT_FORMAT_COMMANDS = frozenset({"for-each-ref", "log"})
-# The str methods that, given no argument, drop or split on any whitespace, U+00A0 and U+2028 among it.
-GIT_WHITESPACE_TRIMS = frozenset({"lstrip", "rstrip", "split", "strip"})
+# The str methods that, given no separator or characters, or None for them, drop or split on any whitespace,
+# U+00A0 and U+2028 among it, with the keyword each takes its separator or characters by.
+GIT_WHITESPACE_TRIMS = {"lstrip": "chars", "rstrip": "chars", "strip": "chars", "split": "sep", "rsplit": "sep"}
+# What a git call whose subcommand only its arguments name at run time is reported as.
+ANY_SUBCOMMAND = "<any subcommand>"
 # The options a format follows, after = or as the next argument, and the prefixes --pretty's form may give it.
 GIT_FORMAT_OPTIONS = frozenset({"--format", "--pretty"})
 GIT_FORMAT_PREFIXES = ("format:", "tformat:")
@@ -2951,9 +2956,12 @@ class _GitOutputs:
             else:
                 elements.append(argument)
         started = _git_command(elements)
-        if started is None:
-            return None
         named = names_git(node.func) or (bool(elements) and _literal(elements[0]) == "git")
+        if started is None:
+            # A git call whose subcommand its arguments name only at run time, as `git_in(checkout, runner,
+            # *arguments)`, counts for any subcommand.
+            spread = any(isinstance(element, ast.Starred) for element in elements)
+            return ANY_SUBCOMMAND if named and spread else None
         return started[0] if named or started[0] in GIT_OUTPUT_COMMANDS else None
 
     def split(self, node: ast.AST) -> str | None:
@@ -2966,20 +2974,23 @@ class _GitOutputs:
         return self.command(node.func.value)
 
     def trim(self, node: ast.AST) -> str | None:
-        """The git subcommand whose output a strip(), lstrip(), rstrip(), or split() given no argument trims or splits
-        on whitespace, bound or unbound as `str.strip(out)`, or None."""
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in GIT_WHITESPACE_TRIMS
-            and not node.keywords
-        ):
+        """The git subcommand whose output a strip(), lstrip(), rstrip(), split(), or rsplit() trims or splits on
+        whitespace, given no separator or characters or None for them, positionally or by keyword, beside a maxsplit or
+        not, bound or unbound as `str.strip(out)`, or None."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             return None
-        if self._unbound(node.func):
-            return self.command(node.args[0]) if len(node.args) == 1 else None
-        if node.args or isinstance(node.func.value, ast.Constant):
+        keyword = GIT_WHITESPACE_TRIMS.get(node.func.attr)
+        if keyword is None:
             return None
-        return self.command(node.func.value)
+        unbound = self._unbound(node.func)
+        given = node.args[1:] if unbound else node.args
+        separator = given[0] if given else next((item.value for item in node.keywords if item.arg == keyword), None)
+        if separator is not None and not (isinstance(separator, ast.Constant) and separator.value is None):
+            return None
+        receiver = (node.args[0] if node.args else None) if unbound else node.func.value
+        if receiver is None or isinstance(receiver, ast.Constant):
+            return None
+        return self.command(receiver)
 
 
 def _git_output_trims(tree: ast.Module) -> list[tuple[int, str, str]]:
