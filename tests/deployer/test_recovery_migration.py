@@ -581,8 +581,8 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assert_lines(
             result.output,
             f"Recovering committed run {self.HELD} (completing finalization)...",
-            f"  WARNING: alpha's previous copy could not be deleted, so it stays at {forward(transient)}: Access is "
-            f"denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}",
+            "  WARNING: alpha's previous copy could not be deleted, so it, or what is left of it, stays at "
+            f"{forward(transient)}: Access is denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}",
             "  Recovery complete.",
         )
         self.assertNotIn("Recovery failed", result.output)
@@ -1019,14 +1019,30 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
         self.assertEqual("changed after the run\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
-    def test_a_changed_permanent_backup_stops_completion(self) -> None:
+    def test_a_changed_permanent_backup_completes_as_a_kept_copy_is_kept_whatever_its_content(self) -> None:
         journal_file, destination = self.committed_with_kept_backup()
         destination.parent.mkdir(parents=True)
         (self.skills_dir / "alpha.deploying-bak").rename(destination)
         self.write(destination / "SKILL.md", "changed after the run\n")
-        self.assert_completion_stopped(
-            journal_file, f"  WARNING: Permanent backup hash mismatch for alpha at .backups/{self.RUN}/alpha"
-        )
+        result = self.deploy_ok("--all")
+        self.assert_lines(result.output, "  Recovery complete.")
+        self.assertNotIn("WARNING", result.output)
+        self.assertFalse(journal_file.exists())
+        self.assertEqual("changed after the run\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_a_retry_after_a_changed_kept_backup_was_moved_completes(self) -> None:
+        # The first attempt moves the changed copy, then stops before it clears the journal; the retry meets the copy
+        # already under .backups and finishes as the first attempt would have.
+        journal_file, destination = self.committed_with_kept_backup()
+        self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "changed after the run\n")
+        with failing_at("remove", journal_file):
+            first = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
+        self.assert_lines(first.output, f"  Preserved backup: alpha -> .backups/{self.RUN}/alpha")
+        self.assertTrue(journal_file.is_file())
+        retried = self.deploy_ok("--all")
+        self.assert_lines(retried.output, "  Recovery complete.")
+        self.assertNotIn("WARNING", retried.output)
+        self.assertFalse(journal_file.exists())
         self.assertEqual("changed after the run\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_an_installed_copy_changed_after_a_committed_run_stops_completion_and_keeps_both_copies(self) -> None:

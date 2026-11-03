@@ -17,7 +17,7 @@ from unittest import mock
 
 from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journal_line
 
-from deployer import discovery, manifest, platform_support, render, state_files
+from deployer import discovery, fsops, manifest, platform_support, render, state_files
 from deployer.errors import DeployError
 from deployer.journal import Journal, valid_entry
 
@@ -239,7 +239,7 @@ class StateFileTests(DeployerTestCase):
                 self.assertNotIn("FAILED", dry.output)
                 self.assertTrue(journal.is_file())
 
-    def test_a_dry_run_beside_a_pending_recovery_refuses_each_state_file_the_deployment_refuses(self) -> None:
+    def test_a_dry_run_refuses_each_state_the_deployment_refuses_before_recovery_pending_run_or_not(self) -> None:
         # The deployment reads the manifest and the configuration before it recovers anything, so a dry run reads them
         # before it reports a pending recovery. A journal it cannot read is the journal's own refusal, held above; the
         # lock's info.json is read only by a run that takes the lock, which a dry run never does.
@@ -259,25 +259,39 @@ class StateFileTests(DeployerTestCase):
             config_file.unlink()
             config_file.mkdir()
 
+        def other_checkout() -> None:
+            data = json.loads(saved)
+            other = self.root / "other-clone"
+            other.mkdir(exist_ok=True)
+            data["sources"][SOURCE_ID]["source_dir"] = platform_support.normalize(other)
+            self.write(self.manifest_file, json.dumps(data))
+
         rows: dict[str, tuple[Callable[[], None], str]] = {
             "malformed manifest": (functools.partial(damage_manifest, False), "ERROR: Manifest is malformed: "),
             "manifest not a file": (functools.partial(damage_manifest, True), "ERROR: The manifest at "),
             "configuration not a file": (damage_configuration, "ERROR: The configuration at "),
+            "another checkout recorded": (other_checkout, f"ERROR: Source '{SOURCE_ID}' is deployed from "),
         }
+        # Each row with a pending run beside it, and with none, where the dry run would otherwise plan.
         for case, (damage, refusal) in rows.items():
-            with self.subTest(case=case):
-                self.write(self.staging_run(RUN_ID) / "journal.jsonl", journal_line(install_entry("ghost", ZERO_HASH)))
-                damage()
-                answers = []
-                for arguments in (("--all",), ("--all", "--dry-run")):
-                    result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
-                    self.assertNotIn("Pending recovery", result.output)
-                    answers.append([line for line in result.output.splitlines() if line.startswith("ERROR: ")])
-                self.assertEqual(answers[0], answers[1])
-                for path, content in ((self.manifest_file, saved), (config_file, configured)):
-                    if path.is_dir():
-                        path.rmdir()
-                    path.write_bytes(content)
+            for pending in (True, False):
+                with self.subTest(case=case, pending=pending):
+                    if pending:
+                        journal = self.staging_run(RUN_ID) / "journal.jsonl"
+                        self.write(journal, journal_line(install_entry("ghost", ZERO_HASH)))
+                    damage()
+                    answers = []
+                    for arguments in (("--all",), ("--all", "--dry-run")):
+                        result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
+                        self.assertNotIn("Pending recovery", result.output)
+                        self.assertNotIn("UNCHANGED", result.output)
+                        answers.append([line for line in result.output.splitlines() if line.startswith("ERROR: ")])
+                    self.assertEqual(answers[0], answers[1])
+                    for path, content in ((self.manifest_file, saved), (config_file, configured)):
+                        if path.is_dir():
+                            path.rmdir()
+                        path.write_bytes(content)
+                    fsops.remove(self.staging_run(RUN_ID))
 
     def test_a_directory_in_place_of_a_journal_stops_recovery_and_keeps_what_the_run_holds(self) -> None:
         self.deploy_ok("--all")

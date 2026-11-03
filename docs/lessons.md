@@ -416,12 +416,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   answer, so it refuses what the run would refuse.
 - **Why:** A preview that answers before the read that refuses, such as reporting a pending recovery, promises a run
   that stops, and sends the user to the step that fails.
-- **Use:** `deployer.pipeline:_dry_run`, which reads the manifest before it reports a pending recovery, as the
-  deployment reads it before recovering.
-- **Guard:** `tests/deployer/test_state_files.py::StateFileTests::test_a_dry_run_beside_a_pending_recovery_refuses_each_state_file_the_deployment_refuses`,
-  a table of each state file the deployment refuses, each beside a pending recovery
-- **Search for:** a `return` in `_dry_run` or another preview before a read its run makes first, such as
-  `_stop_for_pending_recovery(` before `manifest.load(`; a `--dry-run` branch taken before a check the full run takes.
+- **Use:** `deployer.pipeline:_reject_other_checkout`, the deployment's one check before it recovers, which reads the
+  manifest and refuses another checkout, and which `deployer.pipeline:_dry_run` runs first too.
+- **Guard:** `tests/deployer/test_state_files.py::StateFileTests::test_a_dry_run_refuses_each_state_the_deployment_refuses_before_recovery_pending_run_or_not`,
+  a table of each state the deployment refuses before it recovers, each with a pending recovery beside it and without
+- **Search for:** a `return` in `_dry_run` or another preview before a check its run makes first, such as
+  `_stop_for_pending_recovery(` before `_reject_other_checkout(`; a `--dry-run` branch taken before a check the full
+  run takes.
 - **Examples:** #2293
 
 ### What one step accepts, every later step can read and write

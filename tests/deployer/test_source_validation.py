@@ -827,9 +827,15 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
         self.assertIn(f"ERROR: {forward(linked)} is a linked git worktree.", result.output)
         self.assertEqual(forward(self.source), self.recorded_source_dir())
 
-    def test_a_dry_run_from_a_second_clone_is_allowed(self) -> None:
+    def test_a_dry_run_from_a_second_clone_is_refused_as_the_deployment_refuses_it(self) -> None:
         clone = self.deployed_clone()
-        self.deploy_from(clone, "--all", "--dry-run")
+        answers = []
+        for arguments in (("--all",), ("--all", "--dry-run")):
+            result = self.deploy_fails(*arguments, pattern="not from this checkout", source=clone)
+            self.assertNotIn("UNCHANGED", result.output)
+            answers.append([line for line in result.output.splitlines() if line.startswith("ERROR: ")])
+        self.assertEqual(answers[0], answers[1])
+        self.assertEqual(forward(self.source), self.recorded_source_dir())
 
     def test_take_over_source_cannot_be_combined_with_a_dry_run(self) -> None:
         self.deployed_clone()

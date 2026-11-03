@@ -442,8 +442,9 @@ def finish_backup(
             fsops.remove(transient)
         except OSError as error:
             _warn(
-                f"{item}'s previous copy could not be deleted, so it stays at {platform_support.normalize(transient)}: "
-                f"{error.strerror or error}. Delete it once nothing holds it open. {see_recovery('Backups')}"
+                f"{item}'s previous copy could not be deleted, so it, or what is left of it, stays at "
+                f"{platform_support.normalize(transient)}: {error.strerror or error}. Delete it once nothing holds it "
+                f"open. {see_recovery('Backups')}"
             )
         return disposition, None
     if disposition == "gone":
@@ -473,13 +474,11 @@ def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
         print(f"  Preserved backup: {item} -> {kept_at}")
     if disposition != "gone":
         return True
-    # Only a kept backup gets here: one the run did not keep and that is gone has nothing left to delete.
-    kept_at = f".backups/{run_id}/{item}"
+    # Only a kept backup gets here: one the run did not keep and that is gone has nothing left to delete. A kept copy is
+    # kept whatever its content, so the one an earlier attempt moved is not judged by its hash: a retry after that move
+    # completes as the attempt itself would have.
     destination = root_directory(paths, entry_root(entry)) / ".backups" / run_id / item
     if file_presence.is_occupied(destination):
-        if _hash_existing(destination) != entry["backup_hash"]:
-            _warn(f"Permanent backup hash mismatch for {item} at {kept_at}")
-            return False
         return True
     _warn(f"Cannot find backup for {item}")
     return False

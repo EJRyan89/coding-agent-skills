@@ -110,18 +110,21 @@ class SettlementTests(DeployerTestCase):
     def settled(self, row: Row, settle: Callable[[dict[str, Any]], None]) -> tuple[str, list[str]]:
         """Where the copy the row puts on disk ends once settle runs, and the warnings it gives."""
         entry = self.backup(row)
-        with self.faulted(row) as warnings:
-            settle(entry)
-        if self.transient.exists():
-            ends = "beside"
-        elif self.destination.exists() and row.fault != "occupied":
-            ends = "kept"
-            content = CHANGED if row.changed else PREVIOUS
-            self.assertEqual(content, (self.destination / "SKILL.md").read_text(encoding="utf-8"))
-        else:
-            ends = "deleted"
-        fsops.remove(self.skills_dir)
-        fsops.remove(self.staging_run(RUN))
+        try:
+            with self.faulted(row) as warnings:
+                settle(entry)
+            if self.transient.exists():
+                ends = "beside"
+            elif self.destination.exists() and row.fault != "occupied":
+                ends = "kept"
+                content = CHANGED if row.changed else PREVIOUS
+                self.assertEqual(content, (self.destination / "SKILL.md").read_text(encoding="utf-8"))
+            else:
+                ends = "deleted"
+        finally:
+            # Each row starts from an empty root, whether or not the one before it held.
+            fsops.remove(self.skills_dir)
+            fsops.remove(self.staging_run(RUN))
         return ends, warnings
 
     def test_finalization_and_recovery_settle_each_backup_alike(self) -> None:
@@ -137,6 +140,27 @@ class SettlementTests(DeployerTestCase):
                         # A warning that names .backups as where the copy went names the folder that holds it.
                         self.assertFalse(any("instead of being deleted" in warning for warning in warnings))
 
+    def test_a_retry_after_either_path_moved_the_copy_completes_with_no_warning(self) -> None:
+        # Recovery repeats safely: an attempt stopped after the move, before the journal was cleared, is retried by
+        # recovery over the copy already under .backups, whatever its content.
+        for case, row in ROWS.items():
+            if row.ends != "kept" or row.fault:
+                continue
+            for path, settle in (("finalization", self.finalize), ("recovery", self.recover)):
+                with self.subTest(case=case, path=path):
+                    entry = self.backup(row)
+                    try:
+                        with self.faulted(row):
+                            settle(entry)
+                        with self.faulted(row) as warnings:
+                            self.recover(entry)
+                        self.assertEqual([], warnings)
+                        self.assertTrue(self.destination.is_dir())
+                    finally:
+                        # Each row starts from an empty root, whether or not the one before it held.
+                        fsops.remove(self.skills_dir)
+                        fsops.remove(self.staging_run(RUN))
+
 
 # Each stop recovery makes, by the text of the WARNING it gives before it answers False, mapped to the words "When
 # recovery fails" in docs/recovery.md names it by. A stop added without its row fails the test below.
@@ -145,7 +169,6 @@ STOPS = {
     "Installed {} hash mismatch (expected {}, got {})": "an item changed or went missing after the run installed it",
     "Unexpected state for {} during rollback": "an item changed or went missing after the run installed it",
     "Cannot rollback install of {} (hash mismatch)": "an item changed or went missing after the run installed it",
-    "Permanent backup hash mismatch for {} at {}": "a backup already kept in `.backups/<run-id>/` changed",
     "Cannot find backup for {}": "a backup is missing",
     "Both {} and backup are missing during rollback": "a backup is missing",
     "Backup hash mismatch for {} during rollback": "a backup changed before a rollback could put it back",

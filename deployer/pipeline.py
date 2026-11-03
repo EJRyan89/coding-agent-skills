@@ -477,9 +477,9 @@ def _dry_run(
 ) -> int:
     """Report what a deployment would do, holding no lock and changing nothing, unless a recovery is pending."""
     try:
-        # Read first, as the deployment reads it before recovering, so a manifest it refuses is refused here too
-        # rather than answered with a pending recovery the deployment would never reach.
-        manifest.load(paths.manifest_file)
+        # The deployment's own check before it recovers, so a manifest or a checkout it refuses is refused here too,
+        # rather than answered with a pending recovery or a plan the deployment would never reach.
+        _reject_other_checkout(paths, src.source_id, options.take_over_source)
         if _stop_for_pending_recovery(paths):
             return 0
         return _deploy(paths, options, src, values, stdin, None, pin)
