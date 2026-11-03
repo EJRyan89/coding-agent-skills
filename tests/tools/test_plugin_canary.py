@@ -16,6 +16,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from checkout_fixture import FOREIGN, make_foreign, own_checkout
+from git_client import GitClient, GitError
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -24,7 +26,7 @@ import json_writer
 import whole_number
 from review_dispatch import REVIEWER_TASK
 
-from tools import plugin_build
+from tools import checkout_trust, plugin_build
 from tools import plugin_canary as canary
 from tools.runtime_canary import (
     FIXTURE_SKILL,
@@ -40,6 +42,16 @@ from tools.runtime_canary import (
 
 MARKER = "PLUGIN-CANARY-OUTSIDE-1a2b"
 AGENT = "coding-agent-skills:code-review-reviewer"
+
+
+# The real reading, which the autouse fixture below stands in for so no other test depends on this checkout's branch.
+READ_FOREIGN_CHECKOUT = checkout_trust.foreign_checkout
+
+
+@pytest.fixture(autouse=True)
+def own_checkout_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every run reads this checkout as the user's own, whatever branch or detached HEAD CI checked out."""
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", lambda git, directory: None)
 
 
 def event(kind: str, content: list[dict[str, Any]], parent: str | None = None) -> str:
@@ -742,3 +754,46 @@ def test_a_refusal_the_run_meets_is_its_failed_line_and_keeps_the_home(
     assert canary.main([]) == 1
     assert capsys.readouterr().out.splitlines()[0] == f"FAILED {quote(str(refusal))}"
     assert tmp_path.is_dir()
+
+
+@pytest.mark.parametrize("case", sorted(FOREIGN))
+def test_main_refuses_a_checkout_following_another_repositorys_pull_request_before_making_a_home(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git = GitClient()
+    (tmp_path / "checkout with spaces").mkdir()
+    checkout = own_checkout(tmp_path / "checkout with spaces", git)
+    reason = make_foreign(checkout, git, case)
+    read: list[Path] = []
+
+    def foreign(client: GitClient, directory: Path) -> str | None:
+        read.append(directory)
+        return READ_FOREIGN_CHECKOUT(client, checkout)
+
+    def unreachable(*arguments: object, **options: object) -> int:
+        raise AssertionError("the run went on past a refused checkout")
+
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", foreign)
+    monkeypatch.setattr(canary, "create_home", unreachable)
+    monkeypatch.setattr(canary, "canary", unreachable)
+    assert canary.main(["--discovery-only"]) == 1
+    refusal = "the checkout follows another repository's pull request: " + reason
+    assert capsys.readouterr().out.splitlines() == [f"FAILED {quote(refusal)}"]
+    assert read == [REPOSITORY_ROOT]
+
+
+def test_main_refuses_a_checkout_git_cannot_read_before_making_a_home(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(client: GitClient, directory: Path) -> str | None:
+        raise GitError("fatal: not a git repository")
+
+    def unreachable(*arguments: object, **options: object) -> int:
+        raise AssertionError("the run went on past an unreadable checkout")
+
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", unreadable)
+    monkeypatch.setattr(canary, "create_home", unreachable)
+    monkeypatch.setattr(canary, "canary", unreachable)
+    assert canary.main(["--discovery-only"]) == 1
+    refusal = "cannot read the checkout's branch: fatal: not a git repository"
+    assert capsys.readouterr().out.splitlines() == [f"FAILED {quote(refusal)}"]
