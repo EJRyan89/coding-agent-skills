@@ -297,7 +297,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2235, #2292
+- **Examples:** #1890, #1892, #2227, #2235, #2292
 
 ### A reader of another program's language reads it as that program does
 
@@ -425,11 +425,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that writes an output is the mechanism in #1911.
 - **Guard:** `tests/deployer/test_invariants.py::RefusalBeforeMutationGuardTests::test_a_refusal_raised_after_the_deployment_changed_the_home_fails_the_test`,
   `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
-  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`
+  `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`,
+  `skills/curate-agent-memory/scripts/test_memory_audit.py::DeleteTests::test_a_read_only_memory_among_several_is_refused_before_any_is_deleted`
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
   `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
-  as a destination judged in the step that creates it.
-- **Examples:** #1396, #1855, #1876, #1911, #2210
+  as a destination judged in the step that creates it; an `unlink(`, `rename(`, or `replace_text(` in a loop over
+  several files whose refusals do not ask `atomic_file:is_read_only`, which Windows refuses to delete or replace.
+- **Examples:** #1396, #1855, #1876, #1911, #2210, #2223
 
 ### A preview reads what the run refuses on before it answers
 
