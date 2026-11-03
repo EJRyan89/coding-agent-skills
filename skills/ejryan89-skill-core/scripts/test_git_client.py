@@ -124,6 +124,18 @@ class ClientTests(unittest.TestCase):
             GitClient(runner).output(["fetch", "--all"])
         self.assertEqual("git fetch failed with exit code 5", str(context.exception))
 
+    def test_an_empty_stderr_names_the_subcommand_behind_git_s_own_options(self) -> None:
+        # Each failing call names its subcommand, never git's first option, and a call with none names git alone.
+        for arguments, message in (
+            (["--no-optional-locks", "merge-base", "a", "b"], "git merge-base failed with exit code 2"),
+            (["-C", "d", "--shallow-file", "s", "log"], "git log failed with exit code 2"),
+            (["--no-optional-locks"], "git failed with exit code 2"),
+        ):
+            for call in ("output", "quiet_output"):
+                with self.subTest(arguments=arguments, call=call), self.assertRaises(GitError) as context:
+                    getattr(GitClient(scripted(GitResult(2, "", ""))[0]), call)(arguments)
+                self.assertEqual(message, str(context.exception))
+
     def test_input_goes_to_the_input_runner_with_the_same_command_timeout_and_classifier(self) -> None:
         runner, plain = scripted(GitResult(0, "plain\n", ""))
         given: list[tuple[list[str], float, bytes]] = []
@@ -555,6 +567,17 @@ class NamesTests(unittest.TestCase):
             ],
             calls,
         )
+
+    def test_names_keeps_status_porcelain_s_status_and_path_in_one_field(self) -> None:
+        # status --porcelain -z prints "XY path", then a rename's original path as a field of its own.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base, _head = awkward_history(root)
+            plumbing(root, "reset", "--quiet", "--hard", base)
+            plumbing(root, "mv", "README.md", "renamed.md")
+            self.assertEqual(
+                ["R  renamed.md", "README.md"], GitClient().names(["status", "--porcelain"], directory=root)
+            )
 
     def test_names_raises_a_failed_listing_as_output_does(self) -> None:
         runner, _calls = scripted(GitResult(128, "", NOT_A_REPOSITORY))
@@ -1151,7 +1174,8 @@ class IsolatedClientTests(unittest.TestCase):
         GitClient(git_client.subprocess_runner, isolated=True, input_runner=git_client.subprocess_runner)
 
     def test_a_plain_client_refuses_every_spelling_of_no_index_in_every_position(self) -> None:
-        self.assertEqual(frozenset({"grep", "diff"}), git_client.ISOLATED_SUBCOMMANDS)
+        # Of git 2.56's commands, `git <command> -h` names --no-index for these and check-ignore alone.
+        self.assertEqual(frozenset({"grep", "diff", "difftool"}), git_client.ISOLATED_SUBCOMMANDS)
         # Written out here rather than read from NO_INDEX_SPELLINGS: each abbreviation from --no-i to the whole option.
         spellings = ["--no-i", "--no-in", "--no-ind", "--no-inde", "--no-index"]
         self.assertEqual(frozenset(spellings), git_client.NO_INDEX_SPELLINGS)
@@ -1163,8 +1187,12 @@ class IsolatedClientTests(unittest.TestCase):
             "after --": lambda flag: ["grep", "-n", "-e", "needle", "--", flag],
             "behind git's options": lambda flag: ["-c", "a.b=c", "grep", flag, "-e", "needle"],
             "diff": lambda flag: ["diff", "--stat", flag, "a", "b"],
+            "difftool": lambda flag: ["difftool", flag, "-y", "-x", "cat", "a", "b"],
         }
-        refusal = r"^git grep or diff --no-index reads files no repository holds; run it on GitClient\(isolated=True\)$"
+        refusal = (
+            r"^git grep, diff, or difftool --no-index reads files no repository holds; "
+            r"run it on GitClient\(isolated=True\)$"
+        )
         for spelling in spellings:
             for shape, build in shapes.items():
                 arguments = build(spelling)
@@ -1187,6 +1215,62 @@ class IsolatedClientTests(unittest.TestCase):
                 runner, calls = scripted(GitResult(0, "", ""))
                 GitClient(runner).run(arguments)
                 self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias(self) -> None:
+        # Written out here rather than read from ALIAS_SECTIONS: an alias, and the two ways to include a file of them.
+        self.assertEqual(frozenset({"alias", "include", "includeif"}), git_client.ALIAS_SECTIONS)
+        self.assertEqual(frozenset({"help.autocorrect"}), git_client.SUBCOMMAND_KEYS)
+        refused = (
+            ["-c", "alias.s=grep", "s", "--no-index", "-e", "x"],
+            ["-c", "ALIAS.s=grep", "s", "-e", "x"],
+            ["-c", "Alias.s", "status"],
+            ["--config-env", "alias.s=GREP", "s", "--no-index"],
+            ["--config-env=alias.s=GREP", "s"],
+            ["-C", "d", "-c", "core.x=y", "-c", "alias.s=grep", "s"],
+            ["-c", "include.path=/x/aliases", "s"],
+            ["-c", "includeIf.onbranch:main.path=/x/aliases", "s"],
+            ["--config-env", "IncludeIf.gitdir:/x/.path=FILE", "status"],
+            ["--exec-path=/x/programs", "s", "--no-index"],
+            ["-C", "d", "--exec-path=C:/x", "status"],
+            # help.autocorrect runs the command git guesses a misspelled name meant, here grep.
+            ["-c", "help.autocorrect=immediate", "gerp", "--no-index", "-l", "-e", "x"],
+            ["-c", "HELP.AutoCorrect=1", "s"],
+            ["--config-env", "help.autocorrect=WHEN", "s"],
+            ["--config-env=Help.autocorrect=WHEN", "s"],
+        )
+        refusal = r"^an alias, autocorrection, or a folder of git programs set on git's command line can run grep, "
+        for arguments in refused:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).run(arguments)
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).stream(arguments).__enter__()
+                self.assertEqual([], calls, "refused before git starts")
+        allowed = (
+            ["-c", "core.alias=x", "status"],
+            ["-c", "aliases.s=grep", "status"],
+            ["--config-env=core.editor=EDITOR", "status"],
+            ["grep", "-c", "-e", "alias.s=grep"],
+            ["log", "-c", "alias.s=x"],
+            ["--git-dir", "alias.s", "status"],
+            ["--exec-path"],
+            ["log", "--exec-path=x"],
+            ["-c", "help.format=html", "status"],
+            ["-c", "helper.autocorrect=1", "status"],
+            ["-c", "help.autocorrectx=1", "status"],
+        )
+        for arguments in allowed:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_a_command_line_alias_runs_on_an_isolated_client(self) -> None:
+        # The alias reaches grep --no-index, which an isolated client runs.
+        (self.inner / "f.txt").write_bytes(b"needle\n")
+        arguments = ["-c", "alias.s=grep", "s", "--no-index", "-l", "-e", "needle"]
+        self.assertEqual("f.txt\n", GitClient(isolated=True).output(arguments, directory=self.inner))
 
     def test_a_pattern_goes_right_after_the_subcommand_and_any_spelling_of_no_index_is_searched_for(self) -> None:
         for spelling in ("--no-i", "--no-index", "-e", "--"):
@@ -1352,6 +1436,7 @@ def test_push_and_every_other_subcommand_are_never_retried(arguments: list[str])
         ["--git-dir", "push", "ls-remote", "origin"],
         ["--config-env", "core.x=HOME", "fetch", "origin"],
         ["--attr-source", "HEAD", "fetch", "origin"],
+        ["--shallow-file", "push", "fetch", "origin"],
         ["--super-prefix", "sub/", "fetch", "origin"],
         ["--work-tree", "push", "--namespace", "push", "-C", "push", "fetch"],
     ],
@@ -1365,3 +1450,26 @@ def test_the_subcommand_is_found_after_git_options(arguments: list[str]) -> None
 
 def test_a_git_error_names_one_of_the_classes_its_documentation_gives() -> None:
     assert get_args(git_client.GitErrorKind) == ("git", "prerequisite", "execution", "timeout", "not_repository")
+
+
+def test_a_command_is_named_by_its_subcommand_behind_git_s_own_options() -> None:
+    assert git_client.command_name(["--no-optional-locks", "-c", "a=b", "status"]) == "git status"
+    assert git_client.command_name(["--shallow-file", "s", "log"]) == "git log"
+    assert git_client.command_name(["--no-optional-locks"]) == "git"
+
+
+@pytest.mark.parametrize(
+    "arguments", [["-c"], ["--config-env"], ["-C", "d", "-c"], ["--no-optional-locks", "--config-env"]]
+)
+def test_a_configuration_option_with_no_value_after_it_sets_no_section(arguments: list[str]) -> None:
+    # git refuses the command itself; the client reads no section past the end and leaves the refusal to git.
+    assert git_client.configured_keys(arguments) == []
+    assert not git_client.defines_alias(arguments)
+    runner, calls = scripted(GitResult(129, "", "error: option requires a value\n"))
+    assert GitClient(runner).run(arguments).returncode == 129
+    assert calls[0][0] == ["git", *arguments]
+
+
+def test_the_configured_keys_are_read_whole_and_case_folded() -> None:
+    arguments = ["-c", "Alias.S=grep", "--config-env=Help.AutoCorrect=WHEN", "-C", "d", "status", "-c", "x.y=z"]
+    assert git_client.configured_keys(arguments) == ["alias.s", "help.autocorrect"]

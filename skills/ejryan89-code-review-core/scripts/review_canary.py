@@ -33,7 +33,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-from git_client import GitClient, GitError, Runner
+from git_client import GitClient, GitError, Runner, command_name
 from github_client import replace_undecodable
 from link_probe import is_link_or_junction
 from review_config import ConfigurationError, validate_repository_identity
@@ -217,7 +217,7 @@ class _Repository:
         try:
             return self.client.output(arguments, directory=self.path, input_bytes=input_bytes)
         except GitError as exc:
-            raise FixtureError(f"git {arguments[0]} failed for the fixture: {exc}") from exc
+            raise FixtureError(f"{command_name(arguments)} failed for the fixture: {exc}") from exc
 
     def commit(self, tree: Path, message: str, parent: str | None = None) -> str:
         """A commit of exactly the files under `tree`, each as its bytes on disk: fast-import stores a blob as given,

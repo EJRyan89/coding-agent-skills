@@ -149,11 +149,13 @@ Worktrees isolate files. These are still shared:
   - Prefer a temporary WIP commit.
   - If you must stash, push with a unique message, then apply your entry by SHA.
 - **Deployer state under `~/.claude`.** The deploy lock is keyed by the home folder, so it spans worktrees: a
-  second deploy fails at once with "Another deployment is running". Deploying records its source path in the
-  manifest and in the rendered `update-coding-agent-skills` skill, so `deploy.py` refuses to deploy from a
-  linked worktree, whose path disappears when the task ends. Deploy from the hub on `main`. `--dry-run` is
-  allowed anywhere, and so is `--canary-home`, which deploys into a directory under the temporary directory,
-  empty or one an earlier canary deployment marked, that is thrown away with the source path it records.
+  second deploy, or a `--dry-run`, fails at once with "Another deployment is running". Deploying records its
+  source path in the manifest and in the rendered `update-coding-agent-skills` skill, so `deploy.py` refuses to
+  deploy from a linked worktree, whose path disappears when the task ends. Deploy from the hub on `main`. A
+  `--dry-run` refuses any checkout other than the one the manifest records, as the deployment does, so once the hub
+  has deployed into the home it refuses in a linked worktree too. `--canary-home` works anywhere: it deploys into a
+  directory under the temporary directory, empty or one an earlier canary deployment marked, that is thrown away
+  with the source path it records.
 - **Nothing in validation.** Every suite isolates its own temporary home and fixtures, and the suites that
   deploy this repository deploy a temporary copy of it, or into a `--canary-home`. Any number of worktrees can run
   `tests/run_validation.py` at once.
@@ -269,9 +271,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   finally starts, and a relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the
   store of refs and objects every worktree shares, so it does not change which checkout a call writes. The guard
   reads git's own options as git does, with no abbreviation and with a value attached after `=` or as the next word
-  (`-C`, `-c`, `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--super-prefix`, `--work-tree`), and
-  `core.worktree` and `alias.<name>` among the command-line configuration a call sees: `GIT_CONFIG_PARAMETERS`,
-  `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`.
+  (`-C`, `-c`, `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--shallow-file`, `--super-prefix`,
+  `--work-tree`), and `core.worktree` and `alias.<name>` among the command-line configuration a call sees:
+  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`.
 - **Location variables.** `GIT_DIR`, `GIT_WORK_TREE`, and the two configuration variables reach a git call from
   the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
   (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
