@@ -921,6 +921,8 @@ REJECTED: list[Case] = [
             "-owner/repo",
             "owner/.",
             "owner/..",
+            "owner/...",
+            "owner/....",
             "owner/repo name",
             "owner/repo\n",
             "a" * 101 + "/repo",

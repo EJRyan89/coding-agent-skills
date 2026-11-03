@@ -1621,13 +1621,15 @@ STRING_PROBES = (
     "-owner/name",
     "owner/name/more",
     # GitHub's name rule, which review_config.REPOSITORY holds: a name may start with any of its characters, as an
-    # organization's `.github` does, but is never `.` or `..`.
+    # organization's `.github` does, but is never made only of dots.
     "owner/.github",
     "owner/_name",
     "owner/-name",
     "owner/...",
     "owner/.",
     "owner/..",
+    "owner/....",
+    "owner/a..",
     "src/a.cs",
     "src/..x/a.cs",
     "../a.cs",

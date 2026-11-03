@@ -1458,10 +1458,10 @@ class OverrideAndPullKeyTests(unittest.TestCase):
         ]
         self.assertEqual({"owner/repo#1"}, normalize_pull_keys(["Owner/Repo#1"], "removal"))
         self.assertEqual({"owner/repo#9999999999"}, normalize_pull_keys(["owner/repo#9999999999"], "removal"))
-        # A name may start with a dot, as an organization's `.github` does; only `.` and `..` are no name.
+        # A name may start with a dot, as an organization's `.github` does, but a name made only of dots is none.
         self.assertEqual({"owner/.github#1"}, normalize_pull_keys(["Owner/.github#1"], "removal"))
         self.assertEqual({"owner/.github#1": "On hold"}, normalize_overrides({"Owner/.github#1": "On hold"}))
-        for name in (".", ".."):
+        for name in (".", "..", "...", "...."):
             with self.subTest(name=name):
                 self.assertEqual(
                     ("TrackerError", f"Invalid removal pull-request identity: 'owner/{name}#1'"),

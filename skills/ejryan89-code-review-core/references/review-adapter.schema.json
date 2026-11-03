@@ -19,7 +19,7 @@
     "repository": {
       "description": "The request's repository, as owner/name in any case.",
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/(?!\\.\\.?$)[A-Za-z0-9_.-]{1,100}$"
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/(?!\\.+$)[A-Za-z0-9_.-]{1,100}$"
     },
     "pull_number": { "type": "integer", "minimum": 1 },
     "head_sha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },

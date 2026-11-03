@@ -454,13 +454,15 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees(self) -> None:
         # GitHub's repository name rule: up to 100 letters, digits, `_`, `.`, and `-`, any of them first, as in an
-        # organization's `.github`, except the whole names `.` and `..`. The owner is a login and starts with a letter
-        # or a digit.
+        # organization's `.github`, except a name made only of dots: GitHub refuses `.` and `..`, and the rule
+        # refuses every longer run, which a Windows archive path would not name as written. The owner is a login and
+        # starts with a letter or a digit.
         accepted = [
             "owner/.github",
             "owner/a.b",
-            "owner/...",
             "owner/.git",
+            "owner/a..",
+            "owner/..a",
             "owner/-repo",
             "owner/_repo",
             "Owner/.GitHub",
@@ -470,6 +472,8 @@ class ConfigurationTests(unittest.TestCase):
         refused = [
             "owner/.",
             "owner/..",
+            "owner/...",
+            "owner/....",
             "owner/",
             ".owner/repo",
             "-owner/repo",

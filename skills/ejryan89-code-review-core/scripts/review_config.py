@@ -28,13 +28,15 @@ from typed_fields import FieldError, FieldReader, describe
 SCHEMA_VERSION = 1
 # A GitHub repository identity, `owner/name`, the one rule every reader of one here builds on. Each part is at most
 # 100 of the characters GitHub allows, letters, digits, `_`, `.`, and `-`. The owner, a login, starts with a letter or
-# a digit. The name may start with any of them, as an organization's `.github` starts with a dot; GitHub refuses only
-# `.` and `..` as a whole name, which would also name a folder above the one an archive path builds from it.
+# a digit. The name may start with any of them, as an organization's `.github` starts with a dot, but is never made
+# only of dots: GitHub refuses `.` and `..`, which would name the archive's folder or the one above it, and a longer
+# run of dots is refused too, since Windows trims a name's trailing dots and an archive path built from one would
+# not be the folder it names.
 # references/review-adapter.schema.json spells the same rule for an adapter's author, and the format-contract
 # suite's repository probes hold the two in agreement.
 REPOSITORY_CHARACTERS = "A-Za-z0-9_.-"
 REPOSITORY_OWNER = rf"[A-Za-z0-9][{REPOSITORY_CHARACTERS}]{{0,99}}"
-REPOSITORY_NAME = rf"(?!\.\.?(?![{REPOSITORY_CHARACTERS}]))[{REPOSITORY_CHARACTERS}]{{1,100}}"
+REPOSITORY_NAME = rf"(?!\.+(?![{REPOSITORY_CHARACTERS}]))[{REPOSITORY_CHARACTERS}]{{1,100}}"
 REPOSITORY = rf"{REPOSITORY_OWNER}/{REPOSITORY_NAME}"
 REPOSITORY_PATTERN = re.compile(REPOSITORY)
 RUNTIME_HOSTS = {"auto", "claude-code", "codex", "copilot-cli"}
@@ -88,7 +90,9 @@ DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_name
 # The repositories update-pr-dashboard's `collect` never names as untracked: each entry an `owner/repo` identity, or a
 # pattern of one whose owner and name are each matched on their own, ignoring case, where `*` stands for any run of
 # characters and `?` for any one.
-# Built from REPOSITORY_CHARACTERS, so every identity REPOSITORY_PATTERN accepts is an entry that mutes it.
+# Built from REPOSITORY_CHARACTERS, so every identity REPOSITORY_PATTERN accepts is an entry that mutes it. It keeps
+# the entries made only of dots an earlier release took, so a configuration that loaded still loads: an entry is only
+# matched against an identity, never made into a path, and no identity it could match is made only of dots.
 IGNORED_REPOSITORY_PATTERN = re.compile(rf"[*?{REPOSITORY_CHARACTERS}]{{1,100}}/[*?{REPOSITORY_CHARACTERS}]{{1,100}}")
 MAX_IGNORED_REPOSITORIES = 1000
 # The sections the pull-request tracker computes. update-pr-dashboard renders these names, and they live here, beside

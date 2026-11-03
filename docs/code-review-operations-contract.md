@@ -46,7 +46,7 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 ## Safety invariants
 
 - Configuration selects symbolic runtime and reviewer identifiers, never executable commands.
-- Repository identities are always full `owner/repo` values, matched ignoring case, each part at most 100 letters, digits, `_`, `.`, or `-`: the owner starts with a letter or digit, and the name, as GitHub allows, may start with any of them, as an organization's `.github` does, but is never `.` or `..`.
+- Repository identities are always full `owner/repo` values, matched ignoring case, each part at most 100 letters, digits, `_`, `.`, or `-`: the owner starts with a letter or digit, and the name, as GitHub allows, may start with any of them, as an organization's `.github` does, but is never made only of dots, such as `.`, `..`, or `...`.
 - Mutable files use validated temporary writes and atomic replacement.
 - Review records are written as linked JSON/Markdown pairs under collision-safe owner/repository paths.
 - Runtime output is untrusted until the core validates it as a specialist result or an adapter result.
