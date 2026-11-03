@@ -48,6 +48,7 @@ import review_run
 import review_runtime
 import review_source
 import review_specialists
+from diff_paths import unsafe_snapshot_name
 from git_client import GitResult, subprocess_runner
 from github_client import CommandResult, replace_undecodable
 from link_probe import is_link_or_junction
@@ -375,6 +376,7 @@ UNSAFE_NAMES = {
     'app/quote".py': 1,
     "app/star*.py": 1,
     "app/bell\x07.py": 1,
+    "app/delete\x7f.py": 1,
     "app\\nested.py": 2,
     "app/trailing.": 3,
     "app/space ": 3,
@@ -2608,3 +2610,17 @@ class FixtureInputTests(AdversarialFixture):
         self.assertEqual([], sorted(self.temporary.glob("code-review-run-*")))
         self.assertEqual([], sorted(self.temporary.glob("code-review-fixture-*")))
         self.assertEqual([], calls)
+
+
+def test_the_writer_leaves_out_exactly_the_names_a_snapshot_reader_refuses() -> None:
+    # The writer's rules that do not depend on where the snapshot is written, and the readers' one rule,
+    # diff_paths.unsafe_snapshot_name, agree on every name in both directions: no snapshot holds a file its reader
+    # refuses, and no reader refuses a file the snapshot holds.
+    ample = review_runtime.PathRoom(file=100_000, folder=100_000)
+    names = [f"app/a{chr(code)}b.py" for code in [*range(0x80), 0x85, 0xA0, 0x2028, 0xDCE2]]
+    names += [*UNSAFE_NAMES, *KEPT_NAMES, "app/lpt\u00b2.y", "app/x.y.", "app/" + "n" * 255, "app/" + "n" * 256]
+    for name in names:
+        if name.startswith(("app/" + "p" * 97, "app/" + "f" * 85)):
+            continue  # the two length rules depend on the room, which no reader knows
+        writer = review_runtime.unsafe_path_reason(name, ample) is not None
+        assert writer == unsafe_snapshot_name(name), repr(name)

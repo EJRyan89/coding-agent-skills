@@ -66,7 +66,7 @@ from github_client import GitHubClient, GitHubError, replace_undecodable, subpro
 from github_client import Runner as GhRunner
 from github_remote import github_repository
 from link_probe import is_plain_directory, is_plain_file
-from path_containment import within
+from path_containment import relative_within, within
 from path_keys import path_key
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
@@ -1637,16 +1637,16 @@ def linkless_below(path: str, anchor: str) -> bool:
     plain directory: no link or junction, so the path resolves where it reads."""
     # Lexical, like prune_empty_parents: Path.resolve would follow the very links this looks for.
     path, anchor = os.path.abspath(path), os.path.abspath(anchor)  # noqa: PTH100 - lexical, as the comment says
-    try:
-        parts = Path(path).relative_to(anchor).parts
-    except ValueError:
+    relative = relative_within(path, anchor, strict=True)
+    if relative is None:
         return False
+    parts = relative.parts
     current = Path(anchor)
     for part in parts:
         current /= part
         if not is_plain_directory(current):
             return False
-    return bool(parts)
+    return True
 
 
 def searchable_areas(areas: list[str], anchors: list[str]) -> list[str]:
@@ -1725,8 +1725,9 @@ def holding_repositories(path: str, anchors: list[str]) -> list[str]:
     if not holding:
         return []
     current = Path(os.path.abspath(min(holding, key=len)))  # noqa: PTH100 - lexical, as the comment says
+    relative = relative_within(path, current, strict=True)
     found = []
-    for part in Path(path).relative_to(current).parts:
+    for part in () if relative is None else relative.parts:
         if file_presence.is_occupied(current / ".git"):
             found.append(current.as_posix())
         current /= part
