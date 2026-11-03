@@ -438,6 +438,25 @@ class CheckCommandTests(DeployerTestCase):
         self.assertNotIn("UNUSABLE", result.output)
         self.assertNotIn("=== CHECK ===", result.output)
 
+    def test_the_exit_code_installation_states_for_each_tool_state(self) -> None:
+        # "When a command fails" in docs/installation.md states check's exit for each state of a tool; each row quotes
+        # the clause of that sentence it holds.
+        guide = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+        failing = "`check` exits 1 when a tool needed to deploy is missing, outdated, or unusable"
+        passing = "and 0 otherwise, also when a tool only a skill uses is missing, outdated, or unusable"
+        refused = DeployError("ERROR: no Bash beside git", "Put right what Git reports, then retry.")
+        unusable = mock.patch("deployer.platform_support.find_bash", side_effect=refused)
+        for clause, machine, patch, code in (
+            (failing, Machine(missing=("shellcheck",)), contextlib.nullcontext(), 1),
+            (failing, Machine(python=(3, 11, 3)), contextlib.nullcontext(), 1),
+            (failing, Machine(), unusable, 1),
+            (passing, Machine(), contextlib.nullcontext(), 0),
+            (passing, Machine(missing=("gh",)), contextlib.nullcontext(), 0),
+        ):
+            with self.subTest(clause=clause, machine=machine), machine.patches(), patch:
+                self.assertIn(clause, guide)
+                self.assertEqual(code, self.run_cli("check").code)
+
     def test_missing_skill_tool_still_allows_deploying(self) -> None:
         result = self.check(Machine(missing=("gh",)))
         self.assertEqual(0, result.code, result.output)
