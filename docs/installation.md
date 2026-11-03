@@ -25,7 +25,7 @@ Every deployment needs:
 | Tool | Why |
 |---|---|
 | Python 3.11.4 or newer | Runs the deployer. The deployer and the `audit-ai-config` engine use only the standard library. |
-| Git for Windows, or on Linux Git and Bash | The Bash, Git for Windows' on Windows and the system's on Linux, checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. A deployment from a Git checkout runs Git to record the commit it deployed. |
+| Git for Windows, or on Linux Git and Bash | The Bash, Git for Windows' on Windows and the system's on Linux, checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. A deployment from a Git checkout runs Git to record the commit it deployed, and `--at` needs Git 2.40 or newer, which reads a commit's attributes. |
 | ShellCheck | Lints the same rendered Bash content. Deployment stops if it is missing. CI uses 0.9.0 and checks the latest release weekly; newer releases also work. |
 | PowerShell | Parses rendered `.ps1` files regardless of extension case. Windows PowerShell 5.1 is enough for deployment on Windows; Linux and the validation suite need PowerShell 7 (`pwsh`), and GitHub Copilot CLI on Windows needs PowerShell 6 or newer. |
 
