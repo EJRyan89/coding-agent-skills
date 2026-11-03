@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 from reader_table import REPOSITORY, Reader, Refused, module_at, text_of
 
@@ -18,7 +19,7 @@ sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"
 sys.path.insert(0, str(REPOSITORY / "tests" / "validation"))
 
 import json_reader
-from github_client import CommandResult, Listing
+from github_client import CommandResult, GitHubClient, Listing
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT
 from job_selection import job_seconds
 from known_failures import KnownFailuresUnreadable, read_known_failures
@@ -26,12 +27,15 @@ from runtime_support import RUNTIMES
 
 from deployer.errors import DeployError
 from tools import (
+    branch_protection,
+    captured_samples,
     deployable_report,
     mutation_gate,
     plugin_build,
     plugin_release,
     runtime_canary,
     runtime_changelogs,
+    runtime_prompts,
     skill_evals_judging,
     skill_evals_scenarios,
     skill_reference,
@@ -300,6 +304,65 @@ def _title(path: Path) -> object:
     return title
 
 
+# A provenance record of one captured sample, as tools/captured_samples.py reads it.
+PROVENANCE = json.dumps(
+    {"samples": {"changelogs/example.md": {"versions": {RUNTIMES[0]: "1.2.3"}, "captured": "2026-01-02", "how": "x"}}}
+).encode()
+# A coverage.py JSON report of one module, one statement run by one test of the suite.
+COVERAGE_MODULE = "module.py"
+COVERAGE_SUITE = "test_module.py"
+COVERAGE_REPORT = json.dumps(
+    {
+        "files": {
+            COVERAGE_MODULE: {
+                "executed_lines": [1],
+                "missing_lines": [2],
+                "excluded_lines": [],
+                "contexts": {"1": [f"{COVERAGE_SUITE}::test_one|run"]},
+            }
+        }
+    }
+).encode()
+# main's protection as gh api answers it.
+PROTECTION = json.dumps({"required_status_checks": {"strict": True, "contexts": ["Validation"]}}).encode()
+
+
+def _provenance(path: Path) -> object:
+    return captured_samples.read(path.parents[len(captured_samples.PROVENANCE.parts) - 1], RUNTIMES)
+
+
+def _coverage_module(path: Path) -> None:
+    (path.parent / COVERAGE_MODULE).write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+
+
+def _coverage_report(path: Path) -> object:
+    """The lines and tests a report says ran, its refusal raised as Refused."""
+    report = mutation_gate.read_report(path)
+    if isinstance(report, str):
+        raise Refused(report)
+    modules = [COVERAGE_MODULE]
+    collected = [f"{COVERAGE_SUITE}::test_one"]
+    return (
+        mutation_gate.executed_lines(report, path.parent, modules),
+        mutation_gate.executed_tests(report, path.parent, modules, COVERAGE_SUITE, collected),
+    )
+
+
+class _ProtectionGh:
+    """gh answering every api call with the case's file as its output, decoded as the client decodes it."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def run(self, arguments: list[str]) -> CommandResult:
+        return CommandResult(0, text_of(self.path), "")
+
+
+def _protection(path: Path) -> object:
+    document = branch_protection._read(cast(GitHubClient, _ProtectionGh(path)), branch_protection.PROTECTION_ENDPOINT)
+    return branch_protection.protection_problems(document, document, document, document, document)
+
+
 READERS = [
     Reader(
         "audit_repository.read_guidance_record",
@@ -543,5 +606,41 @@ READERS = [
             "bom": "each SKILL.md is decoded as UTF-8 with an optional byte-order mark",
             "nul_bytes": "the body after the frontmatter's closing line is never read",
         },
+    ),
+    Reader(
+        "tools.branch_protection._read",
+        "json",
+        PROTECTION,
+        _protection,
+        (Refused, ValueError),
+        open_fields="protection_problems reads each field through _get and compares it with the value it expects, so "
+        "a field of another type is a drifted setting it reports",
+    ),
+    Reader(
+        "tools.captured_samples.read",
+        "json",
+        PROVENANCE,
+        _provenance,
+        (captured_samples.SampleError,),
+        filename=captured_samples.PROVENANCE.as_posix(),
+    ),
+    Reader(
+        "tools.mutation_gate.read_report",
+        "json",
+        COVERAGE_REPORT,
+        _coverage_report,
+        (Refused,),
+        filename="report.json",
+        prepare=_coverage_module,
+    ),
+    Reader(
+        "tools.runtime_prompts.read_pull_record",
+        "json",
+        (REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-prs" / "clean-change" / "pull.json").read_bytes(),
+        runtime_prompts.read_pull_record,
+        (runtime_prompts.RenderError,),
+        filename="pull.json",
+        open_fields="the record goes on to the review pipeline with its manifest path and a thread set, and the "
+        "pipeline's own reader of a pull request record, held in its table, reads every other field by kind",
     ),
 ]
