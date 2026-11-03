@@ -76,12 +76,6 @@ class PersistenceFieldError(FieldError, PersistenceError):
     """A lock owner record field of the wrong kind."""
 
 
-# The readers here whose errors on content are another family than CONTENT_ERRORS, each with the class it raises:
-# read_json raises PersistenceError for a file it cannot read as JSON, one past its size limit included, so a caller
-# that handles part of what it reads, or its OSError, handles that too.
-CONTENT_FAMILIES = {"read_json": "PersistenceError"}
-
-
 READ = FieldReader(PersistenceFieldError)
 
 

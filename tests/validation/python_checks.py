@@ -3255,18 +3255,18 @@ def time_option_problems(root: Path, files: list[Path]) -> list[str]:
 
 
 # A caller catches the whole error family a shared reader raises on content. Each ejryan89-skill-core module that
-# exports CONTENT_ERRORS, what its readers raise on bad content, names those readers in CONTENT_READERS. A module of
-# either core names a reader whose family is another, as review_io's read_json raises PersistenceError, in a
-# module-level CONTENT_FAMILIES = {reader: class or tuple of classes}. A handler around a call of one, directly or
-# through a repository function that lets part of the family escape, that catches part of the family or the call's
-# OSError catches all of it, or the scope states why in a module-level CONTENT_ERRORS_ALLOWED = {scope: reason}; a
-# function the allowance names lets no family escape, for one that cannot meet bad content.
+# exports CONTENT_ERRORS, what its readers raise on bad content, names those readers in CONTENT_READERS, and
+# core_reader_families names each reader of either core whose family is a class of its own, as review_io's read_json
+# raises PersistenceError. A handler around a call of one, directly or through a repository function that lets part
+# of the family escape, that catches part of the family or the call's OSError catches all of it, or the scope states
+# why in a module-level CONTENT_ERRORS_ALLOWED = {scope: reason}; a function the allowance names lets no family
+# escape, for one that cannot meet bad content.
 CONTENT_ERRORS = "CONTENT_ERRORS"
 CONTENT_READERS = "CONTENT_READERS"
-CONTENT_FAMILIES = "CONTENT_FAMILIES"
 CONTENT_ERRORS_ALLOWANCE = "CONTENT_ERRORS_ALLOWED"
 SKILL_CORE_SCRIPTS = "skills/ejryan89-skill-core/scripts"
 READER_ROOTS = (SKILL_CORE_SCRIPTS, "skills/ejryan89-code-review-core/scripts")
+CONTENT_POLICY = "tests/validation/python_checks.py"
 SUPPRESS = "contextlib.suppress"
 # A class the policy compares: a repository class by its qualified name, or a standard-library class itself.
 ClassKey = str | type
@@ -3353,6 +3353,14 @@ def _content_readers(tree: ast.Module) -> list[str] | None:
     return names if len(names) == len(value.elts) else None
 
 
+def core_reader_families() -> dict[str, str]:
+    """Each reader of either core whose family on content is a class, or a tuple of classes, of its own rather than
+    its module's CONTENT_ERRORS, by the name it is imported as, with that family's: review_io's read_json turns what it
+    cannot read as JSON, a file past its size limit included, into PersistenceError. The table is this policy's alone,
+    so it is kept here rather than in the core module every review suite imports."""
+    return {"review_io.read_json": "review_io.PersistenceError"}
+
+
 def _defined_functions(tree: ast.Module) -> set[str]:
     """The name of each function a module's top level defines."""
     return {node.name for node in _top_level(tree.body) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
@@ -3405,7 +3413,7 @@ class _ContentModel:
     """The repository's modules as the content-errors policy reads them: its classes, its tuples of classes, its
     module-level functions, and each skill-core reader's family."""
 
-    def __init__(self, root: Path, files: list[Path], problems: list[str]) -> None:
+    def __init__(self, root: Path, files: list[Path], problems: list[str], families: Mapping[str, str]) -> None:
         self.trees: dict[str, tuple[str, ast.Module]] = {}
         self.aliases: dict[str, dict[str, str]] = {}
         for path, name, tree in python_trees(claim_files(root, files), root, problems):
@@ -3435,8 +3443,8 @@ class _ContentModel:
         for module, (name, tree) in self.trees.items():
             if posix_within(name, SKILL_CORE_SCRIPTS) and f"{module}.{CONTENT_ERRORS}" in self.tuples:
                 self.read_content_errors(module, name, tree, problems)
-            if any(posix_within(name, root) for root in READER_ROOTS):
-                self.read_content_families(module, name, tree, problems)
+        for reader, family in families.items():
+            self.read_content_family(reader, family, problems)
         if not self.families:
             # With no reader every handler passes, which would hold nothing; say so instead.
             problems.append(
@@ -3461,23 +3469,18 @@ class _ContentModel:
         for reader in readers:
             self.families[f"{module}.{reader}"] = dict.fromkeys(family, f"{module}.{CONTENT_ERRORS}")
 
-    def read_content_families(self, module: str, name: str, tree: ast.Module, problems: list[str]) -> None:
-        """Give each reader a core module names in its CONTENT_FAMILIES the class, or the tuple of classes, it maps
-        the reader to."""
-        declared = module_allowance(tree, CONTENT_FAMILIES)
-        defined = _defined_functions(tree)
-        found = {
-            reader: self.classes(f"{module}.{family}") if reader in defined else None
-            for reader, family in (declared or {}).items()
-        }
-        if declared is None or not all(found.values()):
+    def read_content_family(self, reader: str, family: str, problems: list[str]) -> None:
+        """Give a reader core_reader_families names the class, or the tuple of classes, it names for it."""
+        module = reader.rpartition(".")[0]
+        classes = self.classes(family)
+        place = self.trees[module][0] if module in self.trees else ""
+        if reader not in self.functions or not any(posix_within(place, root) for root in READER_ROOTS) or not classes:
             problems.append(
-                f"{name}: {CONTENT_FAMILIES} must map each function the module defines that raises another family "
-                f"than {CONTENT_ERRORS} on content to the name of the class, or the tuple of classes, it raises"
+                f"{CONTENT_POLICY}: core_reader_families names {reader} with {family}, but each must name a "
+                "module-level function of either core and the class, or the tuple of classes, it raises"
             )
             return
-        for reader, classes in found.items():
-            self.families[f"{module}.{reader}"] = dict.fromkeys(classes or [], f"{module}.{declared[reader]}")
+        self.families[reader] = dict.fromkeys(classes, family)
 
     def ancestors(self, key: ClassKey) -> frozenset[ClassKey]:
         """A class and every class it derives from, as far as the repository and the standard library name them."""
@@ -3664,12 +3667,12 @@ class _ContentEscapes:
         return found
 
 
-def content_error_problems(root: Path, files: list[Path]) -> list[str]:
+def content_error_problems(root: Path, files: list[Path], families: Mapping[str, str] | None = None) -> list[str]:
     """Each handler around a reader that exports CONTENT_ERRORS, called directly or through a repository function,
     that catches part of the reader's family, or the call's OSError, without the rest, and no CONTENT_ERRORS_ALLOWED
     entry sanctions; then each entry that sanctions nothing."""
     problems: list[str] = []
-    model = _ContentModel(root, files, problems)
+    model = _ContentModel(root, files, problems, core_reader_families() if families is None else families)
     escapes = _ContentEscapes(model)
     for module, (name, tree) in model.trees.items():
         sites: list[tuple[int, str, str]] = []

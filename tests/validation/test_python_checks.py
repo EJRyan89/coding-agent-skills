@@ -2318,6 +2318,10 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
             {
                 "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
                 "skills/ejryan89-skill-core/scripts/unresolved.py": "CONTENT_ERRORS = (missing.Error,)\n",
+                # A tuple that names no reader at all.
+                "skills/ejryan89-skill-core/scripts/empty.py": (
+                    "CONTENT_ERRORS = (ValueError,)\nCONTENT_READERS = ()\n\n\ndef read(text):\n    return text\n"
+                ),
                 "skills/ejryan89-skill-core/scripts/unnamed.py": (
                     "CONTENT_ERRORS = (ValueError,)\nCONTENT_READERS = ('gone',)\n\n\n"
                     "def read(text):\n    return text\n"
@@ -2333,7 +2337,7 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
                 "tools/broken.py": "CONTENT_ERRORS_ALLOWED = {'scope': ''}\n",
             },
         )
-        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
     alpha = "skills/alpha/scripts/alpha.py"
 
     def remedy(missing: str) -> str:
@@ -2346,6 +2350,8 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
     assert found == [
         f"skills/beta/scripts/alpha.py: {alpha} is imported as alpha too, so the content-errors policy, which reads "
         "modules by the name they are imported as, cannot read both; rename one",
+        "skills/ejryan89-skill-core/scripts/empty.py: CONTENT_READERS must be a tuple naming each function the "
+        "module defines that raises its CONTENT_ERRORS on content",
         "skills/ejryan89-skill-core/scripts/unnamed.py: CONTENT_READERS must be a tuple naming each function the "
         "module defines that raises its CONTENT_ERRORS on content",
         "skills/ejryan89-skill-core/scripts/unresolved.py: CONTENT_ERRORS must be a tuple of exception classes its "
@@ -2430,7 +2436,7 @@ def test_content_errors_policy_reads_what_a_module_binds_under_a_top_level_block
                 "skills/alpha/scripts/alpha.py": CONTENT_BLOCK_CALLER_SOURCE,
             },
         )
-        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
     remedy = (
         "catches part of what a reader it calls raises, or its OSError, but not json.decoder.JSONDecodeError; catch "
         "the whole family, reader.CONTENT_ERRORS, or state why in CONTENT_ERRORS_ALLOWED"
@@ -2449,8 +2455,11 @@ class Unreadable(StoreError):
     pass
 
 
+class Known(ValueError):
+    pass
+
+
 BOTH = (StoreError, KeyError)
-CONTENT_FAMILIES = {"load": "StoreError", "fetch": "BOTH"}
 
 
 def load(path):
@@ -2459,6 +2468,11 @@ def load(path):
 
 def fetch(path):
     return path
+
+
+class Holder:
+    def get(self, path):
+        return path
 """
 CONTENT_FAMILY_CALLER_SOURCE = """\
 import kept
@@ -2517,8 +2531,7 @@ def in_skill_core(path):
 """
 
 
-def test_content_errors_policy_reads_the_family_a_core_module_names_for_its_reader() -> None:
-    malformed = "def load(path):\n    return path\n\n\nclass Known(ValueError):\n    pass\n\n\n"
+def test_content_errors_policy_reads_the_family_named_for_a_core_reader() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(
@@ -2526,26 +2539,34 @@ def test_content_errors_policy_reads_the_family_a_core_module_names_for_its_read
             {
                 "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
                 "skills/ejryan89-skill-core/scripts/kept.py": (
-                    "class Kept(ValueError):\n    pass\n\n\nCONTENT_FAMILIES = {'keep': 'Kept'}\n\n\n"
-                    "def keep(path):\n    return path\n"
+                    "class Kept(ValueError):\n    pass\n\n\ndef keep(path):\n    return path\n"
                 ),
                 "skills/ejryan89-code-review-core/scripts/store.py": CONTENT_FAMILY_READER_SOURCE,
-                # A family that is no class or tuple the module binds, a reader it does not define, and no mapping.
-                "skills/ejryan89-code-review-core/scripts/unresolved.py": f"{malformed}CONTENT_FAMILIES = "
-                "{'load': 'Missing'}\n",
-                "skills/ejryan89-code-review-core/scripts/undefined.py": f"{malformed}CONTENT_FAMILIES = "
-                "{'load': 'Known', 'gone': 'Known'}\n",
-                "skills/ejryan89-code-review-core/scripts/listed.py": f"{malformed}CONTENT_FAMILIES = ['load']\n",
-                # A module outside both cores names no reader by its CONTENT_FAMILIES.
-                "skills/beta/scripts/elsewhere.py": CONTENT_FAMILY_READER_SOURCE,
+                "skills/beta/scripts/elsewhere.py": (
+                    "class Lost(ValueError):\n    pass\n\n\ndef load(path):\n    return path\n"
+                ),
                 "skills/alpha/scripts/alpha.py": CONTENT_FAMILY_CALLER_SOURCE,
             },
         )
-        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
-    malformed_family = (
-        "CONTENT_FAMILIES must map each function the module defines that raises another family than CONTENT_ERRORS "
-        "on content to the name of the class, or the tuple of classes, it raises"
-    )
+        families = {
+            "store.load": "store.StoreError",
+            "store.fetch": "store.BOTH",
+            "kept.keep": "kept.Kept",
+            # A reader the module does not define, a family that is no class or tuple, a method, a reader outside
+            # both cores, and a module the tree does not hold.
+            "store.read": "store.Known",
+            "store.fetch_all": "store.Missing",
+            "store.Holder.get": "store.Known",
+            "elsewhere.load": "elsewhere.Lost",
+            "gone.load": "gone.Lost",
+        }
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), families)
+
+    def refused(reader: str) -> str:
+        return (
+            f"tests/validation/python_checks.py: core_reader_families names {reader} with {families[reader]}, but "
+            "each must name a module-level function of either core and the class, or the tuple of classes, it raises"
+        )
 
     def remedy(missing: str, family: str) -> str:
         return (
@@ -2555,13 +2576,37 @@ def test_content_errors_policy_reads_the_family_a_core_module_names_for_its_read
 
     alpha = "skills/alpha/scripts/alpha.py"
     assert found == [
-        f"skills/ejryan89-code-review-core/scripts/listed.py: {malformed_family}",
-        f"skills/ejryan89-code-review-core/scripts/undefined.py: {malformed_family}",
-        f"skills/ejryan89-code-review-core/scripts/unresolved.py: {malformed_family}",
+        *(refused(reader) for reader in ("store.read", "store.fetch_all", "store.Holder.get", "elsewhere.load")),
+        refused("gone.load"),
         f"{alpha}:8 {remedy('store.StoreError', 'store.StoreError')}",
         f"{alpha}:15 {remedy('store.StoreError', 'store.StoreError')}",
         f"{alpha}:29 {remedy('store.StoreError', 'store.BOTH')}",
         f"{alpha}:50 {remedy('kept.Kept', 'kept.Kept')}",
+    ]
+
+
+def test_content_errors_policy_reads_read_json_as_raising_persistence_error() -> None:
+    # The repository's own table, read as validation reads it: review_io's read_json raises PersistenceError.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/ejryan89-code-review-core/scripts/review_io.py": (
+                    "class PersistenceError(RuntimeError):\n    pass\n\n\ndef read_json(path):\n    return path\n"
+                ),
+                "skills/alpha/scripts/alpha.py": (
+                    "from review_io import read_json\n\n\ndef narrow(path):\n    try:\n"
+                    "        return read_json(path)\n    except (OSError, ValueError):\n        return None\n"
+                ),
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py:5 catches part of what a reader it calls raises, or its OSError, but not "
+        "review_io.PersistenceError; catch the whole family, review_io.PersistenceError, or state why in "
+        "CONTENT_ERRORS_ALLOWED"
     ]
 
 
@@ -2570,7 +2615,7 @@ def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader()
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": CONTENT_CALLER_SOURCE})
-        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
     assert found[0] == (
         "skills/ejryan89-skill-core/scripts names no reader in a CONTENT_READERS beside its CONTENT_ERRORS, so the "
         "content-errors policy could check no handler"
@@ -3843,25 +3888,30 @@ def test_time_option_policy_refuses_a_float_time_option() -> None:
     ]
 
 
+def content_errors_beside_the_fixture_reader(root: Path, files: list[Path]) -> list[str]:
+    """The content-errors policy over a tree whose cores hold the fixture reader alone, so it names no core family."""
+    return python_checks.content_error_problems(root, files, {})
+
+
 # Each claim policy's forms its paragraph in "Validation" in docs/adding-a-skill.md names, beyond the plain one: a
 # module in a skill's scripts beside ejryan89-skill-core's fixture reader, whose line marked `# read` is refused.
 CLAIM_FORMS: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
     # "directly or through a repository function that lets the reader's errors escape"
     (
         "a reader bound to a module-level name",
-        python_checks.content_error_problems,
+        content_errors_beside_the_fixture_reader,
         "import reader\n\nREAD = reader.read\n\n\ndef f(text):\n    try:  # read\n        return READ(text)\n"
         "    except OSError:\n        return None\n",
     ),
     (
         "a reader called through a module-level lambda",
-        python_checks.content_error_problems,
+        content_errors_beside_the_fixture_reader,
         "import reader\n\nREAD = lambda text: reader.read(text)\n\n\ndef f(text):\n    try:  # read\n"
         "        return READ(text)\n    except OSError:\n        return None\n",
     ),
     (
         "a reader called through a method of a class in the module",
-        python_checks.content_error_problems,
+        content_errors_beside_the_fixture_reader,
         "import reader\n\n\nclass Loader:\n    def load(self, text):\n        return reader.read(text)\n\n\n"
         "def f(text):\n    try:  # read\n        return Loader().load(text)\n"
         "    except OSError:\n        return None\n",
