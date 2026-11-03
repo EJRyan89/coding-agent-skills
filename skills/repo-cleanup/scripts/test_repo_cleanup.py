@@ -2575,3 +2575,14 @@ def test_a_failed_git_output_is_named_by_its_subcommand_behind_git_s_options() -
 
     with pytest.raises(rc.CleanupError, match=r"^git status failed in r: "):
         rc.git_output(rc.Services(git=GitClient(run)), "r", "-c", "core.quotePath=false", "status")
+
+
+def test_a_quiet_git_call_and_a_resolve_git_cannot_answer_are_labelled_with_their_git_command() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: bad config\n")
+
+    services = rc.Services(git=GitClient(run))
+    with pytest.raises(rc.CleanupError, match=r"^git symbolic-ref failed in r: fatal: bad config$"):
+        rc.quiet(services, "r", "-c", "a=b", "symbolic-ref", "--quiet", "HEAD")
+    with pytest.raises(rc.CleanupError, match=r"^git rev-parse failed in r: fatal: bad config$"):
+        rc.resolve(services, "r", "main")

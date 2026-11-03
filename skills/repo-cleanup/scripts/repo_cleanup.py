@@ -285,7 +285,7 @@ def git_failure(root: str | Path, command: str, exc: git_client.GitError) -> Git
     """GitUnavailable when git could not run or finish, else a CleanupError naming git's reason."""
     if exc.returncode is None:
         return GitUnavailable(f"could not run git: {exc}")
-    return CleanupError(f"git {command} failed in {root}: {one_line(str(exc)).strip()}")
+    return CleanupError(f"{command} failed in {root}: {one_line(str(exc)).strip()}")
 
 
 def quiet(services: Services, root: str | Path, *arguments: str) -> str | None:
@@ -294,7 +294,7 @@ def quiet(services: Services, root: str | Path, *arguments: str) -> str | None:
     try:
         return services.git.quiet_output(["--no-optional-locks", *arguments], directory=root)
     except git_client.GitError as exc:
-        raise git_failure(root, arguments[0], exc) from exc
+        raise git_failure(root, git_client.command_name(arguments), exc) from exc
 
 
 def resolve(services: Services, root: str | Path, ref: str) -> str | None:
@@ -302,7 +302,7 @@ def resolve(services: Services, root: str | Path, ref: str) -> str | None:
     try:
         return services.git.commit_of(ref, directory=root)
     except git_client.GitError as exc:
-        raise git_failure(root, "rev-parse", exc) from exc
+        raise git_failure(root, "git rev-parse", exc) from exc
 
 
 def branch_tip(services: Services, root: str | Path, branch: str) -> str | None:

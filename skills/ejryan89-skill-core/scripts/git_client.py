@@ -34,14 +34,17 @@ client's own `pattern`, which it gives git as `-e <pattern>` right after the sub
 `--no-index` is searched for, and a caller that needs one inside its own arguments uses an isolated client. The
 subcommand is read by name, so a plain client also refuses a `-c` or `--config-env` among git's own options that sets
 anything in a section that can define an alias (`ALIAS_SECTIONS`): an alias, or a file included from the command line,
-could make another name run `grep` or `diff`. For the same reason it refuses an `--exec-path=<folder>`, which makes git
-run a `git-<name>` program from that folder under a name the client cannot read. It cannot see an alias that git's
-configuration files or the environment's `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` define, nor tell a folder of
-content it did not write from a repository, so a command that reads the surrounding repository by design, such as
-`ls-files --others`, `grep --untracked`, or `check-ignore --no-index`, runs on a plain client, and so does a `diff` or
-`difftool` run outside any repository, which git reads as `--no-index` without the option; a caller over such content
-asks for an isolated client. Of git's commands, `grep`, `diff`, `difftool`, and `check-ignore` take `--no-index`. An
-isolated client refuses a test's runner, which could not start git with the isolated environment.
+could make another name run `grep` or `diff`, and so does a `help.autocorrect` that runs the command git guesses a
+misspelled name meant (`SUBCOMMAND_KEYS`). For the same reason it refuses an `--exec-path=<folder>`, which makes git run
+a `git-<name>` program from that folder under a name the client cannot read. It does not refuse a subcommand it does not
+know, since the commands git runs depend on the installed git and on the `git-<name>` programs on PATH, which it cannot
+read without starting git; a misspelled name a caller writes is its own literal, which its tests run. It cannot see an
+alias or an autocorrection that git's configuration files or the environment's `GIT_CONFIG_PARAMETERS` and
+`GIT_CONFIG_COUNT` define, nor tell a folder of content it did not write from a repository, so a command that reads the
+surrounding repository by design, such as `ls-files --others`, `grep --untracked`, or `check-ignore --no-index`, runs on
+a plain client, and so does a `diff` run outside any repository, which git reads as `--no-index` without the option; a
+caller over such content asks for an isolated client. Of git's commands, `grep`, `diff`, `difftool`, and `check-ignore`
+take `--no-index`. An isolated client refuses a test's runner, which could not start git with the isolated environment.
 
 Both hold git in a process tree (`job_tree`), because git starts programs of its own: Git for Windows' launcher starts
 the real git, a fetch starts its transport and pack programs, and a command may run a credential helper, a hook, or an
@@ -97,10 +100,14 @@ EXEC_PATH_OPTION = "--exec-path="
 # nothing, and git takes no abbreviation shorter than `--no-`. A plain client refuses each wherever it stands.
 NO_INDEX_SPELLINGS = frozenset("--no-index"[:length] for length in range(len("--no-i"), len("--no-index") + 1))
 # git's options that set a configuration value for one command, each spelled `<name>=<value>` or
-# `<name>=<variable>`, and the sections, case-folded as git reads them, whose settings can define an alias: the alias
-# itself, or a file `include.path` or an `includeIf.<condition>.path` includes, whose own settings may hold one.
+# `<name>=<variable>`, and the settings, case-folded as git reads them, that can make a command line run another
+# subcommand than the one it names: an alias (`alias.*`), a file `include.path` or an `includeIf.<condition>.path`
+# includes, whose own settings may hold one, and `help.autocorrect`, which runs the command git guesses a misspelled
+# name meant. Every other setting leaves the subcommand as named; one that changes a program it starts, such as
+# `diff.external` or `core.hooksPath`, does not make another subcommand read files rather than a repository.
 CONFIGURATION_OPTIONS = frozenset({"-c", "--config-env"})
 ALIAS_SECTIONS = frozenset({"alias", "include", "includeif"})
+SUBCOMMAND_KEYS = frozenset({"help.autocorrect"})
 # A full object name, SHA-1 or SHA-256, as `rev-parse --verify` prints it.
 OBJECT_NAME = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -350,30 +357,31 @@ def reads_no_repository(arguments: Sequence[str]) -> bool:
     )
 
 
-def configured_sections(arguments: Sequence[str]) -> list[str]:
-    """The section, case-folded, of each setting a `-c` or `--config-env` among git's own options in `arguments` makes,
+def configured_keys(arguments: Sequence[str]) -> list[str]:
+    """The name, case-folded, of each setting a `-c` or `--config-env` among git's own options in `arguments` makes,
     in either spelling: the value as the next word or attached after `=`."""
     end = subcommand_index(arguments)
-    index, sections = 0, []
+    index, keys = 0, []
     while index < (len(arguments) if end is None else end):
         argument = arguments[index]
         option, attached, value = argument.partition("=")
         if argument in CONFIGURATION_OPTIONS and index + 1 < len(arguments):
-            sections.append(re.split(r"[.=]", arguments[index + 1], maxsplit=1)[0].casefold())
+            keys.append(arguments[index + 1].partition("=")[0].casefold())
         elif attached and option == "--config-env":
-            sections.append(re.split(r"[.=]", value, maxsplit=1)[0].casefold())
+            keys.append(value.partition("=")[0].casefold())
         index += 2 if argument in GLOBAL_VALUE_OPTIONS else 1
-    return sections
+    return keys
 
 
 def defines_alias(arguments: Sequence[str]) -> bool:
-    """Whether `arguments` set, among git's own options, anything in a section that can define an alias
-    (`ALIAS_SECTIONS`), or name another folder of git programs with `--exec-path=`."""
+    """Whether `arguments` set, among git's own options, anything that can make the command line run another
+    subcommand than it names, a key in a section of `ALIAS_SECTIONS` or one of `SUBCOMMAND_KEYS`, or name another
+    folder of git programs with `--exec-path=`."""
     end = subcommand_index(arguments)
     own = arguments if end is None else arguments[:end]
-    return any(section in ALIAS_SECTIONS for section in configured_sections(arguments)) or any(
-        argument.startswith(EXEC_PATH_OPTION) for argument in own
-    )
+    return any(
+        key.partition(".")[0] in ALIAS_SECTIONS or key in SUBCOMMAND_KEYS for key in configured_keys(arguments)
+    ) or any(argument.startswith(EXEC_PATH_OPTION) for argument in own)
 
 
 def _command(arguments: Sequence[str], directory: str | Path | None, *, isolated: bool) -> list[str]:
@@ -497,12 +505,13 @@ class GitClient:
         subcommand to follow."""
         if not self.isolated and reads_no_repository(arguments):
             raise ValueError(
-                "git grep or diff --no-index reads files no repository holds; run it on GitClient(isolated=True)"
+                "git grep, diff, or difftool --no-index reads files no repository holds; "
+                "run it on GitClient(isolated=True)"
             )
         if not self.isolated and defines_alias(arguments):
             raise ValueError(
-                "an alias or a folder of git programs set on git's command line can run grep or diff --no-index "
-                "unseen; "
+                "an alias, autocorrection, or a folder of git programs set on git's command line can run grep, "
+                "diff, or difftool --no-index unseen; "
                 "run it on GitClient(isolated=True)"
             )
         given = list(arguments)

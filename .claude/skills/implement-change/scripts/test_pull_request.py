@@ -721,3 +721,11 @@ def test_a_failed_git_call_is_named_by_its_subcommand_behind_git_s_options() -> 
 
     with pytest.raises(pull_request.PullRequestError, match=r"^git rev-parse: fatal: no$"):
         pull_request.git_output(GitClient(run), Path("r"), ["-c", "a=b", "rev-parse", "HEAD"])
+
+
+def test_a_quiet_git_call_git_cannot_answer_is_labelled_with_its_subcommand() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: bad config\n")
+
+    with pytest.raises(pull_request.PullRequestError, match=r"^git symbolic-ref: fatal: bad config$"):
+        pull_request.quiet_output(GitClient(run), Path("r"), ["-c", "a=b", "symbolic-ref", "--quiet", "HEAD"])

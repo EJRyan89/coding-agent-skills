@@ -1189,7 +1189,10 @@ class IsolatedClientTests(unittest.TestCase):
             "diff": lambda flag: ["diff", "--stat", flag, "a", "b"],
             "difftool": lambda flag: ["difftool", flag, "-y", "-x", "cat", "a", "b"],
         }
-        refusal = r"^git grep or diff --no-index reads files no repository holds; run it on GitClient\(isolated=True\)$"
+        refusal = (
+            r"^git grep, diff, or difftool --no-index reads files no repository holds; "
+            r"run it on GitClient\(isolated=True\)$"
+        )
         for spelling in spellings:
             for shape, build in shapes.items():
                 arguments = build(spelling)
@@ -1216,6 +1219,7 @@ class IsolatedClientTests(unittest.TestCase):
     def test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias(self) -> None:
         # Written out here rather than read from ALIAS_SECTIONS: an alias, and the two ways to include a file of them.
         self.assertEqual(frozenset({"alias", "include", "includeif"}), git_client.ALIAS_SECTIONS)
+        self.assertEqual(frozenset({"help.autocorrect"}), git_client.SUBCOMMAND_KEYS)
         refused = (
             ["-c", "alias.s=grep", "s", "--no-index", "-e", "x"],
             ["-c", "ALIAS.s=grep", "s", "-e", "x"],
@@ -1228,8 +1232,13 @@ class IsolatedClientTests(unittest.TestCase):
             ["--config-env", "IncludeIf.gitdir:/x/.path=FILE", "status"],
             ["--exec-path=/x/programs", "s", "--no-index"],
             ["-C", "d", "--exec-path=C:/x", "status"],
+            # help.autocorrect runs the command git guesses a misspelled name meant, here grep.
+            ["-c", "help.autocorrect=immediate", "gerp", "--no-index", "-l", "-e", "x"],
+            ["-c", "HELP.AutoCorrect=1", "s"],
+            ["--config-env", "help.autocorrect=WHEN", "s"],
+            ["--config-env=Help.autocorrect=WHEN", "s"],
         )
-        refusal = r"^an alias or a folder of git programs set on git's command line can run grep or diff --no-index "
+        refusal = r"^an alias, autocorrection, or a folder of git programs set on git's command line can run grep, "
         for arguments in refused:
             with self.subTest(arguments=arguments):
                 runner, calls = scripted(GitResult(0, "", ""))
@@ -1247,6 +1256,9 @@ class IsolatedClientTests(unittest.TestCase):
             ["--git-dir", "alias.s", "status"],
             ["--exec-path"],
             ["log", "--exec-path=x"],
+            ["-c", "help.format=html", "status"],
+            ["-c", "helper.autocorrect=1", "status"],
+            ["-c", "help.autocorrectx=1", "status"],
         )
         for arguments in allowed:
             with self.subTest(arguments=arguments):
@@ -1451,8 +1463,13 @@ def test_a_command_is_named_by_its_subcommand_behind_git_s_own_options() -> None
 )
 def test_a_configuration_option_with_no_value_after_it_sets_no_section(arguments: list[str]) -> None:
     # git refuses the command itself; the client reads no section past the end and leaves the refusal to git.
-    assert git_client.configured_sections(arguments) == []
+    assert git_client.configured_keys(arguments) == []
     assert not git_client.defines_alias(arguments)
     runner, calls = scripted(GitResult(129, "", "error: option requires a value\n"))
     assert GitClient(runner).run(arguments).returncode == 129
     assert calls[0][0] == ["git", *arguments]
+
+
+def test_the_configured_keys_are_read_whole_and_case_folded() -> None:
+    arguments = ["-c", "Alias.S=grep", "--config-env=Help.AutoCorrect=WHEN", "-C", "d", "status", "-c", "x.y=z"]
+    assert git_client.configured_keys(arguments) == ["alias.s", "help.autocorrect"]

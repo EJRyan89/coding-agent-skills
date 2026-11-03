@@ -332,7 +332,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `reported(..., empty=False)`, whose fixture rows give every kind of entry the member typed in, never read from
   what the program lists for each kind it reports, as gh lists a check run no workflow reports with an empty
   `workflowName`; a refusal of a git command by its subcommand's name that a `-c alias.<name>`, `-c include.path`, or
-  `-c includeIf.<condition>.path` on the same command line can rename, or an `--exec-path=<folder>` can replace; a
+  `-c includeIf.<condition>.path` on the same command line can rename, a `-c help.autocorrect` can turn a misspelled name into, or an
+  `--exec-path=<folder>` can replace; a
   list of the subcommands that take an option, read against `git <command> -h` for every command git lists, that
   leaves one out, as `difftool --no-index` was; a git option table that leaves out one git.c reads a value after, as
   `--shallow-file` was; a failure labelled with `arguments[0]` rather than `git_client.command_name`.

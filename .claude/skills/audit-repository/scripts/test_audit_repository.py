@@ -2371,3 +2371,16 @@ def test_a_folder_git_finds_no_repository_in_is_named_by_its_path() -> None:
 
     with pytest.raises(audit.AuditError, match=r"^some folder/r is not a Git repository$"):
         audit.git_output(GitClient(run), Path("some folder", "r"), ["-c", "a=b", "log"])
+
+
+def test_a_tag_or_search_git_cannot_read_is_labelled_with_its_git_command() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: bad object\n")
+
+    def given(command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult:
+        return run(command, timeout)
+
+    with pytest.raises(audit.AuditError, match=r"^git for-each-ref: fatal: bad object$"):
+        audit.released_tag(GitClient(run), Path("r"), "HEAD")
+    with pytest.raises(audit.AuditError, match=r"^git grep: fatal: bad object$"):
+        audit.search_construct(GitClient(run, input_runner=given), Path("r"), "HEAD", ["a line"])
