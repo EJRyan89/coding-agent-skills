@@ -1505,11 +1505,15 @@ def int_parse_problems(root: Path, files: list[Path]) -> list[str]:
 
 # ejryan89-skill-core's json_writer is the one writer of JSON for a file, refusing at the write a non-finite number,
 # a lone surrogate, and what json_reader would refuse on reading the text back, where the json module's own writer
-# writes NaN and a lone surrogate a later strict read refuses. A json.dump, or a json.dumps whose text a write call
-# takes, as its argument or through a name its function binds to it, states why in a module-level
-# JSON_WRITE_ALLOWED = {scope: reason}, as where a function writes a message to a pipe.
+# writes NaN and a lone surrogate a later strict read refuses. A use of json.dump, or json.dumps text, or a
+# JSONEncoder's encode or iterencode, that a write call takes, as its argument or through a name its function binds
+# to it, states why in a module-level JSON_WRITE_ALLOWED = {scope: reason}, as where a function writes a message to
+# a pipe. Each is read by its name, a name its scope binds once to it, or a getattr of a constant name, as the parse
+# policy reads json.loads.
 JSON_DUMP = "json.dump"
 JSON_DUMPS = "json.dumps"
+JSON_ENCODERS = frozenset({"json.JSONEncoder", "json.encoder.JSONEncoder"})
+JSON_ENCODE_METHODS = frozenset({"encode", "iterencode"})
 JSON_WRITER = "skills/ejryan89-skill-core/scripts/json_writer.py"
 # The methods that write to a file or a stream, and the functions that replace or append to a file.
 WRITE_METHODS = frozenset({"write", "write_text", "write_bytes", "writelines"})
@@ -1520,52 +1524,127 @@ JSON_WRITE_ALLOWANCE = "JSON_WRITE_ALLOWED"
 PRINTS = frozenset({"print", "builtins.print"})
 
 
-def _writes(call: ast.Call, aliases: dict[str, str]) -> bool:
+def _writes(call: ast.Call, resolver: CallableResolver) -> bool:
     """Whether a call writes what it is given to a file or a stream: a write method, a file writer, or a print given a
-    file= other than None, which prints to that stream."""
-    if isinstance(call.func, ast.Attribute) and call.func.attr in WRITE_METHODS:
+    file= other than None, which prints to that stream, called directly or through a name bound once to one."""
+    function = resolver.function(call)
+    if isinstance(function, ast.Attribute) and function.attr in WRITE_METHODS:
         return True
-    called = qualified_name(call.func, aliases)
+    called = resolver.name(call.func)
     if called in PRINTS:
         stream = call_argument(call, None, "file")
         return stream is not None and not (isinstance(stream, ast.Constant) and stream.value is None)
     return called.rpartition(".")[2] in FILE_WRITERS
 
 
-def _json_text(node: ast.AST, aliases: dict[str, str], bound: set[str]) -> bool:
-    """Whether an expression holds a json.dumps call, or a name its function binds to an expression that does."""
+def _json_function(node: ast.AST, resolver: CallableResolver) -> str:
+    """The qualified name a node reads through the module's imports and its scope's names bound once to a name or an
+    attribute, or what a getattr of a constant name on one reads, as `getattr(json, "dump")` reads json.dump; "" for
+    anything else."""
+    if isinstance(node, ast.Attribute | ast.Name) and isinstance(node.ctx, ast.Load):
+        return resolver.name(node)
+    if isinstance(node, ast.Call) and resolver.name(node.func) in ATTRIBUTE_LOOKUPS and node.args:
+        owner = resolver.name(node.args[0])
+        attribute = call_argument(node, 1, "name")
+        if owner and isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
+            return f"{owner}.{attribute.value}"
+    return ""
+
+
+@dataclass
+class _JsonNames:
+    """A scope's names bound to json.dumps text, and to a JSONEncoder, to the fixed point."""
+
+    text: set[str]
+    encoders: set[str]
+
+
+def _encoder(node: ast.AST, resolver: CallableResolver, names: _JsonNames) -> bool:
+    """Whether an expression is a JSONEncoder: a call of one, or a name its scope binds to one."""
+    if isinstance(node, ast.Call):
+        return _json_function(node.func, resolver) in JSON_ENCODERS
+    return isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names.encoders
+
+
+def _json_call(node: ast.AST, resolver: CallableResolver, names: _JsonNames) -> bool:
+    """Whether a node is a call that returns JSON text: json.dumps, or a JSONEncoder's encode or iterencode."""
+    if not isinstance(node, ast.Call):
+        return False
+    if _json_function(node.func, resolver) == JSON_DUMPS:
+        return True
+    function = resolver.function(node)
+    return (
+        isinstance(function, ast.Attribute)
+        and function.attr in JSON_ENCODE_METHODS
+        and _encoder(function.value, resolver, names)
+    )
+
+
+def _json_text(node: ast.AST, resolver: CallableResolver, names: _JsonNames) -> bool:
+    """Whether an expression holds JSON text: a call that returns it, or a name its scope binds to an expression that
+    holds it."""
     return any(
-        (isinstance(inner, ast.Call) and qualified_name(inner.func, aliases) == JSON_DUMPS)
-        or (isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load) and inner.id in bound)
+        _json_call(inner, resolver, names)
+        or (isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load) and inner.id in names.text)
         for inner in ast.walk(node)
     )
 
 
-def _json_bindings(nodes: list[tuple[ast.AST, str]], aliases: dict[str, str]) -> dict[str, set[str]]:
-    """Each scope's names bound to an expression holding a json.dumps call, to the fixed point, so a name bound to
-    one of them is one too, and a name an augmented assignment such as `text += json.dumps(d)` adds one to."""
-    assignments = [
-        (scope, target.id, node.value)
-        for node, scope in nodes
-        if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign) and node.value is not None
-        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-        if isinstance(target, ast.Name)
-    ]
-    bound: dict[str, set[str]] = {}
+def _target_values(target: ast.expr, value: ast.expr) -> Iterator[tuple[str, ast.expr]]:
+    """Each name a binding target binds, with the expression it may take its value from: the matching item of a literal
+    tuple or list of the same length that unpacks nothing, else the whole value, for a tuple, list, or starred
+    target."""
+    if isinstance(target, ast.Name):
+        yield target.id, value
+    elif isinstance(target, ast.Starred):
+        yield from _target_values(target.value, value)
+    elif isinstance(target, ast.Tuple | ast.List):
+        items = value.elts if isinstance(value, ast.Tuple | ast.List) else []
+        paired = len(items) == len(target.elts) and not any(
+            isinstance(item, ast.Starred) for item in [*items, *target.elts]
+        )
+        for index, element in enumerate(target.elts):
+            yield from _target_values(element, items[index] if paired else value)
+
+
+def _bound_values(node: ast.AST) -> Iterator[tuple[str, ast.expr]]:
+    """Each name a node binds, with the expression its value comes from: an assignment, an annotated or augmented one,
+    an assignment expression, a for loop or a comprehension's target from what it loops over, and a with item's target
+    from its context expression."""
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            yield from _target_values(target, node.value)
+    elif isinstance(node, ast.AnnAssign | ast.AugAssign | ast.NamedExpr) and node.value is not None:
+        yield from _target_values(node.target, node.value)
+    elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
+        yield from _target_values(node.target, node.iter)
+    elif isinstance(node, ast.With | ast.AsyncWith):
+        for item in node.items:
+            if item.optional_vars is not None:
+                yield from _target_values(item.optional_vars, item.context_expr)
+
+
+def _json_bindings(nodes: list[tuple[ast.AST, str]], resolver: CallableResolver) -> dict[str, _JsonNames]:
+    """Each scope's names bound to an expression holding JSON text, or to a JSONEncoder, to the fixed point, so a name
+    bound to one of them is one too, and a name an augmented assignment such as `text += json.dumps(d)` adds one to."""
+    bindings = [(scope, name, value) for node, scope in nodes for name, value in _bound_values(node)]
+    bound: dict[str, _JsonNames] = {}
     while True:
-        found = {
-            (scope, name)
-            for scope, name, value in assignments
-            if name not in bound.get(scope, set()) and _json_text(value, aliases, bound.get(scope, set()))
-        }
-        if not found:
+        added = False
+        for scope, name, value in bindings:
+            names = bound.setdefault(scope, _JsonNames(set(), set()))
+            if name not in names.text and _json_text(value, resolver, names):
+                names.text.add(name)
+                added = True
+            if name not in names.encoders and _encoder(value, resolver, names):
+                names.encoders.add(name)
+                added = True
+        if not added:
             return bound
-        for scope, name in found:
-            bound.setdefault(scope, set()).add(name)
 
 
 def json_write_problems(root: Path, files: list[Path]) -> list[str]:
-    """Each json.dump, and each write call that takes json.dumps text, outside json_writer that no JSON_WRITE_ALLOWED
+    """Each use of json.dump, and each write call that takes JSON text, outside json_writer that no JSON_WRITE_ALLOWED
     entry sanctions."""
     problems: list[str] = []
     paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() != JSON_WRITER]
@@ -1577,20 +1656,23 @@ def json_write_problems(root: Path, files: list[Path]) -> list[str]:
         f"the write, or state why in {JSON_WRITE_ALLOWANCE}"
     )
     for _, name, tree in python_trees(paths, root, problems):
-        aliases = import_aliases(tree)
+        resolver = CallableResolver(tree)
         nodes = list(scoped_nodes(tree.body))
-        bound = _json_bindings(nodes, aliases)
+        bound = _json_bindings(nodes, resolver)
         found: list[tuple[int, str, str]] = []
         for node, scope in nodes:
-            if not isinstance(node, ast.Call):
-                continue
-            if qualified_name(node.func, aliases) == JSON_DUMP:
+            names = bound.get(scope, _JsonNames(set(), set()))
+            if isinstance(node, ast.expr) and _json_function(node, resolver) == JSON_DUMP:
                 found.append((node.lineno, scope, f"writes JSON with {JSON_DUMP}{remedy}"))
-            elif _writes(node, aliases) and any(
-                _json_text(argument, aliases, bound.get(scope, set()))
-                for argument in [*node.args, *(keyword.value for keyword in node.keywords)]
+            elif (
+                isinstance(node, ast.Call)
+                and _writes(node, resolver)
+                and any(
+                    _json_text(argument, resolver, names)
+                    for argument in [*node.args, *(keyword.value for keyword in node.keywords)]
+                )
             ):
-                found.append((node.lineno, scope, f"writes {JSON_DUMPS} text to a file or a stream{remedy}"))
+                found.append((node.lineno, scope, f"writes JSON text to a file or a stream{remedy}"))
         problems += sanctioned_problems(name, tree, JSON_WRITE_ALLOWANCE, found)
     return problems
 
@@ -1734,21 +1816,30 @@ FOREIGN_DECLARATIONS = ("argtypes", "restype")
 CTYPES_ALLOWANCE = "CTYPES_ALLOWED"
 
 
+# A foreign function is keyed by its library and its name, so a declaration on one library's function is none for
+# another's of the same name.
+ForeignFunction = tuple[str, str]
+# The places an assignment binds a library or a function to: a name, an attribute such as self.kernel32, or a subscript
+# such as libraries["k"], each keyed by its text.
+BINDING_PLACES = (ast.Name, ast.Attribute, ast.Subscript)
+
+
 class _ForeignLibraries:
-    """What a module binds to a library ctypes loads: the names bound to one, the module's functions that return one,
-    and the names bound to a function of one, through the module's imports."""
+    """What a module binds to a library ctypes loads: the places bound to one, the module's functions that return one,
+    and the places bound to a function of one, through the module's imports. A library is keyed by the expression that
+    loads it, so each place bound to it, and each place bound to such a place, shares its key."""
 
     def __init__(self, tree: ast.Module) -> None:
         self.aliases = import_aliases(tree)
-        self.names: set[str] = set()
+        self.places: dict[str, str] = {}
         self.loaders: set[str] = set()
-        self.functions: dict[str, str] = {}
+        self.functions: dict[str, ForeignFunction] = {}
         assignments = [
-            (target.id, node.value)
+            (ast.unparse(target), node.value)
             for node in ast.walk(tree)
             if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None
             for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-            if isinstance(target, ast.Name)
+            if isinstance(target, BINDING_PLACES)
         ]
         returns = [
             (function.name, node.value)
@@ -1757,48 +1848,86 @@ class _ForeignLibraries:
             for node in ast.walk(function)
             if isinstance(node, ast.Return) and node.value is not None
         ]
-        # A name bound to a loader's result is a library, and so is a name bound to that name, to the fixed point.
+        # A place bound to a loader's result is a library, and so is a place bound to that place, to the fixed point.
         while True:
-            names = {name for name, value in assignments if self.library(value)} - self.names
-            loaders = {name for name, value in returns if self.library(value)} - self.loaders
-            if not names and not loaders:
+            places = {
+                place: key
+                for place, value in assignments
+                if place not in self.places and (key := self.library(value)) is not None
+            }
+            loaders = {name for name, value in returns if self.library(value) is not None} - self.loaders
+            if not places and not loaders:
                 break
-            self.names |= names
+            self.places |= places
             self.loaders |= loaders
-        self.functions = {name: function for name, value in assignments if (function := self.foreign(value))}
+        self.functions = {place: function for place, value in assignments if (function := self.foreign(value))}
 
-    def library(self, node: ast.expr) -> bool:
-        """Whether an expression is a library ctypes loads."""
+    def library(self, node: ast.expr) -> str | None:
+        """The key of the library ctypes loads that an expression is, or None."""
         if isinstance(node, ast.Call):
-            return qualified_name(node.func, self.aliases) in LIBRARY_LOADERS or (
-                isinstance(node.func, ast.Name) and node.func.id in self.loaders
-            )
-        if isinstance(node, ast.Attribute):
-            return node.attr not in FOREIGN_MEMBERS and qualified_name(node.value, self.aliases) in LIBRARY_NAMESPACES
-        return isinstance(node, ast.Name) and node.id in self.names
+            if qualified_name(node.func, self.aliases) in LIBRARY_LOADERS:
+                return ast.unparse(node)
+            return f"{node.func.id}()" if isinstance(node.func, ast.Name) and node.func.id in self.loaders else None
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr not in FOREIGN_MEMBERS
+            and qualified_name(node.value, self.aliases) in LIBRARY_NAMESPACES
+        ):
+            return qualified_name(node, self.aliases)
+        return self.places.get(ast.unparse(node)) if isinstance(node, BINDING_PLACES) else None
 
-    def foreign(self, node: ast.expr) -> str | None:
-        """The name of the foreign function an expression is, or None."""
-        if isinstance(node, ast.Attribute) and node.attr not in FOREIGN_MEMBERS and self.library(node.value):
-            return node.attr
-        return self.functions.get(node.id) if isinstance(node, ast.Name) else None
+    def foreign(self, node: ast.expr) -> ForeignFunction | None:
+        """The library and the name of the foreign function an expression is: an attribute of a library, a getattr of
+        a constant name on one, or a place bound to either; or None."""
+        if isinstance(node, ast.Attribute) and node.attr not in FOREIGN_MEMBERS:
+            library = self.library(node.value)
+            if library is not None:
+                return library, node.attr
+        if (
+            isinstance(node, ast.Call)
+            and qualified_name(node.func, self.aliases) in ATTRIBUTE_LOOKUPS
+            and node.args
+            and isinstance(attribute := call_argument(node, 1, "name"), ast.Constant)
+            and isinstance(attribute.value, str)
+            and attribute.value not in FOREIGN_MEMBERS
+            and (library := self.library(node.args[0])) is not None
+        ):
+            return library, attribute.value
+        return self.functions.get(ast.unparse(node)) if isinstance(node, BINDING_PLACES) else None
+
+    def declaration(self, node: ast.AST) -> tuple[ForeignFunction, str] | None:
+        """The foreign function and the declaration, argtypes or restype, a node assigns, by an assignment, an
+        annotated assignment, or a setattr of a constant name, or None."""
+        if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                if isinstance(target, ast.Attribute) and target.attr in FOREIGN_DECLARATIONS:
+                    function = self.foreign(target.value)
+                    if function is not None:
+                        return function, target.attr
+        if (
+            isinstance(node, ast.Call)
+            and qualified_name(node.func, self.aliases) in ("setattr", "builtins.setattr")
+            and len(node.args) == 3
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in FOREIGN_DECLARATIONS
+            and (function := self.foreign(node.args[0])) is not None
+        ):
+            return function, str(node.args[1].value)
+        return None
 
 
 def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
-    """Each call of a ctypes foreign function whose module does not assign it both argtypes and restype, argtypes
-    excepted for a function every call gives no arguments, that no CTYPES_ALLOWED entry sanctions."""
+    """Each call of a ctypes foreign function whose module does not assign that library's function both argtypes and
+    restype, argtypes excepted for a function every call gives no arguments, that no CTYPES_ALLOWED entry
+    sanctions."""
     problems: list[str] = []
     for _, name, tree in python_trees(claim_files(root, files), root, problems):
         libraries = _ForeignLibraries(tree)
-        declared: dict[str, set[str]] = {}
-        calls: list[tuple[ast.Call, str, str]] = []
+        declared: dict[ForeignFunction, set[str]] = {}
+        calls: list[tuple[ast.Call, str, ForeignFunction]] = []
         for node, scope in scoped_nodes(tree.body):
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Attribute) and target.attr in FOREIGN_DECLARATIONS:
-                        function = libraries.foreign(target.value)
-                        if function is not None:
-                            declared.setdefault(function, set()).add(target.attr)
+            if (declaration := libraries.declaration(node)) is not None:
+                declared.setdefault(declaration[0], set()).add(declaration[1])
             elif isinstance(node, ast.Call) and (function := libraries.foreign(node.func)) is not None:
                 calls.append((node, scope, function))
         given = {function for call, _, function in calls if call.args or call.keywords}
@@ -1814,8 +1943,8 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
                     (
                         call.lineno,
                         scope,
-                        f"calls {function} through ctypes with no {' or '.join(missing)} assigned in the module, so "
-                        f"ctypes passes it C ints; assign both, or state why in {CTYPES_ALLOWANCE}",
+                        f"calls {function[1]} through ctypes with no {' or '.join(missing)} assigned in the module, "
+                        f"so ctypes passes it C ints; assign both, or state why in {CTYPES_ALLOWANCE}",
                     )
                 )
         problems += sanctioned_problems(name, tree, CTYPES_ALLOWANCE, found)
@@ -1939,11 +2068,9 @@ class _GitClients:
         return isinstance(node, ast.Call) and self._is_class(self.resolver.name(node.func))
 
     def annotated(self, annotation: ast.expr) -> bool:
-        """Whether an annotation names GitClient or a subclass of it, alone or in a union or a subscript."""
-        return any(
-            isinstance(part, ast.Name | ast.Attribute) and self._is_class(self.resolver.name(part))
-            for part in ast.walk(annotation)
-        )
+        """Whether an annotation names GitClient or a subclass of it, alone or in a union or a subscript, by name or in
+        quotes."""
+        return any(self._is_class(name) for name in _annotation_names(annotation, self.resolver))
 
     def holds(self, node: ast.expr) -> bool:
         """Whether an expression is a client: one constructed in place, a name, or an attribute bound to one, or
@@ -2392,14 +2519,33 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
-# Each subcommand that lists names, with the options that make it list them; none means it always does. An option
-# counts alone or with a value after =, as --porcelain=v2.
+# The options that make a diff, or a log or a show of a commit's changes, list the paths it touches.
+DIFF_NAME_OPTIONS = frozenset({"--name-only", "--name-status", "--raw", "--numstat"})
+# Each subcommand that lists names, with the options that make it list them; none means it always does, as the
+# plumbing diffs print raw output unless told otherwise, and grep, check-ignore, and check-attr print each path they
+# match. An option counts alone or with a value after =, as --porcelain=v2.
 GIT_NAME_LISTINGS: dict[str, frozenset[str]] = {
-    "diff": frozenset({"--name-only", "--name-status"}),
+    "check-attr": frozenset(),
+    "check-ignore": frozenset(),
+    "diff": DIFF_NAME_OPTIONS,
+    "diff-files": frozenset(),
+    "diff-index": frozenset(),
+    "diff-tree": frozenset(),
+    "grep": frozenset(),
+    "log": DIFF_NAME_OPTIONS,
     "ls-files": frozenset(),
     "ls-tree": frozenset(),
+    "show": DIFF_NAME_OPTIONS,
     "status": frozenset({"--porcelain", "--short", "-s"}),
+    "worktree": frozenset({"--porcelain"}),
 }
+# The options that end each name a listing prints with NUL: -z, and grep's own spelling of it.
+GIT_NUL_OPTIONS = frozenset({"-z", "--null"})
+# The options that make a listing print no name, as `check-ignore -q` and `diff-index --quiet` answer by their status.
+GIT_SILENT_OPTIONS = frozenset({"-q", "--quiet"})
+# The listings that do nothing without an argument after the subcommand, so a sequence that gives none, as a label
+# beside an error does, is no such command.
+GIT_ARGUMENT_LISTINGS = frozenset({"check-attr", "check-ignore", "grep"})
 GIT_FORMAT_COMMANDS = frozenset({"for-each-ref", "log"})
 # The options a format follows, after = or as the next argument, and the prefixes --pretty's form may give it.
 GIT_FORMAT_OPTIONS = frozenset({"--format", "--pretty"})
@@ -2479,7 +2625,7 @@ def _git_command(elements: Sequence[ast.expr]) -> tuple[str, list[str]] | None:
 def _lists_names(command: str, options: list[str]) -> bool:
     """Whether a git command with these options lists names."""
     listing = GIT_NAME_LISTINGS.get(command)
-    if listing is None:
+    if listing is None or GIT_SILENT_OPTIONS & set(options) or (command in GIT_ARGUMENT_LISTINGS and not options):
         return False
     return not listing or any(option.split("=", 1)[0] in listing for option in options)
 
@@ -2513,7 +2659,7 @@ def _separator_refusal(elements: Sequence[ast.expr]) -> str | None:
     if started is None:
         return None
     command, options = started
-    if _lists_names(command, options) and "-z" not in options:
+    if _lists_names(command, options) and not GIT_NUL_OPTIONS & set(options):
         return (
             f"lists names with git {command} without -z, so git quotes one holding a non-ASCII byte or a newline; "
             f"use GitClient.names, or pass -z and split on NUL, or state why in {GIT_SEPARATOR_ALLOWANCE}"
@@ -2706,20 +2852,68 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-# A time limit read with type=float accepts nan, inf, zero, and a negative number, and none of them is a limit, so an
-# option that names a time takes ejryan89-skill-core's seconds_option.positive_seconds as its type. Any other states
-# why in a module-level TIME_OPTION_ALLOWED = {scope: reason}.
+# A time limit read with type=float accepts nan, inf, zero, and a negative number, and one read with type=int accepts
+# zero and a negative number, and none of them is a limit, so an option that names a time takes ejryan89-skill-core's
+# seconds_option.positive_seconds as its type. Any other states why in a module-level
+# TIME_OPTION_ALLOWED = {scope: reason}.
 TIME_OPTION_ALLOWANCE = "TIME_OPTION_ALLOWED"
+# The words, split from an option string, dest, or metavar at each hyphen, underscore, or space, that name a time: a
+# limit's own words and its units. A bare "limit" or "min" names a count or a minimum as often as a time, and a "day",
+# "week", or "month" a calendar span rather than a wait, so none of them is one; "--time-limit" is one by "time".
+TIME_WORDS = frozenset(
+    {
+        "time",
+        "timeout",
+        "timeouts",
+        "deadline",
+        "wait",
+        "delay",
+        "interval",
+        "ttl",
+        "duration",
+        "sleep",
+        "backoff",
+        "seconds",
+        "second",
+        "secs",
+        "sec",
+        "ms",
+        "millis",
+        "milliseconds",
+        "minutes",
+        "minute",
+        "mins",
+        "hours",
+        "hour",
+        "hrs",
+    }
+)
+# What each type that reads a time option as no limit accepts that is none.
+UNBOUNDED_TIME_TYPES = {"float": "nan, inf, 0, and a negative number", "int": "0 and a negative number"}
 
 
-def _float_time_option(call: ast.Call, aliases: dict[str, str]) -> str | None:
-    """The name of the time an add_argument call reads with type=float, among its option strings, dest, and metavar,
-    or None when it reads no time so."""
-    time_words = {"timeout", "timeouts", "seconds", "secs", "minutes", "mins", "hours", "deadline"}
-    if not (isinstance(call.func, ast.Attribute) and call.func.attr == "add_argument"):
+def _called_attribute(call: ast.Call, resolver: CallableResolver) -> str:
+    """The attribute a call calls: an attribute's own name, followed through a name bound once to an attribute, as
+    `add = parser.add_argument` then `add(...)`, or the constant name a getattr reads, as
+    `getattr(parser, "add_argument")(...)`; "" for anything else."""
+    function = resolver.function(call)
+    if isinstance(function, ast.Attribute):
+        return function.attr
+    if isinstance(function, ast.Call) and resolver.name(function.func) in ATTRIBUTE_LOOKUPS:
+        attribute = call_argument(function, 1, "name")
+        if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
+            return attribute.value
+    return ""
+
+
+def _unbounded_time_option(call: ast.Call, resolver: CallableResolver) -> tuple[str, str] | None:
+    """The name of the time an add_argument call reads with type=float or type=int, among its option strings, dest,
+    and metavar, with that type, or None when it reads no time so."""
+    if _called_attribute(call, resolver) != "add_argument":
         return None
-    types = [qualified_name(keyword.value, aliases) for keyword in call.keywords if keyword.arg == "type"]
-    if "float" not in types:
+    types = [resolver.name(keyword.value) for keyword in call.keywords if keyword.arg == "type"]
+    unbounded = next((kind for kind in UNBOUNDED_TIME_TYPES if kind in types), None)
+    if unbounded is None:
         return None
     names = [
         *call.args,
@@ -2729,27 +2923,28 @@ def _float_time_option(call: ast.Call, aliases: dict[str, str]) -> str | None:
         if (
             isinstance(name, ast.Constant)
             and isinstance(name.value, str)
-            and time_words & set(re.split(r"[-_\s]+", name.value.lower()))
+            and TIME_WORDS & set(re.split(r"[-_\s]+", name.value.lower()))
         ):
-            return name.value
+            return name.value, unbounded
     return None
 
 
 def time_option_problems(root: Path, files: list[Path]) -> list[str]:
-    """Each add_argument that reads an option naming a time with type=float, which no TIME_OPTION_ALLOWED entry
-    sanctions."""
+    """Each add_argument that reads an option naming a time with type=float or type=int, which no TIME_OPTION_ALLOWED
+    entry sanctions."""
     problems: list[str] = []
     for _, name, tree in python_trees(claim_files(root, files), root, problems):
-        aliases = import_aliases(tree)
+        resolver = CallableResolver(tree)
         found = [
             (
                 node.lineno,
                 scope,
-                f"reads {option} with type=float, which accepts nan, inf, 0, and a negative number; use "
+                f"reads {option} with type={kind}, which accepts {UNBOUNDED_TIME_TYPES[kind]}; use "
                 f"ejryan89-skill-core's seconds_option.positive_seconds, or state why in {TIME_OPTION_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Call) and (option := _float_time_option(node, aliases))
+            if isinstance(node, ast.Call) and (read := _unbounded_time_option(node, resolver))
+            for option, kind in [read]
         ]
         problems += sanctioned_problems(name, tree, TIME_OPTION_ALLOWANCE, found)
     return problems
@@ -2784,7 +2979,7 @@ def _content_aliases(tree: ast.Module, module: str) -> dict[str, str]:
     `READ = json_reader.read_file` does, which stands for what that one does."""
     aliases = {
         node.name: f"{module}.{node.name}"
-        for node in tree.body
+        for node in _top_level(tree.body)
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
     }
     aliases |= {name: f"{module}.{name}" for name in [*_module_tuples(tree), *_module_lambdas(tree)]}
@@ -2794,7 +2989,7 @@ def _content_aliases(tree: ast.Module, module: str) -> dict[str, str]:
             base = f"{package}.{node.module}" if node.module else package
             aliases |= {alias.asname or alias.name: f"{base}.{alias.name}" for alias in node.names}
     aliases |= import_aliases(tree)
-    bound = [_module_binding(node) for node in tree.body]
+    bound = [_module_binding(node) for node in _top_level(tree.body)]
     counts = Counter(name for name, _ in filter(None, bound))
     for name, value in filter(None, bound):
         if counts[name] == 1 and (target := qualified_name(value, aliases)):
@@ -2818,7 +3013,7 @@ def _module_lambdas(tree: ast.Module) -> dict[str, ast.Lambda]:
     """Each top-level name assigned a lambda, which a call of the name runs as a function."""
     return {
         target.id: node.value
-        for node in tree.body
+        for node in _top_level(tree.body)
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Lambda)
         for target in node.targets
         if isinstance(target, ast.Name)
@@ -2828,7 +3023,7 @@ def _module_lambdas(tree: ast.Module) -> dict[str, ast.Lambda]:
 def _module_tuples(tree: ast.Module) -> dict[str, ast.Tuple]:
     """Each module-level name assigned a literal tuple, such as a family of exception classes."""
     found: dict[str, ast.Tuple] = {}
-    for node in tree.body:
+    for node in _top_level(tree.body):
         target: ast.expr
         value: ast.expr | None
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
@@ -2880,7 +3075,7 @@ def _repository_functions(
     functions: RepositoryFunctions = {}
     methods: dict[str, dict[str, list[str]]] = {}
     for module, (_, tree) in trees.items():
-        for node in tree.body:
+        for node in _top_level(tree.body):
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 functions[f"{module}.{node.name}"] = (module, node.name, node.body)
             elif isinstance(node, ast.ClassDef):
@@ -2915,7 +3110,7 @@ class _ContentModel:
         self.bases = {
             f"{module}.{node.name}": [qualified_name(base, self.aliases[module]) for base in node.bases]
             for module, (_, tree) in self.trees.items()
-            for node in tree.body
+            for node in _top_level(tree.body)
             if isinstance(node, ast.ClassDef)
         }
         self.tuples = {
@@ -2933,7 +3128,9 @@ class _ContentModel:
                 problems.append(f"{name}: {CONTENT_ERRORS} must be a tuple of exception classes its imports name")
                 continue
             readers = _content_readers(tree)
-            defined = {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
+            defined = {
+                node.name for node in _top_level(tree.body) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            }
             if readers is None or not readers or not set(readers) <= defined:
                 problems.append(
                     f"{name}: {CONTENT_READERS} must be a tuple naming each function the module defines that raises "

@@ -1674,6 +1674,26 @@ def piped(stream, value):
     stream.write(json.dumps(value))
 
 
+def respelled(path, stream, data, values):
+    if (text := json.dumps(data)): path.write_text(text)
+    text2, other = json.dumps(data), ""; path.write_text(text2)
+    for text3 in [json.dumps(data)]: path.write_text(text3)
+    alias = json.dump; alias(data, stream)
+    getattr(json, "dump")(data, stream)
+    path.write_text(json.JSONEncoder().encode(data))
+    encoder = json.JSONEncoder(indent=2); stream.writelines(encoder.iterencode(data))
+    write = stream.write; write(json.dumps(data))
+    with open_text(json.dumps(data)) as text4: path.write_text(text4)
+    first, *rest = json.dumps(data), ""; path.write_text(first)
+    path.write_text("".join(chunk for chunk in json.JSONEncoder().iterencode(data)))
+
+
+def respelled_conforms(path, data):
+    text5, other = json.dumps(data), "plain"; path.write_text(other)
+    encoder = json.JSONEncoder(); path.write_text(str(encoder))
+    for item in ["plain", "text"]: path.write_text(item)
+
+
 JSON_WRITE_ALLOWED = {"piped": "writes a message to a pipe no file holds", "stale": "a reason"}
 """
 
@@ -1692,7 +1712,11 @@ def test_json_write_policy_refuses_a_json_write_outside_json_writer() -> None:
     )
     assert found == [
         *(f"{alpha}:11 writes JSON with json.dump{remedy}" for _ in range(3)),
-        *(f"{alpha}:{line} writes json.dumps text to a file or a stream{remedy}" for line in (12, 13, 16)),
+        *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (12, 13, 16)),
+        *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (37, 38, 39)),
+        *(f"{alpha}:40 writes JSON with json.dump{remedy}" for _ in range(2)),
+        f"{alpha}:41 writes JSON with json.dump{remedy}",
+        *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (42, 43, 44, 45, 46, 47)),
         f"{alpha}: JSON_WRITE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: JSON_WRITE_ALLOWED must map each function, class, or assignment to its reason",
     ]
@@ -2142,6 +2166,74 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
     ]
 
 
+# A module's top level binds under an if, a try, a with, or a loop as it does unindented: a reader a skill-core module
+# defines there, a repository function that calls one, and a name bound once to it are each read.
+CONTENT_BLOCK_READER_SOURCE = """\
+import json
+import sys
+
+
+class Refused(ValueError):
+    pass
+
+
+CONTENT_ERRORS = (Refused, json.JSONDecodeError)
+CONTENT_READERS = ("read",)
+
+if sys.platform:
+
+    def read(text):
+        return text
+"""
+CONTENT_BLOCK_CALLER_SOURCE = """\
+import sys
+
+from reader import Refused, read
+
+if sys.platform:
+
+    def load(text):
+        return read(text)
+
+try:
+    LOAD = load
+except NameError:
+    pass
+
+
+def through_function(text):
+    try:
+        return load(text)
+    except Refused:
+        return None
+
+
+def through_name(text):
+    try:
+        return LOAD(text)
+    except Refused:
+        return None
+"""
+
+
+def test_content_errors_policy_reads_what_a_module_binds_under_a_top_level_block() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_BLOCK_READER_SOURCE,
+                "skills/alpha/scripts/alpha.py": CONTENT_BLOCK_CALLER_SOURCE,
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    remedy = (
+        "catches part of what a reader it calls raises, or its OSError, but not json.decoder.JSONDecodeError; catch "
+        "the whole family, reader.CONTENT_ERRORS, or state why in CONTENT_ERRORS_ALLOWED"
+    )
+    assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (17, 24)]
+
+
 def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader() -> None:
     # With no reader every handler would pass, so a tree that lost its readers fails rather than passing empty.
     with tempfile.TemporaryDirectory() as temporary:
@@ -2293,6 +2385,68 @@ def sanctioned(handle):
 
 CTYPES_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 """
+
+
+CTYPES_PLACES_SOURCE = """import ctypes
+from ctypes import wintypes
+
+
+class Probe:
+    def __init__(self):
+        self.kernel32 = ctypes.WinDLL("kernel32")
+
+    def open(self, pid):
+        return self.kernel32.OpenProcess(1, 0, pid)
+
+
+def held(pid, libraries):
+    libraries["k"] = ctypes.WinDLL("kernel32")
+    return libraries["k"].OpenProcess(1, 0, pid)
+
+
+def looked_up(pid):
+    kernel32 = ctypes.WinDLL("kernel32")
+    return getattr(kernel32, "OpenProcess")(1, 0, pid)
+
+
+def other_library(handle):
+    user32 = ctypes.WinDLL("user32")
+    user32.CloseHandle.argtypes = [wintypes.HANDLE]
+    user32.CloseHandle.restype = wintypes.BOOL
+    windows = ctypes.windll.kernel32
+    return windows.CloseHandle(handle)
+
+
+def annotated(handle):
+    library = ctypes.windll.ntdll
+    library.NtClose.argtypes: list = [wintypes.HANDLE]
+    library.NtClose.restype = wintypes.LONG
+    return library.NtClose(handle)
+
+
+def set_by_name(handle):
+    library = ctypes.windll.advapi32
+    setattr(library.CloseServiceHandle, "argtypes", [wintypes.HANDLE])
+    setattr(library.CloseServiceHandle, "restype", wintypes.BOOL)
+    function = getattr(library, "CloseServiceHandle")
+    return function(handle)
+"""
+
+
+def test_ctypes_policy_keys_a_declaration_by_its_library_wherever_the_library_is_held() -> None:
+    # A library on an attribute, in a subscript, or reached through getattr is read, and a declaration on user32's
+    # CloseHandle is none for kernel32's; an annotated or a setattr declaration is a real one.
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.ctypes_declaration_problems, "CTYPES_ALLOWED", CTYPES_PLACES_SOURCE, "tests/fixtures/ctypes.py"
+    )
+    passes = "assigned in the module, so ctypes passes it C ints; assign both, or state why in CTYPES_ALLOWED"
+    assert [line for line in found if line.startswith(alpha)] == [
+        f"{alpha}:10 calls OpenProcess through ctypes with no argtypes or restype {passes}",
+        f"{alpha}:15 calls OpenProcess through ctypes with no argtypes or restype {passes}",
+        f"{alpha}:20 calls OpenProcess through ctypes with no argtypes or restype {passes}",
+        f"{alpha}:28 calls CloseHandle through ctypes with no argtypes or restype {passes}",
+    ]
 
 
 def test_ctypes_policy_refuses_a_foreign_function_called_undeclared() -> None:
@@ -2610,6 +2764,14 @@ STATUS_CLIENTS = [
             "            return r.returncode  # read\n",
             id="a case capturing the result",
         ),
+        pytest.param(
+            "def f(client: 'GitClient'):\n    return client.run(['status']).returncode  # read\n",
+            id="a client annotated in quotes",
+        ),
+        pytest.param(
+            "def f(client: 'GitClient | None'):\n    return client.run(['status']).returncode  # read\n",
+            id="a client annotated in a quoted union",
+        ),
         # A subclass's own methods run on a client.
         pytest.param(
             "class Mine(GitClient):\n    def f(self):\n        return self.run(['status']).returncode  # read\n",
@@ -2867,6 +3029,41 @@ def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a
     ]
 
 
+# Each git name listing the separator policy's catalogue, GIT_NAME_LISTINGS, names, without -z and with it.
+@pytest.mark.parametrize(
+    ("call", "refused"),
+    [
+        pytest.param('client.output(["diff-tree", "--name-only", "-r", "HEAD"])', True, id="diff-tree --name-only"),
+        pytest.param('client.output(["diff-tree", "-r", "HEAD~1", "HEAD"])', True, id="diff-tree raw by default"),
+        pytest.param('client.output(["diff-index", "--cached", "HEAD"])', True, id="diff-index raw by default"),
+        pytest.param('client.output(["diff-files"])', True, id="diff-files raw by default"),
+        pytest.param('client.output(["diff", "--raw", "main"])', True, id="diff --raw"),
+        pytest.param('client.output(["diff", "--numstat", "main"])', True, id="diff --numstat"),
+        pytest.param('client.output(["log", "--name-status", "main"])', True, id="log --name-status"),
+        pytest.param('client.output(["show", "--name-only", "HEAD"])', True, id="show --name-only"),
+        pytest.param('client.output(["worktree", "list", "--porcelain"])', True, id="worktree list --porcelain"),
+        pytest.param('client.output(["grep", "-n", "pattern"])', True, id="grep"),
+        pytest.param('client.output(["check-ignore", "--stdin"])', True, id="check-ignore"),
+        pytest.param('client.output(["check-attr", "eol", "--", "a"])', True, id="check-attr"),
+        pytest.param('client.output(["diff-tree", "-z", "-r", "HEAD"])', False, id="diff-tree -z"),
+        pytest.param('client.output(["worktree", "list", "--porcelain", "-z"])', False, id="worktree list -z"),
+        pytest.param('client.output(["grep", "--null", "-n", "pattern"])', False, id="grep --null"),
+        pytest.param('client.run(["check-ignore", "-q", "--no-index", "a"])', False, id="check-ignore -q is silent"),
+        pytest.param('client.run(["diff-index", "--quiet", "HEAD"])', False, id="diff-index --quiet is silent"),
+        pytest.param('client.output(["worktree", "list"])', False, id="worktree list without --porcelain"),
+        pytest.param('client.output(["log", "--stat", "main"])', False, id="log --stat"),
+        pytest.param('failure(root, "grep", error)', False, id="a label beside an error is no grep"),
+    ],
+)
+def test_git_separator_policy_reads_every_name_listing_its_catalogue_names(call: str, refused: bool) -> None:
+    source = f"def listing(client, failure, root, error):\n    {call}\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.git_separator_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == (["skills/alpha/scripts/alpha.py:2"] if refused else [])
+
+
 TIME_OPTION_SOURCE = """\
 import argparse
 
@@ -2884,6 +3081,19 @@ def parser():
     result.add_argument("--ratio", type=float)
     result.add_argument("--attempts", type=int)
     result.add_argument("--seconds-listed", type=str)
+    result.add_argument("--delay", type=float)
+    result.add_argument("--interval", type=float)
+    result.add_argument("--time-limit", type=float)
+    result.add_argument("--max-time", type=float)
+    result.add_argument("--timeout", type=int)
+    add = result.add_argument
+    add("--retry-wait", type=float)
+    getattr(result, "add_argument")("--poll-ms", type=int)
+    result.add_argument("--limit", type=int)
+    result.add_argument("--min-count", type=int)
+    result.add_argument("--days", type=int)
+    result.add_argument("--times", type=int)
+    result.add_argument("--wait-ok", type=positive_seconds)
     return result
 
 
@@ -2898,16 +3108,22 @@ TIME_OPTION_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 def test_time_option_policy_refuses_a_float_time_option() -> None:
     alpha = "skills/alpha/scripts/alpha.py"
     found = run_claim_policy(python_checks.time_option_problems, "TIME_OPTION_ALLOWED", TIME_OPTION_SOURCE, alpha)
-    remedy = (
-        "with type=float, which accepts nan, inf, 0, and a negative number; use ejryan89-skill-core's "
-        "seconds_option.positive_seconds, or state why in TIME_OPTION_ALLOWED"
-    )
+    tail = "; use ejryan89-skill-core's seconds_option.positive_seconds, or state why in TIME_OPTION_ALLOWED"
+    remedy = f"with type=float, which accepts nan, inf, 0, and a negative number{tail}"
+    whole = f"with type=int, which accepts 0 and a negative number{tail}"
     assert found == [
         f"{alpha}:8 reads --timeout {remedy}",
         f"{alpha}:9 reads --read-timeout {remedy}",
-        f"{alpha}:10 reads SECONDS {remedy}",
+        f"{alpha}:10 reads --wait {remedy}",
         f"{alpha}:11 reads limit_minutes {remedy}",
         f"{alpha}:12 reads --max_hours {remedy}",
+        f"{alpha}:17 reads --delay {remedy}",
+        f"{alpha}:18 reads --interval {remedy}",
+        f"{alpha}:19 reads --time-limit {remedy}",
+        f"{alpha}:20 reads --max-time {remedy}",
+        f"{alpha}:21 reads --timeout {whole}",
+        f"{alpha}:23 reads --retry-wait {remedy}",
+        f"{alpha}:24 reads --poll-ms {whole}",
         f"{alpha}: TIME_OPTION_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: TIME_OPTION_ALLOWED must map each function, class, or assignment to its reason",
     ]
