@@ -3124,3 +3124,314 @@ def test_the_encoding_policy_reads_every_text_opener_in_the_table(name: str) -> 
     for keyword in opener.encoding_keywords:
         source = _opener_call(name, opener, f"{keyword}=e")
         assert run_claim_form(python_checks.encoding_problems, source) == [], (name, keyword)
+
+
+# The forms "A failure is never read as absence" names in its Search for, and the paragraph in docs/adding-a-skill.md
+# that names what the presence policy refuses, for every presence predicate, each a module the policy must refuse: a
+# predicate's False returned as an empty answer, skipped past with a continue, walked past with a while, chosen against
+# an empty value, returned, or kept or dropped by a comprehension or a filter.
+PRESENCE_PREDICATE_CALLS = {
+    "exists": "p.exists()",
+    "is_file": "p.is_file()",
+    "is_dir": "p.is_dir()",
+    "is_mount": "p.is_mount()",
+    "is_socket": "p.is_socket()",
+    "is_fifo": "p.is_fifo()",
+    "is_block_device": "p.is_block_device()",
+    "is_char_device": "p.is_char_device()",
+    "os.path.exists": "os.path.exists(p)",
+    "os.path.lexists": "os.path.lexists(p)",
+    "os.path.isfile": "os.path.isfile(p)",
+    "os.path.isdir": "os.path.isdir(p)",
+    "os.path.ismount": "os.path.ismount(p)",
+    "os.access": "os.access(p, os.F_OK)",
+}
+PRESENCE_EMPTIES = ("", "None", "False", "0", '""', 'b""', "[]", "()", "{}", "set()", "frozenset()", "dict()", "list()")
+PRESENCE_SHAPES = {
+    "if not P: return E": "def f(p):\n    if not {call}:\n        return {empty}\n    return p.read_text()\n",
+    "if not P or Q: return E": "def f(p, q):\n    if q or not {call}:\n        return {empty}\n    return 1\n",
+    "if P: ... else: return E": (
+        "def f(p):\n    if {call}:\n        x = 1\n    else:\n        return {empty}\n    return x\n"
+    ),
+    "if not P: continue": (
+        "def f(ps):\n    for p in ps:\n        if not {call}:\n            continue\n        print(p)\n"
+    ),
+    "while not P": "def f(p):\n    while not {call}:\n        p = p.parent\n    return p\n",
+    "V if P else E": "def f(p):\n    return p.read_text() if {call} else {empty}\n",
+    "V if P and Q else E": "def f(p, q):\n    return p.read_text() if q and {call} else {empty}\n",
+    "E if not P else V": "def f(p):\n    return {empty} if not {call} else p.read_text()\n",
+    "return P": "def f(p):\n    return {call}\n",
+    "return not P": "def f(p):\n    return not {call}\n",
+    "return Q and P": "def f(p, q):\n    return q and {call}\n",
+    "lambda: P": "def f(ps):\n    return sorted(ps, key=lambda p: {call})\n",
+    "[e for e in es if P]": "def f(ps):\n    return [p for p in ps if {call}]\n",
+    "[e for e in es if not P]": "def f(ps):\n    return [p for p in ps if not {call}]\n",
+    "{e for e in es if Q and P}": "def f(ps, q):\n    return {{p for p in ps if q and {call}}}\n",
+    "{e: v for e in es if P}": "def f(ps):\n    return {{p: 1 for p in ps if {call}}}\n",
+    "any(P for e in es)": "def f(ps):\n    return any({call} for p in ps)\n",
+    "a name bound to P": "def f(p):\n    found = {call}\n    if not found:\n        return {empty}\n    return 1\n",
+    "a name P's assignment expression binds": (
+        "def f(p):\n    if not (found := {call}):\n        return {empty}\n    return found\n"
+    ),
+}
+
+
+def _presence_form(shape: str, call: str, empty: str) -> str:
+    body = PRESENCE_SHAPES[shape].format(call=call, empty=empty or "None")
+    if not empty and shape == "if not P: return E":
+        body = body.replace("return None\n", "return\n")
+    return f"import os\nimport os.path as osp\nfrom os.path import isfile\n\n\n{body}"
+
+
+# The listings, walks, and removals the policy refuses, each written as the module's imports may reach it.
+PRESENCE_LISTINGS = {
+    "a path's glob": "def f(p):\n    return list(p.glob('*'))\n",
+    "a path's rglob": "def f(p):\n    return sorted(p.rglob('*.py'))\n",
+    "glob.glob": "import glob\n\n\ndef f(p):\n    return glob.glob(p)\n",
+    "glob.iglob by its name": "from glob import iglob\n\n\ndef f(p):\n    return list(iglob(p))\n",
+    "glob through an alias": "import glob as g\n\n\ndef f(p):\n    return g.glob(p)\n",
+    "os.walk with no onerror": "import os\n\n\ndef f(p):\n    return list(os.walk(p))\n",
+    "os.walk given onerror None": "import os\n\n\ndef f(p):\n    return list(os.walk(p, onerror=None))\n",
+    "os.walk given None by position": "import os\n\n\ndef f(p):\n    return list(os.walk(p, True, None))\n",
+    "walk by its name": "from os import walk\n\n\ndef f(p):\n    return list(walk(p))\n",
+    "os.walk given an unpacking": "import os\n\n\ndef f(p, k):\n    return list(os.walk(p, **k))\n",
+    "os.fwalk with no onerror": "import os\n\n\ndef f(p):\n    return list(os.fwalk(p))\n",
+    "shutil.rmtree given ignore_errors": "import shutil\n\n\ndef f(p):\n    shutil.rmtree(p, ignore_errors=True)\n",
+    "shutil.rmtree given it by position": "import shutil\n\n\ndef f(p):\n    shutil.rmtree(p, True)\n",
+    "shutil.rmtree given a name for it": "import shutil\n\n\ndef f(p, q):\n    shutil.rmtree(p, ignore_errors=q)\n",
+    "rmtree through an alias": "from shutil import rmtree as r\n\n\ndef f(p):\n    r(p, ignore_errors=True)\n",
+    "a TemporaryDirectory given ignore_cleanup_errors": (
+        "import tempfile\n\n\ndef f():\n    return tempfile.TemporaryDirectory(ignore_cleanup_errors=True)\n"
+    ),
+    "filter given os.path.isfile": "import os\n\n\ndef f(ps):\n    return list(filter(os.path.isfile, ps))\n",
+    "filter given Path.is_dir": (
+        "from pathlib import Path\n\n\ndef f(ps):\n    return list(filter(Path.is_dir, ps))\n"
+    ),
+    "itertools.filterfalse given os.path.exists": (
+        "import itertools\nimport os\n\n\ndef f(ps):\n    return list(itertools.filterfalse(os.path.exists, ps))\n"
+    ),
+    **{
+        f"an emptiness check after {test} by {listing}": (
+            f"import os\n\n\ndef f(p):\n    if {test} and any({listing}):\n        raise OSError(p)\n"
+        )
+        for test in ("p.exists()", "p.is_dir()", "os.path.isdir(p)")
+        for listing in ("p.iterdir()", "os.scandir(p)", "os.listdir(p)")
+    },
+}
+PRESENCE_REFUSED = {
+    **{
+        f"{shape} by {predicate}": _presence_form(shape, call, "None")
+        for shape in PRESENCE_SHAPES
+        for predicate, call in PRESENCE_PREDICATE_CALLS.items()
+    },
+    **{
+        f"a return of {empty or 'nothing'}": _presence_form("if not P: return E", "p.is_file()", empty)
+        for empty in PRESENCE_EMPTIES
+    },
+    "os.path through an alias": _presence_form("V if P else E", "osp.isdir(p)", "[]"),
+    "an imported isfile": _presence_form("V if P else E", "isfile(p)", "[]"),
+    **{
+        f"a continue over {listing}": (
+            f"import os\n\n\ndef f(p):\n    for e in {listing}:\n        if not e.is_file():\n            continue\n"
+            "        print(e)\n"
+        )
+        for listing in ("p.iterdir()", "reversed(list(os.scandir(p)))", "os.listdir(p)")
+    },
+    **PRESENCE_LISTINGS,
+}
+PRESENCE_PASSED = {
+    # The file_presence forms, which let a failed stat or listing through.
+    "file_presence": (
+        "import file_presence\n\n\ndef f(p):\n    return p.read_text() if file_presence.is_present(p) else None\n"
+    ),
+    "file_presence in a filter": (
+        "import file_presence\n\n\ndef f(p):\n"
+        "    return [e for e in p.iterdir() if file_presence.is_present(e, other_is_absent=True)]\n"
+    ),
+    "file_presence.matching": "import file_presence\n\n\ndef f(p):\n    return file_presence.matching(p, '**/*.py')\n",
+    "an emptiness check after file_presence": (
+        "import file_presence\n\n\ndef f(p):\n    if file_presence.is_directory(p) and any(p.iterdir()):\n"
+        "        raise OSError(p)\n"
+    ),
+    "os.walk given an onerror": "import os\n\n\ndef f(p, fail):\n    return list(os.walk(p, onerror=fail))\n",
+    "os.walk given one by position": "import os\n\n\ndef f(p, fail):\n    return list(os.walk(p, True, fail))\n",
+    "shutil.rmtree": "import shutil\n\n\ndef f(p):\n    shutil.rmtree(p)\n",
+    "shutil.rmtree given ignore_errors False": (
+        "import shutil\n\n\ndef f(p):\n    shutil.rmtree(p, ignore_errors=False)\n"
+    ),
+    "a TemporaryDirectory": "import tempfile\n\n\ndef f():\n    return tempfile.TemporaryDirectory()\n",
+    "filter given None": "def f(ps):\n    return list(filter(None, ps))\n",
+    # A predicate whose False leads to a refusal, a value, or more work is no empty answer, and an `if` whose True
+    # branch does the work and that has no else goes on to the code after it, which meets the same path.
+    "a refusal": "def f(p):\n    if not p.is_file():\n        raise OSError(p)\n    return 1\n",
+    "a value": "def f(p):\n    return p.read_text() if p.is_file() else 'default'\n",
+    "more work": "def f(p):\n    if not p.is_dir():\n        p.mkdir()\n        return None\n    return 1\n",
+    "an operand of a wider test": "def f(p, q):\n    if q and p.is_file():\n        return 1\n    return 2\n",
+    "an if with no else": "def f(p):\n    if p.exists():\n        p.unlink()\n    return 1\n",
+    # A name bound to a predicate's answer and to anything else, or a parameter, is not followed.
+    "a name bound otherwise too": (
+        "def f(p, q):\n    found = p.exists()\n    found = q\n    if not found:\n        return None\n    return 1\n"
+    ),
+    "a parameter of the same name": (
+        "def f(p, found):\n    if not found:\n        return None\n    found = p.exists()\n    return found\n"
+    ),
+    # A predicate stored in a container or handed to a call other than a filter is read where that is read.
+    "a predicate stored": "def f(p):\n    return {'present': p.exists()}\n",
+    "a predicate handed to a call": "def f(p, report):\n    report(p.exists())\n    return 1\n",
+    # A predicate that is not a presence test, and a walk the repository's oldest Python has no Path.walk for, which
+    # no module can call.
+    "another method": "def f(p):\n    return p.read_text() if p.is_absolute() else None\n",
+    "a method named walk": "def f(tree):\n    return list(tree.walk())\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("text", "refused"),
+    [
+        *((text, True) for text in PRESENCE_REFUSED.values()),
+        *((text, False) for text in PRESENCE_PASSED.values()),
+    ],
+    ids=[*PRESENCE_REFUSED, *PRESENCE_PASSED],
+)
+def test_presence_policy_refuses_each_empty_answer_form(text: str, refused: bool) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        path = root / "skills" / "alpha" / "scripts" / "alpha.py"
+        path.parent.mkdir(parents=True)
+        path.write_text(text, encoding="utf-8")
+        found = python_checks.presence_problems(root, [path])
+    assert bool(found) == refused, found
+
+
+PRESENCE_SOURCE = """\
+import os
+
+
+def refused(p):
+    return p.read_text() if p.is_file() else None
+
+
+def made(p):
+    p.mkdir()
+    if not p.is_dir():
+        return []
+    return list(p.iterdir())
+
+
+PRESENCE_ALLOWED = {"made": "the caller just made the folder", "stale": "a reason"}
+"""
+
+
+def test_presence_policy_sanctions_by_scope_and_leaves_file_presence_alone() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.presence_problems,
+        "PRESENCE_ALLOWED",
+        PRESENCE_SOURCE,
+        "skills/ejryan89-skill-core/scripts/file_presence.py",
+    )
+    assert found == [
+        f"{alpha}:5 reads is_file's False as nothing there, which it also answers for a path it cannot stat; call "
+        "ejryan89-skill-core's file_presence (is_present, is_directory, or is_occupied), which lets a failed stat "
+        "through, or state why in PRESENCE_ALLOWED",
+        f"{alpha}: PRESENCE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: PRESENCE_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+def _stat_failing(failing: Callable[[Path], bool]) -> Any:
+    """Patch Path.stat so it raises PermissionError for each path `failing` names and answers every other."""
+    real = Path.stat
+
+    def answer(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if failing(self):
+            raise PermissionError(13, "Access is denied", str(self))
+        return real(self, follow_symlinks=follow_symlinks)
+
+    return mock.patch.object(Path, "stat", autospec=True, side_effect=answer)
+
+
+def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[], object]]]:
+    """Each validation reader converted to file_presence, the paths whose stat its row fails, and its call over this
+    checkout."""
+    import duplication
+    import markdown_links
+    import skill_grants
+    import skill_layout
+    import suite_discovery
+    import workflows
+
+    root = REPOSITORY_ROOT
+    owner = root / duplication._shared_facts()[0].owner
+    asset = root / "skills" / sorted(json.loads((root / "source.json").read_text(encoding="utf-8"))["shared_assets"])[0]
+    skill = next(path.parent.name for path in sorted((root / "skills").glob("*/SKILL.md")))
+
+    def at(*paths: Path) -> Callable[[Path], bool]:
+        return lambda path: path in paths
+
+    def granted_script(path: Path) -> bool:
+        return path.suffix == ".py" and path.is_relative_to(root / "tools")
+
+    return {
+        "duplication.shared_fact_owner_problems": (at(owner), lambda: duplication.shared_fact_owner_problems(root)),
+        "duplication.skill_core_import_problems": (
+            at(root / duplication.DEPLOYER_PACKAGE),
+            lambda: duplication.skill_core_import_problems(root),
+        ),
+        "markdown_links._TestIndex.locations": (
+            at(root / "tests" / "validation" / "test_python_checks.py"),
+            lambda: markdown_links._TestIndex(root, []).locations("doc.md", "tests/validation/test_python_checks.py"),
+        ),
+        "skill_grants.root_option_problems": (
+            granted_script,
+            lambda: skill_grants.root_option_problems(root, sorted((root / ".claude" / "skills").glob("*/SKILL.md"))),
+        ),
+        "skill_layout.deploy_variable_problems": (
+            at(asset),
+            lambda: skill_layout.deploy_variable_problems(root, set(), set(), set()),
+        ),
+        "skill_layout.own_needs metadata": (
+            at(root / "deploy-meta" / f"{skill}.json"),
+            lambda: skill_layout.own_needs(root, skill),
+        ),
+        "skill_layout.own_needs scripts": (
+            at(root / "skills" / skill / "scripts"),
+            lambda: skill_layout.own_needs(root, skill),
+        ),
+        "skill_layout.runtime_page_problems": (
+            at(root / "docs" / "codex-support.md"),
+            lambda: skill_layout.runtime_page_problems(root),
+        ),
+        "skill_layout._sibling_path_files": (at(root / "deploy.py"), lambda: skill_layout._sibling_path_files(root)),
+        "skill_layout.skill_tree_problems skills": (
+            at(root / "skills"),
+            lambda: skill_layout.skill_tree_problems(root),
+        ),
+        "skill_layout.skill_tree_problems source.json": (
+            at(root / "source.json"),
+            lambda: skill_layout.skill_tree_problems(root),
+        ),
+        "suite_discovery.suite_python_modules": (
+            at(root / "conftest.py"),
+            lambda: suite_discovery.suite_python_modules(root),
+        ),
+        "suite_discovery.RepositoryModules": (
+            at(root / "pyproject.toml"),
+            lambda: suite_discovery.RepositoryModules(root),
+        ),
+        "suite_discovery.git_isolation_problems": (
+            at(root / "conftest.py"),
+            lambda: suite_discovery.git_isolation_problems(root),
+        ),
+        "workflows.unknown_workflow_problems": (
+            at(root / ".github" / "workflows"),
+            lambda: workflows.unknown_workflow_problems(root / ".github" / "workflows", ()),
+        ),
+    }
+
+
+@pytest.mark.parametrize("reader", sorted(_validation_readers()))
+def test_a_validation_reader_refuses_a_path_whose_stat_fails_rather_than_reading_it_as_absent(reader: str) -> None:
+    failing, read = _validation_readers()[reader]
+    with _stat_failing(failing), pytest.raises(PermissionError):
+        read()

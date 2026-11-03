@@ -472,17 +472,26 @@ class DeployerPresenceTests(DeployerTestCase):
         self.assertTrue((self.skills_dir / "beta" / "SKILL.md").is_file())
 
     def test_a_skill_md_whose_stat_fails_is_refused_not_passed_over(self) -> None:
-        # The listing is the one rglob gives: Python 3.11's glob stats a literal name itself, which is not under test.
         skill_md = self.source / "skills" / "beta" / "SKILL.md"
         self.deployed()
-        listing = [self.source / "skills" / "alpha" / "SKILL.md", skill_md]
-        with (
-            mock.patch.object(Path, "rglob", return_value=iter(listing)),
-            stat_failing_at(skill_md),
-            self.assertRaises(PermissionError) as raised,
-        ):
+        with stat_failing_at(skill_md), self.assertRaises(PermissionError) as raised:
             source._discover_directories(self.paths)
         self.assertEqual(str(skill_md), raised.exception.filename)
+
+    def test_a_skills_folder_it_cannot_list_is_refused_never_read_as_no_skill(self) -> None:
+        # A glob matches nothing in a folder it cannot list, which would drop that skill from the source.
+        self.deployed()
+        unlisted = self.source / "skills" / "beta"
+        real = os.scandir
+
+        def scandir(path: Any = ".") -> Any:
+            if isinstance(path, str | os.PathLike) and Path(path) == unlisted:
+                raise denied(unlisted)
+            return real(path)
+
+        with mock.patch.object(os, "scandir", scandir), self.assertRaises(PermissionError) as raised:
+            source._discover_directories(self.paths)
+        self.assertEqual(str(unlisted), raised.exception.filename)
 
     def test_metadata_whose_stat_fails_is_refused_not_passed_over(self) -> None:
         self.deployed()

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+import file_presence
 import json_reader
 
 # What each template value becomes in a plugin, which has no deployer to render it. A plugin is one tree for every
@@ -244,7 +245,7 @@ def read_menu(root: Path) -> SourceMenu:
     if not isinstance(source_id, str) or "/" not in source_id:
         raise MenuError(f"{(root / SOURCE_FILE).as_posix()} names no source ID of the form <owner>/<repository>")
     menu = SourceMenu(source_id)
-    for path in sorted((root / METADATA_FOLDER).glob("*.json")):
+    for path in file_presence.matching(root / METADATA_FOLDER, "*.json"):
         menu.skills[path.stem] = _entry(_json_object(path))
     _read_bundles(menu, document.get("bundles"))
     named = [*(name for entry in menu.skills.values() for name in entry.skill_deps), *menu.skill_bundle]

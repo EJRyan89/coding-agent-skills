@@ -45,6 +45,7 @@ from review_runtime import (
     verify_checkout_remote,
     verify_source_snapshot,
 )
+from test_review_archive import unstatable
 from test_review_records import field_pattern
 
 
@@ -1519,3 +1520,31 @@ class CommittedReadTests(unittest.TestCase):
         blob = git_blob_id(b"rules\n")
         with self.assertRaisesRegex(RuntimeContractError, f"^The checkout did not return the size of blob {blob}$"):
             review_runtime.read_blob(self.checkout, blob[:7], unsized, maximum=1024)
+
+
+class DestinationStatTests(unittest.TestCase):
+    """A destination that must be empty, whose stat fails, is refused with the stat's error, never read as nothing there
+    and so as empty."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.destination = Path(temporary.name) / "destination"
+        self.destination.mkdir()
+        (self.destination / "stale.txt").write_text("stale\n", encoding="utf-8")
+
+    def assert_refused_with_the_stat_error(self, make: Any) -> None:
+        with unstatable(self.destination), self.assertRaises(PermissionError) as raised:
+            make()
+        self.assertEqual(str(self.destination), raised.exception.filename)
+        self.assertEqual(["stale.txt"], [path.name for path in self.destination.iterdir()])
+
+    def test_a_materialization_destination(self) -> None:
+        manifest = RuntimeContractTests._manifest()
+        checkout = self.destination.parent / "checkout"
+        self.assert_refused_with_the_stat_error(
+            lambda: materialize_reviewer(checkout, "b" * 40, manifest, self.destination)
+        )
+
+    def test_a_source_snapshot_destination(self) -> None:
+        self.assert_refused_with_the_stat_error(lambda: review_runtime._prepare_destination(self.destination))

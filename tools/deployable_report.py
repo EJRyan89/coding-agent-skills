@@ -106,6 +106,14 @@ COMMANDS_ALLOWED = {
 }
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "check_runtimes": "removes its throwaway work folder under the temporary directory once the runtimes are judged; "
+    "nothing reads it after",
+}
+
+
 @dataclass(frozen=True)
 class RuntimeResult:
     runtime: str
@@ -171,7 +179,11 @@ def check_layout(paths: Paths, find: Find | None = None) -> RuntimeResult:
         file = paths.dest_dir / name / "SKILL.md"
         if not file.is_file() or file.stat().st_size == 0:
             problems.append(f"{name}/SKILL.md missing or empty")
-    problems += [f"agent {name} missing" for name in agents if not (paths.agent_dest_dir / name).is_file()]
+    problems += [
+        f"agent {name} missing"
+        for name in agents
+        if not file_presence.is_present(paths.agent_dest_dir / name, other_is_absent=True)
+    ]
     if problems:
         return RuntimeResult(CLAUDE, FAILED, "; ".join(problems))
     plural = "agent" if len(agents) == 1 else "agents"

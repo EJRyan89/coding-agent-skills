@@ -43,7 +43,6 @@ usage error or a last line FAILED <reason>, which fails the review.
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import os
 import re
 import sys
@@ -53,6 +52,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from conditions import (
     DIFF_VARIABLE,
     FAILURE_STATUS,
@@ -223,38 +223,12 @@ def names_to_find(files: list[FileDiff]) -> list[Name]:
     return list(names.values())
 
 
-def _listing(folder: Path) -> list[os.DirEntry[str]]:
-    with os.scandir(folder) as entries:
-        return list(entries)
-
-
-def _folders_within(folder: Path) -> list[Path]:
-    """A folder and every folder below it, as a glob's `**` reaches them, a link not followed."""
-    below = [Path(entry.path) for entry in _listing(folder) if entry.is_dir(follow_symlinks=False)]
-    return [folder, *(found for child in below for found in _folders_within(child))]
-
-
 def _matching_files(root: Path, pattern: str) -> list[Path]:
-    """The files below `root` a DOCUMENTS glob matches, as Path.glob matches it, but listing each folder with
-    os.scandir and asking each entry what it is, so a folder it cannot list or an entry it cannot stat raises, where a
-    glob would match nothing there and the route would close as though no document named the change."""
-    folders = [root]
-    *steps, last = pattern.split("/")
-    for step in steps:
-        if step == "**":
-            folders = [found for folder in folders for found in _folders_within(folder)]
-        else:
-            folders = [
-                Path(entry.path)
-                for folder in folders
-                for entry in _listing(folder)
-                if fnmatch.fnmatch(entry.name, step) and entry.is_dir()
-            ]
+    """The files below `root` a DOCUMENTS glob matches, as Path.glob matches it, but through file_presence, so a folder
+    it cannot list or an entry it cannot stat raises, where a glob would match nothing there and the route would close
+    as though no document named the change."""
     return [
-        Path(entry.path)
-        for folder in folders
-        for entry in _listing(folder)
-        if fnmatch.fnmatch(entry.name, last) and entry.is_file()
+        path for path in file_presence.matching(root, pattern) if file_presence.is_present(path, other_is_absent=True)
     ]
 
 

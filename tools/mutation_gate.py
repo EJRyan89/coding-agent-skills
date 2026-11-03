@@ -167,6 +167,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "validation"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 import json_writer
 from bounded_process import run_bounded
@@ -660,7 +661,7 @@ def policy_tables(tree: Path) -> dict[str, str]:
     """Each sanction table name a validation policy reads, with the policy's path: a module under POLICY_FOLDER, not a
     suite, that binds the name as a string at module level to a name ending in POLICY_TABLE_SUFFIX."""
     found: dict[str, str] = {}
-    for path in sorted((tree / POLICY_FOLDER).glob("*.py")):
+    for path in file_presence.matching(tree / POLICY_FOLDER, "*.py"):
         if is_suite_name(path.name):
             continue
         for statement in ast.parse(path.read_bytes().decode("utf-8"), str(path)).body:
@@ -1651,7 +1652,9 @@ def no_module_line(base: str) -> str:
 def other_sources(tree: Path, module: str) -> str:
     """The text of every Python file in a worktree but one module, read so that a name the module binds can be looked
     for in them; a byte that does not decode is replaced."""
-    files = sorted(path for path in tree.rglob("*.py") if path.relative_to(tree).as_posix() != module)
+    files = sorted(
+        path for path in file_presence.matching(tree, "**/*.py") if path.relative_to(tree).as_posix() != module
+    )
     return "\n".join(path.read_bytes().decode("utf-8", "replace") for path in files)
 
 

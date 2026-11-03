@@ -45,6 +45,7 @@ from review_records import build_record, validate_adapter_result
 from review_reviewers import MissingSkillError
 from review_runtime import RuntimeContractError
 from review_specialists import parse_unified_diff, patch_fingerprints
+from test_review_archive import unstatable
 from test_review_pipeline import checked_run_list
 
 # The command name the skills' scripts write for Python into the commands they hand an agent.
@@ -1671,6 +1672,16 @@ class RefusalTests(PrepareFixture):
             host="unknown",
         )
         self.assertFalse(self.run_dir.exists(), "a given directory is not created either")
+
+    def test_a_run_directory_whose_stat_fails_is_refused_with_the_error_never_read_as_absent_and_empty(self) -> None:
+        self.run_dir.mkdir()
+        (self.run_dir / "earlier.txt").write_text("kept\n", encoding="utf-8")
+        with unstatable(self.run_dir):
+            error, message, _ = self.refused()
+        self.assertIs(PermissionError, error)
+        self.assertIn("Permission denied", message)
+        self.assertEqual(["earlier.txt"], self.files())
+        self.assertEqual([], self.git.calls)
 
     def test_a_run_directory_that_is_not_empty_is_left_alone(self) -> None:
         self.run_dir.mkdir()

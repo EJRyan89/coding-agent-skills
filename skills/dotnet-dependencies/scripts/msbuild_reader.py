@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dotnet_solution
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
-from file_presence import is_directory
+from file_presence import is_directory, matching
 from folders_up import folders_up
 from msbuild_xml import local_name
 from xml_reader import XmlRefused, read_xml
@@ -305,7 +305,7 @@ def package_assemblies(package_dir: Path) -> tuple[str, ...]:
             return ()
     except OSError as error:
         raise Unreadable(lib, error.strerror or str(error)) from None
-    return tuple(sorted({path.stem for path in lib.rglob("*.dll")}, key=str.casefold))
+    return tuple(sorted({path.stem for path in matching(lib, "**/*.dll")}, key=str.casefold))
 
 
 def assets_assemblies(entry: dict[str, Any], path: Path, where: str) -> tuple[str, ...]:

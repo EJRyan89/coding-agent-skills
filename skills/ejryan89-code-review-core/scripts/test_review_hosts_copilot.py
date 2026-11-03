@@ -28,6 +28,7 @@ from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
 from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree, ended
+from test_review_archive import unstatable
 from test_review_io import LONE_SURROGATE, UNPARSEABLE_JSON
 
 HEAD = "b" * 40
@@ -1261,3 +1262,15 @@ class CopilotProcessTests(unittest.TestCase):
             )
             self.assertEqual(1, len(processes))
             self.assertIsNotNone(processes[0].returncode, "Copilot was ended and reaped before the refusal")
+
+
+class IsolationRootStatTests(unittest.TestCase):
+    def test_an_isolation_root_whose_stat_fails_is_refused_with_the_error_never_read_as_absent_and_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "isolation"
+            root.mkdir()
+            (root / "stale.txt").write_text("stale\n", encoding="utf-8")
+            with unstatable(root), self.assertRaises(PermissionError) as raised:
+                review_hosts.isolated_copilot_environment(root)
+            self.assertEqual(str(root), raised.exception.filename)
+            self.assertEqual(["stale.txt"], [path.name for path in root.iterdir()])

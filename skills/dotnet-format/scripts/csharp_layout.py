@@ -578,7 +578,7 @@ def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], 
     a file with a fix pending that `write_refusal` refuses is reported, checked, and left unfixed, so a refusal never
     stops the run part way."""
     names = inside_root(root, listed, emit)
-    missing = next((root / name for name in names if not (root / name).is_file()), None)
+    missing = next((root / name for name in names if not is_present(root / name, other_is_absent=True)), None)
     if missing is not None:
         raise Failed(f"{missing} does not exist")
     checked: list[tuple[str, str]] = []

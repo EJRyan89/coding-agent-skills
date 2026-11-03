@@ -109,6 +109,14 @@ UNQUOTABLE = frozenset('"$`\\')
 REVIEWED_FIELDS = ("number", "title", "base_ref", "head_ref")
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "output_root": "removes the folder it made, part way filled, before raising the failure that stopped it, which an "
+    "error of the removal must not replace",
+}
+
+
 class DocumentError(ValueError):
     pass
 

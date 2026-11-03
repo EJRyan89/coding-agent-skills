@@ -61,7 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import frontmatter
 import json_reader
 from console import run_main
-from file_presence import NotAFile, is_present
+from file_presence import NotAFile, is_directory, is_present, matching
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from markdown_sections import find_fences
@@ -311,7 +311,7 @@ def agent_of(path: str) -> str | None:
 
 def head_metadata(root: Path) -> dict[str, dict[str, object] | None]:
     """Every shipped skill's metadata in the working tree, by name, None for metadata that cannot be read."""
-    files = (root / METADATA).glob("*.json")
+    files = matching(root / METADATA, "*.json")
     return {path.stem: metadata_file(path) for path in files}
 
 
@@ -396,7 +396,7 @@ def needs_canary(tree: Tree, name: str, paths: set[str]) -> bool:
 def reviews(root: Path, name: str) -> bool:
     """Whether the skill has a review scenario: one whose scenario.json is not a trigger scenario's, an unreadable one
     counted, so the gate is owed rather than lost."""
-    for path in (root / SCENARIOS / name).glob("*/scenario.json"):
+    for path in matching(root / SCENARIOS / name, "*/scenario.json"):
         found = metadata_file(path)
         if found is None or found.get("mode") != TRIGGER_MODE:
             return True
@@ -436,7 +436,9 @@ def owed(tree: Tree, changed: Iterable[str]) -> Owed:
     canary = [
         name for name in present if touched[name] == SHIPPED and (name in declaring or needs_canary(tree, name, paths))
     ]
-    scenario_skills = sorted(path.name for path in (tree.root / SCENARIOS).glob("*") if path.is_dir())
+    scenario_skills = sorted(
+        path.name for path in matching(tree.root / SCENARIOS, "*") if is_directory(path, other_is_absent=True)
+    )
     evaluate = [
         name
         for name in scenario_skills

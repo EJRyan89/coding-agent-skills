@@ -68,6 +68,16 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 OWN_SCRIPTS = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/'
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "_remove_scaffold": "undoes a scaffold that failed; a folder it cannot look at is left in place, since an error "
+    "here would replace the failure being undone",
+    "scaffold_repository": "removes the folders this scaffold made, before raising the failure that stopped it, which "
+    "an error of the removal must not replace",
+}
+
+
 def default_allowed_tools(name: str) -> list[str]:
     """Both shells for the skill's script named after it, ending at the script's closing quote so no `..` path out
     of scripts/ matches, and the file-reading tool."""

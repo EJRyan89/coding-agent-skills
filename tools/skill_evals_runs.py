@@ -17,6 +17,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -372,7 +373,11 @@ def find_record(directory: Path, version: int) -> Record:
     """The record a run wrote: the latest record of the pull request under the canary roots in its temporary
     directory, which must be this review version. Raise RecordError when none is, saying what each pull request's
     latest record is instead, or when more than one is, since which is the run's own is then unknown."""
-    pulls = sorted(path for path in directory.glob("code-review-canary-*/*/*/pulls/*") if path.is_dir())
+    pulls = sorted(
+        path
+        for path in file_presence.matching(directory, "code-review-canary-*/*/*/pulls/*")
+        if file_presence.is_directory(path, other_is_absent=True)
+    )
     if not pulls:
         raise RecordError("the run recorded no review")
     latest = [latest_review(pull, version) for pull in pulls]

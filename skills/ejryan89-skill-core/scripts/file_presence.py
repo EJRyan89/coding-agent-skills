@@ -6,6 +6,9 @@ a regular file for no file at all, and reports the repository as having no such 
 `is_present` tells the three apart, and raises `NotAFile`, an `OSError`, for the third, so a reader that already turns
 an `OSError` from its read into its own refusal refuses this one alike. `is_directory` answers the same for a folder,
 raising `NotADirectory`, and `is_occupied` whether anything at all, a link to nothing included, is at a path.
+`matching` lists what a glob pattern matches below a folder, as `Path.glob` does, but raises for a folder it cannot
+list, where `Path.glob` matches nothing in it from Python 3.15 on, so a reader takes no unreadable folder for an empty
+one.
 
 A stat it cannot make is a fourth answer, that it could not tell, and reaches the caller as the `OSError` the stat
 raised: `Path.is_file`, `os.path.exists`, and `os.path.lexists` return False on every `OSError` from Python 3.14 on,
@@ -17,6 +20,8 @@ and `os.path.lexists` on a `ValueError` too, so none of them is called here. Onl
 from __future__ import annotations
 
 import errno
+import fnmatch
+import os
 import stat
 from pathlib import Path
 
@@ -95,3 +100,46 @@ def is_occupied(path: Path) -> bool:
     except ABSENT:
         return False
     return True
+
+
+def matching(folder: Path, pattern: str) -> list[Path]:
+    """The paths below `folder` a relative glob pattern matches, in path order, as `Path.glob` matches them: `*`, `?`,
+    and `[...]` within one name, in the case the platform reads names in, and a `**` part before another any depth of
+    folders, the folder itself included, without entering a symbolic link to a folder. Nothing when nothing is at
+    `folder`, `NotADirectory` when something else is, and the `OSError` of a folder it cannot list, where `Path.glob`
+    matches nothing in it from Python 3.15 on. A pattern that is empty, absolute, ends in `**`, whose matches differ
+    between Python versions, or holds an empty, `.`, or `..` part raises ValueError."""
+    parts = pattern.split("/")
+    if parts[-1] == "**" or any(part in ("", ".", "..") for part in parts):
+        raise ValueError(f"{pattern!r} is no relative glob pattern this reads")
+    if not is_directory(folder):
+        return []
+    found = [folder]
+    for index, part in enumerate(parts):
+        if part == "**":
+            found = [below for base in found for below in _folders_below(base)]
+            continue
+        last = index == len(parts) - 1
+        found = [
+            Path(entry.path)
+            for base in found
+            for entry in _entries(base)
+            if fnmatch.fnmatch(entry.name, part) and (last or entry.is_dir())
+        ]
+    return sorted(set(found))
+
+
+def _entries(folder: Path) -> list[os.DirEntry[str]]:
+    """What a folder holds; a folder it cannot list raises, and a DirEntry's kind test raises every error but "not
+    found"."""
+    with os.scandir(folder) as listing:
+        return list(listing)
+
+
+def _folders_below(folder: Path) -> list[Path]:
+    """A folder and every folder below it, entering no symbolic link to a folder."""
+    found = [folder]
+    for entry in _entries(folder):
+        if entry.is_dir(follow_symlinks=False):
+            found += _folders_below(Path(entry.path))
+    return found

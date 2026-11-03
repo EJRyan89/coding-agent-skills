@@ -76,6 +76,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from conditions import (
     DIFF_VARIABLE,
     FAILURE_STATUS,
@@ -516,9 +517,14 @@ def suites(root: Path) -> dict[str, str]:
     """Each suite the snapshot holds, by its repository path, and its text."""
     found: dict[str, str] = {}
     for suite_root in SUITE_ROOTS:
-        for path in root.glob(f"{suite_root}/**/*"):
+        for path in file_presence.matching(root, f"{suite_root}/**/*"):
             relative = path.relative_to(root).as_posix()
-            if relative.startswith(FIXTURES) or relative in found or not is_suite(relative) or not path.is_file():
+            if (
+                relative.startswith(FIXTURES)
+                or relative in found
+                or not is_suite(relative)
+                or not file_presence.is_present(path, other_is_absent=True)
+            ):
                 continue
             found[relative] = path.read_bytes().decode("utf-8", errors="replace")
     return dict(sorted(found.items()))
@@ -641,8 +647,16 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
     if not changes:
         return []
     excluded = snapshot_exclusions(root)
-    withheld = [change for change in changes if not change.head.is_file() and change.path in excluded]
-    absent = [change.path for change in changes if not change.head.is_file() and change.path not in excluded]
+    withheld = [
+        change
+        for change in changes
+        if not file_presence.is_present(change.head, other_is_absent=True) and change.path in excluded
+    ]
+    absent = [
+        change.path
+        for change in changes
+        if not file_presence.is_present(change.head, other_is_absent=True) and change.path not in excluded
+    ]
     if absent:
         raise MissingEvidence(f"the snapshot holds no {json.dumps(absent[0])}, which the diff leaves at the head")
     blocks = [excluded_entry(change, excluded[change.path]) for change in withheld]

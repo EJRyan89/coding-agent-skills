@@ -26,6 +26,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import file_presence
 from bounded_process import REPOSITORY_VARIABLES
 from call_tables import (
     EVENT_LOOP,
@@ -367,7 +368,10 @@ def type_check_skipped_problems(root: Path, files: list[Path]) -> list[str]:
 
 def imports_a_sibling(path: Path, tree: ast.Module) -> bool:
     """Whether the module imports, by its bare name, another module in its own directory."""
-    return any((path.parent / f"{found.module.split('.')[0]}.py").is_file() for found in module_imports(tree))
+    return any(
+        file_presence.is_present(path.parent / f"{found.module.split('.')[0]}.py", other_is_absent=True)
+        for found in module_imports(tree)
+    )
 
 
 def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
@@ -431,7 +435,7 @@ def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK
         for area in pinned
         if area not in areas
     ]
-    present = skill_roots | {top for top in TYPE_CHECK_ROOTS if (root / top).exists()}
+    present = skill_roots | {top for top in TYPE_CHECK_ROOTS if file_presence.is_occupied(root / top)}
     problems += [
         f"pyproject.toml: [tool.validation] mypy-strict lacks {area}, a type-check root; every root is checked in "
         "strict mode, so list it and fix the errors strict mode reports there"
@@ -731,6 +735,272 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
             if isinstance(node, ast.expr) and (test := _link_test(node, aliases))
         ]
         problems += sanctioned_problems(name, tree, LINK_TEST_ALLOWANCE, found)
+    return problems
+
+
+# ejryan89-skill-core's file_presence is the one reader of whether a path a reader may find absent is there, and of
+# what a folder holds, and lets a stat or a listing that fails through, where every presence predicate returns False on
+# an OSError from Python 3.14 on and Path.glob matches nothing in a folder it cannot list from 3.15 on. A predicate
+# whose False is itself the answer reads a path it could not stat as nothing there: `if not p.is_file(): return None`,
+# `if not p.is_dir(): continue`, `while not p.is_dir(): p = p.parent`, `v if p.exists() else []`, `return p.exists()`,
+# `[e for e in es if e.is_file()]`, `filter(os.path.isfile, es)`, or `p.exists() and any(p.iterdir())`, a name bound
+# only to a predicate's answer included. So does a glob, an os.walk that ignores the folders it cannot list, and a
+# removal that discards its errors. Any such site outside file_presence and link_probe states why in a module-level
+# PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
+PRESENCE_PREDICATES = frozenset(
+    {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
+)
+PRESENCE_FUNCTIONS = frozenset(
+    {"os.path.exists", "os.path.lexists", "os.path.isfile", "os.path.isdir", "os.path.ismount", "os.access"}
+)
+PRESENCE_HOMES = frozenset({"skills/ejryan89-skill-core/scripts/file_presence.py", LINK_PROBE})
+PRESENCE_ALLOWANCE = "PRESENCE_ALLOWED"
+# The listings that raise for a folder they cannot list, which a presence test before them in an `and` passes by.
+LISTING_METHODS = frozenset({"iterdir", "scandir", "listdir"})
+LISTING_FUNCTIONS = frozenset({"os.scandir", "os.listdir", "os.walk", "os.fwalk"})
+# The listings that match nothing in a folder they cannot list: a path's glob and rglob, and the glob module's.
+GLOB_METHODS = frozenset({"glob", "rglob"})
+GLOB_FUNCTIONS = frozenset({"glob.glob", "glob.iglob"})
+# The walks whose onerror, at this position or by keyword, is None unless given, so a folder they cannot list is passed
+# by.
+WALKS = {"os.walk": 2, "os.fwalk": 2}
+# The removals that discard every error when given this flag, at this position or by keyword.
+DISCARDING_REMOVALS = {
+    "shutil.rmtree": (1, "ignore_errors"),
+    "tempfile.TemporaryDirectory": (3, "ignore_cleanup_errors"),
+}
+# The calls that hand each item of an iterable to a predicate they are given, as a comprehension's filter does.
+FILTERS = frozenset({"filter", "itertools.filterfalse"})
+EMPTY_CALLS = frozenset({"set", "frozenset", "dict", "list", "tuple", "str"})
+
+
+@dataclass(frozen=True)
+class _PresenceReader:
+    """How one scope of a module reads presence: through the module's imports, and through the names the scope binds
+    only to a presence predicate's answer."""
+
+    aliases: dict[str, str]
+    names: Mapping[str, str]
+
+    def call(self, node: ast.expr) -> str | None:
+        """The presence predicate whose answer an expression is, as `is_file` or `os.path.lexists`, or None."""
+        if isinstance(node, ast.NamedExpr):
+            return self.call(node.value)
+        if isinstance(node, ast.Name):
+            return self.names.get(node.id)
+        return self.reference(node.func) if isinstance(node, ast.Call) else None
+
+    def reference(self, node: ast.expr) -> str | None:
+        """The presence predicate an expression names, called or not: `p.is_file`, `Path.exists`, or `os.path.isdir`."""
+        named = qualified_name(node, self.aliases)
+        if named in PRESENCE_FUNCTIONS:
+            return named
+        if isinstance(node, ast.Attribute) and node.attr in PRESENCE_PREDICATES:
+            return node.attr
+        return None
+
+    def negated(self, test: ast.expr) -> str | None:
+        """The predicate a test reads as absent: `not P`, or `not P` as an operand of an `or`."""
+        if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            return self.call(test.operand)
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
+            return next((found for value in test.values if (found := self.negated(value))), None)
+        return None
+
+    def affirmed(self, test: ast.expr) -> str | None:
+        """The predicate a test must find true: `P`, or `P` as an operand of an `and`."""
+        if found := self.call(test):
+            return found
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            return next((found for value in test.values if (found := self.affirmed(value))), None)
+        return None
+
+    def truth(self, node: ast.expr) -> str | None:
+        """The predicate an expression's truth turns on: `P`, `not P`, or either as an operand of an `and` or an `or`,
+        at any depth."""
+        if found := self.call(node):
+            return found
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return self.truth(node.operand)
+        if isinstance(node, ast.BoolOp):
+            return next((found for value in node.values if (found := self.truth(value))), None)
+        return None
+
+    def lists_a_folder(self, node: ast.expr) -> bool:
+        """Whether an expression holds a listing of a folder anywhere in it, as `any(p.iterdir())` does."""
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call):
+                method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
+                if method in LISTING_METHODS | GLOB_METHODS or qualified_name(call.func, self.aliases) in (
+                    LISTING_FUNCTIONS | GLOB_FUNCTIONS
+                ):
+                    return True
+        return False
+
+    def answer(self, node: ast.AST) -> str | None:
+        """The predicate whose False an if, a while, a conditional expression, a return, a lambda, a comprehension, a
+        filter, or an `and` before a listing gives as the answer, or None."""
+        if isinstance(node, (ast.If, ast.IfExp)):
+            return self.branch(node)
+        if isinstance(node, ast.While):
+            return self.negated(node.test)
+        if isinstance(node, (ast.Return, ast.Lambda)):
+            value = node.body if isinstance(node, ast.Lambda) else node.value
+            return None if value is None else self.truth(value)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            tests = [test for generator in node.generators for test in generator.ifs]
+            if not isinstance(node, ast.DictComp):
+                tests.insert(0, node.elt)
+            return next((found for test in tests if (found := self.truth(test))), None)
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            for index, value in enumerate(node.values):
+                if (found := self.call(value)) and any(
+                    self.lists_a_folder(later) for later in node.values[index + 1 :]
+                ):
+                    return found
+            return None
+        if isinstance(node, ast.Call) and qualified_name(node.func, self.aliases) in FILTERS and node.args:
+            return self.reference(node.args[0])
+        return None
+
+    def branch(self, node: ast.If | ast.IfExp) -> str | None:
+        """The predicate whose False an if or a conditional expression answers with an empty value or a `continue`."""
+        if isinstance(node, ast.If):
+            if (found := self.negated(node.test)) and _empty_branch(node.body):
+                return found
+            return found if (found := self.affirmed(node.test)) and _empty_branch(node.orelse) else None
+        if (found := self.affirmed(node.test)) and _empty(node.orelse):
+            return found
+        return found if (found := self.negated(node.test)) and _empty(node.body) else None
+
+
+def _empty(node: ast.expr | None) -> bool:
+    """Whether an expression is an empty answer: nothing, None, False, zero, an empty string, or an empty container."""
+    if node is None:
+        return True
+    if isinstance(node, ast.Constant):
+        return (
+            node.value is None
+            or node.value is False
+            or node.value in ("", b"")
+            or (type(node.value) is int and node.value == 0)
+        )
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return not node.elts
+    if isinstance(node, ast.Dict):
+        return not node.keys
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in EMPTY_CALLS
+        and not node.args
+        and not node.keywords
+    )
+
+
+def _empty_branch(body: list[ast.stmt]) -> bool:
+    """Whether a branch is only an empty answer: a return of one, or a continue past the item at hand."""
+    if len(body) != 1:
+        return False
+    statement = body[0]
+    if isinstance(statement, ast.Return):
+        return _empty(statement.value)
+    return isinstance(statement, ast.Continue)
+
+
+def _bound_answers(tree: ast.Module, aliases: dict[str, str]) -> dict[str, dict[str, str]]:
+    """Each scope's names that every binding in the scope sets to one presence predicate's answer, by an assignment, an
+    annotated assignment, or an assignment expression, with that predicate; a name bound any other way, or as a
+    parameter, is none."""
+    plain = _PresenceReader(aliases, {})
+    answers: dict[int, str | None] = {}
+    for node, _ in scoped_nodes(tree.body):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            answers[id(node.targets[0])] = plain.call(node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+            answers[id(node.target)] = plain.call(node.value)
+    seen: dict[str, dict[str, str | None]] = {}
+    for node, scope in scoped_nodes(tree.body):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            name, answer = node.id, answers.get(id(node))
+        elif isinstance(node, ast.arg):
+            name, answer = node.arg, None
+        else:
+            continue
+        names = seen.setdefault(scope, {})
+        names[name] = answer if names.get(name, answer) == answer else None
+    return {scope: {name: found for name, found in names.items() if found} for scope, names in seen.items()}
+
+
+def _flag_given(node: ast.expr | None) -> bool:
+    """Whether an argument may be true: given, and not the constant False, None, or zero."""
+    return node is not None and not (isinstance(node, ast.Constant) and not node.value)
+
+
+def _listing_answer(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    """How a call lists or removes a folder so that one it cannot list or remove reads as empty or gone, or None."""
+    if not isinstance(node, ast.Call):
+        return None
+    named = qualified_name(node.func, aliases)
+    method = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+    if named in GLOB_FUNCTIONS or method in GLOB_METHODS:
+        return (
+            f"lists a folder with {named if named in GLOB_FUNCTIONS else method}, which matches nothing in a folder it "
+            "cannot list; call ejryan89-skill-core's file_presence.matching, which raises there, or list it with "
+            "iterdir or an os.walk whose onerror raises"
+        )
+    if named in WALKS:
+        onerror = call_argument(node, WALKS[named], "onerror")
+        # An unpacking may not hold one, so it shows no onerror.
+        if (
+            onerror is None
+            or isinstance(onerror, ast.Starred)
+            or (isinstance(onerror, ast.Constant) and onerror.value is None)
+        ):
+            return (
+                f"walks a folder with {named} and no onerror, which passes by a folder it cannot list; give it an "
+                "onerror that raises"
+            )
+    if named in DISCARDING_REMOVALS:
+        position, keyword = DISCARDING_REMOVALS[named]
+        if _flag_given(call_argument(node, position, keyword)):
+            return (
+                f"removes a folder with {named} given {keyword}, which reads one it could not remove as gone; let "
+                "the error through"
+            )
+    return None
+
+
+def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tuple[ast.AST, str, str]]:
+    """Each node where a failed stat, listing, or removal is read as nothing there, with its scope and its refusal."""
+    bound = _bound_answers(tree, aliases)
+    readers: dict[str, _PresenceReader] = {}
+    for node, scope in scoped_nodes(tree.body):
+        reader = readers.setdefault(scope, _PresenceReader(aliases, bound.get(scope, {})))
+        if predicate := reader.answer(node):
+            yield (
+                node,
+                scope,
+                f"reads {predicate}'s False as nothing there, which it also answers for a path it cannot stat; call "
+                "ejryan89-skill-core's file_presence (is_present, is_directory, or is_occupied), which lets a failed "
+                "stat through",
+            )
+        elif listing := _listing_answer(node, aliases):
+            yield node, scope, listing
+
+
+def presence_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each presence predicate, glob, walk, or removal outside file_presence and link_probe that reads a path it
+    cannot stat, list, or remove as nothing there, and that no PRESENCE_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    paths = [path for path in claim_files(root, files) if path.relative_to(root).as_posix() not in PRESENCE_HOMES]
+    for _, name, tree in python_trees(paths, root, problems):
+        aliases = import_aliases(tree)
+        found = [
+            (getattr(node, "lineno", 0), scope, f"{refusal}, or state why in {PRESENCE_ALLOWANCE}")
+            for node, scope, refusal in _presence_answers(tree, aliases)
+        ]
+        problems += sanctioned_problems(name, tree, PRESENCE_ALLOWANCE, found)
     return problems
 
 
@@ -2709,7 +2979,7 @@ def mypy_cache_directory(root: Path, cwd: Path, targets: list[str], *, strict: b
 
 def type_check_skill_roots(root: Path = REPOSITORY_ROOT) -> list[Path]:
     """The scripts directory of each shipped or repository skill that holds a Python module or regression suite."""
-    return [scripts for scripts in skill_script_directories(root) if any(scripts.glob("*.py"))]
+    return [scripts for scripts in skill_script_directories(root) if any(file_presence.matching(scripts, "*.py"))]
 
 
 def type_check_jobs() -> list[Job]:
@@ -2854,6 +3124,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_link_probe_is_the_one_link_test(self) -> None:
         self.assertEqual([], link_test_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_file_presence_is_the_one_reader_of_absence(self) -> None:
+        self.assertEqual([], presence_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_claim_policies_read_every_module_their_rules_speak_of(self) -> None:
         modules = formatted_modules(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))

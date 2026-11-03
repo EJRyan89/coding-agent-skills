@@ -83,6 +83,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import frontmatter
 import guidance_record
 import json_reader
@@ -214,7 +215,7 @@ def python_files(top: Path) -> list[Path]:
     files: list[Path] = []
     for root in PYTHON_ROOTS:
         path = top / root
-        found = [path] if path.is_file() else sorted(path.rglob("*.py"))
+        found = [path] if path.is_file() else file_presence.matching(path, "**/*.py")
         files += [file for file in found if not is_suite_name(file.name) and "fixtures" not in file.parts]
     return files
 
@@ -296,7 +297,7 @@ def variable_terms(top: Path) -> list[Term]:
     for tree in trees:
         names |= module_variables(tree, {**constants, **module_constants(tree)})
     for pattern in MARKDOWN_GLOBS:
-        for path in top.glob(pattern):
+        for path in file_presence.matching(top, pattern):
             try:
                 names.update(PLACEHOLDER.findall(path.read_bytes().decode("utf-8")))
             except (OSError, UnicodeDecodeError) as exc:
@@ -322,7 +323,7 @@ def path_terms(top: Path) -> list[Term]:
 def frontmatter_terms(top: Path) -> list[Term]:
     """Each key of a skill's or agent's frontmatter, and of the Codex metadata the deployer writes."""
     keys = set(YAML_KEY.findall(CODEX_USER_ONLY.decode("utf-8")))
-    for path in [*sorted(top.glob("skills/*/SKILL.md")), *sorted(top.glob("agents/*.md"))]:
+    for path in [*file_presence.matching(top, "skills/*/SKILL.md"), *file_presence.matching(top, "agents/*.md")]:
         try:
             keys.update(frontmatter.read(path).keys())
         except (OSError, frontmatter.FrontmatterError) as exc:

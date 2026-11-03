@@ -19,6 +19,7 @@ from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 from markdown_sections import CODE_SPAN as CODE_SPAN
 from markdown_sections import COMMONMARK_CODE_SPAN as COMMONMARK_CODE_SPAN
@@ -733,7 +734,11 @@ def repository_files(root: Path) -> list[Path]:
     Raises ReleaseNotesError naming the command when git cannot run or cannot list them.
     """
     listed = git_output(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-    return [root / name for name in listed.split("\0") if name and (root / name).is_file()]
+    return [
+        root / name
+        for name in listed.split("\0")
+        if name and file_presence.is_present(root / name, other_is_absent=True)
+    ]
 
 
 # ejryan89-skill-core's lookup of a sibling skill's scripts directory, which a script puts on sys.path after the line
@@ -864,7 +869,7 @@ def skill_dependency_closure(root: Path, skill: str) -> list[str]:
     The menu is read from deploy-meta alone, since a policy's fixture tree may hold no source.json, and a dependency
     with no metadata of its own is reached and depends on nothing; the metadata policies report both."""
     menu = SourceMenu("")
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         declared = json_reader.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", [])
         menu.skills[metadata.stem] = MenuEntry(skill_deps=tuple(declared))
     for entry in list(menu.skills.values()):
@@ -925,7 +930,7 @@ def skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     """Each shipped skill's directory: skills/<name>, holding SKILL.md.
     skill_tree_problems reports any other directory under skills/."""
     skills = root / "skills"
-    found = (path.parent for path in skills.glob("*/SKILL.md"))
+    found = (path.parent for path in file_presence.matching(skills, "*/SKILL.md"))
     return sorted(found, key=lambda path: path.relative_to(skills).as_posix().casefold())
 
 
@@ -937,7 +942,10 @@ def skills_by_name(root: Path = REPOSITORY_ROOT) -> dict[str, Path]:
 
 def repository_skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     """Each repository skill's directory under .claude/skills, which validation holds as it holds a shipped skill."""
-    return sorted((path.parent for path in (root / REPOSITORY_SKILLS).glob("*/SKILL.md")), key=lambda path: path.name)
+    return sorted(
+        (path.parent for path in file_presence.matching(root / REPOSITORY_SKILLS, "*/SKILL.md")),
+        key=lambda path: path.name,
+    )
 
 
 def all_skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
@@ -947,7 +955,11 @@ def all_skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
 
 def skill_script_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     """The scripts/ directory of every shipped and repository skill that has one."""
-    return [skill / "scripts" for skill in all_skill_directories(root) if (skill / "scripts").is_dir()]
+    return [
+        skill / "scripts"
+        for skill in all_skill_directories(root)
+        if file_presence.is_directory(skill / "scripts", other_is_absent=True)
+    ]
 
 
 def write_fixture_tree(root: Path, files: Mapping[str, str]) -> None:

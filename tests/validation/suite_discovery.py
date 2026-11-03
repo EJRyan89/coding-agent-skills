@@ -20,6 +20,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import TypeGuard
 
+import file_presence
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from module_closure import MODULE_LOADERS
@@ -191,9 +192,11 @@ def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
     found = (
         path
         for top in roots
-        if top.is_dir()
-        for path in top.rglob("*")
-        if path.is_file() and is_test_script(path) and not within(path, root / FIXTURE_ROOT)
+        if file_presence.is_directory(top, other_is_absent=True)
+        for path in file_presence.matching(top, "**/*")
+        if file_presence.is_present(path, other_is_absent=True)
+        and is_test_script(path)
+        and not within(path, root / FIXTURE_ROOT)
     )
     return sorted(found, key=lambda path: path.relative_to(root).as_posix().casefold())
 
@@ -925,10 +928,14 @@ def pipe_race_problems(root: Path) -> list[str]:
 def suite_python_modules(root: Path) -> list[Path]:
     """The Python the regression suites run: the root conftest.py, every module under tests/ outside tests/fixtures/,
     and each Python suite under a skill's scripts/."""
-    found = {root / CONFTEST} if (root / CONFTEST).is_file() else set()
+    found = {root / CONFTEST} if file_presence.is_present(root / CONFTEST) else set()
     tests = root / "tests"
     if tests.is_dir():
-        found |= {path for path in tests.rglob("*.py") if path.is_file() and not within(path, root / FIXTURE_ROOT)}
+        found |= {
+            path
+            for path in file_presence.matching(tests, "**/*.py")
+            if file_presence.is_present(path, other_is_absent=True) and not within(path, root / FIXTURE_ROOT)
+        }
     found |= {path for path in regression_suites(root) if path.suffix.casefold() == ".py"}
     return sorted(found, key=lambda path: path.relative_to(root).as_posix().casefold())
 
@@ -963,7 +970,11 @@ def unsuited_script_problems(root: Path) -> list[str]:
     """Report a shipped or repository skill whose scripts/ holds executable files but no regression suite."""
     problems: list[str] = []
     for scripts in skill_script_directories(root):
-        files = sorted(path for path in scripts.rglob("*") if path.is_file())
+        files = sorted(
+            path
+            for path in file_presence.matching(scripts, "**/*")
+            if file_presence.is_present(path, other_is_absent=True)
+        )
         if any(is_executable_script(path) and not is_test_script(path) for path in files) and not any(
             is_test_script(path) for path in files
         ):
@@ -999,7 +1010,9 @@ class RepositoryModules:
     def __init__(self, root: Path) -> None:
         self.root = root
         pyproject = root / "pyproject.toml"
-        configuration = tomllib.loads(pyproject.read_text(encoding="utf-8")) if pyproject.is_file() else {}
+        configuration = (
+            tomllib.loads(pyproject.read_text(encoding="utf-8")) if file_presence.is_present(pyproject) else {}
+        )
         entries = configuration.get("tool", {}).get("mypy", {}).get("mypy_path", [])
         self.path_directories = [root / entry.removeprefix(MYPY_PATH_PREFIX) for entry in entries]
         self._sources: dict[Path, str] = {}
@@ -1086,11 +1099,15 @@ class RepositoryModules:
             if not tail or not str(tail[-1]).endswith(".py"):
                 continue
             ending = "/".join(str(part) for part in tail)
-            candidates = [base / ending for base in (path.parent, self.root) if (base / ending).is_file()][:1]
+            candidates = [
+                base / ending
+                for base in (path.parent, self.root)
+                if file_presence.is_present(base / ending, other_is_absent=True)
+            ][:1]
             if not candidates:
                 candidates = [
                     file
-                    for file in self.root.rglob(str(tail[-1]))
+                    for file in file_presence.matching(self.root, f"**/{tail[-1]}")
                     if f"/{file.relative_to(self.root).as_posix()}".endswith(f"/{ending}")
                 ]
             if not unique or len(candidates) == 1:
@@ -1172,8 +1189,8 @@ def _suite_python_files(root: Path) -> list[Path]:
     return sorted(
         path
         for top in tops
-        if top.is_dir()
-        for path in top.rglob("*.py")
+        if file_presence.is_directory(top, other_is_absent=True)
+        for path in file_presence.matching(top, "**/*.py")
         if not within(path, root / FIXTURE_ROOT) and "__pycache__" not in path.parts
     )
 
@@ -1222,7 +1239,7 @@ def git_isolation_problems(root: Path) -> list[str]:
     """
     problems: list[str] = []
     conftest = root / CONFTEST
-    trees = list(python_trees([conftest] if conftest.is_file() else [], root, problems))
+    trees = list(python_trees([conftest] if file_presence.is_present(conftest) else [], root, problems))
     if not trees:
         problems.append(f"{CONFTEST} is missing; its autouse fixtures isolate git for every Python suite")
     for _, name, tree in trees:
@@ -1264,14 +1281,20 @@ def pytest_configuration_problems(root: Path) -> list[str]:
         f"{name} is a pytest configuration file beside pyproject.toml; keep the configuration in "
         "[tool.pytest.ini_options] alone"
         for name in PYTEST_CONFIGURATION_FILES
-        if name != "pyproject.toml" and (root / name).is_file()
+        if name != "pyproject.toml" and file_presence.is_present(root / name, other_is_absent=True)
     ]
     below: dict[Path, Path] = {}
     for suite in regression_suites(root):
         for folder in suite.parents:
             if folder == root:
                 break
-            below.update({folder / name: suite for name in PYTEST_CONFIGURATION_FILES if (folder / name).is_file()})
+            below.update(
+                {
+                    folder / name: suite
+                    for name in PYTEST_CONFIGURATION_FILES
+                    if file_presence.is_present(folder / name, other_is_absent=True)
+                }
+            )
     problems += [
         f"{path.relative_to(root).as_posix()} is a pytest configuration file pytest reads for "
         f"{suite.relative_to(root).as_posix()} instead of the root's pyproject.toml; keep the configuration there"

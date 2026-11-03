@@ -24,6 +24,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_writer
 from bounded_process import non_interactive_environment, run_bounded
 from diff_paths import HUNK_HEADER, DiffPathError, header_path, unquote
@@ -1320,7 +1321,7 @@ def _verified_snapshot(request: dict[str, Any], snapshot: dict[str, Any] | None)
 
 def _read_changes(request: dict[str, Any], work: Path) -> dict[str, dict[str, Any]]:
     """The parsed diff, read once the work directory is known to be empty and is made."""
-    if work.exists() and any(work.iterdir()):
+    if file_presence.is_directory(work) and any(work.iterdir()):
         raise SpecialistError("Work directory must be empty")
     work.mkdir(parents=True, exist_ok=True)
     diff = parse_unified_diff(read_diff(Path(request["diff_path"])))

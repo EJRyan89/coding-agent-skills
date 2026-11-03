@@ -111,6 +111,14 @@ _End = Callable[[str], None]
 _Text = Callable[[str], None]
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "_pdftotext": "a throwaway folder under the temporary directory holding a copy of the PDF; nothing reads it after "
+    "the extraction",
+}
+
+
 class ExtractionRefused(ValueError):
     """A document whose text is not extracted, with the reason, which names no part of its content."""
 

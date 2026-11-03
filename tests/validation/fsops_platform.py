@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
+import file_presence
 from call_tables import TEXT_OPENERS
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
@@ -216,10 +217,13 @@ PLATFORM_POLICY_MODULE = "tests/validation/fsops_platform.py"
 def _platform_scanned_files(root: Path) -> list[Path]:
     """The code that runs on a user's machine or runs validation, other than platform_support itself."""
     files = [root / "deploy.py", root / "tests" / "run_validation.py", root / "conftest.py"]
-    files += [*(root / "tests" / "validation").glob("*.py")]
-    files += [*(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
+    files += [*file_presence.matching(root / "tests" / "validation", "*.py")]
+    files += [*file_presence.matching(root / "deployer", "**/*.py"), *file_presence.matching(root / "tools", "**/*.py")]
     return [
-        path for path in files if path.is_file() and path.relative_to(root).as_posix() != "deployer/platform_support.py"
+        path
+        for path in files
+        if file_presence.is_present(path, other_is_absent=True)
+        and path.relative_to(root).as_posix() != "deployer/platform_support.py"
     ]
 
 
@@ -582,8 +586,13 @@ READ_FLAGS = frozenset({"os.O_RDONLY", "os.O_BINARY", "os.O_TEXT", "os.O_NOINHER
 
 def _writes_scanned_files(root: Path) -> list[Path]:
     """The deployer's code, other than fsops itself."""
-    files = [root / "deploy.py", *(root / "deployer").rglob("*.py")]
-    return [path for path in files if path.is_file() and path.relative_to(root).as_posix() != "deployer/fsops.py"]
+    files = [root / "deploy.py", *file_presence.matching(root / "deployer", "**/*.py")]
+    return [
+        path
+        for path in files
+        if file_presence.is_present(path, other_is_absent=True)
+        and path.relative_to(root).as_posix() != "deployer/fsops.py"
+    ]
 
 
 def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:

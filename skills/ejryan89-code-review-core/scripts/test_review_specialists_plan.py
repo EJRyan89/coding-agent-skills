@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import review_specialists as rs
 from review_runtime import RuntimeContractError
+from test_review_archive import unstatable
 
 CORE = Path(__file__).resolve().parents[1]
 REPOSITORY = "example/one"
@@ -1507,3 +1508,15 @@ class LinkTests(PlanFixture):
         self.assertEqual(
             prompt("tools-review", ["tools/cache"], ["db/Procs.sql", "new-link"]), self.text("tools-review.prompt.md")
         )
+
+
+class WorkDirectoryStatTests(unittest.TestCase):
+    def test_a_work_directory_whose_stat_fails_is_refused_with_the_error_never_read_as_absent_and_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary) / "work"
+            work.mkdir()
+            (work / "stale.txt").write_text("stale\n", encoding="utf-8")
+            with unstatable(work), self.assertRaises(PermissionError) as raised:
+                rs._read_changes({"diff_path": str(Path(temporary) / "diff.patch")}, work)
+            self.assertEqual(str(work), raised.exception.filename)
+            self.assertEqual(["stale.txt"], [path.name for path in work.iterdir()])

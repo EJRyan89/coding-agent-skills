@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import file_presence
 from validation_support import (
     COMMONMARK_CODE_SPAN,
     OPERATIONS_CONTRACT,
@@ -185,7 +186,7 @@ class _TestIndex:
         """Where a document's cited suite is, as the citation's message names it, and the files there."""
         if "/" in suite or document in BARE_SUITE_HOMES:
             location = suite if "/" in suite else f"{BARE_SUITE_HOMES[document]}/{suite}"
-            return location, [self.root / location] if (self.root / location).is_file() else []
+            return location, [self.root / location] if file_presence.is_present(self.root / location) else []
         return f"any file named {suite}", [path for path in self.python if path.name == suite]
 
     def defined_anywhere(self, name: str) -> bool:
@@ -305,12 +306,20 @@ def _use_problem(root: Path, span: str) -> str | None:
         return f"names {span}, which is not a module and a name, <module>:<name> or <module>:<class>.<name>"
     module, name, member = use.groups()
     parts = module.split(".")
-    bases = [root, *sorted((*root.glob("skills/*/scripts"), *root.glob(".claude/skills/*/scripts")))]
+    bases = [
+        root,
+        *sorted(
+            (
+                *file_presence.matching(root, "skills/*/scripts"),
+                *file_presence.matching(root, ".claude/skills/*/scripts"),
+            )
+        ),
+    ]
     found = [
         candidate
         for base in bases
         for candidate in (base / Path(*parts[:-1]) / f"{parts[-1]}.py", base / Path(*parts) / "__init__.py")
-        if candidate.is_file()
+        if file_presence.is_present(candidate, other_is_absent=True)
     ]
     if not found:
         return f"uses {span}, but no module {module} is importable from the repository root or a skill's scripts"

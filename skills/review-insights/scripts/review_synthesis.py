@@ -158,6 +158,16 @@ PROBLEMS_SHOWN = 20
 MAXIMUM_BYTES = 64 * 1024 * 1024
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "Staged.discard_run": "removes the throwaway run folder it staged under the temporary directory for a report that "
+    "is not written; nothing reads it after",
+    "remove_run": "removes the throwaway run folder of a synthesis whose result is already recorded; nothing reads it "
+    "after",
+}
+
+
 class SynthesisError(ValueError):
     """A result that cannot be recorded, with every problem found."""
 

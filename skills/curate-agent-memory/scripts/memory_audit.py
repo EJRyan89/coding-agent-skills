@@ -104,7 +104,7 @@ import json_writer
 from atomic_file import replace_text
 from console import run_main
 from executable_locator import environment_path
-from file_presence import is_directory, is_present
+from file_presence import is_directory, is_present, matching
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
@@ -211,6 +211,14 @@ DESTINATION_GLOBS = (
 )
 USER_DESTINATION_GLOBS = ("CLAUDE.md", "rules/**/*.md")
 SKIPPED_DIRECTORIES = frozenset({".git", "node_modules", "bin", "obj", ".venv", "venv", "__pycache__", "packages"})
+
+
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "cited_paths": "a cited path it cannot stat is reported as not found, a finding the user reviews and approves "
+    "before any memory changes, never a pass",
+}
 
 
 @dataclass
@@ -419,7 +427,7 @@ def memory_entries(memory_dir: Path) -> tuple[list[Path], list[tuple[str, str]]]
     index_identity = target_identity(memory_dir, INDEX_NAME)
     files: list[Path] = []
     others: list[tuple[str, str]] = []
-    for path in sorted(memory_dir.glob("*.md")):
+    for path in matching(memory_dir, "*.md"):
         if target_identity(memory_dir, path.name) == index_identity:
             continue
         problem = entry_problem(path)
@@ -513,7 +521,7 @@ def destination_files(repo: Path | None, instructions: list[Path], user_dir: Pat
         if root is None:
             continue
         for pattern in patterns:
-            found = root.glob(pattern) if "*" in pattern else [root / pattern]
+            found = matching(root, pattern) if "*" in pattern else [root / pattern]
             files.extend(
                 path
                 for path in found

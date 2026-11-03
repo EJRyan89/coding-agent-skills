@@ -623,7 +623,7 @@ def _prepare_run(
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
     run = (Path(tempfile.mkdtemp(prefix=RUN_PREFIX)) if run_directory is None else run_directory).resolve()
-    if run.exists() and any(run.iterdir()):
+    if file_presence.is_directory(run) and any(run.iterdir()):
         raise PipelineError(f"Run directory must be empty: {run}")
     try:
         run.mkdir(parents=True, exist_ok=True)

@@ -30,6 +30,16 @@ LOOKUP_VARIABLES = ("PATH", "PATHEXT", "LOCALAPPDATA")
 Found = dict[tuple[str | None, ...], str]
 
 
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "path_programs": "searches as shutil.which does, passing over a candidate it cannot stat for the next one; a "
+    "command with no candidate it can run is reported missing, never run",
+    "find_executables": "searches as shutil.which does, passing over a candidate it cannot stat for the next one; a "
+    "command with no candidate it can run is reported missing, never run",
+}
+
+
 def environment_path(variable: str) -> Path | None:
     """The absolute path the environment variable `variable` names, or None when it is unset, empty, or not an
     absolute path, a drive-relative `C:bin` or a rooted `\\bin` on Windows included, so a caller that looks a program

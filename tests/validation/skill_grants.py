@@ -10,6 +10,7 @@ import sys
 import unittest
 from pathlib import Path
 
+import file_presence
 import frontmatter
 from skill_layout import embedded_program_problems, output_placeholder_problems
 from skill_roots import sibling_scripts
@@ -53,13 +54,17 @@ GRANT_TEXT = re.compile(r"[A-Za-z_][\w-]*(?:\(.*\))?", re.DOTALL)
 def shipped_skill_files(root: Path) -> list[Path]:
     """Each shipped skill's SKILL.md: a skill directory with deploy-meta."""
     skills = skills_by_name(root)
-    found = (skills[metadata.stem] for metadata in (root / "deploy-meta").glob("*.json") if metadata.stem in skills)
+    found = (
+        skills[metadata.stem]
+        for metadata in file_presence.matching(root / "deploy-meta", "*.json")
+        if metadata.stem in skills
+    )
     return sorted((directory / "SKILL.md" for directory in found), key=lambda path: path.parent.name)
 
 
 def repository_skill_files(root: Path) -> list[Path]:
     """Each repository skill's SKILL.md under .claude/skills, which the shipped-skill policies hold too."""
-    return sorted((root / REPOSITORY_SKILLS).glob("*/SKILL.md"), key=lambda path: path.parent.name)
+    return sorted(file_presence.matching(root / REPOSITORY_SKILLS, "*/SKILL.md"), key=lambda path: path.parent.name)
 
 
 def skill_grant_problems(
@@ -246,7 +251,7 @@ def tool_grant_problems(root: Path) -> list[str]:
     holds a *.
     """
     problems: list[str] = []
-    for _, name, tree in python_trees(sorted((root / "tools").rglob("*.py")), root, problems):
+    for _, name, tree in python_trees(file_presence.matching(root / "tools", "**/*.py"), root, problems):
         functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
         for display in ast.walk(tree):
             if not isinstance(display, ast.List | ast.Tuple):
@@ -280,7 +285,7 @@ def root_option_problems(root: Path, skill_files: list[Path]) -> list[str]:
         document = frontmatter.Frontmatter(found[0] if found else [])
         for tool, pattern in skill_inventory.allowed_entries(document.value("allowed-tools")):
             match = GRANTED_TOOL.match(pattern or "")
-            if pattern is None or "*" not in pattern or match is None or not (root / match[1]).is_file():
+            if pattern is None or "*" not in pattern or match is None or not file_presence.is_present(root / match[1]):
                 continue
             if unbounded_root_option(root / match[1]):
                 problems.append(
@@ -322,7 +327,12 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
     """
     declaration = skill_inventory.REPOSITORY_CODE_DECLARATION
     problems: list[str] = []
-    scripts = sorted([*(root / "skills").rglob("*.py"), *(root / REPOSITORY_SKILLS).rglob("*.py")])
+    scripts = sorted(
+        [
+            *file_presence.matching(root / "skills", "**/*.py"),
+            *file_presence.matching(root / REPOSITORY_SKILLS, "**/*.py"),
+        ]
+    )
     for script, name, tree in python_trees(scripts, root, problems):
         assigned = [
             node

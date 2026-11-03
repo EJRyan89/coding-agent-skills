@@ -87,6 +87,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import file_presence
 from atomic_file import replace_text
 from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
@@ -123,6 +124,14 @@ FINDING_KEYS = ("CONFLICT", "REDIRECT_STALE", "UNREADABLE")
 NO_FRAMEWORK = "-"
 Hop = tuple[str, str, str]  # kind (package, project, assembly, framework), name, version or ""
 Row = tuple[str, ...]
+
+
+# The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
+# each with why that is the answer it should give.
+PRESENCE_ALLOWED = {
+    "write_graph": "removes the folder it made, part way filled, before raising the failure that stopped it, which an "
+    "error of the removal must not replace",
+}
 
 
 class Failed(Exception):
@@ -274,7 +283,11 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
         return path, path.parent, projects
     if not path.is_dir():
         raise Failed(f"{path} is neither a solution file nor a directory")
-    solutions = sorted(child for child in path.iterdir() if child.is_file() and is_solution(child))
+    solutions = sorted(
+        child
+        for child in path.iterdir()
+        if file_presence.is_present(child, other_is_absent=True) and is_solution(child)
+    )
     if len(solutions) > 1:
         names = ", ".join(solution.name for solution in solutions)
         raise Failed(f"{path} holds more than one solution ({names}); name one with --root")
@@ -329,7 +342,7 @@ def nuget_cache() -> list[Path]:
     if configured:
         folders.append(Path(configured))
     folders.append(Path.home() / ".nuget" / "packages")
-    return [folder for folder in folders if folder.is_dir()]
+    return [folder for folder in folders if file_presence.is_directory(folder, other_is_absent=True)]
 
 
 def packages_folder(project_dir: Path, stop: Path) -> Path | None:
