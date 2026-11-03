@@ -24,7 +24,7 @@ from workflows import (
     PINNED_TOOL_LINES,
     PULL_REQUEST_CODE_STATEMENT,
     SAME_REPOSITORY_STATEMENT,
-    TOKEN_CLAIM_FILES,
+    TOKEN_CLAIM_OMISSIONS,
     WorkflowSyntaxError,
     changelog_job_problems,
     codex_settings_problems,
@@ -45,6 +45,7 @@ from workflows import (
     read_workflow,
     required_check_problems,
     token_claim_problems,
+    token_claim_texts,
     token_reach_problems,
     tool_cache_problems,
     uninstall_check_problems,
@@ -2024,6 +2025,40 @@ RETIRED_CLAIM_SPELLINGS = [
     ("the sole job that holds the token", ONLY_JOB),
     ("only the known-failures job is given the run\N{RIGHT SINGLE QUOTATION MARK}s token", ONLY_JOB),
     ("the single step with the token", ONLY_JOB),
+    # The spellings the governance sibling review reproduced passing: underscore emphasis.
+    ("no step is _given_ the token", NO_STEP),
+    # Unicode's hyphen, dash, minus, and space variants, and the invisible characters.
+    ("no step is given the read\N{NON-BREAKING HYPHEN}only token", NO_STEP),
+    ("each leg held no read\N{MINUS SIGN}only token", NO_TOKEN),
+    ("no\N{NO-BREAK SPACE}step is\N{NARROW NO-BREAK SPACE}given\N{THIN SPACE}the token", NO_STEP),
+    ("no step is gi\N{ZERO WIDTH SPACE}ven the to\N{SOFT HYPHEN}ken", NO_STEP),
+    # A word that qualifies the holder or the verb.
+    ("no step is ever given the token", NO_STEP),
+    ("no other job is given the token", NO_STEP),
+    ("not one step is given the token", NO_STEP),
+    ("zero steps are given the token", NO_STEP),
+    ("no command or step is given the token", NO_STEP),
+    ("not a single leg holds the token", NO_STEP),
+    # The token named first.
+    ("the token is given to no step", NO_STEP),
+    ("the token is passed to no job", NO_STEP),
+    ("the token reaches no step", NO_STEP),
+    ("the token goes to this job alone", ONLY_JOB),
+    ("the token is handed to the known-failures job alone", ONLY_JOB),
+    ("the token is given only to the known-failures job", ONLY_JOB),
+    # The token's other names, an expression that reads it among them.
+    ("no step is given the repository token", NO_STEP),
+    ("no step is given ${{ secrets.GITHUB_TOKEN }}", NO_STEP),
+    ("no job receives ${{ github.token }}", NO_STEP),
+    ("only the query job uses github.token", ONLY_JOB),
+    # The common verbs beyond giving and holding.
+    ("no step sees the token", NO_STEP),
+    ("no step uses the token", NO_STEP),
+    ("no step can read the token", NO_STEP),
+    ("no step has access to the token", NO_STEP),
+    ("no step is granted the token", NO_STEP),
+    ("every step runs without the token", NO_STEP),
+    ("the legs cannot read the token", NO_STEP),
 ]
 
 # The true statements the repository makes about the token, each of which names the command or program that holds it
@@ -2042,6 +2077,9 @@ TRUE_TOKEN_STATEMENTS = [
     "Only `tests/known_failure_issues.py` runs it, so the token gh reads reaches no policy and no suite",
     "refuses each of `RETIRED_TOKEN_CLAIMS` by its meaning: that a step, job, leg, or workflow is given none, or that "
     "one job alone is given it",
+    "no command or program a step runs is given the token",
+    "the token reaches that program and the modules it imports alone",
+    "validation and every workflow run without a model, a token beyond the read-only default, or a signed-in runtime",
 ]
 
 
@@ -2086,20 +2124,54 @@ def test_a_retired_token_claim_anywhere_in_the_design_document_fails(claim: str,
         assert problems[0].endswith(suffix), problems
 
 
-def test_the_files_read_for_token_claims_are_pinned_and_each_is_read() -> None:
-    assert TOKEN_CLAIM_FILES == (
-        "conftest.py",
-        "tests/run_validation.py",
-        "tests/known_failure_issues.py",
-        "tests/test_known_failure_issues.py",
-        "tests/validation/credentials.py",
-        "tests/validation/job_pool.py",
-        "tests/validation/known_failures.py",
-        "docs/implementing-changes.md",
-        "CONTRIBUTING.md",
-    )
-    root = Path(__file__).resolve().parents[2]
-    assert all((root / path).read_text(encoding="utf-8") for path in TOKEN_CLAIM_FILES)
+def test_a_retired_token_claim_far_into_a_long_text_fails_and_each_is_found_once() -> None:
+    filler = "a sentence with nothing to say. " * 100
+    text = f"{filler}no step is given the token. {filler}the legs hold no token. the token reaches no step. {filler}"
+    problems = token_claim_problems({"README.md": text}, REACH_DESIGN)
+    assert sorted(problem.split(", the retired claim ")[0] for problem in problems) == [
+        "README.md says 'legs hold no token'",
+        "README.md says 'no step is given the token'",
+        "README.md says 'the token reaches no step'",
+    ]
+
+
+def test_the_parts_the_token_claim_policy_leaves_out_are_pinned() -> None:
+    assert sorted(TOKEN_CLAIM_OMISSIONS) == [
+        "agents/",
+        "skills/",
+        "tests/fixtures/",
+        "tests/validation/test_workflows.py",
+        "tests/validation/workflows.py",
+    ]
+
+
+def test_the_token_claim_policy_reads_every_file_but_the_design_document_and_its_omissions(tmp_path: Path) -> None:
+    files = {
+        "README.md": b"no step is given the token",
+        "docs/parallel-sessions.md": b"text",
+        "docs/design.md": b"the design",
+        "notes.txt": b"caf\xe9",
+        ".claude/skills/review-repository/SKILL.md": b"text",
+        "tests/validation/workflows_support.py": b"text",
+        "tests/validation/workflows.py": b"text",
+        "tests/validation/test_workflows.py": b"text",
+        "skills/a/SKILL.md": b"text",
+        "agents/a.md": b"text",
+        "tests/fixtures/a/README.md": b"text",
+    }
+    paths = []
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        paths.append(path)
+    assert token_claim_texts(tmp_path, paths) == {
+        "README.md": "no step is given the token",
+        "docs/parallel-sessions.md": "text",
+        "notes.txt": "caf\N{REPLACEMENT CHARACTER}",
+        ".claude/skills/review-repository/SKILL.md": "text",
+        "tests/validation/workflows_support.py": "text",
+    }
 
 
 def test_a_row_silent_on_the_actions_default_input_fails() -> None:
