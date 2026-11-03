@@ -823,6 +823,7 @@ except ImportError:
 
 SEPARATOR = "/"
 join = os.path.join
+PROBES = ("".startswith(SEPARATOR + "/ "), "".startswith(SEPARATOR + "/X"))
 
 
 def hand_written(path: Path, root: Path, name: str, top: str) -> list[bool]:
@@ -1073,12 +1074,14 @@ def prefixes_of(top: str) -> list[str]:
 
 def limits(path: Path, root: Path, name: str, top: str, words: list[str]) -> list[object]:
     import fnmatch
+    import re
 
     try:
         relative = path.relative_to(root)
     except ValueError:
         relative = None
     lambda_prefix = lambda folder: folder + "/"  # noqa: E731
+    words[0] += "/"
     return [
         relative,
         getattr(os.path, "commonpath")([path, root]) == root,
@@ -1092,6 +1095,42 @@ def limits(path: Path, root: Path, name: str, top: str, words: list[str]) -> lis
         any(name.startswith(item) for item in words),
         any(name.startswith(item) for item in ("skills", top)),
         [name.startswith(folder) for folder in path.parents],
+        name.startswith(top + "/ "),
+        name.startswith(top + "/X"),
+        re.match(top + "/ ", name),
+        re.match(top + "/X", name),
+        fnmatch.fnmatch(name, top + "/X"),
+        name.startswith(str.format("{}{}{}", top, os.sep, top)),
+        name.startswith("".join(words, [top, "/"])),
+        prefixes_of(pattern=top + "/"),
+    ]
+
+
+def more(path: Path, root: Path, name: str, top: str, other: str) -> list[object]:
+    import fnmatch
+    import re
+
+    grown = ""
+    grown += "/"
+    prefixes = []
+    prefixes += [top + "/"]
+    return [
+        {root}.issubset(path.parents),
+        {root}.issuperset(path.parents),
+        {root}.intersection(path.parents),
+        path.parents.count(root),
+        path.parents.index(root),
+        path.parents.__contains__(root),
+        re.fullmatch(top + "/", name),
+        re.compile(top + os.sep),
+        re.search(top + "/", name),
+        fnmatch.fnmatchcase(name, top + "/*"),
+        fnmatch.translate(top + "/*"),
+        fnmatch.filter([name], top + "/*"),
+        name.startswith(top + grown),
+        any(name.startswith(item) for item in prefixes),
+        name.startswith(top + os.path.join(other, "")),
+        name.startswith(str.format("{}", os.sep)),
     ]
 
 
@@ -1121,33 +1160,41 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
     prefix = "a startswith of a folder and its separator"
     relpath = "a relpath checked for a parent segment"
     folder = "a folder and its separator"
+    parents = "a search of a path's parents"
     found = containment_problems(tmp_path, sorted(tmp_path.rglob("*.py")))
     assert found == [
-        f"{alpha}:22 tests containment with is_relative_to{remedy}",
-        f"{alpha}:23 tests containment with commonpath{remedy}",
-        f"{alpha}:24 tests containment with commonprefix{remedy}",
-        f"{alpha}:25 tests containment with commonpath{remedy}",
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (26, 27, 28)),
-        f"{alpha}:29 tests containment with a comparison of a path's leading parts{remedy}",
-        f"{alpha}:40 tests containment with commonpath{remedy}",
+        f"{alpha}:23 tests containment with is_relative_to{remedy}",
+        f"{alpha}:24 tests containment with commonpath{remedy}",
+        f"{alpha}:25 tests containment with commonprefix{remedy}",
+        f"{alpha}:26 tests containment with commonpath{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in (27, 28, 29)),
+        f"{alpha}:30 tests containment with a comparison of a path's leading parts{remedy}",
         f"{alpha}:41 tests containment with commonpath{remedy}",
-        f"{alpha}:42 tests containment with commonprefix{remedy}",
+        f"{alpha}:42 tests containment with commonpath{remedy}",
         f"{alpha}:43 tests containment with commonprefix{remedy}",
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(44, 66)),
-        *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in range(66, 70)),
-        f"{alpha}:79 tests containment with {prefix}{remedy}",
-        *(f"{alpha}:{line} tests containment with a search of a path's parents{remedy}" for line in range(81, 85)),
-        *(f"{alpha}:{line} tests containment with a removeprefix of {folder}{remedy}" for line in (85, 86)),
-        f"{alpha}:87 tests containment with a comparison of a leading slice{remedy}",
-        *(f"{alpha}:{line} tests containment with a check for a separator after a prefix{remedy}" for line in (88, 89)),
-        f"{alpha}:90 tests containment with a comparison of a path's leading parts{remedy}",
-        *(f"{alpha}:{line} tests containment with a search for {folder}{remedy}" for line in (91, 92)),
-        *(f"{alpha}:{line} tests containment with a regular expression of {folder}{remedy}" for line in (93, 94)),
-        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (95, 96)),
+        f"{alpha}:44 tests containment with commonprefix{remedy}",
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(45, 67)),
+        *(f"{alpha}:{line} tests containment with {relpath}{remedy}" for line in range(67, 71)),
+        f"{alpha}:80 tests containment with {prefix}{remedy}",
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in range(82, 86)),
+        *(f"{alpha}:{line} tests containment with a removeprefix of {folder}{remedy}" for line in (86, 87)),
+        f"{alpha}:88 tests containment with a comparison of a leading slice{remedy}",
+        *(f"{alpha}:{line} tests containment with a check for a separator after a prefix{remedy}" for line in (89, 90)),
+        f"{alpha}:91 tests containment with a comparison of a path's leading parts{remedy}",
+        *(f"{alpha}:{line} tests containment with a search for {folder}{remedy}" for line in (92, 93)),
+        *(f"{alpha}:{line} tests containment with a regular expression of {folder}{remedy}" for line in (94, 95)),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (96, 97)),
         *(
             f"{alpha}:{line} tests containment with {prefix}{remedy}"
-            for line in (97, 108, 111, 119, 123, 131, 135, 253, 256, 257, 258)
+            for line in (98, 109, 112, 120, 124, 132, 136, 254, 257, 258, 259)
         ),
+        *(f"{alpha}:{line} tests containment with {parents}{remedy}" for line in range(310, 316)),
+        *(
+            f"{alpha}:{line} tests containment with a regular expression of {folder}{remedy}"
+            for line in (316, 317, 318)
+        ),
+        *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (319, 320, 321)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(322, 326)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]
