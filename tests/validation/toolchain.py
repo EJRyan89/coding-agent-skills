@@ -594,6 +594,7 @@ class ToolchainPolicies(unittest.TestCase):
         found_python = r"Python (\d+\.\d+\.\d+)"
         copilot = r"Copilot CLI (?:older than )?(\d+(?:\.\d+)+)"
         dotnet = r"\.NET SDK (\S+) or newer"
+        at_git = tools.format_version(tools.GIT.feature_minimums[tools.AT_FEATURE])
         # Each copy of a floor outside its declaration: the part of the dependency document that names the copy (a
         # floor's row, or the runtime tool floors section), the document that holds it, the pattern whose group is
         # the version, and the floor it must be.
@@ -614,6 +615,7 @@ class ToolchainPolicies(unittest.TestCase):
             ("## Runtime tool floors", "docs/code-review-operations-contract.md", copilot, floors["copilot"]),
             ("## Runtime tool floors", "docs/installation.md", dotnet, floors["dotnet"]),
             ("## Runtime tool floors", "docs/skills.md", dotnet, floors["dotnet"]),
+            ("| `git` (`--at` only) |", "docs/installation.md", r"`--at` needs Git (\S+) or newer", at_git),
         )
         dependencies = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         for part, document, pattern, expected in copies:

@@ -33,6 +33,15 @@ def _version_text(probe: tools.Probe) -> str:
     return f" {tools.format_version(probe.version)}" if probe.version else ""
 
 
+def _features_text(probe: tools.Probe) -> str:
+    """What check adds for each feature whose own floor the found tool does not meet: the tool stays found for the
+    rest, and the feature names the version it needs."""
+    return "".join(
+        f"; {feature} needs {tools.format_version(probe.tool.feature_minimums[feature])} or newer"
+        for feature in probe.features_unmet
+    )
+
+
 def _git_deploy_line() -> ReportLine:
     """Git as a deployment needs it from a Git checkout, whose commit each deployment records and refuses to go on
     without (source_commit.head_commit)."""
@@ -40,7 +49,7 @@ def _git_deploy_line() -> ReportLine:
     detail = f"{NEEDED_TO_DEPLOY} from a Git checkout; used by every skill"
     if probe.path is None:
         return ReportLine(tools.GIT.label, "MISSING", detail)
-    return ReportLine(f"{tools.GIT.label}{_version_text(probe)}", "FOUND", detail)
+    return ReportLine(f"{tools.GIT.label}{_version_text(probe)}", "FOUND", f"{detail}{_features_text(probe)}")
 
 
 def _deploy_lines(checkout: bool) -> list[ReportLine]:
@@ -192,6 +201,7 @@ def _tool_line(tool: tools.Tool, optional: bool, roots: list[str]) -> ReportLine
         return ReportLine(f"{tool.label}{_version_text(probe)}", "OUTDATED", f"needs {minimum} or newer")
     found = "OPTIONAL" if optional else "FOUND"
     detail = f"{used_by}; {skipped_text(probe.skipped)}" if probe.skipped else used_by
+    detail += _features_text(probe)
     return ReportLine(f"{tool.label}{_version_text(probe)}", found, detail)
 
 

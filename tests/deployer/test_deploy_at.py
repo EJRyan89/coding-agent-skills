@@ -839,17 +839,20 @@ class DeployAtTests(DeployerTestCase):
         lines = raised.exception.lines
         self.assertTrue(lines[0].startswith(f"ERROR: Git could not read the attributes of the tree of {'0' * 40}: "))
         self.assertEqual(
-            "Put right what Git reports in the checkout, then retry; reading a commit's attributes needs Git 2.40 or "
-            "newer.",
+            "Put right what Git reports in the checkout, then retry; reading a commit's attributes needs Git 2.40.0 "
+            "or newer.",
             lines[1],
         )
         self.assertEqual([], made)
 
     def test_the_installation_requirements_state_the_git_that_reads_a_commits_attributes(self) -> None:
-        # check-attr took --source in Git 2.40; the floor the refusal names is the one the requirements state.
+        # check-attr took --source in Git 2.40; the catalogue holds that floor for --at alone, and the requirements
+        # state the version the catalogue holds.
+        self.assertEqual("--at", tools.AT_FEATURE)
+        self.assertEqual({"--at": (2, 40, 0)}, tools.GIT.feature_minimums)
+        self.assertEqual((), tools.GIT.minimum)
         requirements = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
-        self.assertEqual("2.40", source_ref.ATTRIBUTE_SOURCE_GIT)
-        self.assertIn("`--at` needs Git 2.40 or newer, which reads a commit's attributes", requirements)
+        self.assertIn("`--at` needs Git 2.40.0 or newer, which reads a commit's attributes", requirements)
 
     def test_an_answer_check_attr_did_not_give_for_each_path_and_attribute_is_refused(self) -> None:
         answers = {

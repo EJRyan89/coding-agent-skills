@@ -110,6 +110,7 @@ class Machine:
         describe_failure: str | None = None,
         rev_parse_failure: str | None = None,
         describe_warning: str = "",
+        git_version: str = GIT_VERSION,
     ) -> None:
         # describe is what git describe prints for the deployed commit, which the checkout holds; None makes git answer
         # that it holds no such commit. describe_failure is what git describe prints when it fails instead, and
@@ -123,6 +124,7 @@ class Machine:
         self.pwsh_command = pwsh_command
         self.codex_probe = codex_probe
         self.git = None if "git" in missing else GIT
+        self.git_version = git_version
         self.describe = describe
         self.describe_failure = describe_failure
         self.rev_parse_failure = rev_parse_failure
@@ -194,7 +196,7 @@ class Machine:
         if arguments[0] != GIT:
             return platform_support.ToolResult(self.statuses.get(arguments[0], 0), self.versions[arguments[0]])
         if arguments[1:] == ["--version"]:
-            return platform_support.ToolResult(0, GIT_VERSION)
+            return platform_support.ToolResult(0, self.git_version)
         self.git_calls.append(arguments)
         self.git_options.append(options)
         if "rev-parse" in arguments and self.rev_parse_failure is not None:
@@ -788,6 +790,31 @@ class CheckCommandTests(DeployerTestCase):
         self.assertIn("Git 2.54.0 (needed to deploy from a Git checkout; used by every skill)", found)
         self.assertNotIn("Git 2.54.0 (used by every skill)", found)
         self.assertEqual(1, result.output.count("Git 2.54.0"), result.output)
+
+    def test_git_before_2_40_is_found_for_everything_but_at_which_check_names_it_too_old_for(self) -> None:
+        # Git 2.40 is the first whose check-attr takes --source, which --at reads a commit's attributes with; nothing
+        # else needs it, so an older Git is still found, and ready to deploy, with --at named as needing more.
+        old = Machine(git_version="git version 2.39.5\n")
+        result = self.check(old)
+        self.assertEqual(0, result.code, result.output)
+        groups = self.report_groups(result.output, "CHECK")
+        self.assertIn("Git 2.39.5 (used by every skill; --at needs 2.40.0 or newer)", groups["FOUND"])
+        self.assertNotIn("OUTDATED", groups)
+        (self.source / ".git").mkdir()
+        result = self.check(old)
+        self.assertEqual(0, result.code, result.output)
+        found = self.report_groups(result.output, "CHECK")["FOUND"]
+        self.assertIn(
+            "Git 2.39.5 (needed to deploy from a Git checkout; used by every skill; --at needs 2.40.0 or newer)", found
+        )
+        found = self.report_groups(self.check(Machine(git_version="git version 2.40.0\n")).output, "CHECK")["FOUND"]
+        self.assertIn("Git 2.40.0 (needed to deploy from a Git checkout; used by every skill)", found)
+        # A version that cannot be read is no evidence the floor is met.
+        unread = self.report_groups(self.check(Machine(git_version="git\n")).output, "CHECK")
+        self.assertIn(
+            "Git (needed to deploy from a Git checkout; used by every skill; --at needs 2.40.0 or newer)",
+            unread["FOUND"],
+        )
 
     def test_claude_code_before_2_1_295_is_outdated_because_the_reviewer_guard_must_block_when_it_cannot_run(
         self,

@@ -55,7 +55,7 @@ MANIFEST_CONTRACT_NAMES = ("MANIFEST_VERSION", "OLDEST_READABLE_VERSION")
 TOOLS_MODULE = "deployer/tools.py"
 # The class deployer/tools.py declares each tool with, and its fields that hold a version floor.
 TOOL_CLASS = "Tool"
-TOOL_FLOOR_FIELDS = frozenset({"minimum", "provider_minimum"})
+TOOL_FLOOR_FIELDS = frozenset({"minimum", "provider_minimum", "feature_minimums"})
 PDF_POLICY_MODULE = "skills/ejryan89-skill-core/scripts/pdf_tool.py"
 DEPLOY_META = re.compile(r"deploy-meta/[^/]+\.json")
 REVIEW_SCHEMA = re.compile(r"skills/ejryan89-code-review-core/references/.+\.schema\.json")

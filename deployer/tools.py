@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import versions
 from pdf_tool import (
@@ -51,6 +51,9 @@ class Tool:
     # What `deploy.py check` adds when the tool is not installed, as each refusal of it does: what to install on this
     # platform, or None.
     install_hint: str | None = None
+    # Floors that one feature alone needs, by the feature's name as a user meets it: a version below one leaves the
+    # tool found for everything else, and `deploy.py check` names the feature the version is too old for.
+    feature_minimums: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 POWERSHELL_VERSION = ("-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()")
@@ -187,8 +190,16 @@ SKILL_TOOLS = {
 # Codex CLI, so only this catalogue names it.
 VERIFY_TOOLS = {tool.name: tool for tool in (CODEX, COPILOT)}
 
-# Git, which every skill runs and a deployment from a Git checkout needs to record its commit. It has no floor.
-GIT = Tool("git", "Git", lambda: platform_support.find_executable("git"), other_uses=("every skill",))
+# Git, which every skill runs and a deployment from a Git checkout needs to record its commit. It has no floor but
+# --at's: 2.40.0 is the first Git whose check-attr takes --source, which --at reads a commit's attributes with.
+AT_FEATURE = "--at"
+GIT = Tool(
+    "git",
+    "Git",
+    lambda: platform_support.find_executable("git"),
+    other_uses=("every skill",),
+    feature_minimums={AT_FEATURE: (2, 40, 0)},
+)
 
 # Tools `deploy.py check` reports so that its output alone answers a bug report: Git, and Claude Code, which no
 # deployment needs. 2.1.295 is the first Claude Code that honors a hook's
@@ -226,6 +237,16 @@ class Probe:
     refusal: str | None = None
     # The programs a provider probe passed over before the one it chose, or all of them when it refused.
     skipped: tuple[Skipped, ...] = ()
+
+    @property
+    def features_unmet(self) -> list[str]:
+        """Each feature whose floor this version is below, or every one when no version was read, which is no
+        evidence a floor is met."""
+        return [
+            feature
+            for feature, minimum in self.tool.feature_minimums.items()
+            if self.version is None or self.version < minimum
+        ]
 
     @property
     def outdated(self) -> bool:

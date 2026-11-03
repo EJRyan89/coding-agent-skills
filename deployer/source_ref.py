@@ -40,8 +40,6 @@ ARCHIVE_ONLY_ATTRIBUTES = {
 TREE_ENTRY = re.compile(
     r"(?P<mode>[0-7]{6}) (?P<kind>blob|tree|commit) (?:[0-9a-f]{40}|[0-9a-f]{64})\t(?P<name>.+)", re.DOTALL
 )
-# The first Git whose `check-attr` takes `--source`, reading a commit's attributes; docs/installation.md states it.
-ATTRIBUTE_SOURCE_GIT = "2.40"
 # The path characters one `git check-attr` call is given, well inside what a Windows command line holds.
 ATTRIBUTE_PATH_UNITS = 8000
 
@@ -309,7 +307,7 @@ def _attributes_unreadable(commit: str, reason: str) -> DeployError:
     return DeployError(
         f"ERROR: Git could not read the attributes of the tree of {commit}: {reason}",
         "Put right what Git reports in the checkout, then retry; reading a commit's attributes needs Git "
-        f"{ATTRIBUTE_SOURCE_GIT} or newer.",
+        f"{tools.format_version(tools.GIT.feature_minimums[tools.AT_FEATURE])} or newer.",
         see_recovery(EARLIER_COMMIT),
     )
 

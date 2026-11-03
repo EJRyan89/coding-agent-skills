@@ -114,6 +114,18 @@ TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: obje
             "MINIMUM_PYTHON: tuple[int, ...] = (3, 12, 0)\n",
             id="an annotated floor",
         ),
+        pytest.param(
+            "deployer/tools.py",
+            'T = Tool("git", "Git", locate)\n',
+            'T = Tool("git", "Git", locate, feature_minimums={"--at": (2, 40, 0)})\n',
+            id="a floor one feature alone needs, added",
+        ),
+        pytest.param(
+            "deployer/tools.py",
+            'T = Tool("git", "Git", locate, feature_minimums={"--at": (2, 40, 0)})\n',
+            'T = Tool("git", "Git", locate, feature_minimums={"--at": (2, 41, 0)})\n',
+            id="a floor one feature alone needs, raised",
+        ),
         # The control: a floor by keyword, as the check always read one.
         pytest.param(
             "deployer/tools.py",

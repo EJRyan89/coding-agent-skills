@@ -194,7 +194,8 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
   manifest format;
 - a skill directory name under `skills/`, or a shipped skill's arguments, status lines, or exit codes, named as the
   `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says;
-- a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, or a tool's `minimum`.
+- a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, a tool's `minimum`, or a floor one feature alone needs in its
+  `feature_minimums`.
 - a provider-specific PDF tool floor in `skills/ejryan89-skill-core/scripts/pdf_tool.py`, referenced by the catalogue's
   `provider_minimum`.
 
