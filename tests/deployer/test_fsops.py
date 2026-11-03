@@ -170,6 +170,19 @@ class FilesystemOperationTests(unittest.TestCase):
             fsops.write_atomic(target, b"token")
         self.assertEqual([], list(self.root.iterdir()))
 
+    def test_write_atomic_refuses_a_read_only_target_before_a_copy_exists(self) -> None:
+        # Windows refuses to replace a read-only file, where Linux would replace it, so both refuse it before the copy.
+        target = self.read_only(self.root / "deploy.config", "previous\n")
+        with (
+            mock.patch("tempfile.mkstemp", side_effect=AssertionError("a copy was made")),
+            self.assertRaises(PermissionError) as raised,
+        ):
+            fsops.write_atomic(target, b"next\n")
+        self.assertEqual(errno.EACCES, raised.exception.errno)
+        self.assertEqual(str(target), raised.exception.filename)
+        self.assertEqual("previous\n", target.read_text(encoding="utf-8"))
+        self.assertEqual(["deploy.config"], sorted(path.name for path in self.root.iterdir()))
+
     def test_write_atomic_replaces_the_target(self) -> None:
         target = self.root / "info.json"
         target.write_text("previous\n", encoding="utf-8")
