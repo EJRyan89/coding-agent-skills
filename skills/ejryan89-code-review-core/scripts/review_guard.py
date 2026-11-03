@@ -18,10 +18,12 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
   Nested source folders cannot redefine the claimed root. Grep and Glob must name their folder explicitly, because
   their default is the session's working directory.
 - Write and Edit only on the claimed role's result file, as the run's `run.json` names it.
-- Bash only for the claimed role's self-check command, exactly as the pipeline writes it, and, for a lazy snapshot,
-  its `source-file` and `source-search` commands (review_source.py), with the one path or pattern the reviewer
-  fills in, which may hold no double quote (ASCII or PowerShell's smart variants), backtick, dollar sign, backslash,
-  or line break. No quoted script or run in either may end in a backslash, which would escape its closing quote.
+- Bash only for the claimed role's self-check command, exactly as the pipeline writes it, and its `source-file` and
+  `source-search` commands (review_source.py) on every snapshot, lazy or written whole (its suite holds both kinds),
+  where `review_source.py` itself refuses `source-file` on one that holds every file already, with the one path or
+  pattern the reviewer fills in, which may hold no double quote (ASCII or PowerShell's smart variants), backtick,
+  dollar sign, backslash, or line break. No quoted script or run in either may end in a backslash, which would
+  escape its closing quote.
   The guarded reviewer exposes Bash, not PowerShell; its values conservatively exclude delimiters from either shell.
 - A role whose `run.json` entry declares its `self_check`, as the review-insights synthesis run does, runs that one
   command, exactly as declared, and none of the reviewer commands above. The run's author is the script that made
