@@ -655,6 +655,20 @@ class SourceCheckoutTests(LinkedWorktreeTestCase):
         manifest = json.loads(self.manifest_file.read_text(encoding="utf-8"))
         self.assertEqual(forward(self.source), forward(manifest["sources"]["test/skills"]["source_dir"]))
 
+    def test_a_dry_run_is_exempt_from_the_linked_worktree_refusal_alone_and_refuses_another_checkout(self) -> None:
+        # The deployment refuses a linked worktree before it takes the lock, since a deployment records the path a
+        # worktree loses when its task ends; a dry run records nothing, so it runs there while nothing else refuses it.
+        linked = self.make_linked_worktree()
+        refused = self.deploy_fails_from(linked, "--all")
+        self.assertIn(f"ERROR: {forward(linked)} is a linked git worktree.", refused.output)
+        self.deploy_from(linked, "--all", "--dry-run")
+        # Once the main checkout is the recorded source, the worktree is another checkout, which a dry run refuses as
+        # the deployment does.
+        self.deploy_from(self.source, "--all")
+        dry = self.deploy_fails_from(linked, "--all", "--dry-run")
+        self.assertIn(f"ERROR: Source 'test/skills' is deployed from {forward(self.source)}", dry.output)
+        self.assertIn(f"not from this checkout, {forward(linked)}.", dry.output)
+
     def test_a_git_file_without_a_common_directory_is_not_a_linked_worktree(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Submodule-style fixture")
@@ -827,9 +841,15 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
         self.assertIn(f"ERROR: {forward(linked)} is a linked git worktree.", result.output)
         self.assertEqual(forward(self.source), self.recorded_source_dir())
 
-    def test_a_dry_run_from_a_second_clone_is_allowed(self) -> None:
+    def test_a_dry_run_from_a_second_clone_is_refused_as_the_deployment_refuses_it(self) -> None:
         clone = self.deployed_clone()
-        self.deploy_from(clone, "--all", "--dry-run")
+        answers = []
+        for arguments in (("--all",), ("--all", "--dry-run")):
+            result = self.deploy_fails(*arguments, pattern="not from this checkout", source=clone)
+            self.assertNotIn("UNCHANGED", result.output)
+            answers.append([line for line in result.output.splitlines() if line.startswith("ERROR: ")])
+        self.assertEqual(answers[0], answers[1])
+        self.assertEqual(forward(self.source), self.recorded_source_dir())
 
     def test_take_over_source_cannot_be_combined_with_a_dry_run(self) -> None:
         self.deployed_clone()
