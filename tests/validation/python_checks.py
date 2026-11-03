@@ -42,7 +42,7 @@ from call_tables import (
 )
 from git_client import GLOBAL_VALUE_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
-from path_containment import posix_within, within
+from path_containment import posix_within, relative_within, within
 from runtime_support import names_git
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from validation_support import (
@@ -361,9 +361,10 @@ def type_check_skipped_problems(root: Path, files: list[Path]) -> list[str]:
         checked_from = _type_check_root(root, path, skill_scripts) if path.suffix == ".py" else None
         if checked_from is None or path == checked_from:
             continue
+        relative = relative_within(path.parent, checked_from)
         skipped = [
             part
-            for part in path.parent.relative_to(checked_from).parts
+            for part in (() if relative is None else relative.parts)
             if part in MYPY_SKIPPED_FOLDERS or part.startswith(".")
         ]
         if skipped:
@@ -3745,7 +3746,8 @@ def mypy_cache_root(environment: Mapping[str, str]) -> Path | None:
 def mypy_cache_directory(root: Path, cwd: Path, targets: list[str], *, strict: bool) -> Path:
     """The cache folder under `root` of the type check run from `cwd` on `targets`: one per check, since each check
     differs in one of them, and the same at every run, so a restored cache is found again."""
-    place = cwd.relative_to(REPOSITORY_ROOT).as_posix() if within(cwd, REPOSITORY_ROOT) else cwd.as_posix()
+    relative = relative_within(cwd, REPOSITORY_ROOT)
+    place = cwd.as_posix() if relative is None else relative.as_posix()
     check = "\0".join([place, *targets, "strict" if strict else "default"])
     return root / hashlib.sha256(check.encode("utf-8")).hexdigest()[:16]
 
