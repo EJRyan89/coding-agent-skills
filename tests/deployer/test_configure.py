@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import stat
 from pathlib import Path
 from unittest import mock
 
@@ -135,6 +136,24 @@ class ConfigureTests(DeployerTestCase):
             "Rerun with --debug to see the traceback.\n",
             result.output,
         )
+
+    def test_a_read_only_config_is_refused_before_a_copy_and_kept_on_every_platform(self) -> None:
+        # Linux would replace a read-only file and Windows refuse it after the copy, so both refuse it first.
+        self.make_source_json()
+        self.make_config()
+        target = self.config_file()
+        before = target.read_bytes()
+        target.chmod(stat.S_IREAD)
+        self.addCleanup(target.chmod, stat.S_IREAD | stat.S_IWRITE)
+        result = self.configure(stdin=f"{forward(self.repos)}\n\n\n\n")
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            f"\nERROR: Could not write the configuration: {forward(target)}: the file is read-only; make it writable "
+            "to replace it\n",
+            result.output,
+        )
+        self.assertEqual(before, target.read_bytes())
+        self.assertEqual([target.name], [path.name for path in target.parent.iterdir()])
 
     if platform_support.WINDOWS:
 
