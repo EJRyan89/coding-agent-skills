@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import json_writer
 from console import run_main
 from github_client import GitHubClient, GitHubError, subprocess_runner
+from typed_fields import FieldError, FieldReader
 
 from deployer import platform_support
 
@@ -58,6 +59,8 @@ OK_LINE = re.compile(r"^\S+ ok +(\d+(?:\.\d+)?)s (.+?)\s*$")
 # The note job_pool.py puts after the label of a job it started once more after a termination, as in
 # `ok 12.0s tests/a.py [shard 1/3] (retried after status 0x80000004)`: no part of the job's name.
 RETRY_NOTE = re.compile(r" \(retried after status [^()]+\)$")
+# Reads gh's answers; one of another shape raises FieldError, which main ends as runs it could not read.
+READ = FieldReader()
 SHARD_SUFFIX = re.compile(r" \[shard \d+/\d+\]$")
 # A leg's name in the log, from the workflow's matrix job names, by platform: on Windows `Windows shard <shard>, Python
 # <version>`, and before the Linux job joined the required check, `Shard <shard> on Python <version>`; on Linux
@@ -173,13 +176,20 @@ def latest_runs(client: GitHubClient, count: int) -> list[int]:
     runs = client.capped_list([*arguments, "success", "--json", "databaseId"], count).items
     if not runs:
         raise GitHubError(f"no successful push run of {WORKFLOW_FILE} on main was found", kind="not_found")
-    return [int(run["databaseId"]) for run in runs]
+    return [_run_id(run, f"gh run list[{index}]") for index, run in enumerate(runs)]
+
+
+def _run_id(run: object, path: str) -> int:
+    """The run's ID from one item of `gh run list --json databaseId`, or FieldError for an item of another shape."""
+    return READ.integer(READ.json_object(run, path, required=("databaseId",))["databaseId"], f"{path}.databaseId")
 
 
 def run_seconds(client: GitHubClient, run: int) -> dict[str, dict[str, float]]:
     """The run's job seconds, once it is known to be a completed, successful run of the Validation workflow whose log
     reports every leg."""
-    state = client.json(["run", "view", str(run), "--json", "workflowName,status,conclusion"])
+    state = READ.json_object(
+        client.json(["run", "view", str(run), "--json", "workflowName,status,conclusion"]), f"gh run view {run}"
+    )
     found = (state.get("workflowName"), state.get("status"), state.get("conclusion"))
     if found != (WORKFLOW_NAME, "completed", "success"):
         raise GitHubError(
@@ -229,7 +239,7 @@ def main(arguments: list[str] | None = None, client: GitHubClient | None = None,
     try:
         runs = sorted(set(options.runs)) if options.runs else latest_runs(client, options.count)
         per_run = {run: run_seconds(client, run) for run in runs}
-    except GitHubError as error:
+    except (GitHubError, FieldError) as error:
         print(f"Cannot read the validate runs: {error}", file=sys.stderr)
         return 2
     seconds = combine(per_run)
