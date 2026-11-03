@@ -1976,14 +1976,18 @@ def test_a_token_job_running_the_pull_requests_code_unstated_or_from_an_unread_t
 
 def _token_sentence_spellings(sentence: str) -> dict[str, str]:
     """The sentence as a workflow comment, upper-cased, reflowed one word to a comment line, and as a Markdown
-    quotation reflowed with the token in backticks, each a spelling token_claim_problems reads as the same sentence."""
+    quotation reflowed with its first word emphasized and the token in backticks, each a spelling token_claim_problems
+    reads as the same sentence."""
     words = sentence.split()
+    emphasized = [f"*{words[0]}*", *words[1:]]
     return {
         "as-written": f"    # The legs:\n    # {sentence}.\n",
         "case-folded": f"# {sentence.upper()}.\n",
         "reflowed": "".join(f"    # {word}\n" for word in words),
         "markdown": "> "
-        + "\n> ".join(" ".join(words[i : i + 2]) for i in range(0, len(words), 2)).replace("token", "`token`"),
+        + "\n> ".join(" ".join(emphasized[i : i + 2]) for i in range(0, len(emphasized), 2)).replace(
+            "token", "`token`"
+        ),
     }
 
 
