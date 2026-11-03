@@ -151,11 +151,30 @@ def source_segment(lines: list[bytes], node: ast.expr) -> str:
     return b"\n".join([first, *middle, lines[end_line - 1][:end_column]]).decode("utf-8")
 
 
+# The files ruff formats, by suffix: Python modules and stubs, and notebooks, whose cells no policy here reads.
+FORMATTED_SUFFIXES = (".py", ".pyi", ".ipynb")
+# The ones the policy parses.
+ESCAPE_SUFFIXES = (".py", ".pyi")
+
+
 def escape_files(root: Path, files: list[Path]) -> list[Path]:
-    """The Python the policy reads: every file ruff formats, suites included, since a test is where the slip hides."""
+    """The Python the policy reads: every module and stub ruff formats, suites included, since a test is where the
+    slip hides."""
     return sorted(
-        path for path in files if path.suffix == ".py" and under(path.relative_to(root).as_posix(), FORMAT_ROOTS)
+        path
+        for path in files
+        if path.suffix in ESCAPE_SUFFIXES and under(path.relative_to(root).as_posix(), FORMAT_ROOTS)
     )
+
+
+def unread_python(root: Path, files: list[Path]) -> list[str]:
+    """Each file of `files` of a suffix ruff formats that the policy does not read, wherever it lies, held against
+    what the policy reads rather than the roots it reads by: the rule speaks of every file ruff formats, and the
+    repository's Python is all to be formatted, so a file outside FORMAT_ROOTS, or of a suffix the policy passes over,
+    is reported."""
+    names = [path.relative_to(root).as_posix() for path in files if path.suffix in FORMATTED_SUFFIXES]
+    read = [path.relative_to(root).as_posix() for path in escape_files(root, files)]
+    return scope_problems("the literal policy", names, read, {})
 
 
 def literal_escape_problems(root: Path, files: list[Path]) -> list[str]:
@@ -197,7 +216,4 @@ class LiteralEscapePolicies(unittest.TestCase):
 
     def test_the_literal_policy_reads_every_module_its_rule_speaks_of(self) -> None:
         files = repository_files(REPOSITORY_ROOT)
-        names = [path.relative_to(REPOSITORY_ROOT).as_posix() for path in files if path.suffix == ".py"]
-        read = [path.relative_to(REPOSITORY_ROOT).as_posix() for path in escape_files(REPOSITORY_ROOT, files)]
-        formatted = [name for name in names if under(name, FORMAT_ROOTS)]
-        self.assertEqual([], scope_problems("the literal policy", formatted, read, {}))
+        self.assertEqual([], unread_python(REPOSITORY_ROOT, files))

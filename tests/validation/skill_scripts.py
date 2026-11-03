@@ -21,6 +21,8 @@ import git_client
 import json_reader
 import whole_number
 from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
+from device_names import is_reserved_device_name
+from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
@@ -28,13 +30,19 @@ from path_containment import posix_within
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
+    ATTRIBUTE_LOOKUPS,
+    BASH_CONTINUATION,
     COMPUTED_NAME,
     MODULE_SCOPE,
+    POWERSHELL_CONTINUATION,
     REPOSITORY_ROOT,
+    REPOSITORY_SKILLS,
     CallableResolver,
     UnreadablePython,
+    bound_values,
     call_argument,
     call_arguments,
+    continued_lines,
     find_fences,
     import_aliases,
     is_main_guard,
@@ -49,6 +57,8 @@ from validation_support import (
     python_trees,
     qualified_name,
     repository_files,
+    resolved_calls,
+    resolved_references,
     scoped_nodes,
     skill_dependency_closure,
     skill_script_directories,
@@ -933,7 +943,7 @@ class CommandReader:
         found: list[Unreadable] = []
         types = _type_uses(self.tree, self.resolver)
         for node in ast.walk(self.tree):
-            if isinstance(node, ast.Call) and self.resolver.name(node.func) == "getattr" and len(node.args) > 1:
+            if isinstance(node, ast.Call) and self.resolver.name(node.func) in ATTRIBUTE_LOOKUPS and len(node.args) > 1:
                 module = _reached_name(node.args[0], self.resolver)
                 attribute = node.args[1]
                 named = (
@@ -1366,65 +1376,104 @@ def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> l
 
 GH_SHELL_CALL = re.compile(r"(?:^|[\s;|&(])gh\s")
 # A word that passes gh a filter, in each form gh's flag parser reads: --jq or --template alone, with `=` and the
-# filter, and -q alone or with the filter attached. The Python and the shell readers both read a word by it.
-GH_FILTER_WORD = re.compile(r"(--jq|--template)(?:=.*)?|(-q).*", re.DOTALL)
+# filter, and their shorthands -q and -t alone or with the filter attached. The Python and the shell readers both read
+# a word by it.
+GH_FILTER_WORD = re.compile(r"(--jq|--template)(?:=.*)?|(-[qt]).*", re.DOTALL)
+# The shorthands, which other commands take for something else: gh's -t is the title of `pr create` and `issue
+# create`, and git's -q is quiet. A Python list holds each as a filter only in a gh command whose output is JSON, one
+# given --json or gh api; a shell command that runs gh holds -q as one wherever it stands, and -t only there.
+GH_FILTER_SHORTHANDS = frozenset({"-q", "-t"})
 GH_SHELL_WORD_BREAK = re.compile(r"[\s;|&()]+")
 
 
 def gh_filter_flag(word: str) -> str | None:
-    """The filter flag a word passes gh, as --jq, --template, or -q, or None when it passes none."""
+    """The filter flag a word passes gh, as --jq, --template, -q, or -t, or None when it passes none."""
     match = GH_FILTER_WORD.fullmatch(word)
     return None if match is None else match.group(1) or match.group(2)
 
 
+def _gh_json_output(words: list[str]) -> bool:
+    """Whether a gh command's words, after gh or without it, ask for JSON: --json, alone or with `=`, or api first."""
+    first = words[1:2] if words[:1] == ["gh"] else words[:1]
+    return first == ["api"] or any(word == "--json" or word.startswith("--json=") for word in words)
+
+
+def _command_items(node: ast.expr) -> list[ast.expr | None] | None:
+    """The items of the command a list or tuple literal writes, or a `+` of them does, in order, with None for an
+    operand that is no literal sequence, which holds words it does not write; None for an expression that is
+    neither."""
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return list(node.elts)
+    if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add):
+        return None
+    left, right = _command_items(node.left), _command_items(node.right)
+    if left is None and right is None:
+        return None
+    return [*(left if left is not None else [None]), *(right if right is not None else [None])]
+
+
 def _gh_filter_flags(tree: ast.Module) -> list[tuple[int, str]]:
-    """The line and flag of each gh filter a Python module passes."""
+    """The line and flag of each gh filter a Python module passes. A list, a tuple, or a `+` of them holds a shorthand
+    as a filter when it asks for JSON, or when it runs gh and unpacks words it does not write, which may."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             flag = gh_filter_flag(node.value)
             if flag in ("--jq", "--template"):
                 found.append((node.lineno, flag))
-        elif isinstance(node, (ast.List, ast.Tuple)):
-            values = [
-                item.value for item in node.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)
-            ]
-            # gh's -q applies a jq filter to --json output; git's -q never comes with --json.
-            json_output = any(value == "--json" or value.startswith("--json=") for value in values)
-            if json_output and any(gh_filter_flag(value) == "-q" for value in values):
-                found.append((node.lineno, "-q"))
+        elif isinstance(node, ast.expr) and (items := _command_items(node)) is not None:
+            values = [item.value for item in items if isinstance(item, ast.Constant) and isinstance(item.value, str)]
+            runs_gh = bool(items) and isinstance(items[0], ast.Constant) and items[0].value == "gh"
+            unpacked = any(item is None or isinstance(item, ast.Starred) for item in items)
+            if _gh_json_output(values) or (runs_gh and unpacked):
+                found += [
+                    (node.lineno, flag) for value in values if (flag := gh_filter_flag(value)) in GH_FILTER_SHORTHANDS
+                ]
     return found
 
 
-def _gh_shell_filter_flags(text: str) -> list[tuple[int, str]]:
-    """The line and flag of each gh filter a shell script passes on a line that runs gh."""
+def _gh_shell_filter_flags(text: str, continuation: str) -> list[tuple[int, str]]:
+    """The line and flag of each gh filter a shell script passes in a command that runs gh, read with the lines its
+    `continuation` mark continues it onto, by the command's first line."""
     found: list[tuple[int, str]] = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in continued_lines(text, continuation):
         if GH_SHELL_CALL.search(line):
+            words = [word for word in GH_SHELL_WORD_BREAK.split(line) if word]
+            json_output = "gh" in words and _gh_json_output(words[words.index("gh") :])
+            # git's -q never sits in a command that runs gh, so a shell -q is a filter wherever it does.
             found += [
-                (number, flag) for word in GH_SHELL_WORD_BREAK.split(line) if (flag := gh_filter_flag(word)) is not None
+                (number, flag)
+                for word in words
+                if (flag := gh_filter_flag(word)) is not None and (flag != "-t" or json_output)
             ]
     return found
 
 
 def gh_filter_problems(root: Path) -> list[str]:
-    """Report skill scripts that filter gh output with --jq, -q, or --template instead of parsing its JSON.
+    """Report shipped and repository skill scripts that filter gh output with --jq, --template, or their shorthands
+    instead of parsing its JSON.
 
     Python parsing has one shape check that fails closed and can be tested offline from a fixture; a jq expression
     is a second language that only gh itself can run.
     """
     problems: list[str] = []
-    for path in file_presence.matching(root / "skills", "**/scripts/*"):
+    paths = [
+        path
+        for skills in ("skills", REPOSITORY_SKILLS)
+        for path in file_presence.matching(root / skills, "**/scripts/*")
+    ]
+    for path in sorted(paths, key=lambda path: path.relative_to(root).as_posix()):
         if not file_presence.is_present(path, other_is_absent=True) or is_test_script(path):
             continue
         name = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
         found: list[tuple[int, str]] = []
-        if path.suffix.casefold() == ".py":
+        suffix = path.suffix.casefold()
+        if suffix == ".py":
             for _, _, tree in python_trees([path], root, problems):
                 found += _gh_filter_flags(tree)
-        elif path.suffix.casefold() in {".sh", ".bash", ".ps1"}:
-            found += _gh_shell_filter_flags(text)
+        elif suffix in {".sh", ".bash", ".ps1"}:
+            found += _gh_shell_filter_flags(text, POWERSHELL_CONTINUATION if suffix == ".ps1" else BASH_CONTINUATION)
         for number, flag in sorted(set(found)):
             problems.append(
                 f"{name}:{number} filters gh output with {flag}; parse its JSON in Python instead; see {COMMANDS_DOC}"
@@ -1491,36 +1540,77 @@ STREAM_LAYER_METHODS = frozenset({"detach", "fileno"})
 BINARY_LAYERS = frozenset(
     {"io.FileIO", "io.BufferedWriter", "io.BufferedReader", "io.BufferedRandom", "io.BufferedRWPair", "os.dup"}
 )
-CONSOLE_DEVICES = frozenset(
-    {"CON", "CONIN$", "CONOUT$"}
-    | {f"/dev/{stream}" for stream in ("stdin", "stdout", "stderr")}
-    | {f"{folder}/{fd}" for folder in ("/dev/fd", "/proc/self/fd") for fd in STANDARD_DESCRIPTORS}
+# What every reserved name that opens the console starts with, as ejryan89-skill-core's device_names reads them:
+# con, conin$, and conout$. None of the others, the printer, the ports, aux, and the null device, does.
+CONSOLE_DEVICE_PREFIX = "con"
+# The paths that open the console on Linux, compared as Linux resolves them: a standard stream by its name or its
+# descriptor, the descriptor through /dev/fd or the process's own descriptor folder, by self, thread-self, or a process
+# number, which the kernel reads without a leading zero; and the terminal itself, the controlling one, a virtual
+# console, a pseudo-terminal, or the system console.
+POSIX_CONSOLE_DEVICE = re.compile(
+    r"/dev/(?:std(?:in|out|err)|fd/[012]|tty\d*|pts/\d+|console)|/proc/(?:self|thread-self|[1-9]\d*)/fd/[012]"
 )
 
 
-def _is_reconfigure(node: ast.expr) -> bool:
-    """Whether an expression is a stream's reconfigure method: stream.reconfigure, or getattr(stream, "reconfigure")."""
-    if isinstance(node, ast.Attribute):
-        return node.attr == "reconfigure"
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "getattr"
-        and len(node.args) > 1
-        and isinstance(node.args[1], ast.Constant)
-        and node.args[1].value == "reconfigure"
+def is_console_device(path: str) -> bool:
+    """Whether a path opens the console: one whose last segment, after either separator and any drive, is a console
+    device name in every form Windows reads, any case, before an extension or a colon, as `conout$`, `CON:`, and
+    `con.txt` are, in any folder; or a Linux path to a standard stream or a terminal, however its separators fall and
+    whatever `.` or `..` segments it holds, `..` read lexically."""
+    segments = [segment for segment in re.split(r"[\\/]", path) if segment]
+    last = DRIVE.sub("", segments[-1], count=1) if segments else ""
+    if is_reserved_device_name(last) and last.casefold().startswith(CONSOLE_DEVICE_PREFIX):
+        return True
+    if not path.startswith("/"):
+        return False
+    # Linux reads any run of slashes as one and `..` as the folder above, the root's being the root.
+    parts: list[str] = []
+    for part in path.split("/"):
+        if part == "..":
+            parts = parts[:-1]
+        elif part not in ("", "."):
+            parts.append(part)
+    return POSIX_CONSOLE_DEVICE.fullmatch("/" + "/".join(parts)) is not None
+
+
+RECONFIGURE = "reconfigure"
+# The call that builds a caller of the method it names, applied to the object after, as
+# operator.methodcaller("reconfigure", encoding="utf-8")(sys.stdout) reconfigures the stream.
+METHOD_CALLER = "operator.methodcaller"
+
+
+def _may_name_reconfigure(node: ast.expr) -> bool:
+    """Whether an attribute's name, as a lookup by name is given it, is reconfigure, or a name computed at run time,
+    which may be."""
+    return not isinstance(node, ast.Constant) or node.value == RECONFIGURE
+
+
+def _looks_up_a_computed_name(node: ast.expr, resolver: CallableResolver) -> bool:
+    """Whether an expression may be a getattr, either spelling, given a name computed at run time, itself or through a
+    name bound to one, which may look up reconfigure; resolved_calls reads every lookup of a constant name."""
+    return any(
+        isinstance(value, ast.Call)
+        and len(value.args) > 1
+        and not isinstance(value.args[1], ast.Constant)
+        and any(reference.name in ATTRIBUTE_LOOKUPS for reference in resolved_references(value.func, resolver))
+        for value in bound_values(node, resolver)
     )
 
 
-def _reconfigure_names(tree: ast.Module) -> set[str]:
-    """The names a module binds to a stream's reconfigure method anywhere in it, and reconfigure itself."""
-    names = {"reconfigure"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and _is_reconfigure(node.value):
-            names |= {target.id for target in node.targets if isinstance(target, ast.Name)}
-        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value and _is_reconfigure(node.value):
-            names |= {node.target.id} if isinstance(node.target, ast.Name) else set()
-    return names
+def _reconfigures(node: ast.Call, resolver: CallableResolver) -> bool:
+    """Whether a call may reconfigure a stream's encoding: a reconfigure it may run, on any receiver, as resolved_calls
+    reads it through names, getattr or operator.attrgetter of a constant name, and functools.partial, or a getattr of
+    a computed name, given an encoding or a `**` it cannot read; or an operator.methodcaller of reconfigure or of a
+    computed name given one."""
+    for read in resolved_calls(node, resolver):
+        changes = "encoding" in read.keywords or bool(read.unread)
+        if changes and read.attribute == RECONFIGURE:
+            return True
+        if read.name == METHOD_CALLER and read.args and _may_name_reconfigure(read.args[0]) and changes:
+            return True
+    return _looks_up_a_computed_name(node.func, resolver) and any(
+        keyword.arg in {"encoding", None} for keyword in node.keywords
+    )
 
 
 @dataclass(frozen=True)
@@ -1551,7 +1641,8 @@ def _is_standard_descriptor(node: ast.AST, names: _StreamNames | None) -> bool:
     if isinstance(node, ast.Constant):
         value = node.value
         return (isinstance(value, int) and not isinstance(value, bool) and value in STANDARD_DESCRIPTORS) or (
-            isinstance(value, str) and value in CONSOLE_DEVICES
+            isinstance(value, (str, bytes))
+            and is_console_device(value.decode("utf-8", "replace") if isinstance(value, bytes) else value)
         )
     return names is not None and isinstance(node, ast.Name) and node.id in names.descriptors
 
@@ -1628,10 +1719,10 @@ def _is_stream_wrapper(function: ast.expr, aliases: dict[str, str], names: _Stre
     return qualified_name(function, aliases) in STREAM_WRAPPERS or _is_codec_class(function, aliases, names)
 
 
-def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[str], names: _StreamNames) -> bool:
-    """Whether a node sets a stream's encoding: a reconfigure call that may pass one, directly or through a name bound
-    to the method; an assignment or setattr that replaces a standard stream; or a text wrapper built over one, its
-    buffer, or its descriptor, inline or through a name bound to it, or partially applied by functools.partial."""
+def _changes_a_stream(node: ast.AST, aliases: dict[str, str], resolver: CallableResolver, names: _StreamNames) -> bool:
+    """Whether a node sets a stream's encoding: a reconfigure call that may pass one, as _reconfigures reads it; an
+    assignment or setattr that replaces a standard stream; or a text wrapper built over one, its buffer, or its
+    descriptor, inline or through a name bound to it, or partially applied by functools.partial."""
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         return any(
@@ -1640,9 +1731,9 @@ def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[
         )
     if not isinstance(node, ast.Call):
         return False
+    if _reconfigures(node, resolver):
+        return True
     function = node.func
-    if _is_reconfigure(function) or (isinstance(function, ast.Name) and function.id in reconfigures):
-        return any(keyword.arg in {"encoding", None} for keyword in node.keywords)
     if qualified_name(function, aliases) in {"setattr", "builtins.setattr"} and len(node.args) > 1:
         stream = node.args[1]
         return (
@@ -1665,13 +1756,13 @@ def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[
 
 def _stream_change_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
     """The lines on which a module sets a standard stream's encoding itself."""
-    reconfigures = _reconfigure_names(tree)
+    resolver = CallableResolver(tree)
     names = _stream_names(tree, aliases)
     return sorted(
         {
             node.lineno
             for node in ast.walk(tree)
-            if isinstance(node, (ast.stmt, ast.expr)) and _changes_a_stream(node, aliases, reconfigures, names)
+            if isinstance(node, (ast.stmt, ast.expr)) and _changes_a_stream(node, aliases, resolver, names)
         }
     )
 
