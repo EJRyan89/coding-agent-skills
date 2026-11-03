@@ -18,6 +18,8 @@ from types import MappingProxyType
 from typing import Any, TypeVar
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -2565,3 +2567,22 @@ def test_a_plan_named_through_a_linked_folder_has_the_seal_of_the_file_it_names(
     link_folder(real, link)
     assert rc.seal_file(link / "plan.json") == rc.seal_file(real / "plan.json")
     assert rc.seal_file(real / "other.json") != rc.seal_file(real / "plan.json")
+
+
+def test_a_failed_git_output_is_named_by_its_subcommand_behind_git_s_options() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(1, "", "fatal: no\n")
+
+    with pytest.raises(rc.CleanupError, match=r"^git status failed in r: "):
+        rc.git_output(rc.Services(git=GitClient(run)), "r", "-c", "core.quotePath=false", "status")
+
+
+def test_a_quiet_git_call_and_a_resolve_git_cannot_answer_are_labelled_with_their_git_command() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: bad config\n")
+
+    services = rc.Services(git=GitClient(run))
+    with pytest.raises(rc.CleanupError, match=r"^git symbolic-ref failed in r: fatal: bad config$"):
+        rc.quiet(services, "r", "-c", "a=b", "symbolic-ref", "--quiet", "HEAD")
+    with pytest.raises(rc.CleanupError, match=r"^git rev-parse failed in r: fatal: bad config$"):
+        rc.resolve(services, "r", "main")
