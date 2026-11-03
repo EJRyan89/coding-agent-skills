@@ -667,6 +667,35 @@ class FindingTests(unittest.TestCase):
             failure,
         )
 
+    def test_a_source_passes_only_when_that_reviewer_raised_the_finding_alone_or_with_others(self) -> None:
+        # A catch by another reviewer alone does not show the named one made it, whatever its severity and category.
+        sourced = {**self.spec, "source": "sibling-spellings"}
+        for source, passes in (
+            ("sibling-spellings", True),
+            ("sibling-search + sibling-spellings", True),
+            ("trust-boundary", False),
+            ("sibling-search + trust-boundary", False),
+            ("sibling-spellings-two", False),
+            ("", False),
+        ):
+            with self.subTest(source=source):
+                found = finding("store.go", 44, "MUST_FIX", source=source)
+                self.assertIs(passes, check(sourced, record([found]), "initial") is None)
+        self.assertIsNone(check(self.spec, record([finding("store.go", 44, "MUST_FIX", source="other")]), "initial"))
+        failure = check(sourced, record([finding("store.go", 44, "MUST_FIX", source="trust-boundary")]), "initial")
+        self.assertEqual(
+            "no finding at least SHOULD_FIX by sibling-spellings on those lines; "
+            "findings on store.go: MUST_FIX by trust-boundary at line 44",
+            failure,
+        )
+        self.assertEqual(
+            "finding store.go:44,45 SHOULD_FIX by sibling-spellings",
+            skill_evals_scenarios.expectation(sourced, "initial").label,
+        )
+        for malformed in ("", "  ", 5, None):
+            with self.subTest(malformed=malformed), self.assertRaisesRegex(ScenarioError, "source must be a reviewer"):
+                skill_evals_scenarios.expectation({**self.spec, "source": malformed}, "initial")
+
 
 class NoFindingAboveTests(unittest.TestCase):
     def test_on_listed_paths(self) -> None:
@@ -1846,6 +1875,35 @@ class ReviewerScenarioTests(unittest.TestCase):
         spec["expectations"] = [{**listed, "category": "Tset coverage"}]
         write_reviewer_scenario(self.root, spec)
         self.assertIn('case: category "Tset coverage" is not one of the manifest\'s finding_categories', self.refusal())
+
+    def test_the_open_spelling_catch_counts_only_from_the_sibling_spellings_reviewer(self) -> None:
+        # Trust-boundary and sibling-search read the pull request's body, which claims the fix is complete; only the
+        # reviewer given the issue alone shows the issue's reasoning, unanchored, caught the open spelling.
+        spec = json.loads((REVIEW_REPOSITORY / "open-spelling" / "scenario.json").read_text(encoding="utf-8"))
+        caught = next(item for item in spec["expectations"] if item["kind"] == "finding")
+        path, line = caught["path"], caught["lines"][0]
+        for source, passes in (
+            ("sibling-spellings", True),
+            ("sibling-search + sibling-spellings", True),
+            ("trust-boundary", False),
+            ("sibling-search", False),
+            ("generic-review", False),
+        ):
+            with self.subTest(source=source):
+                found = finding(path, line, "MUST_FIX", category="Missed sibling", source=source)
+                self.assertIs(passes, check(caught, record([found]), "initial") is None)
+
+    def test_a_source_that_is_no_reviewer_of_the_scenario_is_refused(self) -> None:
+        listed = {"kind": "finding", "path": "tools/a.sh", "lines": [1], "severity": "SHOULD_FIX"}
+        spec = reviewer_spec()
+        for source in ("sibling-spellings", "generic-review"):
+            spec["expectations"] = [{**listed, "source": source}]
+            write_reviewer_scenario(self.root, spec)
+            with self.subTest(source=source):
+                self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
+        spec["expectations"] = [{**listed, "source": "sibling-spelling"}]
+        write_reviewer_scenario(self.root, spec)
+        self.assertIn('case: source "sibling-spelling" is not a reviewer of the scenario', self.refusal())
 
     def test_a_held_file_is_restored_in_the_copy_and_kept_in_the_fixture(self) -> None:
         (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["write-before-refusal"])

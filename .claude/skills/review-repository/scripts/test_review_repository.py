@@ -996,7 +996,15 @@ class SiblingSpellingsTests(unittest.TestCase):
         expectations = json.loads((directory / "scenario.json").read_text(encoding="utf-8"))["expectations"]
         self.assertEqual(
             [
-                {"kind": "finding", "path": path, "lines": [13], "severity": "MUST_FIX", "category": "Missed sibling"},
+                {
+                    "kind": "finding",
+                    "path": path,
+                    "lines": [13],
+                    "severity": "MUST_FIX",
+                    "category": "Missed sibling",
+                    # The reviewer given only the issue made the catch, not one that read the body's claim.
+                    "source": "sibling-spellings",
+                },
                 {"kind": "verdict", "verdict": "CHANGES_REQUESTED"},
             ],
             expectations,
