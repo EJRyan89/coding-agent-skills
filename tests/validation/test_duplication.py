@@ -1077,36 +1077,36 @@ def limits(path: Path, root: Path, name: str, top: str, words: list[str]) -> lis
     import re
 
     try:
-        relative = path.relative_to(root)
+        relative = path.relative_to(root)  # Not read: a caught relative_to (#2195).
     except ValueError:
         relative = None
     lambda_prefix = lambda folder: folder + "/"  # noqa: E731
-    words[0] += "/"
+    words[0] += "/"  # Not read: an item changed in place.
     return [
-        relative,
-        getattr(os.path, "commonpath")([path, root]) == root,
-        getattr(path, "is_relative_to")(root),
-        os.path.dirname(name) == top,
-        name.rfind(top + "/") == 0,
-        name.partition(top + "/")[0] == "",
-        name.split(top + "/")[0] == "",
-        name.startswith(lambda_prefix(top)),
-        fnmatch.fnmatch(name, top + "/*.py"),
-        any(name.startswith(item) for item in words),
-        any(name.startswith(item) for item in ("skills", top)),
-        [name.startswith(folder) for folder in path.parents],
-        name.startswith(top + "/ "),
-        name.startswith(top + "/X"),
-        re.match(top + "/ ", name),
-        re.match(top + "/X", name),
-        fnmatch.fnmatch(name, top + "/X"),
-        name.startswith(str.format("{}{}{}", top, os.sep, top)),
-        name.startswith("".join(words, [top, "/"])),
-        prefixes_of(pattern=top + "/"),
+        relative,  # The caught relative_to's result.
+        getattr(os.path, "commonpath")([path, root]) == root,  # Not read: a function named by a string.
+        getattr(path, "is_relative_to")(root),  # Not read: a method named by a string.
+        os.path.dirname(name) == top,  # Not read: a direct child, not a tree.
+        name.rfind(top + "/") == 0,  # Not read: rfind.
+        name.partition(top + "/")[0] == "",  # Not read: partition.
+        name.split(top + "/")[0] == "",  # Not read: split.
+        name.startswith(lambda_prefix(top)),  # Not read: a lambda's prefix.
+        fnmatch.fnmatch(name, top + "/*.py"),  # Not read: more than wildcards after the separator.
+        any(name.startswith(item) for item in words),  # Not read: the item changed in place above.
+        any(name.startswith(item) for item in ("skills", top)),  # Plain prefixes, no separator.
+        [name.startswith(folder) for folder in path.parents],  # A parent as a plain prefix.
+        name.startswith(top + "/ "),  # Text after the separator.
+        name.startswith(top + "/X"),  # Text after the separator.
+        re.match(top + "/ ", name),  # Text after the separator.
+        re.match(top + "/X", name),  # Text after the separator.
+        fnmatch.fnmatch(name, top + "/X"),  # Text, not a wildcard, after the separator.
+        name.startswith(str.format("{}{}{}", top, os.sep, top)),  # The last field is top.
+        name.startswith("".join(words, [top, "/"])),  # A join reads its first argument alone.
+        prefixes_of(pattern=top + "/"),  # No pattern function; a keyword named pattern alone.
     ]
 
 
-def more(path: Path, root: Path, name: str, top: str, other: str) -> list[object]:
+def more(path: Path, root: Path, name: str, top: str, other: str, *rest: str) -> list[object]:
     import fnmatch
     import re
 
@@ -1131,6 +1131,31 @@ def more(path: Path, root: Path, name: str, top: str, other: str) -> list[object
         any(name.startswith(item) for item in prefixes),
         name.startswith(top + os.path.join(other, "")),
         name.startswith(str.format("{}", os.sep)),
+        name.startswith(tuple(PREFIXES)),
+        name.startswith(tuple(prefixes)),
+        name.startswith(frozenset(item for item in PREFIXES)),
+        name.startswith(tuple({top + "/"})),
+        name.startswith("{0}{1}".format(top, os.sep)),
+        name.startswith("{}{sep}".format(top, sep=os.sep)),
+        name.startswith(str.format("{1}", top, os.sep)),
+        name.startswith(top + "/" if top else other),
+        name.startswith(top and top + "/"),
+        name.startswith(list(PREFIXES)),
+        name.startswith(set(PREFIXES)),
+        name.startswith(sorted(PREFIXES)),
+        name.startswith(tuple([item for item in PREFIXES])),
+        name.startswith(tuple({item for item in PREFIXES})),
+        name.startswith("{0}{1}".format(os.sep, top)),  # The last field is top.
+        name.startswith("{sep}{}".format(top, sep=os.sep)),  # The last field is top.
+        name.startswith("{}/{0.name}".format(top)),  # Not read: a field's attribute.
+        name.startswith("{!r}".format(os.sep)),  # A conversion quotes the separator.
+        name.startswith("{}{}".format(*rest, os.sep)),  # Not read: a position an unpacking moves.
+        name.startswith("{x}".format(**rest)),  # Not read: a keyword an unpacking gives.
+        name.startswith("{".format(top)),  # A template that does not parse.
+        name.startswith("{}x".format(os.sep)),  # Text after the last field.
+        name.startswith(tuple(top)),  # A tuple of a plain name's characters.
+        name.startswith(tuple()),  # An empty tuple.
+        name.startswith(sorted(item.name for item in path.parents)),  # Plain names, no separator.
     ]
 
 
@@ -1194,7 +1219,7 @@ def test_containment_policy_refuses_a_containment_test_outside_path_containment(
             for line in (316, 317, 318)
         ),
         *(f"{alpha}:{line} tests containment with a glob of {folder}{remedy}" for line in (319, 320, 321)),
-        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(322, 326)),
+        *(f"{alpha}:{line} tests containment with {prefix}{remedy}" for line in range(322, 340)),
         f"{alpha}: CONTAINMENT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: CONTAINMENT_ALLOWED must map each function, class, or assignment to its reason",
     ]

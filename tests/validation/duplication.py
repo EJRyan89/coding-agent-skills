@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import re
+import string
 import sys
 import unittest
 from collections.abc import Callable, Iterator
@@ -714,6 +715,8 @@ PARENT_SEARCHES = frozenset({"isdisjoint", "issubset", "issuperset", "intersecti
 # glob's, whose pattern may end in wildcards after the separator.
 REGULAR_EXPRESSIONS = {"re.match": 0, "re.fullmatch": 0, "re.search": 0, "re.compile": 0}
 GLOBS = {"fnmatch.fnmatch": 1, "fnmatch.fnmatchcase": 1, "fnmatch.filter": 1, "fnmatch.translate": 0}
+# The builtins that make a collection of what they are given, so its items are the prefixes given.
+COLLECTIONS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
 
 
 def _last_item(value: ast.expr) -> ast.expr | None:
@@ -721,6 +724,36 @@ def _last_item(value: ast.expr) -> ast.expr | None:
     if isinstance(value, ast.Tuple):
         return value.elts[-1] if value.elts else None
     return value
+
+
+def _last_field(template: str, positional: list[ast.expr], keywords: list[ast.keyword]) -> ast.expr | None:
+    """The value a `str.format` template's last replacement field takes when nothing follows the field, by automatic
+    position, explicit index, or keyword, or None: text after it, a conversion, an attribute or item of the value, a
+    position an unpacking may move, or a template that does not parse."""
+    try:
+        fields = list(string.Formatter().parse(template))
+    except ValueError:
+        return None
+    if not fields or fields[-1][1] is None or fields[-1][3] is not None:
+        return None
+    field = fields[-1][1]
+    if field.isidentifier():
+        return next((keyword.value for keyword in keywords if keyword.arg == field), None)
+    index = int(field) if field.isdigit() else sum(name == "" for _, name, _, _ in fields) - 1 if not field else -1
+    leading = positional[: index + 1]
+    if index < 0 or len(leading) <= index or any(isinstance(argument, ast.Starred) for argument in leading):
+        return None
+    return positional[index]
+
+
+def _alternatives(value: ast.expr | None) -> list[ast.expr] | None:
+    """The values an expression may give, for one that gives one of others: an assignment expression's value, either
+    branch of a conditional expression, or any operand of `and` or `or`; None for any other expression."""
+    if isinstance(value, ast.NamedExpr):
+        return [value.value]
+    if isinstance(value, ast.IfExp):
+        return [value.body, value.orelse]
+    return value.values if isinstance(value, ast.BoolOp) else None
 
 
 def _never(_: ast.expr) -> bool:
@@ -826,10 +859,15 @@ class _ContainmentReader:
             self.following.discard(key)
 
     def _each(self, iterable: ast.expr, read: Callable[[ast.expr], bool]) -> bool:
-        """Whether `read` holds for an item of what a loop iterates: a literal tuple, list, or set, or one a name or
-        an attribute holds."""
+        """Whether `read` holds for an item of what a loop iterates: a literal tuple, list, or set, a comprehension's
+        element, a collection a builtin such as `tuple` makes of one, or one a name, an attribute, or a function of the
+        module holds."""
         if isinstance(iterable, ast.Tuple | ast.List | ast.Set):
             return any(map(read, iterable.elts))
+        if isinstance(iterable, ast.ListComp | ast.SetComp | ast.GeneratorExp):
+            return read(iterable.elt)
+        if isinstance(iterable, ast.Call) and self.name(iterable.func) in COLLECTIONS:
+            return any(self._each(argument, read) for argument in iterable.args[:1])
 
         def each(held: ast.expr) -> bool:
             return self._each(held, read)
@@ -845,8 +883,8 @@ class _ContainmentReader:
         """Whether the text `value` gives ends in a separator, a literal such as "/" or "skills/" included."""
         if isinstance(value, ast.Constant):
             return isinstance(value.value, str) and value.value.rstrip(self.trailing).endswith(SEPARATORS)
-        if isinstance(value, ast.NamedExpr):
-            return self.ends(value.value)
+        if (choices := _alternatives(value)) is not None:
+            return any(map(self.ends, choices))
         if isinstance(value, ast.Name | ast.Attribute) and self.name(value) in SEPARATOR_NAMES:
             return True
         if isinstance(value, ast.Name | ast.Attribute):
@@ -872,8 +910,8 @@ class _ContainmentReader:
             return self._built_by_call(value)
         if isinstance(value, ast.Tuple | ast.List | ast.Set):
             return any(map(self.built, value.elts))
-        if isinstance(value, ast.NamedExpr):
-            return self.built(value.value)
+        if (choices := _alternatives(value)) is not None:
+            return any(map(self.built, choices))
         return self._follow(value, self.built, self.ends)
 
     def _built_by_call(self, call: ast.Call) -> bool:
@@ -882,16 +920,19 @@ class _ContainmentReader:
         if function in PATH_JOINS:
             return any(self.ends(item) or (isinstance(item, ast.Constant) and item.value == "") for item in last)
         if function == "str.format":
-            template, last = (call.args[0] if call.args else None), call.args[1:][-1:]
+            template, positional = (call.args[0] if call.args else None), call.args[1:]
         elif isinstance(call.func, ast.Attribute) and call.func.attr == "format":
-            template = call.func.value
+            template, positional = call.func.value, call.args
         elif isinstance(call.func, ast.Attribute) and call.func.attr == "join":
             return any(self._joined(call.func.value, items) for items in call.args[:1])
+        elif function in COLLECTIONS:
+            return self._each(call, self.built)
         else:
             return self._follow(call, self.built, self.built)
         if not (isinstance(template, ast.Constant) and isinstance(template.value, str)):
             return False
-        return template.value.endswith(SEPARATORS) or (template.value.endswith("{}") and any(map(self.ends, last)))
+        filled = _last_field(template.value, positional, call.keywords)
+        return template.value.endswith(SEPARATORS) or self.ends(filled)
 
     def _joined(self, joiner: ast.expr, items: ast.expr) -> bool:
         """Whether a join of a literal tuple or list ends in a separator: its last item does, or the joiner does and
