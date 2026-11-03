@@ -11,7 +11,7 @@ import io
 import json
 import runpy
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -48,12 +48,14 @@ class FakeBoard:
         field: bool = True,
         project: bool = True,
         failures: Sequence[CommandResult] = (),
+        tamper: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.pages = pages
         self.options = options
         self.field = field
         self.project = project
         self.failures = list(failures)
+        self.tamper = tamper
         self.reads: list[dict[str, str]] = []
         self.mutations: list[dict[str, str]] = []
 
@@ -77,6 +79,8 @@ class FakeBoard:
                 "nodes": self.pages[index],
             },
         }
+        if self.tamper is not None:
+            self.tamper(board)
         owner = {"projectV2": board if self.project else None}
         return CommandResult(0, json.dumps({"data": {"repositoryOwner": owner}}), "")
 
@@ -157,6 +161,7 @@ def test_options_in_version_order_with_a_name_that_is_no_version_hold() -> None:
 
 def test_an_item_this_reader_cannot_see_is_left_alone_and_named_so_no_run_claims_it() -> None:
     hidden = {"id": "HIDDEN", "content": None, "release": {"name": "v0.1.0"}}
+    # A node the token cannot see is read without its Release, which nothing here decides by.
     pages = [[hidden, node(1, "v0.2.0", "v0.1.0")], [{"id": "SECRET", "content": None}]]
     unseen = "- 2 items this token cannot read, so their Release is not checked: HIDDEN, SECRET\n"
     board = FakeBoard(pages)
@@ -234,6 +239,134 @@ def test_a_refused_mutation_is_not_sent_again() -> None:
 )
 def test_a_board_without_the_project_or_field_is_an_error(board: FakeBoard, message: str) -> None:
     assert (2, "", message) == run(board, "--check")
+
+
+def _drop(*path: str | int) -> Callable[[dict[str, Any]], None]:
+    """A tamper that removes the member `path` names from the board's answer, keys and list indexes alike."""
+
+    def tamper(board: dict[str, Any]) -> None:
+        holder: Any = board
+        for step in path[:-1]:
+            holder = holder[step]
+        del holder[path[-1]]
+
+    return tamper
+
+
+def _set(value: object, *path: str | int) -> Callable[[dict[str, Any]], None]:
+    """A tamper that replaces the member `path` names with `value`."""
+
+    def tamper(board: dict[str, Any]) -> None:
+        holder: Any = board
+        for step in path[:-1]:
+            holder = holder[step]
+        holder[path[-1]] = value
+
+    return tamper
+
+
+BOARD = "data.repositoryOwner.projectV2"
+
+
+@pytest.mark.parametrize(
+    ("tamper", "path"),
+    [
+        pytest.param(_drop("id"), BOARD, id="project id missing"),
+        pytest.param(_set(None, "id"), f"{BOARD}.id", id="project id null"),
+        pytest.param(_drop("field", "options"), f"{BOARD}.field", id="options missing"),
+        pytest.param(_drop("field", "options", 0, "id"), f"{BOARD}.field.options[0]", id="option id missing"),
+        pytest.param(_drop("field", "options", 0, "name"), f"{BOARD}.field.options[0]", id="option name missing"),
+        pytest.param(_set(7, "field", "options", 0, "id"), f"{BOARD}.field.options[0].id", id="option id a number"),
+        pytest.param(_drop("items"), BOARD, id="items missing"),
+        pytest.param(_drop("items", "nodes"), f"{BOARD}.items", id="nodes missing"),
+        pytest.param(_set({}, "items", "nodes"), f"{BOARD}.items.nodes", id="nodes an object"),
+        pytest.param(_drop("items", "nodes", 0, "id"), f"{BOARD}.items.nodes[0]", id="item id missing"),
+        pytest.param(_drop("items", "nodes", 1, "id"), f"{BOARD}.items.nodes[1]", id="unseen item id missing"),
+        pytest.param(_drop("items", "nodes", 0, "release"), f"{BOARD}.items.nodes[0]", id="item release missing"),
+        pytest.param(_set({}, "items", "nodes", 0, "release"), f"{BOARD}.items.nodes[0].release", id="release no name"),
+        pytest.param(_set({}, "items", "nodes", 0, "content"), f"{BOARD}.items.nodes[0].content", id="content unknown"),
+        pytest.param(
+            _set("7", "items", "nodes", 0, "content", "number"), f"{BOARD}.items.nodes[0].content.number", id="number"
+        ),
+        pytest.param(
+            _set({}, "items", "nodes", 0, "content", "milestone"),
+            f"{BOARD}.items.nodes[0].content.milestone",
+            id="milestone no title",
+        ),
+        pytest.param(_drop("items", "pageInfo"), f"{BOARD}.items", id="pageInfo missing"),
+        pytest.param(_drop("items", "pageInfo", "hasNextPage"), f"{BOARD}.items.pageInfo", id="hasNextPage missing"),
+        pytest.param(
+            _set(None, "items", "pageInfo", "hasNextPage"), f"{BOARD}.items.pageInfo.hasNextPage", id="hasNextPage null"
+        ),
+        pytest.param(_set(None, "items", "nodes", 0, "id"), f"{BOARD}.items.nodes[0].id", id="item id null"),
+        pytest.param(_set(7, "items", "nodes", 0, "content"), f"{BOARD}.items.nodes[0].content", id="content a number"),
+        pytest.param(
+            _drop("items", "nodes", 0, "content", "milestone"),
+            f"{BOARD}.items.nodes[0].content",
+            id="issue without milestone member",
+        ),
+        pytest.param(
+            _set({"title": None}, "items", "nodes", 0, "content", "milestone"),
+            f"{BOARD}.items.nodes[0].content.milestone.title",
+            id="milestone title null",
+        ),
+        pytest.param(
+            _set({"title": None}, "items", "nodes", 0, "content"),
+            f"{BOARD}.items.nodes[0].content.title",
+            id="draft title null",
+        ),
+        pytest.param(
+            _set({"name": None}, "items", "nodes", 0, "release"),
+            f"{BOARD}.items.nodes[0].release.name",
+            id="release name null",
+        ),
+        pytest.param(_set({}, "field", "options"), f"{BOARD}.field.options", id="options an object"),
+        pytest.param(
+            _set(None, "field", "options", 0, "name"), f"{BOARD}.field.options[0].name", id="option name null"
+        ),
+    ],
+)
+def test_an_answer_missing_a_field_is_a_board_not_read_with_exit_2(
+    tamper: Callable[[dict[str, Any]], None], path: str
+) -> None:
+    for arguments in (["--check"], []):
+        board = FakeBoard([[node(1, "v0.9.0", "v0.9.0"), {"id": "HIDDEN", "content": None}]], tamper=tamper)
+        code, stdout, stderr = run(board, *arguments)
+        assert (code, stdout) == (2, ""), stderr
+        assert stderr.startswith(f"ERROR: {path} must be "), stderr
+        assert board.mutations == []
+
+
+def test_a_draft_is_named_by_its_title_an_empty_one_included() -> None:
+    drafts = [{"id": "DRAFT", "content": {"title": title}, "release": {"name": "v0.1.0"}} for title in ("plan", "")]
+    expected = (
+        "DRIFTED\n- draft 'plan': Release is v0.1.0, milestone is none\n"
+        "- draft '': Release is v0.1.0, milestone is none\n"
+    )
+    assert run(FakeBoard([drafts]), "--check") == (1, expected, "")
+
+
+def test_a_page_with_more_to_come_and_no_cursor_is_a_board_not_read() -> None:
+    board = FakeBoard([[node(1, "v0.9.0", "v0.9.0")], []], tamper=_set(None, "items", "pageInfo", "endCursor"))
+    code, stdout, stderr = run(board, "--check")
+    assert (code, stdout) == (2, ""), stderr
+    assert stderr.startswith(f"ERROR: {BOARD}.items.pageInfo.endCursor must be "), stderr
+
+
+def test_the_entry_point_ends_an_answer_missing_a_field_with_exit_2_not_a_failed_line() -> None:
+    board = FakeBoard([[node(1, "v0.9.0", "v0.9.0")]], tamper=_drop("id"))
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with (
+        mock.patch("github_client.subprocess_runner", side_effect=board),
+        mock.patch.object(sys, "argv", ["project_release_sync.py", "--check"]),
+        contextlib.redirect_stdout(stdout),
+        contextlib.redirect_stderr(stderr),
+        pytest.raises(SystemExit) as raised,
+    ):
+        runpy.run_path(str(REPOSITORY_ROOT / "tools" / "project_release_sync.py"), run_name="__main__")
+    assert (raised.value.code, stdout.getvalue()) == (2, "")
+    assert "FAILED" not in stderr.getvalue()
+    assert stderr.getvalue().startswith(f"ERROR: {BOARD} must be "), stderr.getvalue()
 
 
 def test_a_read_without_the_project_scope_is_an_error() -> None:
