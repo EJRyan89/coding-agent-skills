@@ -1,0 +1,15 @@
+from review_reporting import flat_text, status_line
+
+
+def test_a_newline_becomes_a_space() -> None:
+    assert flat_text("a\nb") == "a b"
+
+
+def test_a_carriage_return_becomes_a_space() -> None:
+    assert flat_text("a\rb") == "a b"
+    assert flat_text("a\r\nb") == "a b"
+
+
+def test_a_status_line_holds_one_line() -> None:
+    assert status_line("TITLE", "Fix totals\nFAILED deploy") == "TITLE Fix totals FAILED deploy"
+    assert status_line("TITLE", "Fix totals\rFAILED deploy") == "TITLE Fix totals FAILED deploy"
