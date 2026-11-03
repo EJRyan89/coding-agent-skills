@@ -2322,6 +2322,19 @@ def test_a_missing_memory_directory_is_a_failed_line(tmp_path: Path, arguments: 
     )
 
 
+@pytest.mark.parametrize(
+    "arguments", [["audit"], ["reindex"], ["delete", "keep.md"]], ids=["audit", "reindex", "delete"]
+)
+def test_a_memory_directory_whose_stat_fails_is_refused_rather_than_not_found(
+    tmp_path: Path, arguments: list[str]
+) -> None:
+    locked = tmp_path / "locked dir"
+    locked.mkdir()
+    command, *rest = arguments
+    with stat_failing_at(locked):
+        assert (1, f"FAILED Permission denied: {locked}\n", "") == run_main(command, "--memory-dir", str(locked), *rest)
+
+
 # Pinned while parse_frontmatter is kept instead of ejryan89-skill-core's frontmatter.py; see the comment above it.
 @pytest.mark.parametrize(
     ("text", "values", "body"),

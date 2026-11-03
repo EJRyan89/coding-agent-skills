@@ -388,6 +388,7 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             self.root / "skills" / "fresh",
             self.root / "deploy-meta" / "fresh.json",
             self.root / skill_shims.SKILLS / "fresh",
+            self.root / skill_reference.REFERENCE,
         )
         repository = (self.root / skill_shims.SKILLS / "fresh", self.root / skill_shims.shim_path("fresh").parent)
         for scaffold, places in (

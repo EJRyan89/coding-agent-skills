@@ -1042,7 +1042,8 @@ def search_roots(home: Path, repo: Path | None, plugin: str, folder: Path | None
     """Where locate looks: the plugins under a folder the user names, or the skill roots and then Claude Code's plugin
     cache, which alone is searched for a skill named with its plugin."""
     if folder is not None:
-        if not folder.is_dir():
+        # A path whose stat fails raises, never reported as one that is not there.
+        if not is_directory(folder, other_is_absent=True):
             raise InputError(f"plugin folder not found: {posix(folder)}")
         return plugin_skill_roots(folder, plugin)
     cache = plugin_skill_roots(home / PLUGIN_CACHE, plugin)
@@ -1195,7 +1196,8 @@ def folder_files(directory: Path) -> list[Path]:
 
 
 def inventory(directory: Path) -> list[str]:
-    if not directory.is_dir():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not is_directory(directory, other_is_absent=True):
         raise InputError(f"skill directory not found: {directory}")
     files = folder_files(directory)
     lines: list[str] = []
@@ -1597,7 +1599,8 @@ def affirmed(pattern: re.Pattern[str], line: str) -> bool:
 
 
 def tools(path: Path) -> list[str]:
-    if not path.is_file():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not is_present(path, other_is_absent=True):
         raise InputError(f"skill file not found: {path}")
     lines = require_text(path).splitlines()
     try:

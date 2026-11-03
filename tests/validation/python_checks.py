@@ -757,10 +757,11 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # onerror or onexc that swallows the error; a read whose OSError handler answers nothing; a branch that does work other
 # than logging before its empty answer, read as recording the case; an `if P:` with no else guarding work whose result
 # is an answer, as `if path.is_file(): tokens.update(...)`; an except naming its exceptions through a name bound to a
-# tuple, as `ERRS = (OSError,)` then `except ERRS:`, which this does not follow; and a `warn(...)` imported by `from
-# warnings import warn`, which this does not read as a log, so a branch or handler holding one passes. The link tests
-# are no presence predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe
-# lets a failed stat through.
+# tuple, as `ERRS = (OSError,)` then `except ERRS:`, which this does not follow; a refusal whose reason says the path is
+# not there, as `if not P: raise Error("not found")`, read as any refusal though it reports a failed stat as absent; and
+# a `warn(...)` imported by `from warnings import warn`, which this does not read as a log, so a branch or handler
+# holding one passes. The link tests are no presence predicates here: LINK_TESTS refuses each outside link_probe however
+# its answer is used, and link_probe lets a failed stat through.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )
@@ -907,7 +908,8 @@ class _PresenceReader:
 
 
 def _empty(node: ast.expr | None) -> bool:
-    """Whether an expression is an empty answer: nothing, None, False, zero, an empty string, or an empty container."""
+    """Whether an expression is an empty answer: nothing, None, False, zero, an empty string, an empty container, or a
+    tuple, list, or set holding only empty answers, as `None, None` is."""
     if node is None:
         return True
     if isinstance(node, ast.Constant):
@@ -918,7 +920,7 @@ def _empty(node: ast.expr | None) -> bool:
             or (type(node.value) is int and node.value == 0)
         )
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        return not node.elts
+        return all(_empty(element) for element in node.elts)
     if isinstance(node, ast.Dict):
         return not node.keys
     return (
@@ -950,14 +952,14 @@ def _only_logs(statement: ast.stmt) -> bool:
 
 
 def _empty_branch(body: list[ast.stmt]) -> bool:
-    """Whether a branch answers nothing: it ends in a return of an empty value or a continue past the item at hand,
-    and every statement before that only logs."""
+    """Whether a branch answers nothing: it ends in a return of an empty value, a continue past the item at hand, or a
+    break out of the search, and every statement before that only logs."""
     if not body or not all(_only_logs(statement) for statement in body[:-1]):
         return False
     last = body[-1]
     if isinstance(last, ast.Return):
         return _empty(last.value)
-    return isinstance(last, ast.Continue)
+    return isinstance(last, (ast.Continue, ast.Break))
 
 
 def _returns_a_value(block: list[ast.stmt]) -> bool:

@@ -276,13 +276,15 @@ def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> s
         return _id_problem(index, document, citation)
     if step := skill_step.fullmatch(span):
         path = root / step.group(1)
-        if not path.is_file():
+        # A file whose stat fails raises, never reported as one that does not exist.
+        if not file_presence.is_present(path, other_is_absent=True):
             return f"cites {span}, but {step.group(1)} does not exist"
         if step.group(2) not in heading_slugs(path.read_text(encoding="utf-8")):
             return f"cites {span}, which names no heading of {step.group(1)}"
         return None
     if workflow.fullmatch(span):
-        return None if (root / span).is_file() else f"cites {span}, but {span} does not exist"
+        present = file_presence.is_present(root / span, other_is_absent=True)
+        return None if present else f"cites {span}, but {span} does not exist"
     return f"names {span}, which is not a test ID, a skill's step, or a workflow by its path from the repository root"
 
 
@@ -431,7 +433,8 @@ def lessons_ledger_problems(root: Path) -> list[str]:
     repository root and the skills' scripts, and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
     document = "docs/lessons.md"
     path = root / document
-    if not path.is_file():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not file_presence.is_present(path, other_is_absent=True):
         return [f"{document} does not exist"]
     lines = _outside_fences(path.read_text(encoding="utf-8"))
     start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Patterns"), None)

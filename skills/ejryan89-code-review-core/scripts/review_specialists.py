@@ -1814,7 +1814,8 @@ def load_role_result(
     name = role["id"]
     tools = {tool.casefold(): tool for tool in analyzer_tools}
     path = Path(role["result_file"])
-    if not path.is_file():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not file_presence.is_present(path, other_is_absent=True):
         raise SpecialistError(f"{name}: result file is missing")
     try:
         value = parse_json(path.read_text(encoding="utf-8-sig"))

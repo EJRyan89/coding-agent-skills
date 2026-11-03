@@ -231,7 +231,8 @@ def row(hub: Path, tree: git_worktrees.Worktree) -> Row:
     path = Path(tree.path)
     branch = tree.branch or "(detached)"
     shown = platform_support.normalize(path)
-    if not path.is_dir():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not file_presence.is_directory(path, other_is_absent=True):
         return Row(branch, "missing", "-", "-", "-", shown)
     counted = git(hub, "rev-list", "--left-right", "--count", f"{MAIN}...{tree.head or 'HEAD'}", timeout=None)
     counts = counted.stdout.split()

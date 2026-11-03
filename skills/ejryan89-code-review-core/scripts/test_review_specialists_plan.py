@@ -1520,3 +1520,11 @@ class WorkDirectoryStatTests(unittest.TestCase):
                 rs._read_changes({"diff_path": str(Path(temporary) / "diff.patch")}, work)
             self.assertEqual(str(work), raised.exception.filename)
             self.assertEqual(["stale.txt"], [path.name for path in work.iterdir()])
+
+    def test_a_result_file_whose_stat_fails_is_refused_with_the_error_never_read_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result = Path(temporary) / "result.json"
+            result.write_text("{}", encoding="utf-8")
+            with unstatable(result), self.assertRaises(PermissionError) as raised:
+                rs.load_role_result({"id": "tools-review", "result_file": str(result)}, {})
+            self.assertEqual(str(result), raised.exception.filename)

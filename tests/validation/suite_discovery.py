@@ -1508,7 +1508,8 @@ def pool_shared_state_problems(root: Path) -> list[str]:
     """
     problems: list[str] = []
     for path in policy_module_files(root):
-        if not path.is_file():
+        # A path whose stat fails raises, never reported as one that is not there.
+        if not file_presence.is_present(path, other_is_absent=True):
             problems.append(f"{path.relative_to(root).as_posix()}: a policy module {RUNNER} runs is missing")
             continue
         for _, name, tree in python_trees([path], root, problems):

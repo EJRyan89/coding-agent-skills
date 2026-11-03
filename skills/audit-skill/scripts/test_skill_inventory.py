@@ -3246,6 +3246,21 @@ def dependency_skill_folder(root: Path) -> tuple[list[str], Path]:
     return ["tools", str(folder / "SKILL.md")], root / "skills" / "beta"
 
 
+def inventoried_skill_folder(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root)
+    return ["inventory", str(folder)], folder
+
+
+def tools_skill_file(root: Path) -> tuple[list[str], Path]:
+    folder = source_skill(root)
+    return ["tools", str(folder / "SKILL.md")], folder / "SKILL.md"
+
+
+def named_plugin_folder(root: Path) -> tuple[list[str], Path]:
+    plugin = plugin_in_cache(root / "home")
+    return ["locate", f"alpha {plugin.parent}", "--home", str(root / "home")], plugin.parent
+
+
 def repository_code_script(root: Path) -> tuple[list[str], Path]:
     folder = root / "skill"
     write(folder / "scripts" / "start.py", 'RUNS_REPOSITORY_CODE = "starts configured servers"\n')
@@ -3278,6 +3293,9 @@ def repository_code_script(root: Path) -> tuple[list[str], Path]:
         sample_named_source,
         repository_git_entry,
         dependency_skill_folder,
+        inventoried_skill_folder,
+        tools_skill_file,
+        named_plugin_folder,
     ],
 )
 def test_a_file_or_folder_whose_stat_fails_fails_the_command_rather_than_reading_as_absent(

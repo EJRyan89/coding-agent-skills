@@ -1248,7 +1248,8 @@ def run(args: argparse.Namespace) -> tuple[int, list[str]]:
         refused = output_refusal(args.output, args.memory_dir, projects)
         if refused:
             return 1, [f"FAILED {refused}"]
-    if not args.memory_dir.is_dir():
+    # A path whose stat fails raises, never reported as one that is not there.
+    if not is_directory(args.memory_dir, other_is_absent=True):
         return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
     refused = store_refusal(args.memory_dir)
     if refused:

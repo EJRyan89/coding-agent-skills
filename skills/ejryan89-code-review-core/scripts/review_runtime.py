@@ -1032,7 +1032,8 @@ def load_manifest_from_file(path: Path) -> dict[str, Any]:
     manifest = validate_adapter_manifest(value)
     for relative in local_reviewer_files(manifest):
         target = path.parent.joinpath(*PurePosixPath(relative).parts)
-        if not target.is_file():
+        # A path whose stat fails raises, never reported as one that is not there.
+        if not file_presence.is_present(target, other_is_absent=True):
             raise RuntimeContractError(f"Local condition script is missing beside the manifest: {relative}")
         _require_safe_snapshot_path(path.parent, target)
     return manifest

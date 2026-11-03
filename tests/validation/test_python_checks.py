@@ -3148,6 +3148,7 @@ PRESENCE_PREDICATE_CALLS = {
     "os.path.ismount": "os.path.ismount(p)",
     "os.access": "os.access(p, os.F_OK)",
 }
+PRESENCE_EMPTIES_OF_EMPTIES = ("None, None", "(None, '')", "[None, 0]", "[[], {}]")
 PRESENCE_EMPTIES = ("", "None", "False", "0", '""', 'b""', "[]", "()", "{}", "set()", "frozenset()", "dict()", "list()")
 PRESENCE_SHAPES = {
     "if not P: return E": "def f(p):\n    if not {call}:\n        return {empty}\n    return p.read_text()\n",
@@ -3159,6 +3160,7 @@ PRESENCE_SHAPES = {
         "def f(ps):\n    for p in ps:\n        if not {call}:\n            continue\n        print(p)\n"
     ),
     "while not P": "def f(p):\n    while not {call}:\n        p = p.parent\n    return p\n",
+    "if not P: break": ("def f(ps):\n    for p in ps:\n        if not {call}:\n            break\n        print(p)\n"),
     "if not P: print, return E": (
         "def f(p):\n    if not {call}:\n        print('missing', p)\n        return {empty}\n    return 1\n"
     ),
@@ -3345,6 +3347,10 @@ PRESENCE_REFUSED = {
         f"a return of {empty or 'nothing'}": _presence_form("if not P: return E", "p.is_file()", empty)
         for empty in PRESENCE_EMPTIES
     },
+    **{
+        f"a return of only empty values, {empty}": _presence_form("if not P: return E", "p.is_file()", empty)
+        for empty in PRESENCE_EMPTIES_OF_EMPTIES
+    },
     "os.path through an alias": _presence_form("V if P else E", "osp.isdir(p)", "[]"),
     "an imported isfile": _presence_form("V if P else E", "isfile(p)", "[]"),
     **{
@@ -3391,6 +3397,13 @@ PRESENCE_PASSED = {
     "a branch that records the case and continues": (
         "def f(ps, problems):\n    for p in ps:\n        if not p.is_file():\n"
         "            problems.append(f'{p} is missing')\n            continue\n        print(p)\n"
+    ),
+    "a branch that records the case and breaks": (
+        "def f(ps, problems):\n    for p in ps:\n        if not p.is_file():\n"
+        "            problems.append(p)\n            break\n        print(p)\n"
+    ),
+    "a return of a tuple holding a reason": (
+        "def f(p):\n    if not p.is_file():\n        return None, 'missing'\n    return p, None\n"
     ),
     "a branch that reports and returns nothing": (
         "def f(self, p):\n    if not p.is_file():\n        self.not_read(p, 'not found')\n        return\n"
@@ -3486,6 +3499,9 @@ PRESENCE_PASSED = {
     "limit: a warn imported from warnings": (
         "from warnings import warn\n\n\ndef f(p):\n    if not p.is_file():\n        warn('missing')\n"
         "        return None\n    return 1\n"
+    ),
+    "limit: a refusal with a not-found reason": (
+        "def f(p):\n    if not p.is_file():\n        raise ValueError(f'{p} not found')\n    return p.read_text()\n"
     ),
     "limit: a link test, which the link-test policy holds": "def f(p):\n    return p.is_symlink()\n",
 }
@@ -3607,6 +3623,11 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
         with mock.patch.object(suite_discovery.RepositoryModules, "_module_file", staticmethod(module_file)):
             return suite_discovery.RepositoryModules(root).resolve(sibling.parent / "python_checks.py", sibling.stem)
 
+    def guard(span: str) -> object:
+        # The index of tests lists the checkout, so it is built over no files, leaving the guard's own read of its file.
+        with mock.patch.object(markdown_links, "repository_files", return_value=[]):
+            return markdown_links._guard_problem(root, markdown_links._TestIndex(root, []), "docs/lessons.md", span)
+
     def own_read_of_tests() -> object:
         # regression_suites lists tests/ too, so it is held empty to leave suite_python_modules' own read of it.
         with mock.patch.object(suite_discovery, "regression_suites", return_value=[]):
@@ -3673,6 +3694,22 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
         "suite_discovery.git_isolation_problems": (
             at(root / "conftest.py"),
             lambda: suite_discovery.git_isolation_problems(root),
+        ),
+        "markdown_links._guard_problem skill step": (
+            at(root / "skills" / skill / "SKILL.md"),
+            lambda: guard(f"skills/{skill}/SKILL.md#a-step"),
+        ),
+        "markdown_links._guard_problem workflow": (
+            at(root / ".github" / "workflows" / "deployable.yml"),
+            lambda: guard(".github/workflows/deployable.yml"),
+        ),
+        "markdown_links.lessons_ledger_problems": (
+            at(root / "docs" / "lessons.md"),
+            lambda: markdown_links.lessons_ledger_problems(root),
+        ),
+        "suite_discovery.pool_shared_state_problems": (
+            at(*suite_discovery.policy_module_files(root)[:1]),
+            lambda: suite_discovery.pool_shared_state_problems(root),
         ),
         "kinds_table._scanned_files": (at(root / "deploy.py"), lambda: kinds_table._scanned_files(root)),
         "fsops_platform._platform_scanned_files": (

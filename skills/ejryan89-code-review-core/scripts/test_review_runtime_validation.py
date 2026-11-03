@@ -34,6 +34,7 @@ from review_runtime import (
     validate_adapter_manifest,
     verify_source_snapshot,
 )
+from test_review_archive import unstatable
 from test_review_io import LONE_SURROGATE, UNPARSEABLE_JSON
 
 HEAD = "a" * 40
@@ -2321,6 +2322,22 @@ class AdapterManifestValidationTests(unittest.TestCase):
             ):
                 review_runtime.load_manifest_from_commit(root, HEAD, "manifest.json")
             self.assertIs(missing, caught.exception)
+
+    def test_a_condition_script_whose_stat_fails_is_refused_with_the_error_never_read_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            path = root / "manifest.json"
+            path.write_text("{}", encoding="utf-8")
+            script = root / "window.py"
+            script.write_text("", encoding="utf-8")
+            with (
+                mock.patch.object(review_runtime, "validate_adapter_manifest", return_value={}),
+                mock.patch.object(review_runtime, "local_reviewer_files", return_value=["window.py"]),
+                unstatable(script),
+                self.assertRaises(PermissionError) as raised,
+            ):
+                review_runtime.load_manifest_from_file(path)
+            self.assertEqual(str(script), raised.exception.filename)
 
     def test_manifest_loaders_refuse_content_the_parser_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

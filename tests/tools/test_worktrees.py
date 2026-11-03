@@ -318,6 +318,18 @@ class CheckoutFailureTests(unittest.TestCase):
             ):
                 return worktrees.row(hub, git_worktrees.Worktree(str(tree), head, "feat/x", False)), calls
 
+    def test_list_refuses_a_worktree_it_cannot_stat_never_shows_it_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            hub, tree = Path(folder) / "hub", Path(folder) / "tree"
+            tree.mkdir()
+            with (
+                mock.patch.object(worktrees, "git", side_effect=AssertionError("counted a tree it cannot stat")),
+                denied(tree),
+                self.assertRaises(PermissionError) as raised,
+            ):
+                worktrees.row(hub, git_worktrees.Worktree(str(tree), "abc", "feat/x", False))
+            self.assertEqual(str(tree), raised.exception.filename)
+
     def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
         row, calls = self.counted_row("abc", git_client.GitResult(0, "2\t3\n", ""))
         self.assertEqual([(True, ("rev-list", "--left-right", "--count", "main...abc"), None)], calls)
