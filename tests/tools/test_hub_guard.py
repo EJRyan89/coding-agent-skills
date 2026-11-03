@@ -3875,7 +3875,7 @@ def test_git_builtins_reads_each_line_git_lists_as_one_name_and_nothing_from_a_f
     # git --list-cmds=builtins prints one name a line; a line is split on "\n" alone, never on other whitespace.
     listing = "add\nam\ncommit tree\nx\ty\n"  # a line holding a space or a tab stays one name
     answers = [git_client.GitResult(0, listing, ""), git_client.GitResult(129, "", "unknown option\n")]
-    expected_sets = (frozenset({"add", "am", "commit tree", "x\ty"}), frozenset())
+    expected_sets: tuple[frozenset[str], ...] = (frozenset({"add", "am", "commit tree", "x\ty"}), frozenset())
     for answer, expected in zip(answers, expected_sets, strict=True):
         hub_guard.git_builtins.cache_clear()
         with mock.patch.object(hub_guard, "git", return_value=answer):
