@@ -246,7 +246,8 @@ class RuntimeContractTests(unittest.TestCase):
 
         def runner(arguments: Sequence[str], timeout: float) -> GitResult:
             if "ls-tree" in arguments:
-                return GitResult(0, f"120000 blob {'a' * 40}\t{manifest['entrypoint']}\n", "")
+                # ls-tree -z ends each entry with NUL, as git writes it.
+                return GitResult(0, f"120000 blob {'a' * 40}\t{manifest['entrypoint']}\0", "")
             raise AssertionError(f"Unexpected command: {arguments}")
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -1557,3 +1558,13 @@ class GitLabelTests(unittest.TestCase):
 
         with self.assertRaisesRegex(review_runtime.RuntimeContractError, r"^git fetch failed in r: did not finish$"):
             review_runtime.git_in(Path("r"), run, "-c", "a=b", "fetch")
+
+
+class WholeAnswerTests(unittest.TestCase):
+    def test_git_s_answer_is_returned_whole_so_a_listed_name_keeps_its_leading_space(self) -> None:
+        listing = " lead.py\0trail.py \0"  # a --name-only -z listing whose names begin and end with a space
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(0, listing, "")
+
+        self.assertEqual(listing, review_runtime._run_git(Path("r"), run, "ls-tree", "--name-only", "-z", "HEAD"))

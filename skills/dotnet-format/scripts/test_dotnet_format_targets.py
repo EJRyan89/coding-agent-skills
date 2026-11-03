@@ -1239,3 +1239,11 @@ class OneLineFactTests(unittest.TestCase):
         self.assertEqual(flat_text(str(repository.root)), lines[0][1])
         self.assertEqual(sorted(flat_text(name) for name in names), sorted(fields[1] for fields in lines[3:-1]))
         self.assertEqual(f"no .sln or .slnx found under {flat_text(str(repository.root))}", lines[-1][1])
+
+
+def test_origin_s_default_branch_keeps_a_name_ending_in_a_character_strip_drops() -> None:
+    def run(command: Sequence[str], timeout: float) -> git_client.GitResult:
+        return git_client.GitResult(0, "refs/remotes/origin/main\u00a0\n", "")
+
+    services = targets.Services(git=git_client.GitClient(run))
+    assert targets.remote_default_branch(services, Path("r")) == "origin/main\u00a0"

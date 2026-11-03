@@ -1473,3 +1473,11 @@ def test_a_configuration_option_with_no_value_after_it_sets_no_section(arguments
 def test_the_configured_keys_are_read_whole_and_case_folded() -> None:
     arguments = ["-c", "Alias.S=grep", "--config-env=Help.AutoCorrect=WHEN", "-C", "d", "status", "-c", "x.y=z"]
     assert git_client.configured_keys(arguments) == ["alias.s", "help.autocorrect"]
+
+
+def test_output_line_takes_off_only_the_newline_that_ends_a_line() -> None:
+    # A ref name or a path may end in a character str.strip() also drops.
+    for name in ("topic\u00a0", "topic\u2028", "topic\u0085", " topic", "topic\t", ""):
+        assert git_client.output_line(f"{name}\n") == name
+        assert git_client.output_line(name) == name
+    assert git_client.output_line("a\n\n") == "a\n"

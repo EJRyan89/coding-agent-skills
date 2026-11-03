@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 
@@ -126,3 +127,24 @@ def test_a_codex_reason_for_lacking_the_network_points_to_the_codex_guide() -> N
             [runtime_support.DEFAULT_REASONS["workflow"], runtime_support.DEFAULT_REASONS["sandbox-network"], pointer]
         ),
     }
+
+
+@pytest.mark.parametrize(
+    ("call", "named"),
+    [
+        ("git(x)", True),
+        ("services.git.run(x)", True),
+        ("git_in(x)", True),
+        ("GitClient(runner).output(x)", True),
+        ("run_git(x)", True),
+        ("GitHubClient(runner).output(x)", False),
+        ("github_client.json(x)", False),
+        ("self.github.run(x)", False),
+        ("digit(x)", False),
+        ("legit(x)", False),
+    ],
+)
+def test_a_call_names_git_by_a_word_of_its_name_github_not_counting(call: str, named: bool) -> None:
+    expression = ast.parse(call, mode="eval").body
+    assert isinstance(expression, ast.Call)
+    assert runtime_support.names_git(expression.func) is named

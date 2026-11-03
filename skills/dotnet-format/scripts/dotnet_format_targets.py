@@ -77,7 +77,7 @@ from file_presence import ABSENT, NotAFile, is_present
 from flat_text import fact_line, flat_text
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
 from folders_up import folders_up
-from git_client import GitClient, GitError, GitResult
+from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 from xml_reader import XmlRefused, read_xml
@@ -280,7 +280,7 @@ def remote_default_branch(services: Services, root: Path) -> str | None:
         raise Failed(f"git could not read {REMOTE_REFS}HEAD: {flat_text(str(exc))}") from exc
     if output is None:
         return None
-    target = output.strip()
+    target = output_line(output)
     name = target.removeprefix(REMOTE_REFS)
     return f"origin/{name}" if name and name != target else None
 

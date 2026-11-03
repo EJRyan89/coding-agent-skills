@@ -1541,6 +1541,13 @@ class CheckoutTests(unittest.TestCase):
                 self.follow(remote, merge)
                 self.assertEqual(reason, self.foreign())
 
+    def test_a_branch_whose_name_ends_in_a_character_strip_drops_is_named_whole(self) -> None:
+        name = "topic\u00a0"
+        self.git.output(["checkout", "-q", "-b", name], directory=self.root)
+        self.git.output(["config", f"branch.{name}.remote", "someone"], directory=self.root)
+        self.git.output(["config", f"branch.{name}.merge", "refs/heads/topic"], directory=self.root)
+        self.assertEqual(f"its branch {name} follows someone, not origin", self.foreign())
+
     def test_a_detached_head_is_accepted_only_at_a_commit_a_branch_of_origin_holds(self) -> None:
         self.git.output(["checkout", "-q", "--detach", "HEAD"], directory=self.root)
         self.assertEqual("its HEAD is detached at a commit no branch of origin holds", self.foreign())

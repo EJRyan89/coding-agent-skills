@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 
+from git_client import output_line
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, listed, markdown_section
 
 from tools.release_notes import ReleaseNotesError, git_output
@@ -72,7 +73,7 @@ def head_branch() -> str | None:
     names none. Raises ReleaseNotesError when git cannot answer, so a failure never reads as no branch."""
     if os.environ.get("GITHUB_HEAD_REF"):
         return os.environ["GITHUB_HEAD_REF"]
-    return git_output(REPOSITORY_ROOT, "branch", "--show-current").strip() or None
+    return output_line(git_output(REPOSITORY_ROOT, "branch", "--show-current")) or None
 
 
 class PullRequestTitlePolicies(PullRequestChecks):

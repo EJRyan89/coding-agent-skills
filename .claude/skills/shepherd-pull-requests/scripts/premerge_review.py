@@ -106,7 +106,7 @@ def merges_only(git: GitClient, top: Path, reviewed: str, head: str, base: str |
         listed = git.output(["rev-list", "--no-merges", head, f"^{reviewed}", f"^{base}"], directory=top)
     except GitError:
         return False
-    return not listed.strip()
+    return not listed
 
 
 def review_lines(

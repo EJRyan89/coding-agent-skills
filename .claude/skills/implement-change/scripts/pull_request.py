@@ -67,7 +67,7 @@ from closing_references import (
 from console import run_main
 from file_presence import NotADirectory, is_directory, is_present
 from flat_text import flat_text
-from git_client import GitClient, GitError, command_name
+from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from markdown_sections import HTML_COMMENT
 from typed_text import read_typed
@@ -301,7 +301,7 @@ def branch_facts(git: GitClient, repository: Path, base: Base) -> tuple[list[str
     # merge-base --is-ancestor exits 1 saying nothing when HEAD does not hold the base; any other failure is git's.
     if quiet_output(git, repository, ["merge-base", "--is-ancestor", commit, "HEAD"]) is None:
         problems.append(f"BEHIND {base} {commit}")
-    if git_output(git, repository, ["rev-list", "--count", f"{commit}..HEAD"]).strip() == "0":
+    if output_line(git_output(git, repository, ["rev-list", "--count", f"{commit}..HEAD"])) == "0":
         problems.append(f"NO_COMMITS {base}")
     changed = git_output(git, repository, ["status", "--porcelain", "--no-renames", "-z"]).split("\0")[:-1]
     if changed:
@@ -330,13 +330,13 @@ def upstream_problems(git: GitClient, repository: Path) -> list[str]:
     if branch is None:
         return ["UNPUSHED no upstream"]
     reference, _, name = (
-        git_output(git, repository, ["for-each-ref", "--format=%(upstream)%00%(upstream:short)", branch.strip()])
+        git_output(git, repository, ["for-each-ref", "--format=%(upstream)%00%(upstream:short)", output_line(branch)])
         .removesuffix("\n")
         .partition("\0")
     )
     if not reference:
         return ["UNPUSHED no upstream"]
-    head = git_output(git, repository, ["rev-parse", "HEAD"]).strip()
+    head = output_line(git_output(git, repository, ["rev-parse", "HEAD"]))
     return [] if commit_of(git, repository, reference) == head else [f"UNPUSHED {name}"]
 
 

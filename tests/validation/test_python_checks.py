@@ -48,6 +48,7 @@ from python_checks import (
     ctypes_declaration_problems,
     discarded_result_problems,
     gh_limit_problems,
+    git_answered_problems,
     git_separator_problems,
     int_parse_problems,
     issue_numbers_in_comments,
@@ -1112,6 +1113,164 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("decode().splitlines()", "return out.decode().splitlines()"),
         )
     },
+    # "no `strip()`, `lstrip()`, `rstrip()`, or `split()` of git's output given no argument", bound or unbound.
+    **{
+        f"a trim of git's output by {form}": _form(
+            git_separator_problems,
+            f"def f(client):\n    out = client.output(['symbolic-ref', '--short', 'HEAD'])\n    return {trim}\n",
+        )
+        for form, trim in (
+            ("strip()", "out.strip()"),
+            ("lstrip()", "out.lstrip()"),
+            ("rstrip()", "out.rstrip()"),
+            ("split()", "out.split()"),
+            ("str.strip(out)", "str.strip(out)"),
+            ("str.split(out)", "str.split(out)"),
+            ("strip() of the call", "client.output(['rev-parse', 'HEAD']).strip()"),
+            ("strip() of a stdout", "client.run(['config', '--get', 'x']).stdout.strip()"),
+            ("strip() of an answer or nothing", "(client.quiet_output(['symbolic-ref', 'HEAD']) or '').strip()"),
+            ("rsplit()", "out.rsplit()"),
+            ("strip(None)", "out.strip(None)"),
+            ("split(None)", "out.split(None)"),
+            ("split(maxsplit=1)", "out.split(maxsplit=1)"),
+            ("split(None, 1)", "out.split(None, 1)"),
+            ("split(sep=None)", "out.split(sep=None)"),
+            ("strip(chars=None)", "out.strip(chars=None)"),
+            ("str.split(out, None)", "str.split(out, None)"),
+            ("str.rsplit(out)", "str.rsplit(out)"),
+        )
+    },
+    # "a call whose first argument is a literal `git`, or whose function's name has the word git in it, counts for
+    # any subcommand", one its arguments name only at run time included.
+    "a trim of a git-named call's output whose subcommand its arguments name at run time": _form(
+        git_separator_problems, "def f(git_in, arguments):\n    return git_in(*arguments).stdout.strip()\n"
+    ),
+    "a trim of a call starting with a literal git": _form(
+        git_separator_problems, "def f(run):\n    return run(['git', 'update-ref', 'x']).strip()\n"
+    ),
+    "a trim of a git-named call whose subcommand is a name its caller gives": _form(
+        git_separator_problems,
+        "def f(git_in, checkout, runner, command):\n    return git_in(checkout, runner, command).stdout.strip()\n",
+    ),
+    "a trim of a literal git call whose subcommand is a name": _form(
+        git_separator_problems, "def f(run, name):\n    return run(['git', name]).stdout.strip()\n"
+    ),
+    "a trim of a call whose arguments run no git at all": _form(
+        git_separator_problems, "def f(run, arguments):\n    return run(*arguments).stdout.strip()\n", refused=False
+    ),
+    **{
+        f"a {form} of git's output that keeps what a name holds": _form(
+            git_separator_problems,
+            f"def f(client):\n    out = client.output(['symbolic-ref', '--short', 'HEAD'])\n    return {trim}\n",
+            refused=False,
+        )
+        for form, trim in (
+            ("strip('\\n')", "out.strip('\\n')"),
+            ("split on a tab", "out.split('\\t')"),
+            ("split on a tab once", "out.split('\\t', maxsplit=1)"),
+            ("rsplit on a tab", "out.rsplit(sep='\\t')"),
+            ("split on NUL", "str.split(out, '\\0')"),
+            ("removesuffix", "out.removesuffix('\\n')"),
+            ("strip() of a literal", "' x '.strip()"),
+        )
+    },
+    # "or any subcommand of a call whose function's dotted name has the word git in it", GitHub not counting.
+    "a trim of a git-named call's update-index": _form(
+        git_separator_problems, "def f(git_output):\n    return git_output('update-index', '--verbose').split()\n"
+    ),
+    "a splitlines() of a git-named call's update-index": _form(
+        git_separator_problems,
+        "def f(self):\n    return self.git('update-index', '--verbose', '-z', '--add').splitlines()\n",
+    ),
+    "a trim of a subcommand not catalogued, through a wrapper named otherwise": _form(
+        git_separator_problems, "def f(quiet, root):\n    return quiet(root, 'fetch').strip()\n", refused=False
+    ),
+    "a trim of a catalogued subcommand through a wrapper named otherwise": _form(
+        git_separator_problems, "def f(quiet, root):\n    return quiet(root, 'write-tree').strip()\n"
+    ),
+    "a trim of a GitHub call's output": _form(
+        git_separator_problems,
+        "from github_client import GitHubClient\n\n\n"
+        "def f():\n    return GitHubClient().output(['pr', 'view']).strip()\n",
+        refused=False,
+    ),
+    # "a comparison of a caught `GitError`'s `returncode` with `None` inside the `except` clause that catches it".
+    **{
+        f"a GitError's returncode {form}": _form(
+            git_answered_problems,
+            f"{imports}\n\n\ndef f(client):\n    try:\n        client.output(['status'])\n"
+            f"    except {caught} as exc:\n        if {test}:\n            raise\n",
+        )
+        for form, imports, caught, test in (
+            ("is None", "from git_client import GitError", "GitError", "exc.returncode is None"),
+            ("is not None", "from git_client import GitError", "GitError", "exc.returncode is not None"),
+            ("== None", "from git_client import GitError", "GitError", "exc.returncode == None"),
+            ("None first", "from git_client import GitError", "GitError", "None is exc.returncode"),
+            ("by the module", "import git_client", "git_client.GitError", "exc.returncode is None"),
+            ("by an alias", "from git_client import GitError as Failed", "Failed", "exc.returncode is None"),
+            ("among others", "from git_client import GitError", "(OSError, GitError)", "exc.returncode is None"),
+            ("in a condition", "from git_client import GitError", "GitError", "ok and exc.returncode is None"),
+            ("in a tuple", "from git_client import GitError", "GitError", "exc.returncode in (None, 128)"),
+            ("in a list", "from git_client import GitError", "GitError", "exc.returncode not in [None, 128]"),
+            ("in a set", "from git_client import GitError", "GitError", "exc.returncode in {128, None}"),
+            ("read as false", "from git_client import GitError", "GitError", "not exc.returncode"),
+        )
+    },
+    **{
+        f"a {form}": _form(
+            git_answered_problems,
+            f"{imports}\n\n\ndef f(client, other):\n    try:\n        client.output(['status'])\n"
+            f"    except {caught} as exc:\n        if {test}:\n            raise\n",
+            refused=False,
+        )
+        for form, imports, caught, test in (
+            ("GitError's answered", "from git_client import GitError", "GitError", "not exc.answered"),
+            (
+                "GitError's returncode set beside 0",
+                "from git_client import GitError",
+                "GitError",
+                "exc.returncode == 0",
+            ),
+            (
+                "GitHubError's returncode is None",
+                "from github_client import GitHubError",
+                "GitHubError",
+                "exc.returncode is None",
+            ),
+            ("returncode of another value", "from git_client import GitError", "GitError", "other.returncode is None"),
+        )
+    },
+    # "or a function given it as a parameter annotated `GitError`".
+    **{
+        f"a GitError parameter's returncode {form}": _form(
+            git_answered_problems,
+            f"{imports}\n\n\ndef could_not_run(error: {annotation}) -> bool:\n    return {test}\n",
+        )
+        for form, imports, annotation, test in (
+            ("is None", "from git_client import GitError", "GitError", "error.returncode is None"),
+            ("by the module", "import git_client", "git_client.GitError", "error.returncode is None"),
+            ("in a tuple", "from git_client import GitError", "GitError", "error.returncode in (None, 1)"),
+            ("read as false", "from git_client import GitError", "GitError", "not error.returncode"),
+        )
+    },
+    "a parameter annotated otherwise": _form(
+        git_answered_problems,
+        "from github_client import GitHubError\n\n\n"
+        "def f(error: GitHubError) -> bool:\n    return error.returncode is None\n",
+        refused=False,
+    ),
+    "a trim of a git program's output passed by name": _form(
+        git_separator_problems,
+        "def f(run_tool, git):\n    return run_tool([git, '--exec-path']).output.strip()\n",
+    ),
+    "a GitError's name reused by a GitHubError clause": _form(
+        git_answered_problems,
+        "from git_client import GitError\nfrom github_client import GitHubError\n\n\n"
+        "def f(client):\n    try:\n        client.output(['status'])\n    except GitError as exc:\n        raise\n"
+        "    try:\n        client.json(['pr'])\n    except GitHubError as exc:\n"
+        "        if exc.returncode is None:\n            raise\n",
+        refused=False,
+    ),
     # A str() given an encoding, a formatted string, format(), %, concatenation, and a join keep the text as a str()
     # does, through each place git's output is read: a name bound to client.output, a run result's stdout, and the call.
     **{
@@ -1159,7 +1318,7 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     "a split of git's output on a newline alone": _form(
         git_separator_problems,
         "from git_client import output_lines\n\n\n"
-        "def f(client):\n    return output_lines(client.output(['describe', 'HEAD']).strip())\n",
+        "def f(client):\n    return output_lines(client.output(['describe', 'HEAD']))\n",
         refused=False,
     ),
     # "a one-argument `int()` ... that converts a regular-expression group, a stripped one and a `findall` result's
@@ -1349,6 +1508,51 @@ def sanctioned():
 
 PROCESS_ENV_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 """
+
+
+GIT_ANSWERED_SOURCE = """\
+from git_client import GitError
+
+
+def handled(client):
+    try:
+        client.output(["status"])
+    except GitError as exc:
+        return exc.returncode is None
+
+
+def given(error: GitError) -> bool:
+    return error.returncode in (None, 128)
+
+
+def sanctioned(error: GitError) -> bool:
+    return error.returncode is None
+
+
+GIT_ANSWERED_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_git_answered_policy_holds_its_owner_suites_and_allowance() -> None:
+    # git_client.py, the owner, a suite, and a tests/ helper are not read; a sanctioned scope passes; a stale or
+    # empty entry fails.
+    reads = (
+        "reads a GitError's returncode is None as git not running, though git_client raises one without an exit code "
+        "for an answer in the wrong shape; read GitError.answered, or state why in GIT_ANSWERED_ALLOWED"
+    )
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.git_answered_problems,
+        "GIT_ANSWERED_ALLOWED",
+        GIT_ANSWERED_SOURCE,
+        python_checks.GIT_STATUS_OWNER,
+    )
+    assert found == [
+        f"{alpha}:8 {reads}",
+        f"{alpha}:12 {reads}",
+        f"{alpha}: GIT_ANSWERED_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: GIT_ANSWERED_ALLOWED must map each function, class, or assignment to its reason",
+    ]
 
 
 def test_process_environment_policy_refuses_a_start_that_may_keep_the_repository_variables() -> None:

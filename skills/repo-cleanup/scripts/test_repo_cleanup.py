@@ -2586,3 +2586,35 @@ def test_a_quiet_git_call_and_a_resolve_git_cannot_answer_are_labelled_with_thei
         rc.quiet(services, "r", "-c", "a=b", "symbolic-ref", "--quiet", "HEAD")
     with pytest.raises(rc.CleanupError, match=r"^git rev-parse failed in r: fatal: bad config$"):
         rc.resolve(services, "r", "main")
+
+
+def answering(answers: dict[str, GitResult]) -> GitClient:
+    """A client whose runner answers each command with the result of the first key its words hold, in order."""
+
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return next(result for key, result in answers.items() if key in command)
+
+    return GitClient(run)
+
+
+def test_origin_head_and_the_current_branch_keep_a_name_ending_in_a_character_strip_drops() -> None:
+    for name in ("topic\u00a0", "topic\u2028"):
+        services = rc.Services(
+            git=answering(
+                {
+                    "refs/remotes/origin/HEAD": GitResult(0, f"refs/remotes/origin/{name}\n", ""),
+                    "--short": GitResult(0, f"{name}\n", ""),
+                }
+            )
+        )
+        assert rc.origin_head(services, "r") == name
+        assert rc.current_branch(services, "r") == name
+
+
+def test_a_git_error_git_answered_without_an_exit_code_is_git_s_failure_not_git_unavailable() -> None:
+    # git_client raises one, with no exit code, for an answer in the wrong shape.
+    answered = rc.git_failure("r", "git rev-parse", GitError("git rev-parse answered 'x', not one object name"))
+    assert isinstance(answered, rc.CleanupError)
+    assert not isinstance(answered, rc.GitUnavailable)
+    missing = rc.git_failure("r", "git rev-parse", GitError("no git", kind="prerequisite"))
+    assert isinstance(missing, rc.GitUnavailable)
