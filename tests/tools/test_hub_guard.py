@@ -3873,8 +3873,10 @@ def test_every_field_two_paths_leave_differently_is_joined_by_the_rule(
 
 def test_git_builtins_reads_each_line_git_lists_as_one_name_and_nothing_from_a_failure() -> None:
     # git --list-cmds=builtins prints one name a line; a line is split on "\n" alone, never on other whitespace.
-    answers = [git_client.GitResult(0, "add\nam\ncommit\n", ""), git_client.GitResult(129, "", "unknown option\n")]
-    for answer, expected in zip(answers, (frozenset({"add", "am", "commit"}), frozenset()), strict=True):
+    listing = "add\nam\ncommit tree\nx\ty\n"  # a line holding a space or a tab stays one name
+    answers = [git_client.GitResult(0, listing, ""), git_client.GitResult(129, "", "unknown option\n")]
+    expected_sets = (frozenset({"add", "am", "commit tree", "x\ty"}), frozenset())
+    for answer, expected in zip(answers, expected_sets, strict=True):
         hub_guard.git_builtins.cache_clear()
         with mock.patch.object(hub_guard, "git", return_value=answer):
             assert hub_guard.git_builtins() == expected
