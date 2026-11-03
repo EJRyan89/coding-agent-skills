@@ -1,0 +1,18 @@
+"""The status lines a review prints for the orchestrating session to read, one fact per line.
+
+A pull request's title and an issue's body are free text their authors wrote. A status line that carries one
+flattens it here first, so no line break in it starts a line of its own, which the session would read as another
+status line.
+"""
+
+from __future__ import annotations
+
+
+def flat_text(text: str) -> str:
+    """`text` with each line break `str.splitlines()` breaks on made a space, and no space at either end."""
+    return " ".join(text.splitlines()).strip()
+
+
+def status_line(key: str, value: str) -> str:
+    """`key` and the flattened `value`, one status line."""
+    return f"{key} {flat_text(value)}"

@@ -29,8 +29,14 @@ import whole_number
 from git_client import GitClient
 from path_containment import within
 from review_document import specialists_manifest
-from review_records import LEDGER_ID
-from review_runtime import DOCUMENT_STAGES, RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
+from review_records import LEDGER_ID, source_parts
+from review_runtime import (
+    DOCUMENT_STAGES,
+    GENERIC_SPECIALIST,
+    RuntimeContractError,
+    declared_reviewer_files,
+    validate_adapter_manifest,
+)
 from review_vocabularies import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_vocabularies import SEVERITY_RANK
 from suite_names import is_suite_name
@@ -177,7 +183,7 @@ def _rank(severity: str) -> int:
 
 
 def finding_expectation(spec: Mapping[str, object]) -> Expectation:
-    _fields(spec, {"kind", "path", "lines", "severity"}, frozenset({"category"}))
+    _fields(spec, {"kind", "path", "lines", "severity"}, frozenset({"category", "source"}))
     path, lines = _path(spec["path"]), _lines(spec["lines"])
     severity = _choice(spec["severity"], SEVERITIES, "severity")
     category: str | None = None
@@ -185,8 +191,15 @@ def finding_expectation(spec: Mapping[str, object]) -> Expectation:
         if not isinstance(spec["category"], str) or not spec["category"].strip():
             raise ScenarioError("category must be a category name; leave it out for any category")
         category = spec["category"].strip()
+    source: str | None = None
+    if "source" in spec:
+        if not isinstance(spec["source"], str) or not spec["source"].strip():
+            raise ScenarioError("source must be a reviewer's id; leave it out for any reviewer")
+        source = spec["source"].strip()
 
     def matches(finding: Mapping[str, Any]) -> bool:
+        if source is not None and source not in source_parts(str(finding.get("source", ""))):
+            return False
         return category is None or str(finding.get("category", "")).casefold() == category.casefold()
 
     def check(record: Record) -> str | None:
@@ -201,9 +214,11 @@ def finding_expectation(spec: Mapping[str, object]) -> Expectation:
 
     def describe(finding: Mapping[str, Any]) -> str:
         kind = f" {finding.get('category')}" if category is not None else ""
-        return f"{finding['severity']}{kind} at line {finding['line']}"
+        raised = f" by {finding.get('source')}" if source is not None else ""
+        return f"{finding['severity']}{kind}{raised} at line {finding['line']}"
 
     wanted = severity if category is None else f"{severity} {category}"
+    wanted = wanted if source is None else f"{wanted} by {source}"
     return Expectation(f"finding {_where(path, lines)} {wanted}", check)
 
 
@@ -440,6 +455,29 @@ def finding_categories(spec: Mapping[str, object], directory: Path, checkout: Pa
     return None if categories is None else list(categories)
 
 
+def finding_sources(spec: Mapping[str, object], directory: Path, checkout: Path) -> list[str]:
+    """The reviewers that may raise a finding in the scenario: the generic reviewer and each specialist of the manifest
+    the scenario's reviewers follow, found as `finding_categories` finds it."""
+    if "document" in spec:
+        manifest = specialists_manifest(PurePosixPath(str(spec["document"])).name)
+    else:
+        manifest_path = _manifest_path(directory)
+        if manifest_path is None:
+            return [GENERIC_SPECIALIST]
+        tree = checkout if "reviewer" in spec else directory / "base"
+        manifest = _manifest(tree, manifest_path, "the manifest")
+    return [GENERIC_SPECIALIST, *(specialist["id"] for specialist in manifest.get("specialists", []))]
+
+
+def _listed_sources(expectations: Sequence[Mapping[str, Any]], sources: Sequence[str]) -> None:
+    """Refuse a finding expectation's source no reviewer of the scenario is, which no run could ever pass."""
+    for item in expectations:
+        if item["kind"] == "finding" and "source" in item and item["source"].strip() not in sources:
+            raise ScenarioError(
+                f"source {quote(item['source'])} is not a reviewer of the scenario: {', '.join(sources)}"
+            )
+
+
 def _listed_categories(expectations: Sequence[Mapping[str, Any]], categories: Sequence[str] | None) -> None:
     """Refuse a finding expectation's category its manifest does not list, ignoring case, as the judge matches it."""
     if categories is None:
@@ -653,6 +691,7 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
     expectations = tuple(expectation(item, mode) for item in spec["expectations"])
     _clean_verdict(spec["expectations"], mode)
     _listed_categories(spec["expectations"], finding_categories(spec, directory, checkout))
+    _listed_sources(spec["expectations"], finding_sources(spec, directory, checkout))
     return Scenario(
         skill=str(spec["skill"]),
         name=directory.name,

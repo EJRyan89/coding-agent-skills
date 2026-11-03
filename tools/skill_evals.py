@@ -76,9 +76,12 @@ the turn limit is the evaluation's own. The first such session makes the whole r
 Each expectation is a statement over the record, checked here by script and never by reading the report. Severities
 rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding may be anchored at, any of them:
 
-  {"kind": "finding", "path": P, "lines": [N, ...], "severity": S, "category": C}
+  {"kind": "finding", "path": P, "lines": [N, ...], "severity": S, "category": C, "source": R}
       a finding at P on one of the lines, at least as severe as S, and of category C, matched ignoring case, when
-      `category` is given; a scenario whose manifest declares finding_categories names one of them
+      `category` is given; a scenario whose manifest declares finding_categories names one of them; and raised by the
+      reviewer R, one of those its `source` names, when `source` is given, so another reviewer's catch alone does not
+      pass. A finding several reviewers raised keeps its most severe wording, so `source` shows R raised the finding,
+      not that R alone rated it S
   {"kind": "no_finding_above", "severity": S, "paths": [P, ...], "lines": [N, ...]}
       no finding more severe than S on the paths, or on any path when `paths` is left out; with `lines`, which takes
       exactly one path, only on those lines of it, so a document may hold a more severe finding elsewhere; S is

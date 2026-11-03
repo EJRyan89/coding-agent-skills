@@ -258,6 +258,7 @@ class RuntimePromptsTestCase(unittest.TestCase):
                 "review-insights/synthesis.txt",
                 "review-prs/copilot-entrypoint.txt",
                 "review-prs/generic-review.txt",
+                "review-repository/sibling-spellings.txt",
             ],
             samples,
         )

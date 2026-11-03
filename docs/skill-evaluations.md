@@ -122,9 +122,9 @@ session model and the judged one. A skill with no row has not been run since its
 | review-prs | haiku | claude-haiku-5-5 | 24/27 | 1 | clean-change 2/2, description 5/6, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-24 |
 | review-prs | sonnet | claude-sonnet-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-24 |
 | review-prs | opus | claude-opus-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-24 |
-| review-repository | haiku | claude-haiku-5-5 | 14/14 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-31 |
-| review-repository | sonnet | claude-sonnet-5-5 | 14/14 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-31 |
-| review-repository | opus | claude-opus-5-5 | 13/14 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, tested-change 1/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-31 |
+| review-repository | haiku | claude-haiku-5-5 | 16/18 | 1 | branch-name-command 0/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 1/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
+| review-repository | sonnet | claude-sonnet-5-5 | 17/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 1/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
+| review-repository | opus | claude-opus-5-5 | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
 <!-- skill-evals:end -->
 
 ### Notes
@@ -156,5 +156,5 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | Skill | Scenario | Model | Run | Date | Transcript |
 | --- | --- | --- | --- | --- | --- |
 | review-document | committed-edit | haiku | 1 | 2026-10-25 | agrees |
-| review-repository | drifted-guide | opus | 1 | 2026-10-31 | agrees |
+| review-repository | missed-sibling | haiku | 1 | 2026-11-02 | agrees |
 <!-- skill-evals-samples:end -->

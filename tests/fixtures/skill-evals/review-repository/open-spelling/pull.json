@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "repository": "example/status-lines",
+  "number": 52,
+  "title": "fix(code-review): flatten a carriage return on a status line",
+  "base_ref": "main",
+  "head_ref": "carriage-return",
+  "threads": [],
+  "body": "Closes #41\n\n`flat_text` now makes a carriage return a space, as it does a newline, so a title holding one can no longer start a status line of its own.\n\n## Upgrade note\n\nNone.\n\n## Validation\n\nSiblings: searched every line break `flat_text` could meet; the carriage return was the only one it missed, so the fix is complete.\n",
+  "closing_issues": [
+    {
+      "number": 41,
+      "state": "OPEN",
+      "title": "flat_text lets a carriage return through, so an author's title starts a status line of its own",
+      "body": "## What and why\n\n`flat_text` in `skills/ejryan89-code-review-core/scripts/review_reporting.py` promises, in its module docstring, that no line break in an author's text starts a line of its own on a status line. It replaces only `\\n`.\n\n## Reproduction\n\n```python\n>>> status_line(\"TITLE\", \"Fix totals\\rFAILED deploy\")\n'TITLE Fix totals\\rFAILED deploy'\n```\n\nA reader that splits its input with `str.splitlines()`, as the scripts here do, reads two lines: `TITLE Fix totals` and `FAILED deploy`, a status line the author wrote.\n\n## Expected\n\nNo character a reader splits a line on survives `flat_text`: every one becomes a space, so `status_line` always prints one line."
+    }
+  ],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}

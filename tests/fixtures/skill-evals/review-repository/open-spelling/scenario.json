@@ -1,0 +1,9 @@
+{
+  "skill": "review-prs",
+  "reviewer": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": "skills/ejryan89-code-review-core/scripts/review_reporting.py", "lines": [13], "severity": "MUST_FIX", "category": "Missed sibling", "source": "sibling-spellings"},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}
