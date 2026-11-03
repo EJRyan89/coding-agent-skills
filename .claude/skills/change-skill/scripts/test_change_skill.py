@@ -11,9 +11,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -490,6 +491,43 @@ class GateTests(unittest.TestCase):
         self.assertEqual(2, raised.exception.code)
         self.assertIn("is not a ref", stderr.getvalue())
 
+    # The gates list the scenario and metadata folders through file_presence.matching, so a folder they cannot list
+    # fails the command rather than reading as one with no scenario or no metadata.
+
+    def test_a_skills_scenario_folder_is_kept_and_a_stray_file_beside_it_is_passed_over(self) -> None:
+        scenario = {
+            "tests/fixtures/skill-evals/alpha/review/scenario.json": "{}\n",
+            "tests/fixtures/skill-evals/notes.txt": "not a skill\n",
+        }
+        lines = self.gates(committed=scenario, uncommitted={"skills/alpha/scripts/alpha.py": "print('more')\n"})
+        self.assertIn("GATE evaluate-skill alpha if-prompt", lines)
+        self.assertEqual([], [line for line in lines if "notes" in line])
+
+    def test_a_scenarios_folder_it_cannot_list_fails_the_gates(self) -> None:
+        write(self.root, {"skills/alpha/scripts/alpha.py": "print('more')\n"})
+        scenarios = self.root / "tests" / "fixtures" / "skill-evals"
+        with unlistable(scenarios):
+            code, lines = run(["gates", "--base", "main"], self.root)
+        self.assertEqual((1, f"FAILED [Errno 13] Permission denied: {str(scenarios)!r}"), (code, lines[-1]), lines)
+
+    def test_head_metadata_reads_each_skill_in_name_order_and_refuses_a_folder_it_cannot_list(self) -> None:
+        write(self.root, {"deploy-meta/zeta.json": "{}\n", "deploy-meta/beta.json": "{}\n"})
+        names = list(change_skill.head_metadata(self.root))
+        self.assertEqual(sorted(names), names)
+        self.assertLess(names.index("beta"), names.index("zeta"))
+        metadata = self.root / "deploy-meta"
+        with unlistable(metadata), self.assertRaises(PermissionError) as raised:
+            change_skill.head_metadata(self.root)
+        self.assertEqual(str(metadata), raised.exception.filename)
+
+    def test_reviews_refuses_a_skills_scenario_folder_it_cannot_list(self) -> None:
+        folder = self.root / "tests" / "fixtures" / "skill-evals" / "alpha"
+        write(self.root, {"tests/fixtures/skill-evals/alpha/review/scenario.json": "{}\n"})
+        self.assertTrue(change_skill.reviews(self.root, "alpha"))
+        with unlistable(folder), self.assertRaises(PermissionError) as raised:
+            change_skill.reviews(self.root, "alpha")
+        self.assertEqual(str(folder), raised.exception.filename)
+
 
 def tools_reached(tool: Path) -> set[str]:
     """The modules of `tools/` that `tool` imports, read through `ast`, and each of those imports in turn."""
@@ -547,3 +585,23 @@ def test_every_section_the_skill_quotes_from_the_contract_is_one_heading_there(t
     heading, body = change_skill.section(contract, title)
     assert title == heading.text
     assert any(line.strip() for line in body)
+
+
+@contextlib.contextmanager
+def unlistable(folder: Path) -> Iterator[None]:
+    """`folder` as one whose listing is refused: os.scandir and os.listdir raise PermissionError naming it, so
+    Path.iterdir raises on every supported Python, while Path.glob and Path.rglob match nothing in it. Its stat, and
+    every other folder, are read as they are."""
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any = ".", *rest: Any, **options: Any) -> Any:
+            if isinstance(path, (str, os.PathLike)) and Path(path) == folder:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *rest, **options)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in ("scandir", "listdir"):
+            stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name))))
+        yield

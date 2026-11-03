@@ -3496,18 +3496,16 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
     def at(*paths: Path) -> Callable[[Path], bool]:
         return lambda path: path in paths
 
-    def second_call(target: Path) -> Callable[[Path], bool]:
-        """The second stat or presence test of target alone fails, as when another process takes it away between
-        two looks at it."""
-        seen = [0]
+    sibling = root / "tests" / "validation" / "validation_support.py"
 
-        def failing(path: Path) -> bool:
-            if path != target:
-                return False
-            seen[0] += 1
-            return seen[0] == 2
+    def resolve_alone() -> object:
+        # _module_file, which stats its candidate, is stubbed to hand the candidate on without a stat, so resolve's own
+        # read is the one stat of it on every Python, however many a version's own calls make.
+        def module_file(base: Path, parts: list[str]) -> Path | None:
+            return sibling if base == sibling.parent and parts == [sibling.stem] else None
 
-        return failing
+        with mock.patch.object(suite_discovery.RepositoryModules, "_module_file", staticmethod(module_file)):
+            return suite_discovery.RepositoryModules(root).resolve(sibling.parent / "python_checks.py", sibling.stem)
 
     def own_read_of_tests() -> object:
         # regression_suites lists tests/ too, so it is held empty to leave suite_python_modules' own read of it.
@@ -3630,13 +3628,7 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
             at(root / "pytest.ini"),
             lambda: suite_discovery.pytest_configuration_problems(root),
         ),
-        "suite_discovery.RepositoryModules.resolve": (
-            # _module_file stats the candidate first; resolve's own stat of it, the next, is the one that fails.
-            second_call(root / "tests" / "validation" / "validation_support.py"),
-            lambda: suite_discovery.RepositoryModules(root).resolve(
-                root / "tests" / "validation" / "python_checks.py", "validation_support"
-            ),
-        ),
+        "suite_discovery.RepositoryModules.resolve": (at(sibling), resolve_alone),
         "validation_support.repository_files": (
             at(root / "deploy.py"),
             lambda: validation_support.repository_files(root),

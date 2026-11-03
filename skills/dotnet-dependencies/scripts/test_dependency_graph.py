@@ -3043,22 +3043,22 @@ class PresenceReadTests(Fixture):
                 self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))
 
     def test_an_assets_file_whose_age_cannot_be_told_is_an_unreadable_row_and_its_targets_stay(self) -> None:
-        # Its presence and its read each stat it once and are answered; the third stat, which compares its age with
-        # the project's, fails.
+        # Its presence and its read are answered; only the stat closure_from_assets itself makes, which compares its
+        # age with the project's, fails. The failure is keyed on that caller, never on a count of stats, which differs
+        # between Python versions: 3.11's Path.resolve stats the path it resolves.
         root = self.mixed_solution()
         assets = self.root / "src" / "Harbor.Core" / "obj" / "project.assets.json"
         real = Path.stat
-        calls = [0]
+        failed: list[Path] = []
 
         def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-            if path == assets:
-                calls[0] += 1
-                if calls[0] == 3:
-                    raise PermissionError(13, "Access is denied", str(path))
+            if path == assets and sys._getframe(1).f_code is dependency_graph.closure_from_assets.__code__:
+                failed.append(path)
+                raise PermissionError(13, "Access is denied", str(path))
             return real(path, follow_symlinks=follow_symlinks)
 
         rows = self.answered(root, mock.patch.object(Path, "stat", stat))
-        self.assertEqual(3, calls[0])
+        self.assertEqual([assets], failed)
         self.assertEqual(
             [["src/Harbor.Core/obj/project.assets.json", "Access is denied"]], self.lines(rows, "UNREADABLE")
         )
