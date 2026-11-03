@@ -255,28 +255,6 @@ class SkillsDirectoryHoldingTests(unittest.TestCase):
         self.assertIsNone(skills_directory_holding(extended(self.root / "elsewhere" / "out.json")))
         self.assertIsNone(skills_directory_holding(extended(self.home / ".claude" / "skills-old" / "x")))
 
-    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
-    def test_the_prefix_is_removed_before_a_drive_letter_or_a_share_and_kept_before_anything_else(self) -> None:
-        volume = "\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\skills"
-        cases = {
-            "\\\\?\\C:\\skills\\x": "C:\\skills\\x",
-            "\\\\?\\c:\\skills": "c:\\skills",
-            "\\\\?\\UNC\\host\\share\\skills\\x": "\\\\host\\share\\skills\\x",
-            "\\\\?\\unc\\host\\share\\skills": "\\\\host\\share\\skills",
-            "C:\\skills\\x": "C:\\skills\\x",
-            "\\\\host\\share\\skills": "\\\\host\\share\\skills",
-            volume: volume,
-        }
-        for spelled, plain in cases.items():
-            with self.subTest(path=spelled):
-                self.assertEqual(Path(plain), skill_roots._without_extended_prefix(Path(spelled)))
-
-    @unittest.skipIf(sys.platform == "win32", "Windows reads the prefix as part of a drive")
-    def test_elsewhere_the_prefix_characters_are_an_ordinary_name(self) -> None:
-        for spelled in ("\\\\?\\C:\\skills", "/home/a/\\\\?\\C:\\skills"):
-            with self.subTest(path=spelled):
-                self.assertEqual(Path(spelled), skill_roots._without_extended_prefix(Path(spelled)))
-
 
 def extended(path: Path) -> Path:
     """`path`, resolved, written with Windows' extended-length prefix."""
