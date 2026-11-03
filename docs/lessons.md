@@ -597,9 +597,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a policy whose file list is a hand-kept tuple of directories, such as a `*_ROOTS`, that no
   `scope_problems` test holds, or a `glob(`
   narrower than the rule's statement in `CLAUDE.md` or `docs/`; `rg -n "glob\(\"\*\.sh\"\)|suffix == \"\.sh\"" tests/validation/`,
-  a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; an
-  audit brief that asks only for drift.
-- **Examples:** #1366, #1598, #1678, #1722, and #1884, which adds the check that holds a policy's scope to its rule
+  a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; a
+  policy that refuses a sentence as an exact substring, which a capital, a reflowed line, or an optional word walks
+  past; an audit brief that asks only for drift.
+- **Examples:** #1366, #1598, #1678, #1722, #2260, and #1884, which adds the check that holds a policy's scope to its
+  rule
 
 ### A check reads its subject through its consumer's reader
 

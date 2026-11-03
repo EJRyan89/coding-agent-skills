@@ -112,7 +112,8 @@ class TimedOut(Exception):
 def run_process(arguments: list[str], environment: dict[str, str] | None = None, cwd: Path = REPOSITORY_ROOT) -> None:
     """Run a job's program and raise AssertionError, with its output, when it fails, Terminated when it was ended
     before its first line of output, and TimedOut when it runs past COMMAND_TIMEOUT_SECONDS. The program's environment
-    is this process's with `environment` over it, less every credential variable, so no job holds a token.
+    is this process's with `environment` over it, less every credential variable, so no program a job runs is
+    given a token.
 
     It runs through ejryan89-skill-core's bounded runner in this platform's process tree, so the time limit, and the end
     of a run that passes or fails, ends every process the program started that stays in its tree, such as a git,

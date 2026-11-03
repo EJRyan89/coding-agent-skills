@@ -537,23 +537,50 @@ REACH_STATEMENTS = (PULL_REQUEST_CODE_STATEMENT, SAME_REPOSITORY_STATEMENT)
 # actions/checkout and actions/setup-python take it as the default of their `token` input, so "no step is given the
 # token" is true only of the steps that run a command.
 ACTION_INPUT_STATEMENT = "the pinned actions take the run's token as the default of their `token` input"
-# Claims a workflow comment, the row, or the runner's docstring made before the actions' default input was counted,
-# each false while ACTION_INPUT_STATEMENT holds; a claim about a step's command says "command".
-RETIRED_TOKEN_CLAIMS = (
-    "no step here is given the token",
-    "no step is given the token",
-    "hold no token",
-    "the only job given the run's token",
-    "the one job given the run's read-only token",
+# The words the retired claims below are written in, matched in text _claim_text has folded: the token by any of its
+# names, after any of the words that qualify it; what may hold it; and each verb that gives or withholds it.
+_CREDENTIAL = r"(?:(?:run's|read-only|workflow|github|job's|default|own) )*(?:token|github_token|gh_token)\b"
+_CREDENTIAL_PHRASE = rf"(?:(?:the|a|an|any|its|their) )?{_CREDENTIAL}"
+_HOLDER = r"(?:steps?|jobs?|legs?|workflows?)(?: here)?"
+_GIVEN = r"(?:(?:is|are|was|were) (?:given|passed|handed)|holds?|has|have|receives?|gets?|runs? with)"
+_NOT_GIVEN = (
+    r"(?:(?:is|are|was|were)(?: not|n't| never) (?:given|passed|handed)"
+    r"|(?:(?:do|does|did)(?: not|n't)|never) (?:hold|have|receive|get|run with)|never (?:holds?|has|receives?|gets?))"
 )
-# The files besides the workflows that state which job holds the token, which token_claim_problems reads whole.
+# Claims a workflow comment, the row, or the runner's docstring made before the actions' default input was counted,
+# each false while ACTION_INPUT_STATEMENT holds, by the meaning each is named for: that a step, job, leg, or workflow
+# is given no token, or that one job alone is given it. A true statement about a step's command names the command, as
+# "no command a step runs is given the token" and "the only job whose command is given the run's token" do, so no
+# pattern reads it.
+RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
+    "no step is given the token": re.compile(
+        rf"\b(?:no |none of (?:the |its |these )?){_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
+        rf"|\b{_HOLDER} {_NOT_GIVEN} {_CREDENTIAL_PHRASE}"
+    ),
+    "the legs hold no token": re.compile(
+        rf"\b(?:holds?|held|holding) no {_CREDENTIAL}|\b{_HOLDER} {_GIVEN} no {_CREDENTIAL}"
+    ),
+    "the only job given the run's token": re.compile(
+        rf"\bthe (?:only|one|sole|single) {_HOLDER} (?:(?:that|which) {_GIVEN}|given|holding|with) {_CREDENTIAL_PHRASE}"
+        rf"|\bonly (?:the |one )?(?:[\w-]+ )?{_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
+    ),
+}
+# The files besides the workflows and docs/design.md that state which job, step, or process holds the run's token or
+# is kept from it, which token_claim_problems reads whole.
 TOKEN_CLAIM_FILES = (
+    "conftest.py",
     "tests/run_validation.py",
     "tests/known_failure_issues.py",
+    "tests/test_known_failure_issues.py",
     "tests/validation/credentials.py",
+    "tests/validation/job_pool.py",
+    "tests/validation/known_failures.py",
     "docs/implementing-changes.md",
     "CONTRIBUTING.md",
 )
+# A comment or quotation marker opening a line, which _claim_text drops so a claim wrapped across such lines reads
+# whole.
+_LINE_MARKER = re.compile(r"^\s*[#>]+")
 # The row of docs/design.md that states what the token reaches, found by the words it opens with.
 CREDENTIALS_ROW = "| Development and CI gates need no model and no credentials:"
 
@@ -573,10 +600,15 @@ def _job_comment(workflow: str, job: str) -> str:
     return " ".join(comment)
 
 
-def _comment_text(workflow: str) -> str:
-    """Every comment line of a workflow, each `#` and indentation removed, joined by spaces."""
-    lines = (line.strip() for line in workflow.splitlines())
-    return " ".join(line.removeprefix("#").strip() for line in lines if line.startswith("#"))
+def _claim_text(text: str) -> str:
+    """`text` as one case-folded line for RETIRED_TOKEN_CLAIMS: each line's opening `#` or `>` markers dropped,
+    Markdown's backtick and asterisk markers removed, a curly apostrophe made straight, and every run of whitespace,
+    line breaks included, one space, so a claim capitalized, emphasized, or wrapped across comment lines reads as one
+    sentence."""
+    joined = " ".join(_LINE_MARKER.sub("", line) for line in text.splitlines())
+    return " ".join(
+        joined.replace("\N{RIGHT SINGLE QUOTATION MARK}", "'").replace("`", "").replace("*", "").casefold().split()
+    )
 
 
 def token_reach_problems(workflow: str, token_steps: Mapping[tuple[str, str], str], design: str) -> list[str]:
@@ -621,18 +653,20 @@ def token_reach_problems(workflow: str, token_steps: Mapping[tuple[str, str], st
 
 
 def token_claim_problems(texts: Mapping[str, str], design: str) -> list[str]:
-    """Report docs/design.md's CREDENTIALS_ROW not stating ACTION_INPUT_STATEMENT, and each of RETIRED_TOKEN_CLAIMS in
-    that row or in any of `texts`, a name mapped to a text, such as a workflow's comments or a module's docstring."""
+    """Report docs/design.md's CREDENTIALS_ROW not stating ACTION_INPUT_STATEMENT, and each sentence, in `design` or in
+    any of `texts`, a name mapped to a text such as a workflow or a module, that makes one of RETIRED_TOKEN_CLAIMS in
+    any spelling the patterns read, folded by _claim_text."""
     rows = [line for line in design.splitlines() if line.startswith(CREDENTIALS_ROW)]
     problems = []
     if len(rows) != 1 or ACTION_INPUT_STATEMENT not in rows[0]:
         problems.append(f"docs/design.md's row {CREDENTIALS_ROW!r} does not say {ACTION_INPUT_STATEMENT!r}")
-    for name, text in {**texts, "docs/design.md's credentials row": " ".join(rows)}.items():
-        flat = " ".join(text.split())
+    for name, text in {**texts, "docs/design.md": design}.items():
+        folded = _claim_text(text)
         problems += [
-            f"{name} says {claim!r}, which the pinned actions' default `token` input makes untrue"
-            for claim in RETIRED_TOKEN_CLAIMS
-            if claim in flat
+            f"{name} says {match.group(0)!r}, the retired claim {claim!r}, which the pinned actions' default `token` "
+            "input makes untrue"
+            for claim, pattern in RETIRED_TOKEN_CLAIMS.items()
+            for match in pattern.finditer(folded)
         ]
     return problems
 
@@ -1679,9 +1713,7 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_no_document_says_a_job_holds_no_token_while_its_actions_take_it_by_default(self) -> None:
         design = (REPOSITORY_ROOT / "docs" / "design.md").read_text(encoding="utf-8")
         texts = {
-            f"{WORKFLOWS_DIRECTORY}/{name}": _comment_text(
-                (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / name).read_text(encoding="utf-8")
-            )
+            f"{WORKFLOWS_DIRECTORY}/{name}": (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / name).read_text(encoding="utf-8")
             for name in WORKFLOW_GUARDS
         }
         texts |= {path: (REPOSITORY_ROOT / path).read_text(encoding="utf-8") for path in TOKEN_CLAIM_FILES}

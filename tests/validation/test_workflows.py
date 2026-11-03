@@ -1974,30 +1974,111 @@ def test_a_token_job_running_the_pull_requests_code_unstated_or_from_an_unread_t
     assert any(problem in found for found in problems), problems
 
 
-def test_a_row_naming_the_actions_default_input_and_no_retired_claim_passes() -> None:
-    assert token_claim_problems({"validate.yml": "no command a step runs is given the token"}, REACH_DESIGN) == []
+def _token_sentence_spellings(sentence: str) -> dict[str, str]:
+    """The sentence as a workflow comment, upper-cased, reflowed one word to a comment line, and as a Markdown
+    quotation reflowed with the token in backticks, each a spelling token_claim_problems reads as the same sentence."""
+    words = sentence.split()
+    return {
+        "as-written": f"    # The legs:\n    # {sentence}.\n",
+        "case-folded": f"# {sentence.upper()}.\n",
+        "reflowed": "".join(f"    # {word}\n" for word in words),
+        "markdown": "> "
+        + "\n> ".join(" ".join(words[i : i + 2]) for i in range(0, len(words), 2)).replace("token", "`token`"),
+    }
+
+
+# Each claim the repository retired as false, its respellings, and the words it may be written in, with the retired
+# claim each makes.
+NO_STEP, NO_TOKEN, ONLY_JOB = (
+    "no step is given the token",
+    "the legs hold no token",
+    "the only job given the run's token",
+)
+RETIRED_CLAIM_SPELLINGS = [
+    ("no step here is given the token", NO_STEP),
+    ("no step is given the token", NO_STEP),
+    ("hold no token", NO_TOKEN),
+    ("the only job given the run's token", ONLY_JOB),
+    ("the one job given the run's read-only token", ONLY_JOB),
+    # The respellings issue #2260 names.
+    ("No step here is given the token", NO_STEP),
+    ("no step is given the run's token", NO_STEP),
+    ("the legs holds no token", NO_TOKEN),
+    ("the only job given the token", ONLY_JOB),
+    # The holders, verbs, negations, and token names the patterns read.
+    ("no steps here are given the GITHUB_TOKEN", NO_STEP),
+    ("none of the legs is given the token", NO_STEP),
+    ("no workflow receives a token", NO_STEP),
+    ("no job runs with the GH_TOKEN", NO_STEP),
+    ("the legs are not given the token", NO_STEP),
+    ("the legs do not hold the run's token", NO_STEP),
+    ("the steps never hold the token", NO_STEP),
+    ("the legs don't get the token", NO_STEP),
+    ("the legs are given no token", NO_TOKEN),
+    ("each leg held no read-only token", NO_TOKEN),
+    ("the sole job that holds the token", ONLY_JOB),
+    ("only the known-failures job is given the run\N{RIGHT SINGLE QUOTATION MARK}s token", ONLY_JOB),
+    ("the single step with the token", ONLY_JOB),
+]
+
+# The true statements the repository makes about the token, each of which names the command or program that holds it
+# or a holder the patterns do not read.
+TRUE_TOKEN_STATEMENTS = [
+    "no command a step runs is given the token",
+    "no command a step here runs is given the token, so no suite holds it; the pinned actions take the run's token as "
+    "the default of their `token` input, as every job's do",
+    "It is the only job whose command is given the run's token, as GH_TOKEN in its one step that runs anything",
+    "the one job whose command is given the run's read-only token, so no suite holds the token",
+    "The run's own token reaches one command alone, that step's, as `GH_TOKEN`",
+    "the validation legs read `contents` alone and no command they run is given the token",
+    "a fork's pull request is given a read-only token whatever it changes",
+    "the legs' commands are given no token",
+    "so no program a job runs is given a token",
+    "Only `tests/known_failure_issues.py` runs it, so the token gh reads reaches no policy and no suite",
+    "refuses each of `RETIRED_TOKEN_CLAIMS` by its meaning: that a step, job, leg, or workflow is given none, or that "
+    "one job alone is given it",
+]
 
 
 @pytest.mark.parametrize(
-    "claim",
+    "text",
     [
-        "no step here is given the token",
-        "no step is given the token",
-        "hold no token",
-        "the only job given the run's token",
-        "the one job given the run's read-only token",
+        pytest.param(text, id=f"{statement[:40]}-{spelling}")
+        for statement in TRUE_TOKEN_STATEMENTS
+        for spelling, text in _token_sentence_spellings(statement).items()
     ],
 )
-def test_a_retired_token_claim_anywhere_fails(claim: str) -> None:
-    # A claim wrapped across lines is still read, as `_comment_text` hands the comments over.
-    wrapped = claim.replace(" ", "\n", 1)
-    assert token_claim_problems({"validate.yml": f"The legs:\n{wrapped}."}, REACH_DESIGN) == [
-        f"validate.yml says {claim!r}, which the pinned actions' default `token` input makes untrue"
-    ]
-    row = REACH_DESIGN.replace("the token.", f"the legs {claim}.")
-    assert token_claim_problems({}, row) == [
-        f"docs/design.md's credentials row says {claim!r}, which the pinned actions' default `token` input makes untrue"
-    ]
+def test_a_true_token_statement_in_any_spelling_passes(text: str) -> None:
+    assert token_claim_problems({"validate.yml": text}, REACH_DESIGN) == []
+    assert token_claim_problems({}, f"{REACH_DESIGN}\n{text}\n") == []
+
+
+@pytest.mark.parametrize(
+    ("text", "retired"),
+    [
+        pytest.param(text, retired, id=f"{claim}-{spelling}")
+        for claim, retired in RETIRED_CLAIM_SPELLINGS
+        for spelling, text in _token_sentence_spellings(claim).items()
+    ],
+)
+def test_a_retired_token_claim_in_any_spelling_fails(text: str, retired: str) -> None:
+    suffix = f", the retired claim {retired!r}, which the pinned actions' default `token` input makes untrue"
+    problems = token_claim_problems({"validate.yml": text}, REACH_DESIGN)
+    assert len(problems) == 1, problems
+    assert problems[0].startswith("validate.yml says "), problems
+    assert problems[0].endswith(suffix), problems
+
+
+@pytest.mark.parametrize(("claim", "retired"), RETIRED_CLAIM_SPELLINGS)
+def test_a_retired_token_claim_anywhere_in_the_design_document_fails(claim: str, retired: str) -> None:
+    suffix = f", the retired claim {retired!r}, which the pinned actions' default `token` input makes untrue"
+    in_row = REACH_DESIGN.replace("the token.", f"the legs: {claim}.")
+    elsewhere = f"{REACH_DESIGN}\n## Another section\n\nThe legs:\n{claim.replace(' ', chr(10), 1)}.\n"
+    for design in (in_row, elsewhere):
+        problems = token_claim_problems({}, design)
+        assert len(problems) == 1, problems
+        assert problems[0].startswith("docs/design.md says "), problems
+        assert problems[0].endswith(suffix), problems
 
 
 def test_a_row_silent_on_the_actions_default_input_fails() -> None:
