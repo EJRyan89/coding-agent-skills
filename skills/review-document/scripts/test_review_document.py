@@ -1374,11 +1374,12 @@ class PullRequestTests(PipelineTestCase):
         self.assertEqual(1, code, lines)
         [line] = lines
         listed = self.skill_phrase(r"files API `(lists <n> of the <count> files)`")
-        self.assertTrue(
-            line.startswith(
-                f"FAILED GitHub's files API {listed.replace('<n>', '6').replace('<count>', '3,001')} "
-                "octo-org/widgets#7 changes"
-            ),
+        # The remedy the line names is the one SKILL.md tells the agent to offer.
+        remedy = self.skill_phrase(r"offer to (review a document by its path in a checkout of the pull request's head)")
+        self.assertEqual(
+            f"FAILED GitHub's files API {listed.replace('<n>', '6').replace('<count>', '3,001')} octo-org/widgets#7 "
+            "changes, so a document past its cut would go unreviewed; "
+            + remedy.replace("a document", "such a document"),
             line,
         )
         self.assertEqual([], stub.reads())
