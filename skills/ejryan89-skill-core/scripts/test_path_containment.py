@@ -333,3 +333,12 @@ class RelativeWithinTests(unittest.TestCase):
         ):
             with self.subTest(path=path, tree=tree):
                 self.assertEqual(Path("tools", "calc.py"), path_containment.relative_within(path, tree))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows ignores case in a path")
+    def test_a_case_only_difference_is_judged_as_within_judges_it_and_keeps_the_path_s_spelling(self) -> None:
+        self.assertEqual(Path("Tools", "X.py"), path_containment.relative_within("C:\\TREE\\Tools\\X.py", "c:\\tree"))
+
+    def test_which_parts_lie_below_the_tree_comes_from_the_compared_form_never_a_relative_to(self) -> None:
+        # A case rule other than the one within compared by can never make the answer raise or disagree.
+        with mock.patch.object(Path, "relative_to", side_effect=AssertionError("relative_to is never called")):
+            self.assertEqual(Path("a", "b.py"), path_containment.relative_within("tree/a/b.py", "tree"))

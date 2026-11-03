@@ -1720,8 +1720,9 @@ def holding_repositories(path: str, anchors: list[str]) -> list[str]:
     if not holding:
         return []
     current = Path(os.path.abspath(min(holding, key=len)))  # noqa: PTH100 - lexical, as the comment says
+    relative = relative_within(path, current, strict=True)
     found = []
-    for part in Path(path).relative_to(current).parts:
+    for part in () if relative is None else relative.parts:
         if file_presence.is_occupied(current / ".git"):
             found.append(current.as_posix())
         current /= part

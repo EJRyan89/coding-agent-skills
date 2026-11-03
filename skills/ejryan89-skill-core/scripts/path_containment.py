@@ -71,12 +71,14 @@ def _plain(path: StrPath) -> Path:
 
 
 def relative_within(path: StrPath, tree: StrPath, *, strict: bool = False) -> Path | None:
-    """`path` relative to `tree`, taken from the same forms `within` compares, so a prefix one side carries and the
-    other does not changes nothing; None when `within` finds it outside, or, with `strict`, the tree itself. A caller
-    that needs where a path lies in its tree takes it here, never from a `relative_to` of the paths as given."""
+    """`path` relative to `tree`, or None when `within` finds it outside, or, with `strict`, the tree itself. Which
+    parts lie below the tree is decided on the same forms `within` compares, the tree's part count in its compared
+    form, so neither a prefix one side carries nor a case rule other than the platform's can disagree with it; the
+    parts themselves keep the path's own spelling. A caller that needs where a path lies in its tree takes it here,
+    never from a `relative_to` of the paths as given."""
     if not within(path, tree, strict=strict):
         return None
-    return _plain(path).relative_to(_plain(tree))
+    return Path(*_plain(path).parts[len(_compared(tree).parts) :])
 
 
 def posix_within(name: str, folder: str, *, strict: bool = False) -> bool:
