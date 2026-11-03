@@ -1674,6 +1674,26 @@ def piped(stream, value):
     stream.write(json.dumps(value))
 
 
+def respelled(path, stream, data, values):
+    if (text := json.dumps(data)): path.write_text(text)
+    text2, other = json.dumps(data), ""; path.write_text(text2)
+    for text3 in [json.dumps(data)]: path.write_text(text3)
+    alias = json.dump; alias(data, stream)
+    getattr(json, "dump")(data, stream)
+    path.write_text(json.JSONEncoder().encode(data))
+    encoder = json.JSONEncoder(indent=2); stream.writelines(encoder.iterencode(data))
+    write = stream.write; write(json.dumps(data))
+    with open_text(json.dumps(data)) as text4: path.write_text(text4)
+    first, *rest = json.dumps(data), ""; path.write_text(first)
+    path.write_text("".join(chunk for chunk in json.JSONEncoder().iterencode(data)))
+
+
+def respelled_conforms(path, data):
+    text5, other = json.dumps(data), "plain"; path.write_text(other)
+    encoder = json.JSONEncoder(); path.write_text(str(encoder))
+    for item in ["plain", "text"]: path.write_text(item)
+
+
 JSON_WRITE_ALLOWED = {"piped": "writes a message to a pipe no file holds", "stale": "a reason"}
 """
 
@@ -1692,7 +1712,11 @@ def test_json_write_policy_refuses_a_json_write_outside_json_writer() -> None:
     )
     assert found == [
         *(f"{alpha}:11 writes JSON with json.dump{remedy}" for _ in range(3)),
-        *(f"{alpha}:{line} writes json.dumps text to a file or a stream{remedy}" for line in (12, 13, 16)),
+        *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (12, 13, 16)),
+        *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (37, 38, 39)),
+        *(f"{alpha}:40 writes JSON with json.dump{remedy}" for _ in range(2)),
+        f"{alpha}:41 writes JSON with json.dump{remedy}",
+        *(f"{alpha}:{line} writes JSON text to a file or a stream{remedy}" for line in (42, 43, 44, 45, 46, 47)),
         f"{alpha}: JSON_WRITE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: JSON_WRITE_ALLOWED must map each function, class, or assignment to its reason",
     ]
@@ -2142,6 +2166,74 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
     ]
 
 
+# A module's top level binds under an if, a try, a with, or a loop as it does unindented: a reader a skill-core module
+# defines there, a repository function that calls one, and a name bound once to it are each read.
+CONTENT_BLOCK_READER_SOURCE = """\
+import json
+import sys
+
+
+class Refused(ValueError):
+    pass
+
+
+CONTENT_ERRORS = (Refused, json.JSONDecodeError)
+CONTENT_READERS = ("read",)
+
+if sys.platform:
+
+    def read(text):
+        return text
+"""
+CONTENT_BLOCK_CALLER_SOURCE = """\
+import sys
+
+from reader import Refused, read
+
+if sys.platform:
+
+    def load(text):
+        return read(text)
+
+try:
+    LOAD = load
+except NameError:
+    pass
+
+
+def through_function(text):
+    try:
+        return load(text)
+    except Refused:
+        return None
+
+
+def through_name(text):
+    try:
+        return LOAD(text)
+    except Refused:
+        return None
+"""
+
+
+def test_content_errors_policy_reads_what_a_module_binds_under_a_top_level_block() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_BLOCK_READER_SOURCE,
+                "skills/alpha/scripts/alpha.py": CONTENT_BLOCK_CALLER_SOURCE,
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    remedy = (
+        "catches part of what a reader it calls raises, or its OSError, but not json.decoder.JSONDecodeError; catch "
+        "the whole family, reader.CONTENT_ERRORS, or state why in CONTENT_ERRORS_ALLOWED"
+    )
+    assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (17, 24)]
+
+
 def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader() -> None:
     # With no reader every handler would pass, so a tree that lost its readers fails rather than passing empty.
     with tempfile.TemporaryDirectory() as temporary:
@@ -2293,6 +2385,68 @@ def sanctioned(handle):
 
 CTYPES_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 """
+
+
+CTYPES_PLACES_SOURCE = """import ctypes
+from ctypes import wintypes
+
+
+class Probe:
+    def __init__(self):
+        self.kernel32 = ctypes.WinDLL("kernel32")
+
+    def open(self, pid):
+        return self.kernel32.OpenProcess(1, 0, pid)
+
+
+def held(pid, libraries):
+    libraries["k"] = ctypes.WinDLL("kernel32")
+    return libraries["k"].OpenProcess(1, 0, pid)
+
+
+def looked_up(pid):
+    kernel32 = ctypes.WinDLL("kernel32")
+    return getattr(kernel32, "OpenProcess")(1, 0, pid)
+
+
+def other_library(handle):
+    user32 = ctypes.WinDLL("user32")
+    user32.CloseHandle.argtypes = [wintypes.HANDLE]
+    user32.CloseHandle.restype = wintypes.BOOL
+    windows = ctypes.windll.kernel32
+    return windows.CloseHandle(handle)
+
+
+def annotated(handle):
+    library = ctypes.windll.ntdll
+    library.NtClose.argtypes: list = [wintypes.HANDLE]
+    library.NtClose.restype = wintypes.LONG
+    return library.NtClose(handle)
+
+
+def set_by_name(handle):
+    library = ctypes.windll.advapi32
+    setattr(library.CloseServiceHandle, "argtypes", [wintypes.HANDLE])
+    setattr(library.CloseServiceHandle, "restype", wintypes.BOOL)
+    function = getattr(library, "CloseServiceHandle")
+    return function(handle)
+"""
+
+
+def test_ctypes_policy_keys_a_declaration_by_its_library_wherever_the_library_is_held() -> None:
+    # A library on an attribute, in a subscript, or reached through getattr is read, and a declaration on user32's
+    # CloseHandle is none for kernel32's; an annotated or a setattr declaration is a real one.
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.ctypes_declaration_problems, "CTYPES_ALLOWED", CTYPES_PLACES_SOURCE, "tests/fixtures/ctypes.py"
+    )
+    passes = "assigned in the module, so ctypes passes it C ints; assign both, or state why in CTYPES_ALLOWED"
+    assert [line for line in found if line.startswith(alpha)] == [
+        f"{alpha}:10 calls OpenProcess through ctypes with no argtypes or restype {passes}",
+        f"{alpha}:15 calls OpenProcess through ctypes with no argtypes or restype {passes}",
+        f"{alpha}:20 calls OpenProcess through ctypes with no argtypes or restype {passes}",
+        f"{alpha}:28 calls CloseHandle through ctypes with no argtypes or restype {passes}",
+    ]
 
 
 def test_ctypes_policy_refuses_a_foreign_function_called_undeclared() -> None:
@@ -2610,6 +2764,14 @@ STATUS_CLIENTS = [
             "            return r.returncode  # read\n",
             id="a case capturing the result",
         ),
+        pytest.param(
+            "def f(client: 'GitClient'):\n    return client.run(['status']).returncode  # read\n",
+            id="a client annotated in quotes",
+        ),
+        pytest.param(
+            "def f(client: 'GitClient | None'):\n    return client.run(['status']).returncode  # read\n",
+            id="a client annotated in a quoted union",
+        ),
         # A subclass's own methods run on a client.
         pytest.param(
             "class Mine(GitClient):\n    def f(self):\n        return self.run(['status']).returncode  # read\n",
@@ -2867,6 +3029,424 @@ def test_git_separator_policy_refuses_a_listing_without_z_and_fields_joined_by_a
     ]
 
 
+# Each git name listing the separator policy's catalogue, GIT_NAME_LISTINGS, names, without -z and with it.
+@pytest.mark.parametrize(
+    ("call", "refused"),
+    [
+        pytest.param('client.output(["diff-tree", "--name-only", "-r", "HEAD"])', True, id="diff-tree --name-only"),
+        pytest.param('client.output(["diff-tree", "-r", "HEAD~1", "HEAD"])', True, id="diff-tree raw by default"),
+        pytest.param('client.output(["diff-index", "--cached", "HEAD"])', True, id="diff-index raw by default"),
+        pytest.param('client.output(["diff-files"])', True, id="diff-files raw by default"),
+        pytest.param('client.output(["diff", "--raw", "main"])', True, id="diff --raw"),
+        pytest.param('client.output(["diff", "--numstat", "main"])', True, id="diff --numstat"),
+        pytest.param('client.output(["log", "--name-status", "main"])', True, id="log --name-status"),
+        pytest.param('client.output(["show", "--name-only", "HEAD"])', True, id="show --name-only"),
+        pytest.param('client.output(["worktree", "list", "--porcelain"])', True, id="worktree list --porcelain"),
+        pytest.param('client.output(["grep", "-n", "pattern"])', True, id="grep"),
+        pytest.param('client.output(["check-ignore", "--stdin"])', True, id="check-ignore"),
+        pytest.param('client.output(["check-attr", "eol", "--", "a"])', True, id="check-attr"),
+        pytest.param('client.output(["diff-tree", "-z", "-r", "HEAD"])', False, id="diff-tree -z"),
+        pytest.param('client.output(["worktree", "list", "--porcelain", "-z"])', False, id="worktree list -z"),
+        pytest.param('client.output(["grep", "--null", "-n", "pattern"])', False, id="grep --null"),
+        pytest.param('client.run(["check-ignore", "-q", "--no-index", "a"])', False, id="check-ignore -q is silent"),
+        pytest.param('client.run(["diff-index", "--quiet", "HEAD"])', False, id="diff-index --quiet is silent"),
+        pytest.param('client.output(["worktree", "list"])', False, id="worktree list without --porcelain"),
+        pytest.param('client.output(["log", "--stat", "main"])', False, id="log --stat"),
+        pytest.param('failure(root, "grep", error)', False, id="a label beside an error is no grep"),
+    ],
+)
+def test_git_separator_policy_reads_every_name_listing_its_catalogue_names(call: str, refused: bool) -> None:
+    source = f"def listing(client, failure, root, error):\n    {call}\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.git_separator_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == (["skills/alpha/scripts/alpha.py:2"] if refused else [])
+
+
+# The forms the shared call resolution, validation_support.resolved_call, reads for every policy that uses it: a name
+# bound to a getattr of a constant name or a functools.partial, a `**` of a literal dict, of a dict() call, or of a name
+# bound to one, `builtins.X`, an assignment expression, a tuple target, and a with target. Each source marks the line
+# its policy refuses with `# read`, or marks none where it passes.
+RESOLVED_IMPORTS = (
+    "import builtins\nimport ctypes\nimport functools\nimport json\nimport operator\nfrom ctypes import wintypes\n\n\n"
+)
+
+
+def resolved_rows(policy: Callable[[Path, list[Path]], list[str]], body: str) -> list[str]:
+    """The lines a policy refuses in a skill's module holding body after RESOLVED_IMPORTS, by their numbers."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": RESOLVED_IMPORTS + body})
+        found = policy(root, sorted(root.rglob("*.py")))
+    return sorted({problem.split(" ", 1)[0].rpartition(":")[2] for problem in found})
+
+
+def marked_rows(body: str) -> list[str]:
+    """The numbers of the lines a body marks `# read`, counted after RESOLVED_IMPORTS."""
+    source = RESOLVED_IMPORTS + body
+    return sorted(str(number) for number, line in enumerate(source.splitlines(), 1) if line.endswith("# read"))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            "def f(p):\n    add = functools.partial(p.add_argument, type=float)\n    add('--timeout')  # read\n",
+            id="a partial bound add_argument",
+        ),
+        pytest.param("def f(p):\n    p.add_argument('--timeout', **{'type': float})  # read\n", id="a ** literal"),
+        pytest.param(
+            "def f(p):\n    options = {'type': float}\n    p.add_argument('--timeout', **options)  # read\n",
+            id="a ** name bound to a literal",
+        ),
+        pytest.param("def f(p):\n    p.add_argument('--timeout', **dict(type=int))  # read\n", id="a ** dict()"),
+        pytest.param("def f(p):\n    p.add_argument('--timeout', type=builtins.float)  # read\n", id="builtins"),
+        pytest.param(
+            "def f(p):\n    add = getattr(p, 'add_argument')\n    add('--timeout', type=float)  # read\n",
+            id="a getattr bound to a name",
+        ),
+        pytest.param("def f(p):\n    p.add_argument('--sleeptime', type=float)  # read\n", id="sleeptime"),
+        pytest.param("def f(p):\n    p.add_argument('--waitSeconds', type=int)  # read\n", id="waitSeconds"),
+        pytest.param("def f(p):\n    p.add_argument('--retryDelayMs', type=int)  # read\n", id="retryDelayMs"),
+        pytest.param("def f(p):\n    p.add_argument('--times', type=int)\n", id="times counts repetitions"),
+        pytest.param("def f(p):\n    p.add_argument('--timestamp', type=int)\n", id="a timestamp is no limit"),
+        pytest.param("def f(p, options):\n    p.add_argument('--timeout', **options)\n", id="an unread ** passes"),
+        # Any binding that may reach the read counts, a global's and a nonlocal's from their owner.
+        pytest.param(
+            "def f(p, q):\n    add = q.add_argument\n    add = p.add_argument\n"
+            "    add('--timeout', type=float)  # read\n",
+            id="add rebound in one scope",
+        ),
+        pytest.param(
+            "def f(p):\n    kind = str\n    kind = float\n    p.add_argument('--timeout', type=kind)  # read\n",
+            id="a type rebound in one scope",
+        ),
+        pytest.param(
+            "def f(p):\n    kind = float\n    kind = str\n    p.add_argument('--timeout', type=kind)\n",
+            id="a type rebound to str passes",
+        ),
+        pytest.param(
+            "add = None\n\n\ndef setup(p):\n    global add\n    add = p.add_argument\n\n\n"
+            "def f():\n    add('--timeout', type=float)  # read\n",
+            id="a global add",
+        ),
+        pytest.param(
+            "def f(p):\n    options = {}\n    options['type'] = float\n"
+            "    p.add_argument('--timeout', **options)  # read\n",
+            id="a ** dict given a key after binding",
+        ),
+        pytest.param(
+            "def f(p):\n    options = {}\n    options.update(type=float)\n"
+            "    p.add_argument('--timeout', **options)  # read\n",
+            id="a ** dict updated after binding",
+        ),
+        pytest.param(
+            "def f(p, other):\n    options = {}\n    options.update(other)\n"
+            "    p.add_argument('--timeout', **options)\n",
+            id="a ** dict updated from another mapping is unread",
+        ),
+        pytest.param(
+            "def f(p):\n    operator.attrgetter('add_argument')(p)('--timeout', type=float)  # read\n",
+            id="an attrgetter of add_argument",
+        ),
+        pytest.param(
+            "def f(p):\n    options = {}\n    options['type'] = float\n    options = {}\n"
+            "    p.add_argument('--timeout', **options)\n",
+            id="a key added before the dict is bound again passes",
+        ),
+        pytest.param(
+            "def f(p):\n    kind = str\n    for _ in range(2):\n"
+            "        p.add_argument('--timeout', type=kind)  # read\n        kind = float\n",
+            id="a type a loop binds after the read",
+        ),
+    ],
+)
+def test_time_option_policy_reads_each_form_resolved_call_follows(body: str) -> None:
+    assert resolved_rows(python_checks.time_option_problems, body) == marked_rows(body)
+
+
+# Each word of the time-word catalogue, as an option of its own, is a time.
+@pytest.mark.parametrize("word", sorted(python_checks.TIME_WORDS))
+def test_time_option_policy_reads_every_time_word(word: str) -> None:
+    body = f"def f(p):\n    p.add_argument('--{word}', type=float)  # read\n"
+    assert resolved_rows(python_checks.time_option_problems, body) == marked_rows(body)
+
+
+def test_time_words_hold_each_limit_word_and_unit() -> None:
+    # Pinned against literals, not the constant under test.
+    assert {
+        "ttl",
+        "duration",
+        "backoff",
+        "sec",
+        "secs",
+        "millis",
+        "msec",
+        "millisecond",
+        "usec",
+        "microseconds",
+        "mins",
+        "hrs",
+    } <= python_checks.TIME_WORDS
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("def f(s, d):\n    getattr(s, 'write')(json.dumps(d))  # read\n", id="a getattr write"),
+        pytest.param(
+            "def f(path, d):\n    dumps = getattr(json, 'dumps')\n    path.write_text(dumps(d))  # read\n",
+            id="a getattr dumps",
+        ),
+        pytest.param(
+            "def f(path, d):\n    dumps = functools.partial(json.dumps, indent=2)\n"
+            "    path.write_text(dumps(d))  # read\n",
+            id="a partial dumps",
+        ),
+        pytest.param(
+            "class Store:\n    def __init__(self, d):\n        self.text = json.dumps(d)\n\n"
+            "    def save(self, path):\n        path.write_text(self.text)  # read\n",
+            id="JSON text on an attribute",
+        ),
+        pytest.param(
+            "class Store:\n    def __init__(self):\n        self.encoder = json.JSONEncoder()\n\n"
+            "    def save(self, path, d):\n        path.write_text(self.encoder.encode(d))  # read\n",
+            id="an encoder on an attribute",
+        ),
+        pytest.param(
+            "class Mine(json.JSONEncoder):\n    pass\n\n\ndef f(path, d):\n"
+            "    path.write_text(Mine().encode(d))  # read\n",
+            id="a JSONEncoder subclass",
+        ),
+        pytest.param(
+            "TEXT = json.dumps({'a': 1})\n\n\ndef f(path):\n    path.write_text(TEXT)  # read\n",
+            id="module-level text written in a function",
+        ),
+        pytest.param(
+            "def f(path, d):\n    path.write_text(json.JSONEncoder.encode(json.JSONEncoder(), d))  # read\n",
+            id="an unbound encode",
+        ),
+        pytest.param(
+            "def f(path, d):\n    write = functools.partial(path.write_text, encoding='utf-8')\n"
+            "    write(json.dumps(d))  # read\n",
+            id="a partial write",
+        ),
+        pytest.param(
+            "class Store:\n    def __init__(self, d):\n        self.text = 'plain'\n\n"
+            "    def save(self, path):\n        path.write_text(self.text)\n",
+            id="plain text on an attribute passes",
+        ),
+        pytest.param(
+            "class A:\n    def __init__(self, d):\n        self.text = json.dumps(d)\n\n\n"
+            "class B:\n    def __init__(self, t):\n        self.text = t\n\n"
+            "    def save(self, s):\n        s.write(self.text)\n",
+            id="another class's attribute of the same name passes",
+        ),
+        pytest.param(
+            "def f(path, d, pretty):\n    if pretty:\n        dumps = functools.partial(json.dumps, indent=2)\n"
+            "    else:\n        dumps = json.dumps\n    path.write_text(dumps(d))  # read\n",
+            id="dumps bound in both branches",
+        ),
+        pytest.param(
+            "dumps = None\n\n\ndef load():\n    global dumps\n    dumps = json.dumps\n\n\n"
+            "def f(path, d):\n    path.write_text(dumps(d))  # read\n",
+            id="a global dumps",
+        ),
+        pytest.param(
+            "class C:\n    TEXT = json.dumps({})\n\n    def save(self, s):\n        s.write(self.TEXT)  # read\n"
+            "        s.write(C.TEXT)  # read\n",
+            id="class-level text through self and the class",
+        ),
+        pytest.param(
+            "def f(path, d):\n    path.write_text(json.encoder.JSONEncoder().encode(d))  # read\n",
+            id="json.encoder.JSONEncoder",
+        ),
+        pytest.param(
+            "from json import JSONEncoder\n\n\ndef f(path, d):\n    path.write_text(JSONEncoder().encode(d))  # read\n",
+            id="a from-imported JSONEncoder",
+        ),
+        pytest.param(
+            "def f(stream, d):\n    print(json.dumps(d), file=stream)  # read\n    print(json.dumps(d), file=None)\n",
+            id="a print to a stream, and to None",
+        ),
+        pytest.param(
+            "import pkg.atomic_file\n\n\ndef f(path, d):\n"
+            "    pkg.atomic_file.replace_text(path, json.dumps(d))  # read\n",
+            id="a file writer reached through a dotted package",
+        ),
+        pytest.param(
+            "T = None\n\n\nclass A:\n    def m(self):\n        global T\n        T = self.text\n\n"
+            "    def __init__(self, d):\n        self.text = json.dumps(d)\n\n\n"
+            "class B:\n    def n(self, s):\n        s.write(T)  # read\n",
+            id="text another class's attribute gave a global",
+        ),
+        pytest.param(
+            "class Mine(json.JSONEncoder):\n    pass\n\n\ndef f(path, d):\n"
+            "    path.write_text(json.JSONEncoder().encode(d))  # read\n",
+            id="JSONEncoder itself beside a subclass",
+        ),
+        pytest.param(
+            "class Store:\n    def __init__(self, d):\n        self.text = json.dumps(d)\n\n"
+            "    def save(self, path):\n        text = self.text\n        path.write_text(text)  # read\n",
+            id="an attribute's text through a local name",
+        ),
+        pytest.param(
+            "class Store:\n    def first(self):\n        self.b = self.a\n\n"
+            "    def second(self, d):\n        self.a = json.dumps(d)\n\n"
+            "    def save(self, s):\n        s.write(self.b)  # read\n",
+            id="text an attribute bound later gives",
+        ),
+        pytest.param(
+            "class Store:\n    def first(self):\n        self.enc = self.base\n\n"
+            "    def second(self):\n        self.base = json.JSONEncoder()\n\n"
+            "    def save(self, s, d):\n        s.write(self.enc.encode(d))  # read\n",
+            id="an encoder an attribute bound later gives",
+        ),
+        pytest.param(
+            "def f(s):\n    t = json.dumps({})\n    t = 'x'\n    s.write(t)\n",
+            id="text bound again to plain text passes",
+        ),
+        pytest.param(
+            "def f(s, d):\n    t = ''\n    for _ in range(2):\n        s.write(t)  # read\n        t = json.dumps(d)\n",
+            id="text a loop binds after the write",
+        ),
+        pytest.param(
+            "def f(s, d):\n    for _ in range(2):\n        t = 'x'\n        s.write(t)\n        t = json.dumps(d)\n",
+            id="text a loop binds after the write but before it again passes",
+        ),
+    ],
+)
+def test_json_write_policy_reads_each_form_resolved_call_follows(body: str) -> None:
+    assert resolved_rows(python_checks.json_write_problems, body) == marked_rows(body)
+
+
+DECLARED = "    lib.CloseHandle.argtypes = [wintypes.HANDLE]\n    lib.CloseHandle.restype = wintypes.BOOL\n"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            f"def a(h):\n    lib = ctypes.WinDLL('user32')\n{DECLARED}    return lib.CloseHandle(h)\n\n\n"
+            "def b(h):\n    lib = ctypes.WinDLL('kernel32')\n    return lib.CloseHandle(h)  # read\n",
+            id="one name for two libraries in two functions",
+        ),
+        pytest.param(
+            f"def a(h, name):\n    lib = ctypes.WinDLL(name)\n{DECLARED}    return lib.CloseHandle(h)\n\n\n"
+            "def b(h, name):\n    lib = ctypes.WinDLL(name)\n    return lib.CloseHandle(h)  # read\n",
+            id="one load's text in two functions",
+        ),
+        pytest.param(
+            "def f(h):\n    if (lib := ctypes.WinDLL('k')):\n        lib.CloseHandle(h)  # read\n",
+            id="an assignment expression",
+        ),
+        pytest.param(
+            "def f(h):\n    lib, other = ctypes.WinDLL('k'), None\n    lib.CloseHandle(h)  # read\n",
+            id="a tuple target",
+        ),
+        pytest.param(
+            "def f(h):\n    with ctypes.WinDLL('k') as lib:\n        lib.CloseHandle(h)  # read\n", id="a with target"
+        ),
+        pytest.param("def f(h):\n    getattr(ctypes.windll, 'kernel32').CloseHandle(h)  # read\n", id="a getattr lib"),
+        pytest.param("def f(h):\n    getattr(ctypes, 'WinDLL')('k').CloseHandle(h)  # read\n", id="a getattr loader"),
+        pytest.param("def f(o):\n    ctypes.pythonapi.Py_IncRef(o)  # read\n", id="pythonapi"),
+        pytest.param("def f(h):\n    ctypes.pydll.python3.Close(h)  # read\n", id="pydll"),
+        pytest.param("def f(h):\n    ctypes.oledll.LoadLibrary('x').Close(h)  # read\n", id="oledll.LoadLibrary"),
+        pytest.param(
+            "def f(h):\n    lib = ctypes.WinDLL('k')\n"
+            "    lib.Close.argtypes = lib.Open.argtypes = [wintypes.HANDLE]\n"
+            "    lib.Close.restype = lib.Open.restype = wintypes.BOOL\n    lib.Close(h)\n    lib.Open(h)\n",
+            id="a chained declaration passes",
+        ),
+        pytest.param(
+            "def f(h):\n    lib = ctypes.WinDLL('k')\n"
+            "    lib.Close.argtypes, lib.Close.restype = [wintypes.HANDLE], wintypes.BOOL\n    lib.Close(h)\n",
+            id="an unpacked declaration passes",
+        ),
+        pytest.param(
+            "def f(h):\n    try:\n        lib = ctypes.WinDLL('kernel32')\n    except OSError:\n"
+            "        lib = ctypes.CDLL('libc.so.6')\n    lib.CloseHandle(h)  # read\n",
+            id="a library bound in a try and its handler",
+        ),
+        pytest.param(
+            "def f(h, windows):\n    if windows:\n        lib = ctypes.WinDLL('kernel32')\n    else:\n"
+            "        lib = ctypes.CDLL('libc.so.6')\n    lib.CloseHandle(h)  # read\n",
+            id="a library bound in both arms",
+        ),
+        pytest.param(
+            "lib = None\n\n\ndef load():\n    global lib\n    lib = ctypes.WinDLL('kernel32')\n\n\n"
+            "def use(h):\n    lib.CloseHandle(h)  # read\n",
+            id="a global library",
+        ),
+        pytest.param(
+            "def outer(h):\n    lib = None\n\n    def inner():\n        nonlocal lib\n"
+            "        lib = ctypes.WinDLL('kernel32')\n\n    inner()\n    lib.CloseHandle(h)  # read\n",
+            id="a nonlocal library",
+        ),
+        pytest.param(
+            f"def f(h):\n    lib = ctypes.WinDLL('user32')\n{DECLARED}    lib = ctypes.WinDLL('kernel32')\n"
+            "    lib.CloseHandle(h)  # read\n",
+            id="a library rebound in one scope",
+        ),
+        pytest.param(
+            "def f(h):\n    try:\n        lib = ctypes.WinDLL('kernel32')\n    except OSError:\n"
+            f"        lib = ctypes.CDLL('libc.so.6')\n{DECLARED}    lib.CloseHandle(h)\n",
+            id="a declaration after a try and its handler passes",
+        ),
+        pytest.param(
+            "class K:\n    lib = ctypes.WinDLL('k')\n\n    def f(self, h):\n        self.lib.CloseHandle(h)  # read\n"
+            "        K.lib.CloseHandle(h)  # read\n",
+            id="a class-level library through self and the class",
+        ),
+        pytest.param(
+            "class K:\n    def b(self):\n        self.lib = ctypes.WinDLL('kernel32')\n\n"
+            "    def a(self):\n        user32 = ctypes.WinDLL('user32')\n"
+            "        user32.F.argtypes = [wintypes.HANDLE]\n        user32.F.restype = wintypes.BOOL\n"
+            "        self.lib = user32\n\n    def c(self, h):\n        self.lib.F(h)  # read\n",
+            id="a place bound to two libraries counts both",
+        ),
+        pytest.param(
+            "def f():\n    lib = ctypes.WinDLL('k')\n    g = functools.partial(lib.CloseHandle, 1)\n    g()  # read\n",
+            id="a partial of a foreign function bound to a name",
+        ),
+        pytest.param(
+            "def f():\n    lib = ctypes.WinDLL('k')\n    functools.partial(lib.CloseHandle, 1)()  # read\n",
+            id="a partial of a foreign function called in place",
+        ),
+        pytest.param(
+            "def f():\n    lib = ctypes.WinDLL('k')\n"
+            "    functools.partial(operator.attrgetter('CloseHandle')(lib), 1)()  # read\n",
+            id="a partial over an attrgetter of a foreign function",
+        ),
+        pytest.param(
+            "def f(h):\n    lib = None\n    for _ in range(2):\n        if lib:\n"
+            "            lib.CloseHandle(h)  # read\n        lib = ctypes.WinDLL('k')\n",
+            id="a library a loop binds after the call",
+        ),
+        pytest.param(
+            "if True:\n\n    def load():\n        return ctypes.WinDLL('k')\n\n\n"
+            "def f(h):\n    load().CloseHandle(h)  # read\n",
+            id="a loader defined under a top-level block",
+        ),
+    ],
+)
+def test_ctypes_policy_reads_each_form_resolved_call_follows(body: str) -> None:
+    assert resolved_rows(python_checks.ctypes_declaration_problems, body) == marked_rows(body)
+
+
+# Each name listing GIT_NAME_LISTINGS adds is also a command whose output the splitlines() check reads, -z or not.
+@pytest.mark.parametrize("command", ["diff-tree", "diff-index", "diff-files", "check-ignore", "check-attr"])
+def test_git_separator_policy_reads_a_split_of_each_listing_command(command: str) -> None:
+    source = f"def split(client):\n    client.output([{command!r}, '-z', 'HEAD']).splitlines()\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.git_separator_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == ["skills/alpha/scripts/alpha.py:2"]
+    assert f"splits the output of git {command} with splitlines()" in found[0]
+
+
 TIME_OPTION_SOURCE = """\
 import argparse
 
@@ -2884,6 +3464,19 @@ def parser():
     result.add_argument("--ratio", type=float)
     result.add_argument("--attempts", type=int)
     result.add_argument("--seconds-listed", type=str)
+    result.add_argument("--delay", type=float)
+    result.add_argument("--interval", type=float)
+    result.add_argument("--time-limit", type=float)
+    result.add_argument("--max-time", type=float)
+    result.add_argument("--timeout", type=int)
+    add = result.add_argument
+    add("--retry-wait", type=float)
+    getattr(result, "add_argument")("--poll-ms", type=int)
+    result.add_argument("--limit", type=int)
+    result.add_argument("--min-count", type=int)
+    result.add_argument("--days", type=int)
+    result.add_argument("--times", type=int)
+    result.add_argument("--wait-ok", type=positive_seconds)
     return result
 
 
@@ -2898,16 +3491,22 @@ TIME_OPTION_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 def test_time_option_policy_refuses_a_float_time_option() -> None:
     alpha = "skills/alpha/scripts/alpha.py"
     found = run_claim_policy(python_checks.time_option_problems, "TIME_OPTION_ALLOWED", TIME_OPTION_SOURCE, alpha)
-    remedy = (
-        "with type=float, which accepts nan, inf, 0, and a negative number; use ejryan89-skill-core's "
-        "seconds_option.positive_seconds, or state why in TIME_OPTION_ALLOWED"
-    )
+    tail = "; use ejryan89-skill-core's seconds_option.positive_seconds, or state why in TIME_OPTION_ALLOWED"
+    remedy = f"with type=float, which accepts nan, inf, 0, and a negative number{tail}"
+    whole = f"with type=int, which accepts 0 and a negative number{tail}"
     assert found == [
         f"{alpha}:8 reads --timeout {remedy}",
         f"{alpha}:9 reads --read-timeout {remedy}",
-        f"{alpha}:10 reads SECONDS {remedy}",
+        f"{alpha}:10 reads --wait {remedy}",
         f"{alpha}:11 reads limit_minutes {remedy}",
         f"{alpha}:12 reads --max_hours {remedy}",
+        f"{alpha}:17 reads --delay {remedy}",
+        f"{alpha}:18 reads --interval {remedy}",
+        f"{alpha}:19 reads --time-limit {remedy}",
+        f"{alpha}:20 reads --max-time {remedy}",
+        f"{alpha}:21 reads --timeout {whole}",
+        f"{alpha}:23 reads --retry-wait {remedy}",
+        f"{alpha}:24 reads --poll-ms {whole}",
         f"{alpha}: TIME_OPTION_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: TIME_OPTION_ALLOWED must map each function, class, or assignment to its reason",
     ]
