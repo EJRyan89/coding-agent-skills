@@ -30,6 +30,8 @@ SCHEMA_VERSION = 1
 # 100 of the characters GitHub allows, letters, digits, `_`, `.`, and `-`. The owner, a login, starts with a letter or
 # a digit. The name may start with any of them, as an organization's `.github` starts with a dot; GitHub refuses only
 # `.` and `..` as a whole name, which would also name a folder above the one an archive path builds from it.
+# references/review-adapter.schema.json spells the same rule for an adapter's author, and the format-contract
+# suite's repository probes hold the two in agreement.
 REPOSITORY_CHARACTERS = "A-Za-z0-9_.-"
 REPOSITORY_OWNER = rf"[A-Za-z0-9][{REPOSITORY_CHARACTERS}]{{0,99}}"
 REPOSITORY_NAME = rf"(?!\.\.?(?![{REPOSITORY_CHARACTERS}]))[{REPOSITORY_CHARACTERS}]{{1,100}}"
@@ -585,7 +587,10 @@ def _validate_status_overrides(value: Any) -> None:
     overrides = READ.json_object(value, "config.dashboard.status_overrides")
     for raw_key, raw_status in overrides.items():
         key = READ.string(raw_key, "a key of config.dashboard.status_overrides")
-        if not re.fullmatch(rf"{REPOSITORY}#[1-9][0-9]*", key):
+        # Looser than REPOSITORY, so every key an earlier release wrote still loads: a configuration every code-review
+        # skill reads is never refused for an override only update-pr-dashboard reads, which refuses a key whose
+        # repository is not an identity when it reads the overrides.
+        if not re.fullmatch(rf"[{REPOSITORY_CHARACTERS}]+/[{REPOSITORY_CHARACTERS}]+#[1-9][0-9]*", key):
             raise ConfigurationError(f"Invalid dashboard status override key: {key!r}")
         status = READ.string(raw_status, f"config.dashboard.status_overrides.{key}")
         if dashboard_status_key(status) in COMPUTED_DASHBOARD_STATES:

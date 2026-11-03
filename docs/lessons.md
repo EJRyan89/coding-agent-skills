@@ -222,8 +222,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   is a behavior, the owner's function, such as `frontmatter:Frontmatter.user_only`, `frontmatter:user_only_value` for
   another reader's values, `typed_text:read_typed`, the read of a title or body file without its byte-order mark, and
   `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by,
-  and `review_config:REPOSITORY`, the one rule of a repository identity the mute, status-override, and pull-key
-  patterns are built on.
+  and `review_config:REPOSITORY`, the one rule of a repository identity the mute and pull-key patterns are built
+  on, and that the adapter schema's `repository` pattern is held to by its probes in
+  `tests/code-review/test_format_contract.py`.
   A module more than one part of the repository needs moves to skill-core.
 - **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests`, which runs each backup through both paths,
   `skills/ejryan89-code-review-core/scripts/test_review_config.py::ConfigurationTests::test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees`,

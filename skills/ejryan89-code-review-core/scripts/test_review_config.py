@@ -492,11 +492,32 @@ class ConfigurationTests(unittest.TestCase):
                 config["dashboard"] = {"status_overrides": {f"{identity}#1": "On hold"}}
                 validate_config(config)
         for identity in refused:
-            with self.subTest(identity=identity):
-                with self.assertRaisesRegex(ConfigurationError, "^Invalid repository identity: "):
-                    review_config.validate_repository_identity(identity)
+            with (
+                self.subTest(identity=identity),
+                self.assertRaisesRegex(ConfigurationError, "^Invalid repository identity: "),
+            ):
+                review_config.validate_repository_identity(identity)
+
+    def test_a_status_override_key_an_earlier_release_accepted_still_loads(self) -> None:
+        # The previous release's key check took any run of letters, digits, `_`, `.`, and `-` on each side of the
+        # slash, and its `override --set` wrote what it took; the next release loads every such configuration, since
+        # every code-review skill reads it and `override` itself validates the file before it edits it.
+        for key in (
+            "-owner/repo#1",
+            ".owner/repo#1",
+            "_owner/repo#1",
+            "owner/.#1",
+            "owner/..#1",
+            "o/" + "n" * 101 + "#1",
+        ):
+            with self.subTest(key=key):
                 config = valid_config()
-                config["dashboard"] = {"status_overrides": {f"{identity}#1": "On hold"}}
+                config["dashboard"] = {"status_overrides": {key: "On hold"}}
+                validate_config(config)
+        for key in ("owner/repo", "owner#1", "owner/repo/x#1", "owner/re po#1", "owner/repo#0", "/repo#1"):
+            with self.subTest(key=key):
+                config = valid_config()
+                config["dashboard"] = {"status_overrides": {key: "On hold"}}
                 with self.assertRaisesRegex(ConfigurationError, "^Invalid dashboard status override key: "):
                     validate_config(config)
 
