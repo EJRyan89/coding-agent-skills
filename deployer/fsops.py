@@ -14,6 +14,8 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+import file_presence
+
 from . import platform_support
 
 PLATFORM_ALLOWED = {
@@ -62,16 +64,17 @@ def _remove_tree(path: Path) -> None:
 def remove(path: Path) -> None:
     """Delete a path; a symlink or junction is unlinked itself, never followed into its target.
 
-    A read-only file, which Windows will not delete, is made writable and deleted.
+    A read-only file, which Windows will not delete, is made writable and deleted. A path whose stat fails raises that
+    OSError, never returning as though nothing were there to delete.
     """
     if platform_support.is_link_or_junction(path):
         try:
             path.unlink()
         except OSError:
             path.rmdir()
-    elif path.is_dir():
+    elif file_presence.is_directory(path, other_is_absent=True):
         _remove_tree(path)
-    elif os.path.lexists(path):
+    elif file_presence.is_occupied(path):
         try:
             path.unlink()
         except OSError as error:

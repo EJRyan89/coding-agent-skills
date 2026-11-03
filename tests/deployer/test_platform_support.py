@@ -13,7 +13,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from harness import DeployerTestCase, make_directory_link
+from harness import DeployerTestCase, forward, make_directory_link
+from test_presence_reads import stat_failing_at
 
 from deployer import platform_support
 from deployer.errors import DeployError
@@ -69,7 +70,9 @@ if platform_support.WINDOWS:
             if found is None:
                 self.fail("Git Bash beside the git on PATH is found")
             self.assertEqual(bash, Path(found))
-            run_tool.assert_called_once_with([r"C:\Profiles\YourName\scoop\shims\git.exe", "--exec-path"])
+            run_tool.assert_called_once_with(
+                [r"C:\Profiles\YourName\scoop\shims\git.exe", "--exec-path"], separate_errors=True
+            )
 
         def test_other_bash_on_path_is_never_used(self) -> None:
             with self.which(None):
@@ -77,13 +80,17 @@ if platform_support.WINDOWS:
 
         def test_git_without_bash_beside_it_is_not_enough(self) -> None:
             exec_path = f"{platform_support.normalize(self.root / 'MinGit')}/mingw64/libexec/git-core\n"
-            for result in (platform_support.ToolResult(0, exec_path), platform_support.ToolResult(1, "")):
-                with (
-                    self.subTest(returncode=result.returncode),
-                    self.which("git.exe"),
-                    mock.patch("deployer.platform_support.run_tool", return_value=result),
-                ):
-                    self.assertIsNone(platform_support.find_bash())
+            found = platform_support.ToolResult(0, exec_path)
+            with self.which("git.exe"), mock.patch("deployer.platform_support.run_tool", return_value=found):
+                self.assertIsNone(platform_support.find_bash())
+            # A git that cannot name its exec path is refused with its reason (BashBesideGitTests), never read as none.
+            failed = platform_support.ToolResult(1, "", "fatal: refused\n")
+            with (
+                self.which("git.exe"),
+                mock.patch("deployer.platform_support.run_tool", return_value=failed),
+                self.assertRaises(DeployError),
+            ):
+                platform_support.find_bash()
 
     class FindPwshTests(DeployerTestCase):
         def test_pwsh_is_found_only_on_the_path_given(self) -> None:
@@ -258,6 +265,65 @@ class GitBashVariableTests(DeployerTestCase):
             str(self.planted / "Git" / "bin" / "bash.exe"),
             self.find(GIT_BASH="bash.exe", PROGRAMFILES=str(self.planted)),
         )
+
+    def test_a_bash_it_cannot_stat_is_refused_never_passed_over_for_another(self) -> None:
+        program_files = self.planted / "Git" / "bin" / "bash.exe"
+        for variable, bash in (("GIT_BASH", self.planted / "bash.exe"), ("PROGRAMFILES", program_files)):
+            named = str(self.planted) if variable == "PROGRAMFILES" else str(bash)
+            # GIT_BASH falls through to the Program Files Bash, and that to none, were a failed stat passed over.
+            with self.subTest(variable=variable):
+                with stat_failing_at(bash), self.assertRaises(DeployError) as raised:
+                    self.find(**{variable: named, "PROGRAMFILES": str(self.planted)})
+                self.assertEqual(
+                    f"ERROR: Could not read the Bash {variable} names: {forward(bash)}: Access is denied",
+                    raised.exception.lines[0],
+                )
+        # Something other than a file there still passes to the next place.
+        (self.planted / "folder.exe").mkdir()
+        self.assertEqual(
+            str(program_files), self.find(GIT_BASH=str(self.planted / "folder.exe"), PROGRAMFILES=str(self.planted))
+        )
+
+
+class BashBesideGitTests(DeployerTestCase):
+    """The Bash beside the git the locator finds: a git that cannot name its exec path is refused with its reason,
+    never read as no Bash beside it, and a warning it prints is never read as the path."""
+
+    GIT = "C:/Program Files/Git/cmd/git.exe"
+
+    def bash_beside(self, result: platform_support.ToolResult) -> str | None:
+        with (
+            mock.patch.object(platform_support, "find_executable", return_value=self.GIT),
+            mock.patch.object(platform_support, "run_tool", return_value=result) as run_tool,
+        ):
+            found = platform_support._bash_beside_git()
+        run_tool.assert_called_once_with([self.GIT, "--exec-path"], separate_errors=True)
+        return found
+
+    def test_a_git_whose_exec_path_fails_is_refused_with_its_reason(self) -> None:
+        for errors, reason in (
+            ("fatal: bad config line 1\nin file .gitconfig\n", "fatal: bad config line 1 in file .gitconfig"),
+            ("", "it printed no reason"),
+        ):
+            with self.subTest(reason=reason), self.assertRaises(DeployError) as raised:
+                self.bash_beside(platform_support.ToolResult(128, "", errors))
+            self.assertEqual(
+                (
+                    f"ERROR: Could not find the Bash beside {self.GIT}: git --exec-path failed with exit status 128: "
+                    f"{reason}",
+                    "Put right what Git reports, or set GIT_BASH to the absolute path of Git Bash, then retry.",
+                ),
+                raised.exception.lines,
+            )
+
+    def test_a_warning_git_prints_beside_its_exec_path_is_not_read_as_the_path(self) -> None:
+        root = self.root / "Git"
+        bash = root / "bin" / "bash.exe"
+        bash.parent.mkdir(parents=True)
+        bash.write_bytes(b"")
+        exec_path = root / "mingw64" / "libexec" / "git-core"
+        warned = platform_support.ToolResult(0, f"{exec_path}\n", "warning: unable to access '.gitconfig'\n")
+        self.assertEqual(str(bash), self.bash_beside(warned))
 
 
 class HiddenWindowTests(unittest.TestCase):

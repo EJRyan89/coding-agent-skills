@@ -348,18 +348,30 @@ class DeployAtTests(DeployerTestCase):
         self.assertEqual((self.release, "refs/tags/v1.0.0"), (entry["source_commit"], entry["source_ref"]))
         self.assertFalse((self.skills_dir / "beta").exists())
 
-    def test_a_pin_at_its_commit_whose_tags_git_cannot_read_keeps_its_recorded_ref(self) -> None:
-        # Recording runs after the deployment, so a tag listing Git cannot give there keeps the ref as written, where a
-        # readable one would record the short name given over the update's own pin.
-        self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
-        with self.tags_unreadable():
-            self.assertNotIn("Replaced", self.deploy_ok("--all", "--at", "v1.0.0").output)
-        entry = self.manifest()["sources"][SOURCE_ID]
-        self.assertEqual((self.release, "refs/tags/v1.0.0"), (entry["source_commit"], entry["source_ref"]))
-        pin = source_ref.Pin("v1.0.0", self.release)
-        with self.tags_unreadable():
-            recorded = source_ref.recorded_ref(self.source, pin, "refs/tags/v1.0.0", self.release, unpin=False)
-        self.assertEqual("refs/tags/v1.0.0", recorded)
+    def test_a_users_pin_at_the_updates_own_pin_is_recorded_as_the_users_when_git_cannot_read_its_tags(self) -> None:
+        # Whose the recorded refs/tags/v1.0.0 is cannot be told, but a short name or a commit is only ever the user's,
+        # so it is recorded, and the next release's update is refused without --unpin rather than moving the pin.
+        for given in ("v1.0.0", self.release):
+            with self.subTest(given=given):
+                self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
+                with self.tags_unreadable():
+                    self.assertNotIn("Replaced", self.deploy_ok("--all", "--at", given).output)
+                entry = self.manifest()["sources"][SOURCE_ID]
+                self.assertEqual((self.release, given), (entry["source_commit"], entry["source_ref"]))
+                git(self.source, "tag", "v1.1.0")
+                self.deploy_fails("--all", "--at", "refs/tags/v1.1.0", pattern="without --unpin")
+                self.assertEqual(given, self.manifest()["sources"][SOURCE_ID]["source_ref"])
+                git(self.source, "tag", "-d", "v1.1.0")
+                self.deploy_ok("--all", "--unpin")
+
+    def test_a_pin_named_in_full_at_its_commit_whose_tags_git_cannot_read_keeps_its_recorded_ref(self) -> None:
+        # A ref --at names in full may be either's, so the ref recorded, the user's or the update's, is kept as written.
+        pin = source_ref.Pin("refs/tags/v1.0.0", self.release)
+        for recorded in ("refs/tags/v0.9.0", "refs/tags/v1.0.0"):
+            with self.subTest(recorded=recorded), self.tags_unreadable():
+                self.assertEqual(
+                    recorded, source_ref.recorded_ref(self.source, pin, recorded, self.release, unpin=False)
+                )
 
     def test_the_uninstall_removes_a_pinned_deployment_without_unpin(self) -> None:
         # Answering none is the explicit removal, so it needs no flag; the pin goes with the items it pinned.

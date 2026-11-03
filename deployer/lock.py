@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import secrets
 import sys
 import time
@@ -12,10 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 
+import file_presence
 import json_writer
 
 from . import fsops, platform_support, state_files
-from .errors import DeployError, see_recovery
+from .errors import DeployError, os_error, see_recovery
 from .paths import Paths
 
 ProcessProbe = Callable[[int], platform_support.ProcessStatus]
@@ -188,7 +188,11 @@ def acquire(paths: Paths, probe: ProcessProbe = platform_support.process_status)
     except FileExistsError:
         judged = _existing_holder(paths, probe)
         stale = paths.deployer_dir / f".deploy.lock.stale.{pid}"
-        if os.path.lexists(stale):
+        try:
+            moved_aside = file_presence.is_occupied(stale)
+        except OSError as exc:
+            raise os_error(exc, "tell whether an earlier reclaim left a lock moved aside") from exc
+        if moved_aside:
             # Left by an earlier reclaim from a process with this PID; it may hold another deployment's lock.
             raise DeployError(
                 f"ERROR: The lock moved aside by an earlier reclaim is still at {platform_support.normalize(stale)}.",

@@ -106,6 +106,7 @@ def _carry_requests(
 
 def migrate(context: Context, old: str) -> None:
     paths, data = context.paths, context.manifest
+    # A manifest whose stat fails is refused here as missing: the migration stops before it changes anything either way.
     if not paths.manifest_file.is_file():
         raise DeployError(
             "ERROR: Cannot migrate without an existing manifest.",

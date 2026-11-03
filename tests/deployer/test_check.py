@@ -36,6 +36,7 @@ from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, parse_banner
 
 from deployer import platform_support, tools
 from deployer.check import _tool_line
+from deployer.errors import DeployError
 
 XPDF_4_06 = "pdftotext version 4.06\nCopyright 1996-2025 Glyph & Cog, LLC\n"
 XPDF_4_00 = "pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n"
@@ -393,6 +394,49 @@ class CheckCommandTests(DeployerTestCase):
             ),
             result.output,
         )
+
+    def test_a_deploy_tool_that_cannot_be_located_is_reported_unusable_and_the_check_goes_on(self) -> None:
+        # A git whose exec path fails stops the Bash lookup with its reason; check reports that one tool and the rest.
+        reason = "Could not find the Bash beside C:/Git/cmd/git.exe: git --exec-path failed with exit status 128: no"
+        refused = DeployError(f"ERROR: {reason}", "Put right what Git reports, then retry.")
+        with Machine().patches(), mock.patch("deployer.platform_support.find_bash", side_effect=refused):
+            result = self.run_cli("check")
+        self.assertEqual(1, result.code, result.output)
+        groups = self.report_groups(result.output, "CHECK")
+        self.assertEqual([f"{platform_support.BASH_NAME} (needed to deploy; {reason})"], groups["UNUSABLE"])
+        self.assertIn("ShellCheck 0.11.0 (needed to deploy)", groups["FOUND"])
+        self.assertTrue(
+            result.output.endswith(
+                'Put right what each unusable tool\'s line names before deploying; see "Installing the tools" in\n'
+                "docs/installation.md. Open a new terminal afterwards so the tools are on PATH.\n\n"
+            ),
+            result.output,
+        )
+        # A stat that fails is named with its path, as the deployer's refusal names it.
+        with (
+            Machine().patches(),
+            mock.patch(
+                "deployer.platform_support.find_bash",
+                side_effect=PermissionError(13, "Access is denied", "C:/Git/bin/bash.exe"),
+            ),
+        ):
+            result = self.run_cli("check")
+        bash = platform_support.BASH_NAME
+        located = f"Could not locate {bash}: C:/Git/bin/bash.exe: Access is denied"
+        self.assertEqual(
+            [f"{bash} (needed to deploy; {located})"], self.report_groups(result.output, "CHECK")["UNUSABLE"]
+        )
+
+    def test_a_deploy_tool_probe_that_times_out_stops_the_check_rather_than_reporting_it_unusable(self) -> None:
+        # A hung probe is ended with its processes and stops the check with the deadline's lines, as every hung probe
+        # does. Though its error is a DeployError, it is no tool that cannot be located: no line reports it unusable.
+        timed_out = platform_support.ToolTimedOut("C:/Program Files/Git/bin/bash.exe", 600)
+        with Machine().patches(), mock.patch("deployer.platform_support.find_bash", side_effect=timed_out):
+            result = self.run_cli("check")
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn("bash.exe did not finish within 600 seconds", result.output)
+        self.assertNotIn("UNUSABLE", result.output)
+        self.assertNotIn("=== CHECK ===", result.output)
 
     def test_missing_skill_tool_still_allows_deploying(self) -> None:
         result = self.check(Machine(missing=("gh",)))

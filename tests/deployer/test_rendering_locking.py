@@ -28,6 +28,7 @@ from harness import (
 )
 from markdown_sections import find_fences
 from suite_names import is_suite_name
+from test_presence_reads import stat_failing_at
 
 from deployer import fsops, hashing, lock, platform_support
 from deployer.paths import Paths
@@ -956,6 +957,23 @@ class LockTests(DeployerTestCase):
         self.assertTrue((lock_dir / "info.json").is_file())
         self.assertTrue((stale / "info.json").is_file())
         self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_a_lock_left_aside_whose_stat_fails_is_refused_with_the_reason_rather_than_moved_onto(self) -> None:
+        self.fixture()
+        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
+        self.write(stale / "info.json", json.dumps({"pid": 4141, "token": "older-token", "start_time": 1}))
+        with stat_failing_at(stale):
+            result = self.deploy_fails(
+                "--all", pattern="earlier reclaim left a lock", probe=probe_returning(False, None)
+            )
+        self.assertIn(
+            "ERROR: Could not tell whether an earlier reclaim left a lock moved aside: "
+            f"{forward(stale)}: Access is denied\n",
+            result.output,
+        )
+        self.assertTrue((lock_dir / "info.json").is_file())
+        self.assertTrue((stale / "info.json").is_file())
 
     def test_manifest_ownership_is_loaded_after_lock_acquisition(self) -> None:
         self.make_source_json("test/source-a")
