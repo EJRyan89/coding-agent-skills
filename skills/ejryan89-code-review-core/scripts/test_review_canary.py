@@ -559,3 +559,13 @@ class PriorRecordTests(unittest.TestCase):
         for name, (value, repository, number, message) in cases.items():
             with self.subTest(name), self.assertRaisesRegex(FixtureError, message):
                 validate_prior_record(copy.deepcopy(value), repository=repository, number=number)
+
+
+class GitLabelTests(unittest.TestCase):
+    def test_a_failed_fixture_git_call_is_named_by_its_subcommand_behind_git_s_options(self) -> None:
+        def run(command: Sequence[str], timeout: float) -> git_client.GitResult:
+            return git_client.GitResult(1, "", "fatal: no\n")
+
+        repository = review_canary._Repository(Path("r"), run)
+        with self.assertRaisesRegex(FixtureError, r"^git write-tree failed for the fixture: fatal: no$"):
+            repository.git("-c", "a=b", "write-tree")

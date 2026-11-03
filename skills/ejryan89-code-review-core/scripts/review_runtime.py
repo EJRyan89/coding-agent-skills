@@ -27,7 +27,7 @@ import file_presence
 from device_names import is_reserved_device_name
 from executable_locator import find_executable
 from git_client import OBJECT_NAME as GIT_OBJECT_ID
-from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
+from git_client import GitClient, GitError, GitResult, GitStream, Runner, command_name, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
 from link_probe import is_link_or_junction
@@ -773,7 +773,7 @@ def git_in(checkout: Path, runner: Runner, *arguments: str) -> GitResult:
     try:
         return GitClient(runner).run(arguments, directory=checkout)
     except GitError as exc:
-        raise RuntimeContractError(f"git {arguments[0]} failed in {checkout}: {exc}") from exc
+        raise RuntimeContractError(f"{command_name(arguments)} failed in {checkout}: {exc}") from exc
 
 
 # A full object id, alone or peeled to a kind: what it names cannot change while the object exists.

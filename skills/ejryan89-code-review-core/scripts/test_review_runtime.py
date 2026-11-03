@@ -1548,3 +1548,12 @@ class DestinationStatTests(unittest.TestCase):
 
     def test_a_source_snapshot_destination(self) -> None:
         self.assert_refused_with_the_stat_error(lambda: review_runtime._prepare_destination(self.destination))
+
+
+class GitLabelTests(unittest.TestCase):
+    def test_git_that_cannot_run_is_named_by_its_subcommand_behind_git_s_options(self) -> None:
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            raise GitError("did not finish", kind="timeout")
+
+        with self.assertRaisesRegex(review_runtime.RuntimeContractError, r"^git fetch failed in r: did not finish$"):
+            review_runtime.git_in(Path("r"), run, "-c", "a=b", "fetch")
