@@ -1,12 +1,12 @@
 """The one test of whether a path lies inside a tree, for every check that keeps a path from leaving one.
 
 `within` compares two paths by text alone: each made absolute against the working directory and normalized without
-reaching the file system, then compared as the platform compares names, case-folded where it ignores case, part by
-part, each without Windows' extended-length prefix (`without_extended_prefix`), which `Path.resolve` may give one
-path and not the other. So a `..` that climbs out of the tree, another drive, and a sibling whose name starts with the
-tree's are each outside. A caller that must follow links resolves both paths first and compares the results; one that
-must never follow them compares the paths as written. `posix_within` compares a `/`-separated name a listing gives,
-such as a repository path git lists, by text, case and all.
+reaching the file system, then compared as the platform compares names, case-folded where it ignores case, part by part,
+each without Windows' extended-length or device-namespace prefix (`without_extended_prefix`), which `Path.resolve` may
+give one path and not the other. So a `..` that climbs out of the tree, another drive, and a sibling whose name starts
+with the tree's are each outside. A caller that must follow links resolves both paths first and compares the results;
+one that must never follow them compares the paths as written. `posix_within` compares a `/`-separated name a listing
+gives, such as a repository path git lists, by text, case and all.
 
 `refusal` judges an entry taken from input, such as a repository path a record or a list names, inside the tree it
 must stay in, before anything opens it. It runs three tests in turn and names the first that fails, or gives None:
@@ -29,26 +29,26 @@ from path_keys import path_key
 
 StrPath = str | os.PathLike[str]
 
-# The prefixes of Windows' extended-length spellings: `\\?\C:\x` names `C:\x`, and `\\?\UNC\host\share\x` names
-# `\\host\share\x`. `Path.resolve` keeps either, and gives a volume's GUID path or a `\\.\` path back with the first,
-# so a path and a tree are compared without them. pathlib reads each as part of a path's drive, which a path has only
-# on Windows, so elsewhere the same characters are an ordinary name and are kept.
-EXTENDED_PREFIX = "\\\\?\\"
-EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"
+# The prefixes of Windows' extended-length and device-namespace spellings: `\\?\C:\x` and `\\.\C:\x` name `C:\x`, and
+# `\\?\UNC\host\share\x` and `\\.\UNC\host\share\x` name `\\host\share\x`. `Path.resolve` keeps the first, and gives a
+# volume's GUID path back with it, so a path and a tree are compared without any of them. A device-namespace path that
+# names no drive or share, such as `\\.\pipe\x`, is kept. pathlib reads each as part of a path's drive, which a path has
+# only on Windows, so elsewhere the same characters are an ordinary name and are kept.
+EXTENDED_PREFIXES = ("\\\\?\\", "\\\\.\\")
+UNC_PREFIX = "UNC\\"
 
 
 def without_extended_prefix(path: Path) -> Path:
-    """`path` without Windows' extended-length prefix, when one comes before a drive letter or a UNC share; any other
-    path, such as a volume's GUID path that no drive letter names, is kept as it is."""
+    """`path` without Windows' extended-length or device-namespace prefix, when one comes before a drive letter or a
+    UNC share; any other path, such as a volume's GUID path or a pipe that no drive letter names, is kept as it is."""
     if not path.drive:
         return path
     text = str(path)
-    if text[: len(EXTENDED_UNC_PREFIX)].upper() == EXTENDED_UNC_PREFIX:
-        plain = Path("\\\\" + text[len(EXTENDED_UNC_PREFIX) :])
-    elif text.startswith(EXTENDED_PREFIX):
-        plain = Path(text[len(EXTENDED_PREFIX) :])
-    else:
+    prefix = next((prefix for prefix in EXTENDED_PREFIXES if text.startswith(prefix)), None)
+    if prefix is None:
         return path
+    rest = text[len(prefix) :]
+    plain = Path("\\\\" + rest[len(UNC_PREFIX) :]) if rest[: len(UNC_PREFIX)].upper() == UNC_PREFIX else Path(rest)
     return plain if plain.drive else path
 
 

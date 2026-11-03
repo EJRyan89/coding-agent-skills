@@ -8,7 +8,9 @@ end is plain however it ends. A script that reads those lines decodes the path h
 and undoes the same quoting, and one that writes them, as from a listing of changed files, quotes it here.
 
 A decoded path is the pull request author's to choose, and pathlib on Windows reads a backslash in it as a separator,
-so a script that reads the file a diff names finds it through `snapshot_path`, which holds it inside the snapshot.
+so a script that reads the file a diff names finds it through `snapshot_path`, which holds it inside the snapshot,
+and every reader of a snapshot's file by its repository path judges the name with `unsafe_snapshot_name`, so the
+snapshot readers apply one rule.
 """
 
 from __future__ import annotations
@@ -107,13 +109,19 @@ def header_path(value: str) -> str | None:
     return path[2:] if path.startswith(("a/", "b/")) else path
 
 
+def unsafe_snapshot_name(path: str) -> bool:
+    """Whether a repository path names no file a snapshot can hold as written: one holding a backslash or a control
+    character, one with a `.` segment, or one ejryan89-skill-core's `path_containment.written_refusal` refuses, as an
+    absolute, drive, empty, `..`, reserved-device, or trailing dot or space segment. The rule is the same on every
+    platform, so a path refused on one is refused on all."""
+    return bool(UNSAFE_CHARACTERS.search(path)) or "." in path.split("/") or written_refusal(path) is not None
+
+
 def snapshot_path(root: Path, path: str) -> Path | None:
     """Where a decoded diff path lands in the snapshot at `root`, resolved, or None when it could land outside it or
-    open something other than a file there: a path holding a backslash or a control character, one with a `.`
-    segment, one ejryan89-skill-core's `path_containment.written_refusal` refuses, as an absolute, drive, empty, `..`,
-    reserved-device, or trailing dot or space segment, and one that resolves outside the resolved root, as through a
-    link, or cannot be resolved. The rule is the same on every platform, so a path refused on one is refused on all."""
-    if UNSAFE_CHARACTERS.search(path) or "." in path.split("/") or written_refusal(path) is not None:
+    open something other than a file there: a name `unsafe_snapshot_name` refuses, and one that resolves outside the
+    resolved root, as through a link, or cannot be resolved."""
+    if unsafe_snapshot_name(path):
         return None
     try:
         base = root.resolve()

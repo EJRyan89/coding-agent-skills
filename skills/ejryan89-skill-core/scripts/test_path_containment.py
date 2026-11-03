@@ -80,13 +80,16 @@ class ExtendedPrefixTests(unittest.TestCase):
             ("C:\\tree\\a", "\\\\?\\C:\\tree"),
             ("\\\\?\\c:\\TREE\\a", "\\\\?\\C:\\tree"),
             ("\\\\?\\UNC\\host\\share\\a", "\\\\host\\share"),
+            ("\\\\.\\C:\\tree\\a", "C:\\tree"),
+            ("C:\\tree\\a", "\\\\.\\c:\\tree"),
+            ("\\\\.\\UNC\\host\\share\\a", "\\\\?\\UNC\\host\\share"),
         ):
             with self.subTest(path=path, tree=tree):
                 self.assertTrue(within(path, tree))
                 self.assertFalse(within(path, tree.replace("tree", "other").replace("share", "other")))
 
     @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
-    def test_the_prefix_is_removed_before_a_drive_letter_or_a_share_and_kept_before_anything_else(self) -> None:
+    def test_either_prefix_is_removed_before_a_drive_letter_or_a_share_and_kept_before_anything_else(self) -> None:
         volume = "\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\skills"
         cases = {
             "\\\\?\\C:\\skills\\x": "C:\\skills\\x",
@@ -96,6 +99,9 @@ class ExtendedPrefixTests(unittest.TestCase):
             "C:\\skills\\x": "C:\\skills\\x",
             "\\\\host\\share\\skills": "\\\\host\\share\\skills",
             volume: volume,
+            "\\\\.\\C:\\skills\\x": "C:\\skills\\x",
+            "\\\\.\\UNC\\host\\share\\skills": "\\\\host\\share\\skills",
+            "\\\\.\\pipe\\x": "\\\\.\\pipe\\x",
         }
         for spelled, plain in cases.items():
             with self.subTest(path=spelled):

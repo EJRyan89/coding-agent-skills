@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import file_presence
 from device_names import is_reserved_device_name
+from diff_paths import unsafe_snapshot_name
 from executable_locator import find_executable
 from git_client import OBJECT_NAME as GIT_OBJECT_ID
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
@@ -1404,6 +1405,11 @@ def _snapshot_stamp(metadata: dict[str, Any], tree: _SnapshotTree, manifest_dige
 
 
 def _snapshot_path(root: Path, relative: str) -> Path:
+    """Where a listed or fetched file lies in the snapshot at `root`, once ejryan89-skill-core's
+    `diff_paths.unsafe_snapshot_name`, the rule every snapshot reader applies, finds the name safe; the snapshot's
+    writer excludes any other name, so a manifest that lists one is refused."""
+    if unsafe_snapshot_name(relative):
+        raise RuntimeContractError(f"Source snapshot path is unsafe: {relative!r}")
     return root.joinpath(*PurePosixPath(relative).parts)
 
 

@@ -267,3 +267,40 @@ def test_the_family_is_the_path_error_and_covers_a_quoted_header_path_git_does_n
 
 def test_the_readers_that_raise_the_family_are_named() -> None:
     assert diff_paths.CONTENT_READERS == ("unquote", "header_path")
+
+
+UNSAFE_SNAPSHOT_NAMES = [
+    "con",
+    "src/NUL",
+    "a/COM1:x",
+    "COM1.txt",
+    "src/aux.py",
+    "a/CON.txt",
+    "a/conin$",
+    "a/CONOUT$",
+    "a/COM\u00b9",
+    "a/lpt\u00b2.y",
+    "a/con .txt",
+    "a/x.",
+    "a/x ",
+    ".. ",
+    ".../tools/inside.py",
+    "tools/./inside.py",
+    "tools\\inside.py",
+    "tools/in\nside.py",
+    "../outside.py",
+    "/etc/outside.py",
+    "C:/outside.py",
+    "",
+]
+
+
+@pytest.mark.parametrize("path", UNSAFE_SNAPSHOT_NAMES)
+def test_an_unsafe_snapshot_name_is_refused_by_the_shared_rule(path: str) -> None:
+    assert diff_paths.unsafe_snapshot_name(path)
+    assert snapshot_path(Path("root"), path) is None
+
+
+@pytest.mark.parametrize("path", ["a.py", "src/a b.py", "tools/..x.py", "tools/ab:c.py", ".github/x.yml", "con_x/a"])
+def test_a_safe_snapshot_name_passes_the_shared_rule(path: str) -> None:
+    assert not diff_paths.unsafe_snapshot_name(path)
