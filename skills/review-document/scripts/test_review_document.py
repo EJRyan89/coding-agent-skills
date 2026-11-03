@@ -180,6 +180,7 @@ class StubGitHub:
         # listing, and the head each read of the pull request answers in turn, its last one for every later read.
         self.changed_files = sum(len(page) for page in pages)
         self.heads = [HEAD]
+        self.bases = [BRANCH_TIP]  # the base branch's tip each read answers, as heads are
         self.pull_reads = 0
         self.blobs = {blob_id(content): content for tree in trees.values() for content in tree.values()}
 
@@ -200,6 +201,7 @@ class StubGitHub:
     def answer(self, endpoint: str, options: list[str]) -> Any:
         if endpoint == "pulls/7" and not options:
             head = self.heads[min(self.pull_reads, len(self.heads) - 1)]
+            base = self.bases[min(self.pull_reads, len(self.bases) - 1)]
             self.pull_reads += 1
             return {
                 "number": 7,
@@ -209,7 +211,7 @@ class StubGitHub:
                 "state": "open",
                 "draft": False,
                 "merged_at": None,
-                "base": {"ref": "main", "sha": BRANCH_TIP},
+                "base": {"ref": "main", "sha": base},
                 "head": {"ref": AUTHORED.replace(" ", "-"), "sha": head},
                 "changed_files": self.changed_files,
             }
@@ -1382,17 +1384,23 @@ class PullRequestTests(PipelineTestCase):
         self.assertEqual([], stub.reads())
         self.assertFalse(self.output.exists())
 
-    def test_a_pull_request_whose_head_moves_while_its_files_are_listed_fails_before_any_document_is_read(
+    def test_a_pull_request_that_moves_while_its_files_are_listed_fails_before_any_document_is_read(
         self,
     ) -> None:
         # The listing is served by pull number, which follows a push, while the documents are read at the head the
-        # build began with; a moved head before the pages, or after them, mixes two commits' changes.
+        # build began with and the merge base of the base it began with; a moved head before the pages, or after
+        # them, or a base retargeted by the end of them, mixes two commits' changes.
         moved = "4" * 40
         promised = self.skill_phrase(r"pull request `(changed while its files were being read)`")
-        for heads in ([HEAD, moved], [HEAD, HEAD, moved]):
-            with self.subTest(heads=heads):
+        retargeted = "5" * 40
+        for heads, bases, name, was, now in (
+            ([HEAD, moved], [BRANCH_TIP], "head", HEAD, moved),
+            ([HEAD, HEAD, moved], [BRANCH_TIP], "head", HEAD, moved),
+            ([HEAD], [BRANCH_TIP, BRANCH_TIP, retargeted], "base", BRANCH_TIP, retargeted),
+        ):
+            with self.subTest(heads=heads, bases=bases):
                 stub = self.stub()
-                stub.heads = heads
+                stub.heads, stub.bases = heads, bases
                 code, lines = run_main(
                     "build", "octo-org/widgets#7", "--output", str(self.output), github=stub.client()
                 )
@@ -1400,7 +1408,7 @@ class PullRequestTests(PipelineTestCase):
                     (
                         1,
                         [
-                            f"FAILED octo-org/widgets#7 {promised} (head {HEAD[:12]} is now {moved[:12]}); "
+                            f"FAILED octo-org/widgets#7 {promised} ({name} {was[:12]} is now {now[:12]}); "
                             "run build again"
                         ],
                     ),

@@ -1163,6 +1163,23 @@ class ChangeSizeTests(AdversarialFixture):
                 "run prepare again"
             )
         )
+        # And a base retargeted while the listing is read, as review-document's build refuses one too.
+        self.github.files = self.files_listing(patched=True)
+        listed = self.github.list_pull_files
+        tip = self.github.base
+
+        def retargeting(repository: str, number: int) -> PullFiles:
+            self.github.base = "e" * 40
+            return listed(repository, number)
+
+        with mock.patch.object(self.github, "list_pull_files", retargeting):
+            self.assert_prepare_fails(
+                re.escape(
+                    f"{SELECTOR} changed while it was being prepared (head {self.github.head[:12]} is now "
+                    f"{self.github.head[:12]}); run prepare again"
+                )
+            )
+        self.github.base = tip
 
 
 class ConfiguredExclusionTests(AdversarialFixture):
