@@ -421,16 +421,25 @@ refused while a guarded hub is in view, and what they do not see at all is named
   nested `bash`'s own letters, `-o`, `-O`, and long options, `sh`, which Bash runs in POSIX mode, a `bash` that
   `exec -a sh` starts by that name, the `SHELLOPTS` and `BASHOPTS` its environment hands it, and a `POSIXLY_CORRECT`
   or `BASH_COMPAT` it is handed or the command assigns, by any builtin that assigns, before a command, through a name
-  reference, or by arithmetic (`(( ))`, `$(( ))`, `let`, or an arithmetic `for`). A command that only names one, as
+  reference, or by arithmetic. Every arithmetic context is read for what it may assign: `(( ))`, `$(( ))`, `let`,
+  an arithmetic `for`, each operand of an arithmetic comparison in `[[ ]]`, an array subscript, in a `${ }` or before
+  an element's `=`, and a `${NAME:offset:length}`, in a word, a redirection target, an unquoted here-document, a case
+  word or pattern, or a `for` list. The guard cannot read a command whose arithmetic assigns either variable, or
+  evaluates what the text does not settle to a number, since Bash evaluates a variable's value as an expression in
+  turn: an expansion or variable whose value the text does not settle, a substitution's output, or a `${ }` other than
+  a plain name. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
+  which each assignment to it is arithmetic. A command that only names either variable, as
   `git log -S POSIXLY_CORRECT` does, is read as before. Each table names each option Bash lists and whether a shell
   holding it is one the guard reads: the guard follows allexport, reads a shell under an option that changes nothing
   it reads, such as `errexit`, `pipefail`, `nounset`, or `extglob`, and cannot read one under `keyword`, `posix`,
   `lastpipe`, `cdable_vars`, `physical`, `privileged`, or the others its table marks, nor an option it does not
   name. `xtrace` expands `PS4` before each command it traces, so the guard cannot read a shell where it is turned on
-  while the shell holds a `PS4` that may hold an expansion, nor one that assigns `PS4` such a value. An assignment
-  whose name the text does not settle, by `export`, `declare`, `typeset`, `local`, `readonly`, `read`, `printf -v`,
-  `mapfile`, `wait -p`, a name reference, or `${!NAME:=word}`, may assign any variable, one of these among them, so
-  the guard cannot read it. A nested `bash`'s own options are judged only where the guard reads its script: a script
+  while the shell holds a `PS4` that may run something as it expands, nor one that assigns `PS4` such a value: one
+  the text does not settle, or one holding a command substitution, a backquote, an arithmetic expansion, or a `${ }`
+  other than a plain name's. The usual `PS4='+ ${BASH_SOURCE}:${LINENO}: '` runs nothing. An assignment whose name
+  the text does not settle, by `export`, `declare`, `typeset`, `local`, `readonly`, `read`, `printf -v`, `mapfile`,
+  `wait -p`, a name reference, or `${!NAME:=word}`, may assign any variable, one of these among them, so the guard
+  cannot read it, which refuses `read -r name value; declare "$name=$value"` too. A nested `bash`'s own options are judged only where the guard reads its script: a script
   file is unread whatever they are. An
   `env` word the text does not settle, as in `env FOO=$(cmd)`, may assign any variable, so the guard cannot read it,
   and every variable git or a nested bash reads is unsettled for the command after it. A shell the text does not settle may have exported any
@@ -466,8 +475,10 @@ the hubs they reach stay in view. While one is, the guard refuses:
   among its options, as in `bash -c"$x"` or `bash $x -c`, which may be `-c`, an option word of `set` or `shopt`
   the text does not settle, which may turn on allexport, a shell where an option the guard's tables mark as unread
   holds or one they do not name is turned on, by any source above, `sh` and a `POSIXLY_CORRECT` the command assigns
-  or its environment hands it among them, `xtrace` turned on where `PS4` may hold an expansion, a `PS4` assigned such
-  a value, an assignment whose name the text does not settle, a `BASH_FUNC_<name>%%` a PowerShell cmdlet writes,
+  or its environment hands it among them, `xtrace` turned on where `PS4` may run something as it expands, a `PS4`
+  assigned such a value, an assignment whose name the text does not settle, arithmetic that may assign one of them
+  or that evaluates what the text does not settle to a number, an integer attribute, a `BASH_FUNC_<name>%%` a
+  PowerShell cmdlet writes,
   whose body the text does not settle, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
   inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
   lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline
@@ -526,11 +537,10 @@ The hook sees the command text. It does not see:
 - a script handed to a shell other than `bash`, `sh`, `pwsh`, and `powershell`, such as `zsh -c`, `dash -c`, or
   `ksh -c`: the guard reads that shell as a program and never reads its script;
 - an alias `BASH_ALIASES` or a command name `BASH_CMDS` gains through a name the text does not settle;
-- a variable an arithmetic expression assigns, in `(( ))`, `let`, or an arithmetic `for`, which holds a number,
-  and a builtin `enable -f` loads from a shared object;
+- a variable an arithmetic expression assigns, other than the two that turn on a shell option, which holds a
+  number, and a builtin `enable -f` loads from a shared object;
 - a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
-- a shell option turned on by an arithmetic assignment through a name the text does not settle, as `(( $n = 1 ))`
-  may assign `POSIXLY_CORRECT`, and one a shell's startup files turn on;
+- a shell option a shell's startup files turn on;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
 - text run as commands through an object of PowerShell's engine the text does not type, such as one a variable

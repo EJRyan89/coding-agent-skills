@@ -338,7 +338,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   shell option read from one source, such as `set`, and not from another that turns it on, such as `shopt -o`, a
   nested bash's letters, `sh`, or a variable such as `POSIXLY_CORRECT` judged by the name an assignment gives it,
   never by a search of the command's text, which refuses a commit message that names it and misses a name built
-  at run time, rather than through `SET_OPTIONS` and
+  at run time; an arithmetic context read in one place and not another, `(( ))` but not a subscript, an offset,
+  `[[ -eq ]]`, a case pattern, or a value Bash evaluates again, rather than through `arithmetic_contexts` and
+  `arithmetic_hazard`, rather than through `SET_OPTIONS` and
   `SHOPT_OPTIONS`; a row for an option table that asserts only a refusal while a guarded hub is in view, which an
   option read as unknown gives too, where the row could read what the reader returns, as each sudo option's was; each
   way a variable is assigned, an expansion's `${NAME:=word}` and `${NAME=word}` among them, and each way an

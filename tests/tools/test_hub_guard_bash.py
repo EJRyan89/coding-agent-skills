@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from tools import hub_guard
+from tools import bash_syntax, hub_guard
 
 START = Path(__file__).resolve().parent
 UNSETTLED = "unsettled"
@@ -882,6 +882,48 @@ class ShellOptionTableTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual([], bash_reading(command).unread)
+
+    def test_the_arithmetic_readers_take_each_form_as_bash_does(self) -> None:
+        # The contexts a word's raw text holds: none inside single quotes or after a backslash.
+        for raw, expected in (
+            ("$((a))", ["(a)"]),
+            ("$[a+1]", ["a+1"]),
+            ("'x$((a))'", []),
+            ("\\$((a))", []),
+            ("${a[@]}${a[*]}", []),
+            ("${x:-1}${x:=1}${x:?e}${x:+y}", []),
+            ("${x:1:n}", ["1", "n"]),
+            ("${a[i]}", ["i"]),
+            ("a[j]=x", ["j"]),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, hub_guard.arithmetic_contexts(raw))
+        self.assertEqual("a", hub_guard.unquoted("'a'"))
+        shell = hub_guard.Shell(None, {"self": "self", "n": "3"}, set())
+        for expression, hazard in (("`echo 1`", True), ("$1 + 1", True), ("self", True), ("n", False)):
+            with self.subTest(expression=expression):
+                self.assertEqual(hazard, hub_guard.arithmetic_hazard(expression, shell) is not None)
+        shell.opaque = True
+        self.assertIsNotNone(hub_guard.arithmetic_hazard("n", shell))
+        # (( )) is one simple command in a subshell in a subshell, alone and not negated.
+        commands: tuple[tuple[str, str | None], ...] = (
+            ("((a))", "a"),
+            ("( (a) | cat )", None),
+            ("( ! (a) )", None),
+            ("( (a); b )", None),
+        )
+        for text, arithmetic in commands:
+            with self.subTest(text=text):
+                [(and_or, _)] = bash_syntax.parse(text).items
+                node = and_or.first.commands[0]
+                assert isinstance(node, bash_syntax.Subshell)
+                self.assertEqual(arithmetic, hub_guard.arithmetic_command(node))
+        # Each arithmetic comparison of [[ ]], an integer attribute only where it is given, and one report a loop.
+        for operator in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge"):
+            with self.subTest(operator=operator):
+                self.assertTrue(bash_reading(f'read -r x; [[ 1 {operator} "$x" ]]; git status').unread)
+        self.assertEqual([], bash_reading("declare +i n; git status").unread)
+        self.assertEqual(1, len(bash_reading("read -r x; for i in 1; do (( x )); done; git status").unread))
 
     def test_ps4_is_refused_only_where_it_may_run_something_as_it_expands(self) -> None:
         for value, expands in (

@@ -2576,7 +2576,8 @@ def braced_arithmetic(content: str) -> list[str | None]:
         rest = rest[end + 1 :]
     if rest.startswith(":") and rest[1:2] not in ("-", "=", "?", "+"):
         found.extend(rest[1:].split(":")[:2])
-    found.extend(arithmetic_contexts(content))
+    # The subscript is read whole above; what follows the name and subscript, an operator's word, may hold more.
+    found.extend(arithmetic_contexts(rest))
     return found
 
 
