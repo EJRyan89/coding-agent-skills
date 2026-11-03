@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from git_client import GitError
 from harness import (
     DEPLOY_COMMAND,
     REPOSITORY_ROOT,
@@ -853,6 +854,31 @@ class DeployAtTests(DeployerTestCase):
         self.assertEqual((), tools.GIT.minimum)
         requirements = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
         self.assertIn("`--at` needs Git 2.40.0 or newer, which reads a commit's attributes", requirements)
+
+    def test_a_check_attr_git_refuses_is_refused_with_gits_reason_and_the_floor_before_anything_is_made(self) -> None:
+        # A Git older than 2.40.0 lists the tree but refuses check-attr's --source, so the refusal carries its reason
+        # and names the Git --at needs.
+        reason = "error: unknown option `source=0123'"
+        client = mock.Mock()
+        client.names.side_effect = [[f"100644 blob {'a' * 40}\tREADME.md"], GitError(reason, returncode=129)]
+        patch, made = recorded_temporary_directories()
+        with (
+            patch,
+            mock.patch.object(source_ref, "_client", return_value=client),
+            self.assertRaises(DeployError) as raised,
+        ):
+            source_ref.export(self.source, self.release)
+        self.assertEqual(
+            (
+                f"ERROR: Git could not read the attributes of the tree of {self.release}: {reason}",
+                "Put right what Git reports in the checkout, then retry; reading a commit's attributes needs Git "
+                "2.40.0 or newer.",
+                'See "Deploying an earlier commit" in docs/recovery.md.',
+            ),
+            raised.exception.lines,
+        )
+        self.assertEqual("check-attr", client.names.call_args_list[1].args[0][0])
+        self.assertEqual([], made)
 
     def test_an_answer_check_attr_did_not_give_for_each_path_and_attribute_is_refused(self) -> None:
         answers = {

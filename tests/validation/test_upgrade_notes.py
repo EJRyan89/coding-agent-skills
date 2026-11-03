@@ -82,6 +82,15 @@ class ContractValueReaders(unittest.TestCase):
                 '# The tools.\nGH = (2, 48, 0)\nT = Tool(name="gh", label="gh", locate=locate, minimum=GH)\n',
             ),
         )
+        # A feature's name or floor moved into a constant inside the dict is the same floor.
+        self.assertEqual(
+            [],
+            changed(
+                "deployer/tools.py",
+                'T = Tool("git", "Git", locate, feature_minimums={"--at": (2, 40, 0)})\n',
+                'AT = "--at"\nAT_GIT = (2, 40, 0)\nT = Tool("git", "Git", locate, feature_minimums={AT: AT_GIT})\n',
+            ),
+        )
 
 
 TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: object\n    version_arguments: tuple\n"
@@ -125,6 +134,12 @@ TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: obje
             'T = Tool("git", "Git", locate, feature_minimums={"--at": (2, 40, 0)})\n',
             'T = Tool("git", "Git", locate, feature_minimums={"--at": (2, 41, 0)})\n',
             id="a floor one feature alone needs, raised",
+        ),
+        pytest.param(
+            "deployer/tools.py",
+            'AT_GIT = (2, 40, 0)\nT = Tool("git", "Git", locate, feature_minimums={"--at": AT_GIT})\n',
+            'AT_GIT = (2, 41, 0)\nT = Tool("git", "Git", locate, feature_minimums={"--at": AT_GIT})\n',
+            id="a floor one feature alone needs, raised in a constant inside the dict",
         ),
         # The control: a floor by keyword, as the check always read one.
         pytest.param(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import functools
 import re
 import sys
@@ -124,12 +125,24 @@ def _module_values(tree: ast.Module) -> dict[str, ast.expr]:
     return values
 
 
+class _Constants(ast.NodeTransformer):
+    """Replaces each module-level name in an expression, wherever it sits, with the value it is assigned."""
+
+    def __init__(self, values: dict[str, ast.expr], seen: frozenset[str]) -> None:
+        self.values = values
+        self.seen = seen
+
+    def visit_Name(self, node: ast.Name) -> ast.expr:
+        if node.id in self.values and node.id not in self.seen:
+            value: ast.expr = _Constants(self.values, self.seen | {node.id}).visit(copy.deepcopy(self.values[node.id]))
+            return value
+        return node
+
+
 def _value_source(node: ast.expr, values: dict[str, ast.expr], seen: frozenset[str] = frozenset()) -> str:
-    """An expression's text, a module-level name followed to the value it is assigned, so a floor held in a constant
-    compares by the constant's value."""
-    if isinstance(node, ast.Name) and node.id in values and node.id not in seen:
-        return _value_source(values[node.id], values, seen | {node.id})
-    return ast.unparse(node)
+    """An expression's text, each module-level name in it followed to the value it is assigned, a key or a value of a
+    dict and a member of a tuple included, so a floor held in a constant compares by the constant's value."""
+    return ast.unparse(_Constants(values, seen).visit(copy.deepcopy(node)))
 
 
 def _assigned_sources(tree: ast.Module, names: tuple[str, ...]) -> dict[str, str]:
