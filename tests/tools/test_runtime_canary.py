@@ -1196,6 +1196,29 @@ class RunTests(RuntimeCanaryTestCase):
         init = json.dumps({"type": "system", "subtype": "init", "skills": 5})
         self.assertEqual((set(), []), runtime_canary.claude_stream(init))
 
+    def test_a_line_holding_a_line_break_other_than_newline_is_read_whole(self) -> None:
+        # JSON holds U+2028, U+0085, and the other characters str.splitlines() breaks on as they are, and a log line
+        # may too, so each reader of a runtime's output or a record file splits on "\n" alone.
+        breaks = [
+            character
+            for character in map(chr, range(sys.maxunicode + 1))
+            if character not in "\n\r" and len(f"a{character}b".splitlines()) == 2
+        ]
+        self.assertLessEqual({"\u0085", "\u2028", "\u2029"}, set(breaks))
+        for separator in breaks:
+            with self.subTest(separator=hex(ord(separator))):
+                init = {"type": "system", "subtype": "init", "cwd": f"a{separator}b", "skills": ["/alpha"]}
+                stream = json.dumps(init, ensure_ascii=False) + "\n"
+                self.assertEqual(({"alpha"}, []), runtime_canary.claude_stream(stream))
+                with tempfile.TemporaryDirectory() as temporary:
+                    records = Path(temporary) / "records.jsonl"
+                    records.write_bytes(stream.encode("utf-8"))
+                    self.assertEqual([init], runtime_canary.read_records(records))
+                failed = f"error=exec_command failed: a{separator}b"
+                self.assertEqual(
+                    [failed], runtime_canary.unread_rejections("codex", Completed(0, "", f"before\n{failed}\n"))
+                )
+
     def test_a_stream_line_that_is_not_json_or_repeats_a_key_is_passed_over(self) -> None:
         init = json.dumps({"type": "system", "subtype": "init", "skills": ["/alpha"]})
         stream = "\n".join(["warning: not json", '{"type": "result", "type": "system"}', init])
