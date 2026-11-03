@@ -397,8 +397,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_plugin_canary.py::test_an_installed_plugin_the_canary_cannot_place_in_the_home_is_refused_by_name`,
   `tests/tools/test_checkout.py::test_every_tool_that_takes_root_parses_it_with_checkout_root_and_the_module_names_it`
 - **Search for:** `root / name` or `joinpath(*` where the operand comes from input and no `refusal` judged it first;
-  `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, or
-  `startswith(f"{` with a trailing `/` outside `path_containment.py`, which the guard refuses unless a
+  `within(` on a path from input with no lexical check before it; `is_relative_to(`, `commonpath(`, `in` a path's
+  `.parents`, a `startswith(`, `find(`, `removeprefix(`, slice, regular expression, or glob of a folder built to end
+  in a separator, or a `relpath(` checked for `..`, outside `path_containment.py`, which the guard refuses unless a
   `CONTAINMENT_ALLOWED` entry states why.
 - **Examples:** #1780, #1782, #1818, #1905, #2050
 
@@ -646,10 +647,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a policy whose file list is a hand-kept tuple of directories, such as a `*_ROOTS`, that no
   `scope_problems` test holds, or a `glob(`
   narrower than the rule's statement in `CLAUDE.md` or `docs/`; `rg -n "glob\(\"\*\.sh\"\)|suffix == \"\.sh\"" tests/validation/`,
-  a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; an
-  audit brief that asks only for drift; a `scope_problems` call whose modules are filtered by the roots it is held
-  to, which compares a list with itself.
-- **Examples:** #1366, #1598, #1678, #1722, and #1884, which adds the check that holds a policy's scope to its rule
+  a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; a
+  policy that refuses a sentence as an exact substring, which a capital, a reflowed line, or an optional word walks
+  past; an audit brief that asks only for drift; a `scope_problems` call whose modules are filtered by the roots it
+  is held to, which compares a list with itself.
+- **Examples:** #1366, #1598, #1678, #1722, #2260, and #1884, which adds the check that holds a policy's scope to its
+  rule
 
 ### A check reads its subject through its consumer's reader
 
