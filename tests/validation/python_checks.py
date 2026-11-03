@@ -2647,8 +2647,9 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # a concatenation, or a join. Nor is it trimmed or split by strip(), lstrip(), rstrip(), split(), or rsplit() given no
 # separator or characters, or None for them, which drop or break on U+00A0, U+2028, and the other whitespace such a
 # name can hold: git_client.output_line takes off the one "\n" that ends a line git wrote. Every subcommand's output
-# counts for a call whose first argument, or the first item of a list it is given, is a literal "git", as
-# subprocess.run(["git", ...]), or whose function's name says git, one whose subcommand its arguments name only at
+# counts for a call whose first element, the arguments read in order with each list among them read as its items,
+# is the literal "git" or a name that says git, as subprocess.run(["git", ...]) or run_tool([git, "--exec-path"]), or
+# whose function's name says git, one whose subcommand its arguments name only at
 # run time included, whatever their shape. A listing, a format, a split, or a trim that must stay states why in a
 # module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
@@ -2957,7 +2958,13 @@ class _GitOutputs:
             else:
                 elements.append(argument)
         started = _git_command(elements)
-        named = names_git(node.func) or (bool(elements) and _literal(elements[0]) == "git")
+        # A call names git by its function, or by its first argument: the literal "git", or a name or attribute that
+        # says git, such as `run_tool([git, "--exec-path"])` given the path the locator found.
+        first = elements[0] if elements else None
+        named = names_git(node.func) or (
+            first is not None
+            and (_literal(first) == "git" or (isinstance(first, ast.Name | ast.Attribute) and names_git(first)))
+        )
         if started is None:
             # A git call whose subcommand its arguments name only at run time, whatever their shape, as
             # `git_in(checkout, runner, *arguments)`, `git_in(checkout, runner, command)`, or `run(["git", name])`,
@@ -3056,8 +3063,8 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
 
 # A GitError whose returncode is None is not one git could not run: git_client raises it, with no exit code, for an
 # answer git gave in the wrong shape, such as a rev-parse that printed no object name. Whether git ran and finished is
-# GitError.answered, so a handler of a GitError, or a function given one, reads that, never `returncode is None`
-# or `returncode in (None, ...)`. A read that must stay states why in a module-level
+# GitError.answered, so a handler of a GitError, or a function given one, reads that, never `returncode is None`,
+# `returncode in (None, ...)`, or `not returncode`. A read that must stay states why in a module-level
 # GIT_ANSWERED_ALLOWED = {scope: reason}.
 GIT_ERROR = "git_client.GitError"
 GIT_ANSWERED_ALLOWANCE = "GIT_ANSWERED_ALLOWED"
@@ -3083,22 +3090,30 @@ def _none_returncode_reads(tree: ast.Module, aliases: dict[str, str]) -> set[int
             continue
         for statement in body if names else []:
             for compared in ast.walk(statement):
-                if isinstance(compared, ast.Compare) and _compares_returncode_with_none(compared, names):
+                if (isinstance(compared, ast.Compare) and _compares_returncode_with_none(compared, names)) or (
+                    isinstance(compared, ast.UnaryOp)
+                    and isinstance(compared.op, ast.Not)
+                    and _is_returncode_of(compared.operand, names)
+                ):
                     found.add(id(compared))
     return found
+
+
+def _is_returncode_of(value: ast.expr, names: set[str]) -> bool:
+    """Whether `value` reads the returncode of one of `names`."""
+    return (
+        isinstance(value, ast.Attribute)
+        and value.attr == "returncode"
+        and isinstance(value.value, ast.Name)
+        and value.value.id in names
+    )
 
 
 def _compares_returncode_with_none(node: ast.Compare, names: set[str]) -> bool:
     """Whether a comparison sets one of `names`' returncode beside None, as a side or as a member of a literal tuple,
     list, or set it tests membership in."""
     sides = [node.left, *node.comparators]
-    returncode = any(
-        isinstance(side, ast.Attribute)
-        and side.attr == "returncode"
-        and isinstance(side.value, ast.Name)
-        and side.value.id in names
-        for side in sides
-    )
+    returncode = any(_is_returncode_of(side, names) for side in sides)
 
     def none(value: ast.expr) -> bool:
         if isinstance(value, ast.Tuple | ast.List | ast.Set):
@@ -3125,7 +3140,7 @@ def git_answered_problems(root: Path, files: list[Path]) -> list[str]:
                 f"{GIT_ANSWERED_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Compare) and id(node) in reads
+            if isinstance(node, ast.Compare | ast.UnaryOp) and id(node) in reads
         ]
         problems += sanctioned_problems(name, tree, GIT_ANSWERED_ALLOWANCE, found)
     return problems

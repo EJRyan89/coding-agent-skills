@@ -1210,6 +1210,10 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("by an alias", "from git_client import GitError as Failed", "Failed", "exc.returncode is None"),
             ("among others", "from git_client import GitError", "(OSError, GitError)", "exc.returncode is None"),
             ("in a condition", "from git_client import GitError", "GitError", "ok and exc.returncode is None"),
+            ("in a tuple", "from git_client import GitError", "GitError", "exc.returncode in (None, 128)"),
+            ("in a list", "from git_client import GitError", "GitError", "exc.returncode not in [None, 128]"),
+            ("in a set", "from git_client import GitError", "GitError", "exc.returncode in {128, None}"),
+            ("read as false", "from git_client import GitError", "GitError", "not exc.returncode"),
         )
     },
     **{
@@ -1236,6 +1240,29 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("returncode of another value", "from git_client import GitError", "GitError", "other.returncode is None"),
         )
     },
+    # "or a function given it as a parameter annotated `GitError`".
+    **{
+        f"a GitError parameter's returncode {form}": _form(
+            git_answered_problems,
+            f"{imports}\n\n\ndef could_not_run(error: {annotation}) -> bool:\n    return {test}\n",
+        )
+        for form, imports, annotation, test in (
+            ("is None", "from git_client import GitError", "GitError", "error.returncode is None"),
+            ("by the module", "import git_client", "git_client.GitError", "error.returncode is None"),
+            ("in a tuple", "from git_client import GitError", "GitError", "error.returncode in (None, 1)"),
+            ("read as false", "from git_client import GitError", "GitError", "not error.returncode"),
+        )
+    },
+    "a parameter annotated otherwise": _form(
+        git_answered_problems,
+        "from github_client import GitHubError\n\n\n"
+        "def f(error: GitHubError) -> bool:\n    return error.returncode is None\n",
+        refused=False,
+    ),
+    "a trim of a git program's output passed by name": _form(
+        git_separator_problems,
+        "def f(run_tool, git):\n    return run_tool([git, '--exec-path']).output.strip()\n",
+    ),
     "a GitError's name reused by a GitHubError clause": _form(
         git_answered_problems,
         "from git_client import GitError\nfrom github_client import GitHubError\n\n\n"
