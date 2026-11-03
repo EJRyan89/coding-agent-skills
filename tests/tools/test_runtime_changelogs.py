@@ -677,7 +677,7 @@ class MainTests(unittest.TestCase):
         self.assertTrue(printed[0].startswith("FAILED cannot read the guidance record"), printed)
 
     def test_github_releases_are_asked_for_thirty_a_page_which_the_api_answers_in_its_time(self) -> None:
-        # A hundred of Codex's release bodies a page answered 504 (#2286); thirty is GitHub's default page.
+        # A hundred of Codex's release bodies a page answered 504; thirty is GitHub's default page.
         record = watch.read_record(REPOSITORY)
         fetcher = StubFetcher(self.table())
         with pytest.MonkeyPatch.context() as patch:
