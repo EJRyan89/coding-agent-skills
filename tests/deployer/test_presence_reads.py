@@ -451,7 +451,12 @@ class DeployerPresenceTests(DeployerTestCase):
         # A folder named SKILL.md is no skill.
         self.make_skill("alpha", "Alpha")
         (self.source / "skills" / "gamma" / "SKILL.md").mkdir(parents=True)
-        self.assertEqual(["alpha"], sorted(source._discover_directories(self.paths)))
+        self.assertEqual(["alpha"], sorted(self.discover_directories()))
+
+    def discover_directories(self) -> dict[str, Path]:
+        """The skill directories discovery finds beside the metadata files it lists, as `source._discover` reads."""
+        metadata = {meta_file.stem for meta_file in source._metadata_files(self.paths.meta_dir)}
+        return source._discover_directories(self.paths, metadata)
 
     def deployed(self) -> None:
         self.make_source_json()
@@ -475,7 +480,7 @@ class DeployerPresenceTests(DeployerTestCase):
         skill_md = self.source / "skills" / "beta" / "SKILL.md"
         self.deployed()
         with stat_failing_at(skill_md), self.assertRaises(PermissionError) as raised:
-            source._discover_directories(self.paths)
+            self.discover_directories()
         self.assertEqual(str(skill_md), raised.exception.filename)
 
     def test_a_skills_folder_it_cannot_list_is_refused_never_read_as_no_skill(self) -> None:
@@ -490,8 +495,33 @@ class DeployerPresenceTests(DeployerTestCase):
             return real(path)
 
         with mock.patch.object(os, "scandir", scandir), self.assertRaises(PermissionError) as raised:
-            source._discover_directories(self.paths)
+            self.discover_directories()
         self.assertEqual(str(unlisted), raised.exception.filename)
+
+    def test_a_source_folder_it_cannot_list_or_stat_is_refused_naming_it_never_a_traceback(self) -> None:
+        # The source ID is read only once no entry spells source.json in another case, which takes the folder's listing.
+        self.deployed()
+        tree = self.source
+        real = os.scandir
+
+        def scandir(path: Any = ".") -> Any:
+            if isinstance(path, str | os.PathLike) and Path(path) == tree:
+                raise denied(tree)
+            return real(path)
+
+        expected = (
+            f"ERROR: Could not read the source's folder: {forward(tree)}: Access is denied",
+            "Check that the path exists and that you can read it, then retry.",
+            "Rerun with --debug to see the traceback.",
+        )
+        with mock.patch.object(os, "scandir", scandir):
+            result = self.deploy_fails("--all", pattern="Could not read the source's folder")
+        self.assert_lines(result.output, *expected)
+        self.assertNotIn("Traceback", result.output)
+        with stat_failing_at(tree):
+            result = self.deploy_fails("--all", pattern="Could not read the source's folder")
+        self.assert_lines(result.output, *expected)
+        self.assertNotIn("Traceback", result.output)
 
     def test_metadata_whose_stat_fails_is_refused_not_passed_over(self) -> None:
         self.deployed()

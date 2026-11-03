@@ -4,6 +4,10 @@ Usage:
   python tools/plugin_canary.py [--discovery-only] [--timeout SECONDS] [--keep-home]
   python tools/plugin_canary.py --remove-home DIR
 
+It first refuses, with FAILED "<reason>" and exit 1 before it makes a home, a checkout that follows another
+repository's pull request, as tools/checkout_trust.py reads it and tools/runtime_canary.py refuses it, since the run
+builds and runs the checkout's plugins and fixture signed in as the user.
+
 It makes a fresh home under the temporary directory, as tools/runtime_canary.py does, and assembles into it, with
 tools/plugin_build.py, this checkout's plugins and the plugin of the fixture source in tests/fixtures/runtime-canary.
 It writes a marketplace beside them and, with CLAUDE_CONFIG_DIR set to a folder of the home, so nothing reaches the
@@ -40,7 +44,8 @@ Each check is judged from the session's stream, never from what the model report
   RECORD_BEGIN ... RECORD_END                         the lines a pull request records, paths as placeholders:
   VERSION claude <version>                            first, the version Claude Code reports, or unknown, then
                                                       each line above from VALIDATED to UNGUARDED
-  FAILED "<reason>"                                   a plugin cannot be built or a file of the home written
+  FAILED "<reason>"                                   the checkout is refused, before HOME, or a plugin cannot be
+                                                      built or a file of the home written
   REMOVED "<dir>" or HOME_KEPT "<dir>" "<reason>"     as tools/runtime_canary.py ends
 
 It exits 1 when nothing was checked, when any check fails (a FAILED or *_FAILED line, an UNDISCOVERED line, a
@@ -79,7 +84,7 @@ from review_guard import REVIEWER, RUN_FILE, RUN_PREFIX
 from review_run import RunState
 
 from deployer import platform_support
-from tools import plugin_build
+from tools import checkout_trust, plugin_build
 from tools.runtime_canary import (
     DEFAULT_TIMEOUT,
     FIXTURE_SKILL,
@@ -583,6 +588,10 @@ def main(arguments: list[str] | None = None) -> int:
     options = parser.parse_args(arguments)
     if options.remove_home is not None:
         return remove_home(options.remove_home)
+    refused = checkout_trust.refusal(checkout_trust.reader(REPOSITORY_ROOT))
+    if refused is not None:
+        print(f"FAILED {quote(refused)}")
+        return 1
     home = create_home()
     try:
         code = canary(home, discovery_only=options.discovery_only, timeout=options.timeout)
