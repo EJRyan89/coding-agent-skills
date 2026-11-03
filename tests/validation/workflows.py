@@ -5,13 +5,14 @@ from __future__ import annotations
 import re
 import shlex
 import tomllib
+import unicodedata
 import unittest
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 
 import file_presence
 from python_checks import MYPY_CACHE_VARIABLE
-from validation_support import REPOSITORY_ROOT
+from validation_support import REPOSITORY_ROOT, repository_files
 
 from deployer import config
 
@@ -537,23 +538,139 @@ REACH_STATEMENTS = (PULL_REQUEST_CODE_STATEMENT, SAME_REPOSITORY_STATEMENT)
 # actions/checkout and actions/setup-python take it as the default of their `token` input, so "no step is given the
 # token" is true only of the steps that run a command.
 ACTION_INPUT_STATEMENT = "the pinned actions take the run's token as the default of their `token` input"
-# Claims a workflow comment, the row, or the runner's docstring made before the actions' default input was counted,
-# each false while ACTION_INPUT_STATEMENT holds; a claim about a step's command says "command".
-RETIRED_TOKEN_CLAIMS = (
-    "no step here is given the token",
-    "no step is given the token",
-    "hold no token",
-    "the only job given the run's token",
-    "the one job given the run's read-only token",
+# The words the retired claims below are written in, matched in text _claim_text has folded. The token by any of its
+# names, an expression that reads it included, singular, plural, or possessive, after any of the words that qualify
+# it: any possessive, as "the workflow's token" and "the legs' token" are, and "read-only" spelled with a hyphen,
+# a space, or neither.
+_CREDENTIAL = (
+    r"(?:(?:(?:[\w.-]+'s?|read(?:-| )?only|workflow|github|actions|repository|repo|default|own|automatic|built-in) )*"
+    r"(?:tokens?|github_token|gh_token)(?:'s?)?(?!\w)"
+    r"|\$\{\{ ?(?:secrets\.github_token|github\.token) ?\}\}|(?:secrets\.github_token|github\.token)(?!\w))"
 )
-# The files besides the workflows that state which job holds the token, which token_claim_problems reads whole.
-TOKEN_CLAIM_FILES = (
+_CREDENTIAL_PHRASE = rf"(?:(?:the|a|an|any|its|their|this|that) )?{_CREDENTIAL}"
+# An adverb that may stand between a verb's words, as "is ever given" does.
+_ADVERB = r"(?:(?:ever|also|then|otherwise|yet|still|now|\w+ly) )?"
+# What may hold the token: a step, job, leg, or workflow, after up to two words that qualify it, as "no other job"
+# does, and in a pair with any other noun, as "no command or step" does.
+_HOLDER_NOUN = r"(?:steps?|jobs?|legs?|workflows?)"
+_QUALIFIERS = r"(?:(?:other|single|one|more|further|additional|such|later|individual|remaining|separate) ){0,2}"
+_HOLDER = (
+    rf"{_QUALIFIERS}(?:[\w-]+ (?:or|nor|and) {_QUALIFIERS})?{_HOLDER_NOUN}(?: (?:or|nor|and) [\w-]+)?"
+    r"(?: here| (?:of|in|within|inside|from) (?:(?:this|the|its|that|each|every|any|a) )?(?:[\w.-]+ )?[\w.-]+)?"
+)
+# The words that say none: "no", "none of the", "not one", "not a single", "zero", "neither".
+_NONE = r"(?:no|none(?: of(?: the| its| these)?)?|not (?:one|a single|any)(?: of(?: the| its| these)?)?|zero|neither)"
+# Each verb that gives the token to a holder, and each that withholds it, after any auxiliary: "is given", "has been
+# given", "will be given", "is being given"; "holds", "should hold", "has held"; and each negated.
+_GIVE = r"(?:given|passed|handed|granted|sent)"
+_MODALS = r"(?:will|would|shall|should|can|could|may|might|must)"
+_PASSIVE = (
+    rf"(?:(?:is|are|was|were)(?: being)?|gets?|got|(?:has|have|had) been|{_MODALS} (?:be|get)|(?:does|do|did) get)"
+)
+_ACTIVE = (
+    r"(?:holds?|has|have|receives?|gets?|sees?|uses?|runs? with|read|reach|access|ha(?:s|ve) access to|gets? access to)"
+)
+_PERFECT = r"(?:has|have|had) (?:held|had|received|got|gotten|seen|used|run with|read|reached|accessed|had access to)"
+_GIVEN = (
+    rf"(?:{_PASSIVE} {_ADVERB}{_GIVE}|{_ADVERB}(?:(?:{_MODALS}|does|do|did) {_ADVERB})?{_ACTIVE}|{_ADVERB}{_PERFECT})"
+)
+_NOT = r"(?: not|n't| never)"
+_NEGATED_PASSIVE = (
+    rf"(?:(?:is|are|was|were){_NOT}(?: being)?|(?:has|have|had){_NOT} been|{_MODALS}{_NOT} (?:be|get)"
+    rf"|(?:won't|can't|cannot|shan't) (?:be|get)|(?:does|do|did){_NOT} get)"
+)
+_NEGATED_ACTIVE = rf"(?:(?:do|does|did|{_MODALS}){_NOT}|won't|can't|cannot|shan't|never)"
+_NOT_GIVEN = (
+    rf"(?:{_NEGATED_PASSIVE} {_ADVERB}{_GIVE}"
+    rf"|{_NEGATED_ACTIVE} {_ADVERB}(?:hold|have|receive|get|see|use|read|reach|access|run with|have access to)"
+    rf"|(?:has|have|had){_NOT} (?:held|had|received|got|gotten|seen|used|read|reached|accessed|run with)"
+    r"|never (?:holds?|has|receives?|gets?|sees?|uses?)|runs? without)"
+)
+# The token named first: "the token is given to", "has been passed to", "reaches", "will reach", "goes to", or "is
+# available to".
+_TOKEN_GOES = (
+    rf"(?:{_PASSIVE} {_ADVERB}(?:{_GIVE}|available|visible) to|(?:(?:{_MODALS}|does|do|did) )?(?:reach|go to)"
+    r"|reaches|goes to|(?:has|have|had) (?:reached|gone to))"
+)
+# The token named first with its verb negated: "is not given to", "has never been passed to", "does not reach", "will
+# not go to", before "any", "a", or "the" and the holder.
+_TOKEN_KEPT = (
+    rf"(?:{_NEGATED_PASSIVE} {_ADVERB}(?:{_GIVE}|available|visible) to|{_NEGATED_ACTIVE} (?:reach|go to)"
+    rf"|(?:has|have|had){_NOT} (?:reached|gone to)|never (?:reaches|goes to))"
+    r"(?: (?:any|a|an|the|one)(?: single)?)?"
+)
+# The end of a holder named after the token: no letter or apostrophe follows, so "no step's command", whose
+# holder owns what the token reaches, is not read as the holder.
+_HOLDER_END = r"(?![\w'])"
+# "Alone" or "only" closing a holder, and not opening a condition, as "only as", "only through", or "only when" does.
+_ALONE = r"(?:alone|only)(?! (?:as|through|by|via|when|if|where|while|in|from|with|under|after|before|because)\b)"
+# Claims a workflow comment, the row, or the runner's docstring made before the actions' default input was counted,
+# each false while ACTION_INPUT_STATEMENT holds, by the meaning each is named for: that a step, job, leg, or workflow
+# is given no token, or that one job alone is given it. A true statement about a step's command names the command, as
+# "no command a step runs is given the token" and "the only job whose command is given the run's token" do, so no
+# pattern reads it. The patterns read the verbs above and no others: a sentence in other words is the review's to judge.
+RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
+    "no step is given the token": re.compile(
+        rf"\b{_NONE} {_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
+        rf"|\b{_HOLDER} {_NOT_GIVEN} {_CREDENTIAL_PHRASE}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_TOKEN_GOES}|{_PASSIVE} {_ADVERB}{_GIVE}) {_NONE} "
+        rf"{_HOLDER}{_HOLDER_END}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_KEPT} {_HOLDER}{_HOLDER_END}"
+    ),
+    "the legs hold no token": re.compile(
+        rf"\b(?:holds?|held|holding) no {_CREDENTIAL}|\b{_HOLDER} {_GIVEN} no {_CREDENTIAL}"
+    ),
+    "the only job given the run's token": re.compile(
+        rf"\bthe (?:only|one|sole|single) {_HOLDER} (?:(?:that|which) {_GIVEN}|given|holding|with) {_CREDENTIAL_PHRASE}"
+        rf"|\bonly (?:the |one |this |that )?(?:[\w-]+ )?{_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_GOES} (?:the |this |that |one |a )?(?:[\w-]+ )?"
+        rf"{_HOLDER_NOUN} {_ALONE}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_PASSIVE} {_ADVERB}{_GIVE} |reaches |goes )?"
+        r"(?:only|solely|exclusively) "
+        rf"(?:to )?(?:the |this |that |one )?(?:[\w-]+ )?{_HOLDER_NOUN}{_HOLDER_END}"
+    ),
+}
+# The parts of the repository token_claim_texts leaves out, by path or folder, each with why no claim about this
+# repository's workflows is read there. Every other file a commit could include is read whole.
+TOKEN_CLAIM_OMISSIONS = {
+    "tests/validation/test_workflows.py": "its fixture rows write each retired claim",
+    "skills/": "a shipped skill speaks of the user's repository, its jobs and steps, and the user's own gh token",
+    "agents/": "a shipped agent speaks of the user's repository, as a shipped skill does",
+    "tests/fixtures/": "a fixture stands for another repository, not this one's workflows",
+}
+# The part of a file token_claim_texts blanks rather than reads, by the openings of its first line and of the line
+# after its last, with why: the rest of the file, its docstrings among them, is read.
+TOKEN_CLAIM_SPANS = {
+    "tests/validation/workflows.py": (
+        "# What every job's pinned actions do with the run's token",
+        "# The parts of the repository token_claim_texts leaves out",
+        "the claim list and the patterns that spell each claim, which quote the claims they refuse",
+    ),
+}
+# The files besides the workflows where a retired claim was made, which token_claim_read_problems requires read.
+TOKEN_CLAIM_REQUIRED = (
     "tests/run_validation.py",
     "tests/known_failure_issues.py",
     "tests/validation/credentials.py",
     "docs/implementing-changes.md",
     "CONTRIBUTING.md",
 )
+# How far either side of a mention of the token a claim can reach: each pattern's words stand within it, so
+# token_claim_problems matches only the stretches of a text around a mention.
+_CLAIM_REACH = 300
+# A comment or quotation marker opening a line, which _claim_text drops so a claim wrapped across such lines reads
+# whole.
+_LINE_MARKER = re.compile(r"^\s*[#>]+")
+# What _claim_text folds after NFKC: each hyphen and dash variant and the minus sign to a hyphen, the non-breaking
+# hyphen among them, which NFKC makes U+2010; each typographic apostrophe to a straight one; and Markdown's backtick
+# and asterisk markers, the soft hyphen, and the zero-width characters, which NFKC keeps, dropped.
+_CLAIM_FOLD: dict[int, str | None] = {
+    **dict.fromkeys((0x2010, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212), "-"),
+    **dict.fromkeys((0x2018, 0x2019, 0x02BC, 0x2032), "'"),
+    **dict.fromkeys((ord("`"), ord("*"), 0x00AD, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF), None),
+}
+# An underscore that opens or closes a word, as Markdown's emphasis writes one; `GITHUB_TOKEN`'s stays.
+_EMPHASIS_UNDERSCORE = re.compile(r"(?<!\w)_+|_+(?!\w)")
 # The row of docs/design.md that states what the token reaches, found by the words it opens with.
 CREDENTIALS_ROW = "| Development and CI gates need no model and no credentials:"
 
@@ -573,10 +690,15 @@ def _job_comment(workflow: str, job: str) -> str:
     return " ".join(comment)
 
 
-def _comment_text(workflow: str) -> str:
-    """Every comment line of a workflow, each `#` and indentation removed, joined by spaces."""
-    lines = (line.strip() for line in workflow.splitlines())
-    return " ".join(line.removeprefix("#").strip() for line in lines if line.startswith("#"))
+def _claim_text(text: str) -> str:
+    """`text` as one case-folded line for RETIRED_TOKEN_CLAIMS: each line's opening `#` or `>` markers dropped; the
+    text in Unicode's compatibility form, NFKC, so a no-break or thin space is a space; each _CLAIM_FOLD character
+    replaced or dropped; an underscore that opens or closes a word dropped, as Markdown's emphasis writes it; and every
+    run of whitespace, line breaks included, one space. A claim capitalized, emphasized, or wrapped across comment lines
+    reads as one sentence."""
+    joined = " ".join(_LINE_MARKER.sub("", line) for line in text.splitlines())
+    folded = _EMPHASIS_UNDERSCORE.sub("", unicodedata.normalize("NFKC", joined).translate(_CLAIM_FOLD))
+    return " ".join(folded.casefold().split())
 
 
 def token_reach_problems(workflow: str, token_steps: Mapping[tuple[str, str], str], design: str) -> list[str]:
@@ -621,20 +743,75 @@ def token_reach_problems(workflow: str, token_steps: Mapping[tuple[str, str], st
 
 
 def token_claim_problems(texts: Mapping[str, str], design: str) -> list[str]:
-    """Report docs/design.md's CREDENTIALS_ROW not stating ACTION_INPUT_STATEMENT, and each of RETIRED_TOKEN_CLAIMS in
-    that row or in any of `texts`, a name mapped to a text, such as a workflow's comments or a module's docstring."""
+    """Report docs/design.md's CREDENTIALS_ROW not stating ACTION_INPUT_STATEMENT, and each sentence, in `design` or in
+    any of `texts`, a name mapped to a text such as a workflow or a module, that makes one of RETIRED_TOKEN_CLAIMS in
+    any spelling the patterns read, folded by _claim_text."""
     rows = [line for line in design.splitlines() if line.startswith(CREDENTIALS_ROW)]
     problems = []
     if len(rows) != 1 or ACTION_INPUT_STATEMENT not in rows[0]:
         problems.append(f"docs/design.md's row {CREDENTIALS_ROW!r} does not say {ACTION_INPUT_STATEMENT!r}")
-    for name, text in {**texts, "docs/design.md's credentials row": " ".join(rows)}.items():
-        flat = " ".join(text.split())
+    for name, text in {**texts, "docs/design.md": design}.items():
         problems += [
-            f"{name} says {claim!r}, which the pinned actions' default `token` input makes untrue"
-            for claim in RETIRED_TOKEN_CLAIMS
-            if claim in flat
+            f"{name} says {match.group(0)!r}, the retired claim {claim!r}, which the pinned actions' default `token` "
+            "input makes untrue"
+            for window in _claim_windows(_claim_text(text))
+            for claim, pattern in RETIRED_TOKEN_CLAIMS.items()
+            for match in pattern.finditer(window)
         ]
     return problems
+
+
+def _claim_windows(folded: str) -> list[str]:
+    """The stretches of a folded text within _CLAIM_REACH of a mention of the token, each name of which says "token",
+    with stretches that meet joined, so no match is found twice and none is cut."""
+    spans: list[list[int]] = []
+    for mention in re.finditer("token", folded):
+        start, end = max(0, mention.start() - _CLAIM_REACH), mention.end() + _CLAIM_REACH
+        if spans and start <= spans[-1][1]:
+            spans[-1][1] = end
+        else:
+            spans.append([start, end])
+    return [folded[start:end] for start, end in spans]
+
+
+def token_claim_read_problems(texts: Mapping[str, str]) -> list[str]:
+    """Each of the places a retired token claim was once made, every workflow WORKFLOW_GUARDS names among them, that
+    `texts` lacks: a read that found nothing finds no claim, so it fails here rather than passing."""
+    required = sorted({f"{WORKFLOWS_DIRECTORY}/{name}" for name in WORKFLOW_GUARDS} | set(TOKEN_CLAIM_REQUIRED))
+    return [
+        f"the token-claim policy read no {name}, where a retired claim was made"
+        for name in required
+        if name not in texts
+    ]
+
+
+def token_claim_texts(root: Path, files: Iterable[Path]) -> dict[str, str]:
+    """Each of `files` under `root` that token_claim_problems reads, by its path from `root`, mapped to its text: every
+    one but docs/design.md, which it is given apart, and those TOKEN_CLAIM_OMISSIONS names. A byte that is not UTF-8
+    is read as a replacement character, so no file is passed over for its encoding."""
+    texts = {}
+    for path in files:
+        name = path.relative_to(root).as_posix()
+        if name != "docs/design.md" and not any(
+            name == omitted or (omitted.endswith("/") and name.startswith(omitted)) for omitted in TOKEN_CLAIM_OMISSIONS
+        ):
+            texts[name] = _outside_claim_span(name, path.read_bytes().decode("utf-8", errors="replace"))
+    return texts
+
+
+def _outside_claim_span(name: str, text: str) -> str:
+    """`text` with the lines of its TOKEN_CLAIM_SPANS entry blanked, from the line opening with its first marker to the
+    line before the one opening with its second; the whole text when `name` has no entry or a marker is missing, so a
+    moved marker reads the claims and fails rather than leaving the file unread."""
+    if name not in TOKEN_CLAIM_SPANS:
+        return text
+    first, after = TOKEN_CLAIM_SPANS[name][:2]
+    lines = text.split("\n")
+    start = next((index for index, line in enumerate(lines) if line.startswith(first)), None)
+    end = next((index for index, line in enumerate(lines) if line.startswith(after)), None)
+    if start is None or end is None or end <= start:
+        return text
+    return "\n".join(lines[:start] + [""] * (end - start) + lines[end:])
 
 
 def unknown_workflow_problems(directory: Path, known: Collection[str]) -> list[str]:
@@ -1678,13 +1855,8 @@ class WorkflowsPolicies(unittest.TestCase):
 
     def test_no_document_says_a_job_holds_no_token_while_its_actions_take_it_by_default(self) -> None:
         design = (REPOSITORY_ROOT / "docs" / "design.md").read_text(encoding="utf-8")
-        texts = {
-            f"{WORKFLOWS_DIRECTORY}/{name}": _comment_text(
-                (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / name).read_text(encoding="utf-8")
-            )
-            for name in WORKFLOW_GUARDS
-        }
-        texts |= {path: (REPOSITORY_ROOT / path).read_text(encoding="utf-8") for path in TOKEN_CLAIM_FILES}
+        texts = token_claim_texts(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))
+        self.assertEqual([], token_claim_read_problems(texts))
         self.assertEqual([], token_claim_problems(texts, design))
 
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
