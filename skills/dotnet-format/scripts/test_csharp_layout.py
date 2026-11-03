@@ -991,6 +991,9 @@ class ConfigTests(unittest.TestCase):
             ({"Analyzer": [{"Filename": "Roslynator.Formatting.Analyzers", "Extension": ".dll"}]}, "present"),
             ({"Analyzer": [{"Filename": "Roslynator.Formatting.Analyzers.CodeFixes"}]}, "missing"),
             ({"PackageReference": [{"Identity": "Roslynator.Analyzers"}]}, "missing"),
+            # NuGet compares ids ordinally ignoring case, so a long s or a Kelvin sign names another package.
+            ({"PackageReference": [{"Identity": "Ro\u017flynator.Formatting.Analyzers"}]}, "missing"),
+            ({"Analyzer": [{"Filename": "Roslynator.Formatting.Analyzer\u017f"}]}, "missing"),
         )
         for items, state in cases:
             with self.subTest(items=items):
@@ -1164,11 +1167,31 @@ class ConfigTests(unittest.TestCase):
             ("DOTNET_DIAGNOSTIC.RCS0063.SEVERITY = WARNING\n", "present"),
             ("dotnet_diagno\u017ftic.RCS0063.severity = warning\n", "missing"),
             ("dotnet_diagnostic.RCS0063.severity = \u017fuggestion\n", "other:\u017fuggestion"),
+            # A dotted capital I lowers to i, as the compiler special-cases it, so this key names the setting.
+            ("dotnet_d\u0130agnostic.RCS0063.severity = warning\n", "present"),
+            # Another capital beyond ASCII lowers one for one, so the value is read as its lowercase.
+            ("dotnet_diagnostic.RCS0063.severity = \u00c9rror\n", "other:\u00e9rror"),
+            # A character beyond the 16-bit range is two surrogates to .NET, which it does not lower.
+            ("dotnet_diagnostic.RCS0063.severity = \U00010400x\n", "other:\U00010400x"),
         )
         for line, state in cases:
             with self.subTest(line=line):
                 editorconfig.write_text(f"root = true\n\n[*.cs]\n{line}", encoding="utf-8")
                 self.assertEqual(state, self.severity("RCS0063"))
+
+    def test_a_character_is_lowered_one_for_one_as_the_compiler_lowers_it(self) -> None:
+        # Python's lowercase of a dotted capital I is two characters; the compiler's is i. A character whose Python
+        # lowercase is several characters otherwise stays itself, and so does one beyond the 16-bit range.
+        cases = (
+            ("\u0130", "i"),
+            ("A\u00c9", "a\u00e9"),
+            ("\U00010400", "\U00010400"),
+            ("\u017f\u00df", "\u017f\u00df"),
+            ("I", "i"),
+        )
+        for text, lowered in cases:
+            with self.subTest(text=text):
+                self.assertEqual(lowered, layout.roslyn_lower(text))
 
     def test_an_editorconfig_that_sets_is_global_to_any_value_is_a_global_config(self) -> None:
         # The compiler asks only whether the preamble holds the key, so `is_global = false` makes the file global too:

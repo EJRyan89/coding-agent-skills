@@ -985,7 +985,9 @@ def evaluated_reference(root: Path, project: Path, services: Services) -> bool |
         found = [item[metadata] for kind, metadata in PACKAGE_ITEMS for item in items.get(kind, [])]
     except (ValueError, KeyError, TypeError, AttributeError):
         return f"MSBuild's evaluation of {name} is not the items it was asked for"
-    return any(isinstance(value, str) and value.casefold() == PACKAGE.casefold() for value in found)
+    # NuGet and MSBuild compare a package id or a file name ordinally ignoring case, which only ASCII letters can match
+    # against this ASCII name: Unicode case folding would read a long s or a Kelvin sign as the letter it imitates.
+    return any(isinstance(value, str) and value.isascii() and value.lower() == PACKAGE.lower() for value in found)
 
 
 def package_state(
