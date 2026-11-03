@@ -184,11 +184,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/ejryan89-skill-core/scripts/test_github_client.py::CappedListTests`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::DuplicateTests::test_a_search_that_finds_exactly_what_it_lists_is_not_cut`,
   `skills/review-insights/scripts/test_review_guidance.py::ReportTests::test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input`,
-  `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`
-- **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a slice such as
+  `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`,
+  `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`
+- **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a pull request's
+  `pulls/<n>/files` pages read outside `review_github:GitHubClient.list_pull_files`, or its `PullFiles` used without
+  comparing `files` with `changed`, since GitHub's files API lists at most 3,000; a slice such as
   `[:MAX_RELATED_TESTS]` or `rg -n "\[:[A-Z_a-z]*(LIMIT|MAX|BUDGET|CAP)[A-Z_a-z]*\]"` with no flag beside it; a
   `break` on a counter in a loop that returns no sign it stopped.
-- **Examples:** #1845, #1857, #1864, #1891
+- **Examples:** #1845, #1857, #1864, #1891, #2220
 
 ### A number read from text is bounded
 
