@@ -32,11 +32,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import runtime_support
 import whole_number
+from checkout_fixture import FOREIGN, make_foreign, own_checkout
+from git_client import GitClient, GitError
 
 from deployer import discovery, platform_support
 from deployer import source as deploy_source
 from deployer.paths import Paths
-from tools import runtime_canary
+from tools import checkout_trust, runtime_canary
 from tools.runtime_canary import Completed
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +61,16 @@ CAPTURED = REPOSITORY_ROOT / "tests" / "fixtures" / "captured-output"
 CODEX_REJECTION = (CAPTURED / "codex" / "exec-policy-rejection.stderr.txt").read_text(encoding="utf-8")
 CODEX_UNSTARTED = (CAPTURED / "codex" / "exec-sandbox-unstarted.stderr.txt").read_text(encoding="utf-8")
 CLAUDE_SIGNED_OUT = (CAPTURED / "claude" / "signed-out-stream.jsonl").read_text(encoding="utf-8")
+
+
+# The real reading, which the autouse fixture below stands in for so no other test depends on this checkout's branch.
+READ_FOREIGN_CHECKOUT = checkout_trust.foreign_checkout
+
+
+@pytest.fixture(autouse=True)
+def own_checkout_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every run reads this checkout as the user's own, whatever branch or detached HEAD CI checked out."""
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", lambda git, directory: None)
 
 
 def forward(path: Path | str) -> str:
@@ -2769,3 +2781,46 @@ def test_a_path_is_inside_a_folder_only_below_it_and_as_written(tmp_path: Path) 
     assert not runtime_canary.inside(str(folder), folder), "the folder itself holds no script of its own"
     assert not runtime_canary.inside(str(folder / ".." / "other" / "run.py"), folder)
     assert not runtime_canary.inside(str(tmp_path / "skills-other" / "run.py"), folder)
+
+
+@pytest.mark.parametrize("case", sorted(FOREIGN))
+def test_main_refuses_a_checkout_following_another_repositorys_pull_request_before_making_a_home(
+    case: str, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git = GitClient()
+    (tmp_path / "checkout with spaces").mkdir()
+    checkout = own_checkout(tmp_path / "checkout with spaces", git)
+    reason = make_foreign(checkout, git, case)
+    read: list[Path] = []
+
+    def foreign(client: GitClient, directory: Path) -> str | None:
+        read.append(directory)
+        return READ_FOREIGN_CHECKOUT(client, checkout)
+
+    def unreachable(*arguments: object, **options: object) -> int:
+        raise AssertionError("the run went on past a refused checkout")
+
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", foreign)
+    monkeypatch.setattr(runtime_canary, "create_home", unreachable)
+    monkeypatch.setattr(runtime_canary, "canary", unreachable)
+    assert runtime_canary.main(["--discovery-only"]) == 1
+    refusal = "the checkout follows another repository's pull request: " + reason
+    assert capsys.readouterr().out.splitlines() == [f"FAILED {runtime_canary.quote(refusal)}"]
+    assert read == [runtime_canary.REPOSITORY_ROOT]
+
+
+def test_main_refuses_a_checkout_git_cannot_read_before_making_a_home(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(client: GitClient, directory: Path) -> str | None:
+        raise GitError("fatal: not a git repository")
+
+    def unreachable(*arguments: object, **options: object) -> int:
+        raise AssertionError("the run went on past an unreadable checkout")
+
+    monkeypatch.setattr(checkout_trust, "foreign_checkout", unreadable)
+    monkeypatch.setattr(runtime_canary, "create_home", unreachable)
+    monkeypatch.setattr(runtime_canary, "canary", unreachable)
+    assert runtime_canary.main(["--discovery-only"]) == 1
+    refusal = "cannot read the checkout's branch: fatal: not a git repository"
+    assert capsys.readouterr().out.splitlines() == [f"FAILED {runtime_canary.quote(refusal)}"]

@@ -254,12 +254,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from bounded_process import without_repository_variables
 from console import run_main
-from git_client import GitClient, GitError, output_line, output_lines
+from git_client import GitClient
 from seconds_option import positive_seconds
 
 from deployer import fsops, platform_support
 from deployer.source import SKILL_NAME_PATTERN
-from tools import runtime_canary
+from tools import checkout_trust, runtime_canary
 from tools.runtime_canary import Runner
 from tools.skill_evals_judging import Outcome, judge, not_counted_line, outcome_line, records_in, report, table
 from tools.skill_evals_records import JUDGMENT, MODELS, RUN, Index
@@ -372,42 +372,9 @@ def new_home() -> Path:
     return Path(tempfile.mkdtemp(prefix="skill-evals-")).resolve()
 
 
-# The upstreams of a branch that is the user's own: none, a local branch, or this repository's origin.
-OWN_REMOTES = frozenset({"", ".", "origin"})
-
-
-def origin_branches_holding_head(git: GitClient, directory: Path) -> list[str]:
-    """The full names of origin's remote-tracking branches whose history holds the checkout's HEAD, in git's order.
-    Raises GitError when git cannot read the checkout."""
-    held = git.output(
-        ["for-each-ref", "--contains", "HEAD", "--format=%(refname)", "refs/remotes/origin"], directory=directory
-    )
-    return output_lines(held)
-
-
-def foreign_checkout(git: GitClient, directory: Path) -> str | None:
-    """Why the checkout at `directory` follows another repository's pull request, or None when it does not: its
-    branch's upstream is a pull request's ref or a remote other than origin, or its HEAD is detached at a commit no
-    branch of origin holds. Raises GitError when git cannot read the checkout."""
-    # Each read exits 1 saying nothing for what is not there: a detached HEAD, or a branch that follows nothing.
-    branch = git.quiet_output(["symbolic-ref", "-q", "--short", "HEAD"], directory=directory)
-    if branch is None:
-        if origin_branches_holding_head(git, directory):
-            return None
-        return "its HEAD is detached at a commit no branch of origin holds"
-    name = output_line(branch)
-    remote = output_line(git.quiet_output(["config", "--get", f"branch.{name}.remote"], directory=directory) or "")
-    merge = output_line(git.quiet_output(["config", "--get", f"branch.{name}.merge"], directory=directory) or "")
-    if merge.startswith("refs/pull/"):
-        return f"its branch {name} follows {merge}, a pull request's ref"
-    if remote not in OWN_REMOTES:
-        return f"its branch {name} follows {remote}, not origin"
-    return None
-
-
 def this_checkout() -> str | None:
     """Why this checkout follows another repository's pull request, or None."""
-    return foreign_checkout(GitClient(), REPOSITORY_ROOT)
+    return checkout_trust.foreign_checkout(GitClient(), REPOSITORY_ROOT)
 
 
 @dataclass(frozen=True)
@@ -431,12 +398,9 @@ def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
     executable = seams.which("claude")
     if executable is None:
         raise ScenarioError("Claude Code (claude) is not installed")
-    try:
-        foreign = seams.checkout()
-    except GitError as exc:
-        raise ScenarioError(f"cannot read the checkout's branch: {exc}") from exc
-    if foreign is not None:
-        raise ScenarioError(f"the checkout follows another repository's pull request: {foreign}")
+    refused = checkout_trust.refusal(seams.checkout)
+    if refused is not None:
+        raise ScenarioError(refused)
     if not write:
         return executable, None
     try:
