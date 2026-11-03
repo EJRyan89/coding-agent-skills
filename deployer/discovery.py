@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import IO
 
 import json_reader
-from bounded_process import ProcessTree, without_repository_variables
+from bounded_process import KILL_WAIT_SECONDS, ProcessTree, without_repository_variables
 
 from . import platform_support
 
@@ -49,10 +49,11 @@ CLOSE_GRACE = 5
 CODEX_LIST_ID = 1
 # The model-free view of the skills Codex offers the model, which leaves out a skill only the user may start.
 CODEX_CATALOG = ("debug", "prompt-input")
-CODEX_CATALOG_ROOT = re.compile(r"^- `(r\d+)` = `([^`]+)`$", re.MULTILINE)
+# Each pattern reads one line of the skills message, as output_lines splits it, whole.
+CODEX_CATALOG_ROOT = re.compile(r"- `(r\d+)` = `([^`]+)`")
 # A skill's file runs from its last "(file: " to the line's closing parenthesis, so an absolute path holding a space
 # or a parenthesis, as a home such as D:/Profiles/A Name (Work) does, is read whole.
-CODEX_CATALOG_SKILL = re.compile(r"^- ([\w.-]+): .*\(file: (\S.*)\)$", re.MULTILINE)
+CODEX_CATALOG_SKILL = re.compile(r"- ([\w.-]+): .*\(file: (\S.*)\)")
 # The heading of the skills message's list of skills, under which every list item is one skill.
 CODEX_CATALOG_SKILLS = "### Available skills"
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
@@ -156,8 +157,7 @@ def _start(
     stdin, stdout = process.stdin, process.stdout
     # Both were requested as pipes above; a program started without them cannot be asked anything.
     if stdin is None or stdout is None:
-        process.kill()
-        process.wait()
+        _kill(process)
         raise ListingError("its pipes did not open")
     return process, stdin, stdout
 
@@ -224,15 +224,30 @@ def _close(process: subprocess.Popen[str], stdin: IO[str], reader: threading.Thr
     try:
         process.wait(timeout=CLOSE_GRACE)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+        _kill(process)
     reader.join(timeout=CLOSE_GRACE)
     errors.seek(0)
     return errors.read().decode("utf-8", "replace").strip()
 
 
+def _kill(process: subprocess.Popen[str]) -> None:
+    """Kill the program and wait for it to be reported gone, at most KILL_WAIT_SECONDS: a kill not reported by then
+    leaves the refusal its caller raises next to say why, rather than holding the listing past its deadline."""
+    process.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=KILL_WAIT_SECONDS)
+
+
+def output_lines(output: str) -> list[str]:
+    """The lines another program wrote, split on "\\n" alone, with a "\\r" before it taken off: never on the other
+    characters str.splitlines() breaks on, such as U+0085, U+2028, and U+2029, which a skill's description, a path, or
+    a JSON string the program writes as it is can hold. A last "\\n" ends the last line rather than starting an empty
+    one."""
+    return [line.removesuffix("\r") for line in output.removesuffix("\n").split("\n")] if output else []
+
+
 def _ended(what: str, code: int, stderr: str) -> str:
-    last = stderr.splitlines()[-1] if stderr else ""
+    last = output_lines(stderr)[-1] if stderr else ""
     return f"{what} with exit code {code}" + (f": {last}" if last else "")
 
 
@@ -381,7 +396,7 @@ def parse_codex_catalog(lines: list[str]) -> Listing:
         raise ListingError(f"its prompt input has no skills message, which lists them under {CODEX_CATALOG_SKILLS}")
     found: Listing = {}
     for text in skills:
-        roots = dict(CODEX_CATALOG_ROOT.findall(text))
+        roots = {root[1]: root[2] for line in output_lines(text) if (root := CODEX_CATALOG_ROOT.fullmatch(line))}
         for name, file in _catalog_skills(text):
             alias, _, rest = file.partition("/")
             path = f"{roots[alias]}/{rest}" if alias in roots else file
@@ -395,11 +410,11 @@ def _catalog_skills(text: str) -> list[tuple[str, str]]:
     """Each skill a skills message lists, as its name and file; a list item under its "### Available skills" that
     is not of that shape is refused, since passing over it would report the skill out of the model's catalog."""
     skills: list[tuple[str, str]] = []
-    for line in text.split(CODEX_CATALOG_SKILLS, 1)[1].splitlines():
+    for line in output_lines(text.split(CODEX_CATALOG_SKILLS, 1)[1]):
         if line.startswith(("#", "<")):
             break
         if line.startswith("- "):
-            listed = CODEX_CATALOG_SKILL.match(line)
+            listed = CODEX_CATALOG_SKILL.fullmatch(line)
             if listed is None:
                 raise ListingError(f"its prompt input lists a skill in a shape this reader does not know: {line}")
             skills.append((listed[1], listed[2]))
