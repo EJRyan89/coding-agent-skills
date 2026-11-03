@@ -190,6 +190,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `break` on a counter in a loop that returns no sign it stopped.
 - **Examples:** #1845, #1857, #1864, #1891
 
+### One source that cannot be read costs only its own findings
+
+- **Rule:** A run over several independent sources, such as changelogs, pages, or repositories, lists a source it
+  cannot read as a line of its own and still reads the others, and a request to a remote API asks for a page its
+  server answers within its time.
+- **Why:** One source's failure that stops the run hides every other source's findings, and a page too large for the
+  server's time fails every run until someone reads the failure.
+- **Use:** `tools.runtime_changelogs:watch`, which lists a changelog it cannot read and reads on, and
+  `tools.runtime_changelogs:RELEASES_PER_PAGE`.
+- **Guard:** `tests/tools/test_runtime_changelogs.py::MainTests::test_a_changelog_that_cannot_be_read_is_listed_and_the_others_and_the_pages_keep_their_watch`,
+  `tests/tools/test_runtime_changelogs.py::MainTests::test_github_releases_are_asked_for_thirty_a_page_which_the_api_answers_in_its_time`
+- **Search for:** a comprehension that calls a reader raising on one source across all of them, as
+  `rg -n "\[\(\w+, \w+\([^)]*\)\) for \w+ in "`, with no `except` per source; `per_page=100` on an endpoint whose
+  items carry long bodies, such as releases.
+- **Examples:** #2286
+
 ### A number read from text is bounded
 
 - **Rule:** A whole number read from text, an argument, a file, or another program's output is read with its bounds

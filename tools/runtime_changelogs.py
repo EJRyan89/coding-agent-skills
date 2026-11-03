@@ -51,14 +51,20 @@ It prints one fact per line:
   MOVED <page> <address>                                 the page redirects to that address
   GONE <page> <status>                                   the page answers 404 or 410
   UNREADABLE <page> "<reason>"                           the page answers another error or cannot be reached
+  UNREADABLE_CHANGELOG <subject> "<reason>"              the changelog cannot be fetched or read, or does not name the
+                                                         release its read_through records; the other changelogs and
+                                                         the pages are still listed, and the run exits 1
   FAILED <reason>                                        the watch could not run: the record cannot be read, names no
-                                                         changelog for a runtime the deployer supports, a changelog
-                                                         cannot be fetched or read or does not name the release its
-                                                         read_through records, the code its terms come from cannot be
-                                                         read, or the samples' provenance cannot be read; exit 1
+                                                         changelog for a runtime the deployer supports, the code its
+                                                         terms come from cannot be read, or the samples' provenance
+                                                         cannot be read; exit 1
+
+GitHub's releases API is read thirty releases a page, its default: a hundred of Codex's long release bodies no longer
+fit in the API's response time, and that page answers 504.
 
 With --summary FILE it also appends the findings to FILE as Markdown, as the workflow does with its step summary. A
-finding is never a failure: the run exits 0 whatever it lists, and 1 only on FAILED. A usage error exits 2.
+finding is never a failure: the run exits 0 whatever it lists, and 1 only on FAILED or an UNREADABLE_CHANGELOG line.
+A usage error exits 2.
 
 It is the check .github/workflows/runtime-changelogs.yml runs weekly. It decides nothing: the guidance audit after
 each tag still judges each entry and page, starting from what the latest run lists. It starts no model, needs no
@@ -104,8 +110,11 @@ from tools.runtime_canary import DECLARED_RUNTIME, REPOSITORY_ROOT, quote
 
 DEFAULT_TIMEOUT = 30.0
 USER_AGENT = "coding-agent-skills-runtime-changelogs"
-# The most pages of GitHub releases read for one changelog, a hundred releases each, prereleases among them.
-MAX_RELEASE_PAGES = 10
+# The releases one request to GitHub's releases API asks for: its default page. A hundred of Codex's long release
+# bodies no longer fit in the API's response time and answer 504, while thirty answer in seconds.
+RELEASES_PER_PAGE = 30
+# The most pages of GitHub releases read for one changelog, prereleases among them.
+MAX_RELEASE_PAGES = 34
 # The pages requested at once.
 PAGE_WORKERS = 8
 GONE_STATUSES = (404, 410)
@@ -460,7 +469,7 @@ def changelog_releases(changelog: Changelog, fetcher: Fetcher, timeout: float) -
         return [release for release in releases if release.release > since]
     newer: list[Release] = []
     for page in range(1, MAX_RELEASE_PAGES + 1):
-        url = f"{changelog.url}?per_page=100&page={page}"
+        url = f"{changelog.url}?per_page={RELEASES_PER_PAGE}&page={page}"
         fetched = fetcher(url, timeout)
         if fetched.status != 200:
             raise WatchError(f"cannot fetch the {changelog.subject} releases {url}: {fetched.reason or fetched.status}")
@@ -554,14 +563,23 @@ def read_record(top: Path) -> GuidanceRecord:
 def watch(top: Path, fetcher: Fetcher, timeout: float, watched: Sequence[Term] | None = None) -> list[str]:
     """Every line of a run over the checkout at `top`, or WatchError."""
     record = read_record(top)
-    read = [(changelog, changelog_releases(changelog, fetcher, timeout)) for changelog in record.changelogs]
+    read: list[tuple[Changelog, list[Release]]] = []
+    unreadable: list[str] = []
+    for changelog in record.changelogs:
+        # A changelog that cannot be read is listed, and the others and the pages keep their watch.
+        try:
+            read.append((changelog, changelog_releases(changelog, fetcher, timeout)))
+        except WatchError as exc:
+            unreadable.append(f"UNREADABLE_CHANGELOG {changelog.subject} {quote(single_line(str(exc)))}")
     if watched is None:
-        watched = terms(top, {changelog.subject: versions_read(changelog, releases) for changelog, releases in read})
+        versions = {changelog.subject: [release_number(changelog.read_through)] for changelog in record.changelogs}
+        versions.update({changelog.subject: versions_read(changelog, releases) for changelog, releases in read})
+        watched = terms(top, versions)
     try:
         samples = captured_samples.read(top, SUBJECTS)
     except captured_samples.SampleError as exc:
         raise WatchError(str(exc)) from exc
-    lines = [f"TERMS {kind} {sum(1 for term in watched if term.kind == kind)}" for kind in KINDS]
+    lines = [f"TERMS {kind} {sum(1 for term in watched if term.kind == kind)}" for kind in KINDS] + unreadable
     for changelog, releases in read:
         lines += changelog_lines(changelog, releases, watched)
     for changelog, releases in read:
@@ -578,7 +596,10 @@ def summary(lines: Sequence[str]) -> str:
     rows = ["## Runtime changelogs and guidance pages", ""]
     unread = {line.split(" ")[1] for line in lines if line.startswith("UNREAD ")}
     for line in lines:
-        if line.startswith("CHANGELOG "):
+        if line.startswith("UNREADABLE_CHANGELOG "):
+            _, subject, reason = line.split(" ", 2)
+            rows += ["", f"### {subject}: not read", "", markdown_cell(json_reader.loads(reason)), ""]
+        elif line.startswith("CHANGELOG "):
             _, subject, since, latest, read, kept = line.split(" ")
             rows += ["", f"### {subject}: releases after {since}, up to {latest}", "", f"Entries read: {read}.", ""]
             rows += [NO_WATCHED_ENTRY, ""] if kept == "0" else []
@@ -623,7 +644,7 @@ def main(arguments: list[str] | None = None, fetcher: Fetcher = fetch, top: Path
     if namespace.summary is not None:
         with namespace.summary.open("a", encoding="utf-8") as stream:
             stream.write(summary(lines))
-    return 0
+    return 1 if any(line.startswith("UNREADABLE_CHANGELOG ") for line in lines) else 0
 
 
 if __name__ == "__main__":
