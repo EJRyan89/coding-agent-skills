@@ -191,6 +191,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `break` on a counter in a loop that returns no sign it stopped.
 - **Examples:** #1845, #1857, #1864, #1891
 
+### One source that cannot be read costs only its own findings
+
+- **Rule:** A run over several independent sources, such as changelogs, pages, or repositories, lists a source it
+  cannot read as a line of its own and still reads the others, and a request to a remote API asks for a page its
+  server answers within its time.
+- **Why:** One source's failure that stops the run hides every other source's findings, and a page too large for the
+  server's time fails every run until someone reads the failure.
+- **Use:** `tools.runtime_changelogs:watch`, which lists a changelog it cannot read and reads on, and
+  `tools.runtime_changelogs:RELEASES_PER_PAGE`.
+- **Guard:** `tests/tools/test_runtime_changelogs.py::MainTests::test_a_changelog_that_cannot_be_read_is_listed_and_the_others_and_the_pages_keep_their_watch`,
+  `tests/tools/test_runtime_changelogs.py::MainTests::test_github_releases_are_asked_for_thirty_a_page_which_the_api_answers_in_its_time`
+- **Search for:** a comprehension that calls a reader raising on one source across all of them, as
+  `rg -n "\[\(\w+, \w+\([^)]*\)\) for \w+ in "`, with no `except` per source; `per_page=100` on an endpoint whose
+  items carry long bodies, such as releases.
+- **Examples:** #2286
+
 ### A number read from text is bounded
 
 - **Rule:** A whole number read from text, an argument, a file, or another program's output is read with its bounds
@@ -260,14 +276,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`,
   `tests/validation/workflows.py::WorkflowsPolicies::test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so`,
   `tests/deployer/test_backup_settlement.py::RecoveryStopsTests::test_when_recovery_fails_names_every_stop_recovery_makes`,
-  which reads each stop from the code and fails one the guide's list leaves out
+  which reads each stop from the code and fails one the guide's list leaves out,
+  `skills/dotnet-format/scripts/test_csharp_layout.py::test_each_status_word_a_scripts_docstring_names_is_one_it_prints`,
+  which fails a dotnet-format script's docstring naming a status word the script never prints
 - **Search for:** an `assertEqual(` or `assertIn(` on a literal sentence a document states, where the test could read
   the document or the shared constant; `never`, `always`, `nothing`, `every`, or `only` in a `SKILL.md` or a
   docstring, each checked for a test of its exception; a docstring's exit codes against the function's `return` and
   `sys.exit(` values; a statement of which code a credential or the run's token reaches, checked for the code a
   pull request can change at those paths; a document's list of the cases a step stops or refuses on, checked against
   each `return False` or `raise` of that step.
-- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2237, #2296
+- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2224, #2237, #2296
 
 ### A reader refuses a shape it does not know
 
@@ -327,8 +345,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::ShellOptionsDifferentialTests`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_the_recorded_rollup_reads_its_newest_validation_run`,
   which reads a check rollup recorded from gh's pull request listing, and
-  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_no_workflow_reports_neither_satisfies_nor_blocks_the_required_check`
-- **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_no_workflow_reports_neither_satisfies_nor_blocks_the_required_check`,
+  `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::test_a_number_is_read_as_msbuild_reads_one_and_any_other_spelling_leaves_the_comparison_unsettled`
+  and
+  `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::test_equality_compares_numbers_booleans_and_text_as_msbuild_does`,
+  which hold the condition reader to MSBuild's verdicts captured from the .NET SDK's MSBuild
+- **Search for:** a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
+  `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
+  checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
+  and compares text with .NET's ordinal comparison ignoring case; an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`, or tests a builtin's option by an exact
   word's membership, as `"-f" in arguments` misses `unset -fn` and `-a` misses `exec -ca`; each way the shell defines a name a later
   word runs, an alias, a function, a `hash -p` or `BASH_CMDS` command name, a `command_not_found_handle`, or one
@@ -356,7 +381,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   leaves one out, as `difftool --no-index` was; a git option table that leaves out one git.c reads a value after, as
   `--shallow-file` was; a failure labelled with `arguments[0]` rather than `git_client.command_name`.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140, #2188, #2232, #2233, #2234, #2262, #2276
+  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2262, #2276
 
 ### A recursive parser of input has a depth bound
 
