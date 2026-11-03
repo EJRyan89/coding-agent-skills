@@ -11,7 +11,7 @@ skills/<skill-name>/SKILL.md
 deploy-meta/<skill-name>.json
 ```
 
-The `name` in the `SKILL.md` frontmatter must exactly match the directory and metadata filename. Skill and shared-asset names must be unique. The skills directory is flat: the deployer refuses a `SKILL.md` anywhere but directly under `skills/<skill-name>`, so group skills with a bundle (see [Opt-in skills and bundles](#opt-in-skills-and-bundles)), not a folder.
+The `name` in the `SKILL.md` frontmatter must exactly match the directory and metadata filename. Skill and shared-asset names must be unique. The skills directory is flat: the deployer refuses a `SKILL.md` anywhere but directly under `skills/<skill-name>`, so group skills with a bundle (see [Opt-in skills and bundles](#opt-in-skills-and-bundles)), not a folder. Each name the deployer reads a source by, `source.json`, the `skills`, `deploy-meta`, and `agents` folders, `SKILL.md`, a metadata file's `.json`, and an owned shared asset's file as `source.json` names it, is spelled exactly so: one spelled in another case is refused by name on every platform, since Windows would open it and Linux pass it over.
 
 The deployer and the repository tools read `name`, `description`, `argument-hint`, and the invocation flags with `frontmatter.py` from the hidden `ejryan89-skill-core` skill. Each of those may be a plain, quoted, or block (`|` or `>-`) scalar, but not a list or a nested mapping. Deployment stops with the reason when `name` cannot be read, and validation when any of them cannot. Keys they do not read, such as `hooks`, are never parsed. A skill script that reads frontmatter imports the same reader as `frontmatter`, declaring `ejryan89-skill-core` like its `console.py`.
 
