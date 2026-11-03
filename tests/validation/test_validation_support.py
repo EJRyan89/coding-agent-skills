@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
@@ -30,6 +31,7 @@ from validation_support import (
     ModuleImport,
     ScriptsEntry,
     UnreadablePython,
+    bound_values,
     call_argument,
     call_arguments,
     docstring_ids,
@@ -43,9 +45,12 @@ from validation_support import (
     module_imports,
     module_lookup,
     parse_python,
+    place_key,
     python_trees,
     qualified_name,
     repository_files,
+    resolved_calls,
+    resolved_references,
     scoped_nodes,
     scripts_entries,
     skill_dependency_closure,
@@ -722,3 +727,201 @@ class RepositoryFilesFixtures(unittest.TestCase):
                 ReleaseNotesError, "git ls-files --cached --others --exclude-standard -z failed"
             ):
                 repository_files(Path(temporary))
+
+
+RESOLVED_SOURCE = """import builtins
+import functools
+import json as j
+
+
+def f(parser, stream, data, options):
+    add = functools.partial(getattr(parser, "add_argument"), "--timeout", type=float)
+    add(metavar="SECONDS")
+    keywords = {"dest": "limit"}
+    parser.add_argument("--wait", **keywords, **dict(type=builtins.int), **options)
+    dumps = getattr(j, "dumps")
+    dumps(data)
+    with open(stream) as handle:
+        handle.write(data)
+    if (writer := stream.write):
+        writer(data)
+    extra = {}
+    extra["type"] = float
+    extra.update(dest="d")
+    parser.add_argument("--x", **extra)
+"""
+
+
+@dataclass
+class ResolvedCallView:
+    name: str
+    attribute: str
+    receiver: str | None
+    args: list[str]
+    keywords: dict[str, list[str]]
+    unread: list[str]
+
+
+def _resolved_calls(source: str = RESOLVED_SOURCE) -> dict[int, list[ResolvedCallView]]:
+    tree = ast.parse(source)
+    resolver = CallableResolver(tree)
+    views: dict[int, list[ResolvedCallView]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            views[node.lineno] = [
+                ResolvedCallView(
+                    read.name,
+                    read.attribute,
+                    ast.unparse(read.receiver) if read.receiver is not None else None,
+                    [ast.unparse(argument) for argument in read.args],
+                    {key: [ast.unparse(value) for value in values] for key, values in read.keywords.items()},
+                    [ast.unparse(value) for value in read.unread],
+                )
+                for read in resolved_calls(node.value, resolver)
+            ]
+    return views
+
+
+def test_resolved_calls_follow_a_partial_of_a_getattr_with_its_arguments_ahead() -> None:
+    assert _resolved_calls()[8] == [
+        ResolvedCallView(
+            "<local>.parser.add_argument",
+            "add_argument",
+            "parser",
+            ["'--timeout'"],
+            {"type": ["float"], "metavar": ["'SECONDS'"]},
+            [],
+        )
+    ]
+
+
+def test_resolved_calls_spread_a_literal_and_a_dict_call_and_keep_an_unread_unpacking() -> None:
+    assert _resolved_calls()[10] == [
+        ResolvedCallView(
+            "<local>.parser.add_argument",
+            "add_argument",
+            "parser",
+            ["'--wait'"],
+            {"dest": ["'limit'"], "type": ["builtins.int"]},
+            ["options"],
+        )
+    ]
+
+
+def test_resolved_calls_read_keys_a_scope_adds_to_a_spread_dict() -> None:
+    assert _resolved_calls()[20][0].keywords == {"type": ["float"], "dest": ["'d'"]}
+
+
+def test_resolved_calls_read_a_setdefault_and_an_update_of_a_literal_dict() -> None:
+    source = (
+        "def f(parser):\n    extra = {}\n    extra.setdefault('type', float)\n    extra.update({'dest': 'd'})\n"
+        "    parser.add_argument('--x', **extra)\n"
+    )
+    assert [view.keywords for view in _resolved_calls(source)[5]] == [{"type": ["float"], "dest": ["'d'"]}]
+    assert [view.unread for view in _resolved_calls(source)[5]] == [[]]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("extra[key] = float", id="a subscript store of a key that is no constant"),
+        pytest.param("extra |= other", id="an augmented assignment"),
+        pytest.param("extra.pop('type')", id="another method that changes the dict"),
+        pytest.param("extra.update(**other)", id="an update of an unpacked mapping"),
+        pytest.param("extra.update(other)", id="an update of another mapping"),
+    ],
+)
+def test_resolved_calls_keep_a_dict_changed_another_way_unread(change: str) -> None:
+    source = f"def f(parser, key, other):\n    extra = {{}}\n    {change}\n    parser.add_argument('--x', **extra)\n"
+    assert [view.unread for view in _resolved_calls(source)[4]] == [["extra"]]
+
+
+def test_resolved_calls_keep_a_dict_an_augmented_assignment_updates_in_place_unread() -> None:
+    # A resolver that reads `|=` as an update in place keeps the name bound to its literal, so only the change itself
+    # says the dict is unread.
+    tree = ast.parse(
+        "def f(parser, other):\n    extra = {}\n    extra |= other\n    parser.add_argument('--x', **extra)\n"
+    )
+    resolver = CallableResolver(tree, in_place_updates=True)
+    call = next(
+        node.value for node in ast.walk(tree) if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+    )
+    assert [[ast.unparse(item) for item in read.unread] for read in resolved_calls(call, resolver)] == [["extra"]]
+
+
+def test_resolved_calls_name_a_getattr_bound_to_a_name_through_the_imports() -> None:
+    assert _resolved_calls()[12] == [ResolvedCallView("json.dumps", "dumps", "j", ["data"], {}, [])]
+
+
+def test_bound_values_follow_a_with_target_and_an_assignment_expression() -> None:
+    views = _resolved_calls()
+    assert [(view.attribute, view.receiver) for view in views[14]] == [("write", "handle")]
+    assert [(view.attribute, view.receiver) for view in views[16]] == [("write", "stream")]
+    tree = ast.parse(RESOLVED_SOURCE)
+    resolver = CallableResolver(tree)
+    handle = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "handle" and isinstance(node.ctx, ast.Load)
+    )
+    assert [ast.unparse(value) for value in bound_values(handle, resolver)] == ["open(stream)"]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param("x = a\nx = b\nx\n", ["b"], id="a later assignment replaces an earlier one"),
+        pytest.param("x = a\nx\nx = b\n", ["a"], id="an assignment after the read does not reach it"),
+        pytest.param("if c:\n    x = a\nelse:\n    x = b\nx\n", ["a", "b"], id="both arms reach"),
+        pytest.param("try:\n    x = a\nexcept E:\n    x = b\nx\n", ["a", "b"], id="a try and its handler reach"),
+        pytest.param(
+            "x = a\n\n\ndef f():\n    global x\n    x = b\n\n\ndef g():\n    x\n",
+            ["a", "b"],
+            id="a global's every binding reaches another function",
+        ),
+        pytest.param(
+            "def f():\n    x = a\n\n    def g():\n        nonlocal x\n        x = b\n\n    g()\n    x\n",
+            ["a", "b"],
+            id="a nonlocal's binding reaches its owner",
+        ),
+        pytest.param("x, x = a, b\nx\n", ["a", "b"], id="one statement's bindings are not ordered"),
+        pytest.param("x = x\nx\n", [], id="a name bound to itself is followed once"),
+        pytest.param(
+            "x = a\nwhile c:\n    x\n    x = b\n", ["a", "b"], id="a loop's later binding reaches its next pass"
+        ),
+        pytest.param(
+            "while c:\n    x = a\n    x\n    x = b\n",
+            ["a"],
+            id="a loop's binding before the read replaces its later one",
+        ),
+    ],
+)
+def test_bound_values_read_every_binding_that_may_reach_the_read(source: str, expected: list[str]) -> None:
+    tree = ast.parse(source)
+    resolver = CallableResolver(tree)
+    read = [node for node in ast.walk(tree) if isinstance(node, ast.Expr) and isinstance(node.value, ast.Name)][-1]
+    assert sorted(ast.unparse(value) for value in bound_values(read.value, resolver)) == expected
+
+
+def test_resolved_references_drop_builtins_and_read_a_getattr_of_a_constant_name() -> None:
+    tree = ast.parse("import builtins\nimport json\nbuiltins.float\ngetattr(json, 'dump')\ngetattr(json, name)\n")
+    resolver = CallableResolver(tree)
+    expressions = [node.value for node in tree.body if isinstance(node, ast.Expr)]
+    assert [
+        [(reference.name, reference.attribute) for reference in resolved_references(expression, resolver)]
+        for expression in expressions
+    ] == [[("float", "float")], [("json.dump", "dump")], [("", "")]]
+
+
+def test_place_key_keys_an_instance_or_class_attribute_by_its_class() -> None:
+    classes = {"Store", "Other"}
+    tree = ast.parse("self.text\nStore.text\ntext\nthing.text\n")
+    places = [node.value for node in tree.body if isinstance(node, ast.Expr)]
+    assert [place_key(place, "Store.save", classes) for place in places] == [
+        "Store.text",
+        "Store.text",
+        "text",
+        "thing.text",
+    ]
+    assert place_key(places[0], "Other.save", classes) == "Other.text"
+    assert place_key(places[2], "Store", classes) == "Store.text"
