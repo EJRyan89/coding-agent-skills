@@ -1891,6 +1891,23 @@ class ReviewerScenarioTests(unittest.TestCase):
         (directory / "head" / "CLAUDE.md").write_text("# A stale copy\n", encoding="utf-8")
         self.assertEqual("case: its head/ tree holds CLAUDE.md, which the run places from the checkout", self.refusal())
 
+    def test_a_reviewer_s_folders_place_every_file_but_its_suites_and_python_caches(self) -> None:
+        checkout = self.root / "checkout"
+        folder = PurePosixPath(".claude/skills/demo-reviewer")
+        for relative in (
+            "references/notes.md",
+            "scripts/conditions.py",
+            "scripts/test_conditions.py",
+            "scripts/__pycache__/conditions.cpython-311.pyc",
+        ):
+            path = checkout / folder / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        self.assertEqual(
+            [f"{folder}/references/notes.md", f"{folder}/scripts/conditions.py"],
+            skill_evals_scenarios._reviewer_folder(checkout, folder),
+        )
+
     def test_a_reviewer_folder_or_file_it_cannot_list_or_examine_is_refused_never_left_unplaced(self) -> None:
         write_reviewer_scenario(self.root, reviewer_spec())
         reviewer = skill_evals_scenarios.REPOSITORY_ROOT / REVIEWER_FOLDER
