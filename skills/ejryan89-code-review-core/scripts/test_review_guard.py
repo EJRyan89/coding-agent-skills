@@ -681,6 +681,22 @@ class BashTests(GuardFixture):
         )
         self.assert_denied(self.decide("Bash", command=check))
 
+    def test_bash_runs_both_source_commands_on_a_lazy_snapshot_and_on_one_written_whole(self) -> None:
+        # The guard reads no snapshot kind: the pipeline gives every role `source-search`, and `review_source.py`
+        # itself refuses `source-file` on a snapshot that holds every file already.
+        fetch, search = source_commands(self.run_directory, "csharp-review")
+        manifest = self.run_directory / "source" / review_runtime.SOURCE_SNAPSHOT_MANIFEST
+        self.claim()
+        kinds: tuple[tuple[str, dict[str, Any]], ...] = (
+            ("written whole", {}),
+            ("lazy", {review_runtime.SNAPSHOT_FETCHABLE: {}}),
+        )
+        for kind, entries in kinds:
+            manifest.write_text(json.dumps({"files": {}, **entries}), encoding="utf-8")
+            for command in (search.replace("<pattern>", "Service"), fetch.replace("<path>", "app/Service.cs")):
+                with self.subTest(snapshot=kind, command=command):
+                    self.assertIsNone(self.decide("Bash", command=command))
+
     def test_bash_runs_the_source_commands_of_its_own_role_and_run_with_a_path_or_pattern_kept_in_quotes(
         self,
     ) -> None:

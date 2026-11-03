@@ -1071,7 +1071,7 @@ class PytestConfigurationPolicy(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(
                     [
-                        f"{path} is a pytest configuration file pytest reads for {suite} instead of the root's "
+                        f"{path} is a pytest configuration file pytest may read for {suite} instead of the root's "
                         "pyproject.toml; keep the configuration there"
                     ],
                     self.problems({**suites, path: ""}),
