@@ -448,6 +448,15 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
         RuntimeContractError,
         "a key of source-snapshot.json.source_hashes is unsafe: 'src/a:pp.py'",
     ),
+    *(
+        (
+            f"a listed name the snapshot's writer leaves out: {name!r}",
+            _rename_first("source_hashes", name),
+            RuntimeContractError,
+            f"Source snapshot path is invalid: {name!r}",
+        )
+        for name in ("src/con", "src/CON.txt", "src/app.", "src/app ", "src/conin$", "src/" + "n" * 256)
+    ),
     (
         "a path with a doubled slash",
         _rename_first("source_hashes", "src//app.py"),
