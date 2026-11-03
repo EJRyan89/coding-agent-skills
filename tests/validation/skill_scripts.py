@@ -39,6 +39,7 @@ from validation_support import (
     REPOSITORY_SKILLS,
     CallableResolver,
     UnreadablePython,
+    bound_values,
     call_argument,
     call_arguments,
     continued_lines,
@@ -56,6 +57,8 @@ from validation_support import (
     python_trees,
     qualified_name,
     repository_files,
+    resolved_calls,
+    resolved_references,
     scoped_nodes,
     skill_dependency_closure,
     skill_script_directories,
@@ -1582,28 +1585,32 @@ def _may_name_reconfigure(node: ast.expr) -> bool:
     return not isinstance(node, ast.Constant) or node.value == RECONFIGURE
 
 
-def _is_reconfigure(node: ast.expr, aliases: dict[str, str]) -> bool:
-    """Whether an expression may be a stream's reconfigure method: stream.reconfigure, or a lookup of it by name,
-    getattr or builtins.getattr, read through the module's imports, given reconfigure or a name it computes."""
-    if isinstance(node, ast.Attribute):
-        return node.attr == RECONFIGURE
-    return (
-        isinstance(node, ast.Call)
-        and qualified_name(node.func, aliases) in ATTRIBUTE_LOOKUPS
-        and len(node.args) > 1
-        and _may_name_reconfigure(node.args[1])
+def _looks_up_a_computed_name(node: ast.expr, resolver: CallableResolver) -> bool:
+    """Whether an expression may be a getattr, either spelling, given a name computed at run time, itself or through a
+    name bound to one, which may look up reconfigure; resolved_calls reads every lookup of a constant name."""
+    return any(
+        isinstance(value, ast.Call)
+        and len(value.args) > 1
+        and not isinstance(value.args[1], ast.Constant)
+        and any(reference.name in ATTRIBUTE_LOOKUPS for reference in resolved_references(value.func, resolver))
+        for value in bound_values(node, resolver)
     )
 
 
-def _reconfigure_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
-    """The names a module binds to a stream's reconfigure method anywhere in it, and reconfigure itself."""
-    names = {RECONFIGURE}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and _is_reconfigure(node.value, aliases):
-            names |= {target.id for target in node.targets if isinstance(target, ast.Name)}
-        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value and _is_reconfigure(node.value, aliases):
-            names |= {node.target.id} if isinstance(node.target, ast.Name) else set()
-    return names
+def _reconfigures(node: ast.Call, resolver: CallableResolver) -> bool:
+    """Whether a call may reconfigure a stream's encoding: a reconfigure it may run, on any receiver, as resolved_calls
+    reads it through names, getattr or operator.attrgetter of a constant name, and functools.partial, or a getattr of
+    a computed name, given an encoding or a `**` it cannot read; or an operator.methodcaller of reconfigure or of a
+    computed name given one."""
+    for read in resolved_calls(node, resolver):
+        changes = "encoding" in read.keywords or bool(read.unread)
+        if changes and read.attribute == RECONFIGURE:
+            return True
+        if read.name == METHOD_CALLER and read.args and _may_name_reconfigure(read.args[0]) and changes:
+            return True
+    return _looks_up_a_computed_name(node.func, resolver) and any(
+        keyword.arg in {"encoding", None} for keyword in node.keywords
+    )
 
 
 @dataclass(frozen=True)
@@ -1712,10 +1719,10 @@ def _is_stream_wrapper(function: ast.expr, aliases: dict[str, str], names: _Stre
     return qualified_name(function, aliases) in STREAM_WRAPPERS or _is_codec_class(function, aliases, names)
 
 
-def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[str], names: _StreamNames) -> bool:
-    """Whether a node sets a stream's encoding: a reconfigure call that may pass one, directly or through a name bound
-    to the method; an assignment or setattr that replaces a standard stream; or a text wrapper built over one, its
-    buffer, or its descriptor, inline or through a name bound to it, or partially applied by functools.partial."""
+def _changes_a_stream(node: ast.AST, aliases: dict[str, str], resolver: CallableResolver, names: _StreamNames) -> bool:
+    """Whether a node sets a stream's encoding: a reconfigure call that may pass one, as _reconfigures reads it; an
+    assignment or setattr that replaces a standard stream; or a text wrapper built over one, its buffer, or its
+    descriptor, inline or through a name bound to it, or partially applied by functools.partial."""
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         return any(
@@ -1724,11 +1731,9 @@ def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[
         )
     if not isinstance(node, ast.Call):
         return False
+    if _reconfigures(node, resolver):
+        return True
     function = node.func
-    if _is_reconfigure(function, aliases) or (isinstance(function, ast.Name) and function.id in reconfigures):
-        return any(keyword.arg in {"encoding", None} for keyword in node.keywords)
-    if qualified_name(function, aliases) == METHOD_CALLER and node.args and _may_name_reconfigure(node.args[0]):
-        return any(keyword.arg in {"encoding", None} for keyword in node.keywords)
     if qualified_name(function, aliases) in {"setattr", "builtins.setattr"} and len(node.args) > 1:
         stream = node.args[1]
         return (
@@ -1751,13 +1756,13 @@ def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[
 
 def _stream_change_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
     """The lines on which a module sets a standard stream's encoding itself."""
-    reconfigures = _reconfigure_names(tree, aliases)
+    resolver = CallableResolver(tree)
     names = _stream_names(tree, aliases)
     return sorted(
         {
             node.lineno
             for node in ast.walk(tree)
-            if isinstance(node, (ast.stmt, ast.expr)) and _changes_a_stream(node, aliases, reconfigures, names)
+            if isinstance(node, (ast.stmt, ast.expr)) and _changes_a_stream(node, aliases, resolver, names)
         }
     )
 

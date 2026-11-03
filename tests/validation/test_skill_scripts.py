@@ -1780,13 +1780,19 @@ def test_console_setup_policy_passes_a_wrapper_over_a_file_no_console_device_nam
         'fix = builtins.getattr(sys.stdout, name)\nfix(encoding="utf-8")',
         'operator.methodcaller("reconfigure", encoding="utf-8")(sys.stdout)',
         "operator.methodcaller(name, **OPTIONS)(sys.stdout)",
+        'functools.partial(sys.stdout.reconfigure, encoding="utf-8")()',
+        'fix = functools.partial(sys.stderr.reconfigure)\nfix(encoding="utf-8")',
+        'operator.attrgetter("reconfigure")(sys.stdout)(encoding="utf-8")',
+        'fix = operator.attrgetter("reconfigure")(sys.stdout)\nfix(encoding="utf-8")',
+        'sys.stdout.reconfigure(**{"encoding": "utf-8"})',
+        "getattr(sys.stdout, name)(**OPTIONS)",
         'fix: object = sys.stdout.reconfigure\nfix(encoding="utf-8")',
         'fix: object = getattr(sys.stdout, "reconfigure")\nfix(encoding="utf-8")',
         '(fix := builtins.getattr(sys.stderr, "reconfigure"))\nfix(encoding="utf-8")',
     ],
 )
 def test_console_setup_policy_refuses_a_reconfigure_looked_up_by_name(tmp_path: Path, reach: str) -> None:
-    imports = "import builtins\nimport operator\nimport sys\n\n"
+    imports = "import builtins\nimport functools\nimport operator\nimport sys\n\n"
     write_fixture_tree(tmp_path, {"tools/reconfigured.py": imports + reach + "\n"})
     mark_skills(tmp_path)
     [problem] = console_setup_problems(tmp_path)
