@@ -205,7 +205,7 @@ def new(kind: str, name: str) -> int:
     path = hub / WORKTREES / f"{kind}-{name}"
     if CLIENT.quiet_output(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], directory=hub) is not None:
         raise UsageError(f"Branch {branch} already exists.")
-    if path.exists():
+    if file_presence.is_occupied(path):
         raise UsageError(f"{platform_support.normalize(path)} already exists.")
     if git(hub, "check-ignore", "-q", "--no-index", str(path)).returncode != 0:
         raise UsageError(f"{WORKTREES.as_posix()}/ must be ignored in the hub's .gitignore before it holds worktrees.")

@@ -5,6 +5,8 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import copy
 import importlib
 import json
@@ -13,7 +15,7 @@ import re
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, get_args
 from unittest import mock
@@ -3443,8 +3445,11 @@ def test_presence_policy_sanctions_by_scope_and_leaves_file_presence_alone() -> 
     ]
 
 
-def _stat_failing(failing: Callable[[Path], bool]) -> Any:
-    """Patch Path.stat so it raises PermissionError for each path `failing` names and answers every other."""
+@contextlib.contextmanager
+def _stat_failing(failing: Callable[[Path], bool]) -> Iterator[None]:
+    """Patch Path.stat so it raises PermissionError for each path `failing` names and answers every other, and Path's
+    presence predicates so they answer False for such a path, as they do from Python 3.14 on, so a reader left on a
+    predicate reads it as absent rather than reaching another stat that raises."""
     real = Path.stat
 
     def answer(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
@@ -3452,18 +3457,36 @@ def _stat_failing(failing: Callable[[Path], bool]) -> Any:
             raise PermissionError(13, "Access is denied", str(self))
         return real(self, follow_symlinks=follow_symlinks)
 
-    return mock.patch.object(Path, "stat", autospec=True, side_effect=answer)
+    def answering_false(real_predicate: Callable[..., bool]) -> Callable[..., bool]:
+        def predicate(self: Path, *rest: Any, **options: Any) -> bool:
+            return False if failing(self) else real_predicate(self, *rest, **options)
+
+        return predicate
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(Path, "stat", autospec=True, side_effect=answer))
+        for name in ("exists", "is_file", "is_dir"):
+            stack.enter_context(mock.patch.object(Path, name, answering_false(getattr(Path, name))))
+        yield
 
 
 def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[], object]]]:
     """Each validation reader converted to file_presence, the paths whose stat its row fails, and its call over this
     checkout."""
     import duplication
+    import fsops_platform
+    import kinds_table
     import markdown_links
+    import shell_targets
     import skill_grants
     import skill_layout
+    import skill_scripts
     import suite_discovery
+    import validation_support
     import workflows
+    from skill_menu import PLUGIN_MANIFEST
+
+    from tools.plugin_build import README as PLUGIN_README
 
     root = REPOSITORY_ROOT
     owner = root / duplication._shared_facts()[0].owner
@@ -3472,6 +3495,24 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
 
     def at(*paths: Path) -> Callable[[Path], bool]:
         return lambda path: path in paths
+
+    def second_call(target: Path) -> Callable[[Path], bool]:
+        """The second stat or presence test of target alone fails, as when another process takes it away between
+        two looks at it."""
+        seen = [0]
+
+        def failing(path: Path) -> bool:
+            if path != target:
+                return False
+            seen[0] += 1
+            return seen[0] == 2
+
+        return failing
+
+    def own_read_of_tests() -> object:
+        # regression_suites lists tests/ too, so it is held empty to leave suite_python_modules' own read of it.
+        with mock.patch.object(suite_discovery, "regression_suites", return_value=[]):
+            return suite_discovery.suite_python_modules(root)
 
     def granted_script(path: Path) -> bool:
         return path.suffix == ".py" and path.is_relative_to(root / "tools")
@@ -3534,6 +3575,75 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
         "suite_discovery.git_isolation_problems": (
             at(root / "conftest.py"),
             lambda: suite_discovery.git_isolation_problems(root),
+        ),
+        "kinds_table._scanned_files": (at(root / "deploy.py"), lambda: kinds_table._scanned_files(root)),
+        "fsops_platform._platform_scanned_files": (
+            at(root / "tools" / "worktrees.py"),
+            lambda: fsops_platform._platform_scanned_files(root),
+        ),
+        "fsops_platform._writes_scanned_files": (
+            at(root / "deploy.py"),
+            lambda: fsops_platform._writes_scanned_files(root),
+        ),
+        "python_checks.imports_a_sibling": (
+            # python_checks imports call_tables, beside it, before any other sibling.
+            at(root / "tests" / "validation" / "call_tables.py"),
+            lambda: python_checks.imports_a_sibling(
+                root / "tests" / "validation" / "python_checks.py",
+                ast.parse((root / "tests" / "validation" / "python_checks.py").read_text(encoding="utf-8")),
+            ),
+        ),
+        "python_checks.strict_area_problems": (
+            at(root / "deployer"),
+            lambda: python_checks.strict_area_problems(root),
+        ),
+        "skill_scripts.console_entry_points": (
+            at(root / "deploy.py"),
+            lambda: skill_scripts.console_entry_points(root),
+        ),
+        "shell_targets.shell_script_targets": (
+            at(root / "skills" / skill / "SKILL.md"),
+            lambda: shell_targets.shell_script_targets(root),
+        ),
+        "skill_layout.skill_tree_problems per skill folder": (
+            at(root / "skills" / skill),
+            lambda: skill_layout.skill_tree_problems(root),
+        ),
+        "skill_layout.skill_tree_problems per SKILL.md": (
+            at(root / "skills" / skill / "SKILL.md"),
+            lambda: skill_layout.skill_tree_problems(root),
+        ),
+        "skill_layout._template_tokens": (
+            at(root / "skills" / skill / "SKILL.md"),
+            lambda: skill_layout._template_tokens(root / "skills" / skill),
+        ),
+        "skill_layout.plugin_tree_problems manifest": (
+            at(root / PLUGIN_MANIFEST),
+            lambda: skill_layout.plugin_tree_problems(root, {}, "0.0.0"),
+        ),
+        "skill_layout.plugin_tree_problems README": (
+            at(root / PLUGIN_README),
+            lambda: skill_layout.plugin_tree_problems(root, {"alpha": {"README.md": b""}}, "0.0.0"),
+        ),
+        "suite_discovery.suite_python_modules tests": (at(root / "tests"), own_read_of_tests),
+        "suite_discovery.pytest_configuration_problems": (
+            at(root / "pytest.ini"),
+            lambda: suite_discovery.pytest_configuration_problems(root),
+        ),
+        "suite_discovery.RepositoryModules.resolve": (
+            # _module_file stats the candidate first; resolve's own stat of it, the next, is the one that fails.
+            second_call(root / "tests" / "validation" / "validation_support.py"),
+            lambda: suite_discovery.RepositoryModules(root).resolve(
+                root / "tests" / "validation" / "python_checks.py", "validation_support"
+            ),
+        ),
+        "validation_support.repository_files": (
+            at(root / "deploy.py"),
+            lambda: validation_support.repository_files(root),
+        ),
+        "validation_support.skill_script_directories": (
+            at(root / "skills" / skill / "scripts"),
+            lambda: validation_support.skill_script_directories(root),
         ),
         "workflows.unknown_workflow_problems": (
             at(root / ".github" / "workflows"),

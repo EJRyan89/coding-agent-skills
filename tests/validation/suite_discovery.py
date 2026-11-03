@@ -930,7 +930,7 @@ def suite_python_modules(root: Path) -> list[Path]:
     and each Python suite under a skill's scripts/."""
     found = {root / CONFTEST} if file_presence.is_present(root / CONFTEST) else set()
     tests = root / "tests"
-    if tests.is_dir():
+    if file_presence.is_directory(tests):
         found |= {
             path
             for path in file_presence.matching(tests, "**/*.py")
@@ -1076,7 +1076,11 @@ class RepositoryModules:
         for base in bases:
             for count in range(1, len(parts) + 1) if parts else [0]:
                 candidate = self._module_file(base, parts[:count]) if count else base / "__init__.py"
-                if candidate is not None and candidate.is_file() and candidate.resolve() not in found:
+                if (
+                    candidate is not None
+                    and file_presence.is_present(candidate, other_is_absent=True)
+                    and candidate.resolve() not in found
+                ):
                     found.append(candidate.resolve())
             if found and not level:
                 break

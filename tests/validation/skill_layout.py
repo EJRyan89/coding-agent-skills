@@ -100,7 +100,7 @@ def embedded_program_problems(root: Path, tree: str = "skills") -> list[str]:
 def _template_tokens(directory: Path) -> set[str]:
     tokens: set[str] = set()
     for path in file_presence.matching(directory, "**/*"):
-        if path.is_file():
+        if file_presence.is_present(path, other_is_absent=True):
             tokens.update(TEMPLATE_TOKEN.findall(path.read_text(encoding="utf-8", errors="replace")))
     return tokens
 
@@ -736,7 +736,7 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]],
     token left; a file of a carried skill, as the builder reads it, that the plugin leaves out; a manifest that is not
     its marketplace entry with the plugin's name and `version`, the one it was built with; and a hooks file that is not
     its agents' hooks. `plugins` maps each plugin's name to its files, by path in the plugin."""
-    if (root / PLUGIN_MANIFEST).exists():
+    if file_presence.is_occupied(root / PLUGIN_MANIFEST):
         return [f"{PLUGIN_MANIFEST} makes the checkout's skills read as a plugin's"]
     found: list[str] = []
     for name, files in sorted(plugins.items()):
@@ -744,10 +744,11 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]],
         agents = [path[len("agents/") : -len(".md")] for path in files if path.startswith("agents/")]
         declared = ""
         readme = root / PLUGIN_README
-        if readme.is_file() and files.get("README.md") != readme.read_bytes():
+        has_readme = file_presence.is_present(readme, other_is_absent=True)
+        if has_readme and files.get("README.md") != readme.read_bytes():
             found.append(f"plugin {name}: README.md is not {PLUGIN_README.as_posix()}")
         for path, content in sorted(files.items()):
-            if path in (PLUGIN_MANIFEST, PLUGIN_HOOKS) or (path == "README.md" and readme.is_file()):
+            if path in (PLUGIN_MANIFEST, PLUGIN_HOOKS) or (path == "README.md" and has_readme):
                 continue
             origin = _plugin_source(root, path)
             if isinstance(origin, str) or not origin[0].is_file():

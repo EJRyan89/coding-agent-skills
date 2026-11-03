@@ -175,15 +175,24 @@ def check_layout(paths: Paths, find: Find | None = None) -> RuntimeResult:
         where = platform_support.normalize(paths.dest_dir)
         raise DeployError(f"ERROR: No skills are deployed in {where}.", f"Deploy first with '{PROG}'.")
     problems = [] if find(CLAUDE) else ["not installed"]
+    # A file whose stat fails is a problem naming it, as a missing one is, never raised past the report.
     for name in skills:
         file = paths.dest_dir / name / "SKILL.md"
-        if not file.is_file() or file.stat().st_size == 0:
+        try:
+            empty = not file_presence.is_present(file, other_is_absent=True) or file.stat().st_size == 0
+        except OSError as error:
+            problems.append(f"{name}/SKILL.md cannot be examined: {error.strerror or error}")
+            continue
+        if empty:
             problems.append(f"{name}/SKILL.md missing or empty")
-    problems += [
-        f"agent {name} missing"
-        for name in agents
-        if not file_presence.is_present(paths.agent_dest_dir / name, other_is_absent=True)
-    ]
+    for name in agents:
+        try:
+            present = file_presence.is_present(paths.agent_dest_dir / name, other_is_absent=True)
+        except OSError as error:
+            problems.append(f"agent {name} cannot be examined: {error.strerror or error}")
+            continue
+        if not present:
+            problems.append(f"agent {name} missing")
     if problems:
         return RuntimeResult(CLAUDE, FAILED, "; ".join(problems))
     plural = "agent" if len(agents) == 1 else "agents"

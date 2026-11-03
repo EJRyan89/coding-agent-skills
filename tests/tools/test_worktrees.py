@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 import git_client
 import git_worktrees
 import skill_scripts
+from presence_denial import denied
 from worktree_fixture import (
     GUARD_SCRIPT,
     HUB,
@@ -96,6 +97,17 @@ class NewWorktreeTests(WorktreesTestCase):
         result = self.run_script(["new", "fix", "second"], cwd=self.tree)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertTrue((self.worktrees / "fix-second" / "README.md").is_file())
+
+    def test_new_refuses_a_worktree_path_it_cannot_stat_never_reads_it_as_free(self) -> None:
+        path = self.worktrees / "fix-locked"
+        with (
+            mock.patch.object(worktrees, "current_hub", return_value=self.hub),
+            denied(path),
+            self.assertRaises(PermissionError) as raised,
+        ):
+            worktrees.new("fix", "locked")
+        self.assertEqual(str(path), raised.exception.filename)
+        self.assertFalse(path.exists())
 
     def test_new_rejects_unsafe_names_and_existing_branches_or_paths(self) -> None:
         (self.worktrees / "fix-taken").mkdir()

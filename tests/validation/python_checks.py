@@ -754,8 +754,10 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # Stated limits, which the policy's next widening reads: `if not P and Q: return None`; a predicate handed to map, as
 # `any(map(os.path.exists, ps))`; a predicate bound to a name this does not follow or reached through getattr; a
 # returned sentinel name, as `result = []` then `if not P: return result`; `P == False` and `P is False`; an rmtree
-# onerror or onexc that swallows the error; a read whose OSError handler answers nothing; and a branch that does work
-# other than logging before its empty answer, read as recording the case.
+# onerror or onexc that swallows the error; a read whose OSError handler answers nothing; a branch that does work other
+# than logging before its empty answer, read as recording the case; and an `if P:` with no else guarding work whose
+# result is an answer, as `if path.is_file(): tokens.update(...)`. The link tests are no presence predicates here:
+# LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed stat through.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )

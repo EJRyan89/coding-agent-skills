@@ -48,6 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import runtime_support
 from console import run_main
 from skill_roots import SKILL_CORE, sibling_scripts
@@ -259,9 +260,14 @@ def scaffold(
         raise ScaffoldError(f"--skill-dep {absent[0]} names no skill in the source")
     skill_md = root / "skills" / name / "SKILL.md"
     meta = root / "deploy-meta" / f"{name}.json"
-    if name in existing.skills or name in existing.bundles or skill_md.parent.exists() or meta.exists():
+    if (
+        name in existing.skills
+        or name in existing.bundles
+        or file_presence.is_occupied(skill_md.parent)
+        or file_presence.is_occupied(meta)
+    ):
         raise ScaffoldError(f"'{name}' is already a skill, a bundle, or an existing path")
-    if (root / skill_shims.SKILLS / name).exists():
+    if file_presence.is_occupied(root / skill_shims.SKILLS / name):
         raise ScaffoldError(
             f"'{name}' is already a repository skill under {skill_shims.SKILLS.as_posix()}, "
             "which would make the cost audit's lookup by name ambiguous"
@@ -354,9 +360,9 @@ def scaffold_repository(
     )
     skill_md = skill_shims.SKILLS / name / "SKILL.md"
     shim = skill_shims.shim_path(name)
-    if name in skill_reference.load_source(root).skills or (root / skill_md.parent).exists():
+    if name in skill_reference.load_source(root).skills or file_presence.is_occupied(root / skill_md.parent):
         raise ScaffoldError(f"'{name}' is already a shipped or repository skill, or an existing path")
-    if (root / shim.parent).exists():
+    if file_presence.is_occupied(root / shim.parent):
         raise ScaffoldError(f"{shim.parent.as_posix()} already exists")
 
     try:

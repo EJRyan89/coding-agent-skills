@@ -73,11 +73,13 @@ def markdown_link_problems(root: Path) -> list[str]:
                     continue
                 location, _, fragment = target.partition("#")
                 destination = path.parent / unquote(location) if location else path
-                if not destination.exists():
+                # A destination whose stat fails raises, never reads as one that does not exist or holds no heading.
+                is_file = file_presence.is_present(destination, other_is_absent=True)
+                if not is_file and not file_presence.is_directory(destination, other_is_absent=True):
                     problems.append(f"{name}:{number} links to {target}, which does not exist")
                 elif (
                     fragment
-                    and destination.is_file()
+                    and is_file
                     and destination.suffix.casefold() == ".md"
                     and unquote(fragment) not in heading_slugs(destination.read_text(encoding="utf-8"))
                 ):
