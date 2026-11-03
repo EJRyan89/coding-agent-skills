@@ -594,6 +594,7 @@ class CallableResolver:
         self.tree = tree
         self.scopes = _BindingReader(tree, in_place_updates).scopes
         self._aliases: dict[int, dict[str, str]] = {}
+        self.shape: _ModuleShape | None = None
 
     def _bound_name(self, name: str, scope: _NameScope, seen: frozenset[tuple[int, str]]) -> str:
         owner = scope.owner(name)
@@ -714,109 +715,357 @@ def module_lookup(node: ast.expr, resolver: CallableResolver) -> str:
 
 # The call that binds a function to arguments given ahead, which a later call of its result runs with those first.
 PARTIAL_CALLS = frozenset({"functools.partial"})
+# The call that builds a reader of the attribute it names, applied to the object after, as getattr reads it.
+ATTRIBUTE_GETTERS = frozenset({"operator.attrgetter"})
 BUILTINS_PREFIX = "builtins."
+# The methods that add a key to a dict in place, and the keyword or the position each takes the key and value by.
+DICT_ADDERS = frozenset({"update", "setdefault"})
 
 
 @dataclass
 class ResolvedCall:
-    """A call as it runs once each name, getattr of a constant name, and functools.partial is followed: the qualified
-    name of what it calls ("" when it has none), the attribute it calls ("" when it calls none) and the receiver that
-    attribute is looked up on, and the positional arguments and keywords it runs with, a partial's ahead of the
-    call's own and each `**` of a literal dict or a dict() call of keywords, or of a name bound once to one, spread into
-    keywords. A `**` it cannot read is kept in unread."""
+    """One way a call may run once each name, getattr of a constant name, and functools.partial is followed: the
+    qualified name of what it calls ("" when it has none), the attribute it calls ("" when it calls none) and the
+    receiver that attribute is looked up on, and the positional arguments and keywords it runs with, a partial's ahead
+    of the call's own and each `**` of a literal dict or a dict() call of keywords, or of a name bound to one, with
+    every key a constant subscript store, an `update`, or a `setdefault` adds to that name, spread into keywords. Each
+    keyword holds every value it may take. A `**` it cannot read is kept in unread."""
 
     name: str
     attribute: str
     receiver: ast.expr | None
     args: list[ast.expr]
-    keywords: dict[str, ast.expr]
+    keywords: dict[str, list[ast.expr]]
     unread: list[ast.expr]
 
 
-def bound_value(node: ast.expr, resolver: CallableResolver) -> ast.expr:
-    """The expression a name stands for, followed through each name its scope binds once to an expression, by an
-    assignment, an annotated one, an assignment expression, a literal tuple's item, a loop over a literal, or a with
-    item, or the expression itself."""
-    seen: set[int] = set()
-    while isinstance(node, ast.Name) and id(node) not in seen:
-        seen.add(id(node))
-        scope = resolver.scopes.get(id(node))
-        owner = scope.owner(node.id) if scope is not None else None
-        values = owner.bindings[node.id] if owner is not None else []
-        if len(values) != 1 or not isinstance(values[0], ast.expr):
-            break
-        node = values[0]
-    return node
+@dataclass(frozen=True)
+class Reference:
+    """What an expression may name: its qualified name ("" when none), and the attribute and receiver for an attribute
+    or a getattr of a constant name."""
+
+    name: str
+    attribute: str
+    receiver: ast.expr | None
 
 
-def resolved_reference(node: ast.expr, resolver: CallableResolver) -> tuple[str, str, ast.expr | None]:
-    """What an expression names, once bound_value follows it: its qualified name through the module's imports, with
-    `builtins.` dropped so `builtins.float` reads as float ("" when it names nothing the imports reach), and, for an
-    attribute or a getattr of a constant name, that attribute and the receiver it is looked up on."""
-    node = bound_value(node, resolver)
-    if isinstance(node, ast.Call):
-        attribute = call_argument(node, 1, "name")
+class _ModuleShape:
+    """A module's statements as the binding reader needs them to tell which bindings reach a use: each node's parent,
+    and each statement's list and position in it."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.parents: dict[int, ast.AST] = {}
+        self.places: dict[int, tuple[int, int]] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                self.parents[id(child)] = node
+            for _, value in ast.iter_fields(node):
+                if isinstance(value, list):
+                    for index, item in enumerate(value):
+                        if isinstance(item, ast.stmt):
+                            self.places[id(item)] = (id(value), index)
+
+    def statements(self, node: ast.AST) -> list[ast.stmt]:
+        """The statements that hold a node, innermost first."""
+        found: list[ast.stmt] = []
+        current: ast.AST | None = node
+        while current is not None:
+            if isinstance(current, ast.stmt):
+                found.append(current)
+            current = self.parents.get(id(current))
+        return found
+
+
+def _shape(resolver: CallableResolver) -> _ModuleShape:
+    """The resolver's module shape, read once and kept on the resolver."""
+    if resolver.shape is None:
+        resolver.shape = _ModuleShape(resolver.tree)
+    return resolver.shape
+
+
+def _reaches(binding: ast.expr, others: list[ast.expr], use: ast.AST, shape: _ModuleShape) -> bool:
+    """Whether a binding's value may reach a use in the same scope: unless it comes after the use in the statement list
+    that holds both, or another binding of the name in the same list comes after it and before the use, as a second
+    assignment in straight-line code replaces the first. A binding in a branch, a try, or a handler is not replaced by
+    one outside it."""
+    bound = shape.statements(binding)
+    place = shape.places.get(id(bound[0])) if bound else None
+    if place is None:
+        return True
+    holder = next(
+        (statement for statement in shape.statements(use) if shape.places.get(id(statement), (0, 0))[0] == place[0]),
+        None,
+    )
+    if holder is None:
+        return True
+    use_index = shape.places[id(holder)][1]
+    if place[1] > use_index:
+        return False
+    for other in others:
+        statements = shape.statements(other)
+        other_place = shape.places.get(id(statements[0])) if statements else None
         if (
-            resolved_reference(node.func, resolver)[0] in ATTRIBUTE_LOOKUPS
-            and node.args
-            and isinstance(attribute, ast.Constant)
-            and isinstance(attribute.value, str)
+            other is not binding
+            and other_place is not None
+            and other_place[0] == place[0]
+            and place[1] < other_place[1] <= use_index
+            and statements[0] is not holder
         ):
-            owner = resolved_reference(node.args[0], resolver)[0]
-            return (f"{owner}.{attribute.value}" if owner else ""), attribute.value, node.args[0]
-        return "", "", None
-    if isinstance(node, ast.Attribute):
-        owner = resolved_reference(node.value, resolver)[0]
-        return (f"{owner}.{node.attr}".removeprefix(BUILTINS_PREFIX) if owner else ""), node.attr, node.value
-    if isinstance(node, ast.Name) and id(node) in resolver.scopes:
-        return resolver.name(node).removeprefix(BUILTINS_PREFIX), "", None
-    return "", "", None
+            return False
+    return True
+
+
+def bound_values(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
+    """Every expression a name may stand for at the place it is read, followed through each name in turn: each value
+    the scope that owns it binds, by an assignment, an annotated one, an assignment expression, a literal tuple's item,
+    a loop over a literal, or a with item, `global` and `nonlocal` followed to the owner, that may reach the read; a
+    name with a binding of another kind, as an import, stands for itself too. Any other expression stands for itself.
+    A refusal policy reads a name as risky when any of these is."""
+    found: list[ast.expr] = []
+    pending: list[ast.expr] = [node]
+    seen: set[int] = set()
+    shape = _shape(resolver)
+    while pending:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if not isinstance(current, ast.Name) or not isinstance(current.ctx, ast.Load):
+            found.append(current)
+            continue
+        scope = resolver.scopes.get(id(current))
+        owner = scope.owner(current.id) if scope is not None else None
+        values = owner.bindings[current.id] if owner is not None else []
+        expressions = [value for value in values if isinstance(value, ast.expr)]
+        other_kind = len(expressions) != len(values)
+        if owner is scope:
+            expressions = [value for value in expressions if _reaches(value, expressions, current, shape)]
+        if not expressions or other_kind:
+            found.append(current)
+        pending += expressions
+    return found
+
+
+def resolved_references(node: ast.expr, resolver: CallableResolver) -> list[Reference]:
+    """Each thing an expression may name, once bound_values follows it: its qualified name through the module's
+    imports, with `builtins.` dropped so `builtins.float` reads as float ("" when it names nothing the imports reach),
+    and, for an attribute, a getattr of a constant name, or an operator.attrgetter of one applied to an object, that
+    attribute and the receiver it is looked up on. A binding that reaches back to itself, as `x = x.parent`, is
+    followed once."""
+    return _references(node, resolver, frozenset())
+
+
+def _references(node: ast.expr, resolver: CallableResolver, seen: frozenset[int]) -> list[Reference]:
+    found: list[Reference] = []
+    for value in bound_values(node, resolver):
+        if id(value) in seen:
+            found.append(Reference("", "", None))
+            continue
+        inner = seen | {id(value)}
+        getter = value.func if isinstance(value, ast.Call) else None
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(getter, ast.Call)
+            and len(value.args) == 1
+            and len(getter.args) == 1
+            and isinstance(getter.args[0], ast.Constant)
+            and isinstance(getter.args[0].value, str)
+            and "." not in getter.args[0].value
+            and any(reference.name in ATTRIBUTE_GETTERS for reference in _references(getter.func, resolver, inner))
+        ):
+            name = getter.args[0].value
+            owners = [reference.name for reference in _references(value.args[0], resolver, inner)] or [""]
+            found += [Reference(f"{owner}.{name}" if owner else "", name, value.args[0]) for owner in owners]
+            continue
+        if isinstance(value, ast.Call):
+            attribute = call_argument(value, 1, "name")
+            if (
+                value.args
+                and isinstance(attribute, ast.Constant)
+                and isinstance(attribute.value, str)
+                and any(reference.name in ATTRIBUTE_LOOKUPS for reference in _references(value.func, resolver, inner))
+            ):
+                owners = [reference.name for reference in _references(value.args[0], resolver, inner)] or [""]
+                found += [
+                    Reference(f"{owner}.{attribute.value}" if owner else "", attribute.value, value.args[0])
+                    for owner in owners
+                ]
+            else:
+                found.append(Reference("", "", None))
+        elif isinstance(value, ast.Attribute):
+            owners = [reference.name for reference in _references(value.value, resolver, inner)] or [""]
+            found += [
+                Reference(
+                    f"{owner}.{value.attr}".removeprefix(BUILTINS_PREFIX) if owner else "", value.attr, value.value
+                )
+                for owner in owners
+            ]
+        elif isinstance(value, ast.Name) and id(value) in resolver.scopes:
+            found.append(Reference(resolver.name(value).removeprefix(BUILTINS_PREFIX), "", None))
+        else:
+            found.append(Reference("", "", None))
+    return found
+
+
+def _dict_additions(name: ast.Name, resolver: CallableResolver) -> tuple[dict[str, list[ast.expr]], bool]:
+    """The keys a scope adds to the dict a name holds, by a constant subscript store, an `update` of keywords or of a
+    literal dict, or a `setdefault` of a constant key, with each value; and whether any other change, such as an
+    `update` of another mapping or `|=`, leaves it unread."""
+    scope = resolver.scopes.get(id(name))
+    owner = scope.owner(name.id) if scope is not None else None
+    added: dict[str, list[ast.expr]] = {}
+    unread = False
+
+    def same(node: ast.expr) -> bool:
+        if not isinstance(node, ast.Name) or node.id != name.id:
+            return False
+        found = resolver.scopes.get(id(node))
+        return found is not None and found.owner(node.id) is owner
+
+    for node in ast.walk(resolver.tree):
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and same(node.value):
+            key = node.slice
+            parent = _shape(resolver).parents.get(id(node))
+            value = parent.value if isinstance(parent, ast.Assign) else None
+            if isinstance(key, ast.Constant) and isinstance(key.value, str) and value is not None:
+                added.setdefault(key.value, []).append(value)
+            else:
+                unread = True
+        elif isinstance(node, ast.AugAssign) and same(node.target):
+            unread = True
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and same(node.func.value):
+            unread = _dict_method_additions(node, node.func.attr, added) or unread
+    return added, unread
+
+
+# The dict methods that read a dict and change nothing in it.
+DICT_READERS = frozenset({"get", "keys", "values", "items", "copy"})
+
+
+def _dict_method_additions(call: ast.Call, method: str, added: dict[str, list[ast.expr]]) -> bool:
+    """Add to added the keys a method call on a dict gives it, a `setdefault` of a constant key or an `update` of
+    keywords or of a literal dict, and answer whether the call changes the dict some other way, which leaves it
+    unread."""
+    if method == "setdefault" and call.args and isinstance(call.args[0], ast.Constant):
+        if len(call.args) > 1:
+            added.setdefault(str(call.args[0].value), []).append(call.args[1])
+        return False
+    if method != "update":
+        return method not in DICT_READERS
+    unread = False
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            unread = True
+        else:
+            added.setdefault(keyword.arg, []).append(keyword.value)
+    for argument in call.args:
+        literal = _literal_keywords(argument)
+        if literal is None:
+            unread = True
+        else:
+            for key, value in literal.items():
+                added.setdefault(key, []).append(value)
+    return unread
+
+
+def _literal_keywords(node: ast.expr) -> dict[str, ast.expr] | None:
+    """The keys and values of a literal dict whose keys are all constant strings, or None."""
+    if not isinstance(node, ast.Dict):
+        return None
+    keys = [key.value for key in node.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+    if len(keys) != len(node.keys):
+        return None
+    return dict(zip(keys, node.values, strict=True))
 
 
 def _spread_keywords(
-    keywords: list[ast.keyword], resolver: CallableResolver, found: dict[str, ast.expr], unread: list[ast.expr]
+    keywords: list[ast.keyword], resolver: CallableResolver, found: dict[str, list[ast.expr]], unread: list[ast.expr]
 ) -> None:
-    """Add each keyword a call gives to found, a `**` of a literal dict or a dict() call of keywords spread, and keep
-    any other `**` in unread."""
+    """Add each keyword a call gives to found, a `**` of a literal dict or a dict() call of keywords spread, with what
+    the scope adds to a name bound to one, and keep any other `**` in unread."""
     for keyword in keywords:
         if keyword.arg is not None:
-            found[keyword.arg] = keyword.value
+            found.setdefault(keyword.arg, []).append(keyword.value)
             continue
-        value = bound_value(keyword.value, resolver)
-        names = (
-            [key.value for key in value.keys if isinstance(key, ast.Constant)] if isinstance(value, ast.Dict) else []
-        )
-        if isinstance(value, ast.Dict) and len(names) == len(value.keys) and all(isinstance(n, str) for n in names):
-            found |= {str(key): item for key, item in zip(names, value.values, strict=True)}
-        elif isinstance(value, ast.Call) and resolved_reference(value.func, resolver)[0] == "dict" and not value.args:
-            _spread_keywords(value.keywords, resolver, found, unread)
-        else:
-            unread.append(keyword.value)
+        for value in bound_values(keyword.value, resolver):
+            literal = _literal_keywords(value)
+            if literal is not None:
+                for key, item in literal.items():
+                    found.setdefault(key, []).append(item)
+            elif (
+                isinstance(value, ast.Call)
+                and not value.args
+                and any(reference.name == "dict" for reference in resolved_references(value.func, resolver))
+            ):
+                _spread_keywords(value.keywords, resolver, found, unread)
+            else:
+                unread.append(keyword.value)
+        if isinstance(keyword.value, ast.Name):
+            added, changed = _dict_additions(keyword.value, resolver)
+            for key, items in added.items():
+                found.setdefault(key, []).extend(items)
+            if changed:
+                unread.append(keyword.value)
 
 
-def resolved_call(call: ast.Call, resolver: CallableResolver) -> ResolvedCall:
-    """A call as it runs: see ResolvedCall. Every policy that reads which function a call runs, and with what keywords,
-    through a name, a getattr of a constant name, a functools.partial, or a `**` literal, reads it here."""
-    args = list(call.args)
-    keywords: dict[str, ast.expr] = {}
+def resolved_calls(call: ast.Call, resolver: CallableResolver) -> list[ResolvedCall]:
+    """Each way a call may run: see ResolvedCall. Every policy that reads which function a call runs, and with what
+    keywords, through a name, a getattr of a constant name, a functools.partial, or a `**` literal, reads it here, and
+    a refusal policy refuses the call when any of these is risky."""
+    keywords: dict[str, list[ast.expr]] = {}
     unread: list[ast.expr] = []
     _spread_keywords(call.keywords, resolver, keywords, unread)
-    function = bound_value(call.func, resolver)
-    seen: set[int] = set()
-    while (
-        isinstance(function, ast.Call)
-        and id(function) not in seen
-        and function.args
-        and resolved_reference(function.func, resolver)[0] in PARTIAL_CALLS
-    ):
-        seen.add(id(function))
-        ahead: dict[str, ast.expr] = {}
-        _spread_keywords(function.keywords, resolver, ahead, unread)
-        keywords = ahead | keywords
-        args = [*function.args[1:], *args]
-        function = bound_value(function.args[0], resolver)
-    name, attribute, receiver = resolved_reference(function, resolver)
-    return ResolvedCall(name, attribute, receiver, args, keywords, unread)
+    return _calls_of(call.func, list(call.args), keywords, unread, resolver, set())
+
+
+def _calls_of(
+    function: ast.expr,
+    args: list[ast.expr],
+    keywords: dict[str, list[ast.expr]],
+    unread: list[ast.expr],
+    resolver: CallableResolver,
+    seen: set[int],
+) -> list[ResolvedCall]:
+    found: list[ResolvedCall] = []
+    for value in bound_values(function, resolver):
+        if (
+            isinstance(value, ast.Call)
+            and id(value) not in seen
+            and value.args
+            and any(reference.name in PARTIAL_CALLS for reference in resolved_references(value.func, resolver))
+        ):
+            ahead: dict[str, list[ast.expr]] = {}
+            more = list(unread)
+            _spread_keywords(value.keywords, resolver, ahead, more)
+            merged = {key: [*ahead.get(key, []), *keywords.get(key, [])] for key in {*ahead, *keywords}}
+            found += _calls_of(value.args[0], [*value.args[1:], *args], merged, more, resolver, seen | {id(value)})
+            continue
+        for reference in resolved_references(value, resolver):
+            found.append(ResolvedCall(reference.name, reference.attribute, reference.receiver, args, keywords, unread))
+    return found
+
+
+def class_of(scope: str, classes: set[str]) -> str:
+    """The innermost class a scope's qualified name lies in, or "" outside every class."""
+    parts = scope.split(".")
+    for end in range(len(parts), 0, -1):
+        if (candidate := ".".join(parts[:end])) in classes:
+            return candidate
+    return ""
+
+
+def place_key(node: ast.expr, scope: str, classes: set[str]) -> str:
+    """The key a place an assignment binds, or an expression reads, is held by: `self.x` or `cls.x` in a method, and a
+    name a class body binds, by the class and the attribute, as `Store.x`, which `Store.x` itself reads too; any other
+    attribute or subscript by its text, and a name by itself."""
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        if node.value.id in ("self", "cls") and (owner := class_of(scope, classes)):
+            return f"{owner}.{node.attr}"
+        if node.value.id in classes:
+            return f"{node.value.id}.{node.attr}"
+    if isinstance(node, ast.Name) and scope in classes:
+        return f"{scope}.{node.id}"
+    return ast.unparse(node)
 
 
 def fence_holders(lines: list[str]) -> list[Fence | None]:

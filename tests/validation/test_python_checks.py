@@ -3068,7 +3068,9 @@ def test_git_separator_policy_reads_every_name_listing_its_catalogue_names(call:
 # bound to a getattr of a constant name or a functools.partial, a `**` of a literal dict, of a dict() call, or of a name
 # bound to one, `builtins.X`, an assignment expression, a tuple target, and a with target. Each source marks the line
 # its policy refuses with `# read`, or marks none where it passes.
-RESOLVED_IMPORTS = "import builtins\nimport ctypes\nimport functools\nimport json\nfrom ctypes import wintypes\n\n\n"
+RESOLVED_IMPORTS = (
+    "import builtins\nimport ctypes\nimport functools\nimport json\nimport operator\nfrom ctypes import wintypes\n\n\n"
+)
 
 
 def resolved_rows(policy: Callable[[Path, list[Path]], list[str]], body: str) -> list[str]:
@@ -3110,10 +3112,60 @@ def marked_rows(body: str) -> list[str]:
         pytest.param("def f(p):\n    p.add_argument('--times', type=int)\n", id="times counts repetitions"),
         pytest.param("def f(p):\n    p.add_argument('--timestamp', type=int)\n", id="a timestamp is no limit"),
         pytest.param("def f(p, options):\n    p.add_argument('--timeout', **options)\n", id="an unread ** passes"),
+        # Any binding that may reach the read counts, a global's and a nonlocal's from their owner.
+        pytest.param(
+            "def f(p, q):\n    add = q.add_argument\n    add = p.add_argument\n"
+            "    add('--timeout', type=float)  # read\n",
+            id="add rebound in one scope",
+        ),
+        pytest.param(
+            "def f(p):\n    kind = str\n    kind = float\n    p.add_argument('--timeout', type=kind)  # read\n",
+            id="a type rebound in one scope",
+        ),
+        pytest.param(
+            "def f(p):\n    kind = float\n    kind = str\n    p.add_argument('--timeout', type=kind)\n",
+            id="a type rebound to str passes",
+        ),
+        pytest.param(
+            "add = None\n\n\ndef setup(p):\n    global add\n    add = p.add_argument\n\n\n"
+            "def f():\n    add('--timeout', type=float)  # read\n",
+            id="a global add",
+        ),
+        pytest.param(
+            "def f(p):\n    options = {}\n    options['type'] = float\n"
+            "    p.add_argument('--timeout', **options)  # read\n",
+            id="a ** dict given a key after binding",
+        ),
+        pytest.param(
+            "def f(p):\n    options = {}\n    options.update(type=float)\n"
+            "    p.add_argument('--timeout', **options)  # read\n",
+            id="a ** dict updated after binding",
+        ),
+        pytest.param(
+            "def f(p, other):\n    options = {}\n    options.update(other)\n"
+            "    p.add_argument('--timeout', **options)\n",
+            id="a ** dict updated from another mapping is unread",
+        ),
+        pytest.param(
+            "def f(p):\n    operator.attrgetter('add_argument')(p)('--timeout', type=float)  # read\n",
+            id="an attrgetter of add_argument",
+        ),
     ],
 )
 def test_time_option_policy_reads_each_form_resolved_call_follows(body: str) -> None:
     assert resolved_rows(python_checks.time_option_problems, body) == marked_rows(body)
+
+
+# Each word of the time-word catalogue, as an option of its own, is a time.
+@pytest.mark.parametrize("word", sorted(python_checks.TIME_WORDS))
+def test_time_option_policy_reads_every_time_word(word: str) -> None:
+    body = f"def f(p):\n    p.add_argument('--{word}', type=float)  # read\n"
+    assert resolved_rows(python_checks.time_option_problems, body) == marked_rows(body)
+
+
+def test_time_words_hold_each_limit_word_and_unit() -> None:
+    # Pinned against literals, not the constant under test.
+    assert {"ttl", "duration", "backoff", "sec", "secs", "millis", "mins", "hrs"} <= python_checks.TIME_WORDS
 
 
 @pytest.mark.parametrize(
@@ -3161,6 +3213,35 @@ def test_time_option_policy_reads_each_form_resolved_call_follows(body: str) -> 
             "class Store:\n    def __init__(self, d):\n        self.text = 'plain'\n\n"
             "    def save(self, path):\n        path.write_text(self.text)\n",
             id="plain text on an attribute passes",
+        ),
+        pytest.param(
+            "class A:\n    def __init__(self, d):\n        self.text = json.dumps(d)\n\n\n"
+            "class B:\n    def __init__(self, t):\n        self.text = t\n\n"
+            "    def save(self, s):\n        s.write(self.text)\n",
+            id="another class's attribute of the same name passes",
+        ),
+        pytest.param(
+            "def f(path, d, pretty):\n    if pretty:\n        dumps = functools.partial(json.dumps, indent=2)\n"
+            "    else:\n        dumps = json.dumps\n    path.write_text(dumps(d))  # read\n",
+            id="dumps bound in both branches",
+        ),
+        pytest.param(
+            "dumps = None\n\n\ndef load():\n    global dumps\n    dumps = json.dumps\n\n\n"
+            "def f(path, d):\n    path.write_text(dumps(d))  # read\n",
+            id="a global dumps",
+        ),
+        pytest.param(
+            "class C:\n    TEXT = json.dumps({})\n\n    def save(self, s):\n        s.write(self.TEXT)  # read\n"
+            "        s.write(C.TEXT)  # read\n",
+            id="class-level text through self and the class",
+        ),
+        pytest.param(
+            "def f(path, d):\n    path.write_text(json.encoder.JSONEncoder().encode(d))  # read\n",
+            id="json.encoder.JSONEncoder",
+        ),
+        pytest.param(
+            "from json import JSONEncoder\n\n\ndef f(path, d):\n    path.write_text(JSONEncoder().encode(d))  # read\n",
+            id="a from-imported JSONEncoder",
         ),
     ],
 )
@@ -3210,6 +3291,48 @@ DECLARED = "    lib.CloseHandle.argtypes = [wintypes.HANDLE]\n    lib.CloseHandl
             "def f(h):\n    lib = ctypes.WinDLL('k')\n"
             "    lib.Close.argtypes, lib.Close.restype = [wintypes.HANDLE], wintypes.BOOL\n    lib.Close(h)\n",
             id="an unpacked declaration passes",
+        ),
+        pytest.param(
+            "def f(h):\n    try:\n        lib = ctypes.WinDLL('kernel32')\n    except OSError:\n"
+            "        lib = ctypes.CDLL('libc.so.6')\n    lib.CloseHandle(h)  # read\n",
+            id="a library bound in a try and its handler",
+        ),
+        pytest.param(
+            "def f(h, windows):\n    if windows:\n        lib = ctypes.WinDLL('kernel32')\n    else:\n"
+            "        lib = ctypes.CDLL('libc.so.6')\n    lib.CloseHandle(h)  # read\n",
+            id="a library bound in both arms",
+        ),
+        pytest.param(
+            "lib = None\n\n\ndef load():\n    global lib\n    lib = ctypes.WinDLL('kernel32')\n\n\n"
+            "def use(h):\n    lib.CloseHandle(h)  # read\n",
+            id="a global library",
+        ),
+        pytest.param(
+            "def outer(h):\n    lib = None\n\n    def inner():\n        nonlocal lib\n"
+            "        lib = ctypes.WinDLL('kernel32')\n\n    inner()\n    lib.CloseHandle(h)  # read\n",
+            id="a nonlocal library",
+        ),
+        pytest.param(
+            f"def f(h):\n    lib = ctypes.WinDLL('user32')\n{DECLARED}    lib = ctypes.WinDLL('kernel32')\n"
+            "    lib.CloseHandle(h)  # read\n",
+            id="a library rebound in one scope",
+        ),
+        pytest.param(
+            "def f(h):\n    try:\n        lib = ctypes.WinDLL('kernel32')\n    except OSError:\n"
+            f"        lib = ctypes.CDLL('libc.so.6')\n{DECLARED}    lib.CloseHandle(h)\n",
+            id="a declaration after a try and its handler passes",
+        ),
+        pytest.param(
+            "class K:\n    lib = ctypes.WinDLL('k')\n\n    def f(self, h):\n        self.lib.CloseHandle(h)  # read\n"
+            "        K.lib.CloseHandle(h)  # read\n",
+            id="a class-level library through self and the class",
+        ),
+        pytest.param(
+            "class K:\n    def b(self):\n        self.lib = ctypes.WinDLL('kernel32')\n\n"
+            "    def a(self):\n        user32 = ctypes.WinDLL('user32')\n"
+            "        user32.F.argtypes = [wintypes.HANDLE]\n        user32.F.restype = wintypes.BOOL\n"
+            "        self.lib = user32\n\n    def c(self, h):\n        self.lib.F(h)  # read\n",
+            id="a place bound to two libraries counts both",
         ),
     ],
 )
