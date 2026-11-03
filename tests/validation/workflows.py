@@ -554,7 +554,7 @@ _HOLDER_NOUN = r"(?:steps?|jobs?|legs?|workflows?)"
 _QUALIFIERS = r"(?:(?:other|single|one|more|further|additional|such|later|individual|remaining|separate) ){0,2}"
 _HOLDER = (
     rf"{_QUALIFIERS}(?:[\w-]+ (?:or|nor|and) {_QUALIFIERS})?{_HOLDER_NOUN}(?: (?:or|nor|and) [\w-]+)?"
-    r"(?: here| of (?:this|the|its) (?:job|workflow|leg))?"
+    r"(?: here| (?:of|in|within|inside|from) (?:(?:this|the|its|that|each|every|any|a) )?(?:[\w.-]+ )?[\w.-]+)?"
 )
 # The words that say none: "no", "none of the", "not one", "not a single", "zero", "neither".
 _NONE = r"(?:no|none(?: of(?: the| its| these)?)?|not (?:one|a single|any)(?: of(?: the| its| these)?)?|zero|neither)"
@@ -572,6 +572,13 @@ _NOT_GIVEN = (
 )
 # The token named first: "the token is given to", "reaches", "goes to", or "is available to".
 _TOKEN_GOES = rf"(?:(?:is|are|was|were) {_ADVERB}(?:{_GIVE}|available|visible) to|reaches|goes to)"
+# The token named first with its verb negated: "is not given to", "is never passed to", "does not reach", "never goes
+# to", before "any", "a", or "the" and the holder.
+_TOKEN_KEPT = (
+    rf"(?:(?:is|are|was|were)(?: not|n't| never) {_ADVERB}(?:{_GIVE}|available|visible) to"
+    r"|(?:(?:does|do|did)(?: not|n't)|never) (?:reach|go to)|never (?:reaches|goes to))"
+    r"(?: (?:any|a|an|the|one)(?: single)?)?"
+)
 # Claims a workflow comment, the row, or the runner's docstring made before the actions' default input was counted,
 # each false while ACTION_INPUT_STATEMENT holds, by the meaning each is named for: that a step, job, leg, or workflow
 # is given no token, or that one job alone is given it. A true statement about a step's command names the command, as
@@ -582,6 +589,7 @@ RETIRED_TOKEN_CLAIMS: dict[str, re.Pattern[str]] = {
         rf"\b{_NONE} {_HOLDER} {_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|\b{_HOLDER} {_NOT_GIVEN} {_CREDENTIAL_PHRASE}"
         rf"|(?<!\w){_CREDENTIAL_PHRASE} (?:{_TOKEN_GOES}|(?:is|are|was|were) {_ADVERB}{_GIVE}) {_NONE} {_HOLDER}"
+        rf"|(?<!\w){_CREDENTIAL_PHRASE} {_TOKEN_KEPT} {_HOLDER}"
     ),
     "the legs hold no token": re.compile(
         rf"\b(?:holds?|held|holding) no {_CREDENTIAL}|\b{_HOLDER} {_GIVEN} no {_CREDENTIAL}"
@@ -605,6 +613,14 @@ TOKEN_CLAIM_OMISSIONS = {
     "agents/": "a shipped agent speaks of the user's repository, as a shipped skill does",
     "tests/fixtures/": "a fixture stands for another repository, not this one's workflows",
 }
+# The files besides the workflows where a retired claim was made, which token_claim_read_problems requires read.
+TOKEN_CLAIM_REQUIRED = (
+    "tests/run_validation.py",
+    "tests/known_failure_issues.py",
+    "tests/validation/credentials.py",
+    "docs/implementing-changes.md",
+    "CONTRIBUTING.md",
+)
 # How far either side of a mention of the token a claim can reach: each pattern's words stand within it, so
 # token_claim_problems matches only the stretches of a text around a mention.
 _CLAIM_REACH = 300
@@ -722,6 +738,17 @@ def _claim_windows(folded: str) -> list[str]:
         else:
             spans.append([start, end])
     return [folded[start:end] for start, end in spans]
+
+
+def token_claim_read_problems(texts: Mapping[str, str]) -> list[str]:
+    """Each of the places a retired token claim was once made, every workflow WORKFLOW_GUARDS names among them, that
+    `texts` lacks: a read that found nothing finds no claim, so it fails here rather than passing."""
+    required = sorted({f"{WORKFLOWS_DIRECTORY}/{name}" for name in WORKFLOW_GUARDS} | set(TOKEN_CLAIM_REQUIRED))
+    return [
+        f"the token-claim policy read no {name}, where a retired claim was made"
+        for name in required
+        if name not in texts
+    ]
 
 
 def token_claim_texts(root: Path, files: Iterable[Path]) -> dict[str, str]:
@@ -1780,6 +1807,7 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_no_document_says_a_job_holds_no_token_while_its_actions_take_it_by_default(self) -> None:
         design = (REPOSITORY_ROOT / "docs" / "design.md").read_text(encoding="utf-8")
         texts = token_claim_texts(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))
+        self.assertEqual([], token_claim_read_problems(texts))
         self.assertEqual([], token_claim_problems(texts, design))
 
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:

@@ -45,6 +45,7 @@ from workflows import (
     read_workflow,
     required_check_problems,
     token_claim_problems,
+    token_claim_read_problems,
     token_claim_texts,
     token_reach_problems,
     tool_cache_problems,
@@ -2059,6 +2060,17 @@ RETIRED_CLAIM_SPELLINGS = [
     ("no step is granted the token", NO_STEP),
     ("every step runs without the token", NO_STEP),
     ("the legs cannot read the token", NO_STEP),
+    # The spellings the review of the pull request reproduced passing: a holder placed by "in".
+    ("no step in this job is given the token", NO_STEP),
+    ("no step in validate.yml is given the token", NO_STEP),
+    ("no step within the legs holds the token", NO_STEP),
+    # The token named first with its verb negated.
+    ("the token is not given to any step", NO_STEP),
+    ("the token is never given to a job", NO_STEP),
+    ("the token is not passed to any job", NO_STEP),
+    ("the token isn't handed to the legs", NO_STEP),
+    ("the token does not reach any step", NO_STEP),
+    ("the token never goes to a leg", NO_STEP),
 ]
 
 # The true statements the repository makes about the token, each of which names the command or program that holds it
@@ -2132,6 +2144,29 @@ def test_a_retired_token_claim_far_into_a_long_text_fails_and_each_is_found_once
         "README.md says 'legs hold no token'",
         "README.md says 'no step is given the token'",
         "README.md says 'the token reaches no step'",
+    ]
+
+
+def test_a_token_claim_read_that_found_nothing_fails_and_one_that_read_each_place_passes() -> None:
+    required = [
+        ".github/workflows/deployable.yml",
+        ".github/workflows/mutation.yml",
+        ".github/workflows/runtime-changelogs.yml",
+        ".github/workflows/runtime-command-lines.yml",
+        ".github/workflows/validate.yml",
+        "CONTRIBUTING.md",
+        "docs/implementing-changes.md",
+        "tests/known_failure_issues.py",
+        "tests/run_validation.py",
+        "tests/validation/credentials.py",
+    ]
+    assert token_claim_read_problems({}) == [
+        f"the token-claim policy read no {name}, where a retired claim was made" for name in required
+    ]
+    assert token_claim_read_problems(dict.fromkeys(required, "")) == []
+    missing_one = dict.fromkeys(required[1:], "")
+    assert token_claim_read_problems(missing_one) == [
+        f"the token-claim policy read no {required[0]}, where a retired claim was made"
     ]
 
 
