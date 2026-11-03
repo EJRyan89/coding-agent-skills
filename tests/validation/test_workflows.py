@@ -2004,7 +2004,7 @@ RETIRED_CLAIM_SPELLINGS = [
     ("hold no token", NO_TOKEN),
     ("the only job given the run's token", ONLY_JOB),
     ("the one job given the run's read-only token", ONLY_JOB),
-    # The respellings issue #2260 names.
+    # The respellings a review found passing the exact-substring check.
     ("No step here is given the token", NO_STEP),
     ("no step is given the run's token", NO_STEP),
     ("the legs holds no token", NO_TOKEN),
