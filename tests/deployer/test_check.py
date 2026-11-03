@@ -427,6 +427,17 @@ class CheckCommandTests(DeployerTestCase):
             [f"{bash} (needed to deploy; {located})"], self.report_groups(result.output, "CHECK")["UNUSABLE"]
         )
 
+    def test_a_deploy_tool_probe_that_times_out_stops_the_check_rather_than_reporting_it_unusable(self) -> None:
+        # A hung probe is ended with its processes and stops the check with the deadline's lines, as every hung probe
+        # does. Though its error is a DeployError, it is no tool that cannot be located: no line reports it unusable.
+        timed_out = platform_support.ToolTimedOut("C:/Program Files/Git/bin/bash.exe", 600)
+        with Machine().patches(), mock.patch("deployer.platform_support.find_bash", side_effect=timed_out):
+            result = self.run_cli("check")
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn("bash.exe did not finish within 600 seconds", result.output)
+        self.assertNotIn("UNUSABLE", result.output)
+        self.assertNotIn("=== CHECK ===", result.output)
+
     def test_missing_skill_tool_still_allows_deploying(self) -> None:
         result = self.check(Machine(missing=("gh",)))
         self.assertEqual(0, result.code, result.output)
