@@ -339,6 +339,10 @@ class RelativeWithinTests(unittest.TestCase):
         self.assertEqual(Path("Tools", "X.py"), path_containment.relative_within("C:\\TREE\\Tools\\X.py", "c:\\tree"))
 
     def test_which_parts_lie_below_the_tree_comes_from_the_compared_form_never_a_relative_to(self) -> None:
-        # A case rule other than the one within compared by can never make the answer raise or disagree.
-        with mock.patch.object(Path, "relative_to", side_effect=AssertionError("relative_to is never called")):
+        # A case rule other than the one within compared by can never make the answer raise or disagree. within is
+        # stubbed, since Python 3.11's is_relative_to calls relative_to itself.
+        with (
+            mock.patch.object(path_containment, "within", return_value=True),
+            mock.patch.object(Path, "relative_to", side_effect=AssertionError("relative_to is never called")),
+        ):
             self.assertEqual(Path("a", "b.py"), path_containment.relative_within("tree/a/b.py", "tree"))
