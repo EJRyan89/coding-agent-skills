@@ -6,8 +6,11 @@ waiting for an answer nobody gives. Its environment, that default or one its cal
 repository-selecting variables, such as `GIT_DIR` and `GIT_INDEX_FILE`, which a git hook exports and a shell may pass
 on: a command names its repository by the directory it runs in or names, as `git -C` and gh in its working directory
 do, and reads that repository, its index, and its objects, never one a variable points at. A program that is not git,
-such as Copilot CLI or an MCP server, may run git or read a repository's files itself, so no command keeps them.
-`without_repository_variables` is the one builder of such an environment, which a start outside this module uses too.
+such as Copilot CLI or an MCP server, may run git or read a repository's files itself, so no command keeps them. The
+one exception is `GIT_INDEX_FILE` set by the caller itself in the environment it gives (CALLER_SET_VARIABLES), as
+`deploy.py --at` does to read a commit's attributes through a throwaway index; one this process inherited is left out
+still. `without_repository_variables` is the one builder of such an environment, which a start outside this module uses
+too, and `given_environment` adds the exception to it.
 `isolated_git_environment` builds a stricter one, for a git that reads content it did not write, that leaves out every
 git variable and switches off the system and global configuration.
 
@@ -75,6 +78,10 @@ REPOSITORY_VARIABLES = frozenset(
         "GIT_WORK_TREE",
     }
 )
+# The repository-selecting variables a caller may set itself, in the environment it gives a command, and a command
+# keeps: GIT_INDEX_FILE, which deploy.py --at sets to a throwaway index of a commit's tree to read that commit's
+# attributes on any Git. One with the value this process inherited is left out, as an inherited one is.
+CALLER_SET_VARIABLES = frozenset({"GIT_INDEX_FILE"})
 # Ends a stream cut at an output limit, so whoever reads it learns that more was written than it holds.
 CUT_NOTE = "\n[output cut: {cut} bytes past the first {limit} not kept]\n"
 
@@ -105,6 +112,19 @@ def without_repository_variables(environment: Mapping[str, str]) -> dict[str, st
     deployer, or a repository tool starts some other way, so none reads a repository a variable points at.
     """
     return {name: value for name, value in environment.items() if name.upper() not in REPOSITORY_VARIABLES}
+
+
+def given_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """The environment a command is started with when its caller gives `environment`: without git's
+    repository-selecting variables, but for one of CALLER_SET_VARIABLES, spelled as git reads it, that the caller set
+    to a value other than the one this process inherited, so one inherited or copied from this process's is left out.
+    """
+    kept = without_repository_variables(environment)
+    for name in CALLER_SET_VARIABLES:
+        value = environment.get(name)
+        if value is not None and value != os.environ.get(name):
+            kept[name] = value
+    return kept
 
 
 def non_interactive_environment() -> dict[str, str]:
@@ -141,8 +161,9 @@ def run_bounded(
     With `stdout`, the command writes there and the result's stdout is empty, and `stderr` likewise; given the same
     file, the two streams arrive in it in the order the command wrote them. With `cwd`, it runs in that directory.
     With `input_bytes`, its stdin is exactly those bytes and then closed; the time limit covers reading them. With
-    `env`, that is the command's whole environment but git's repository-selecting variables, and no prompt is turned
-    off for it; otherwise it is `non_interactive_environment()`. With `output_limit`, at most that many bytes of each
+    `env`, that is the command's whole environment but git's repository-selecting variables, as `given_environment`
+    builds it, and no prompt is turned off for it; otherwise it is `non_interactive_environment()`. With
+    `output_limit`, at most that many bytes of each
     stream are read back, and a stream that held more ends with CUT_NOTE. With `tree`, the command starts as the tree
     says, and every process it started that stays in the tree is ended once it has finished or been killed.
     Raises OSError when the command cannot start (FileNotFoundError when it does not exist), and
@@ -155,7 +176,7 @@ def run_bounded(
             stdin=stdin,
             stdout=output if stdout is None else stdout,
             stderr=errors if stderr is None else stderr,
-            env=non_interactive_environment() if env is None else without_repository_variables(env),
+            env=non_interactive_environment() if env is None else given_environment(env),
             cwd=cwd,
             **({} if tree is None else tree.start_options()),
         )
@@ -212,7 +233,8 @@ def streaming(
 
     With `timeout`, the whole session, from starting the command to closing it, lasts at most that many seconds, as
     `Streaming` describes. With `env`, that is the command's whole environment but git's repository-selecting
-    variables, and no prompt is turned off for it; otherwise it is `non_interactive_environment()`. Raises OSError
+    variables, as `given_environment` builds it, and no prompt is turned off for it; otherwise it is
+    `non_interactive_environment()`. Raises OSError
     when the command cannot start (FileNotFoundError when it does not exist). With `merge_stderr`, both output
     streams go through the bounded stdout reader, rather than keeping diagnostics in a file. With `tree`, the command
     starts as the tree says, and every process it started that stays in the tree is ended once it has been closed.
@@ -223,7 +245,7 @@ def streaming(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else errors,
-            env=non_interactive_environment() if env is None else without_repository_variables(env),
+            env=non_interactive_environment() if env is None else given_environment(env),
             cwd=cwd,
             **({} if tree is None else tree.start_options()),
         )

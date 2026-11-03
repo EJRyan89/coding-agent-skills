@@ -42,8 +42,6 @@ TREE_ENTRY = re.compile(
 )
 # The path characters one `git check-attr` call is given, well inside what a Windows command line holds.
 ATTRIBUTE_PATH_UNITS = 8000
-# The prefix of the throwaway directory that holds the index of a commit's tree whose attributes --at reads.
-ATTRIBUTE_INDEX_PREFIX = "deploy-at-attributes-"
 
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
@@ -85,6 +83,8 @@ def _run_git(
             "ERROR: --at needs Git, which was not found.",
             'Install it as "Installing the tools" in docs/installation.md says, then retry.',
         )
+    if environment is None:
+        return platform_support.run_tool([git, *arguments], timeout=timeout, separate_errors=separate_errors)
     return platform_support.run_tool([git, *arguments], environment, timeout=timeout, separate_errors=separate_errors)
 
 
@@ -96,7 +96,10 @@ def _git_runner(command: Sequence[str], timeout: float, environment: dict[str, s
     """GitClient's runner over the deployer's own, for resolve and release_tags: the command GitClient builds, git
     first, run by run_tool with stdout and stderr kept apart, so a warning git prints beside an answer is never part of
     it and a failure's reason is git's stderr. `environment` is added to that call's environment alone."""
-    result = _run_git(command[1:], timeout, separate_errors=True, environment=environment)
+    if environment is None:
+        result = _run_git(command[1:], timeout, separate_errors=True)
+    else:
+        result = _run_git(command[1:], timeout, separate_errors=True, environment=environment)
     return GitResult(result.returncode, result.output, result.errors)
 
 
@@ -284,7 +287,8 @@ def archive_attributes(source_dir: Path, commit: str) -> list[tuple[str, str]]:
     answer is not the one asked for, path by path and attribute by attribute, so no unread answer passes as none set.
     """
     paths = _tree_paths(source_dir, commit)
-    directory = Path(tempfile.mkdtemp(prefix=ATTRIBUTE_INDEX_PREFIX))
+    # The throwaway directory that holds the index of the commit's tree, apart from the export's.
+    directory = Path(tempfile.mkdtemp(prefix="deploy-at-attributes-"))
     try:
         return _indexed_attributes(source_dir, commit, paths, _client(directory / "index"))
     finally:

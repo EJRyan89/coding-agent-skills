@@ -29,6 +29,9 @@ from harness import (
 from deployer import fsops, platform_support, source_ref, tools
 from deployer.errors import DeployError
 
+# The prefix of the directory --at reads a commit's attributes through, apart from the export's.
+ATTRIBUTE_INDEX_PREFIX = "deploy-at-attributes-"
+
 
 class RefValidationTests(unittest.TestCase):
     def test_a_ref_is_a_git_revision_that_cannot_be_read_as_an_option(self) -> None:
@@ -321,11 +324,15 @@ class DeployAtTests(DeployerTestCase):
         real = source_ref._run_git
 
         def run_git(
-            arguments: Any, timeout: float | None = None, *, separate_errors: bool = False
+            arguments: Any,
+            timeout: float | None = None,
+            *,
+            separate_errors: bool = False,
+            environment: dict[str, str] | None = None,
         ) -> platform_support.ToolResult:
             if "for-each-ref" in arguments:
                 return platform_support.ToolResult(128, "", "fatal: refused by the test\n")
-            return real(arguments, timeout, separate_errors=separate_errors)
+            return real(arguments, timeout, separate_errors=separate_errors, environment=environment)
 
         return mock.patch.object(source_ref, "_run_git", run_git)
 
@@ -759,7 +766,7 @@ class DeployAtTests(DeployerTestCase):
         """The attributes were read through `count` throwaway indexes, each removed, and no export was made."""
         self.assertEqual(count, len(made), made)
         for directory in made:
-            self.assertTrue(directory.name.startswith(source_ref.ATTRIBUTE_INDEX_PREFIX), directory)
+            self.assertTrue(directory.name.startswith(ATTRIBUTE_INDEX_PREFIX), directory)
             self.assertFalse(directory.exists(), directory)
 
     def assert_attribute_refused(self, ref: str, path: str, attribute: str, more: str = "") -> None:
@@ -905,7 +912,7 @@ class DeployAtTests(DeployerTestCase):
             "nested precedence": (
                 {".gitattributes": "*.md export-ignore\n", "skills/alpha/.gitattributes": "*.md -export-ignore\n"},
                 "",
-                [("README.md", "export-ignore")],
+                [("README.md", "export-ignore"), ("skills/beta/SKILL.md", "export-ignore")],
             ),
             "info/attributes": ({}, f"{nested} export-subst\n", [(nested, "export-subst")]),
         }
@@ -915,11 +922,16 @@ class DeployAtTests(DeployerTestCase):
                 branch = f"read-{name.replace(' ', '-').replace('/', '-')}"
                 self.commit_tree(branch, {"README.md": "Readme\n", nested: "Notes\n", **files})
                 self.write(info, information)
+                commit = git(self.source, "rev-parse", branch)
+                index = (self.source / ".git" / "index").read_bytes()
                 patch, made = recorded_temporary_directories()
                 with patch:
-                    found = source_ref.archive_attributes(self.source, git(self.source, "rev-parse", branch))
+                    found = source_ref.archive_attributes(self.source, commit)
                 self.assertEqual(expected, found)
                 self.assert_only_indexes_removed(made)
+                # git read-tree wrote the throwaway index, never the checkout's: a GIT_INDEX_FILE left out of its
+                # environment once made it overwrite this one with the commit's tree.
+                self.assertEqual(index, (self.source / ".git" / "index").read_bytes())
         info.unlink()
         self.assert_head_unmoved()
 
@@ -947,7 +959,7 @@ class DeployAtTests(DeployerTestCase):
         self.assertLessEqual({"ls-tree", "archive"}, commands)
         self.assertEqual(2, len(made))
         index, exported = made
-        self.assertTrue(index.name.startswith(source_ref.ATTRIBUTE_INDEX_PREFIX))
+        self.assertTrue(index.name.startswith(ATTRIBUTE_INDEX_PREFIX))
         self.assertFalse(index.exists())
         self.assertFalse(exported.exists())
         self.assertEqual(
@@ -1020,7 +1032,7 @@ class DeployAtTests(DeployerTestCase):
                 self.assertFalse(self.manifest_file.exists())
                 self.assertFalse((self.skills_dir / "alpha").exists())
                 self.assert_head_unmoved()
-        exports = [directory for directory in made if not directory.name.startswith(source_ref.ATTRIBUTE_INDEX_PREFIX)]
+        exports = [directory for directory in made if not directory.name.startswith(ATTRIBUTE_INDEX_PREFIX)]
         self.assertEqual(3, len(exports))
         for directory in made:
             self.assertFalse(directory.exists(), directory)

@@ -1056,14 +1056,16 @@ class RepositoryVariableTests(unittest.TestCase):
             self.assertEqual(b"?? f.txt\0", self.plain_git(status))
             self.assertEqual("A  f.txt\0", self.client.output(status, directory=self.named))
 
-    def test_every_repository_selecting_variable_set_at_once_reaches_no_call(self) -> None:
+    def selecting_values(self) -> dict[str, str]:
+        """A value for each repository-selecting variable that points git at the other repository, after staging
+        f.txt and setting fixture.repository in the named one."""
         (self.named / "f.txt").write_text("staged\n", encoding="utf-8")
         self.client.output(["add", "f.txt"], directory=self.named)
         self.client.output(["config", "fixture.repository", "named"], directory=self.named)
         other_git = self.other / ".git"
         other_config = self.other / "another config"
         other_config.write_text("[fixture]\n\trepository = other\n", encoding="utf-8")
-        values = {
+        return {
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(other_git / "objects"),
             "GIT_COMMON_DIR": str(other_git),
             "GIT_CONFIG": str(other_config),
@@ -1079,6 +1081,9 @@ class RepositoryVariableTests(unittest.TestCase):
             "GIT_SHALLOW_FILE": str(self.other / "shallow"),
             "GIT_WORK_TREE": str(self.other),
         }
+
+    def test_every_repository_selecting_variable_set_at_once_reaches_no_call(self) -> None:
+        values = self.selecting_values()
         self.assertEqual(bounded_process.REPOSITORY_VARIABLES, set(values))
         with mock.patch.dict(os.environ, values):
             self.assertEqual(NAMED_LISTING.decode(), self.client.output(LISTING, directory=self.named))
@@ -1086,6 +1091,37 @@ class RepositoryVariableTests(unittest.TestCase):
             config = ["config", "--get", "fixture.repository"]
             self.assertEqual("named\n", self.client.output(config, directory=self.named))
             self.assertEqual(b"other\n", self.plain_git(config))
+
+    def test_a_given_environment_reaches_git_with_its_own_index_file_alone_of_the_selecting_variables(self) -> None:
+        # The real runner, given an environment, keeps the GIT_INDEX_FILE its caller set there, which here names an
+        # empty index, so the staged file reads as untracked; every other repository-selecting variable, given the same
+        # way, is still left out, so git reads the named repository.
+        values = self.selecting_values()
+        base = bounded_process.without_repository_variables(os.environ)
+        status = ["git", "-C", str(self.named), "status", "--porcelain", "-z"]
+        config = ["git", "-C", str(self.named), "config", "--get", "fixture.repository"]
+        listing = ["git", "-C", str(self.named), *LISTING]
+        for name in sorted(bounded_process.REPOSITORY_VARIABLES):
+            with self.subTest(variable=name):
+                given = {**base, name: values[name]}
+                answers = [
+                    git_client.subprocess_runner(command, 60, env=given) for command in (status, config, listing)
+                ]
+                if name in bounded_process.CALLER_SET_VARIABLES:
+                    self.assertEqual("?? f.txt\0", answers[0].stdout)
+                else:
+                    self.assertEqual(
+                        ["A  f.txt\0", "named\n", NAMED_LISTING.decode()], [answer.stdout for answer in answers]
+                    )
+
+    def test_an_inherited_index_file_is_left_out_even_when_copied_into_a_given_environment(self) -> None:
+        self.selecting_values()
+        status = ["git", "-C", str(self.named), "status", "--porcelain", "-z"]
+        inherited = str(self.other / "an empty index")
+        with mock.patch.dict(os.environ, {"GIT_INDEX_FILE": inherited}):
+            for given in (None, dict(os.environ)):
+                with self.subTest(given="none" if given is None else "a copy of this process's"):
+                    self.assertEqual("A  f.txt\0", git_client.subprocess_runner(status, 60, env=given).stdout)
 
     def test_command_scope_settings_still_reach_git(self) -> None:
         settings = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "command"}
@@ -1120,6 +1156,7 @@ class RepositoryVariableTests(unittest.TestCase):
             ),
             bounded_process.REPOSITORY_VARIABLES,
         )
+        self.assertEqual(frozenset({"GIT_INDEX_FILE"}), bounded_process.CALLER_SET_VARIABLES)
 
 
 class IsolatedClientTests(unittest.TestCase):
