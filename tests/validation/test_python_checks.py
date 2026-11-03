@@ -2438,6 +2438,133 @@ def test_content_errors_policy_reads_what_a_module_binds_under_a_top_level_block
     assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (17, 24)]
 
 
+# A core module's reader whose family on content is its own class, or its own tuple of classes, as review_io's
+# read_json raises PersistenceError.
+CONTENT_FAMILY_READER_SOURCE = """\
+class StoreError(RuntimeError):
+    pass
+
+
+class Unreadable(StoreError):
+    pass
+
+
+BOTH = (StoreError, KeyError)
+CONTENT_FAMILIES = {"load": "StoreError", "fetch": "BOTH"}
+
+
+def load(path):
+    return path
+
+
+def fetch(path):
+    return path
+"""
+CONTENT_FAMILY_CALLER_SOURCE = """\
+import kept
+import store
+from elsewhere import load as other
+from store import fetch, load
+
+
+def narrow(path):
+    try:
+        return load(path)
+    except OSError:
+        return None
+
+
+def member(path):
+    try:
+        return store.load(path)
+    except store.Unreadable:
+        return None
+
+
+def whole(path):
+    try:
+        return load(path)
+    except (store.StoreError, OSError):
+        return None
+
+
+def part_of_a_tuple(path):
+    try:
+        return fetch(path)
+    except KeyError:
+        return None
+
+
+def unrelated(path):
+    try:
+        return load(path)
+    except AttributeError:
+        return None
+
+
+def outside_the_cores(path):
+    try:
+        return other(path)
+    except OSError:
+        return None
+
+
+def in_skill_core(path):
+    try:
+        return kept.keep(path)
+    except OSError:
+        return None
+"""
+
+
+def test_content_errors_policy_reads_the_family_a_core_module_names_for_its_reader() -> None:
+    malformed = "def load(path):\n    return path\n\n\nclass Known(ValueError):\n    pass\n\n\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/ejryan89-skill-core/scripts/kept.py": (
+                    "class Kept(ValueError):\n    pass\n\n\nCONTENT_FAMILIES = {'keep': 'Kept'}\n\n\n"
+                    "def keep(path):\n    return path\n"
+                ),
+                "skills/ejryan89-code-review-core/scripts/store.py": CONTENT_FAMILY_READER_SOURCE,
+                # A family that is no class or tuple the module binds, a reader it does not define, and no mapping.
+                "skills/ejryan89-code-review-core/scripts/unresolved.py": f"{malformed}CONTENT_FAMILIES = "
+                "{'load': 'Missing'}\n",
+                "skills/ejryan89-code-review-core/scripts/undefined.py": f"{malformed}CONTENT_FAMILIES = "
+                "{'load': 'Known', 'gone': 'Known'}\n",
+                "skills/ejryan89-code-review-core/scripts/listed.py": f"{malformed}CONTENT_FAMILIES = ['load']\n",
+                # A module outside both cores names no reader by its CONTENT_FAMILIES.
+                "skills/beta/scripts/elsewhere.py": CONTENT_FAMILY_READER_SOURCE,
+                "skills/alpha/scripts/alpha.py": CONTENT_FAMILY_CALLER_SOURCE,
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    malformed_family = (
+        "CONTENT_FAMILIES must map each function the module defines that raises another family than CONTENT_ERRORS "
+        "on content to the name of the class, or the tuple of classes, it raises"
+    )
+
+    def remedy(missing: str, family: str) -> str:
+        return (
+            f"catches part of what a reader it calls raises, or its OSError, but not {missing}; catch the whole "
+            f"family, {family}, or state why in CONTENT_ERRORS_ALLOWED"
+        )
+
+    alpha = "skills/alpha/scripts/alpha.py"
+    assert found == [
+        f"skills/ejryan89-code-review-core/scripts/listed.py: {malformed_family}",
+        f"skills/ejryan89-code-review-core/scripts/undefined.py: {malformed_family}",
+        f"skills/ejryan89-code-review-core/scripts/unresolved.py: {malformed_family}",
+        f"{alpha}:8 {remedy('store.StoreError', 'store.StoreError')}",
+        f"{alpha}:15 {remedy('store.StoreError', 'store.StoreError')}",
+        f"{alpha}:29 {remedy('store.StoreError', 'store.BOTH')}",
+        f"{alpha}:50 {remedy('kept.Kept', 'kept.Kept')}",
+    ]
+
+
 def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader() -> None:
     # With no reader every handler would pass, so a tree that lost its readers fails rather than passing empty.
     with tempfile.TemporaryDirectory() as temporary:

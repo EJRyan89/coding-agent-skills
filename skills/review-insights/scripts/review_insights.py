@@ -264,7 +264,7 @@ def collect_records(
             try:
                 record = pairs.read(json_path)
                 reviewed = date.fromisoformat(record["review"]["reviewed_at"][:10])
-            except (KeyError, ValueError, OSError, RecordError) as exc:
+            except (KeyError, ValueError, OSError, RecordError, PersistenceError) as exc:
                 raise InsightError(f"Invalid review pair {json_path}: {exc}") from exc
             if start <= reviewed <= end:
                 records.append((json_path, record))
@@ -317,7 +317,7 @@ def read_ledgers(archive_root: Path, records: list[tuple[Path, ReviewRecord]], p
         try:
             directory = pull_directory(archive_root, repository, number)
             history = [pairs.read(record_paths(directory, version)[0]) for version in list_versions(directory)]
-        except (KeyError, ValueError, OSError, RecordError) as exc:
+        except (KeyError, ValueError, OSError, RecordError, PersistenceError) as exc:
             raise InsightError(f"Invalid review history for {repository}#{number}: {exc}") from exc
         by_version = ledger_history(history)
         versions = sorted(by_version)
