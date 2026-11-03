@@ -167,14 +167,110 @@ def check_run(name: str, run: int = RUN, **fields: str) -> dict[str, Any]:
     }
 
 
+# A head's checks as `gh pr list --json number,statusCheckRollup` listed them for an open pull request of this
+# repository on 2026-11-02 (gh 2.102.0), with the repository written owner/repo and only some of the legs kept: a
+# Validation run that failed, a newer one running, the CodeQL and Mutation workflows' jobs, and the check code
+# scanning's app adds, which no workflow reports, so gh lists it with an empty workflowName and its own URL.
+RECORDED_ROLLUP: tuple[Mapping[str, str], ...] = tuple(
+    MappingProxyType(entry)
+    for entry in (
+        {
+            "__typename": "CheckRun",
+            "completedAt": "0001-01-01T00:00:00Z",
+            "conclusion": "",
+            "detailsUrl": "https://github.com/owner/repo/actions/runs/41539269343/job/125598963406",
+            "name": "Windows shard 1/6, Python 3.11",
+            "startedAt": "2026-11-02T22:40:43Z",
+            "status": "IN_PROGRESS",
+            "workflowName": "Validation",
+        },
+        {
+            "__typename": "CheckRun",
+            "completedAt": "2026-11-02T22:26:47Z",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/owner/repo/actions/runs/41537251904/job/125592126808",
+            "name": "Analyze (actions)",
+            "startedAt": "2026-11-02T22:26:18Z",
+            "status": "COMPLETED",
+            "workflowName": "CodeQL",
+        },
+        {
+            "__typename": "CheckRun",
+            "completedAt": "2026-11-02T22:31:35Z",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/owner/repo/actions/runs/41537256370/job/125592698147",
+            "name": "Mutation gate mutants",
+            "startedAt": "2026-11-02T22:27:29Z",
+            "status": "COMPLETED",
+            "workflowName": "Mutation",
+        },
+        {
+            "__typename": "CheckRun",
+            "completedAt": "2026-11-02T22:34:45Z",
+            "conclusion": "FAILURE",
+            "detailsUrl": "https://github.com/owner/repo/actions/runs/41537256430/job/125592138924",
+            "name": "Windows shard 2/6, Python 3.11",
+            "startedAt": "2026-11-02T22:26:58Z",
+            "status": "COMPLETED",
+            "workflowName": "Validation",
+        },
+        {
+            "__typename": "CheckRun",
+            "completedAt": "0001-01-01T00:00:00Z",
+            "conclusion": "",
+            "detailsUrl": "https://github.com/owner/repo/actions/runs/41539269343/job/125598963205",
+            "name": "Linux shard 2/2, Python 3.11",
+            "startedAt": "2026-11-02T22:40:43Z",
+            "status": "IN_PROGRESS",
+            "workflowName": "Validation",
+        },
+        {
+            "__typename": "CheckRun",
+            "completedAt": "2026-11-02T22:40:50Z",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/owner/repo/actions/runs/41539269343/job/125598962863",
+            "name": "Known-failure issues",
+            "startedAt": "2026-11-02T22:40:43Z",
+            "status": "COMPLETED",
+            "workflowName": "Validation",
+        },
+        {
+            "__typename": "CheckRun",
+            "completedAt": "2026-11-02T22:35:01Z",
+            "conclusion": "FAILURE",
+            "detailsUrl": "https://github.com/owner/repo/actions/runs/41537256430/job/125596181735",
+            "name": "Validation",
+            "startedAt": "2026-11-02T22:34:48Z",
+            "status": "COMPLETED",
+            "workflowName": "Validation",
+        },
+        {
+            "__typename": "CheckRun",
+            "completedAt": "2026-11-02T22:26:42Z",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/owner/repo/runs/125592303498",
+            "name": "CodeQL",
+            "startedAt": "2026-11-02T22:26:38Z",
+            "status": "COMPLETED",
+            "workflowName": "",
+        },
+    )
+)
+# The recorded check no workflow reports, which every head of this repository carries.
+CODE_SCANNING = RECORDED_ROLLUP[-1]
+
+
 def rollup(state: str = "SUCCESS", run: int = RUN) -> list[dict[str, Any]]:
-    """A head's checks: the legs, and the required check once they finished; PENDING has the legs running alone."""
+    """A head's checks: the legs, and the required check once they finished; PENDING has the legs running alone.
+    Each holds code scanning's check, as every recorded head does."""
+    scanning = dict(CODE_SCANNING)
     if state == "PENDING":
-        return [check_run("Validation on Linux", run)]
+        return [check_run("Validation on Linux", run), scanning]
     if state == "MISSING":
-        return [check_run("Analyze (python)", run, workflowName="CodeQL", status="COMPLETED", conclusion="SUCCESS")]
+        analyze = check_run("Analyze (python)", run, workflowName="CodeQL", status="COMPLETED", conclusion="SUCCESS")
+        return [analyze, scanning]
     required = check_run("Validation", run, status="COMPLETED", conclusion=state, startedAt="2026-10-16T06:00:00Z")
-    return [check_run("Validation on Linux", run, status="COMPLETED", conclusion="SUCCESS"), required]
+    return [check_run("Validation on Linux", run, status="COMPLETED", conclusion="SUCCESS"), required, scanning]
 
 
 def pull(
@@ -1189,6 +1285,45 @@ class ShapeTest(unittest.TestCase):
                 self.malformed(f"a check without its {key}", shepherd.required_check, [*older, cut])
         nameless = {**newer, "detailsUrl": "https://github.com/owner/repo/checks/6"}
         self.malformed("a Validation check whose URL names no run", shepherd.required_check, [*older, nameless])
+
+    def test_the_recorded_rollup_reads_its_newest_validation_run(self) -> None:
+        # The newer run's legs are running and one of them finished; without them, the older run's required check.
+        recorded = [dict(entry) for entry in RECORDED_ROLLUP]
+        self.assertEqual(shepherd.Check("PENDING", 41539269343, 1 / 3), shepherd.required_check(recorded))
+        found = shepherd.pull_of({**pull(20), "statusCheckRollup": recorded})
+        self.assertEqual(shepherd.Check("PENDING", 41539269343, 1 / 3), found.check)
+        older = [entry for entry in recorded if "/41539269343/" not in entry["detailsUrl"]]
+        self.assertEqual(shepherd.Check("FAILURE", 41537256430, 1.0), shepherd.required_check(older))
+
+    def test_a_check_no_workflow_reports_neither_satisfies_nor_blocks_the_required_check(self) -> None:
+        # The recorded code scanning check, under its own name and under the required check's, with each URL an app
+        # may give a check run, never an Actions run's page: the required check reads as it would without it.
+        urls: dict[str, str | None] = {
+            "its check run": CODE_SCANNING["detailsUrl"],
+            "a checks page": "https://github.com/owner/repo/checks/6",
+            "another host's Actions path": "https://ci.example.com/owner/repo/actions/runs/6",
+            "empty": "",
+            "null": None,
+        }
+        for name in ("CodeQL", shepherd.REQUIRED_CHECK):
+            for conclusion in ("SUCCESS", "FAILURE"):
+                for form, url in urls.items():
+                    entry = {**CODE_SCANNING, "name": name, "conclusion": conclusion, "detailsUrl": url}
+                    for state in ("SUCCESS", "FAILURE", "PENDING", "MISSING"):
+                        with self.subTest(name=name, conclusion=conclusion, url=form, state=state):
+                            alone = shepherd.required_check(rollup(state))
+                            self.assertEqual(alone, shepherd.required_check([entry, *rollup(state)]))
+        absent = {key: value for key, value in CODE_SCANNING.items() if key != "detailsUrl"}
+        self.malformed("a check without its detailsUrl", shepherd.required_check, [absent])
+
+    def test_an_empty_workflow_on_an_actions_run_page_is_malformed_never_passed_over(self) -> None:
+        # Passed over, a newer run whose workflowName gh left empty would leave the older passing run to be read.
+        older = rollup("SUCCESS", run=5)
+        for page in ("/actions/runs/6", "/actions/runs/6/job/9", "/actions/runs/6?pr=20", "/actions/runs/6#step"):
+            for name in (shepherd.REQUIRED_CHECK, "Validation on Linux", "Analyze (python)"):
+                with self.subTest(page=page, name=name):
+                    newer = check_run(name, 6, workflowName="", detailsUrl=f"https://github.com/owner/repo{page}")
+                    self.malformed("a check without its workflowName", shepherd.required_check, [*older, newer])
 
     def test_a_commit_status_is_passed_over_and_a_check_of_another_kind_is_malformed(self) -> None:
         status = {"__typename": "StatusContext", "context": "ci/other", "state": "FAILURE"}

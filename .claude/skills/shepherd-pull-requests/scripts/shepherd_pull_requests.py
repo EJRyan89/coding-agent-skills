@@ -164,6 +164,10 @@ UPDATABLE = frozenset({"SUCCESS", "NEUTRAL", "PENDING"})
 UNJUDGED = UPDATABLE | {"MISSING"}
 FAILED_LEG = frozenset({"failure", "cancelled", "timed_out", "startup_failure"})
 RUN_URL = re.compile(r"/actions/runs/(\d+)")
+# The page of a GitHub Actions run, which only a check run an Actions workflow reports links to. gh lists a check run
+# no workflow reports, such as the one code scanning's app adds under the name CodeQL, with an empty workflowName and
+# a URL of the check run itself, never this page.
+ACTIONS_RUN_PAGE = re.compile(r"^https://github\.com/[^/?#]+/[^/?#]+/actions/runs/\d+(?:[/?#]|$)")
 # The kinds of entry gh lists in a check rollup: a check run, which a workflow's job reports, and a commit status.
 CHECK_RUN = "CheckRun"
 STATUS_CONTEXT = "StatusContext"
@@ -393,6 +397,26 @@ def run_of(entry: dict[str, Any]) -> int | None:
     return whole_number.read(match.group(1), refused) if match else None
 
 
+def workflow_check(entry: dict[str, Any]) -> bool:
+    """Whether a check run is one an Actions workflow reports, and so may be the required check.
+
+    gh lists a check run no workflow reports, such as code scanning's, with an empty workflowName and a URL, when its
+    app gives one, of the check run itself: it is never the required check, whatever its name, and is passed over. A
+    check run whose URL is an Actions run's page has a workflow, so an empty workflowName there is a listing gh did
+    not fill, and is malformed rather than passed over: passing it over could hide a newer required run behind an older
+    passing one. A check run with a workflow is read only with the URL that names its run."""
+    workflow = reported(entry, "workflowName", str, "a check")
+    present(entry, "detailsUrl", "a check")
+    url = member(entry, "detailsUrl", str, "a check")
+    if workflow:
+        if not url:
+            raise malformed("a check without its detailsUrl")
+        return True
+    if url is not None and ACTIONS_RUN_PAGE.match(url):
+        raise malformed("a check without its workflowName")
+    return False
+
+
 def required_check(rollup: Any) -> Check:
     """The required check's state in the newest run on the head, PENDING while that run's legs run before it starts,
     and MISSING without it, with the share of that run's legs that finished. An older run on the same head, such as
@@ -401,7 +425,8 @@ def required_check(rollup: Any) -> Check:
     The state gates updating a branch and the pre-merge review, so each member it rests on is read only as GitHub
     reported it: a check run without its name, workflow, status, conclusion, start, or URL, or a Validation one whose
     URL names no run, is malformed, never a check of another workflow, an older run, or a pending one. A commit
-    status (a StatusContext) carries none of these and belongs to no workflow, so it is passed over by its kind."""
+    status (a StatusContext) carries none of these and belongs to no workflow, so it is passed over by its kind, and a
+    check run no workflow reports is passed over as workflow_check says."""
     # GitHub gives a head with no status at all a null rollup.
     listed = objects([] if rollup is None else rollup, "a check rollup")
     runs: list[tuple[dict[str, Any], int]] = []
@@ -411,11 +436,13 @@ def required_check(rollup: Any) -> Check:
             continue
         if kind != CHECK_RUN:
             raise malformed(f"a check of a kind the shepherd does not know, {flat_text(kind)!r}")
-        for key in ("name", "workflowName", "status", "detailsUrl"):
+        for key in ("name", "status"):
             reported(entry, key, str, "a check", empty=False)
         # gh reports a run that has not finished with an empty conclusion, and one not started with a zero start.
         for key in ("conclusion", "startedAt"):
             reported(entry, key, str, "a check")
+        if not workflow_check(entry):
+            continue
         if entry["workflowName"] == REQUIRED_CHECK:
             run = run_of(entry)
             if run is None:
