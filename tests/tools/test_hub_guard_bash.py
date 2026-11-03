@@ -740,10 +740,19 @@ class ShellOptionTableTests(unittest.TestCase):
             ("exec -a sh git status", []),
             ("exec bash -c 'git status'", []),
             ("command -p bash -c 'git status'", []),
+            # A script the guard does not read is unread whatever the options, so they are not judged.
+            ("bash --posix script.sh; git status", []),
+            ("sh script.sh; git status", []),
+            ("printf x | sh -k -s; git status", ["could not read the command passed to sh"]),
         ):
             with self.subTest(command=command):
                 self.assertEqual(unread, bash_reading(command).unread)
                 self.assertEqual(["status"], subcommands(command))
+        # A shell the text does not settle may hold any PS4, which a nested bash under -x expands.
+        self.assertEqual(
+            ["xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs"],
+            bash_reading("declare $n=1; bash -x -c 'git status'").unread,
+        )
 
     def test_xtrace_is_refused_where_ps4_may_hold_an_expansion(self) -> None:
         names = "the command names PS4, which xtrace expands before each command, running what it holds"
@@ -832,9 +841,10 @@ class ShellOptionTableTests(unittest.TestCase):
         # A starter that holds names folded hands each by a name in any case.
         # A PowerShell session the text does not settle may have set either variable to anything.
         reading = hub_guard.Reading({}, "bash -c 'git status'")
-        hub_guard.PowerShellReader(reading, 0).run_program("bash", ["-c", "git status"], START, {}, opaque=True)
+        hub_guard.PowerShellReader(reading, 0).run_program("bash", ["-xc", "git status"], START, {}, opaque=True)
         self.assertEqual(
             [
+                "xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs",
                 "could not read the SHELLOPTS its environment hands bash, which may turn on allexport",
                 "could not read the BASHOPTS its environment hands bash, which may turn on any option",
             ],
