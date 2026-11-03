@@ -20,6 +20,7 @@ from process_identity import ProcessStatus
 
 from deployer import config, discovery, journal, lock, manifest, source
 from deployer.errors import DeployError
+from deployer.kinds import AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind
 from deployer.names import transient_name
 from deployer.paths import Paths
 
@@ -41,6 +42,77 @@ def _read_config(path: Path) -> object:
 JOURNAL_LINE = json.dumps(
     {"op": "preserve", "item": "example", "from": f"skills/{transient_name('example')}", "to": ".backups/run/example"}
 ).encode()
+
+
+ZERO_HASH = "sha256:" + "0" * 64
+AGENTS_ROOT, AGENTS_STAGING = journal.ROOT_PREFIXES["agents"]
+# The other entries, each in a root other than the skills root and, for a backup, kept, so every key an entry may hold
+# is in a line and meets each field case.
+JOURNAL_ENTRIES = {
+    "backup": {
+        "op": "backup",
+        "root": "agents",
+        "item": "example",
+        "from": f"{AGENTS_ROOT}/example",
+        "to": f"{AGENTS_ROOT}/{transient_name('example')}",
+        "retain": True,
+        "backup_hash": ZERO_HASH,
+        "backup_dest": ".backups/run/example",
+    },
+    "install": {
+        "op": "install",
+        "root": "agents",
+        "item": "example",
+        "from": f"{AGENTS_STAGING}/example",
+        "to": f"{AGENTS_ROOT}/example",
+        "staged_hash": ZERO_HASH,
+    },
+}
+
+
+def _item_name(kind: ItemKind) -> str:
+    """An item of the kind as the manifest names it: an agent by its file, any other item by its folder, which a shared
+    asset may not share with a skill."""
+    if kind is AGENT_KIND:
+        return "example.md"
+    return "example-asset" if kind is SHARED else "example"
+
+
+# A manifest whose one source holds every field an entry may, and an item of every kind, so each meets the field cases.
+FULL_MANIFEST: dict[str, object] = {
+    "manifest_version": manifest.MANIFEST_VERSION,
+    "last_run_id": "20260101-000000-abcd",
+    "sources": {
+        SOURCE_ID: {
+            "source_dir": "/source",
+            "source_commit": "0" * 40,
+            "source_ref": "refs/tags/v1.0.0",
+            "deployed_at": "2026-01-01T00:00:00Z",
+            "requested_bundles": ["bundle"],
+            "requested_bundle_members": {"bundle": ["example"]},
+            "requested_skills": ["example"],
+            **{
+                kind.key: {
+                    _item_name(kind): {
+                        "hash": ZERO_HASH,
+                        **({"role": "owner"} if kind is SHARED else {}),
+                        **(
+                            {dependency.dependency_key: [_item_name(dependency)] for dependency in DEPENDENCY_KINDS}
+                            if kind is SKILL
+                            else {}
+                        ),
+                    }
+                }
+                for kind in KINDS
+            },
+        }
+    },
+}
+JOURNAL_ACCEPTS = {
+    "empty": "an empty journal records no change, so recovery has nothing to undo",
+    "torn_line": "a last line with no newline was cut off before its change began, so it is set aside",
+    "blank_lines": "blank lines hold no entry and are passed over",
+}
 
 
 def _read_journal(path: Path) -> object:
@@ -166,11 +238,19 @@ READERS = [
         _read_journal,
         (Refused,),
         filename="home/.claude/deployer/staging/run/journal.jsonl",
-        accepts={
-            "empty": "an empty journal records no change, so recovery has nothing to undo",
-            "torn_line": "a last line with no newline was cut off before its change began, so it is set aside",
-            "blank_lines": "blank lines hold no entry and are passed over",
-        },
+        accepts=JOURNAL_ACCEPTS,
+    ),
+    *(
+        Reader(
+            f"deployer.journal.pending_runs ({op} entry)",
+            "json-lines",
+            json.dumps(entry).encode() + b"\n",
+            _read_journal,
+            (Refused,),
+            filename="home/.claude/deployer/staging/run/journal.jsonl",
+            accepts=JOURNAL_ACCEPTS,
+        )
+        for op, entry in JOURNAL_ENTRIES.items()
     ),
     Reader(
         "deployer.lock._existing_holder",
@@ -190,6 +270,18 @@ READERS = [
         b'{"manifest_version": 8, "sources": {}}',
         manifest.load,
         (DeployError,),
+    ),
+    Reader(
+        "deployer.manifest.load (a source with every field)",
+        "json",
+        json.dumps(FULL_MANIFEST).encode(),
+        manifest.load,
+        (DeployError,),
+        accepts={
+            f"wrong_type:sources.{SOURCE_ID}.{field}": "kept as written: the deployer only compares source_dir, as "
+            "text it checks it is, and never reads deployed_at"
+            for field in ("source_dir", "deployed_at")
+        },
     ),
     Reader(
         "deployer.source.frontmatter_name",

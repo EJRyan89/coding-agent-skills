@@ -38,6 +38,8 @@ from deployer.kinds import KINDS
 from deployer.names import transient_name
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
+SEE_RECOVERY_BACKUPS = 'See "Backups" in docs/recovery.md.'
+
 
 class RecoveryTestCase(DeployerTestCase):
     def deployed(self, *skills: tuple[str, str]) -> None:
@@ -568,14 +570,25 @@ class RecoveryFailureTests(RecoveryTestCase):
             result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, alpha)
 
-    def test_a_held_transient_backup_fails_finalization_of_a_committed_run(self) -> None:
-        self.committed_fixture(retain=False)
+    def test_a_held_transient_backup_is_left_named_and_completes_a_committed_run(self) -> None:
+        journal_file = self.committed_fixture(retain=False)
         self.later_run()
         transient = self.skills_dir / "alpha.deploying-bak"
+        # The run is committed, so a copy it cannot delete stays beside its item, named, and the journal is cleared;
+        # the deployment that follows recovery then refuses alpha until the copy is gone, as for any stale backup.
         with failing_at("remove", transient):
-            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
-        self.assert_recovery_failed(result.output, transient, committed=True)
+            result = self.deploy_fails("--all", pattern="transient backup already exists", changes_home=RECOVERS)
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {self.HELD} (completing finalization)...",
+            "  WARNING: alpha's previous copy could not be deleted, so it, or what is left of it, stays at "
+            f"{forward(transient)}: Access is denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}",
+            "  Recovery complete.",
+        )
+        self.assertNotIn("Recovery failed", result.output)
+        self.assertFalse(journal_file.exists())
         self.assertTrue((transient / "SKILL.md").is_file())
+        self.assertFalse(self.lock_dir.exists())
 
     def test_a_backup_directory_that_cannot_be_created_keeps_the_copy_and_finishes_a_committed_run(self) -> None:
         self.committed_fixture(retain=True)
@@ -598,14 +611,53 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assert_recovery_failed(result.output, journal_file)
         self.assertIn("installed by the interrupted run", self.skill_text("alpha"))
 
-    def test_a_staging_directory_that_cannot_be_removed_fails_its_run_only(self) -> None:
+    def test_a_staging_directory_that_cannot_be_removed_is_left_named_and_the_next_deployment_deletes_it(self) -> None:
         self.deployed(("alpha", "Alpha content"))
-        self.write_journal(self.HELD, install_entry("ghost", ZERO_HASH))
+        journal_file = self.write_journal(self.HELD, install_entry("ghost", ZERO_HASH))
         self.later_run()
         run = self.staging_run(self.HELD)
         with failing_at("remove", run):
+            result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output,
+            f"  WARNING: Could not delete the staging folder {forward(run)}: Access is denied. It holds no journal, "
+            "so the next deployment deletes it.",
+            "  Recovery complete.",
+            f"Recovering uncommitted run {self.NEXT} (rolling back)...",
+        )
+        self.assertFalse(journal_file.exists())
+        self.assertTrue(run.is_dir())
+        self.deploy_ok("--all")
+        self.assertFalse(run.exists())
+
+    def test_a_staging_folder_with_no_journal_that_cannot_be_removed_is_left_named_and_deleted_later(self) -> None:
+        # A run stopped before it wrote its journal, or one whose journal is already gone, holds nothing to recover, so
+        # a folder another program holds open is named rather than failing recovery.
+        self.deployed(("alpha", "Alpha content"))
+        run = self.staging_run(self.HELD)
+        self.write(run / "skills" / "alpha" / "SKILL.md", "staged, never journaled\n")
+        self.later_run()
+        with failing_at("remove", run):
+            result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output,
+            f"  WARNING: Could not delete the staging folder {forward(run)}: Access is denied. It holds no journal, "
+            "so the next deployment deletes it.",
+            f"Recovering uncommitted run {self.NEXT} (rolling back)...",
+        )
+        self.assertNotIn("Recovery failed", result.output)
+        self.assertTrue(run.is_dir())
+        self.deploy_ok("--all")
+        self.assertFalse(run.exists())
+
+    def test_a_journal_that_cannot_be_removed_fails_its_run_only(self) -> None:
+        # A journal left behind would be replayed after a later commit as a run that was never committed.
+        self.deployed(("alpha", "Alpha content"))
+        journal_file = self.write_journal(self.HELD, install_entry("ghost", ZERO_HASH))
+        self.later_run()
+        with failing_at("remove", journal_file):
             result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
-        self.assert_recovery_failed(result.output, run)
+        self.assert_recovery_failed(result.output, journal_file)
 
     def test_an_unlistable_staging_root_fails_recovery_and_releases_the_lock(self) -> None:
         self.deployed(("alpha", "Alpha content"))
@@ -952,6 +1004,8 @@ class RecoveryBranchTests(RecoveryTestCase):
         result = self.deploy_ok("--all")
         self.assert_lines(result.output, f"Recovering committed run {self.RUN} (completing finalization)...")
         self.assertNotIn("Preserved backup", result.output)
+        # A copy an earlier attempt already moved is not moved again, so nothing warns that it stayed behind.
+        self.assertNotIn("WARNING", result.output)
         self.assertEqual("previous alpha\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_a_transient_and_a_permanent_backup_both_there_keep_the_transient_and_complete(self) -> None:
@@ -970,21 +1024,45 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assert_completion_stopped(journal_file, "  WARNING: Cannot find backup for alpha", RECOVERS)
         self.assertFalse(destination.exists())
 
-    def test_a_changed_transient_backup_stops_completion(self) -> None:
+    def test_a_changed_kept_backup_is_preserved_whatever_its_content_as_the_run_itself_keeps_it(self) -> None:
         journal_file, destination = self.committed_with_kept_backup()
         self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "changed after the run\n")
-        self.assert_completion_stopped(journal_file, "  WARNING: Backup hash mismatch for alpha", RECOVERS)
-        self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
-        self.assertFalse(destination.exists())
+        result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {self.RUN} (completing finalization)...",
+            f"  Preserved backup: alpha -> .backups/{self.RUN}/alpha",
+            "  Recovery complete.",
+        )
+        self.assertNotIn("WARNING", result.output)
+        self.assertFalse(journal_file.exists())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertEqual("changed after the run\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
-    def test_a_changed_permanent_backup_stops_completion(self) -> None:
+    def test_a_changed_permanent_backup_completes_as_a_kept_copy_is_kept_whatever_its_content(self) -> None:
         journal_file, destination = self.committed_with_kept_backup()
         destination.parent.mkdir(parents=True)
         (self.skills_dir / "alpha.deploying-bak").rename(destination)
         self.write(destination / "SKILL.md", "changed after the run\n")
-        self.assert_completion_stopped(
-            journal_file, f"  WARNING: Permanent backup hash mismatch for alpha at .backups/{self.RUN}/alpha"
-        )
+        result = self.deploy_ok("--all")
+        self.assert_lines(result.output, "  Recovery complete.")
+        self.assertNotIn("WARNING", result.output)
+        self.assertFalse(journal_file.exists())
+        self.assertEqual("changed after the run\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_a_retry_after_a_changed_kept_backup_was_moved_completes(self) -> None:
+        # The first attempt moves the changed copy, then stops before it clears the journal; the retry meets the copy
+        # already under .backups and finishes as the first attempt would have.
+        journal_file, destination = self.committed_with_kept_backup()
+        self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "changed after the run\n")
+        with failing_at("remove", journal_file):
+            first = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
+        self.assert_lines(first.output, f"  Preserved backup: alpha -> .backups/{self.RUN}/alpha")
+        self.assertTrue(journal_file.is_file())
+        retried = self.deploy_ok("--all")
+        self.assert_lines(retried.output, "  Recovery complete.")
+        self.assertNotIn("WARNING", retried.output)
+        self.assertFalse(journal_file.exists())
         self.assertEqual("changed after the run\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_an_installed_copy_changed_after_a_committed_run_stops_completion_and_keeps_both_copies(self) -> None:
@@ -1208,6 +1286,33 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertEqual([], list((self.home / ".claude" / "deployer" / "staging").iterdir()))
         self.assertFalse(self.lock_dir.exists())
 
+    def test_a_staging_folder_the_run_cannot_delete_after_its_commit_is_named_and_the_run_finishes(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.make_skill("alpha", "Updated alpha")
+        staging = self.home / ".claude" / "deployer" / "staging"
+        real_remove = fsops.remove
+
+        # Its journal goes first, so only the rest of the folder, holding no record, is held.
+        def held_folder(path: Path) -> None:
+            if path.parent == staging:
+                raise denied(path)
+            real_remove(path)
+
+        with mock.patch("deployer.fsops.remove", side_effect=held_folder):
+            result = self.deploy_ok("--all")
+        run_id = self.manifest()["last_run_id"]
+        run = staging / run_id
+        self.assert_lines(
+            result.output,
+            f"  WARNING: Could not delete the staging folder {forward(run)}: Access is denied. It holds no journal, "
+            "so the next deployment deletes it.",
+        )
+        self.assertNotIn("failed", result.output)
+        self.assertFalse((run / "journal.jsonl").exists())
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+        self.deploy_ok("--all")
+        self.assertFalse(run.exists())
+
     def test_a_finalization_failure_after_the_commit_is_completed_before_exit(self) -> None:
         self.deployed(("alpha", "Alpha content"))
         self.write(self.skills_dir / "alpha" / "SKILL.md", "edited by hand\n")
@@ -1216,10 +1321,10 @@ class RecoveryBranchTests(RecoveryTestCase):
         real_remove = fsops.remove
         state = {"failed": False}
 
-        # A failed move into .backups keeps the copy beside its item, so the run fails after the commit where nothing
-        # absorbs it: removing its staging folder once finalization is done.
+        # A failed move into .backups keeps the copy beside its item, and a staging folder that cannot be deleted is
+        # left named, so the run fails after the commit only where nothing may absorb it: deleting its journal.
         def failing_remove(path: Path) -> None:
-            if path.parent == staging and not state["failed"]:
+            if path.parent.parent == staging and path.name == "journal.jsonl" and not state["failed"]:
                 state["failed"] = True
                 raise OSError("synthetic staging removal failure")
             real_remove(path)
@@ -1272,7 +1377,7 @@ class UnkeptBackupTests(RecoveryTestCase):
     def assert_kept(self, output: str, item: str, run_id: str) -> None:
         self.assert_lines(
             output,
-            f"WARNING: {item} changed after this deployment planned it, so its previous copy was kept at "
+            f"  WARNING: {item} changed after run {run_id} planned it, so its previous copy was kept at "
             f".backups/{run_id}/{item} instead of being deleted.",
             "BACKED UP (1):",
             f"  {item}: .backups/{run_id}/{item}",
@@ -1323,7 +1428,7 @@ class UnkeptBackupTests(RecoveryTestCase):
         self.assert_lines(
             result.output,
             f"Recovering committed run {run_id} (completing finalization)...",
-            f"  WARNING: alpha changed after run {run_id} planned it, so its previous copy is kept at "
+            f"  WARNING: alpha changed after run {run_id} planned it, so its previous copy was kept at "
             f".backups/{run_id}/alpha instead of being deleted.",
             f"  Preserved backup: alpha -> .backups/{run_id}/alpha",
             "  Recovery complete.",
@@ -1362,7 +1467,7 @@ class UnkeptBackupTests(RecoveryTestCase):
         result = self.deploy_ok("--all")
         self.assert_lines(
             result.output,
-            f"  WARNING: alpha changed after run {self.RUN} planned it, so its previous copy is kept at "
+            f"  WARNING: alpha changed after run {self.RUN} planned it, so its previous copy was kept at "
             f".backups/{self.RUN}/alpha instead of being deleted.",
             f"  Preserved backup: alpha -> .backups/{self.RUN}/alpha",
             "  Recovery complete.",
@@ -1378,6 +1483,8 @@ class UnkeptBackupTests(RecoveryTestCase):
         self.write(destination / "SKILL.md", "already there\n")
         result = self.deploy_fails("--all", pattern="transient backup already exists", changes_home=RECOVERS)
         self.assertIn(f"Something is already at {forward(destination)}", result.output)
+        # Only the warning that says where the copy is: none names .backups, which holds a different copy.
+        self.assertNotIn("instead of being deleted", result.output)
         self.assertFalse(journal_file.exists())
         self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text(encoding="utf-8"))
         self.assertEqual("already there\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
