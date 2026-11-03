@@ -6,6 +6,11 @@ Usage:
   python tools/runtime_canary.py --changed-since [REF]
   python tools/runtime_canary.py --remove-home DIR
 
+It first refuses, with FAILED "<reason>" and exit 1 before it makes a home, a checkout that follows another
+repository's pull request, as tools/checkout_trust.py reads it: a branch whose upstream is a pull request's ref
+(refs/pull/...) or a remote other than origin, or a HEAD detached at a commit no branch of origin holds, since the run
+deploys and runs the checkout's skills and fixture signed in as the user.
+
 It makes a fresh home under the temporary directory and deploys this checkout into it with `deploy.py
 --canary-home`, which a linked worktree may do, then deploys the fixture source in tests/fixtures/runtime-canary.
 That home is the only place anything is deployed. Each installed runtime then starts with the home as its working
@@ -157,6 +162,7 @@ from deployer import source as deploy_source
 from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.tools import format_version, parse_version
+from tools import checkout_trust
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -447,7 +453,7 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     Python's digit limit, raises RecordRefused, naming the file and the line."""
     records = []
     if is_present(path):
-        for number, line in enumerate(path.read_bytes().decode("utf-8", "replace").splitlines(), 1):
+        for number, line in enumerate(discovery.output_lines(path.read_bytes().decode("utf-8", "replace")), 1):
             try:
                 record = json_reader.loads(line)
             except json.JSONDecodeError:
@@ -719,7 +725,7 @@ def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
     """The skills Claude Code's init event lists, if it printed one, and the permissions its result denied."""
     skills: set[str] | None = None
     denials: list[str] = []
-    for line in output.splitlines():
+    for line in discovery.output_lines(output):
         with contextlib.suppress(ValueError):
             event = json_reader.loads(line)
             if not isinstance(event, dict):
@@ -772,7 +778,7 @@ def unread_rejections(runtime: str, completed: Completed) -> list[str]:
         return []
     return [
         line.strip()
-        for line in completed.stderr.splitlines()
+        for line in discovery.output_lines(completed.stderr)
         if CODEX_EXEC_FAILED.search(line) and not CODEX_REJECTED.search(line)
     ]
 
@@ -1458,6 +1464,10 @@ def main(arguments: list[str]) -> int:
     unknown = [skill for skill in options.skills if skill not in dependencies(sources)]
     if unknown and all(discoverable(source) for source in sources):
         parser.error(f"unknown skill: {', '.join(unknown)}")
+    refused = checkout_trust.refusal(checkout_trust.reader(REPOSITORY_ROOT))
+    if refused is not None:
+        print(f"FAILED {quote(refused)}")
+        return 1
     home = create_home()
     code = canary(
         options.skills,
