@@ -92,11 +92,12 @@ def any_case(name: str) -> str:
     )
 
 
-def refuse_other_spellings(folder: Path, name: str, what: str) -> None:
-    """Refuse an entry of `folder` that spells `name` in another case, naming it as `what`. A stat or listing that
-    fails raises its OSError."""
+def refuse_other_spellings(folder: Path, name: str, what: str, declared: frozenset[str] = frozenset()) -> None:
+    """Refuse an entry of `folder` that spells `name` in another case, naming it as `what`. An entry spelled as a name
+    among `declared`, one the source declares itself, is left to the plan, which refuses the two names as one. A stat
+    or listing that fails raises its OSError."""
     for found in file_presence.matching(folder, any_case(name)):
-        if found.name != name:
+        if found.name != name and found.name not in declared:
             raise DeployError(
                 f"ERROR: {what} {platform_support.normalize(found)} is spelled in another case than {name}.",
                 f"Rename it {name}, then retry.",
@@ -545,10 +546,12 @@ def _discover(paths: Paths, source_id: str) -> Source:
             if agent not in source.agents:
                 raise DeployError(f"ERROR: Skill '{name}' depends on unknown agent '{agent}'")
     source.shared_assets = _shared_assets(document)
+    # An owned asset is read from skills/, beside each skill's folder and every other asset. An unsafe name is refused
+    # by the plan before any path is built from it, and so is a name that is one with a skill's or another asset's.
+    declared = frozenset((*source.skills, *source.shared_assets))
     for asset, role in sorted(source.shared_assets.items()):
-        # An unsafe name is refused by the plan before any path is built from it; an owned asset is read from skills/.
         if role == "owner" and safe_name_problem(asset, "shared asset name") is None:
-            refuse_other_spellings(paths.skills_src, asset, f"Shared asset '{asset}' file")
+            refuse_other_spellings(paths.skills_src, asset, f"Shared asset '{asset}' file", declared)
     return source
 
 

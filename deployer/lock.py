@@ -50,7 +50,7 @@ class Lock:
         try:
             current = token_file.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
-            # A token file that does not read, or is not the UTF-8 this run wrote, holds no token of this run's.
+            # A token file that does not read, or is not the UTF-8 this run wrote, is not this run's, so the lock stays.
             return
         if current != self.token:
             return
