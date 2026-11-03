@@ -1148,6 +1148,13 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     "a trim of a call starting with a literal git": _form(
         git_separator_problems, "def f(run):\n    return run(['git', 'update-ref', 'x']).strip()\n"
     ),
+    "a trim of a git-named call whose subcommand is a name its caller gives": _form(
+        git_separator_problems,
+        "def f(git_in, checkout, runner, command):\n    return git_in(checkout, runner, command).stdout.strip()\n",
+    ),
+    "a trim of a literal git call whose subcommand is a name": _form(
+        git_separator_problems, "def f(run, name):\n    return run(['git', name]).stdout.strip()\n"
+    ),
     "a trim of a call whose arguments run no git at all": _form(
         git_separator_problems, "def f(run, arguments):\n    return run(*arguments).stdout.strip()\n", refused=False
     ),
@@ -1474,6 +1481,51 @@ def sanctioned():
 
 PROCESS_ENV_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
 """
+
+
+GIT_ANSWERED_SOURCE = """\
+from git_client import GitError
+
+
+def handled(client):
+    try:
+        client.output(["status"])
+    except GitError as exc:
+        return exc.returncode is None
+
+
+def given(error: GitError) -> bool:
+    return error.returncode in (None, 128)
+
+
+def sanctioned(error: GitError) -> bool:
+    return error.returncode is None
+
+
+GIT_ANSWERED_ALLOWED = {"sanctioned": "a reason", "stale": "a reason"}
+"""
+
+
+def test_git_answered_policy_holds_its_owner_suites_and_allowance() -> None:
+    # git_client.py, the owner, a suite, and a tests/ helper are not read; a sanctioned scope passes; a stale or
+    # empty entry fails.
+    reads = (
+        "reads a GitError's returncode is None as git not running, though git_client raises one without an exit code "
+        "for an answer in the wrong shape; read GitError.answered, or state why in GIT_ANSWERED_ALLOWED"
+    )
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.git_answered_problems,
+        "GIT_ANSWERED_ALLOWED",
+        GIT_ANSWERED_SOURCE,
+        python_checks.GIT_STATUS_OWNER,
+    )
+    assert found == [
+        f"{alpha}:8 {reads}",
+        f"{alpha}:12 {reads}",
+        f"{alpha}: GIT_ANSWERED_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: GIT_ANSWERED_ALLOWED must map each function, class, or assignment to its reason",
+    ]
 
 
 def test_process_environment_policy_refuses_a_start_that_may_keep_the_repository_variables() -> None:

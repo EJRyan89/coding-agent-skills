@@ -392,7 +392,7 @@ def resolve(value: str, cwd: Path) -> Path:
 def git_builtins() -> frozenset[str]:
     """The subcommands git runs itself, which no alias can stand for; empty when git cannot list them."""
     result = git(Path(__file__).resolve().parent, "--list-cmds=builtins")
-    return frozenset(result.stdout.split()) if result.returncode == 0 else frozenset()
+    return frozenset(output_lines(result.stdout)) if result.returncode == 0 else frozenset()
 
 
 def hub_protected(path: Path) -> bool:

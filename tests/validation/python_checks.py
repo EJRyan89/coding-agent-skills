@@ -2647,9 +2647,10 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # a concatenation, or a join. Nor is it trimmed or split by strip(), lstrip(), rstrip(), split(), or rsplit() given no
 # separator or characters, or None for them, which drop or break on U+00A0, U+2028, and the other whitespace such a
 # name can hold: git_client.output_line takes off the one "\n" that ends a line git wrote. Every subcommand's output
-# counts for a call whose first argument is a literal "git" or whose function's name says git, one whose subcommand
-# its arguments name only at run time included. A listing, a format, a split, or a
-# trim that must stay states why in a module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
+# counts for a call whose first argument, or the first item of a list it is given, is a literal "git", as
+# subprocess.run(["git", ...]), or whose function's name says git, one whose subcommand its arguments name only at
+# run time included, whatever their shape. A listing, a format, a split, or a trim that must stay states why in a
+# module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
 # The options that make a diff, or a log or a show of a commit's changes, list the paths it touches.
@@ -2958,10 +2959,10 @@ class _GitOutputs:
         started = _git_command(elements)
         named = names_git(node.func) or (bool(elements) and _literal(elements[0]) == "git")
         if started is None:
-            # A git call whose subcommand its arguments name only at run time, as `git_in(checkout, runner,
-            # *arguments)`, counts for any subcommand.
-            spread = any(isinstance(element, ast.Starred) for element in elements)
-            return ANY_SUBCOMMAND if named and spread else None
+            # A git call whose subcommand its arguments name only at run time, whatever their shape, as
+            # `git_in(checkout, runner, *arguments)`, `git_in(checkout, runner, command)`, or `run(["git", name])`,
+            # counts for any subcommand.
+            return ANY_SUBCOMMAND if named else None
         return started[0] if named or started[0] in GIT_OUTPUT_COMMANDS else None
 
     def split(self, node: ast.AST) -> str | None:
@@ -3055,40 +3056,56 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
 
 # A GitError whose returncode is None is not one git could not run: git_client raises it, with no exit code, for an
 # answer git gave in the wrong shape, such as a rev-parse that printed no object name. Whether git ran and finished is
-# GitError.answered, so a handler of a GitError reads that, never `returncode is None`. A read that must stay states
-# why in a module-level GIT_ANSWERED_ALLOWED = {scope: reason}.
+# GitError.answered, so a handler of a GitError, or a function given one, reads that, never `returncode is None`
+# or `returncode in (None, ...)`. A read that must stay states why in a module-level
+# GIT_ANSWERED_ALLOWED = {scope: reason}.
 GIT_ERROR = "git_client.GitError"
 GIT_ANSWERED_ALLOWANCE = "GIT_ANSWERED_ALLOWED"
 
 
 def _none_returncode_reads(tree: ast.Module, aliases: dict[str, str]) -> set[int]:
-    """The comparisons, by id, that set the returncode of the GitError an `except` clause catches, alone or among
-    others, beside None, inside that clause's own body."""
+    """The comparisons, by id, that set the returncode of a GitError beside None: one an `except` clause catches,
+    alone or among others, inside that clause's own body, or one a function takes as a parameter annotated as one,
+    inside that function's body."""
+
+    def is_git_error(kind: ast.expr | None) -> bool:
+        kinds = kind.elts if isinstance(kind, ast.Tuple) else [kind] if kind is not None else []
+        return any(resolves_to(qualified_name(item, aliases), GIT_ERROR) for item in kinds)
+
     found: set[int] = set()
-    for handler in ast.walk(tree):
-        if not isinstance(handler, ast.ExceptHandler) or handler.name is None or handler.type is None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.name is not None and is_git_error(node.type):
+            names, body = {node.name}, node.body
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+            names, body = {argument.arg for argument in parameters if is_git_error(argument.annotation)}, node.body
+        else:
             continue
-        caught = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-        if not any(resolves_to(qualified_name(kind, aliases), GIT_ERROR) for kind in caught):
-            continue
-        for statement in handler.body:
-            for node in ast.walk(statement):
-                if isinstance(node, ast.Compare) and _compares_returncode_with_none(node, handler.name):
-                    found.add(id(node))
+        for statement in body if names else []:
+            for compared in ast.walk(statement):
+                if isinstance(compared, ast.Compare) and _compares_returncode_with_none(compared, names):
+                    found.add(id(compared))
     return found
 
 
-def _compares_returncode_with_none(node: ast.Compare, name: str) -> bool:
-    """Whether a comparison sets `name`'s returncode beside None."""
+def _compares_returncode_with_none(node: ast.Compare, names: set[str]) -> bool:
+    """Whether a comparison sets one of `names`' returncode beside None, as a side or as a member of a literal tuple,
+    list, or set it tests membership in."""
     sides = [node.left, *node.comparators]
     returncode = any(
         isinstance(side, ast.Attribute)
         and side.attr == "returncode"
         and isinstance(side.value, ast.Name)
-        and side.value.id == name
+        and side.value.id in names
         for side in sides
     )
-    return returncode and any(isinstance(side, ast.Constant) and side.value is None for side in sides)
+
+    def none(value: ast.expr) -> bool:
+        if isinstance(value, ast.Tuple | ast.List | ast.Set):
+            return any(map(none, value.elts))
+        return isinstance(value, ast.Constant) and value.value is None
+
+    return returncode and any(map(none, sides))
 
 
 def git_answered_problems(root: Path, files: list[Path]) -> list[str]:
