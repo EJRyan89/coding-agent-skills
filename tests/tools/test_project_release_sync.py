@@ -298,6 +298,32 @@ BOARD = "data.repositoryOwner.projectV2"
         pytest.param(
             _set(None, "items", "pageInfo", "hasNextPage"), f"{BOARD}.items.pageInfo.hasNextPage", id="hasNextPage null"
         ),
+        pytest.param(_set(None, "items", "nodes", 0, "id"), f"{BOARD}.items.nodes[0].id", id="item id null"),
+        pytest.param(_set(7, "items", "nodes", 0, "content"), f"{BOARD}.items.nodes[0].content", id="content a number"),
+        pytest.param(
+            _drop("items", "nodes", 0, "content", "milestone"),
+            f"{BOARD}.items.nodes[0].content",
+            id="issue without milestone member",
+        ),
+        pytest.param(
+            _set({"title": None}, "items", "nodes", 0, "content", "milestone"),
+            f"{BOARD}.items.nodes[0].content.milestone.title",
+            id="milestone title null",
+        ),
+        pytest.param(
+            _set({"title": None}, "items", "nodes", 0, "content"),
+            f"{BOARD}.items.nodes[0].content.title",
+            id="draft title null",
+        ),
+        pytest.param(
+            _set({"name": None}, "items", "nodes", 0, "release"),
+            f"{BOARD}.items.nodes[0].release.name",
+            id="release name null",
+        ),
+        pytest.param(_set({}, "field", "options"), f"{BOARD}.field.options", id="options an object"),
+        pytest.param(
+            _set(None, "field", "options", 0, "name"), f"{BOARD}.field.options[0].name", id="option name null"
+        ),
     ],
 )
 def test_an_answer_missing_a_field_is_a_board_not_read_with_exit_2(
@@ -309,6 +335,15 @@ def test_an_answer_missing_a_field_is_a_board_not_read_with_exit_2(
         assert (code, stdout) == (2, ""), stderr
         assert stderr.startswith(f"ERROR: {path} must be "), stderr
         assert board.mutations == []
+
+
+def test_a_draft_is_named_by_its_title_an_empty_one_included() -> None:
+    drafts = [{"id": "DRAFT", "content": {"title": title}, "release": {"name": "v0.1.0"}} for title in ("plan", "")]
+    expected = (
+        "DRIFTED\n- draft 'plan': Release is v0.1.0, milestone is none\n"
+        "- draft '': Release is v0.1.0, milestone is none\n"
+    )
+    assert run(FakeBoard([drafts]), "--check") == (1, expected, "")
 
 
 def test_a_page_with_more_to_come_and_no_cursor_is_a_board_not_read() -> None:

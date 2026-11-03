@@ -364,6 +364,8 @@ class MainTests(unittest.TestCase):
         stub = Stub({"gh run view 38 --json": SUCCESS, "gh run view 38 --log": LOG})
         code, output, _, table = self.run_main(["38"], stub)
         self.assertEqual(0, code)
+        # The run's state is asked for by the three fields it is judged by, as gh names them.
+        self.assertIn(["gh", "run", "view", "38", "--json", "workflowName,status,conclusion"], stub.commands)
         self.assertEqual(
             {"runs": [38], "seconds": {"Linux": LINUX_SECONDS, "Windows": WINDOWS_SECONDS}},
             json.loads(table.read_text(encoding="utf-8")),
