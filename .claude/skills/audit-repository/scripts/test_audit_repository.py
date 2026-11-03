@@ -2363,3 +2363,11 @@ def test_a_failed_git_call_is_named_by_its_subcommand_behind_git_s_options() -> 
 
     with pytest.raises(audit.AuditError, match=r"^git log: fatal: no$"):
         audit.git_output(GitClient(run), Path("r"), ["-c", "a=b", "log"])
+
+
+def test_a_folder_git_finds_no_repository_in_is_named_by_its_path() -> None:
+    def run(command: Sequence[str], timeout: float) -> GitResult:
+        return GitResult(128, "", "fatal: not a git repository (or any of the parent directories): .git\n")
+
+    with pytest.raises(audit.AuditError, match=r"^some folder/r is not a Git repository$"):
+        audit.git_output(GitClient(run), Path("some folder", "r"), ["-c", "a=b", "log"])
