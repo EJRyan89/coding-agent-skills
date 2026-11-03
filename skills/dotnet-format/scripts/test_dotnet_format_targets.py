@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -8,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import IO, Any
 from unittest import mock
@@ -85,6 +86,45 @@ def remove_link(link: Path) -> None:
         link.rmdir()
     else:
         link.unlink()
+
+
+@contextlib.contextmanager
+def denied(target: Path, *, stat: bool = True) -> Iterator[None]:
+    """`target` cannot be listed, as a file system refuses a folder: os.scandir and os.listdir raise, and Path.glob
+    and Path.rglob match nothing in it, as Python 3.15's do where iterdir raises. With `stat`, its stat is refused
+    too: Path.stat, os.stat, and os.lstat raise, and Path.exists, is_file, and is_dir and the os.path predicates
+    answer False, as from Python 3.14 on."""
+
+    def names(argument: object) -> bool:
+        return isinstance(argument, (str, os.PathLike)) and Path(argument) == target
+
+    def refusing(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(path: Any, *args: Any, **kwargs: Any) -> Any:
+            if names(path):
+                raise PermissionError(errno.EACCES, "Access is denied", str(target))
+            return real(path, *args, **kwargs)
+
+        return call
+
+    def answering(real: Callable[..., Any], answer: Any) -> Callable[..., Any]:
+        def call(path: Any, *args: Any, **kwargs: Any) -> Any:
+            return answer if names(path) else real(path, *args, **kwargs)
+
+        return call
+
+    Wrap = Callable[[Callable[..., Any]], Callable[..., Any]]
+    patches: list[tuple[object, str, Wrap]] = [(os, "scandir", refusing), (os, "listdir", refusing)]
+    patches += [(Path, name, lambda real: answering(real, iter(()))) for name in ("glob", "rglob")]
+    if stat:
+        patches += [(Path, "stat", refusing), (os, "stat", refusing), (os, "lstat", refusing)]
+        patches += [(Path, name, lambda real: answering(real, False)) for name in ("exists", "is_file", "is_dir")]
+        patches += [
+            (os.path, name, lambda real: answering(real, False)) for name in ("exists", "lexists", "isfile", "isdir")
+        ]
+    with contextlib.ExitStack() as stack:
+        for owner, name, wrap in patches:
+            stack.enter_context(mock.patch.object(owner, name, wrap(getattr(owner, name))))
+        yield
 
 
 class Repository:
@@ -279,6 +319,28 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual([["Pages/Index.cs", "Root.csproj"]], self.values(lines, "SKIPPED_ASPNET"))
         self.assertEqual([["Pages/Index.cs"]], self.values(lines, "FILE"))
         self.assertEqual([["Root.sln", "1"]], self.values(lines, "SOLUTION"))
+
+    def test_a_changed_file_project_or_solution_it_cannot_examine_or_list_fails_never_reads_as_none(self) -> None:
+        # A changed file it cannot stat would read as deleted, and the run as one with no C# change; a project or
+        # solution, or a folder it cannot list, as one with none, which drops the ASP.NET skip or the nearest solution.
+        repo = self.repository
+        repo.write("Web/Web.csproj", WEB_PROJECT)
+        repo.write("Web/Program.cs")
+        repo.write("App.sln", solution("Web\\Web.csproj"))
+        repo.commit("web")
+        root = repo.root
+        error = "[Errno 13] Access is denied"
+        rows: list[tuple[str, bool, str]] = [
+            ("Web/Program.cs", True, "the changed file Web/Program.cs cannot be examined"),
+            ("Web/Web.csproj", True, f"{root / 'Web/Web.csproj'} cannot be examined"),
+            ("Web", False, f"{root / 'Web'} cannot be listed"),
+            ("App.sln", True, f"{root / 'App.sln'} cannot be examined"),
+            (".", False, f"{root} cannot be listed"),
+        ]
+        for relative, stat, reason in rows:
+            target = root / relative if relative != "." else root
+            with self.subTest(relative=relative), denied(target, stat=stat):
+                self.assertEqual(f"{reason}: {error}: {str(target)!r}", self.failed())
 
     def test_the_sdks_dotnet_format_is_given_an_aspnet_projects_files_and_only_the_global_tool_skips_them(self) -> None:
         # The SDK's dotnet format formats an ASP.NET project, so its files are skipped only when the solution has the

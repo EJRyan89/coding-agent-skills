@@ -6,8 +6,10 @@ from __future__ import annotations
 import ast
 import contextlib
 import dataclasses
+import errno
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -23,6 +25,8 @@ from unittest import mock
 
 import audit_ai_config as audit
 import check_provenance
+import folder_walk
+import link_probe
 import markdown_literal
 import pytest
 from folder_walk import SKIPPED_FOLDERS
@@ -3653,6 +3657,7 @@ SCHEMA_AUTHORITY_ROWS: list[tuple[str, str, str | None, str]] = [
 ]
 
 DIRECTORY = "<directory>"
+UNREAD = "Could not read, so the checks that read it did not run:"
 
 INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
     "nothing": {},
@@ -3679,6 +3684,8 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         ".claude/rules/notes.txt": "x",
     },
     "claude_rules_without_markdown": {".claude/rules/notes.txt": "x"},
+    "claude_rules_is_a_file": {".claude/rules": "x"},
+    "codex_agents_is_a_file": {".codex/agents": "x", ".codex/rules/default.rules": "x"},
     "codex_files": {
         ".codex/hooks.json": "{}",
         ".codex/agents/reviewer.toml": "x",
@@ -3704,6 +3711,8 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         ".github/skills/demo/SKILL.md": "x",
     },
     "skill_directory_is_a_file": {".agents/skills": "x"},
+    "skill_file_is_a_directory": {".claude/skills/demo/SKILL.md": DIRECTORY, ".claude/skills/alpha/SKILL.md": "x"},
+    "runtime_folders_are_files": {".codex": "x", ".github": "x"},
     "agent_directories": {
         ".github/agents/Reviewer.md": "x",
         ".github/agents/author.agent.md": "x",
@@ -3718,7 +3727,9 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         ".github/instructions/c.md": "x",
     },
     "instructions_without_matches": {".github/instructions/notes.md": "x"},
+    "instructions_is_a_file": {".github/instructions": "x"},
     "generator_scripts": {"scripts/ai_config.py": "x", ".github/scripts/ai_config.py": "x"},
+    "generator_is_a_directory": {"scripts/ai_config.py": DIRECTORY},
     "parity_workflows": {
         ".github/workflows/check.yaml": "run: python scripts/AI_CONFIG.py",
         ".github/workflows/parity.yml": "run: ai-config --check",
@@ -3760,7 +3771,9 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
         ("INFO", "inventory", ".github/ai-config-manifest.json", "Found .github/ai-config-manifest.json"),
     ],
-    "fixed_file_is_a_directory": [],
+    "fixed_file_is_a_directory": [
+        ("ERROR", "inventory", "CLAUDE.md", f"{UNREAD} [Errno {errno.EISDIR}] not a file: <path>"),
+    ],
     "claude_code_files": [
         ("INFO", "inventory", ".claude/CLAUDE.md", "Found .claude/CLAUDE.md"),
         ("INFO", "inventory", "CLAUDE.local.md", "Found CLAUDE.local.md"),
@@ -3768,6 +3781,13 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ("INFO", "inventory", ".claude/rules", "Rules found: frontend/ui.md, testing.md"),
     ],
     "claude_rules_without_markdown": [],
+    "claude_rules_is_a_file": [
+        ("ERROR", "inventory", ".claude/rules", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
+    "codex_agents_is_a_file": [
+        ("ERROR", "inventory", ".codex/agents", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+        ("INFO", "inventory", ".codex/rules", "Rules found: default.rules"),
+    ],
     "codex_files": [
         ("INFO", "inventory", ".codex/hooks.json", "Found .codex/hooks.json"),
         ("INFO", "inventory", ".codex/agents", "Custom agents found: explorer.toml, reviewer.toml"),
@@ -3783,19 +3803,37 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ("INFO", "inventory", ".claude/skills", "Skills found: Beta, alpha"),
         ("INFO", "inventory", ".github/skills", "Skills found: demo"),
     ],
-    "skill_directory_is_a_file": [],
+    "skill_directory_is_a_file": [
+        ("ERROR", "inventory", ".agents/skills", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
+    "skill_file_is_a_directory": [
+        ("INFO", "inventory", ".claude/skills", "Skills found: alpha"),
+        ("ERROR", "inventory", ".claude/skills/demo/SKILL.md", f"{UNREAD} [Errno {errno.EISDIR}] not a file: <path>"),
+    ],
+    "runtime_folders_are_files": [
+        ("ERROR", "inventory", ".codex", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+        ("ERROR", "inventory", ".github", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
     "agent_directories": [
         ("INFO", "inventory", ".github/agents", "Custom agent files found: Reviewer.md, author.agent.md"),
     ],
     "agent_directory_is_empty": [],
-    "agent_directory_is_a_file": [],
+    "agent_directory_is_a_file": [
+        ("ERROR", "inventory", ".github/agents", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
     "path_specific_instructions": [
         ("INFO", "inventory", ".github/instructions", "2 path-specific instruction file(s)"),
     ],
     "instructions_without_matches": [],
+    "instructions_is_a_file": [
+        ("ERROR", "inventory", ".github/instructions", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
     "generator_scripts": [
         ("INFO", "inventory", ".github/scripts/ai_config.py", "Generator script found: .github/scripts/ai_config.py"),
         ("INFO", "inventory", "scripts/ai_config.py", "Generator script found: scripts/ai_config.py"),
+    ],
+    "generator_is_a_directory": [
+        ("ERROR", "inventory", "scripts/ai_config.py", f"{UNREAD} [Errno {errno.EISDIR}] not a file: <path>"),
     ],
     "parity_workflows": [
         ("INFO", "inventory", ".github/workflows/parity.yml", "AI config parity workflow found"),
@@ -3812,7 +3850,9 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
         ("INFO", "inventory", ".github/workflows/parity.yaml", "AI config parity workflow found"),
     ],
-    "workflows_is_a_file": [],
+    "workflows_is_a_file": [
+        ("ERROR", "inventory", ".github/workflows", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
+    ],
     "one_of_each_group": [
         ("INFO", "inventory", "CLAUDE.md", "Found CLAUDE.md"),
         (
@@ -3838,7 +3878,11 @@ def inventory_rows(files: dict[str, str | bytes]) -> list[tuple[str, str, str | 
         for relative in (path for path, content in files.items() if content == DIRECTORY):
             (root / relative).mkdir(parents=True)
         _write_fixture(root, {path: content for path, content in files.items() if content != DIRECTORY})
-        return _finding_rows(audit.check_inventory(root))
+        # An error names its path as the temporary folder spells it; a row names it <path>.
+        return [
+            (severity, check, path, message.replace(repr(str(root / path)), "<path>") if path else message)
+            for severity, check, path, message in _finding_rows(audit.check_inventory(root))
+        ]
 
 
 class ManifestSchemaAndInventorySequenceTests(unittest.TestCase):
@@ -4167,6 +4211,33 @@ class UnreadableConfigurationTests(unittest.TestCase):
                 self.assertTrue(errors[0][1].startswith(message), errors)
                 self.assertIn("not a file", errors[0][1])
                 (self.root / rel).rmdir()
+
+    def test_a_directory_in_a_configuration_file_place_is_the_inventorys_error_where_its_check_does_not_run(
+        self,
+    ) -> None:
+        # A manifest naming AGENTS.md as the canonical source is an alternative authority, so no check after the
+        # classification runs, and the inventory's ERROR is the one report of the file.
+        manifest = self.root / ".github/ai-config-manifest.json"
+        manifest.write_text(json.dumps({"generatedBy": "gen.py", "canonicalSource": "AGENTS.md"}), encoding="utf-8")
+        for rel in (".mcp.json", ".claude/settings.json", ".codex/config.toml", ".codex/hooks.json"):
+            with self.subTest(rel=rel):
+                (self.root / rel).mkdir(parents=True)
+                result = audit.audit(self.root)
+                errors = [(f.check, f.message) for f in result.findings if f.path == rel and f.severity == "ERROR"]
+                self.assertEqual("alternative", result.authority)
+                self.assertEqual(["inventory"], [check for check, _ in errors])
+                self.assertTrue(errors[0][1].startswith(UNREAD), errors)
+                (self.root / rel).rmdir()
+
+    def test_only_the_reading_checks_error_takes_the_place_of_the_inventorys(self) -> None:
+        unread = audit.Finding("ERROR", "inventory", ".mcp.json", message=f"{UNREAD} not a file")
+        warning = audit.Finding("WARNING", "mcp", ".mcp.json", message="Server 'x': no command")
+        self.assertEqual([unread, warning], audit._left_to_reading_check([unread, warning]))
+
+    def test_a_configuration_file_its_check_cannot_parse_is_still_found_by_the_inventory(self) -> None:
+        (self.root / ".mcp.json").write_text("{", encoding="utf-8")
+        rows = [(f.severity, f.check) for f in audit.audit(self.root).findings if f.path == ".mcp.json"]
+        self.assertEqual([("INFO", "inventory"), ("ERROR", "mcp")], rows)
 
     def test_an_undecodable_file_the_length_checks_read_is_an_inventory_error(self) -> None:
         # CLAUDE.local.md is the memory check's, GEMINI.md and REVIEW.md the code-review length check's: one they
@@ -5420,6 +5491,524 @@ class OwnershipFindingTests(unittest.TestCase):
         self.assertEqual([], audit.check_ownership(self.root, {"artifacts": [{"path": ".mcp.json"}]}))
 
 
+def _denied_error(target: Path) -> PermissionError:
+    return PermissionError(errno.EACCES, "Access is denied", str(target))
+
+
+def _names(target: Path, argument: object) -> bool:
+    """Whether a path argument a stat or a listing is given names `target`; a descriptor never does."""
+    return isinstance(argument, (str, os.PathLike)) and Path(argument) == target
+
+
+@contextlib.contextmanager
+def listing_denied(target: Path) -> Iterator[None]:
+    """`target`, a folder, cannot be listed: os.scandir and os.listdir, and so Path.iterdir and every walk, raise the
+    error a file system gives, and Path.glob and Path.rglob match nothing in it, as Python 3.15's do where iterdir
+    raises."""
+    listers = {name: getattr(os, name) for name in ("scandir", "listdir")}
+    globs = {name: getattr(Path, name) for name in ("glob", "rglob")}
+
+    def lister(name: str) -> Callable[..., Any]:
+        def listed(*args: Any, **kwargs: Any) -> Any:
+            if args and _names(target, args[0]):
+                raise _denied_error(target)
+            return listers[name](*args, **kwargs)
+
+        return listed
+
+    def glob(name: str) -> Callable[..., Any]:
+        def matched(path: Path, *args: Any, **kwargs: Any) -> Any:
+            return iter(()) if path == target else globs[name](path, *args, **kwargs)
+
+        return matched
+
+    with contextlib.ExitStack() as stack:
+        for name in listers:
+            stack.enter_context(mock.patch.object(os, name, lister(name)))
+        for name in globs:
+            stack.enter_context(mock.patch.object(Path, name, glob(name)))
+        yield
+
+
+@contextlib.contextmanager
+def os_stat_denied(target: Path) -> Iterator[None]:
+    """os.stat and os.lstat refuse `target` alone, and the os.path predicates answer False for it, as they always
+    have for a stat that fails."""
+    stats = {"stat": os.stat, "lstat": os.lstat}
+
+    def os_stat(name: str) -> Callable[..., os.stat_result]:
+        def stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            if _names(target, path):
+                raise _denied_error(target)
+            return stats[name](path, *args, **kwargs)
+
+        return stat
+
+    os_predicates = {name: getattr(os.path, name) for name in ("exists", "lexists", "isfile", "isdir")}
+
+    def os_predicate(name: str) -> Callable[..., bool]:
+        def answer(path: Any) -> bool:
+            return False if _names(target, path) else bool(os_predicates[name](path))
+
+        return answer
+
+    with contextlib.ExitStack() as stack:
+        for name in stats:
+            stack.enter_context(mock.patch.object(os, name, os_stat(name)))
+        for name in os_predicates:
+            stack.enter_context(mock.patch.object(os.path, name, os_predicate(name)))
+        yield
+
+
+@contextlib.contextmanager
+def stat_denied(target: Path, *, older: bool, walked: bool = True) -> Iterator[None]:
+    """Path.stat, os.stat, and os.lstat refuse `target` alone, as a file system does a path the audit may not examine,
+    and it cannot be listed either (listing_denied). Path.exists, is_file, and is_dir raise that error for it, as
+    before Python 3.14, when `older`, and answer False, as from 3.14 on, when not, and the os.path predicates answer
+    False, as they always have, so every Python the suite runs on meets a predicate left on the path as either does.
+    The folder walk's own examination of the entry is refused too, unless not `walked`, as when a listing found the
+    entry by its name alone."""
+    real = Path.stat
+
+    def refuse(path: object) -> None:
+        if _names(target, path):
+            raise _denied_error(target)
+
+    def stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        refuse(path)
+        return real(path, *args, **kwargs)
+
+    predicates = {name: getattr(Path, name) for name in ("exists", "is_file", "is_dir")}
+
+    def predicate(name: str) -> Callable[..., bool]:
+        def answer(path: Path, *args: Any, **kwargs: Any) -> bool:
+            if path == target and not older:
+                return False
+            refuse(path)
+            return bool(predicates[name](path, *args, **kwargs))
+
+        return answer
+
+    probe = link_probe.is_link_or_junction
+
+    def entry_probe(path: Any, *args: Any) -> bool:
+        # The folder walk examines a listed entry by its DirEntry's own stat, which no patch reaches.
+        refuse(path)
+        return probe(path, *args)
+
+    with contextlib.ExitStack() as stack:
+        if walked:
+            stack.enter_context(mock.patch.object(folder_walk, "is_link_or_junction", entry_probe))
+        stack.enter_context(mock.patch.object(Path, "stat", stat))
+        for name in predicates:
+            stack.enter_context(mock.patch.object(Path, name, predicate(name)))
+        stack.enter_context(os_stat_denied(target))
+        stack.enter_context(listing_denied(target))
+        yield
+
+
+class UnexaminedPathTests(unittest.TestCase):
+    """A configuration file or folder whose stat fails, or with something else in its place, is a finding at its
+    path, never read as no such file or folder."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        # The audit resolves its root, so a path the stat refuses is spelled as the resolved root spells it.
+        self.root = Path(self.temp.name).resolve()
+        _setup_conforming_repo(self.root)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    # Whether a predicate left on a refused path raises, as before Python 3.14, or answers False, as from 3.14 on.
+    OLDER = True
+
+    def denied(self, target: Path) -> contextlib.AbstractContextManager[None]:
+        return stat_denied(target, older=self.OLDER)
+
+    # Each path the inventory reports when its stat fails, with what makes it there, which the stat then hides.
+    INVENTORY_DENIED: ClassVar[dict[str, dict[str, str | bytes]]] = {
+        "CLAUDE.md": {},
+        ".github/ai-config-manifest.json": {},
+        "scripts/ai_config.py": {"scripts/ai_config.py": "x"},
+        ".claude/rules": {".claude/rules/testing.md": "x"},
+        ".github/instructions": {".github/instructions/a.instructions.md": "x"},
+        ".github/workflows": {".github/workflows/parity.yml": "run: ai_config --check"},
+        ".codex/rules": {".codex/rules/default.rules": "x"},
+    }
+
+    def test_a_path_the_inventory_reads_that_cannot_be_examined_is_an_inventory_error(self) -> None:
+        for rel, files in self.INVENTORY_DENIED.items():
+            with self.subTest(rel=rel):
+                _write_fixture(self.root, files)
+                with self.denied(self.root / rel):
+                    errors = [row for row in _finding_rows(audit.check_inventory(self.root)) if row[0] == "ERROR"]
+                self.assertEqual(
+                    [("ERROR", "inventory", rel, f"{UNREAD} [Errno {errno.EACCES}] Access is denied: ")],
+                    [(*row[:3], row[3].replace(repr(str(self.root / rel)), "")) for row in errors],
+                )
+
+    def test_each_folder_a_check_reads_that_cannot_be_examined_is_one_error_and_the_audit_ends(self) -> None:
+        rows: list[tuple[str, dict[str, str | bytes]]] = [
+            (".claude/rules", {".claude/rules/testing.md": "x"}),
+            (".github/workflows", {".github/workflows/parity.yml": "run: ai_config --check"}),
+            (".github/skills", {".github/skills/demo/SKILL.md": "x"}),
+            (".github/agents", {".github/agents/reviewer.md": "x"}),
+            (".claude/skills", {}),
+            (".codex/agents", {".codex/agents/reviewer.toml": "x"}),
+            (".codex/rules", {".codex/rules/default.rules": "x"}),
+        ]
+        for rel, files in rows:
+            with self.subTest(rel=rel):
+                _write_fixture(self.root, files)
+                with self.denied(self.root / rel):
+                    findings = audit.audit(self.root).findings
+                self.assertEqual(
+                    ["inventory"], [f.check for f in findings if f.path == rel and f.severity == "ERROR"], findings
+                )
+
+    # Each file or folder a check reads, whether a listing or walk finds it or a check names it, with what makes it
+    # there: its stat refused, it is the one inventory ERROR at its path, never dropped as no such file or folder.
+    EXAMINED: ClassVar[dict[str, dict[str, str | bytes]]] = {
+        ".claude/agents/reviewer.md": {".claude/agents/reviewer.md": "x"},
+        ".github/agents/reviewer.agent.md": {".github/agents/reviewer.agent.md": "x"},
+        ".claude/skills/demo/SKILL.md": {".claude/skills/demo/SKILL.md": "x"},
+        ".agents/skills/demo/SKILL.md": {".agents/skills/demo/SKILL.md": "x"},
+        ".github/skills/demo/SKILL.md": {".github/skills/demo/SKILL.md": "x"},
+        ".codex/agents/reviewer.toml": {".codex/agents/reviewer.toml": "x"},
+        ".codex/rules/default.rules": {".codex/rules/default.rules": "x"},
+        ".github/instructions/a.instructions.md": {".github/instructions/a.instructions.md": "x"},
+        ".claude/rules/testing.md": {".claude/rules/testing.md": "x"},
+        ".claude/rules/frontend": {".claude/rules/frontend/ui.md": "x"},
+        ".github/workflows/parity.yml": {".github/workflows/parity.yml": "run: ai_config --check"},
+        "docs/AGENTS.override.md": {"docs/AGENTS.override.md": "x", "docs/AGENTS.md": "x"},
+        "docs": {"docs/AGENTS.md": "x"},
+        "CLAUDE.md": {},
+        ".github/copilot-instructions.md": {},
+        "REVIEW.md": {"REVIEW.md": "x"},
+        ".github/instructions": {".github/instructions/a.instructions.md": "x"},
+        ".claude/settings.json": {".claude/settings.json": "{}"},
+        ".codex/config.toml": {".codex/config.toml": ""},
+        ".mcp.json": {".mcp.json": "{}"},
+        ".codex": {".codex/config.toml": ""},
+        ".github": {},
+        ".agents/skills": {},
+        ".claude/agents": {".claude/agents/reviewer.md": "x"},
+    }
+
+    # Files only a walk finds, which the checks then read with no stat of their own, so only the walk's examination
+    # of the entry can fail; a read that fails reports itself.
+    WALKED_ONLY: ClassVar[frozenset[str]] = frozenset(
+        {".github/instructions/a.instructions.md", ".claude/rules/testing.md"}
+    )
+
+    # The files among EXAMINED whose own check reports a failed examination as its read failure, with that check: the
+    # audit reports each once, by that check, though the inventory alone reports it as its own.
+    READ_BY_OWN_CHECK: ClassVar[dict[str, str]] = {
+        ".claude/settings.json": "claude-settings",
+        ".codex/config.toml": "mcp",
+        ".mcp.json": "mcp",
+    }
+
+    def test_each_path_a_check_reads_that_cannot_be_examined_is_one_inventory_error(self) -> None:
+        # Once as the repository walk meets the path, which it reports as an entry it cannot examine, and once as a
+        # listing that found it by its name alone, which leaves it to the reporter of the files or folders it is one of.
+        for (rel, files), walked in itertools.product(self.EXAMINED.items(), (True, False)):
+            if not walked and rel in self.WALKED_ONLY:
+                continue
+            with self.subTest(rel=rel, walked=walked):
+                _write_fixture(self.root, files)
+                with stat_denied(self.root / rel, older=self.OLDER, walked=walked):
+                    rows = _finding_rows(audit.check_inventory(self.root))
+                    # The positive checks, such as those of the scope a repository's files show, take such a path for
+                    # no find, leaving it to the ERROR, never raising its stat's error and ending the audit.
+                    audit.derive_file_scope(self.root)
+                    findings = audit.audit(self.root).findings
+                self.assertEqual([("ERROR", "inventory", rel)], [row[:3] for row in rows if row[0] == "ERROR"])
+                self.assertTrue(rows[[row[2] for row in rows].index(rel)][3].startswith(UNREAD), rows)
+                if rel in self.READ_BY_OWN_CHECK:
+                    # The check that reads the file reports its failure itself, so the audit reports it once, there.
+                    self.assertEqual(
+                        [self.READ_BY_OWN_CHECK[rel]],
+                        [f.check for f in findings if f.path == rel and f.severity == "ERROR"],
+                        findings,
+                    )
+                else:
+                    self.assertIn(("ERROR", "inventory", rel), [(f.severity, f.check, f.path) for f in findings])
+
+    # Each folder there whose listing is refused, with a file in it: the inventory's one ERROR at the folder, though
+    # a glob matches nothing in it.
+    UNLISTED: ClassVar[dict[str, dict[str, str | bytes]]] = {
+        ".claude/rules": {".claude/rules/testing.md": "x"},
+        ".claude/rules/frontend": {".claude/rules/frontend/ui.md": "x"},
+        ".github/instructions": {".github/instructions/a.instructions.md": "x"},
+        ".github/instructions/deep": {".github/instructions/deep/b.instructions.md": "x"},
+        # The repository walk skips a folder named bin, which these walks enter.
+        ".claude/rules/bin": {".claude/rules/bin/ui.md": "x"},
+        ".github/instructions/bin": {".github/instructions/bin/b.instructions.md": "x"},
+        ".github/workflows": {".github/workflows/parity.yml": "run: ai_config --check"},
+        ".codex/agents": {".codex/agents/reviewer.toml": "x"},
+        ".codex/rules": {".codex/rules/default.rules": "x"},
+        ".claude/agents": {".claude/agents/reviewer.md": "x"},
+        ".github/agents": {".github/agents/reviewer.md": "x"},
+        ".claude/skills": {".claude/skills/demo/SKILL.md": "x"},
+        ".github/skills": {".github/skills/demo/SKILL.md": "x"},
+        ".github/skills/demo": {".github/skills/demo/SKILL.md": "x"},
+        "docs": {"docs/AGENTS.md": "x"},
+    }
+
+    def test_each_folder_a_check_lists_that_cannot_be_listed_is_one_error_never_an_empty_folder(self) -> None:
+        for rel, files in self.UNLISTED.items():
+            with self.subTest(rel=rel):
+                _write_fixture(self.root, files)
+                with listing_denied(self.root / rel):
+                    inventory = [
+                        row[:3] for row in _finding_rows(audit.check_inventory(self.root)) if row[0] == "ERROR"
+                    ]
+                    findings = audit.audit(self.root).findings
+                self.assertEqual([("ERROR", "inventory", rel)], inventory)
+                self.assertEqual(
+                    [("inventory", rel)],
+                    [(f.check, f.path) for f in findings if f.severity == "ERROR" and f.path == rel],
+                )
+
+    def test_an_agent_whose_stat_fails_is_still_checked_so_its_own_errors_are_reported(self) -> None:
+        rows: list[tuple[str, str, Callable[[Path], list[audit.Finding]]]] = [
+            (".codex/agents/reviewer.toml", "codex-agent", audit._codex_agents),
+            (".github/agents/reviewer.md", "copilot-agent", lambda root: audit.check_copilot_configuration(root, {})),
+            (".claude/agents/reviewer.md", "claude-agent", lambda root: audit.check_copilot_configuration(root, {})),
+        ]
+        for rel, check, run in rows:
+            with self.subTest(rel=rel):
+                # No name and no description: each check's own ERROR at the file.
+                _write_fixture(self.root, {rel: 'model = "x"\n' if rel.endswith(".toml") else "---\nx: y\n---\n"})
+                with self.denied(self.root / rel):
+                    errors = {row[1] for row in _finding_rows(run(self.root)) if row[0] == "ERROR" and row[2] == rel}
+                self.assertIn(check, errors)
+
+    def test_a_skill_listing_keeps_what_it_cannot_list_or_examine_for_the_inventory(self) -> None:
+        skills = self.root / ".claude/skills"
+        skill = skills / "demo/SKILL.md"
+        _write_fixture(self.root, {".claude/skills/demo/SKILL.md": "x"})
+        with listing_denied(skills):
+            self.assertEqual(([], [skills]), self._paths_and_unread(audit.skill_files(self.root, skills)))
+        with stat_denied(skill, older=self.OLDER, walked=False):
+            self.assertEqual(([skill], [skill]), self._paths_and_unread(audit.skill_files(self.root, skills)))
+
+    @staticmethod
+    def _paths_and_unread(listing: audit.Listing) -> tuple[list[Path], list[Path]]:
+        return listing.paths, [path for path, _ in listing.unread]
+
+    def test_the_scope_of_a_repositorys_files_takes_a_path_it_cannot_examine_for_no_find(self) -> None:
+        # Each path alone shows its runtime or surface, so an earlier one never answers for it.
+        rows: list[tuple[str, dict[str, str | bytes], dict[str, list[str]]]] = [
+            ("AGENTS.override.md", {"AGENTS.override.md": "x"}, {}),
+            (".codex", {".codex/config.toml": ""}, {}),
+            (".agents/skills", {".agents/skills/demo/SKILL.md": "x"}, {}),
+            (
+                ".github/workflows/copilot-setup-steps.yml",
+                {".github/workflows/copilot-setup-steps.yml": "x"},
+                {"runtimes": [], "surfaces": ["copilot_cli", "code_review"]},
+            ),
+        ]
+        for rel, files, scope in rows:
+            with self.subTest(rel=rel), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                _write_fixture(root, files)
+                with self.denied(root / rel):
+                    self.assertEqual(scope, audit.derive_file_scope(root))
+
+    def test_code_review_takes_a_review_file_it_cannot_examine_for_no_source(self) -> None:
+        _write_fixture(self.root, {"REVIEW.md": "x"})
+        sources = audit._instruction_sources(self.root)
+        with self.denied(self.root / "REVIEW.md"):
+            first = audit._layering_code_review(self.root, sources)[0]
+        self.assertNotIn("REVIEW.md", first.message)
+
+    def test_a_skill_folder_the_skill_check_cannot_list_is_its_error_where_the_repository_walk_skips_it(self) -> None:
+        # The repository walk skips a folder named bin, which the skill check's own walk enters.
+        _write_fixture(self.root, {".github/skills/bin/SKILL.md": "x"})
+        with listing_denied(self.root / ".github/skills/bin"):
+            rows = _finding_rows(audit.check_copilot_configuration(self.root, {}))
+        self.assertEqual(
+            [("ERROR", "copilot-config")], [row[:2] for row in rows if row[2] == ".github/skills/bin"], rows
+        )
+
+    def test_a_projection_it_cannot_examine_keeps_its_limitation_note(self) -> None:
+        _write_fixture(self.root, {".github/agents/reviewer.md": f"<!-- {OWNERSHIP} -->\n"})
+        with stat_denied(self.root / ".github/agents/reviewer.md", older=self.OLDER, walked=False):
+            rows = _finding_rows(audit.check_limitations(self.root, {}))
+        self.assertIn(("INFO", "limitation", ".github/agents/reviewer.md"), [row[:3] for row in rows])
+
+    def test_a_listing_raises_for_a_folder_it_cannot_list_where_a_glob_matches_nothing(self) -> None:
+        folder = self.root / ".github/workflows"
+        _write_fixture(self.root, {".github/workflows/parity.yml": "x", ".github/workflows/notes.txt": "x"})
+        self.assertEqual([folder / "parity.yml"], audit.list_directory(self.root, folder, "*.yml").paths)
+        with listing_denied(folder), self.assertRaises(PermissionError):
+            audit.list_directory(self.root, folder, "*.yml")
+
+    def test_an_import_it_cannot_examine_is_a_warning_saying_so_never_a_missing_file(self) -> None:
+        _write_fixture(self.root, {"docs/guide.md": "x"})
+        self.assertEqual([], audit._missing_imports(self.root, "CLAUDE.md", ["docs/guide.md"]))
+        with self.denied(self.root / "docs/guide.md"):
+            rows = _finding_rows(audit._missing_imports(self.root, "CLAUDE.md", ["docs/guide.md"]))
+        self.assertEqual([("WARNING", "claude-memory", "CLAUDE.md")], [row[:3] for row in rows])
+        self.assertTrue(rows[0][3].startswith("Import @docs/guide.md names a path that could not be examined"), rows)
+
+    def test_a_canonical_source_it_cannot_examine_is_there_to_the_manifest_and_a_folder_is_not(self) -> None:
+        manifest = json.loads((self.root / MANIFEST_PATH).read_text(encoding="utf-8"))
+        with self.denied(self.root / "CLAUDE.md"):
+            self.assertEqual("manifest", audit._validate_claude_manifest(self.root, manifest)[0])
+        (self.root / "CLAUDE.md").unlink()
+        (self.root / "CLAUDE.md").mkdir()
+        self.assertIsNone(audit._validate_claude_manifest(self.root, manifest)[0])
+
+    def test_a_git_marker_it_cannot_examine_fails_saying_so_never_no_repository(self) -> None:
+        (self.root / ".git").mkdir()
+        output = io.StringIO()
+        with (
+            contextlib.redirect_stdout(output),
+            mock.patch.object(sys, "argv", ["audit_ai_config.py", "--root", str(self.root)]),
+            self.denied(self.root / ".git"),
+        ):
+            code = audit.main()
+        self.assertEqual(1, code)
+        self.assertTrue(
+            output.getvalue().startswith(f"FAILED {self.root} could not be examined for a .git: [Errno 13]"),
+            output.getvalue(),
+        )
+
+    def test_a_file_in_a_skill_or_agent_folders_place_is_an_error_never_no_folder(self) -> None:
+        for rel in (".github/skills", ".github/agents", ".claude/agents"):
+            with self.subTest(rel=rel):
+                _write_fixture(self.root, {rel: "../.claude/skills\n"})
+                self.assertEqual(
+                    [("ERROR", "copilot-config", rel, "Could not list the directory: not a directory")],
+                    [row for row in _finding_rows(audit.check_copilot_configuration(self.root, {})) if row[2] == rel],
+                )
+                (self.root / rel).unlink()
+
+    def test_a_skill_folder_that_cannot_be_examined_is_an_error_never_no_folder(self) -> None:
+        with self.denied(self.root / ".agents/skills"):
+            rows = _finding_rows(audit.check_copilot_configuration(self.root, {}))
+        self.assertIn(
+            ("ERROR", "copilot-config", ".agents/skills", "Could not list the directory: Access is denied"), rows
+        )
+
+    def test_a_generator_that_is_a_folder_or_cannot_be_examined_is_unreadable_scope(self) -> None:
+        generator = self.root / ".github/scripts/ai_config.py"
+        generator.mkdir(parents=True)
+        self.assertEqual((None, "generator-scope-unreadable"), audit.derive_generator_scope(self.root))
+        generator.rmdir()
+        _write_fixture(self.root, {".github/scripts/ai_config.py": "TARGET_RUNTIMES = []\n"})
+        with self.denied(generator):
+            self.assertEqual((None, "generator-scope-unreadable"), audit.derive_generator_scope(self.root))
+
+    def test_an_invocation_policy_that_is_a_folder_or_cannot_be_examined_is_a_problem_never_no_policy(self) -> None:
+        policy = self.root / ".agents/skills/demo/agents/openai.yaml"
+        problem = "Could not read agents/openai.yaml, so the skill's invocation policy was not checked"
+        policy.mkdir(parents=True)
+        self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
+        policy.rmdir()
+        _write_fixture(
+            self.root, {".agents/skills/demo/agents/openai.yaml": "policy:\n  allow_implicit_invocation: false\n"}
+        )
+        with self.denied(policy):
+            self.assertEqual((True, problem), audit._codex_implicit_invocation(self.root, policy))
+
+    def test_a_manifest_that_is_a_folder_or_cannot_be_examined_is_there_to_the_scope_check(self) -> None:
+        manifest = self.root / MANIFEST_PATH
+        with self.denied(manifest):
+            self.assertEqual("manifest-declared-only", audit.check_scope_and_roles(self.root, {})[0])
+        manifest.unlink()
+        manifest.mkdir()
+        self.assertEqual("manifest-declared-only", audit.check_scope_and_roles(self.root, {})[0])
+
+    def test_an_artifact_that_is_a_folder_or_cannot_be_examined_could_not_be_read_never_is_missing(self) -> None:
+        unread = (None, "Generated artifact exists but could not be read")
+        with self.denied(self.root / "AGENTS.md"):
+            self.assertEqual(unread, audit._read_artifact(self.root, "AGENTS.md"))
+        (self.root / "AGENTS.md").unlink()
+        (self.root / "AGENTS.md").mkdir()
+        self.assertEqual(unread, audit._read_artifact(self.root, "AGENTS.md"))
+
+    def test_codex_chooses_an_instruction_file_it_cannot_examine_as_holding_text_and_passes_a_folder_by(self) -> None:
+        (self.root / "AGENTS.md").write_text("  \n", encoding="utf-8")
+        self.assertEqual(("AGENTS.md", False), audit._codex_choice(self.root, self.root, []))
+        with self.denied(self.root / "AGENTS.md"):
+            self.assertEqual(("AGENTS.md", True), audit._codex_choice(self.root, self.root, []))
+        (self.root / "AGENTS.md").unlink()
+        (self.root / "AGENTS.md").mkdir()
+        self.assertEqual(("CLAUDE.md", True), audit._codex_choice(self.root, self.root, ["CLAUDE.md"]))
+
+
+class PresenceAnswerTests(unittest.TestCase):
+    """What each check that asks whether a configuration file or folder is there answers, found or not, and that one
+    path it cannot examine leaves the rest of its loop to run."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_found_file_and_found_folder_answer_false_for_a_path_they_cannot_examine(self) -> None:
+        _write_fixture(self.root, {"CLAUDE.md": "x", ".claude/rules/a.md": "x"})
+        file, folder = self.root / "CLAUDE.md", self.root / ".claude/rules"
+        self.assertEqual(
+            (True, True, False, False),
+            (audit.found_file(file), audit.found_folder(folder), audit.found_file(folder), audit.found_folder(file)),
+        )
+        for older in (True, False):
+            with self.subTest(older=older):
+                with stat_denied(file, older=older):
+                    self.assertFalse(audit.found_file(file))
+                with stat_denied(folder, older=older):
+                    self.assertFalse(audit.found_folder(folder))
+
+    def test_the_ci_parity_signal_reads_workflow_files_alone_and_none_in_a_folder_it_cannot_examine(self) -> None:
+        _write_fixture(self.root, {".github/workflows/notes.txt": "run: ai_config --check"})
+        self.assertFalse(audit._has_ci_parity_workflow(self.root))
+        _write_fixture(self.root, {".github/workflows/parity.yaml": "run: ai_config --check"})
+        self.assertTrue(audit._has_ci_parity_workflow(self.root))
+        with stat_denied(self.root / ".github/workflows", older=False):
+            self.assertFalse(audit._has_ci_parity_workflow(self.root))
+
+    def test_an_orphan_candidate_it_cannot_examine_leaves_the_next_one_checked(self) -> None:
+        _setup_conforming_repo(self.root)
+        with stat_denied(self.root / ".github/copilot-instructions.md", older=False):
+            rows = _finding_rows(audit.check_orphans(self.root, {"artifacts": []}))
+        self.assertIn(("WARNING", "orphan", "AGENTS.md", "Generated file is no longer listed in the manifest"), rows)
+        self.assertNotIn(".github/copilot-instructions.md", [row[2] for row in rows])
+
+    def test_the_instruction_sources_name_each_file_and_folder_where_it_is(self) -> None:
+        _write_fixture(self.root, {".claude/CLAUDE.md": "x", ".github/instructions/notes.md": "x"})
+        sources = audit._instruction_sources(self.root)
+        self.assertEqual((False, True, False), (sources.claude_md, sources.dot_claude_md, sources.path_instructions))
+        _write_fixture(self.root, {".github/instructions/a.instructions.md": "x"})
+        self.assertTrue(audit._instruction_sources(self.root).path_instructions)
+
+    def test_the_codex_rules_check_reads_rules_files_alone(self) -> None:
+        _write_fixture(self.root, {".codex/rules/README.md": "Not Starlark (\n"})
+        self.assertEqual([], audit._codex_rules(self.root))
+
+    def test_a_projection_folder_absent_or_unexamined_leaves_the_other_folders_notes(self) -> None:
+        _write_fixture(self.root, {".github/agents/reviewer.md": f"<!-- {OWNERSHIP} -->\n"})
+        note = ("INFO", "limitation", ".github/agents/reviewer.md")
+        self.assertIn(note, [row[:3] for row in _finding_rows(audit.check_limitations(self.root, {}))])
+        (self.root / ".github/skills").mkdir()
+        with stat_denied(self.root / ".github/skills", older=False):
+            rows = _finding_rows(audit.check_limitations(self.root, {}))
+        self.assertIn(note, [row[:3] for row in rows])
+
+
+class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
+    """The same rows with each predicate left on a refused path answering False, as from Python 3.14 on."""
+
+    OLDER = False
+
+
 class UnlistableDirectoryTests(unittest.TestCase):
     """A directory the audit cannot list is a finding at that directory, never a traceback."""
 
@@ -5443,10 +6032,13 @@ class UnlistableDirectoryTests(unittest.TestCase):
 
         with mock.patch.object(Path, "iterdir", iterdir):
             result = audit.audit(self.root)
+        # The inventory reports it first, and audit() keeps one such ERROR per path.
         self.assertEqual(
-            [("ERROR", "copilot-config", "Could not list the directory: Access is denied")],
-            [(f.severity, f.check, f.message) for f in result.findings if f.path == ".github/agents"],
+            [("ERROR", "inventory")],
+            [(f.severity, f.check) for f in result.findings if f.path == ".github/agents"],
         )
+        (message,) = [f.message for f in result.findings if f.path == ".github/agents"]
+        self.assertTrue(message.startswith(f"{UNREAD} [Errno 13] Access is denied: "), message)
 
 
 def _link_directory(target: Path, link: Path) -> None:

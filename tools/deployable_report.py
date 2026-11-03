@@ -26,7 +26,9 @@ directories items deploy to, and each item the manifest still records, and recor
 when it names any. It allows what the uninstall leaves by design: the manifest, which keeps the source's entry with no
 items, and each directory's retained backups. Every path the deployment owns is an entry of one of those directories,
 so the listing after the uninstall is the whole check and nothing is saved before it; the workflow's step before the
-uninstall is the layout check, which refuses a profile with nothing deployed.
+uninstall is the layout check, which refuses a profile with nothing deployed. One of those directories that cannot be
+examined or listed, or a file in its place, is an `ERROR:` line naming it, and the command exits 2, since an empty
+listing would read as a clean uninstall.
 
 `pin` checks that a runtime the workflow installed is the version it asked for. It prints `NAME --version: TEXT`,
 what the program reported, and exits 0 when VERSION is `latest` or the version in that text is VERSION, compared as
@@ -186,11 +188,19 @@ def _item_roots(paths: Paths) -> list[Path]:
 
 
 def _root_entries(paths: Paths) -> set[Path]:
-    """Every entry in the directories items deploy to, files included, but the manifest and the retained backups."""
+    """Every entry in the directories items deploy to, files included, but the manifest and the retained backups. A
+    directory that is not there holds none; one that cannot be examined or listed, or a file in its place, is a
+    DeployError, never a directory holding nothing."""
     found: set[Path] = set()
     for root in _item_roots(paths):
-        if root.is_dir():
-            found.update(entry for entry in root.iterdir() if entry != paths.manifest_file and entry.name != BACKUPS)
+        try:
+            if file_presence.is_directory(root):
+                found.update(
+                    entry for entry in root.iterdir() if entry != paths.manifest_file and entry.name != BACKUPS
+                )
+        except OSError as exc:
+            where = platform_support.normalize(root)
+            raise DeployError(f"ERROR: Cannot list {where}: {exc}", exit_code=INPUT_ERROR) from exc
     return found
 
 
