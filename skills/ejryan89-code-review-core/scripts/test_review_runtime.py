@@ -1551,6 +1551,44 @@ class DestinationStatTests(unittest.TestCase):
         self.assert_refused_with_the_stat_error(lambda: review_runtime._prepare_destination(self.destination))
 
 
+class SnapshotNameTests(unittest.TestCase):
+    """The runtime reads a listed or fetched snapshot file by the rule diff_paths.snapshot_path applies."""
+
+    def test_a_listed_name_the_shared_rule_refuses_is_never_read(self) -> None:
+        for path in [
+            "con",
+            "src/NUL",
+            "a/COM1:x",
+            "COM1.txt",
+            "src/aux.py",
+            "a/CON.txt",
+            "a/conin$",
+            "a/CONOUT$",
+            "a/COM\u00b9",
+            "a/lpt\u00b2.y",
+            "a/con .txt",
+            "a/x.",
+            "a/x ",
+            ".. ",
+            ".../tools/inside.py",
+            "tools/./inside.py",
+            "tools\\inside.py",
+            "tools/in\nside.py",
+            "../outside.py",
+            "/etc/outside.py",
+            "C:/outside.py",
+            "",
+        ]:
+            with (
+                self.subTest(path=path),
+                self.assertRaisesRegex(review_runtime.RuntimeContractError, "^Source snapshot path is unsafe: "),
+            ):
+                review_runtime._snapshot_path(Path("root"), path)
+
+    def test_a_safe_name_lands_below_the_root(self) -> None:
+        self.assertEqual(Path("root", "src", "a b.py"), review_runtime._snapshot_path(Path("root"), "src/a b.py"))
+
+
 class GitLabelTests(unittest.TestCase):
     def test_git_that_cannot_run_is_named_by_its_subcommand_behind_git_s_options(self) -> None:
         def run(command: Sequence[str], timeout: float) -> GitResult:
