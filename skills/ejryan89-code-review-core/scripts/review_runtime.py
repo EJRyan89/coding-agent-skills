@@ -103,7 +103,9 @@ SNAPSHOT_EXCLUSION_REASONS = {
     "non-regular",
     "unextractable",
 }
-WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f]')
+# A reserved character or a control character, DEL among them as diff_paths.unsafe_snapshot_name reads it, so the
+# snapshot writer never holds a name a snapshot reader refuses.
+WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f\x7f]')
 MAX_SEGMENT_UNITS = 255  # NTFS, ReFS, exFAT, and FAT32 all stop a name at 255 UTF-16 code units
 MAX_PATH = 260  # a Windows path without long-path support, its terminating NUL included
 LONG_PATH_UNITS = 32_767  # an NT path with long-path support, counted with the volume's device name for the drive
