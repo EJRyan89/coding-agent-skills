@@ -240,6 +240,27 @@ class PullRequest(TypedDict):
     head_ref: NotRequired[str]
     body_characters: NotRequired[int]
     body_given: NotRequired[int]
+    closing_issues: NotRequired[ClosingIssues]
+
+
+class ClosingIssue(TypedDict):
+    """An issue the pull request closes, as a specialist given them was: whether it is in the reviewed repository, and
+    how much of its body the specialist was given, none for another repository's."""
+
+    repository: str
+    number: int
+    state: str
+    same_repository: bool
+    body_characters: int
+    body_given: int
+    unreadable: NotRequired[bool]  # true for one GitHub did not let the reviewer's account read, given no text
+
+
+class ClosingIssues(TypedDict):
+    """The issues GitHub links as closed by the pull request, `total` of them, and those a specialist was given."""
+
+    total: int
+    issues: list[ClosingIssue]
 
 
 class Coverage(TypedDict):
@@ -1002,6 +1023,12 @@ def build_record(
     if request.get("body_characters") is not None:
         record["pull_request"]["body_characters"] = request["body_characters"]
         record["pull_request"]["body_given"] = request["body_given"]
+    if request.get("closing_issues") is not None:
+        closing = request["closing_issues"]
+        record["pull_request"]["closing_issues"] = {
+            "total": closing["total"],
+            "issues": copy.deepcopy(closing["issues"]),
+        }
     coverage = _record_coverage(request)
     if coverage is not None:
         record["review"]["coverage"] = coverage
@@ -1523,11 +1550,41 @@ RECORD_FIELDS = frozenset(
 )
 
 
+def _validate_closing_issues(value: Any) -> None:
+    """The record's account of the closing issues: at most `total` of them, each given no more of its body than it
+    has, and none of another repository's."""
+    path = "record.pull_request.closing_issues"
+    closing = READ.json_object(value, path, required={"total", "issues"})
+    total = READ.integer(closing["total"], f"{path}.total", minimum=0)
+    issues = READ.array(closing["issues"], f"{path}.issues", READ.json_object)
+    if len(issues) > total:
+        raise RecordError(f"Review {path} lists more issues than its total")
+    fields = {"repository", "number", "state", "same_repository", "body_characters", "body_given"}
+    for index, issue in enumerate(issues):
+        where = f"{path}.issues[{index}]"
+        READ.json_object(issue, where, required=fields, optional={"unreadable"})
+        READ.string(issue["repository"], f"{where}.repository")
+        READ.integer(issue["number"], f"{where}.number", minimum=1)
+        READ.one_of(issue["state"], f"{where}.state", ("OPEN", "CLOSED"))
+        same = READ.boolean(issue["same_repository"], f"{where}.same_repository")
+        characters = READ.integer(issue["body_characters"], f"{where}.body_characters", minimum=0)
+        given = READ.integer(issue["body_given"], f"{where}.body_given", minimum=0)
+        if "unreadable" in issue:
+            READ.one_of(issue["unreadable"], f"{where}.unreadable", (True,))
+        if given > characters or (given and (not same or "unreadable" in issue)):
+            raise RecordError(f"Review {where}.body_given is more than the issue's body it could be given")
+
+
 def _validate_pull_request(pull: dict[str, Any]) -> None:
     pull_fields = {"number", "url", "title", "base_ref", "base_sha", "head_sha"}
     READ.json_object(
-        pull, "record.pull_request", required=pull_fields, optional={"head_ref", "body_characters", "body_given"}
+        pull,
+        "record.pull_request",
+        required=pull_fields,
+        optional={"head_ref", "body_characters", "body_given", "closing_issues"},
     )
+    if "closing_issues" in pull:
+        _validate_closing_issues(pull["closing_issues"])
     if ("body_characters" in pull) != ("body_given" in pull):
         raise RecordError("Review pull-request fields are malformed")
     if "head_ref" in pull:
@@ -1822,6 +1879,29 @@ def _description_row(pull: PullRequest) -> list[str]:
     return [f"| **Description** | {stated} |"]
 
 
+def _closing_issues_row(pull: PullRequest) -> list[str]:
+    """The report's row naming the issues the pull request closes and how much of each a specialist was given; none
+    for a review that gave no specialist them."""
+    closing = pull.get("closing_issues")
+    if closing is None:
+        return []
+    named = []
+    for issue in closing["issues"]:
+        name = f"{issue['repository']}#{issue['number']} ({issue['state'].lower()})"
+        if not issue["same_repository"]:
+            named.append(f"{name}, another repository's, not given")
+        elif issue.get("unreadable"):
+            named.append(f"{name}, unreadable to the reviewer's account, not given")
+        elif issue["body_given"] == issue["body_characters"]:
+            named.append(f"{name}, {issue['body_characters']:,} characters, given whole")
+        else:
+            named.append(f"{name}, the first {issue['body_given']:,} of {issue['body_characters']:,} characters")
+    left = closing["total"] - len(closing["issues"])
+    if left:
+        named.append(f"{left:,} more not given")
+    return [f"| **Closing issues** | {_text('; '.join(named) or 'none')} |"]
+
+
 def _finding_block(
     finding: Finding, label: str, *, repeats: str | None = None, status: Iterable[str] = ()
 ) -> list[str]:
@@ -1990,6 +2070,7 @@ def render_markdown(
         ),
         f"| **URL** | {_navigation_url(pull['url']) or _text(pull['url'])} |",
         *_description_row(pull),
+        *_closing_issues_row(pull),
         f"| **Reviewed** | {_reviewed_at(review['reviewed_at'])} |",
         f"| **Verdict** | {_label(review['verdict'])}{', ' + ledger.counts() if re_review else ''} |",
         *([f"| **Scope** | {_prose(describe_scope(review['scope']), table=True)} |"] if "scope" in review else []),

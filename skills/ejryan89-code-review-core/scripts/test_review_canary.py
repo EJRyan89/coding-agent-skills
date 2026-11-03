@@ -104,6 +104,30 @@ class PullTests(unittest.TestCase):
                 validate_fixture_pull({**copy.deepcopy(PULL), "document_stage": other})
         self.assertNotIn("document_stage", validate_fixture_pull(copy.deepcopy(PULL)))
 
+    def test_closing_issues_take_the_fixture_s_repository_unless_one_is_named(self) -> None:
+        issues = [
+            {"number": 4, "state": "OPEN", "title": "Total", "body": "Totals are wrong."},
+            {"number": 5, "state": "CLOSED", "title": "", "body": "", "repository": "Other/Two"},
+        ]
+        pull = validate_fixture_pull({**copy.deepcopy(PULL), "closing_issues": issues})
+        self.assertEqual(
+            [{"repository": "example/inventory", **issues[0]}, {**issues[1], "repository": "other/two"}],
+            pull["closing_issues"],
+        )
+        self.assertNotIn("closing_issues", validate_fixture_pull(copy.deepcopy(PULL)))
+        for fault, message in (
+            ({**issues[0], "state": "MERGED"}, "closing_issues\\[0\\].state"),
+            ({**issues[0], "number": 0}, "closing_issues\\[0\\].number"),
+            ({**issues[0], "body": None}, "closing_issues\\[0\\].body"),
+            ({key: value for key, value in issues[0].items() if key != "title"}, "title"),
+            ({**issues[0], "url": "https://example.invalid"}, "url"),
+            ({**issues[0], "repository": "a/b/c"}, "repository"),
+        ):
+            with self.subTest(fault=fault), self.assertRaisesRegex(FixtureError, message):
+                validate_fixture_pull({**copy.deepcopy(PULL), "closing_issues": [fault]})
+        with self.assertRaisesRegex(FixtureError, "closing_issues"):
+            validate_fixture_pull({**copy.deepcopy(PULL), "closing_issues": {"number": 4}})
+
     def test_a_reviewer_manifest_in_the_base_tree_is_named_by_a_safe_relative_path(self) -> None:
         pull = validate_fixture_pull({**copy.deepcopy(PULL), "manifest_path": "./review//specialists.json"})
         self.assertEqual("review/specialists.json", pull["manifest_path"])

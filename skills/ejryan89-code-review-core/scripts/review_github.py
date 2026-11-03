@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import github_client
 from github_client import Clock, GitHubError, GitHubErrorKind, Runner, Sleeper, subprocess_runner
-from review_config import validate_repository_identity
+from review_config import ConfigurationError, validate_repository_identity
 from review_state import utc_date
 from typed_fields import FieldError, FieldReader
 
@@ -169,6 +169,77 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
   }
 }
 """.strip()
+
+
+CLOSING_ISSUES_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $first: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      closingIssuesReferences(first: $first) {
+        totalCount
+        nodes { number state title body repository { nameWithOwner } }
+      }
+    }
+  }
+}
+""".strip()
+
+
+# The GraphQL errors GitHub reports for a closing issue the viewer may not read, such as one in a private repository:
+# the node is then null, and the review counts it without its text rather than failing.
+UNREADABLE_NODE_ERRORS = ("FORBIDDEN", "NOT_FOUND")
+CLOSING_NODE_PATH = ["repository", "pullRequest", "closingIssuesReferences", "nodes"]
+
+
+def _unreadable_closing_issue(error: Any) -> bool:
+    """Whether a GraphQL error is GitHub refusing the viewer one closing issue, at its node and no wider: its type is
+    one of UNREADABLE_NODE_ERRORS and its path is a node of the closing issues, or a field of one."""
+    if not isinstance(error, dict) or error.get("type") not in UNREADABLE_NODE_ERRORS:
+        return False
+    path = error.get("path")
+    return (
+        isinstance(path, list)
+        and len(path) > len(CLOSING_NODE_PATH)
+        and path[: len(CLOSING_NODE_PATH)] == CLOSING_NODE_PATH
+        and type(path[len(CLOSING_NODE_PATH)]) is int
+    )
+
+
+def _refused_nodes(answer: Any) -> set[int]:
+    """The closing issues, by their place in the nodes, a field of which GitHub refused the viewer: each error that
+    `_unreadable_closing_issue` takes whose path runs past the node into one of its fields."""
+    errors = answer.get("errors") if isinstance(answer, dict) else None
+    return {
+        error["path"][len(CLOSING_NODE_PATH)]
+        for error in errors or []
+        if _unreadable_closing_issue(error) and len(error["path"]) > len(CLOSING_NODE_PATH) + 1
+    }
+
+
+def _closing_issue(value: Any, path: str, *, refused: bool = False) -> dict[str, Any] | None:
+    """One closing issue as a review keeps it, or None for a reference GitHub no longer resolves for the viewer. One a
+    field of which GitHub `refused` the viewer keeps its repository, number, and state, and is marked `unreadable`, its
+    title and body empty, never read as a title or a body its author left empty."""
+    if value is None:
+        return None
+    issue = READ.json_object(value, path)
+    if refused:
+        issue = {**issue, "title": "", "body": ""}
+    owner = READ.json_object(issue.get("repository"), f"{path}.repository")
+    name = READ.string(owner.get("nameWithOwner"), f"{path}.repository.nameWithOwner")
+    try:
+        # A prompt names the issue by its repository, so it must be the owner/repo form a configured one is.
+        repository = validate_repository_identity(name)
+    except ConfigurationError as exc:
+        raise GitHubError(f"{path}.repository.nameWithOwner is not a repository: {exc}", kind="malformed") from exc
+    return {
+        "repository": repository,
+        "number": READ.integer(issue.get("number"), f"{path}.number", minimum=1),
+        "state": READ.one_of(issue.get("state"), f"{path}.state", ("OPEN", "CLOSED")),
+        "title": READ.string(issue.get("title"), f"{path}.title", empty=True),
+        "body": READ.optional(READ.string, issue.get("body"), f"{path}.body", empty=True) or "",
+        **({"unreadable": True} if refused else {}),
+    }
 
 
 class GitHubClient:
@@ -329,6 +400,34 @@ class GitHubClient:
             if comment is not None:
                 comments.append({"id": f"C{len(comments) + 1}", **comment})
         return comments
+
+    def list_closing_issues(self, repository: str, number: int, *, first: int) -> tuple[list[dict[str, Any]], int]:
+        """The first `first` issues GitHub links as closing the pull request, each its `repository`, `number`, `state`,
+        `title`, and `body`, and how many it links in all. A reference the viewer can no longer resolve, such as a
+        deleted issue or one in a repository it cannot read, is left out, though `totalCount` still counts it."""
+        repository = validate_repository_identity(repository)
+        ARGUMENTS.integer(number, "pull number", minimum=1)
+        ARGUMENTS.integer(first, "closing issues", minimum=1)
+        owner, name = repository.split("/", 1)
+        arguments = ["api", "graphql", "-f", f"query={CLOSING_ISSUES_QUERY}", "-f", f"owner={owner}", "-f"]
+        arguments.extend([f"name={name}", "-F", f"number={number}", "-F", f"first={first}"])
+        path = "graphql response.data"
+        answer = self.github.partial_graphql(arguments, _unreadable_closing_issue)
+        page: Any = READ.json_object(answer, "graphql response").get("data")
+        for key in ("repository", "pullRequest", "closingIssuesReferences"):
+            page = READ.json_object(page, path).get(key)
+            path = f"{path}.{key}"
+            if page is None:
+                raise GitHubError(f"GraphQL {path} was not found", kind="not_found")
+        connection = READ.json_object(page, path)
+        listed = READ.array(connection.get("nodes"), f"{path}.nodes", maximum=first)
+        refused = _refused_nodes(answer)
+        nodes = [
+            _closing_issue(node, f"{path}.nodes[{index}]", refused=index in refused)
+            for index, node in enumerate(listed)
+        ]
+        total = READ.integer(connection.get("totalCount"), f"{path}.totalCount", minimum=0)
+        return [issue for issue in nodes if issue is not None], total
 
     def list_pulls(self, repository: str, *, state: str) -> PullListing:
         """Every pull request in `state`, through every page; closed pull requests that were not merged are dropped."""

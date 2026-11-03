@@ -45,6 +45,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import json_writer
 from console import run_main
 from review_archive import archive_head, commit_record, pull_records
 from review_batches import (
@@ -69,6 +70,7 @@ from review_dispatch import (
     check_run,
     count_reads,
     dispatch_copilot,
+    guard_runs,
     next_role,
     reviewer_seconds,
     role_errors,
@@ -141,12 +143,15 @@ from review_run import (
     verify_seal,
 )
 from review_runtime import (
+    CLOSING_ISSUES_FILE,
+    CLOSING_ISSUES_MAXIMUM,
     PULL_REQUEST_BODY_FILE,
     RUNTIME_CAPABILITIES,
     SNAPSHOT_FETCHABLE,
     PrepareGitRunner,
     build_adapter_request,
     given_body,
+    given_closing_issues,
     stamp_source_snapshot,
     write_adapter_request,
 )
@@ -165,6 +170,7 @@ from review_source import source_commands
 from review_specialists import (
     assemble,
     build_plan,
+    gives_closing_issues,
     parse_unified_diff,
     renamed_from,
     render_entrypoint_prompt,
@@ -277,13 +283,20 @@ def _write_request(
     comments: list[dict[str, Any]],
     gaps: list[str],
     unreviewed_suffixes: tuple[str, ...] = (),
+    closing_issues: tuple[list[dict[str, Any]], int] | None = None,
 ) -> None:
     """The adapter request, whose unavailable sources include every changed path whose change no reviewer could be
     given whole, which is then no unreviewed file, and beside it the file of the pull request's description, which is
-    never prompt text."""
+    never prompt text, and, when `closing_issues` gives them with how many GitHub links, the file of the closing
+    issues, which is never prompt text either."""
     body = pull.get("body", "")
     body_path = request_path.parent / PULL_REQUEST_BODY_FILE
     atomic_write_text(body_path, given_body(body))
+    closing: tuple[Path, dict[str, Any]] | None = None
+    if closing_issues is not None:
+        issues_file, account = given_closing_issues(*closing_issues, repository)
+        closing = (request_path.parent / CLOSING_ISSUES_FILE, account)
+        atomic_write_text(closing[0], json_writer.dumps(issues_file, indent=2, ensure_ascii=False) + "\n")
     request = build_adapter_request(
         mode=mode,
         repository=repository,
@@ -299,8 +312,8 @@ def _write_request(
         prior_findings=prior,
         github_comments=comments,
         snapshot=manifest,  # prepare materialized and verified it, in this call
-        body_file=body_path,
-        body_characters=len(body),
+        body=(body_path, len(body)),
+        closing_issues=closing,
         unreviewed_suffixes=unreviewed_suffixes,
     )
     coverage = request["coverage"]
@@ -334,10 +347,14 @@ def _write_roles(
     notes: list[str],
     lazy: bool = False,
     document_stage: str | None = None,
-) -> tuple[list[RunRole], list[str]]:
-    """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles
-    and the changed files the plan leaves unreviewed. Every prompt names the `source-search` command, and a `lazy`
-    snapshot's its `source-file` command too; a `document_stage` reaches the design-review specialist's."""
+    guarded: bool,
+) -> tuple[list[RunRole], list[str], dict[str, list[str]]]:
+    """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles,
+    the changed files the plan leaves unreviewed, and the run's restricted paths, each with the roles that may read it.
+    Every prompt names the `source-search` command, and a `lazy` snapshot's its `source-file` command too; a
+    `document_stage` reaches the design-review specialist's. A role withheld a pull-request text keeps the paths it may
+    read, and the closing issues' file is restricted to the roles given it, which the reviewer guard holds them to
+    when it is `guarded`; when it is not, a note says so."""
     script = command_script("review_source.py")
     if kind == "entrypoint":
         if reviewer_root is None or entrypoint is None:
@@ -358,7 +375,7 @@ def _write_roles(
                 source_commands=_source_commands(run, adapter["name"], script, lazy),
             ),
         )
-        return [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}], []
+        return [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}], [], {}
     plan = build_plan(
         request_path,
         reviewer_root,
@@ -370,18 +387,32 @@ def _write_roles(
         source_commands=lambda identity: _source_commands(run, identity, script, lazy),
         document_stage=document_stage,
     )
-    roles: list[RunRole] = [
-        {
-            "id": role["id"],
-            "prompt_file": role["prompt_file"],
-            "result_file": role["result_file"],
-            "model": role["model"],
-            "effort": role["effort"],
+    roles: list[RunRole] = []
+    for planned in plan["roles"]:
+        role: RunRole = {
+            "id": planned["id"],
+            "prompt_file": planned["prompt_file"],
+            "result_file": planned["result_file"],
+            "model": planned["model"],
+            "effort": planned["effort"],
         }
-        for role in plan["roles"]
-    ]
+        if "reads" in planned:
+            role["reads"] = planned["reads"]
+        roles.append(role)
+    unheld = [role["id"] for role in roles if "reads" in role]
+    if unheld and not guarded:
+        notes.append(
+            f"The {', '.join(unheld)} specialist{'s are' if len(unheld) != 1 else ' is'} withheld a pull-request text "
+            "its prompt does not name, but no reviewer guard runs here to keep it from the rest of the run."
+        )
+    restricted: dict[str, list[str]] = plan.get("restricted", {})
+    if restricted and not guarded:
+        notes.append(
+            "Only the specialists given the closing issues are told of their file, but no reviewer guard runs here to "
+            "keep it from the other reviewers."
+        )
     notes.extend(plan["notes"])
-    return roles, plan["uncovered_files"]
+    return roles, plan["uncovered_files"], restricted
 
 
 @dataclass
@@ -401,6 +432,9 @@ class _Review:
     source: Path | None  # the repository the head is snapshotted from; None for GitHub's tarball
     # Writes the diff to the path it is given and returns what prepare reads of the change.
     read_diff: Callable[[Path], ChangeRead]
+    # The first issues of the number it is given that the pull request closes, and how many it closes in all; read
+    # only for a reviewer one of whose specialists is given them.
+    read_closing_issues: Callable[[int], tuple[list[dict[str, Any]], int]]
     canary: bool
     fixture: dict[str, Any] | None = None  # run.json's record of a fixture canary
     prior_record: ReviewRecord | None = None  # a fixture re-review's prior record, which finalize archives first
@@ -476,6 +510,7 @@ def prepare(
         checkout=checkout,
         source=checkout,
         read_diff=lambda diff_path: _fetch_diff(repository, number, pull, checkout, diff_path, services, notes),
+        read_closing_issues=lambda first: services.github.list_closing_issues(repository, number, first=first),
         canary=canary,
         snapshot_exclude=tuple(entry["snapshot_exclude"]),
         unreviewed_suffixes=tuple(entry["unreviewed_suffixes"]),
@@ -542,6 +577,7 @@ def prepare_fixture(
                 change.comments,
                 None,
             ),
+            read_closing_issues=lambda first: (change.closing_issues[:first], len(change.closing_issues)),
             canary=True,
             fixture={"directory": str(directory.resolve()), "prior": None if prior is None else str(prior.resolve())},
             prior_record=record,
@@ -673,6 +709,11 @@ def _prepare_run(
             comments=comments,
             gaps=gaps,
             unreviewed_suffixes=review.unreviewed_suffixes,
+            closing_issues=(
+                review.read_closing_issues(CLOSING_ISSUES_MAXIMUM)
+                if kind == "specialists" and reviewer_root is not None and gives_closing_issues(reviewer_root)
+                else None
+            ),
         )
         fixture = review.fixture
         if fixture is not None:
@@ -681,7 +722,7 @@ def _prepare_run(
                 fixture["prior_record"] = str(run / FIXTURE_PRIOR_FILE)
                 atomic_write_json(run / FIXTURE_PRIOR_FILE, review.prior_record)
         result_path = run / "result.json"
-        roles, uncovered_files = _write_roles(
+        roles, uncovered_files, restricted = _write_roles(
             kind,
             run,
             request_path,
@@ -696,6 +737,7 @@ def _prepare_run(
             notes=notes,
             lazy=lazy,
             document_stage=review.document_stage,
+            guarded=guard_runs(runtime, dispatch),
         )
         snapshot["seconds"] = snapshot_seconds({**snapshot["seconds"], "prompts": services.timer() - writing})
         state: RunState = {
@@ -732,6 +774,8 @@ def _prepare_run(
             "archive_base": review.base,
             # Each line's place in each changed document whose extracted text the reviewers read.
             "documents": documents,
+            # Each file only some roles are given, with those roles, which the reviewer guard holds the others from.
+            "restricted": restricted,
         }
         _write_run(run, state)
     except BaseException:
