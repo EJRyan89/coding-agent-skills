@@ -70,6 +70,50 @@ class WithinTests(unittest.TestCase):
         self.assertFalse(within("//host/share/tree/x", "C:/tree"))
 
 
+class ExtendedPrefixTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
+    def test_within_compares_a_path_and_a_tree_without_the_extended_length_prefix(self) -> None:
+        # Path.resolve gives a long path, or one whose last segment Windows rewrites, with the prefix and a tree
+        # without it, so either spelling on either side compares as the plain path.
+        for path, tree in (
+            ("\\\\?\\C:\\tree\\a", "C:\\tree"),
+            ("C:\\tree\\a", "\\\\?\\C:\\tree"),
+            ("\\\\?\\c:\\TREE\\a", "\\\\?\\C:\\tree"),
+            ("\\\\?\\UNC\\host\\share\\a", "\\\\host\\share"),
+            ("\\\\.\\C:\\tree\\a", "C:\\tree"),
+            ("C:\\tree\\a", "\\\\.\\c:\\tree"),
+            ("\\\\.\\UNC\\host\\share\\a", "\\\\?\\UNC\\host\\share"),
+        ):
+            with self.subTest(path=path, tree=tree):
+                self.assertTrue(within(path, tree))
+                self.assertFalse(within(path, tree.replace("tree", "other").replace("share", "other")))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
+    def test_either_prefix_is_removed_before_a_drive_letter_or_a_share_and_kept_before_anything_else(self) -> None:
+        volume = "\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\skills"
+        cases = {
+            "\\\\?\\C:\\skills\\x": "C:\\skills\\x",
+            "\\\\?\\c:\\skills": "c:\\skills",
+            "\\\\?\\UNC\\host\\share\\skills\\x": "\\\\host\\share\\skills\\x",
+            "\\\\?\\unc\\host\\share\\skills": "\\\\host\\share\\skills",
+            "C:\\skills\\x": "C:\\skills\\x",
+            "\\\\host\\share\\skills": "\\\\host\\share\\skills",
+            volume: volume,
+            "\\\\.\\C:\\skills\\x": "C:\\skills\\x",
+            "\\\\.\\UNC\\host\\share\\skills": "\\\\host\\share\\skills",
+            "\\\\.\\pipe\\x": "\\\\.\\pipe\\x",
+        }
+        for spelled, plain in cases.items():
+            with self.subTest(path=spelled):
+                self.assertEqual(Path(plain), path_containment.without_extended_prefix(Path(spelled)))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows reads the prefix as part of a drive")
+    def test_elsewhere_the_prefix_characters_are_an_ordinary_name(self) -> None:
+        for spelled in ("\\\\?\\C:\\skills", "/home/a/\\\\?\\C:\\skills"):
+            with self.subTest(path=spelled):
+                self.assertEqual(Path(spelled), path_containment.without_extended_prefix(Path(spelled)))
+
+
 class PosixWithinTests(unittest.TestCase):
     def test_a_name_in_the_folder_is_within_and_the_folder_itself_only_when_not_strict(self) -> None:
         self.assertTrue(posix_within("skills/a/b.py", "skills"))
@@ -108,9 +152,17 @@ class WrittenRefusalTests(unittest.TestCase):
             "docs//a.md": "the entry holds an empty segment",
             "docs/": "the entry holds an empty segment",
         }
+        trailing = "the entry has a segment ending in a dot or a space, which Windows drops, so it names another file"
+        for entry in ("a.", "a ", "docs./a.md", "docs /a.md", "...", ".. ", ". ", ".. /Roaming", "docs\\a. "):
+            cases[entry] = trailing
         for entry, reason in cases.items():
             with self.subTest(entry=entry):
                 self.assertEqual(reason, written_refusal(entry))
+
+    def test_a_dot_or_a_space_inside_a_name_and_a_lone_dot_segment_are_accepted(self) -> None:
+        for entry in (".", "./a", "a/./b", ".a", "a.b", "a b", "..a", "a/.github/b"):
+            with self.subTest(entry=entry):
+                self.assertIsNone(written_refusal(entry))
 
     def test_a_reserved_device_name_in_any_segment_is_refused_on_every_platform(self) -> None:
         for entry in (
@@ -162,6 +214,14 @@ class RefusalTests(unittest.TestCase):
         self.outside = base / "outside"
         self.outside.mkdir()
         (self.outside / "a.md").write_text("outside\n", encoding="utf-8")
+
+    def test_a_segment_windows_drops_the_end_of_is_refused_for_that_never_for_a_link(self) -> None:
+        # Windows reads `.. /docs` as `docs` and `.../a.md` as `a.md`, a file inside the tree, so the refusal names the
+        # spelling, not a link that does not exist.
+        trailing = "the entry has a segment ending in a dot or a space, which Windows drops, so it names another file"
+        for entry in (".. /docs", ".../a.md", "docs/a.md."):
+            with self.subTest(entry=entry):
+                self.assertEqual(trailing, refusal(entry, self.tree))
 
     def test_a_file_inside_the_tree_and_one_not_yet_written_are_accepted(self) -> None:
         self.assertIsNone(refusal("docs/a.md", self.tree))
@@ -249,3 +309,40 @@ class RefusalTests(unittest.TestCase):
         with mock.patch.object(path_containment, "is_link_or_junction", side_effect=recording):
             self.assertIsNone(refusal("docs/a.md", self.tree))
         self.assertEqual([self.tree / "docs", self.tree / "docs" / "a.md"], probed)
+
+
+class RelativeWithinTests(unittest.TestCase):
+    def test_a_path_in_its_tree_is_given_relative_to_it_and_one_outside_is_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary) / "tree"
+            self.assertEqual(Path("a", "b.py"), path_containment.relative_within(tree / "a" / "b.py", tree))
+            self.assertEqual(Path("a"), path_containment.relative_within(tree / "a" / ".." / "a", tree))
+            self.assertEqual(Path(), path_containment.relative_within(tree, tree))
+            self.assertIsNone(path_containment.relative_within(tree, tree, strict=True))
+            for outside in (Path(temporary), Path(temporary) / "tree2" / "a", tree / ".." / "other"):
+                with self.subTest(outside=outside):
+                    self.assertIsNone(path_containment.relative_within(outside, tree))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
+    def test_a_prefix_on_one_side_alone_still_gives_the_relative_path(self) -> None:
+        # Path.resolve gives a path too long for MAX_PATH with the prefix and a short tree without it.
+        for path, tree in (
+            ("\\\\?\\C:\\tree\\tools\\calc.py", "C:\\tree"),
+            ("C:\\tree\\tools\\calc.py", "\\\\?\\C:\\tree"),
+            ("\\\\.\\c:\\TREE\\tools\\calc.py", "C:\\tree"),
+        ):
+            with self.subTest(path=path, tree=tree):
+                self.assertEqual(Path("tools", "calc.py"), path_containment.relative_within(path, tree))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows ignores case in a path")
+    def test_a_case_only_difference_is_judged_as_within_judges_it_and_keeps_the_path_s_spelling(self) -> None:
+        self.assertEqual(Path("Tools", "X.py"), path_containment.relative_within("C:\\TREE\\Tools\\X.py", "c:\\tree"))
+
+    def test_which_parts_lie_below_the_tree_comes_from_the_compared_form_never_a_relative_to(self) -> None:
+        # A case rule other than the one within compared by can never make the answer raise or disagree. within is
+        # stubbed, since Python 3.11's is_relative_to calls relative_to itself.
+        with (
+            mock.patch.object(path_containment, "within", return_value=True),
+            mock.patch.object(Path, "relative_to", side_effect=AssertionError("relative_to is never called")),
+        ):
+            self.assertEqual(Path("a", "b.py"), path_containment.relative_within("tree/a/b.py", "tree"))
