@@ -297,7 +297,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2235, #2292
+- **Examples:** #1890, #1892, #2227, #2235, #2292
 
 ### A reader of another program's language reads it as that program does
 
