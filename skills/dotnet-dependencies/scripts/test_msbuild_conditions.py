@@ -337,6 +337,8 @@ EQUALITY_VERDICTS = [
     ("-NaN", "NaN", False),
     ("+NaN", "1", False),
     ("NaN", "x", False),
+    ("true", "false", False),
+    ("on", "off", False),
     ("yes", "true", True),
     ("on", "!false", True),
     ("no", "!yes", True),
@@ -382,6 +384,11 @@ def test_text_whose_simple_uppercase_python_cannot_tell_leaves_equality_unsettle
     # A Greek letter with a subscript iota: Python's uppercase of it is two letters, so its simple one is not known.
     assert holds("'$(Left)' == '$(Right)'", Left="\u1fb3", Right="\u1fbc") is None
     assert holds("'$(Left)' == '$(Right)'", Left="\u1fb3x", Right="\u1fbcy") is False
+    # A number or a boolean beside such text is compared as text too, since the other side is neither, so it stays
+    # unsettled rather than unequal.
+    for known, text in (("1", "\u1fb3"), ("yes", "\u1fb3\u1fb3\u1fb3"), ("true", "\u1fb3\u1fb3\u1fb3\u1fb3")):
+        assert holds("'$(Left)' == '$(Right)'", Left=known, Right=text) is None, known
+        assert holds("'$(Left)' == '$(Right)'", Left=text, Right=known) is None, known
 
 
 # MSBuild's verdicts on a lone operand, captured the same way: only the whole value, in any case, is a boolean, and any
@@ -414,3 +421,12 @@ def test_a_lone_operand_is_a_boolean_only_as_msbuild_reads_one(value: str, verdi
 )
 def test_a_method_or_function_name_is_matched_in_ascii_letters_alone(text: str) -> None:
     assert expand(text, a="a") == UNKNOWN
+
+
+def test_a_method_or_function_name_is_matched_in_any_ascii_case() -> None:
+    # MSBuild finds a property function and a [MSBuild] function by its name in any case.
+    assert expand("$(A.startswith('a'))", a="a") == ("True",)
+    assert expand("$(A.CONTAINS('z'))", a="a") == ("False",)
+    assert expand("$([msbuild]::getpathoffileabove('Directory.Build.props', '/repo'))") == (
+        "/repo/Directory.Build.props",
+    )
