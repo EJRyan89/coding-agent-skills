@@ -780,7 +780,7 @@ class ShellOptionTableTests(unittest.TestCase):
             ("set +x; git status", {"PS4": "$(cmd)"}, []),
             (
                 "bash -x -c 'git status'",
-                {"PS4": "${x}"},
+                {"PS4": "${x:-y}"},
                 ["xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs"],
             ),
             ("bash -c 'git status'", {"PS4": "$(cmd)"}, []),
@@ -815,6 +815,105 @@ class ShellOptionTableTests(unittest.TestCase):
                 self.assertEqual(unread, reading.unread)
         self.assertEqual((), hub_guard.handed_ps4({"ps4": "$(x)"}, names_folded=False))
         self.assertEqual(("$(x)",), hub_guard.handed_ps4({"ps4": "$(x)"}, names_folded=True))
+
+    def test_each_arithmetic_context_is_read_for_what_it_may_assign(self) -> None:
+        # Each arithmetic context, with EXPR standing for its expression.
+        contexts = (
+            "(( EXPR ))",
+            ": $(( EXPR ))",
+            'let "EXPR"',
+            '[[ 1 -eq "EXPR" ]]',
+            '[[ "EXPR" -lt 2 ]]',
+            "a=(x); : ${a[EXPR]}",
+            "a[EXPR]=x",
+            "s=abc; : ${s: EXPR}",
+            "s=abc; : ${s:0:EXPR}",
+            "for (( EXPR; 0; )); do :; done",
+            "cat <<< $(( EXPR ))",
+            "cat > $(( EXPR ))",
+            "cat <<END\n$(( EXPR ))\nEND\ntrue",
+            "case $(( EXPR )) in *) ;; esac",
+            "for x in $(( EXPR )); do :; done",
+            'echo "${x:-$(( EXPR ))}"',
+        )
+        # Each expression, and whether it may turn on a shell option: an assignment to POSIXLY_CORRECT or BASH_COMPAT,
+        # through a name or value the text settles or not, and a variable whose value is not a number.
+        expressions = (
+            ("POSIXLY_CORRECT=1", True),
+            ("BASH_COMPAT=44", True),
+            ("POSIXLY_CORRECT += 1", True),
+            ("++BASH_COMPAT", True),
+            ("x", True),
+            ("$x", True),
+            ("u", True),
+            ("y", True),
+            ("$(echo 1)", True),
+            ("${x:-1}", True),
+            ("n + 1", False),
+            ("$n * 2", False),
+            ("16#ff + 0x1f", False),
+            ("$# + ${#n}", False),
+            ("absent + 1", False),
+            ("POSIXLY_CORRECT == 1", False),
+        )
+        before = "x='POSIXLY_CORRECT=1'; y=x; n=3; read -r u <<< 1; "
+        for context in contexts:
+            for expression, refused in expressions:
+                command = before + context.replace("EXPR", expression) + "; git status"
+                with self.subTest(command=command):
+                    self.assertEqual(refused, bool(bash_reading(command).unread), bash_reading(command).unread)
+        # A name the text settles to one of them, an integer attribute, and a value evaluated again.
+        for command in (
+            "x=POSIXLY_CORRECT; (( $x = 1 )); git status",
+            'v=BASH_COMPAT; let "$v=44"; git status',
+            "declare -i n='POSIXLY_CORRECT=1'; git status",
+            "declare -i n; n='BASH_COMPAT=44'; git status",
+            "local -ri n=1; git status",
+            "x='y=1'; y='POSIXLY_CORRECT=1'; (( x, y )); git status",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(bash_reading(command).unread)
+        # A case pattern's substitution runs as Bash tests the pattern.
+        self.assertEqual(["reset"], subcommands("case x in a|$(git reset --hard)) :;; esac"))
+        for command in (
+            "n=0; (( n += 1 )); git status",
+            "declare -a arr=(a b c); git status",
+            "declare -r Z=3; git status",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([], bash_reading(command).unread)
+
+    def test_ps4_is_refused_only_where_it_may_run_something_as_it_expands(self) -> None:
+        for value, expands in (
+            ("+ ", False),
+            ("+ ${BASH_SOURCE}:${LINENO}: ", False),
+            ("+ $LINENO ", False),
+            ("${1}${#}", False),
+            ("$(cmd)", True),
+            ("`cmd`", True),
+            ("$((x))", True),
+            ("$[x]", True),
+            ("${x:=y}", True),
+            ("${x:-$(cmd)}", True),
+            ("${x", True),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(expands, hub_guard.expanding_ps4((value,)))
+        self.assertTrue(hub_guard.expanding_ps4((None,)))
+        self.assertFalse(hub_guard.expanding_ps4(()))
+        for command in (
+            "export PS4='+ ${BASH_SOURCE}:${LINENO}: '; set -x; git status",
+            "export PS4='+ ${BASH_SOURCE}:${LINENO}: '; git status",
+            "PS4='+ $LINENO: ' bash -x -c 'git status'",
+            "set -x; git status; PS4='+ $LINENO '; echo hi",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([], bash_reading(command).unread)
+        # A declaration by names the text does not settle may assign any variable, as #2171's fail-closed reading
+        # holds, so the common split-and-declare idiom is refused while a hub is guarded.
+        self.assertEqual(
+            [ANY_NAME], bash_reading('read -r name value <<< "a b"; declare "$name=$value"; git status').unread
+        )
 
     def test_the_environment_a_bash_starts_with_is_judged_by_each_variable_that_sets_options(self) -> None:
         source = "the environment bash starts with"
@@ -870,7 +969,8 @@ class ShellOptionTableTests(unittest.TestCase):
             "the command assigns BASH_COMPAT, which turns on an earlier Bash's behavior; the guard does not read it"
         )
         by_arithmetic = (
-            "the command assigns POSIXLY_CORRECT by arithmetic, which turns on posix; the guard does not read it"
+            "the command holds an arithmetic assignment to POSIXLY_CORRECT, which turns on posix, which the guard does "
+            "not read"
         )
         for command, unread in (
             # Each way a literal name is assigned, by every builtin that assigns and before a command.

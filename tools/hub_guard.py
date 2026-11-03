@@ -262,8 +262,6 @@ ARITHMETIC_OPTION_ASSIGNMENT = re.compile(
     r"\b(POSIXLY_CORRECT|BASH_COMPAT)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))"
     r"|(?:\+\+|--)\s*(POSIXLY_CORRECT|BASH_COMPAT)\b"
 )
-# The first word of `(( ))` that assigns one of them, which the grammar reads as a command in nested subshells.
-ARITHMETIC_COMMAND = re.compile(r"(?:\+\+|--)?(?:POSIXLY_CORRECT|BASH_COMPAT)\b")
 # A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry a
 # leading backslash or, without one, the provider's module. A variable may follow a separator on the drive only: after
 # Environment:: PowerShell keeps the separator as part of the variable's name.
@@ -1551,6 +1549,9 @@ class BashReader:
             return certain(shell)
         self.read_substitutions([], node.redirects, shell)
         if isinstance(node, bash_syntax.Subshell):
+            expression = arithmetic_command(node)
+            if expression is not None:
+                self.note_arithmetic([expression], shell)
             self.run_list(node.body, shell.copy())
             # The reader reads an arithmetic command, (( )), as a subshell, though it runs in this shell, so an
             # expansion in it that assigns leaves its variable unsettled here too.
@@ -1561,7 +1562,8 @@ class BashReader:
         if isinstance(node, bash_syntax.If):
             return self.run_if(node, shell)
         if isinstance(node, bash_syntax.Case):
-            self.read_substitutions([node.word], [], shell)
+            # Bash expands each pattern as it tests it, so each pattern's substitutions and arithmetic may run.
+            self.read_substitutions([node.word, *node.patterns], [], shell)
             branches = [self.run_list(branch, shell.copy()).merged() for branch in node.branches]
             return certain(join_all([shell, *branches]))
         return self.run_loop(node, shell)
@@ -1582,7 +1584,8 @@ class BashReader:
         if node.words is not None:
             self.read_substitutions(node.words, [], shell)
         self.read_substitutions(node.header, [], shell)
-        self.note_arithmetic([" ".join(word.raw for word in node.header)])
+        if node.header:
+            self.note_arithmetic([" ".join(unquoted(word.raw) for word in node.header)], shell)
         if self.reading.loops >= LOOP_NESTING_LIMIT:
             self.reading.cannot_read(f"loops nest more than {LOOP_NESTING_LIMIT} deep")
             lost = shell.copy()
@@ -1628,32 +1631,41 @@ class BashReader:
                 assigns.extend(redirect.here.assigns)
         for text in texts:
             self.run_text(text, shell.copy())
+        # Each arithmetic expression the words, the redirection targets, and an unquoted here-document's body hold.
+        raws = [word.raw for word in words]
+        raws.extend(redirect.target.raw for redirect in redirects if redirect.target is not None)
+        raws.extend(
+            redirect.here.body for redirect in redirects if redirect.here is not None and not redirect.here.quoted
+        )
+        self.note_arithmetic((expression for raw in raws for expression in arithmetic_contexts(raw)), shell)
         assign_expanded(shell, assigns)
 
-    def note_arithmetic(self, texts: Iterable[str]) -> None:
-        """Tells the reading of an arithmetic assignment to a variable that turns on a shell option."""
-        for text in texts:
-            found = ARITHMETIC_OPTION_ASSIGNMENT.search(text)
-            if found is not None:
-                name = found.group(1) or found.group(2)
-                self.reading.cannot_read(
-                    f"the command assigns {name} by arithmetic, which turns on {OPTION_SETTING_VARIABLES[name]}; "
-                    "the guard does not read it"
-                )
+    def note_arithmetic(self, expressions: Iterable[str | None], shell: Shell) -> None:
+        """Tells the reading of the first arithmetic expression that may turn on a shell option (arithmetic_hazard),
+        once for the command, whose loops the reader reads twice."""
+        for expression in expressions:
+            reason = arithmetic_hazard(expression, shell)
+            if reason is not None:
+                message = f"the command holds {reason}, which the guard does not read"
+                if message not in (*self.reading.unread, *self.reading.notes):
+                    self.reading.cannot_read(message)
                 return
 
     def run_simple(self, node: bash_syntax.Simple, shell: Shell) -> Outcome:
         self.read_substitutions(node.words, node.redirects, shell)
         words = node.words
-        # Arithmetic: each $(( )) in a word or redirection, let's operands, and `(( ))`, which the grammar reads as a
-        # command in nested subshells whose first word is the expression's.
-        raws = [word.raw for word in words] + [each.target.raw for each in node.redirects if each.target is not None]
-        self.note_arithmetic(raw[raw.index("$((") :] for raw in raws if "$((" in raw)
-        if words and (
-            words[0].literal == "let" or (words[0].assignment is None and ARITHMETIC_COMMAND.match(words[0].raw))
-        ):
-            self.note_arithmetic([" ".join(word.raw for word in words)])
+        # let evaluates each operand, and [[ ]] each operand of an arithmetic comparison.
+        if words and words[0].literal == "let":
+            self.note_arithmetic((unquoted(word.raw) for word in words[1:]), shell)
         if words and words[0].literal == "[[":
+            operands = [
+                unquoted(words[index + step].raw)
+                for index, word in enumerate(words)
+                if word.literal in ARITHMETIC_COMPARISONS
+                for step in (-1, 1)
+                if 0 <= index + step < len(words)
+            ]
+            self.note_arithmetic(operands, shell)
             return certain(shell)
         index = 0
         while index < len(words) and words[index].assignment is not None:
@@ -2076,6 +2088,7 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
     through any name reference, and the name references declare, typeset, and local make with -n and undo with
     +n."""
     builtin = reader.current_builtin
+    refuse_integer_attribute(reader, arguments)
     if None in arguments:
         # A word the text does not settle may be -fx, which exports any function.
         shell.exported_functions |= set(shell.functions)
@@ -2114,6 +2127,16 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
         elif exporting or (shell.allexport and has_value):
             shell.exported.add(subject)
     return certain(shell)
+
+
+def refuse_integer_attribute(reader: BashReader, arguments: list[Word]) -> None:
+    """A declaration that gives a variable the integer attribute, -i alone or in a bundle: Bash evaluates each later
+    assignment to it as arithmetic, which may assign any variable, so the guard cannot read the shell after it."""
+    if any(word is not None and is_declare_option(word) and word.startswith("-") and "i" in word for word in arguments):
+        reader.reading.cannot_read(
+            "the command gives a variable the integer attribute, so each assignment to it is arithmetic, which the "
+            "guard does not read"
+        )
 
 
 def declare_unsettled(reader: BashReader, shell: Shell, referencing: bool | None) -> None:
@@ -2430,9 +2453,174 @@ def judge_options(
 
 
 def expanding_ps4(ps4: tuple[Word, ...]) -> bool:
-    """Whether a PS4, given as (value,) or () when the shell holds none, may hold an expansion: a value the text does
-    not settle, or one holding $ or a backquote."""
-    return bool(ps4) and (ps4[0] is None or bool(re.search(r"[$`]", ps4[0])))
+    """Whether a PS4, given as (value,) or () when the shell holds none, may run something as xtrace expands it: a
+    value the text does not settle, or one holding a command substitution, a backquote, an arithmetic expansion, or a
+    ${ } other than a plain name's, which may assign. A plain $NAME or ${NAME} runs nothing."""
+    if not ps4:
+        return False
+    value = ps4[0]
+    if value is None or "`" in value or re.search(r"\$[(\[]", value):
+        return True
+    return any(
+        not closed or not PLAIN_BRACED.fullmatch(content) for content, closed in re.findall(r"\$\{([^}]*)(\}?)", value)
+    )
+
+
+# What a ${ } may hold and run nothing as it expands: a name, a positional parameter, or a special one.
+PLAIN_BRACED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?$!@*-]")
+# A name in an arithmetic expression, which Bash reads as a variable, not one inside a number such as 0x1f or 16#ff.
+ARITHMETIC_NAME = re.compile(r"(?<![A-Za-z0-9_#])[A-Za-z_][A-Za-z0-9_]*")
+ARITHMETIC_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+# An expansion whose value is always a number: $#, $?, $$, $!, and ${#NAME}, a length.
+NUMERIC_EXPANSION = re.compile(r"\$[#?$!]|\$\{#[A-Za-z_][A-Za-z0-9_]*\}")
+INTEGER = re.compile(r"\s*[-+]?[0-9]+\s*")
+# How deep arithmetic follows a variable whose value is itself an expression, which Bash evaluates in turn.
+ARITHMETIC_DEPTH = 8
+
+
+ARITHMETIC_COMPARISONS = {"-eq", "-ne", "-lt", "-le", "-gt", "-ge"}
+
+
+def unquoted(raw: str) -> str:
+    """A word's raw text without its quote marks, as arithmetic reads an operand; what single quotes hold is read as
+    if it expanded, which can only refuse more."""
+    return raw.replace('"', "").replace("'", "")
+
+
+def arithmetic_command(node: bash_syntax.Subshell) -> str | None:
+    """The expression of an arithmetic command, (( )), which the grammar reads as one simple command in a subshell
+    in a subshell; None for any other subshell."""
+    inner = sole_command(node.body)
+    if not isinstance(inner, bash_syntax.Subshell):
+        return None
+    command = sole_command(inner.body)
+    if not isinstance(command, bash_syntax.Simple):
+        return None
+    return " ".join(unquoted(word.raw) for word in command.words)
+
+
+def sole_command(body: bash_syntax.CommandList) -> bash_syntax.Command | None:
+    """The one command a list holds, alone in its pipeline and not in the background; None for any other list."""
+    if len(body.items) != 1:
+        return None
+    and_or, background = body.items[0]
+    if background or and_or.rest or len(and_or.first.commands) != 1 or and_or.first.negated:
+        return None
+    return and_or.first.commands[0]
+
+
+def matching(text: str, start: int) -> int | None:
+    """The index of the bracket that closes the one at start, counting the same kind nested in it; None when none
+    does."""
+    opening = text[start]
+    closing = {"(": ")", "[": "]", "{": "}"}[opening]
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == opening:
+            depth += 1
+        elif text[index] == closing:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def arithmetic_contexts(raw: str) -> list[str | None]:
+    """The text of each arithmetic expression a word's raw text holds, where Bash evaluates it as it expands the word:
+    each $(( )) and $[ ], each subscript of a ${NAME[...]}, each offset and length of a ${NAME:offset:length}, and the
+    subscript of an assignment to an element, NAME[...]=, at the word's start; None for one that does not close.
+    Nothing inside single quotes expands."""
+    found: list[str | None] = []
+    head = re.match(r"[A-Za-z_][A-Za-z0-9_]*\[", raw)
+    if head is not None:
+        end = matching(raw, head.end() - 1)
+        found.append(None if end is None else raw[head.end() : end])
+    index, single = 0, False
+    while index < len(raw):
+        character = raw[index]
+        if single:
+            single = character != "'"
+            index += 1
+        elif character == "'":
+            single = True
+            index += 1
+        elif character == "\\":
+            index += 2
+        elif raw.startswith("$((", index) or raw.startswith("$[", index):
+            end = matching(raw, index + 1)
+            found.append(None if end is None else raw[index + 2 : end])
+            index = len(raw) if end is None else end + 1
+        elif raw.startswith("${", index):
+            end = matching(raw, index + 1)
+            if end is None:
+                found.append(None)
+                return found
+            found.extend(braced_arithmetic(raw[index + 2 : end]))
+            index = end + 1
+        else:
+            index += 1
+    return found
+
+
+def braced_arithmetic(content: str) -> list[str | None]:
+    """The arithmetic expressions in a ${ }'s content: its subscript, its offset and length, and each nested in it."""
+    found: list[str | None] = []
+    name = re.match(r"[#!]?([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?$!@*-])", content)
+    rest = content[name.end() :] if name is not None else content
+    if rest.startswith("["):
+        end = matching(rest, 0)
+        if end is None:
+            return [None]
+        if rest[1:end] not in ("@", "*"):
+            found.append(rest[1:end])
+        rest = rest[end + 1 :]
+    if rest.startswith(":") and rest[1:2] not in ("-", "=", "?", "+"):
+        found.extend(rest[1:].split(":")[:2])
+    found.extend(arithmetic_contexts(content))
+    return found
+
+
+def arithmetic_hazard(expression: str | None, shell: Shell, depth: int = 0) -> str | None:
+    """Why an arithmetic expression may turn on a shell option, or None when it cannot: it assigns POSIXLY_CORRECT or
+    BASH_COMPAT, or holds what the text does not settle to a number, which may be such an assignment as Bash evaluates
+    it: an expansion or a variable whose value is unsettled, a substitution's output, a ${ } other than a plain name, or
+    a variable whose value is an expression that does, followed to ARITHMETIC_DEPTH."""
+    if expression is None or depth > ARITHMETIC_DEPTH:
+        return "an arithmetic expression the guard does not read to its end"
+    text = NUMERIC_EXPANSION.sub("0", expression.replace("$((", "((").replace("$[", "["))
+    if "`" in text or "$(" in text:
+        return "an arithmetic expression that holds a substitution's output"
+
+    def expand(match: re.Match[str]) -> str:
+        value = settled_variable(shell, match.group(1) or match.group(2))
+        # Bash puts the value in the expression as text, so it may name the variable an operator assigns.
+        return value if value is not None else "\0"
+
+    text = ARITHMETIC_EXPANSION.sub(expand, text)
+    if "\0" in text or "$" in text:
+        return "an arithmetic expression that expands what the text does not settle"
+    found = ARITHMETIC_OPTION_ASSIGNMENT.search(text)
+    if found is not None:
+        name = found.group(1) or found.group(2)
+        return f"an arithmetic assignment to {name}, which turns on {OPTION_SETTING_VARIABLES[name]}"
+    for name in dict.fromkeys(ARITHMETIC_NAME.findall(text)):
+        value = settled_variable(shell, name)
+        if value is None:
+            return f"an arithmetic expression that evaluates {name}, whose value the text does not settle"
+        if value and not INTEGER.fullmatch(value):
+            reason = arithmetic_hazard(value, shell, depth + 1)
+            if reason is not None:
+                return reason
+    return None
+
+
+def settled_variable(shell: Shell, name: str) -> str | None:
+    """A variable's value as arithmetic reads it, through any name reference: "" when it is unset; None when the text
+    does not settle it."""
+    target = shell.target(name)
+    if target is None or shell.opaque:
+        return None
+    return shell.variables.get(target, "")
 
 
 def shell_ps4(shell: Shell) -> tuple[Word, ...]:

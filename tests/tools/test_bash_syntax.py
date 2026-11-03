@@ -387,6 +387,14 @@ class TreeTests(unittest.TestCase):
             [["git", "status"], ["echo", "a#b"]], simple_commands(parse("git status # git reset\necho a#b"))
         )
 
+    def test_a_case_keeps_each_word_of_every_pattern_which_bash_expands_as_it_tests_it(self) -> None:
+        tree = parse("case $x in a|$(git reset)) :;; (b*|$((n=1))) :;; esac")
+        [(and_or, _)] = tree.items
+        case = and_or.first.commands[0]
+        assert isinstance(case, bash_syntax.Case)
+        self.assertEqual(["a", "$(git reset)", "b*", "$((n=1))"], [word.raw for word in case.patterns])
+        self.assertEqual(("git reset",), case.patterns[1].substitutions)
+
 
 @pytest.mark.parametrize(
     ("text", "expected"),

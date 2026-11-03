@@ -212,6 +212,8 @@ class Case:
     word: Word
     branches: list[CommandList]
     redirects: list[Redirect] = field(default_factory=list)
+    # Each word of every pattern, which Bash expands, its substitutions and arithmetic included, as it tests it.
+    patterns: list[Word] = field(default_factory=list)
 
 
 @dataclass
@@ -963,17 +965,21 @@ class Parser:
         self.skip_newlines()
         self.expect_reserved("in")
         branches: list[CommandList] = []
+        patterns: list[Word] = []
         while True:
             self.skip_newlines()
             if self.at_reserved("esac"):
                 self.index += 1
-                return Case(word, branches, self.redirects())
+                return Case(word, branches, self.redirects(), patterns)
             if self.at_operator("("):
                 self.index += 1
             while not self.at_operator(")"):
                 if self.peek() is None:
                     raise BashSyntaxError("a case pattern is not closed")
-                refuse_array(self.advance())
+                token = self.advance()
+                refuse_array(token)
+                if isinstance(token, Word):
+                    patterns.append(token)
             self.index += 1
             branches.append(self.command_list(frozenset({"esac"})))
             if self.at_operator(*CASE_ENDS):

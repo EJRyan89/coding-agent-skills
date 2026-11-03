@@ -1003,6 +1003,18 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
             'read -r v <<< POSIXLY_; declare "${v}CORRECT=1"; PROBE',
             "read -r v <<< POSIXLY_; declare -n r=${v}CORRECT; r=1; PROBE",
             'read -r v <<< POSIXLY_; printf -v "${v}CORRECT" 1; PROBE',
+            # Arithmetic, by a name the text settles, a value Bash evaluates again, and each context it runs in.
+            "x=POSIXLY_CORRECT; (( $x = 1 )); PROBE",
+            "x='POSIXLY_CORRECT=1'; (( x )); PROBE",
+            "x='POSIXLY_CORRECT=1'; : $(( x )); PROBE",
+            "declare -i n; n='POSIXLY_CORRECT=1'; PROBE",
+            "declare -i n='POSIXLY_CORRECT=1'; PROBE",
+            "[[ 1 -eq POSIXLY_CORRECT=1 ]]; PROBE",
+            "a[POSIXLY_CORRECT=1]=x; PROBE",
+            "a=(x); : ${a[POSIXLY_CORRECT=1]}; PROBE",
+            's=abc; : "${s:POSIXLY_CORRECT=1}"; PROBE',
+            'v=POSIXLY_CORRECT; let "$v=1"; PROBE',
+            ": <<< $(( POSIXLY_CORRECT = 1 )); PROBE",
         )
     ),
     *(
@@ -1034,6 +1046,8 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
     # which has no [[; and lastpipe turned on beside job control, which keeps it from holding.
     ("sh -c 'PROBE'", "posix", "refused"),
     ("set -m; shopt -s lastpipe; PROBE", "lastpipe", "refused"),
+    # A program's redirections are expanded in the child it runs in, so the assignment does not reach the shell.
+    ("cat <<< $(( POSIXLY_CORRECT = 1 )) > /dev/null; PROBE", "posix", "refused"),
     # Spellings that leave each option off.
     *(
         (spelling, option, "off")
@@ -1047,6 +1061,8 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
             ("set +o posix; PROBE", "posix"),
             ("echo PS4 POSIXLY_CORRECT $BASH_COMPAT; unset POSIXLY_CORRECT; PROBE", "posix"),
             ("echo $(( POSIXLY_CORRECT == 1 )); PROBE", "posix"),
+            ("n=0; (( n += 1 )); a=(x); : ${a[n-1]}; PROBE", "posix"),
+            ("export PS4='+ ${BASH_SOURCE}:${LINENO}: '; PROBE", "posix"),
             ("bash -c 'PROBE'", "posix"),
             ("bash -lc 'PROBE'", "posix"),
             ("bash --norc --noprofile -c 'PROBE'", "posix"),
