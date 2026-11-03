@@ -1444,3 +1444,15 @@ def test_a_command_is_named_by_its_subcommand_behind_git_s_own_options() -> None
     assert git_client.command_name(["--no-optional-locks", "-c", "a=b", "status"]) == "git status"
     assert git_client.command_name(["--shallow-file", "s", "log"]) == "git log"
     assert git_client.command_name(["--no-optional-locks"]) == "git"
+
+
+@pytest.mark.parametrize(
+    "arguments", [["-c"], ["--config-env"], ["-C", "d", "-c"], ["--no-optional-locks", "--config-env"]]
+)
+def test_a_configuration_option_with_no_value_after_it_sets_no_section(arguments: list[str]) -> None:
+    # git refuses the command itself; the client reads no section past the end and leaves the refusal to git.
+    assert git_client.configured_sections(arguments) == []
+    assert not git_client.defines_alias(arguments)
+    runner, calls = scripted(GitResult(129, "", "error: option requires a value\n"))
+    assert GitClient(runner).run(arguments).returncode == 129
+    assert calls[0][0] == ["git", *arguments]
