@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -333,6 +334,11 @@ class LazySnapshotTests(LazySnapshotFixture):
             ({"CLAUDE.md": unchanged}, "fetchable path is invalid: 'CLAUDE.md'"),  # an exclusion
             ({"src/changed.py": unchanged}, "fetchable path is invalid: 'src/changed.py'"),  # already held
             ({".claude/settings.json": unchanged}, "fetchable path is invalid"),  # agent configuration
+            # A name the snapshot's writer leaves out, which no fetch may join or write.
+            *(
+                ({name: unchanged}, f"fetchable (path is invalid|is unsafe): {re.escape(repr(name))}")
+                for name in ("a/con", "a/CON.txt", "a/x.", "a/x ", "a/conin$", "a/x?y.py", "a/" + "n" * 256)
+            ),
         ):
             with self.subTest(fetchable=fetchable):
                 path.write_text(json.dumps({**original, "fetchable": fetchable}), encoding="utf-8")
