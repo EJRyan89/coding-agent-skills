@@ -201,6 +201,9 @@ def valid_entry(entry: object, run_id: str) -> TypeGuard[JournalEntry]:
 
 
 BACKUP_PATH_REMEDY = "Replace it with a real directory after verifying its contents, then retry."
+# The step a refusal of a backup destination a journal names ends with. Only a rollback prints a refusal's later lines,
+# so the run it was rolling back is the user's to reconcile.
+RECONCILE_BY_HAND = "Reconcile the run by hand, then rerun with --dry-run."
 
 
 def _reject_backup_links(components: tuple[Path, ...], verb: str) -> None:
@@ -284,9 +287,13 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
     for name, context in ((run_id, "journal run ID"), (item, "backup item")):
         problem = safe_name_problem(name, context)
         if problem is not None:
-            raise DeployError(problem)
+            raise DeployError(problem, RECONCILE_BY_HAND, see_recovery("When recovery fails"))
     if not file_presence.is_directory(base, other_is_absent=True):
-        raise DeployError(f"ERROR: Deployment destination is missing: {platform_support.normalize(base)}")
+        raise DeployError(
+            f"ERROR: Deployment destination is missing: {platform_support.normalize(base)}",
+            "Put the folder back, or reconcile the run by hand, then rerun with --dry-run.",
+            see_recovery("When recovery fails"),
+        )
     check_backup_root(paths, root)
     backups = base / ".backups"
     run_backups = backups / run_id
@@ -305,7 +312,11 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
     base_canonical = platform_support.name_key(platform_support.canonical_directory(base), base)
     parent_canonical = platform_support.canonical_directory(run_backups)
     if not posix_within(platform_support.name_key(parent_canonical, base), base_canonical, strict=True):
-        raise DeployError(f"ERROR: Backup path resolves outside deployment root: {parent_canonical}")
+        raise DeployError(
+            f"ERROR: Backup path resolves outside deployment root: {parent_canonical}",
+            BACKUP_PATH_REMEDY,
+            see_recovery("Backups"),
+        )
     return run_backups / item
 
 

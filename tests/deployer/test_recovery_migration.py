@@ -704,9 +704,12 @@ class RecoveryFailureTests(RecoveryTestCase):
     ) -> None:
         # The catalogue is journal.RECOVERY_FAILURES past OSError: a refusal of what stands on disk, and a name or text
         # the deployer cannot encode or decode. Each is injected into both steps of a committed run's completion: the
-        # check of what it installed, and the settling of the copy it replaced.
-        failures: list[tuple[Exception, str]] = [
-            (DeployError("ERROR: synthetic refusal", "Synthetic remedy."), "synthetic refusal"),
+        # check of what it installed, and the settling of the copy it replaced. Each report is pinned whole, against
+        # literals: _guarded's line naming the run, the path, and the reason, with a refusal's step below it. A refusal
+        # from hashing is read by _hash_existing, which prints it and reads the item as changed, so it never reaches
+        # _guarded and is pinned as that report.
+        failures: list[tuple[Exception, str | None]] = [
+            (DeployError("ERROR: synthetic refusal", "Synthetic remedy."), None),
             (
                 UnicodeEncodeError("utf-8", "note\udcff.md", 4, 5, "surrogates not allowed"),
                 "UnicodeEncodeError: 'utf-8' codec can't encode character '\\udcff' in position 4: surrogates not "
@@ -722,16 +725,32 @@ class RecoveryFailureTests(RecoveryTestCase):
             if expected is not OSError:
                 self.assertTrue(any(isinstance(error, expected) for error, _ in failures), expected)
         steps = (("hash_path", "alpha", "deployer.hashing"), ("remove", "alpha.deploying-bak", "deployer.fsops"))
-        for error, named in failures:
+        for error, reason in failures:
             for function, item, module in steps:
                 with self.subTest(error=type(error).__name__, step=function):
                     self.start(Path(self.enterContext(tempfile.TemporaryDirectory(prefix="deploy-test."))))
                     self.committed_fixture(retain=False)
                     self.later_run()
-                    with failing_at(function, self.skills_dir / item, module, error):
+                    path = self.skills_dir / item
+                    installed = hashing.hash_path(self.skills_dir / "alpha")
+                    with failing_at(function, path, module, error):
                         result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
                     self.assert_sent_to_the_manual_steps(result.output)
-                    self.assertIn(named, result.output)
+                    failed_at = f"  ERROR: Recovery of run {self.HELD} failed at {forward(path)}: "
+                    if reason is not None:
+                        expected_lines = [f"{failed_at}{reason}"]
+                    elif function == "hash_path":
+                        expected_lines = [
+                            "  ERROR: synthetic refusal",
+                            "  Synthetic remedy.",
+                            f"  WARNING: Installed alpha hash mismatch (expected {installed}, got unsafe)",
+                        ]
+                    else:
+                        expected_lines = [f"{failed_at}synthetic refusal", "  Synthetic remedy."]
+                    printed = result.output.splitlines()
+                    self.assertIn(expected_lines[0], printed, result.output)
+                    at = printed.index(expected_lines[0])
+                    self.assertEqual(expected_lines, printed[at : at + len(expected_lines)], result.output)
                     self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
 
     def test_an_unlistable_staging_root_fails_recovery_and_releases_the_lock(self) -> None:
