@@ -2721,7 +2721,7 @@ def _layering_copilot_cli(sources: InstructionSources) -> list[Finding]:
 
 
 def _layering_jetbrains(sources: InstructionSources) -> list[Finding]:
-    """JetBrains cannot read CLAUDE.md, only Copilot instruction files."""
+    """JetBrains cannot read CLAUDE.md: it reads personal instructions and Copilot's repository instruction files."""
     if sources.copilot_instructions:
         return [
             Finding(severity="INFO", check="layering", message="JetBrains: .github/copilot-instructions.md available")
@@ -2731,7 +2731,7 @@ def _layering_jetbrains(sources: InstructionSources) -> list[Finding]:
             Finding(
                 severity="INFO",
                 check="layering",
-                message="JetBrains: path-specific instructions only (no copilot-instructions.md)",
+                message="JetBrains: path-specific instructions without .github/copilot-instructions.md",
             )
         ]
     return [
