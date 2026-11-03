@@ -718,8 +718,6 @@ PARTIAL_CALLS = frozenset({"functools.partial"})
 # The call that builds a reader of the attribute it names, applied to the object after, as getattr reads it.
 ATTRIBUTE_GETTERS = frozenset({"operator.attrgetter"})
 BUILTINS_PREFIX = "builtins."
-# The methods that add a key to a dict in place, and the keyword or the position each takes the key and value by.
-DICT_ADDERS = frozenset({"update", "setdefault"})
 
 
 @dataclass
@@ -788,13 +786,10 @@ def _reaches(binding: ast.expr, others: list[ast.expr], use: ast.AST, shape: _Mo
     that holds both, or another binding of the name in the same list comes after it and before the use, as a second
     assignment in straight-line code replaces the first. A binding in a branch, a try, or a handler is not replaced by
     one outside it."""
-    bound = shape.statements(binding)
-    place = shape.places.get(id(bound[0])) if bound else None
-    if place is None:
-        return True
+    # Every binding's value and every read lie in a statement, and every statement in a list of its parent's.
+    place = shape.places[id(shape.statements(binding)[0])]
     holder = next(
-        (statement for statement in shape.statements(use) if shape.places.get(id(statement), (0, 0))[0] == place[0]),
-        None,
+        (statement for statement in shape.statements(use) if shape.places[id(statement)][0] == place[0]), None
     )
     if holder is None:
         return True
@@ -802,15 +797,9 @@ def _reaches(binding: ast.expr, others: list[ast.expr], use: ast.AST, shape: _Mo
     if place[1] > use_index:
         return False
     for other in others:
-        statements = shape.statements(other)
-        other_place = shape.places.get(id(statements[0])) if statements else None
-        if (
-            other is not binding
-            and other_place is not None
-            and other_place[0] == place[0]
-            and place[1] < other_place[1] <= use_index
-            and statements[0] is not holder
-        ):
+        other_place = shape.places[id(shape.statements(other)[0])]
+        # A binding in the statement that holds the read, as a loop's target, is not one before it.
+        if other is not binding and other_place[0] == place[0] and place[1] < other_place[1] < use_index:
             return False
     return True
 

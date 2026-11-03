@@ -847,6 +847,8 @@ def test_bound_values_follow_a_with_target_and_an_assignment_expression() -> Non
             ["a", "b"],
             id="a nonlocal's binding reaches its owner",
         ),
+        pytest.param("x, x = a, b\nx\n", ["a", "b"], id="one statement's bindings are not ordered"),
+        pytest.param("x = x\nx\n", [], id="a name bound to itself is followed once"),
     ],
 )
 def test_bound_values_read_every_binding_that_may_reach_the_read(source: str, expected: list[str]) -> None:

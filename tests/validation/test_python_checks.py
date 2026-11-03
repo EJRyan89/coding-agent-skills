@@ -3243,6 +3243,43 @@ def test_time_words_hold_each_limit_word_and_unit() -> None:
             "from json import JSONEncoder\n\n\ndef f(path, d):\n    path.write_text(JSONEncoder().encode(d))  # read\n",
             id="a from-imported JSONEncoder",
         ),
+        pytest.param(
+            "def f(stream, d):\n    print(json.dumps(d), file=stream)  # read\n    print(json.dumps(d), file=None)\n",
+            id="a print to a stream, and to None",
+        ),
+        pytest.param(
+            "import pkg.atomic_file\n\n\ndef f(path, d):\n"
+            "    pkg.atomic_file.replace_text(path, json.dumps(d))  # read\n",
+            id="a file writer reached through a dotted package",
+        ),
+        pytest.param(
+            "T = None\n\n\nclass A:\n    def m(self):\n        global T\n        T = self.text\n\n"
+            "    def __init__(self, d):\n        self.text = json.dumps(d)\n\n\n"
+            "class B:\n    def n(self, s):\n        s.write(T)  # read\n",
+            id="text another class's attribute gave a global",
+        ),
+        pytest.param(
+            "class Mine(json.JSONEncoder):\n    pass\n\n\ndef f(path, d):\n"
+            "    path.write_text(json.JSONEncoder().encode(d))  # read\n",
+            id="JSONEncoder itself beside a subclass",
+        ),
+        pytest.param(
+            "class Store:\n    def __init__(self, d):\n        self.text = json.dumps(d)\n\n"
+            "    def save(self, path):\n        text = self.text\n        path.write_text(text)  # read\n",
+            id="an attribute's text through a local name",
+        ),
+        pytest.param(
+            "class Store:\n    def first(self):\n        self.b = self.a\n\n"
+            "    def second(self, d):\n        self.a = json.dumps(d)\n\n"
+            "    def save(self, s):\n        s.write(self.b)  # read\n",
+            id="text an attribute bound later gives",
+        ),
+        pytest.param(
+            "class Store:\n    def first(self):\n        self.enc = self.base\n\n"
+            "    def second(self):\n        self.base = json.JSONEncoder()\n\n"
+            "    def save(self, s, d):\n        s.write(self.enc.encode(d))  # read\n",
+            id="an encoder an attribute bound later gives",
+        ),
     ],
 )
 def test_json_write_policy_reads_each_form_resolved_call_follows(body: str) -> None:
