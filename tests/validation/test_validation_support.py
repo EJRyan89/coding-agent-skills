@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
@@ -30,6 +31,7 @@ from validation_support import (
     ModuleImport,
     ScriptsEntry,
     UnreadablePython,
+    bound_value,
     call_argument,
     call_arguments,
     docstring_ids,
@@ -46,6 +48,8 @@ from validation_support import (
     python_trees,
     qualified_name,
     repository_files,
+    resolved_call,
+    resolved_reference,
     scoped_nodes,
     scripts_entries,
     skill_dependency_closure,
@@ -722,3 +726,103 @@ class RepositoryFilesFixtures(unittest.TestCase):
                 ReleaseNotesError, "git ls-files --cached --others --exclude-standard -z failed"
             ):
                 repository_files(Path(temporary))
+
+
+RESOLVED_SOURCE = """import builtins
+import functools
+import json as j
+
+
+def f(parser, stream, data, options):
+    add = functools.partial(getattr(parser, "add_argument"), "--timeout", type=float)
+    add(metavar="SECONDS")
+    keywords = {"dest": "limit"}
+    parser.add_argument("--wait", **keywords, **dict(type=builtins.int), **options)
+    dumps = getattr(j, "dumps")
+    dumps(data)
+    with open(stream) as handle:
+        handle.write(data)
+    if (writer := stream.write):
+        writer(data)
+"""
+
+
+def _resolved_calls() -> dict[int, ResolvedCallView]:
+    tree = ast.parse(RESOLVED_SOURCE)
+    resolver = CallableResolver(tree)
+    views: dict[int, ResolvedCallView] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            read = resolved_call(node.value, resolver)
+            views[node.lineno] = ResolvedCallView(
+                read.name,
+                read.attribute,
+                ast.unparse(read.receiver) if read.receiver is not None else None,
+                [ast.unparse(argument) for argument in read.args],
+                {key: ast.unparse(value) for key, value in read.keywords.items()},
+                [ast.unparse(value) for value in read.unread],
+            )
+    return views
+
+
+@dataclass
+class ResolvedCallView:
+    name: str
+    attribute: str
+    receiver: str | None
+    args: list[str]
+    keywords: dict[str, str]
+    unread: list[str]
+
+
+def test_resolved_call_follows_a_partial_of_a_getattr_with_its_arguments_ahead() -> None:
+    assert _resolved_calls()[8] == ResolvedCallView(
+        "<local>.parser.add_argument",
+        "add_argument",
+        "parser",
+        ["'--timeout'"],
+        {"type": "float", "metavar": "'SECONDS'"},
+        [],
+    )
+
+
+def test_resolved_call_spreads_a_literal_and_a_dict_call_and_keeps_an_unread_unpacking() -> None:
+    assert _resolved_calls()[10] == ResolvedCallView(
+        "<local>.parser.add_argument",
+        "add_argument",
+        "parser",
+        ["'--wait'"],
+        {"dest": "'limit'", "type": "builtins.int"},
+        ["options"],
+    )
+
+
+def test_resolved_call_names_a_getattr_bound_to_a_name_through_the_imports() -> None:
+    assert _resolved_calls()[12] == ResolvedCallView("json.dumps", "dumps", "j", ["data"], {}, [])
+
+
+def test_bound_value_follows_a_with_target_and_an_assignment_expression() -> None:
+    views = _resolved_calls()
+    assert views[14].attribute == "write"
+    assert views[14].receiver == "handle"
+    tree = ast.parse(RESOLVED_SOURCE)
+    resolver = CallableResolver(tree)
+    handle = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "handle" and isinstance(node.ctx, ast.Load)
+    )
+    assert ast.unparse(bound_value(handle, resolver)) == "open(stream)"
+    assert views[16].attribute == "write"
+    assert views[16].receiver == "stream"
+
+
+def test_resolved_reference_drops_builtins_and_reads_a_getattr_of_a_constant_name() -> None:
+    tree = ast.parse("import builtins\nimport json\nbuiltins.float\ngetattr(json, 'dump')\ngetattr(json, name)\n")
+    resolver = CallableResolver(tree)
+    expressions = [node.value for node in tree.body if isinstance(node, ast.Expr)]
+    assert [resolved_reference(expression, resolver)[:2] for expression in expressions] == [
+        ("float", "float"),
+        ("json.dump", "dump"),
+        ("", ""),
+    ]

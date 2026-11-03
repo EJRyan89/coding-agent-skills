@@ -3064,6 +3064,159 @@ def test_git_separator_policy_reads_every_name_listing_its_catalogue_names(call:
     assert [problem.split(" ", 1)[0] for problem in found] == (["skills/alpha/scripts/alpha.py:2"] if refused else [])
 
 
+# The forms the shared call resolution, validation_support.resolved_call, reads for every policy that uses it: a name
+# bound to a getattr of a constant name or a functools.partial, a `**` of a literal dict, of a dict() call, or of a name
+# bound to one, `builtins.X`, an assignment expression, a tuple target, and a with target. Each source marks the line
+# its policy refuses with `# read`, or marks none where it passes.
+RESOLVED_IMPORTS = "import builtins\nimport ctypes\nimport functools\nimport json\nfrom ctypes import wintypes\n\n\n"
+
+
+def resolved_rows(policy: Callable[[Path, list[Path]], list[str]], body: str) -> list[str]:
+    """The lines a policy refuses in a skill's module holding body after RESOLVED_IMPORTS, by their numbers."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": RESOLVED_IMPORTS + body})
+        found = policy(root, sorted(root.rglob("*.py")))
+    return sorted({problem.split(" ", 1)[0].rpartition(":")[2] for problem in found})
+
+
+def marked_rows(body: str) -> list[str]:
+    """The numbers of the lines a body marks `# read`, counted after RESOLVED_IMPORTS."""
+    source = RESOLVED_IMPORTS + body
+    return sorted(str(number) for number, line in enumerate(source.splitlines(), 1) if line.endswith("# read"))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            "def f(p):\n    add = functools.partial(p.add_argument, type=float)\n    add('--timeout')  # read\n",
+            id="a partial bound add_argument",
+        ),
+        pytest.param("def f(p):\n    p.add_argument('--timeout', **{'type': float})  # read\n", id="a ** literal"),
+        pytest.param(
+            "def f(p):\n    options = {'type': float}\n    p.add_argument('--timeout', **options)  # read\n",
+            id="a ** name bound to a literal",
+        ),
+        pytest.param("def f(p):\n    p.add_argument('--timeout', **dict(type=int))  # read\n", id="a ** dict()"),
+        pytest.param("def f(p):\n    p.add_argument('--timeout', type=builtins.float)  # read\n", id="builtins"),
+        pytest.param(
+            "def f(p):\n    add = getattr(p, 'add_argument')\n    add('--timeout', type=float)  # read\n",
+            id="a getattr bound to a name",
+        ),
+        pytest.param("def f(p):\n    p.add_argument('--sleeptime', type=float)  # read\n", id="sleeptime"),
+        pytest.param("def f(p):\n    p.add_argument('--waitSeconds', type=int)  # read\n", id="waitSeconds"),
+        pytest.param("def f(p):\n    p.add_argument('--retryDelayMs', type=int)  # read\n", id="retryDelayMs"),
+        pytest.param("def f(p):\n    p.add_argument('--times', type=int)\n", id="times counts repetitions"),
+        pytest.param("def f(p):\n    p.add_argument('--timestamp', type=int)\n", id="a timestamp is no limit"),
+        pytest.param("def f(p, options):\n    p.add_argument('--timeout', **options)\n", id="an unread ** passes"),
+    ],
+)
+def test_time_option_policy_reads_each_form_resolved_call_follows(body: str) -> None:
+    assert resolved_rows(python_checks.time_option_problems, body) == marked_rows(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("def f(s, d):\n    getattr(s, 'write')(json.dumps(d))  # read\n", id="a getattr write"),
+        pytest.param(
+            "def f(path, d):\n    dumps = getattr(json, 'dumps')\n    path.write_text(dumps(d))  # read\n",
+            id="a getattr dumps",
+        ),
+        pytest.param(
+            "def f(path, d):\n    dumps = functools.partial(json.dumps, indent=2)\n"
+            "    path.write_text(dumps(d))  # read\n",
+            id="a partial dumps",
+        ),
+        pytest.param(
+            "class Store:\n    def __init__(self, d):\n        self.text = json.dumps(d)\n\n"
+            "    def save(self, path):\n        path.write_text(self.text)  # read\n",
+            id="JSON text on an attribute",
+        ),
+        pytest.param(
+            "class Store:\n    def __init__(self):\n        self.encoder = json.JSONEncoder()\n\n"
+            "    def save(self, path, d):\n        path.write_text(self.encoder.encode(d))  # read\n",
+            id="an encoder on an attribute",
+        ),
+        pytest.param(
+            "class Mine(json.JSONEncoder):\n    pass\n\n\ndef f(path, d):\n"
+            "    path.write_text(Mine().encode(d))  # read\n",
+            id="a JSONEncoder subclass",
+        ),
+        pytest.param(
+            "TEXT = json.dumps({'a': 1})\n\n\ndef f(path):\n    path.write_text(TEXT)  # read\n",
+            id="module-level text written in a function",
+        ),
+        pytest.param(
+            "def f(path, d):\n    path.write_text(json.JSONEncoder.encode(json.JSONEncoder(), d))  # read\n",
+            id="an unbound encode",
+        ),
+        pytest.param(
+            "def f(path, d):\n    write = functools.partial(path.write_text, encoding='utf-8')\n"
+            "    write(json.dumps(d))  # read\n",
+            id="a partial write",
+        ),
+        pytest.param(
+            "class Store:\n    def __init__(self, d):\n        self.text = 'plain'\n\n"
+            "    def save(self, path):\n        path.write_text(self.text)\n",
+            id="plain text on an attribute passes",
+        ),
+    ],
+)
+def test_json_write_policy_reads_each_form_resolved_call_follows(body: str) -> None:
+    assert resolved_rows(python_checks.json_write_problems, body) == marked_rows(body)
+
+
+DECLARED = "    lib.CloseHandle.argtypes = [wintypes.HANDLE]\n    lib.CloseHandle.restype = wintypes.BOOL\n"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            f"def a(h):\n    lib = ctypes.WinDLL('user32')\n{DECLARED}    return lib.CloseHandle(h)\n\n\n"
+            "def b(h):\n    lib = ctypes.WinDLL('kernel32')\n    return lib.CloseHandle(h)  # read\n",
+            id="one name for two libraries in two functions",
+        ),
+        pytest.param(
+            f"def a(h, name):\n    lib = ctypes.WinDLL(name)\n{DECLARED}    return lib.CloseHandle(h)\n\n\n"
+            "def b(h, name):\n    lib = ctypes.WinDLL(name)\n    return lib.CloseHandle(h)  # read\n",
+            id="one load's text in two functions",
+        ),
+        pytest.param(
+            "def f(h):\n    if (lib := ctypes.WinDLL('k')):\n        lib.CloseHandle(h)  # read\n",
+            id="an assignment expression",
+        ),
+        pytest.param(
+            "def f(h):\n    lib, other = ctypes.WinDLL('k'), None\n    lib.CloseHandle(h)  # read\n",
+            id="a tuple target",
+        ),
+        pytest.param(
+            "def f(h):\n    with ctypes.WinDLL('k') as lib:\n        lib.CloseHandle(h)  # read\n", id="a with target"
+        ),
+        pytest.param("def f(h):\n    getattr(ctypes.windll, 'kernel32').CloseHandle(h)  # read\n", id="a getattr lib"),
+        pytest.param("def f(h):\n    getattr(ctypes, 'WinDLL')('k').CloseHandle(h)  # read\n", id="a getattr loader"),
+        pytest.param("def f(o):\n    ctypes.pythonapi.Py_IncRef(o)  # read\n", id="pythonapi"),
+        pytest.param("def f(h):\n    ctypes.pydll.python3.Close(h)  # read\n", id="pydll"),
+        pytest.param("def f(h):\n    ctypes.oledll.LoadLibrary('x').Close(h)  # read\n", id="oledll.LoadLibrary"),
+        pytest.param(
+            "def f(h):\n    lib = ctypes.WinDLL('k')\n"
+            "    lib.Close.argtypes = lib.Open.argtypes = [wintypes.HANDLE]\n"
+            "    lib.Close.restype = lib.Open.restype = wintypes.BOOL\n    lib.Close(h)\n    lib.Open(h)\n",
+            id="a chained declaration passes",
+        ),
+        pytest.param(
+            "def f(h):\n    lib = ctypes.WinDLL('k')\n"
+            "    lib.Close.argtypes, lib.Close.restype = [wintypes.HANDLE], wintypes.BOOL\n    lib.Close(h)\n",
+            id="an unpacked declaration passes",
+        ),
+    ],
+)
+def test_ctypes_policy_reads_each_form_resolved_call_follows(body: str) -> None:
+    assert resolved_rows(python_checks.ctypes_declaration_problems, body) == marked_rows(body)
+
+
 TIME_OPTION_SOURCE = """\
 import argparse
 

@@ -46,9 +46,12 @@ from path_containment import posix_within, within
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
+    DEFINITIONS,
     REPOSITORY_ROOT,
     CallableResolver,
+    ResolvedCall,
     UnreadablePython,
+    bound_value,
     call_argument,
     import_aliases,
     is_test_script,
@@ -61,6 +64,8 @@ from validation_support import (
     qualified_name,
     relative,
     repository_files,
+    resolved_call,
+    resolved_reference,
     scope_problems,
     scoped_nodes,
     scripts_put_on_path,
@@ -1524,78 +1529,130 @@ JSON_WRITE_ALLOWANCE = "JSON_WRITE_ALLOWED"
 PRINTS = frozenset({"print", "builtins.print"})
 
 
-def _writes(call: ast.Call, resolver: CallableResolver) -> bool:
+def _writes(call: ResolvedCall) -> bool:
     """Whether a call writes what it is given to a file or a stream: a write method, a file writer, or a print given a
-    file= other than None, which prints to that stream, called directly or through a name bound once to one."""
-    function = resolver.function(call)
-    if isinstance(function, ast.Attribute) and function.attr in WRITE_METHODS:
+    file= other than None, which prints to that stream."""
+    if call.attribute in WRITE_METHODS:
         return True
-    called = resolver.name(call.func)
-    if called in PRINTS:
-        stream = call_argument(call, None, "file")
+    if call.name in PRINTS:
+        stream = call.keywords.get("file")
         return stream is not None and not (isinstance(stream, ast.Constant) and stream.value is None)
-    return called.rpartition(".")[2] in FILE_WRITERS
+    return call.name.rpartition(".")[2] in FILE_WRITERS
 
 
-def _json_function(node: ast.AST, resolver: CallableResolver) -> str:
-    """The qualified name a node reads through the module's imports and its scope's names bound once to a name or an
-    attribute, or what a getattr of a constant name on one reads, as `getattr(json, "dump")` reads json.dump; "" for
-    anything else."""
-    if isinstance(node, ast.Attribute | ast.Name) and isinstance(node.ctx, ast.Load):
-        return resolver.name(node)
-    if isinstance(node, ast.Call) and resolver.name(node.func) in ATTRIBUTE_LOOKUPS and node.args:
-        owner = resolver.name(node.args[0])
-        attribute = call_argument(node, 1, "name")
-        if owner and isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
-            return f"{owner}.{attribute.value}"
-    return ""
+# The places a binding writes to, keyed by their text: a name, an attribute such as self.text, or a subscript.
+JSON_PLACES = (ast.Name, ast.Attribute, ast.Subscript)
+# The bucket a module-level binding goes in, which every scope of the module reads.
+MODULE_WIDE = "<module-wide>"
 
 
 @dataclass
 class _JsonNames:
-    """A scope's names bound to json.dumps text, and to a JSONEncoder, to the fixed point."""
+    """A scope's places bound to JSON text, and to a JSONEncoder, to the fixed point; and the module's classes that
+    subclass JSONEncoder, by the name the resolver gives them."""
 
     text: set[str]
     encoders: set[str]
+    encoder_classes: set[str]
 
 
-def _encoder(node: ast.AST, resolver: CallableResolver, names: _JsonNames) -> bool:
-    """Whether an expression is a JSONEncoder: a call of one, or a name its scope binds to one."""
-    if isinstance(node, ast.Call):
-        return _json_function(node.func, resolver) in JSON_ENCODERS
-    return isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names.encoders
+class _JsonModel:
+    """What a module binds to JSON text or a JSONEncoder, scope by scope, with a module-level binding read in every
+    scope, and its JSONEncoder subclasses."""
+
+    def __init__(self, tree: ast.Module, nodes: list[tuple[ast.AST, str]], resolver: CallableResolver) -> None:
+        self.resolver = resolver
+        self.classes = set(JSON_ENCODERS)
+        while True:
+            added = {
+                f"<local>.{node.name}"
+                for node, _ in nodes
+                if isinstance(node, ast.ClassDef)
+                and any(resolved_reference(base, resolver)[0] in self.classes for base in node.bases)
+            } - self.classes
+            if not added:
+                break
+            self.classes |= added
+        module_level = {id(node) for node in _module_level_nodes(tree)}
+        # A module-level binding, and an attribute or a subscript such as self.text that a method binds and another
+        # reads, go in the bucket every scope reads.
+        bindings = [
+            (MODULE_WIDE if id(node) in module_level or not place.isidentifier() else scope, place, value)
+            for node, scope in nodes
+            for place, value in _bound_values(node)
+        ]
+        self.bound: dict[str, _JsonNames] = {}
+        while True:
+            added_any = False
+            for scope, place, value in bindings:
+                names = self.names(scope)
+                own = self.bound.setdefault(scope, _JsonNames(set(), set(), self.classes))
+                if place not in names.text and self.text(value, names):
+                    own.text.add(place)
+                    added_any = True
+                if place not in names.encoders and self.encoder(value, names):
+                    own.encoders.add(place)
+                    added_any = True
+            if not added_any:
+                return
+
+    def names(self, scope: str) -> _JsonNames:
+        """A scope's places with the module's own, which every scope reads."""
+        own = self.bound.get(scope, _JsonNames(set(), set(), self.classes))
+        wide = self.bound.get(MODULE_WIDE, _JsonNames(set(), set(), self.classes))
+        return _JsonNames(own.text | wide.text, own.encoders | wide.encoders, self.classes)
+
+    def encoder(self, node: ast.AST, names: _JsonNames) -> bool:
+        """Whether an expression is a JSONEncoder: a call of one, or of a subclass the module defines, or a place its
+        scope binds to one."""
+        if isinstance(node, ast.Call):
+            return resolved_call(node, self.resolver).name in self.classes
+        return isinstance(node, JSON_PLACES) and isinstance(node.ctx, ast.Load) and ast.unparse(node) in names.encoders
+
+    def call(self, node: ast.AST, names: _JsonNames) -> bool:
+        """Whether a node is a call that returns JSON text: json.dumps, or a JSONEncoder's encode or iterencode, bound
+        or called on the class with the encoder first."""
+        if not isinstance(node, ast.Call):
+            return False
+        read = resolved_call(node, self.resolver)
+        if read.name == JSON_DUMPS:
+            return True
+        if read.attribute not in JSON_ENCODE_METHODS:
+            return False
+        if read.receiver is not None and self.encoder(bound_value(read.receiver, self.resolver), names):
+            return True
+        return read.receiver is not None and resolved_reference(read.receiver, self.resolver)[0] in self.classes
+
+    def text(self, node: ast.AST, names: _JsonNames) -> bool:
+        """Whether an expression holds JSON text: a call that returns it, or a place its scope binds to an expression
+        that holds it."""
+        return any(
+            self.call(inner, names)
+            or (isinstance(inner, JSON_PLACES) and isinstance(inner.ctx, ast.Load) and ast.unparse(inner) in names.text)
+            for inner in ast.walk(node)
+        )
 
 
-def _json_call(node: ast.AST, resolver: CallableResolver, names: _JsonNames) -> bool:
-    """Whether a node is a call that returns JSON text: json.dumps, or a JSONEncoder's encode or iterencode."""
-    if not isinstance(node, ast.Call):
-        return False
-    if _json_function(node.func, resolver) == JSON_DUMPS:
-        return True
-    function = resolver.function(node)
-    return (
-        isinstance(function, ast.Attribute)
-        and function.attr in JSON_ENCODE_METHODS
-        and _encoder(function.value, resolver, names)
-    )
+def _module_level_nodes(tree: ast.Module) -> Iterator[ast.AST]:
+    """Each node the module's top level runs, never one inside a function, a class, or a lambda."""
 
+    def walk(node: ast.AST) -> Iterator[ast.AST]:
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, (*DEFINITIONS, ast.Lambda)):
+                yield from walk(child)
 
-def _json_text(node: ast.AST, resolver: CallableResolver, names: _JsonNames) -> bool:
-    """Whether an expression holds JSON text: a call that returns it, or a name its scope binds to an expression that
-    holds it."""
-    return any(
-        _json_call(inner, resolver, names)
-        or (isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load) and inner.id in names.text)
-        for inner in ast.walk(node)
-    )
+    for statement in tree.body:
+        if not isinstance(statement, DEFINITIONS):
+            yield from walk(statement)
 
 
 def _target_values(target: ast.expr, value: ast.expr) -> Iterator[tuple[str, ast.expr]]:
-    """Each name a binding target binds, with the expression it may take its value from: the matching item of a literal
-    tuple or list of the same length that unpacks nothing, else the whole value, for a tuple, list, or starred
-    target."""
-    if isinstance(target, ast.Name):
-        yield target.id, value
+    """Each place a binding target binds, by its text, with the expression it may take its value from: the matching
+    item of a literal tuple or list of the same length that unpacks nothing, else the whole value, for a tuple, list,
+    or starred target."""
+    if isinstance(target, JSON_PLACES):
+        yield ast.unparse(target), value
     elif isinstance(target, ast.Starred):
         yield from _target_values(target.value, value)
     elif isinstance(target, ast.Tuple | ast.List):
@@ -1608,9 +1665,9 @@ def _target_values(target: ast.expr, value: ast.expr) -> Iterator[tuple[str, ast
 
 
 def _bound_values(node: ast.AST) -> Iterator[tuple[str, ast.expr]]:
-    """Each name a node binds, with the expression its value comes from: an assignment, an annotated or augmented one,
-    an assignment expression, a for loop or a comprehension's target from what it loops over, and a with item's target
-    from its context expression."""
+    """Each place a node binds, with the expression its value comes from: an assignment, an annotated or augmented
+    one, an assignment expression, a for loop or a comprehension's target from what it loops over, and a with item's
+    target from its context expression."""
     if isinstance(node, ast.Assign):
         for target in node.targets:
             yield from _target_values(target, node.value)
@@ -1622,25 +1679,6 @@ def _bound_values(node: ast.AST) -> Iterator[tuple[str, ast.expr]]:
         for item in node.items:
             if item.optional_vars is not None:
                 yield from _target_values(item.optional_vars, item.context_expr)
-
-
-def _json_bindings(nodes: list[tuple[ast.AST, str]], resolver: CallableResolver) -> dict[str, _JsonNames]:
-    """Each scope's names bound to an expression holding JSON text, or to a JSONEncoder, to the fixed point, so a name
-    bound to one of them is one too, and a name an augmented assignment such as `text += json.dumps(d)` adds one to."""
-    bindings = [(scope, name, value) for node, scope in nodes for name, value in _bound_values(node)]
-    bound: dict[str, _JsonNames] = {}
-    while True:
-        added = False
-        for scope, name, value in bindings:
-            names = bound.setdefault(scope, _JsonNames(set(), set()))
-            if name not in names.text and _json_text(value, resolver, names):
-                names.text.add(name)
-                added = True
-            if name not in names.encoders and _encoder(value, resolver, names):
-                names.encoders.add(name)
-                added = True
-        if not added:
-            return bound
 
 
 def json_write_problems(root: Path, files: list[Path]) -> list[str]:
@@ -1658,21 +1696,20 @@ def json_write_problems(root: Path, files: list[Path]) -> list[str]:
     for _, name, tree in python_trees(paths, root, problems):
         resolver = CallableResolver(tree)
         nodes = list(scoped_nodes(tree.body))
-        bound = _json_bindings(nodes, resolver)
+        model = _JsonModel(tree, nodes, resolver)
         found: list[tuple[int, str, str]] = []
         for node, scope in nodes:
-            names = bound.get(scope, _JsonNames(set(), set()))
-            if isinstance(node, ast.expr) and _json_function(node, resolver) == JSON_DUMP:
+            if not isinstance(node, ast.expr):
+                continue
+            loads = isinstance(node, ast.Call) or (
+                isinstance(node, ast.Name | ast.Attribute) and isinstance(node.ctx, ast.Load)
+            )
+            if loads and resolved_reference(node, resolver)[0] == JSON_DUMP:
                 found.append((node.lineno, scope, f"writes JSON with {JSON_DUMP}{remedy}"))
-            elif (
-                isinstance(node, ast.Call)
-                and _writes(node, resolver)
-                and any(
-                    _json_text(argument, resolver, names)
-                    for argument in [*node.args, *(keyword.value for keyword in node.keywords)]
-                )
-            ):
-                found.append((node.lineno, scope, f"writes JSON text to a file or a stream{remedy}"))
+            elif isinstance(node, ast.Call) and _writes(read := resolved_call(node, resolver)):
+                names = model.names(scope)
+                if any(model.text(argument, names) for argument in [*read.args, *read.keywords.values()]):
+                    found.append((node.lineno, scope, f"writes JSON text to a file or a stream{remedy}"))
         problems += sanctioned_problems(name, tree, JSON_WRITE_ALLOWANCE, found)
     return problems
 
@@ -1807,9 +1844,13 @@ LIBRARY_LOADERS = frozenset(
         "ctypes.PyDLL",
         "ctypes.windll.LoadLibrary",
         "ctypes.cdll.LoadLibrary",
+        "ctypes.oledll.LoadLibrary",
+        "ctypes.pydll.LoadLibrary",
     }
 )
-LIBRARY_NAMESPACES = frozenset({"ctypes.windll", "ctypes.cdll", "ctypes.oledll"})
+LIBRARY_NAMESPACES = frozenset({"ctypes.windll", "ctypes.cdll", "ctypes.oledll", "ctypes.pydll"})
+# The libraries ctypes loads itself, which a module reaches by name.
+LIBRARY_OBJECTS = frozenset({"ctypes.pythonapi"})
 # What a library or a foreign function holds that is no foreign function.
 FOREIGN_MEMBERS = frozenset({"LoadLibrary", "argtypes", "restype", "errcheck", "_handle", "_name"})
 FOREIGN_DECLARATIONS = ("argtypes", "restype")
@@ -1817,103 +1858,118 @@ CTYPES_ALLOWANCE = "CTYPES_ALLOWED"
 
 
 # A foreign function is keyed by its library and its name, so a declaration on one library's function is none for
-# another's of the same name.
+# another's of the same name. A library is keyed by where it is loaded: the call that loads it, by its position, so
+# `lib` bound to one library in one function and to another in the next are two, or the name a library ctypes keeps
+# for every caller is reached by, as ctypes.windll.kernel32.
 ForeignFunction = tuple[str, str]
-# The places an assignment binds a library or a function to: a name, an attribute such as self.kernel32, or a subscript
-# such as libraries["k"], each keyed by its text.
-BINDING_PLACES = (ast.Name, ast.Attribute, ast.Subscript)
+# The places an assignment binds a library or a function to beyond a name the resolver follows: an attribute such as
+# self.kernel32, or a subscript such as libraries["k"], each keyed by its text.
+HELD_PLACES = (ast.Attribute, ast.Subscript)
 
 
 class _ForeignLibraries:
-    """What a module binds to a library ctypes loads: the places bound to one, the module's functions that return one,
-    and the places bound to a function of one, through the module's imports. A library is keyed by the expression that
-    loads it, so each place bound to it, and each place bound to such a place, shares its key."""
+    """What a module binds to a library ctypes loads, through the shared resolution of names, getattr, and
+    functools.partial (bound_value, resolved_reference, resolved_call): a name its scope binds once to one, an
+    attribute or a subscript an assignment binds to one, and the module's functions that return one."""
 
-    def __init__(self, tree: ast.Module) -> None:
-        self.aliases = import_aliases(tree)
+    def __init__(self, tree: ast.Module, resolver: CallableResolver) -> None:
+        self.resolver = resolver
         self.places: dict[str, str] = {}
-        self.loaders: set[str] = set()
+        self.loaders: dict[str, str] = {}
         self.functions: dict[str, ForeignFunction] = {}
-        assignments = [
+        held = [
             (ast.unparse(target), node.value)
             for node in ast.walk(tree)
             if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None
-            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-            if isinstance(target, BINDING_PLACES)
+            for target in _assignment_targets(node)
+            if isinstance(target, HELD_PLACES)
         ]
         returns = [
-            (function.name, node.value)
-            for function in ast.walk(tree)
+            (f"<local>.{function.name}", node.value)
+            for function in tree.body
             if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
             for node in ast.walk(function)
             if isinstance(node, ast.Return) and node.value is not None
         ]
-        # A place bound to a loader's result is a library, and so is a place bound to that place, to the fixed point.
+        # A place bound to a loader's result is a library, and so is a place bound to that place, to the fixed point; a
+        # place bound to two libraries keeps the first.
         while True:
             places = {
                 place: key
-                for place, value in assignments
+                for place, value in held
                 if place not in self.places and (key := self.library(value)) is not None
             }
-            loaders = {name for name, value in returns if self.library(value) is not None} - self.loaders
+            loaders = {
+                name: key
+                for name, value in returns
+                if name not in self.loaders and (key := self.library(value)) is not None
+            }
             if not places and not loaders:
                 break
             self.places |= places
             self.loaders |= loaders
-        self.functions = {place: function for place, value in assignments if (function := self.foreign(value))}
+        self.functions = {place: function for place, value in held if (function := self.foreign(value))}
 
     def library(self, node: ast.expr) -> str | None:
         """The key of the library ctypes loads that an expression is, or None."""
-        if isinstance(node, ast.Call):
-            if qualified_name(node.func, self.aliases) in LIBRARY_LOADERS:
-                return ast.unparse(node)
-            return f"{node.func.id}()" if isinstance(node.func, ast.Name) and node.func.id in self.loaders else None
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr not in FOREIGN_MEMBERS
-            and qualified_name(node.value, self.aliases) in LIBRARY_NAMESPACES
+        value = bound_value(node, self.resolver)
+        name, attribute, receiver = resolved_reference(value, self.resolver)
+        if name in LIBRARY_OBJECTS or (
+            attribute
+            and attribute not in FOREIGN_MEMBERS
+            and receiver is not None
+            and resolved_reference(receiver, self.resolver)[0] in LIBRARY_NAMESPACES
         ):
-            return qualified_name(node, self.aliases)
-        return self.places.get(ast.unparse(node)) if isinstance(node, BINDING_PLACES) else None
+            return name
+        if isinstance(value, ast.Call):
+            called = resolved_call(value, self.resolver).name
+            if called in LIBRARY_LOADERS:
+                return f"{called}@{value.lineno}:{value.col_offset}"
+            return self.loaders.get(called)
+        return self.places.get(ast.unparse(value)) if isinstance(value, HELD_PLACES) else None
 
     def foreign(self, node: ast.expr) -> ForeignFunction | None:
         """The library and the name of the foreign function an expression is: an attribute of a library, a getattr of
         a constant name on one, or a place bound to either; or None."""
-        if isinstance(node, ast.Attribute) and node.attr not in FOREIGN_MEMBERS:
-            library = self.library(node.value)
+        value = bound_value(node, self.resolver)
+        _, attribute, receiver = resolved_reference(value, self.resolver)
+        if attribute and attribute not in FOREIGN_MEMBERS and receiver is not None:
+            library = self.library(receiver)
             if library is not None:
-                return library, node.attr
-        if (
-            isinstance(node, ast.Call)
-            and qualified_name(node.func, self.aliases) in ATTRIBUTE_LOOKUPS
-            and node.args
-            and isinstance(attribute := call_argument(node, 1, "name"), ast.Constant)
-            and isinstance(attribute.value, str)
-            and attribute.value not in FOREIGN_MEMBERS
-            and (library := self.library(node.args[0])) is not None
-        ):
-            return library, attribute.value
-        return self.functions.get(ast.unparse(node)) if isinstance(node, BINDING_PLACES) else None
+                return library, attribute
+        return self.functions.get(ast.unparse(value)) if isinstance(value, HELD_PLACES) else None
 
-    def declaration(self, node: ast.AST) -> tuple[ForeignFunction, str] | None:
-        """The foreign function and the declaration, argtypes or restype, a node assigns, by an assignment, an
-        annotated assignment, or a setattr of a constant name, or None."""
+    def declarations(self, node: ast.AST) -> Iterator[tuple[ForeignFunction, str]]:
+        """Each foreign function and declaration, argtypes or restype, a node assigns: by every target of an
+        assignment, chained or unpacked, by an annotated assignment, or by a setattr of a constant name."""
         if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
-            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+            for target in _assignment_targets(node):
                 if isinstance(target, ast.Attribute) and target.attr in FOREIGN_DECLARATIONS:
                     function = self.foreign(target.value)
                     if function is not None:
-                        return function, target.attr
-        if (
-            isinstance(node, ast.Call)
-            and qualified_name(node.func, self.aliases) in ("setattr", "builtins.setattr")
-            and len(node.args) == 3
-            and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value in FOREIGN_DECLARATIONS
-            and (function := self.foreign(node.args[0])) is not None
-        ):
-            return function, str(node.args[1].value)
-        return None
+                        yield function, target.attr
+        if isinstance(node, ast.Call):
+            read = resolved_call(node, self.resolver)
+            declared = read.args[1] if read.name == "setattr" and len(read.args) == 3 else None
+            if (
+                isinstance(declared, ast.Constant)
+                and declared.value in FOREIGN_DECLARATIONS
+                and (function := self.foreign(read.args[0])) is not None
+            ):
+                yield function, str(declared.value)
+
+
+def _assignment_targets(node: ast.Assign | ast.AnnAssign) -> Iterator[ast.expr]:
+    """Each place an assignment stores to: every target of a chained assignment, and each item of an unpacked one."""
+    pending: list[ast.expr] = list(node.targets) if isinstance(node, ast.Assign) else [node.target]
+    while pending:
+        target = pending.pop(0)
+        if isinstance(target, ast.Tuple | ast.List):
+            pending += target.elts
+        elif isinstance(target, ast.Starred):
+            pending.append(target.value)
+        else:
+            yield target
 
 
 def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
@@ -1922,13 +1978,13 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
     sanctions."""
     problems: list[str] = []
     for _, name, tree in python_trees(claim_files(root, files), root, problems):
-        libraries = _ForeignLibraries(tree)
+        libraries = _ForeignLibraries(tree, CallableResolver(tree))
         declared: dict[ForeignFunction, set[str]] = {}
         calls: list[tuple[ast.Call, str, ForeignFunction]] = []
         for node, scope in scoped_nodes(tree.body):
-            if (declaration := libraries.declaration(node)) is not None:
-                declared.setdefault(declaration[0], set()).add(declaration[1])
-            elif isinstance(node, ast.Call) and (function := libraries.foreign(node.func)) is not None:
+            for declared_function, declaration in libraries.declarations(node):
+                declared.setdefault(declared_function, set()).add(declaration)
+            if isinstance(node, ast.Call) and (function := libraries.foreign(node.func)) is not None:
                 calls.append((node, scope, function))
         given = {function for call, _, function in calls if call.args or call.keywords}
         found: list[tuple[int, str, str]] = []
@@ -2892,40 +2948,37 @@ TIME_WORDS = frozenset(
 UNBOUNDED_TIME_TYPES = {"float": "nan, inf, 0, and a negative number", "int": "0 and a negative number"}
 
 
-def _called_attribute(call: ast.Call, resolver: CallableResolver) -> str:
-    """The attribute a call calls: an attribute's own name, followed through a name bound once to an attribute, as
-    `add = parser.add_argument` then `add(...)`, or the constant name a getattr reads, as
-    `getattr(parser, "add_argument")(...)`; "" for anything else."""
-    function = resolver.function(call)
-    if isinstance(function, ast.Attribute):
-        return function.attr
-    if isinstance(function, ast.Call) and resolver.name(function.func) in ATTRIBUTE_LOOKUPS:
-        attribute = call_argument(function, 1, "name")
-        if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
-            return attribute.value
-    return ""
+# The time words long enough to name a time inside a word written together, as `--sleeptime` and `--waitseconds` do,
+# where a short unit such as "ms" or "sec" would match inside unrelated words.
+TIME_WORD_STEMS = tuple(sorted((word for word in TIME_WORDS if len(word) >= 4), key=len, reverse=True))
+# The words that start or end with a time word but name no time limit, as `--times` counts repetitions.
+UNTIMED_COMPOUNDS = frozenset({"times", "timestamp", "timestamps", "timezone", "timezones", "runtime", "runtimes"})
+
+
+def _time_words(text: str) -> set[str]:
+    """The words of an option string, dest, or metavar, split at each hyphen, underscore, space, and lower-to-upper
+    case change, lowered, with each word written together that starts or ends with a time word, as `sleeptime`,
+    counted as that time word too."""
+    words = {word.lower() for word in re.split(r"[-_\s]+|(?<=[a-z0-9])(?=[A-Z])", text) if word}
+    for word in words - TIME_WORDS - UNTIMED_COMPOUNDS:
+        words |= {stem for stem in TIME_WORD_STEMS if word.startswith(stem) or word.endswith(stem)}
+    return words
 
 
 def _unbounded_time_option(call: ast.Call, resolver: CallableResolver) -> tuple[str, str] | None:
     """The name of the time an add_argument call reads with type=float or type=int, among its option strings, dest,
-    and metavar, with that type, or None when it reads no time so."""
-    if _called_attribute(call, resolver) != "add_argument":
+    and metavar, with that type, or None when it reads no time so. The call is read as it runs, through a name, a
+    getattr, a functools.partial, and a `**` literal (resolved_call)."""
+    read = resolved_call(call, resolver)
+    if read.attribute != "add_argument" or "type" not in read.keywords:
         return None
-    types = [resolver.name(keyword.value) for keyword in call.keywords if keyword.arg == "type"]
-    unbounded = next((kind for kind in UNBOUNDED_TIME_TYPES if kind in types), None)
-    if unbounded is None:
+    kind = resolved_reference(read.keywords["type"], resolver)[0]
+    if kind not in UNBOUNDED_TIME_TYPES:
         return None
-    names = [
-        *call.args,
-        *(keyword.value for keyword in call.keywords if keyword.arg in ("dest", "metavar")),
-    ]
+    names = [*read.args, *(read.keywords[key] for key in ("dest", "metavar") if key in read.keywords)]
     for name in names:
-        if (
-            isinstance(name, ast.Constant)
-            and isinstance(name.value, str)
-            and TIME_WORDS & set(re.split(r"[-_\s]+", name.value.lower()))
-        ):
-            return name.value, unbounded
+        if isinstance(name, ast.Constant) and isinstance(name.value, str) and TIME_WORDS & _time_words(name.value):
+            return name.value, kind
     return None
 
 

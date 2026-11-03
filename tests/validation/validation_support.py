@@ -336,6 +336,8 @@ class _BindingReader(ast.NodeVisitor):
             elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
                 for item in _literal_items(node.iter) or [None]:
                     self._pair(node.target, item)
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                self._pair(node.optional_vars, node.context_expr)
         self.annotations = {
             id(node.target) for node in ast.walk(tree) if isinstance(node, ast.AnnAssign) and node.value is None
         }
@@ -708,6 +710,113 @@ def module_lookup(node: ast.expr, resolver: CallableResolver) -> str:
     if loader != "importlib.import_module" and call_argument(node, 3, "fromlist") is None:
         return name.value.partition(".")[0]
     return name.value
+
+
+# The call that binds a function to arguments given ahead, which a later call of its result runs with those first.
+PARTIAL_CALLS = frozenset({"functools.partial"})
+BUILTINS_PREFIX = "builtins."
+
+
+@dataclass
+class ResolvedCall:
+    """A call as it runs once each name, getattr of a constant name, and functools.partial is followed: the qualified
+    name of what it calls ("" when it has none), the attribute it calls ("" when it calls none) and the receiver that
+    attribute is looked up on, and the positional arguments and keywords it runs with, a partial's ahead of the
+    call's own and each `**` of a literal dict or a dict() call of keywords, or of a name bound once to one, spread into
+    keywords. A `**` it cannot read is kept in unread."""
+
+    name: str
+    attribute: str
+    receiver: ast.expr | None
+    args: list[ast.expr]
+    keywords: dict[str, ast.expr]
+    unread: list[ast.expr]
+
+
+def bound_value(node: ast.expr, resolver: CallableResolver) -> ast.expr:
+    """The expression a name stands for, followed through each name its scope binds once to an expression, by an
+    assignment, an annotated one, an assignment expression, a literal tuple's item, a loop over a literal, or a with
+    item, or the expression itself."""
+    seen: set[int] = set()
+    while isinstance(node, ast.Name) and id(node) not in seen:
+        seen.add(id(node))
+        scope = resolver.scopes.get(id(node))
+        owner = scope.owner(node.id) if scope is not None else None
+        values = owner.bindings[node.id] if owner is not None else []
+        if len(values) != 1 or not isinstance(values[0], ast.expr):
+            break
+        node = values[0]
+    return node
+
+
+def resolved_reference(node: ast.expr, resolver: CallableResolver) -> tuple[str, str, ast.expr | None]:
+    """What an expression names, once bound_value follows it: its qualified name through the module's imports, with
+    `builtins.` dropped so `builtins.float` reads as float ("" when it names nothing the imports reach), and, for an
+    attribute or a getattr of a constant name, that attribute and the receiver it is looked up on."""
+    node = bound_value(node, resolver)
+    if isinstance(node, ast.Call):
+        attribute = call_argument(node, 1, "name")
+        if (
+            resolved_reference(node.func, resolver)[0] in ATTRIBUTE_LOOKUPS
+            and node.args
+            and isinstance(attribute, ast.Constant)
+            and isinstance(attribute.value, str)
+        ):
+            owner = resolved_reference(node.args[0], resolver)[0]
+            return (f"{owner}.{attribute.value}" if owner else ""), attribute.value, node.args[0]
+        return "", "", None
+    if isinstance(node, ast.Attribute):
+        owner = resolved_reference(node.value, resolver)[0]
+        return (f"{owner}.{node.attr}".removeprefix(BUILTINS_PREFIX) if owner else ""), node.attr, node.value
+    if isinstance(node, ast.Name) and id(node) in resolver.scopes:
+        return resolver.name(node).removeprefix(BUILTINS_PREFIX), "", None
+    return "", "", None
+
+
+def _spread_keywords(
+    keywords: list[ast.keyword], resolver: CallableResolver, found: dict[str, ast.expr], unread: list[ast.expr]
+) -> None:
+    """Add each keyword a call gives to found, a `**` of a literal dict or a dict() call of keywords spread, and keep
+    any other `**` in unread."""
+    for keyword in keywords:
+        if keyword.arg is not None:
+            found[keyword.arg] = keyword.value
+            continue
+        value = bound_value(keyword.value, resolver)
+        names = (
+            [key.value for key in value.keys if isinstance(key, ast.Constant)] if isinstance(value, ast.Dict) else []
+        )
+        if isinstance(value, ast.Dict) and len(names) == len(value.keys) and all(isinstance(n, str) for n in names):
+            found |= {str(key): item for key, item in zip(names, value.values, strict=True)}
+        elif isinstance(value, ast.Call) and resolved_reference(value.func, resolver)[0] == "dict" and not value.args:
+            _spread_keywords(value.keywords, resolver, found, unread)
+        else:
+            unread.append(keyword.value)
+
+
+def resolved_call(call: ast.Call, resolver: CallableResolver) -> ResolvedCall:
+    """A call as it runs: see ResolvedCall. Every policy that reads which function a call runs, and with what keywords,
+    through a name, a getattr of a constant name, a functools.partial, or a `**` literal, reads it here."""
+    args = list(call.args)
+    keywords: dict[str, ast.expr] = {}
+    unread: list[ast.expr] = []
+    _spread_keywords(call.keywords, resolver, keywords, unread)
+    function = bound_value(call.func, resolver)
+    seen: set[int] = set()
+    while (
+        isinstance(function, ast.Call)
+        and id(function) not in seen
+        and function.args
+        and resolved_reference(function.func, resolver)[0] in PARTIAL_CALLS
+    ):
+        seen.add(id(function))
+        ahead: dict[str, ast.expr] = {}
+        _spread_keywords(function.keywords, resolver, ahead, unread)
+        keywords = ahead | keywords
+        args = [*function.args[1:], *args]
+        function = bound_value(function.args[0], resolver)
+    name, attribute, receiver = resolved_reference(function, resolver)
+    return ResolvedCall(name, attribute, receiver, args, keywords, unread)
 
 
 def fence_holders(lines: list[str]) -> list[Fence | None]:
