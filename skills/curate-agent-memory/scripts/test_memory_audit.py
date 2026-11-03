@@ -1290,6 +1290,20 @@ class DeleteTests(unittest.TestCase):
         self.assertTrue((self.memory_dir / "gone.md").is_file())
         self.assertTrue(link.exists())
 
+    def test_a_read_only_memory_among_several_is_refused_before_any_is_deleted(self) -> None:
+        # Windows will not delete a read-only file, so delete refuses one with the rest of its checks, everywhere.
+        locked = self.memory_dir / "other.md"
+        locked.chmod(stat.S_IREAD)
+        before = self.snapshot()
+        self.assertEqual(
+            (1, ["FAILED other.md: the file is read-only; make it writable to delete it"]),
+            self.delete("gone.md", "other.md", "keep.md"),
+        )
+        self.assertEqual(before, self.snapshot())
+        # Writable again, it is a memory delete removes.
+        locked.chmod(stat.S_IREAD | stat.S_IWRITE)
+        self.assertEqual((0, ["DELETED gone.md", "DELETED other.md"]), self.delete("gone.md", "other.md"))
+
     def test_a_failure_mid_way_reports_what_was_already_deleted(self) -> None:
         unlink = Path.unlink
 
