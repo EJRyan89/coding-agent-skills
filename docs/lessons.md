@@ -583,11 +583,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_pull_carried.py::CarriedTests`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_at_main_that_reuses_a_merged_branch_s_name_is_not_named`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_with_its_own_commit_that_reuses_a_merged_branch_s_name_is_not_named`,
-  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_local_branch_that_reuses_a_merged_branch_s_name_is_not_named_for_deletion`
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_local_branch_that_reuses_a_merged_branch_s_name_is_not_named_for_deletion`,
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_only_an_open_pull_request_of_this_repository_holds_a_merged_worktree_s_line_back`
 - **Search for:** a branch, a ref, or a path compared by name, `== branch` or `in branches`, in a decision that a
   pull request is merged, a worktree retired, or a file owned; a `headRefName` read where a `headRefOid` or a commit
-  is meant.
-- **Examples:** #1901
+  is meant; a name or a head read from another repository's pull request, `isCrossRepository` true, in a decision
+  about this repository's own branches.
+- **Examples:** #1901, #2238
 
 ### A time option is a positive finite number of seconds
 
