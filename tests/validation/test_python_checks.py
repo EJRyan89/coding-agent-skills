@@ -4665,3 +4665,31 @@ def test_a_validation_reader_never_lists_the_folder_it_leaves_out_and_refuses_an
     with _listing_refused(tmp_path / elsewhere), pytest.raises(PermissionError) as raised:
         read(tmp_path)
     assert raised.value.filename == str(tmp_path / elsewhere)
+
+
+def _cache_key(root: Path, place: str) -> Path:
+    """The cache folder a default type check of `a.py` run from `place` has under `root`."""
+    import hashlib
+
+    return root / hashlib.sha256(f"{place}\0a.py\0default".encode()).hexdigest()[:16]
+
+
+def test_the_type_check_cache_is_keyed_by_the_check_s_place_under_the_repository(tmp_path: Path) -> None:
+    inside = REPOSITORY_ROOT / "skills" / "x"
+    outside = tmp_path / "elsewhere"
+    assert python_checks.mypy_cache_directory(tmp_path, inside, ["a.py"], strict=False) == _cache_key(
+        tmp_path, "skills/x"
+    )
+    assert python_checks.mypy_cache_directory(tmp_path, outside, ["a.py"], strict=False) == _cache_key(
+        tmp_path, outside.as_posix()
+    )
+
+
+class PrefixedCacheTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
+    def test_a_run_from_the_prefixed_repository_shares_the_plain_spelling_s_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prefixed = Path("\\\\?\\" + str(REPOSITORY_ROOT / "skills" / "x"))
+            found = python_checks.mypy_cache_directory(root, prefixed, ["a.py"], strict=False)
+            self.assertEqual(_cache_key(root, "skills/x"), found)
