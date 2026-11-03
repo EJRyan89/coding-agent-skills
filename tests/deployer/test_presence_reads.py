@@ -665,8 +665,8 @@ class TransientPresenceTests(DeployerTestCase):
         self.assertNotIn("changed", (kept[0] / "SKILL.md").read_text(encoding="utf-8"))
         kept_at = kept[0].relative_to(self.skills_dir).as_posix()
         self.assertIn(
-            "WARNING: Could not tell whether alpha's previous copy changed after this deployment planned it "
-            f"(Access is denied), so it was kept at {kept_at}.",
+            f"WARNING: Could not tell whether alpha's previous copy changed after run {kept[0].parent.name} planned "
+            f"it (Access is denied), so it was kept at {kept_at}.",
             result.stderr,
         )
 

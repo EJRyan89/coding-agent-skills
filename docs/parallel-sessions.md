@@ -149,11 +149,13 @@ Worktrees isolate files. These are still shared:
   - Prefer a temporary WIP commit.
   - If you must stash, push with a unique message, then apply your entry by SHA.
 - **Deployer state under `~/.claude`.** The deploy lock is keyed by the home folder, so it spans worktrees: a
-  second deploy fails at once with "Another deployment is running". Deploying records its source path in the
-  manifest and in the rendered `update-coding-agent-skills` skill, so `deploy.py` refuses to deploy from a
-  linked worktree, whose path disappears when the task ends. Deploy from the hub on `main`. `--dry-run` is
-  allowed anywhere, and so is `--canary-home`, which deploys into a directory under the temporary directory,
-  empty or one an earlier canary deployment marked, that is thrown away with the source path it records.
+  second deploy, or a `--dry-run`, fails at once with "Another deployment is running". Deploying records its
+  source path in the manifest and in the rendered `update-coding-agent-skills` skill, so `deploy.py` refuses to
+  deploy from a linked worktree, whose path disappears when the task ends. Deploy from the hub on `main`. A
+  `--dry-run` refuses any checkout other than the one the manifest records, as the deployment does, so once the hub
+  has deployed into the home it refuses in a linked worktree too. `--canary-home` works anywhere: it deploys into a
+  directory under the temporary directory, empty or one an earlier canary deployment marked, that is thrown away
+  with the source path it records.
 - **Nothing in validation.** Every suite isolates its own temporary home and fixtures, and the suites that
   deploy this repository deploy a temporary copy of it, or into a `--canary-home`. Any number of worktrees can run
   `tests/run_validation.py` at once.

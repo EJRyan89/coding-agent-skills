@@ -179,6 +179,14 @@ def _confirm_reclaimed(paths: Paths, stale: Path, judged: tuple[int, object]) ->
     raise _contention("Retry the deployment.")
 
 
+def check_holder(paths: Paths, probe: ProcessProbe = platform_support.process_status) -> None:
+    """Judge a lock already there as acquire judges it, taking and changing nothing, for the dry run: refuse metadata
+    acquire refuses and a live holder, and warn of a stale lock the deployment would reclaim. A stat that fails raises
+    its OSError rather than reading as no lock."""
+    if file_presence.is_occupied(paths.lock_dir):
+        _existing_holder(paths, probe)
+
+
 def acquire(paths: Paths, probe: ProcessProbe = platform_support.process_status) -> Lock:
     fsops.make_directories(paths.deployer_dir)
     pid = platform_support.current_process_id()
