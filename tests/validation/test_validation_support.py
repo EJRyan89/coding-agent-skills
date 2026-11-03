@@ -812,6 +812,15 @@ def test_resolved_calls_read_keys_a_scope_adds_to_a_spread_dict() -> None:
     assert _resolved_calls()[20][0].keywords == {"type": ["float"], "dest": ["'d'"]}
 
 
+def test_resolved_calls_read_a_setdefault_and_an_update_of_a_literal_dict() -> None:
+    source = (
+        "def f(parser):\n    extra = {}\n    extra.setdefault('type', float)\n    extra.update({'dest': 'd'})\n"
+        "    parser.add_argument('--x', **extra)\n"
+    )
+    assert [view.keywords for view in _resolved_calls(source)[5]] == [{"type": ["float"], "dest": ["'d'"]}]
+    assert [view.unread for view in _resolved_calls(source)[5]] == [[]]
+
+
 def test_resolved_calls_name_a_getattr_bound_to_a_name_through_the_imports() -> None:
     assert _resolved_calls()[12] == [ResolvedCallView("json.dumps", "dumps", "j", ["data"], {}, [])]
 

@@ -3422,6 +3422,18 @@ def test_ctypes_policy_reads_each_form_resolved_call_follows(body: str) -> None:
     assert resolved_rows(python_checks.ctypes_declaration_problems, body) == marked_rows(body)
 
 
+# Each name listing GIT_NAME_LISTINGS adds is also a command whose output the splitlines() check reads, -z or not.
+@pytest.mark.parametrize("command", ["diff-tree", "diff-index", "diff-files", "check-ignore", "check-attr"])
+def test_git_separator_policy_reads_a_split_of_each_listing_command(command: str) -> None:
+    source = f"def split(client):\n    client.output([{command!r}, '-z', 'HEAD']).splitlines()\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.git_separator_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == ["skills/alpha/scripts/alpha.py:2"]
+    assert f"splits the output of git {command} with splitlines()" in found[0]
+
+
 TIME_OPTION_SOURCE = """\
 import argparse
 
