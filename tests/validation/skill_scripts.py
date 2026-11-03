@@ -22,6 +22,7 @@ import json_reader
 import whole_number
 from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
 from device_names import is_reserved_device_name
+from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
@@ -1529,7 +1530,6 @@ POSIX_CONSOLE_DEVICES = frozenset(
     {f"/dev/{stream}" for stream in ("stdin", "stdout", "stderr")}
     | {f"{folder}/{fd}" for folder in ("/dev/fd", "/proc/self/fd") for fd in STANDARD_DESCRIPTORS}
 )
-DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 
 def is_console_device(path: str) -> bool:
@@ -1537,7 +1537,7 @@ def is_console_device(path: str) -> bool:
     device name in every form Windows reads, any case, before an extension or a colon, as `conout$`, `CON:`, and
     `con.txt` are, in any folder; or a Linux path to a standard stream, however its separators fall."""
     segments = [segment for segment in re.split(r"[\\/]", path) if segment]
-    last = DRIVE_PREFIX.sub("", segments[-1], count=1) if segments else ""
+    last = DRIVE.sub("", segments[-1], count=1) if segments else ""
     if is_reserved_device_name(last) and any(last.casefold().startswith(name) for name in CONSOLE_DEVICE_NAMES):
         return True
     return path.startswith("/") and str(PurePosixPath(path)) in POSIX_CONSOLE_DEVICES

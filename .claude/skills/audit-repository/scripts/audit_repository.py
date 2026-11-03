@@ -119,6 +119,7 @@ from git_client import GitClient, GitError, output_lines
 from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
+from module_assignments import sole_assignment
 from path_keys import path_key
 from release_tags import is_release_tag, last_release, release_order
 from suite_names import is_suite_name
@@ -694,15 +695,6 @@ CATALOGUE_NAMES = ("RUNTIMES", "RUNTIME_TITLES")
 READING_METHODS = frozenset({"copy", "count", "get", "index", "items", "keys", "values"})
 
 
-def _sole_assignment(node: ast.stmt) -> tuple[ast.Name, ast.expr] | None:
-    """The one name a module-level statement assigns, with its value, when it assigns one name and nothing else."""
-    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-        return node.targets[0], node.value
-    if isinstance(node, ast.AnnAssign) and node.value is not None and isinstance(node.target, ast.Name):
-        return node.target, node.value
-    return None
-
-
 def _binds(node: ast.AST, name: str) -> bool:
     """Whether a node binds or rebinds `name` in a form Python spells outside a Name node: a parameter, an import, a
     definition, an exception or match capture, a match mapping's rest, a type parameter, a global or nonlocal
@@ -742,7 +734,7 @@ def _exported(tree: ast.Module) -> set[int]:
     return {
         id(node)
         for statement in tree.body
-        if (assignment := _sole_assignment(statement)) is not None and assignment[0].id == "__all__"
+        if (assignment := sole_assignment(statement)) is not None and assignment[0].id == "__all__"
         for node in ast.walk(assignment[1])
         if isinstance(node, ast.Constant)
     }
@@ -776,7 +768,7 @@ def catalogue_value(tree: ast.Module, name: str, path: str) -> object:
     assignments = [
         assignment
         for node in tree.body
-        if (assignment := _sole_assignment(node)) is not None and assignment[0].id == name
+        if (assignment := sole_assignment(node)) is not None and assignment[0].id == name
     ]
     if len(assignments) != 1:
         raise AuditError(f"{path} must assign {name} once at module level")

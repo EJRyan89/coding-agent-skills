@@ -1670,7 +1670,7 @@ def test_console_setup_policy_passes_a_wrapper_over_any_other_file(tmp_path: Pat
         "logs/con.txt",
         "/dev//stdout",
         "/dev/./stderr",
-        "/proc/self/fd//1",
+        "/dev/fd//1",
         b"CONOUT$",
     ],
 )

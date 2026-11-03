@@ -25,6 +25,7 @@ import json_reader
 from closing_references import pull_request_references
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_remote import github_repository
+from module_assignments import sole_assignment
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, UnreadablePython, parse_python
 
 from tools.release_notes import ReleaseNotesError, git_output
@@ -104,15 +105,6 @@ class OwedIssue:
     owed: str
 
 
-def _sole_assignment(node: ast.stmt) -> tuple[ast.Name, ast.expr] | None:
-    """The one name a module-level statement assigns, with its value, when it assigns one name and nothing else."""
-    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-        return node.targets[0], node.value
-    if isinstance(node, ast.AnnAssign) and node.value is not None and isinstance(node.target, ast.Name):
-        return node.target, node.value
-    return None
-
-
 def _named(node: ast.AST) -> str | None:
     """The identifier a node spells, as a name, an attribute, a string, or a binding of any kind, or None. Each
     binding Python spells outside a Name node is here: a parameter, a keyword, an import, a global or nonlocal
@@ -174,7 +166,7 @@ def read_pending(path: Path) -> dict[str, int]:
     assignments = [
         assignment
         for node in tree.body
-        if (assignment := _sole_assignment(node)) is not None and assignment[0].id == PENDING
+        if (assignment := sole_assignment(node)) is not None and assignment[0].id == PENDING
     ]
     if len(assignments) != 1:
         raise KnownFailuresUnreadable(f"must assign {PENDING} once at module level")
