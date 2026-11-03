@@ -743,12 +743,20 @@ class HomeFolderTests(unittest.TestCase):
             ("audit", "--memory-dir", str(self.memory_dir)),
             ("audit", "--memory-dir", str(self.memory_dir), "--output", str(self.root / "report.json")),
             ("skill-source", "demo", "--repo", str(self.repo)),
+            # These read the home only for the deployer's skills directories a store may not lie in.
+            ("reindex", "--memory-dir", str(self.memory_dir)),
+            ("reindex", "--memory-dir", str(self.memory_dir), "--write"),
+            ("delete", "--memory-dir", str(self.memory_dir), "kept.md"),
         )
+        write(self.memory_dir / "kept.md", memory("kept", "A memory delete must not remove."))
+        index = (self.memory_dir / "MEMORY.md").read_bytes()
         for arguments in commands:
             with self.subTest(arguments=arguments):
                 result = self.run_with_home(Path("relative home"), *arguments)
                 self.assertEqual((1, home_refusal("relative home"), ""), result)
         self.assertFalse((self.root / "report.json").exists())
+        self.assertTrue((self.memory_dir / "kept.md").is_file())
+        self.assertEqual(index, (self.memory_dir / "MEMORY.md").read_bytes())
 
     def test_a_home_python_cannot_find_is_refused_by_its_variable(self) -> None:
         with (
@@ -765,11 +773,14 @@ class HomeFolderTests(unittest.TestCase):
         )
         self.assertEqual((1, home_refusal("relative home"), ""), result)
 
-    def test_an_explicit_home_or_user_dir_needs_no_home_folder(self) -> None:
+    def test_an_explicit_home_still_needs_an_absolute_home_folder(self) -> None:
+        # --home names where Claude Code's settings are read, but the skills directories the deployer owns, which no
+        # store may lie in, are still under the home folder.
         home = self.root / "home"
         home.mkdir()
-        result = self.run_with_home(Path("relative home"), "resolve", "--repo", str(self.repo), "--home", str(home))
-        self.assertEqual(0, result[0], result[1])
+        arguments = ("resolve", "--repo", str(self.repo), "--home", str(home))
+        self.assertEqual((1, home_refusal("relative home"), ""), self.run_with_home(Path("relative home"), *arguments))
+        self.assertEqual(0, self.run_with_home(home, *arguments)[0])
 
 
 class ConfigDirectoryTests(unittest.TestCase):

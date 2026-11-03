@@ -37,7 +37,8 @@ projects folder, the skills directory it runs from, ~/.claude/skills, or ~/.agen
 audited. It searches the user's Claude configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude)
 unless --user-dir names another. A CLAUDE_CONFIG_DIR that is set but is not an absolute path, and a
 home folder (USERPROFILE on Windows, HOME elsewhere) that is not one, is a `FAILED <reason>` line
-naming the variable, from any command that reads it, and nothing is read from it.
+naming the variable: every command reads the home and refuses such a one first, and any that
+reads the configuration directory refuses such a CLAUDE_CONFIG_DIR, and nothing is read from it.
 
 reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memory:
 `- [Title](file.md) — hook`. It writes only MEMORY.md, only with --write, and never deletes
@@ -1297,10 +1298,12 @@ def main(arguments: list[str] | None = None) -> int:
     source.add_argument("--home", type=Path, help="default: the home folder")
     args = parser.parse_args(arguments)
     try:
-        # The home folder is read only once a command needs it, so a home that is not an absolute path is refused on
-        # a FAILED line rather than in building the parser.
+        # Every command reads the home folder, if only for the skills directories the deployer owns under it that a
+        # store may not lie in, so a home that is not an absolute path is refused first, on a FAILED line rather than
+        # in building the parser.
+        home = absolute_home()
         if hasattr(args, "home") and args.home is None:
-            args.home = absolute_home()
+            args.home = home
         code, lines = run(args)
     except OSError as exc:
         code, lines = 1, [f"FAILED {describe(exc)}"]
