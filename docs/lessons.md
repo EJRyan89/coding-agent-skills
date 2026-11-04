@@ -319,7 +319,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   absent section as empty and refuses one of another kind, and the shepherd's `shepherd_pull_requests:objects` and
   `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on, and
   `shepherd_pull_requests:reported` and `shepherd_pull_requests:present`, which refuse a member that decides a write
-  when the listing leaves it out, so an absent field is never read as the answer that permits the write.
+  when the listing leaves it out, so an absent field is never read as the answer that permits the write, and
+  `tools.hub_guard:judge_options`, which refuses a shell option no table of the guard's names.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
@@ -367,6 +368,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::EnvironmentSetDifferentialTests`,
   `tests/tools/test_hub_guard_shells.py::UnsetDifferentialTests`,
   `tests/tools/test_hub_guard_shells.py::ShellOptionsDifferentialTests`,
+  `tests/tools/test_hub_guard_shells.py::ShellOptionSpellingTests`, which runs Bash on each spelling that turns on an
+  option the guard cannot read a shell under, and fails when Bash lists an option its tables do not name,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_the_recorded_rollup_reads_its_newest_validation_run`,
   which reads a check rollup recorded from gh's pull request listing, and
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_no_workflow_reports_neither_satisfies_nor_blocks_the_required_check`,
@@ -383,7 +386,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   word runs, an alias, a function, a `hash -p` or `BASH_CMDS` command name, a `command_not_found_handle`, or one
   handed to a child in its environment, through any shell between them, against the ways the guard reads; each
   way a child's options or variables reach it from its starter, a `SHELLOPTS` or `BASHOPTS` the starter exported or
-  `env` gives, and a starter the text does not settle, against what a reader takes from the hook's own environment; each
+  `env` gives, and a starter the text does not settle, against what a reader takes from the hook's own environment; a
+  shell option read from one source, such as `set`, and not from another that turns it on, such as `shopt -o`, a
+  nested bash's letters, `sh`, or a variable such as `POSIXLY_CORRECT`, rather than through `SET_OPTIONS` and
+  `SHOPT_OPTIONS`; such a variable judged by a search of the command's text rather than by the name an assignment
+  gives it, which refuses a commit message that names it and misses a name built at run time; an arithmetic context
+  read in one place and not another, `(( ))` but not a subscript, a compound assignment's `[k]=`, an offset,
+  `[[ -eq ]]`, a case pattern, or a value Bash evaluates again, rather than through `arithmetic_contexts` and
+  `arithmetic_hazard`; an operand settled by its raw characters rather than as one whole token once quotes and
+  backslash-newlines are gone, which `x"$i"`, `${w}$i`, and `x$((i))` pass; a list of the variables Bash sets that
+  names the dangerous ones rather than a catalogue of all of them held to `compgen -v`; a row for an option table that asserts only a refusal while a guarded hub is in view, which an
+  option read as unknown gives too, where the row could read what the reader returns, as each sudo option's was; each
   way a variable is assigned, an expansion's `${NAME:=word}` and `${NAME=word}` among them, and each way an
   attribute is given, allexport and an option's upper-case spelling such as `-F` among them, against the ways the
   guard reads; an option loop that ends at a word the text does not settle without saying it may be an option;
@@ -405,7 +418,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   leaves one out, as `difftool --no-index` was; a git option table that leaves out one git.c reads a value after, as
   `--shallow-file` was; a failure labelled with `arguments[0]` rather than `git_client.command_name`.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2262, #2276
+  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276
 
 ### A recursive parser of input has a depth bound
 

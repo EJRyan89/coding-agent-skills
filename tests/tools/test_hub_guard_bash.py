@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from tools import hub_guard
+from tools import bash_syntax, hub_guard
 
 START = Path(__file__).resolve().parent
 UNSETTLED = "unsettled"
@@ -588,3 +588,640 @@ class OptionReaderTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual(expected, subcommands(command))
+
+
+# The set and shopt options under which the guard cannot read a shell, by the state that refuses it, written out apart
+# from SET_OPTIONS and SHOPT_OPTIONS so that a changed decision there fails a row.
+REFUSED_SET_OPTIONS = {
+    "keyword": "on",
+    "posix": "on",
+    "physical": "on",
+    "privileged": "on",
+    "igncr": "on",
+    "interactive-comments": "off",
+}
+REFUSED_SHOPT_OPTIONS = {
+    **dict.fromkeys(("cdable_vars", "lastpipe", "autocd", "cdspell", "extdebug", "localvar_inherit"), "on"),
+    **dict.fromkeys(("localvar_unset", "nocasematch", "array_expand_once", "assoc_expand_once"), "on"),
+    **dict.fromkeys(("compat31", "compat32", "compat40", "compat41", "compat42", "compat43", "compat44"), "on"),
+    "interactive_comments": "off",
+}
+SET_OPTION_LETTERS = {
+    "a": "allexport",
+    "b": "notify",
+    "e": "errexit",
+    "f": "noglob",
+    "h": "hashall",
+    "k": "keyword",
+    "m": "monitor",
+    "n": "noexec",
+    "p": "privileged",
+    "t": "onecmd",
+    "u": "nounset",
+    "v": "verbose",
+    "x": "xtrace",
+    "B": "braceexpand",
+    "C": "noclobber",
+    "E": "errtrace",
+    "H": "histexpand",
+    "P": "physical",
+    "T": "functrace",
+}
+
+
+ANY_NAME = (
+    "could not read the name a command assigns, which may be any variable, one that turns on a shell option or PS4 "
+    "among them"
+)
+ASSIGNS_PS4 = "the command assigns PS4 a value that may hold an expansion, run by xtrace"
+
+
+def refused(source: str, name: str, state: str = "on") -> str:
+    return f"{name} is turned {state} by {source}, under which the guard cannot read the shell"
+
+
+def unknown(source: str, name: str, state: str = "on") -> str:
+    return f"the option {name} is turned {state} by {source}, and the guard does not read it"
+
+
+class ShellOptionTableTests(unittest.TestCase):
+    """Each source of shell options read through SET_OPTIONS and SHOPT_OPTIONS: set, shopt, a nested bash's own
+    options and the environment it starts with, and exec -a; an option no table names is unread."""
+
+    def test_the_tables_refuse_exactly_the_options_written_out_here(self) -> None:
+        self.assertEqual(
+            REFUSED_SET_OPTIONS, {name: state for name, (_, state) in hub_guard.SET_OPTIONS.items() if state}
+        )
+        self.assertEqual(
+            REFUSED_SHOPT_OPTIONS, {name: state for name, state in hub_guard.SHOPT_OPTIONS.items() if state}
+        )
+        self.assertEqual(SET_OPTION_LETTERS, hub_guard.SET_LETTERS)
+
+    def test_set_and_a_starting_bash_name_each_option_they_change_in_order(self) -> None:
+        for arguments, starting, expected in (
+            (["-ek"], False, [("set", "errexit", True), ("set", "keyword", True)]),
+            (["+k", "-o", "posix"], False, [("set", "keyword", False), ("set", "posix", True)]),
+            (["-oo", "posix", "keyword", "x"], False, [("set", "posix", True), ("set", "keyword", True)]),
+            (["-eo", "posix", "--", "-k"], False, [("set", "errexit", True), ("set", "posix", True)]),
+            (["-o"], False, []),
+            (["+o"], False, []),
+            (["-", "-k"], False, []),
+            (["+", "-k"], False, []),
+            (["x", "-k"], False, []),
+            (["-y"], False, [("set", "-y", True)]),
+            (["-O", "lastpipe"], False, [("set", "-O", True)]),
+            (["-c"], False, [("set", "-c", True)]),
+            (["-O", "lastpipe", "-c", "s"], True, [("shopt", "lastpipe", True)]),
+            (["+O", "lastpipe"], True, [("shopt", "lastpipe", False)]),
+            (["-Oo", "lastpipe", "posix"], True, [("shopt", "lastpipe", True), ("set", "posix", True)]),
+            (["-cilrsD", "s"], True, []),
+            (["--posix", "-c", "s"], True, [("set", "posix", True)]),
+            (["--debugger"], True, [("shopt", "extdebug", True)]),
+            (["--verbose"], True, [("set", "verbose", True)]),
+            (["--rcfile", "-k", "-c", "s"], True, []),
+            (["--norc", "--noprofile", "--login", "-c", "s"], True, []),
+            (["--bogus"], True, [("set", "--bogus", True)]),
+        ):
+            with self.subTest(arguments=arguments, starting=starting):
+                self.assertEqual(expected, hub_guard.option_changes(list(arguments), starting))
+        for unsettled in ([None], ["-e", None], ["-o", None], ["-eo", None, "-c"]):
+            with self.subTest(arguments=unsettled):
+                self.assertIsNone(hub_guard.option_changes(list(unsettled), starting=False))
+
+    def test_each_change_is_judged_by_its_table_and_allexport_is_followed(self) -> None:
+        reading = hub_guard.Reading({}, "git")
+        changes: list[hub_guard.OptionChange] = [
+            ("set", "allexport", True),
+            ("set", "keyword", False),
+            ("set", "interactive-comments", False),
+            ("shopt", "lastpipe", True),
+            ("shopt", "extglob", True),
+            ("set", "lastpipe", True),
+            ("shopt", "posix", True),
+            ("set", "allexport", False),
+        ]
+        self.assertFalse(hub_guard.judge_options(changes, reading, "S"))
+        self.assertEqual(
+            [
+                refused("S", "interactive-comments", "off"),
+                refused("S", "lastpipe"),
+                unknown("S", "lastpipe"),
+                unknown("S", "posix"),
+            ],
+            reading.unread,
+        )
+        self.assertIsNone(hub_guard.judge_options([("set", "errexit", True)], reading, "S"))
+        self.assertTrue(hub_guard.judge_options([("set", "allexport", True)], reading, "S"))
+
+    def test_shopt_judges_what_it_sets_and_unsets_and_refuses_flags_it_does_not_take(self) -> None:
+        for command, unread in (
+            ("shopt -s lastpipe", [refused("shopt", "lastpipe")]),
+            ("shopt -u lastpipe", []),
+            ("shopt -u interactive_comments", [refused("shopt", "interactive_comments", "off")]),
+            ("shopt -so keyword", [refused("shopt", "keyword")]),
+            ("shopt -uo keyword", []),
+            ("shopt -s nosuch", [unknown("shopt", "nosuch")]),
+            ("shopt lastpipe; shopt -p; shopt -q lastpipe; shopt -po posix", []),
+            ("shopt -x lastpipe", ["could not read the options passed to shopt"]),
+            ("shopt -su lastpipe", ["could not read the options passed to shopt"]),
+            ("shopt -s $o", ["could not read the options passed to shopt"]),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(unread, bash_reading(f"{command}; git status").unread)
+        self.assertEqual(START / "after", git_dir_reaching_git("unset GIT_DIR; shopt -so allexport; GIT_DIR=after"))
+        self.assertEqual(UNSET, git_dir_reaching_git("unset GIT_DIR; set -a; shopt -uo allexport; GIT_DIR=after"))
+
+    def test_a_nested_bash_judges_its_own_options_and_sh_runs_in_posix_mode(self) -> None:
+        for command, unread in (
+            ("bash -k -c 'git status'", [refused("bash's own options", "keyword")]),
+            ("sh -c 'git status'", [refused("sh's own options", "posix")]),
+            ("sh +o posix -c 'git status'", [refused("sh's own options", "posix")]),
+            ("bash -euo pipefail -c 'git status'", []),
+            ("exec -a sh bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a /bin/sh bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a -sh bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -ash bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a $n bash -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a bash sh -c 'git status'", [refused("sh's own options", "posix")]),
+            ("exec -a shell bash -c 'git status'", []),
+            ("exec -a sh git status", []),
+            ("exec bash -c 'git status'", []),
+            ("command -p bash -c 'git status'", []),
+            # A script the guard does not read is unread whatever the options, so they are not judged.
+            ("bash --posix script.sh; git status", []),
+            ("sh script.sh; git status", []),
+            ("printf x | sh -k -s; git status", ["could not read the command passed to sh"]),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(unread, bash_reading(command).unread)
+                self.assertEqual(["status"], subcommands(command))
+        # A shell the text does not settle may hold any PS4, which a nested bash under -x expands.
+        self.assertEqual(
+            [ANY_NAME, "xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs"],
+            bash_reading("declare $n=1; bash -x -c 'git status'").unread,
+        )
+
+    def test_xtrace_is_refused_where_ps4_may_hold_an_expansion(self) -> None:
+        assigns_any = ANY_NAME
+        for command, environment, unread in (
+            ("set -x; git status", {}, []),
+            ("bash -x -c 'git status'", {}, []),
+            ("set -x; git status", {"PS4": "+ "}, []),
+            (
+                "set -x; git status",
+                {"PS4": "$(cmd)"},
+                ["xtrace is turned on by set where PS4 may hold an expansion, which it runs"],
+            ),
+            (
+                "shopt -so xtrace; git status",
+                {"PS4": "`cmd`"},
+                ["xtrace is turned on by shopt where PS4 may hold an expansion, which it runs"],
+            ),
+            ("set +x; git status", {"PS4": "$(cmd)"}, []),
+            (
+                "bash -x -c 'git status'",
+                {"PS4": "${x:-y}"},
+                ["xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs"],
+            ),
+            ("bash -c 'git status'", {"PS4": "$(cmd)"}, []),
+            ("PS4=+; git status", {}, []),
+            ("PS4='$(cmd)'; git status", {}, [ASSIGNS_PS4]),
+            ("declare PS4='`cmd`'; git status", {}, [ASSIGNS_PS4]),
+            (
+                "declare $n=1; set -x; git status",
+                {},
+                [assigns_any, "xtrace is turned on by set where PS4 may hold an expansion, which it runs"],
+            ),
+        ):
+            with self.subTest(command=command, environment=environment):
+                reading = hub_guard.Reading({}, command)
+                hub_guard.read_bash(command, START, reading, 1, environment)
+                self.assertEqual(unread, reading.unread)
+        source = "the environment bash starts with"
+        for handed, unread in (
+            ({"SHELLOPTS": "xtrace"}, []),
+            (
+                {"SHELLOPTS": "xtrace", "PS4": "$(cmd)"},
+                [f"xtrace is turned on by {source} where PS4 may hold an expansion, which it runs"],
+            ),
+            (
+                {"SHELLOPTS": "xtrace", "PS4": None},
+                [f"xtrace is turned on by {source} where PS4 may hold an expansion, which it runs"],
+            ),
+        ):
+            with self.subTest(handed=handed):
+                reading = hub_guard.Reading({}, "git status")
+                hub_guard.read_bash("git status", START, reading, 1, handed)
+                self.assertEqual(unread, reading.unread)
+        self.assertEqual((), hub_guard.handed_ps4({"ps4": "$(x)"}, names_folded=False))
+        self.assertEqual(("$(x)",), hub_guard.handed_ps4({"ps4": "$(x)"}, names_folded=True))
+
+    def test_each_arithmetic_context_is_read_for_what_it_may_assign(self) -> None:
+        # Each arithmetic context, with EXPR standing for its expression.
+        contexts = (
+            "(( EXPR ))",
+            ": $(( EXPR ))",
+            'let "EXPR"',
+            '[[ 1 -eq "EXPR" ]]',
+            '[[ "EXPR" -lt 2 ]]',
+            "a=(x); : ${a[EXPR]}",
+            "a[EXPR]=x",
+            "s=abc; : ${s: EXPR}",
+            "s=abc; : ${s:0:EXPR}",
+            "for (( EXPR; 0; )); do :; done",
+            "cat <<< $(( EXPR ))",
+            "cat > $(( EXPR ))",
+            "cat <<END\n$(( EXPR ))\nEND\ntrue",
+            "case $(( EXPR )) in *) ;; esac",
+            "for x in $(( EXPR )); do :; done",
+            'echo "${x:-$(( EXPR ))}"',
+        )
+        # Each expression, and whether it may turn on a shell option: an assignment to POSIXLY_CORRECT or BASH_COMPAT,
+        # through a name or value the text settles or not, and a variable whose value is not a number.
+        expressions = (
+            ("POSIXLY_CORRECT=1", True),
+            ("BASH_COMPAT=44", True),
+            ("POSIXLY_CORRECT += 1", True),
+            ("++BASH_COMPAT", True),
+            ("x", True),
+            ("$x", True),
+            ("u", True),
+            ("y", True),
+            ("$(echo 1)", True),
+            ("${x:-1}", True),
+            ("n + 1", False),
+            ("$n * 2", False),
+            ("16#ff + 0x1f", False),
+            ("$# + ${#n}", False),
+            ("absent + 1", False),
+            ("POSIXLY_CORRECT == 1", False),
+        )
+        before = "x='POSIXLY_CORRECT=1'; y=x; n=3; read -r u <<< 1; "
+        for context in contexts:
+            for expression, refused in expressions:
+                command = before + context.replace("EXPR", expression) + "; git status"
+                with self.subTest(command=command):
+                    self.assertEqual(refused, bool(bash_reading(command).unread), bash_reading(command).unread)
+        # A name the text settles to one of them, an integer attribute, and a value evaluated again.
+        for command in (
+            "x=POSIXLY_CORRECT; (( $x = 1 )); git status",
+            'v=BASH_COMPAT; let "$v=44"; git status',
+            "declare -i n='POSIXLY_CORRECT=1'; git status",
+            "declare -i n; n='BASH_COMPAT=44'; git status",
+            "local -ri n=1; git status",
+            "x='y=1'; y='POSIXLY_CORRECT=1'; (( x, y )); git status",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(bash_reading(command).unread)
+        # A case pattern's substitution runs as Bash tests the pattern.
+        self.assertEqual(["reset"], subcommands("case x in a|$(git reset --hard)) :;; esac"))
+        for command in (
+            "n=0; (( n += 1 )); git status",
+            "declare -a arr=(a b c); git status",
+            "declare -r Z=3; git status",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([], bash_reading(command).unread)
+
+    def test_arithmetic_reads_a_number_the_text_does_not_settle_as_a_number(self) -> None:
+        for command, refused in (
+            # A loop variable over literal integers, the special parameters, a length, and Bash's own numbers.
+            ("for i in 1 2 3; do echo $((i)); done; git status", False),
+            ("for i in -1 +2; do (( i > 0 )); done; git status", False),
+            ("for i in 1 2; do : $(( $i * 2 )) ${a[i]}; done; git status", False),
+            ("echo $(( $# + $? + $$ + $! + ${#} + ${?} )); git status", False),
+            ("a=(x y); echo $(( ${#a[@]} + ${#a[*]} + ${#a} )); git status", False),
+            ("echo $(( RANDOM + SECONDS + LINENO + BASHPID + PPID + UID + EUID )); git status", False),
+            ("echo $(( $RANDOM % 6 + ${SECONDS} )); git status", False),
+            # Any other loop list, a number the text then changes, and one of Bash's numbers the text assigns.
+            ("for i in $(cmd); do echo $((i)); done; git status", True),
+            ('for i in "$@"; do echo $((i)); done; git status', True),
+            ("for i; do echo $((i)); done; git status", True),
+            ("for i in 1 x; do echo $((i)); done; git status", True),
+            ("for i in 1 '2'; do echo $((i)); done; git status", True),
+            ("for i in 1 2; do read -r i; echo $((i)); done; git status", True),
+            ("for i in 1 2; do declare i=$v; echo $((i)); done; git status", True),
+            ("read -r v; LINENO=$v; echo $((LINENO)); git status", True),
+            ("RANDOM='POSIXLY_CORRECT=1'; echo $((RANDOM)); git status", True),
+            ("a=(x); read -r k; echo $(( ${#a[k]} )); git status", True),
+            # A number joined to a name makes a name the text does not settle, whole operands do not.
+            ("x1='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( x$i )); done; git status", True),
+            ("x1='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( x${i} )); done; git status", True),
+            ("x1='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( ${i}x )); done; git status", True),
+            ("for i in 1 2; do (( x$i )); : ${a[x$i]}; done; git status", True),
+            ('for i in 1 2; do let "x$i"; done; git status', True),
+            ("for i in 1 2; do [[ x$i -eq 0 ]]; done; git status", True),
+            ("echo $(( x$# )); git status", True),
+            ("echo $(( x${#} )); git status", True),
+            ("echo $(( x${#a} )); git status", True),
+            ("echo $(( ${#a[@]}x )); git status", True),
+            ("for i in 1 2; do echo $(( $i + ${i} - $# * ${#a} )); done; git status", False),
+            # A loop number made a reference and undone, and an element of one.
+            (
+                "v='POSIXLY_CORRECT=1'; for i in 1 2; do declare -n i=v; declare +n i; echo $((i)); done; git status",
+                True,
+            ),
+            (
+                "v='POSIXLY_CORRECT=1'; for i in 1 2; do typeset -n i=v; typeset +n i; echo $((i)); done; git status",
+                True,
+            ),
+            ("for i in 1 2; do declare +n i; echo $((i)); done; git status", True),
+            ("i=(0 'POSIXLY_CORRECT=1'); for i in 1 2; do echo $(( i[1] )); done; git status", True),
+            ("for i in 1 2; do echo $(( i [0] )); done; git status", True),
+            # The variables Bash sets itself.
+            (": 'POSIXLY_CORRECT=1'; echo $(( $_ )); git status", True),
+            (": 'POSIXLY_CORRECT=1'; echo $(( _ )); git status", True),
+            ("getopts a: o; echo $(( OPTARG )); git status", True),
+            ("[[ $v =~ (.*) ]]; echo $(( BASH_REMATCH )); git status", True),
+            ("select x in a; do echo $(( REPLY )); done; git status", True),
+            ("mapfile < f; echo $(( MAPFILE )); git status", True),
+            ("echo $(( PWD + OLDPWD )); git status", True),
+            # A compound assignment's subscripts, before a command and as a declaration's argument.
+            ("a=([POSIXLY_CORRECT=1]=x); echo ok; git status", True),
+            ("declare -a a=([BASH_COMPAT=44]=x); git status", True),
+            ("a+=(x [k]=y); read -r k; b=([k]=z); git status", True),
+            ("a=(x [1]=y [k]=z); git status", False),
+            ("a+=([POSIXLY_CORRECT=1]=x); git status", True),
+            ("a=(x [POSIXLY_CORRECT=1]=y); git status", True),
+            # A digit that belongs to a name joins the number to it.
+            ("x11='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( x1$i )); done; git status", True),
+            # An expansion is a whole operand or none: joined past quotes, a nested expansion, or another expansion.
+            ("for i in 1 2; do echo $(( x$((i)) )); done; git status", True),
+            ("for i in 1 2; do echo $(( x$[i] )); done; git status", True),
+            ("echo $(( x$((1)) )); git status", True),
+            ("echo $(( x$(( $# )) )); git status", True),
+            ('for i in 1 2; do echo $(( x"$i" )); done; git status', True),
+            ('for i in 1 2; do echo $(( x""$i )); done; git status', True),
+            ("for i in 1 2; do echo $(( x'1' )); done; git status", False),
+            ('for i in 1 2; do a[x"$i"]=5; : ${a[x"$i"]} ${s:x"$i"}; done; git status', True),
+            ('for i in 1 2; do a=([x"$i"]=q); done; git status', True),
+            ('echo $(( x"$#" )); git status', True),
+            ('echo $(( x"${#a}" )); git status', True),
+            ("w=x; for i in 1 2; do echo $(( ${w}$i )); done; git status", True),
+            ('for i in 1 2; do echo $(( "$i""$i" )); done; git status', True),
+            ("for i in 1 2; do echo $(( $i$i )); done; git status", True),
+            ("for i in 1 2; do echo $(( $i[0] )); done; git status", True),
+            ("echo $(( 1\\\n2 )); git status", False),
+            ('let "n=1\\\n2"; git status', False),
+            ("echo $(( $[1] + 1 )); git status", False),
+            ("a\\\n[POSIXLY_CORRECT=1]=x; git status", True),
+            ("unset a\\\n[POSIXLY_CORRECT=1]; git status", True),
+            ('unset "a\\\n[POSIXLY_CORRECT=1]"; git status', True),
+            ("echo $(( 1\\2 )); git status", True),
+            ("echo $(( ${#a} )) $(( ${x}1 )); git status", True),
+            ("echo $(( $# )) $(( ($#) )) $(( -$# )); git status", False),
+            ("echo $(( $( echo 1 ) )); git status", True),
+            ("echo $(( ${x )); git status", True),
+            ("i=(0 'POSIXLY_CORRECT=1'); for i in 1 2; do echo $(( i\\\n[1] )); done; git status", True),
+            # What Bash sets itself: unsettled but for its numbers, and a name it does not set unset.
+            ("echo $(( SHELLOPTS )); git status", True),
+            ("echo $(( BASHOPTS + DIRSTACK[1] )); git status", True),
+            (
+                "echo $(( MACHTYPE )) $(( HOSTTYPE )) $(( OSTYPE )) $(( HOSTNAME )) $(( BASH_VERSINFO )); git status",
+                True,
+            ),
+            (
+                "echo $(( OPTIND + BASH_ARGC + PIPESTATUS + SRANDOM + EPOCHSECONDS + COPROC_PID )); git status",
+                False,
+            ),
+            ("OPTIND='POSIXLY_CORRECT=1'; echo $(( OPTIND )); git status", True),
+            ("echo $(( undefined_name + 1 )); git status", False),
+            # An array reference a builtin takes, quoted or escaped, and a declaration's quoted compound value.
+            ("declare -a 'a=([POSIXLY_CORRECT=1]=x)'; git status", True),
+            ("declare -a a='([POSIXLY_CORRECT=1]=x)'; git status", True),
+            ('declare -a a="([POSIXLY_CORRECT=1]=x)"; git status', True),
+            ('local -a a="([POSIXLY_CORRECT=1]=x)"; git status', True),
+            ('typeset -a a="([BASH_COMPAT=44]=x)"; git status', True),
+            ('readonly -a a="([POSIXLY_CORRECT=1]=x)"; git status', True),
+            ("declare -a b=\\([POSIXLY_CORRECT=1]=x\\); git status", True),
+            ("a=( \\\n[POSIXLY_CORRECT=1]=x ); git status", True),
+            ("unset 'a[POSIXLY_CORRECT=1]'; git status", True),
+            ("read -r 'a[POSIXLY_CORRECT=1]' <<< x; git status", True),
+            ("printf -v 'a[POSIXLY_CORRECT=1]' x; git status", True),
+            ("declare 'a[POSIXLY_CORRECT=1]=v'; git status", True),
+            ("export 'a[POSIXLY_CORRECT=1]=v'; git status", True),
+            ("wait -p 'a[POSIXLY_CORRECT=1]'; git status", True),
+            ("mapfile 'a[POSIXLY_CORRECT=1]' < f; git status", True),
+            ("printf '%s\\n' x; read -r -p \"Enter [y/n]: \" ans; unset 'a[1]'; git status", False),
+            ("declare -A m=([key]=1); echo ok; git status", False),
+            # A quoted here-document's body is not expanded.
+            ("cat <<'END'\n$(( POSIXLY_CORRECT = 1 ))\nEND\ngit status", False),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(refused, bool(bash_reading(command).unread), bash_reading(command).unread)
+        # An expansion that does not close joins whatever follows it.
+        self.assertTrue(hub_guard.expansion_joins("${x", 0))
+        self.assertTrue(hub_guard.expansion_joins("$((x)", 0))
+        self.assertFalse(hub_guard.expansion_joins("$x + 1", 0))
+        # A provider path the PowerShell reader does not settle may name a variable a bash takes a setting from.
+        for last, names in (
+            ("POSIXLY_CORRECT", True),
+            ("bash_compat", True),
+            ("BASHOPTS", True),
+            ("ShellOpts", True),
+            ("PS4", True),
+            ("GIT_DIR", True),
+            ("out.txt", False),
+        ):
+            with self.subTest(last=last):
+                self.assertEqual(names, hub_guard.may_name_tracked({"text": f"$d\\{last}"}))
+        # What Bash sets itself is unsettled, whatever the environment the shell starts with hands it.
+        for name in ("MAPFILE", "OLDPWD", "OPTARG", "REPLY", "_"):
+            with self.subTest(name=name):
+                reading = hub_guard.Reading({}, f"echo $(( {name} )); git status")
+                hub_guard.read_bash(f"echo $(( {name} )); git status", START, reading, 1, {name: "1"})
+                self.assertTrue(reading.unread)
+        # A loop's number stays one after it, a copy's numbers are its own, and an unset one is no longer one.
+        shell = hub_guard.Shell(None, {}, set(), numbers={"i"})
+        self.assertEqual("0", hub_guard.settled_variable(shell, "i"))
+        shell.copy().numbers.add("j")
+        self.assertEqual({"i"}, shell.numbers)
+        shell.unset("i")
+        self.assertEqual("", hub_guard.settled_variable(shell, "i"))
+
+    def test_the_arithmetic_readers_take_each_form_as_bash_does(self) -> None:
+        # The contexts a word's raw text holds: none inside single quotes or after a backslash.
+        for raw, expected in (
+            ("$((a))", ["(a)"]),
+            ("$[a+1]", ["a+1"]),
+            ("'x$((a))'", []),
+            ("\\$((a))", []),
+            ("${a[@]}${a[*]}", []),
+            ("${x:-1}${x:=1}${x:?e}${x:+y}", []),
+            ("${x:1:n}", ["1", "n"]),
+            ("${a[i]}", ["i"]),
+            ("a[j]=x", ["j"]),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, hub_guard.arithmetic_contexts(raw))
+        self.assertEqual("a", hub_guard.unquoted("'a'"))
+        shell = hub_guard.Shell(None, {"self": "self", "n": "3"}, set())
+        for expression, hazard in (("`echo 1`", True), ("$1 + 1", True), ("self", True), ("n", False)):
+            with self.subTest(expression=expression):
+                self.assertEqual(hazard, hub_guard.arithmetic_hazard(expression, shell) is not None)
+        shell.opaque = True
+        self.assertIsNotNone(hub_guard.arithmetic_hazard("n", shell))
+        # (( )) is one simple command in a subshell in a subshell, alone and not negated.
+        commands: tuple[tuple[str, str | None], ...] = (
+            ("((a))", "a"),
+            ("( (a) | cat )", None),
+            ("( ! (a) )", None),
+            ("( (a); b )", None),
+        )
+        for text, arithmetic in commands:
+            with self.subTest(text=text):
+                [(and_or, _)] = bash_syntax.parse(text).items
+                node = and_or.first.commands[0]
+                assert isinstance(node, bash_syntax.Subshell)
+                self.assertEqual(arithmetic, hub_guard.arithmetic_command(node))
+        # Each arithmetic comparison of [[ ]], an integer attribute only where it is given, and one report a loop.
+        for operator in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge"):
+            with self.subTest(operator=operator):
+                self.assertTrue(bash_reading(f'read -r x; [[ 1 {operator} "$x" ]]; git status').unread)
+        self.assertEqual([], bash_reading("declare +i n; git status").unread)
+        self.assertEqual(1, len(bash_reading("read -r x; for i in 1; do (( x )); done; git status").unread))
+
+    def test_ps4_is_refused_only_where_it_may_run_something_as_it_expands(self) -> None:
+        for value, expands in (
+            ("+ ", False),
+            ("+ ${BASH_SOURCE}:${LINENO}: ", False),
+            ("+ $LINENO ", False),
+            ("${1}${#}", False),
+            ("$(cmd)", True),
+            ("`cmd`", True),
+            ("$((x))", True),
+            ("$[x]", True),
+            ("${x:=y}", True),
+            ("${x:-$(cmd)}", True),
+            ("${x", True),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(expands, hub_guard.expanding_ps4((value,)))
+        self.assertTrue(hub_guard.expanding_ps4((None,)))
+        self.assertFalse(hub_guard.expanding_ps4(()))
+        for command in (
+            "export PS4='+ ${BASH_SOURCE}:${LINENO}: '; set -x; git status",
+            "export PS4='+ ${BASH_SOURCE}:${LINENO}: '; git status",
+            "PS4='+ $LINENO: ' bash -x -c 'git status'",
+            "set -x; git status; PS4='+ $LINENO '; echo hi",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([], bash_reading(command).unread)
+        # A declaration by names the text does not settle may assign any variable, as the readers' fail-closed rule
+        # holds, so the common split-and-declare idiom is refused while a hub is guarded.
+        self.assertEqual(
+            [ANY_NAME], bash_reading('read -r name value <<< "a b"; declare "$name=$value"; git status').unread
+        )
+
+    def test_the_environment_a_bash_starts_with_is_judged_by_each_variable_that_sets_options(self) -> None:
+        source = "the environment bash starts with"
+        for environment, unread in (
+            ({"SHELLOPTS": "braceexpand:hashall:interactive-comments"}, []),
+            ({"SHELLOPTS": "keyword:allexport"}, [refused(source, "keyword")]),
+            ({"SHELLOPTS": "nosuch"}, [unknown(source, "nosuch")]),
+            ({"BASHOPTS": "checkwinsize:extglob"}, []),
+            ({"BASHOPTS": "lastpipe"}, [refused(source, "lastpipe")]),
+            ({"BASHOPTS": "posix"}, [unknown(source, "posix")]),
+            (
+                {"POSIXLY_CORRECT": ""},
+                ["the POSIXLY_CORRECT its environment hands bash turns on posix, which the guard does not read"],
+            ),
+            (
+                {"BASH_COMPAT": "44"},
+                [
+                    "the BASH_COMPAT its environment hands bash turns on an earlier Bash's behavior, "
+                    "which the guard does not read"
+                ],
+            ),
+        ):
+            with self.subTest(environment=environment):
+                # As a nested bash's starter hands them.
+                reading = hub_guard.Reading({}, "git status")
+                hub_guard.read_bash("git status", START, reading, 1, environment)
+                self.assertEqual(unread, reading.unread)
+        reading = hub_guard.Reading({}, "git")
+        hub_guard.started_options({"BASHOPTS": None}, False, reading)
+        self.assertEqual(
+            ["could not read the BASHOPTS its environment hands bash, which may turn on any option"], reading.unread
+        )
+        # A starter that holds names folded hands each by a name in any case.
+        # A PowerShell session the text does not settle may have set either variable to anything.
+        reading = hub_guard.Reading({}, "bash -c 'git status'")
+        hub_guard.PowerShellReader(reading, 0).run_program("bash", ["-xc", "git status"], START, {}, opaque=True)
+        self.assertEqual(
+            [
+                "xtrace is turned on by bash's own options where PS4 may hold an expansion, which it runs",
+                "could not read the SHELLOPTS its environment hands bash, which may turn on allexport",
+                "could not read the BASHOPTS its environment hands bash, which may turn on any option",
+            ],
+            reading.unread,
+        )
+        for names_folded, count in ((True, 1), (False, 0)):
+            reading = hub_guard.Reading({}, "git")
+            hub_guard.started_options({"posixly_correct": "1"}, names_folded, reading)
+            self.assertEqual(count, len(reading.unread))
+
+    def test_an_assignment_is_judged_by_the_name_it_assigns_and_one_the_text_does_not_settle_is_unread(self) -> None:
+        posix = "the command assigns POSIXLY_CORRECT, which turns on posix; the guard does not read it"
+        compat = (
+            "the command assigns BASH_COMPAT, which turns on an earlier Bash's behavior; the guard does not read it"
+        )
+        by_arithmetic = (
+            "the command holds an arithmetic assignment to POSIXLY_CORRECT, which turns on posix, which the guard does "
+            "not read"
+        )
+        for command, unread in (
+            # Each way a literal name is assigned, by every builtin that assigns and before a command.
+            ("POSIXLY_CORRECT=1; git status", [posix]),
+            ("POSIXLY_CORRECT=; git status", [posix]),
+            ("POSIXLY_CORRECT=1 :; git status", [posix]),
+            ("export POSIXLY_CORRECT=1; git status", [posix]),
+            ("declare -x POSIXLY_CORRECT=1; git status", [posix]),
+            ("typeset POSIXLY_CORRECT=1; git status", [posix]),
+            ("readonly POSIXLY_CORRECT=1; git status", [posix]),
+            ("f() { local POSIXLY_CORRECT=1; }; f; git status", [posix]),
+            ("read -r POSIXLY_CORRECT <<< 1; git status", [posix]),
+            ("printf -v POSIXLY_CORRECT 1; git status", [posix]),
+            ("for POSIXLY_CORRECT in 1; do :; done; git status", [posix]),
+            ("declare -n r=POSIXLY_CORRECT; r=1; git status", [posix]),
+            ('v=POSIXLY_; export "${v}CORRECT=1"; git status', [posix]),
+            ("declare BASH_COMPAT=44; git status", [compat]),
+            ("declare POSIXLY_CORRECT[0]=1; git status", [posix]),
+            ("POSIXLY_CORRECT[0]=1; git status", [posix]),
+            ("PS4[0]='$(x)'; git status", [ASSIGNS_PS4]),
+            # By arithmetic, which assigns a number.
+            ("(( POSIXLY_CORRECT = 1 )); git status", [by_arithmetic]),
+            ("(( POSIXLY_CORRECT++ )); git status", [by_arithmetic]),
+            ("(( --POSIXLY_CORRECT )); git status", [by_arithmetic]),
+            ("let POSIXLY_CORRECT+=1; git status", [by_arithmetic, posix]),
+            ("echo $(( POSIXLY_CORRECT = 1 )); git status", [by_arithmetic]),
+            ("for (( POSIXLY_CORRECT=1; 0; )); do :; done; git status", [by_arithmetic]),
+            # A name the text does not settle, in each builtin that assigns, may be any variable.
+            ('export "${v}CORRECT=1"; git status', [ANY_NAME]),
+            ('declare "${v}COMPAT=44"; git status', [ANY_NAME]),
+            ("declare -n r=${v}CORRECT; r=1; git status", [ANY_NAME]),
+            ('printf -v "${v}CORRECT" 1; git status', [ANY_NAME]),
+            ("read -r $v <<< 1; git status", [ANY_NAME]),
+            ("mapfile $v < /dev/null; git status", [ANY_NAME]),
+            ("wait -p $v; git status", [ANY_NAME]),
+            (": ${!v:=x}; git status", [ANY_NAME]),
+            ("declare -n r; r=$v; r=1; git status", [ANY_NAME]),
+            ("declare -n r; r=$v; r=1 :; git status", [ANY_NAME]),
+            ("declare -n r; r=$v; declare r=1; git status", [ANY_NAME]),
+            ("declare -a c=($(cat f)); git status", []),
+            ("echo $(( POSIXLY_CORRECT = 1 )) $(( BASH_COMPAT = 1 )); git status", [by_arithmetic]),
+            ('set -x; declare "${v}4=x"; git status', [ANY_NAME]),
+            # Naming them without assigning them is read as before.
+            ('git commit -m "fix PS4 handling"', []),
+            ("git log -S PS4", []),
+            ("git grep POSIXLY_CORRECT", []),
+            ("grep -rn PS4 tools/hub_guard.py && git status", []),
+            ('git commit -m "POSIXLY_CORRECT=1 docs"', []),
+            ("echo $BASH_COMPAT; unset POSIXLY_CORRECT; git status", []),
+            ("echo $(( POSIXLY_CORRECT == 1 )); git status", []),
+            ("XPOSIXLY_CORRECT=1; BASH_COMPATS=1; git status", []),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(unread, bash_reading(command).unread)
+        reading = bash_reading('set -x; v=PS; declare "${v}4=\\$(git -C /hub reset --hard)"; git status')
+        self.assertEqual([ASSIGNS_PS4], reading.unread)

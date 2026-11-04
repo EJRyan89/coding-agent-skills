@@ -372,7 +372,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   variable the session does not hold is unsettled too. A cmdlet that writes, removes, or renames a variable at a
   path or name the text does not settle may reach any variable, so every one is unsettled after it, as after Bash's
   `export "$v"=x` or `unset "$v"`; a path whose last part is literal text, as in `"$dir\out.txt"`, can name only the
-  variable that part names, so it is passed over when git does not read that one. A command after the programs
+  variable that part names, so it is passed over when git does not read that one, nor a bash it starts takes a
+  setting from (`SHELLOPTS`, `BASHOPTS`, `POSIXLY_CORRECT`, `BASH_COMPAT`, or `PS4`). A command after the programs
   `env`, `nohup`, `nice`, `timeout`, `stdbuf`, `time`, `sudo`, and `doas` is read as in Bash, as the command it
   starts. A location
   set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed
@@ -416,8 +417,45 @@ refused while a guarded hub is in view, and what they do not see at all is named
   names; `env -u` and `env -i` remove it, and `export -n` stops exporting it. A `SHELLOPTS` whose value the text does
   not settle, or one listing `allexport` from a PowerShell session, which holds environment names folded where the
   platform folds them, so that Bash may not read it, is a part the guard cannot read. `BASHOPTS` hands on `shopt`'s
-  options the same way. Of the options either hands on, the guard follows allexport alone, though `keyword`, `posix`,
-  `lastpipe`, and `cdable_vars` change where a command runs or what reaches git, as "What it does not see" says. An
+  options the same way. Every source of a shell option is read through one table of `set`'s options and one of
+  `shopt`'s (`SET_OPTIONS` and `SHOPT_OPTIONS` in `tools/hub_guard.py`): `set` and `shopt -s`, `-u`, and `-o`, a
+  nested `bash`'s own letters, `-o`, `-O`, and long options, `sh`, which Bash runs in POSIX mode, a `bash` that
+  `exec -a sh` starts by that name, the `SHELLOPTS` and `BASHOPTS` its environment hands it, and a `POSIXLY_CORRECT`
+  or `BASH_COMPAT` it is handed or the command assigns, by any builtin that assigns, before a command, through a name
+  reference, or by arithmetic. Every arithmetic context is read for what it may assign: `(( ))`, `$(( ))`, `let`,
+  an arithmetic `for`, each operand of an arithmetic comparison in `[[ ]]`, an array subscript, in a `${ }` or before
+  an element's `=`, and a `${NAME:offset:length}`, in a word, a redirection target, an unquoted here-document, a case
+  word or pattern, or a `for` list. The guard cannot read a command whose arithmetic assigns either variable, or
+  evaluates what the text does not settle to a number, since Bash evaluates a variable's value as an expression in
+  turn: an expansion or variable whose value the text does not settle, a substitution's output, or a `${ }` other than
+  a plain name. A number the text does not settle is read as a number: a `for` loop's variable over words that are each
+  a literal integer, `$#`, `$?`, `$$`, `$!`, a length (`${#NAME}`, `${#NAME[@]}`), and `RANDOM`, `SECONDS`, `LINENO`,
+  `BASHPID`, `PPID`, `UID`, and `EUID` while the text neither assigns nor unsets them. Once Bash has removed quotes
+  and backslash-newlines, an expansion stands for its value only as a whole operand: beside a name or another
+  expansion, as in `x$i`, `x"$#"`, `${w}$i`, or `x$((i))`, it makes a name the text does not settle, and any other
+  backslash is not read. A loop's number is its variable's first element alone, so a subscripted read of it, as
+  `i[1]`, is unsettled, and making it a name reference or undoing one ends it. Every variable Bash sets itself
+  (`BASH_SET_VARIABLES` in `tools/hub_guard.py`, held to what `compgen -v` lists in a bash started with no
+  environment) is unsettled, `SHELLOPTS`, `BASHOPTS`, `DIRSTACK`, `_`, `OPTARG`, `BASH_REMATCH`, and `REPLY` among
+  them, but for those that always hold a number while the text leaves them alone, such as `OPTIND`, `PIPESTATUS`,
+  and `RANDOM`; a name Bash does not set is unset until the text assigns it. A compound array assignment's element
+  subscripts, as in `a=([k]=v)`, are arithmetic too, and so is the subscript of each operand a builtin takes as an
+  array reference, quoted or escaped, as `unset 'a[k]'`, `printf -v 'a[k]'`, or `declare -a "a=([k]=v)"` give it.
+  An associative array's keys are no arithmetic, but the guard reads them as if they were, so `declare -A m=([$k]=v)`
+  with `$k` unsettled is refused all the same. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
+  which each assignment to it is arithmetic. A command that only names either variable, as
+  `git log -S POSIXLY_CORRECT` does, is read as before. Each table names each option Bash lists and whether a shell
+  holding it is one the guard reads: the guard follows allexport, reads a shell under an option that changes nothing
+  it reads, such as `errexit`, `pipefail`, `nounset`, or `extglob`, and cannot read one under `keyword`, `posix`,
+  `lastpipe`, `cdable_vars`, `physical`, `privileged`, or the others its table marks, nor an option it does not
+  name. `xtrace` expands `PS4` before each command it traces, so the guard cannot read a shell where it is turned on
+  while the shell holds a `PS4` that may run something as it expands, nor one that assigns `PS4` such a value: one
+  the text does not settle, or one holding a command substitution, a backquote, an arithmetic expansion, or a `${ }`
+  other than a plain name's. The usual `PS4='+ ${BASH_SOURCE}:${LINENO}: '` runs nothing. An assignment whose name
+  the text does not settle, by `export`, `declare`, `typeset`, `local`, `readonly`, `read`, `printf -v`, `mapfile`,
+  `wait -p`, a name reference, or `${!NAME:=word}`, may assign any variable, one of these among them, so the guard
+  cannot read it, which refuses `read -r name value; declare "$name=$value"` too. A nested `bash`'s own options are judged only where the guard reads its script: a script
+  file is unread whatever they are. An
   `env` word the text does not settle, as in `env FOO=$(cmd)`, may assign any variable, so the guard cannot read it,
   and every variable git or a nested bash reads is unsettled for the command after it. A shell the text does not settle may have exported any
   variable, so a shell it starts is one the text does not settle either. Nesting of shells, `eval`, function calls,
@@ -450,7 +488,12 @@ the hubs they reach stay in view. While one is, the guard refuses:
   and script blocks nested more than eight deep, a script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression`
   that the text does not settle or that nests more than four deep, a `bash` with a word the text does not settle
   among its options, as in `bash -c"$x"` or `bash $x -c`, which may be `-c`, an option word of `set` or `shopt`
-  the text does not settle, which may turn on allexport, a `BASH_FUNC_<name>%%` a PowerShell cmdlet writes,
+  the text does not settle, which may turn on allexport, a shell where an option the guard's tables mark as unread
+  holds or one they do not name is turned on, by any source above, `sh` and a `POSIXLY_CORRECT` the command assigns
+  or its environment hands it among them, `xtrace` turned on where `PS4` may run something as it expands, a `PS4`
+  assigned such a value, an assignment whose name the text does not settle, arithmetic that may assign one of them
+  or that evaluates what the text does not settle to a number, an integer attribute, a `BASH_FUNC_<name>%%` a
+  PowerShell cmdlet writes,
   whose body the text does not settle, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
   inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
   lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline
@@ -509,21 +552,10 @@ The hook sees the command text. It does not see:
 - a script handed to a shell other than `bash`, `sh`, `pwsh`, and `powershell`, such as `zsh -c`, `dash -c`, or
   `ksh -c`: the guard reads that shell as a program and never reads its script;
 - an alias `BASH_ALIASES` or a command name `BASH_CMDS` gains through a name the text does not settle;
-- a variable an arithmetic expression assigns, in `(( ))`, `let`, or an arithmetic `for`, which holds a number,
-  and a builtin `enable -f` loads from a shared object;
+- a variable an arithmetic expression assigns, other than the two that turn on a shell option, which holds a
+  number, and a builtin `enable -f` loads from a shared object;
 - a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
-- an assignment word after a command's name under the `keyword` option, which Bash puts in the command's
-  environment, so `git switch -c x GIT_DIR=<dir>` hands `GIT_DIR` to git; it is turned on by `set -k`,
-  `set -o keyword`, `shopt -so keyword`, `bash -k`, `bash -o keyword`, or a `SHELLOPTS` listing it that a nested
-  bash's starter hands it;
-- in POSIX mode an assignment before a special builtin such as `:` or `eval`, which Bash keeps in the shell after the
-  builtin ends; it is turned on by `set -o posix`, `shopt -so posix`, `bash --posix`, `bash -o posix`, `sh`, a
-  `POSIXLY_CORRECT` assigned or in the environment, or a `SHELLOPTS` listing `posix`;
-- the last command of a pipeline under the `lastpipe` option, which Bash runs in the shell itself, so after
-  `true | cd <dir>` a git call runs at `<dir>`; it is turned on by `shopt -s lastpipe`, `bash -O lastpipe`, or a
-  `BASHOPTS` listing it that a nested bash's starter hands it, PowerShell's `$env:BASHOPTS` included;
-- a `cd` to a name that is no directory under the `cdable_vars` option, which Bash takes as a variable holding one;
-  it is turned on by `shopt -s cdable_vars`, `bash -O cdable_vars`, or a `BASHOPTS` listing it;
+- a shell option a shell's startup files turn on;
 - an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
   shell's startup files define;
 - text run as commands through an object of PowerShell's engine the text does not type, such as one a variable
