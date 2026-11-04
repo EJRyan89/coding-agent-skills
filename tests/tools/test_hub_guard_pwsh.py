@@ -200,7 +200,7 @@ class CommandNameTests(unittest.TestCase):
             {name.lower() for name in functions if "-" not in name} - hub_guard.POWERSHELL_FUNCTIONS,
         )
         self.assertEqual(set(), {name.lower() for name in verbs} - hub_guard.POWERSHELL_VERBS)
-        for name in ("iex", "Invoke-Expression", "Start-Process", "help", "C:"):
+        for name in ("iex", "Invoke-Expression", "Start-Process", "help", "C:", "exec"):
             with self.subTest(name=name):
                 self.assertTrue(hub_guard.powershell_command(name))
         for name in ("git", "python", "dotnet-format", "shellcheck"):

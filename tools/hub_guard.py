@@ -585,6 +585,8 @@ POWERSHELL_FUNCTIONS = frozenset(
     for name in (
         *("cd..", "cd\\", "cd~", "help", "mkdir", "more", "oss", "Pause", "prompt", "TabExpansion2", "Configuration"),
         *("ImportSystemModules", "PSConsoleHostReadLine"),
+        # pwsh off Windows: replaces the session with the program its words name, a runner the guard does not read.
+        "exec",
         *(f"{letter}:" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
     )
 )
