@@ -248,6 +248,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import whole_number
 from bounded_process import without_repository_variables
 from console import run_main
 from git_client import GitClient
@@ -458,13 +459,6 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: Options, seams:
     return 1 if failed else 0
 
 
-def positive(value: str) -> int:
-    number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError(f"must be at least 1, not {value}")
-    return number
-
-
 def skill_name(value: str) -> str:
     if not SKILL_NAME_PATTERN.fullmatch(value):
         raise argparse.ArgumentTypeError(f"must be a skill's name, a folder under {SCENARIO_ROOT}, not {value}")
@@ -486,9 +480,14 @@ def parser() -> argparse.ArgumentParser:
         default=DEFAULT_TIMEOUT,
         help=f"seconds for each run (default {DEFAULT_TIMEOUT})",
     )
-    result.add_argument("--jobs", type=positive, default=DEFAULT_JOBS, help=f"runs at once (default {DEFAULT_JOBS})")
     result.add_argument(
-        "--runs", type=positive, default=1, help="runs of each scenario on each model, each judged (default 1)"
+        "--jobs", type=whole_number.argument(1), default=DEFAULT_JOBS, help=f"runs at once (default {DEFAULT_JOBS})"
+    )
+    result.add_argument(
+        "--runs",
+        type=whole_number.argument(1),
+        default=1,
+        help="runs of each scenario on each model, each judged (default 1)",
     )
     result.add_argument(
         "--sample-read",

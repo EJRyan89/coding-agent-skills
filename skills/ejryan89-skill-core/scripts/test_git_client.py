@@ -1087,6 +1087,39 @@ class RepositoryVariableTests(unittest.TestCase):
             self.assertEqual("named\n", self.client.output(config, directory=self.named))
             self.assertEqual(b"other\n", self.plain_git(config))
 
+    def test_each_repository_selecting_variable_given_in_an_environment_reaches_no_git(self) -> None:
+        # The real runner, given an environment holding one variable that points at the other repository, reads the
+        # named one: an environment may come from another process, such as a hook's, so none of them, GIT_INDEX_FILE
+        # included, is ever taken from it.
+        (self.named / "f.txt").write_text("staged\n", encoding="utf-8")
+        self.client.output(["add", "f.txt"], directory=self.named)
+        other_git = self.other / ".git"
+        values = {
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(other_git / "objects"),
+            "GIT_COMMON_DIR": str(other_git),
+            "GIT_CONFIG": str(self.other / "another config"),
+            "GIT_DIR": str(other_git),
+            "GIT_GRAFT_FILE": str(self.other / "grafts"),
+            "GIT_IMPLICIT_WORK_TREE": "0",
+            "GIT_INDEX_FILE": str(self.other / "an empty index"),
+            "GIT_NAMESPACE": "elsewhere",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OBJECT_DIRECTORY": str(other_git / "objects"),
+            "GIT_PREFIX": "a prefix/",
+            "GIT_REPLACE_REF_BASE": "refs/elsewhere/",
+            "GIT_SHALLOW_FILE": str(self.other / "shallow"),
+            "GIT_WORK_TREE": str(self.other),
+        }
+        self.assertEqual(bounded_process.REPOSITORY_VARIABLES, set(values))
+        base = bounded_process.without_repository_variables(os.environ)
+        status = ["git", "-C", str(self.named), "status", "--porcelain", "-z"]
+        listing = ["git", "-C", str(self.named), *LISTING]
+        for name in sorted(values):
+            with self.subTest(variable=name):
+                given = {**base, name: values[name]}
+                self.assertEqual("A  f.txt\0", git_client.subprocess_runner(status, 60, env=given).stdout)
+                self.assertEqual(NAMED_LISTING.decode(), git_client.subprocess_runner(listing, 60, env=given).stdout)
+
     def test_command_scope_settings_still_reach_git(self) -> None:
         settings = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "command"}
         with mock.patch.dict(os.environ, settings):

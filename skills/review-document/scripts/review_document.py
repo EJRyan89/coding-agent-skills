@@ -21,16 +21,19 @@ under the name git tracks it by, so the review covers the uncommitted change; ot
 has no such file and the whole document is reviewed. A failure git reports reading the commit or the file fails the
 build with git's reason.
 
-A pull request is named as owner/repo#number or by its URL, and validated as review-prs validates its --pull
-selectors. It is read as review-prs reads one, so a pull request closed without being merged fails, with `FAILED Pull
-request is closed without being merged`, and an open or merged one is reviewed. Its changed files are read from
-GitHub, through ejryan89-code-review-core's GitHubClient and with no checkout, and those the design reviewer
-reviews (DESIGN_SUFFIXES, or a document format) are kept, or the one `--document` names. Each one's head is its
-blob at the pull request's head commit, and its base its blob at the merge base GitHub diffs the pull request
-against, under its old path when it was renamed; a document the pull request adds has no base, and one GitHub answers
-as a symbolic link or a submodule is skipped. The fixture's pull.json names the real pull request, so the record's URL
-is its URL, and the commits; the pull request's title, description, branch names, and comments are never read into
-it, so the only text from GitHub a reviewer reads is the documents' own. Nothing is written to GitHub.
+A pull request is named as owner/repo#number or by its URL, and validated as review-prs validates its --pull selectors.
+It is read as review-prs reads one, so a pull request closed without being merged fails, with `FAILED Pull request is
+closed without being merged`, and an open or merged one is reviewed. Its changed files are read from GitHub, through
+ejryan89-code-review-core's GitHubClient and with no checkout, and those the design reviewer reviews (DESIGN_SUFFIXES,
+or a document format) are kept, or the one `--document` names. The listing is the review core's, `list_pull_files`, and
+is refused as `prepare` refuses it: when it is shorter than the files the pull request changes, as GitHub's files API
+cuts it, and when the pull request's head moved while it was read, before its pages or after them, or its base was
+retargeted by the end of them. Each kept document's head is its blob at the pull request's head commit, and its base its
+blob at the merge base GitHub diffs the pull request against, under its old path when it was renamed; a document the
+pull request adds has no base, and one GitHub answers as a symbolic link or a submodule is skipped. The fixture's
+pull.json names the real pull request, so the record's URL is its URL, and the commits; the pull request's title,
+description, branch names, and comments are never read into it, so the only text from GitHub a reviewer reads is the
+documents' own. Nothing is written to GitHub.
 
 A Word document or a PDF, a format `review_documents.document_format` names, is written to the fixture as its exact
 bytes, so the fixture canary's snapshot extracts its text as it does a pull request's; one whose text would not be
@@ -71,8 +74,7 @@ from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from path_containment import within
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
-from review_github import PULL_PAGE_SIZE, GitHubClient, NotOneFile
-from review_github import READ as RESPONSE
+from review_github import GitHubClient, NotOneFile
 from review_io import PersistenceError, working_path
 from review_operation import parse_pull_selector
 from review_runtime import (
@@ -583,23 +585,35 @@ def pull_reference(argument: str) -> tuple[str, int] | None:
         raise DocumentError(f"{argument} names no pull request: {exc}") from exc
 
 
-def pull_changes(github: GitHubClient, repository: str, number: int) -> list[Change]:
-    """Every file the pull request changes, through every page of its file listing."""
-    pages = github.api_json(f"repos/{repository}/pulls/{number}/files?per_page={PULL_PAGE_SIZE}", paginate=True)
-    listed = RESPONSE.array(
-        pages, "pull file pages", lambda page, path: RESPONSE.array(page, path, RESPONSE.json_object)
-    )
-    changes = []
-    for index, entry in enumerate(file for page in listed for file in page):
-        where = f"pull files[{index}]"
-        changes.append(
-            Change(
-                RESPONSE.string(entry.get("filename"), f"{where}.filename"),
-                RESPONSE.string(entry.get("status"), f"{where}.status"),
-                RESPONSE.optional(RESPONSE.string, entry.get("previous_filename"), f"{where}.previous_filename"),
-            )
+def pull_changes(github: GitHubClient, pull: Pull, base_tip: str) -> list[Change]:
+    """Every file the pull request changes at `pull.head`, as ejryan89-code-review-core's one listing reads them.
+    Refused, as the review core refuses them, when the listing is cut short of the files GitHub counts, since a
+    document past the cut would go unreviewed, and when the pull request's head is not the one the build began with,
+    before the pages or after them, or its base, `base_tip` when the build began, was retargeted by the end of them,
+    since the documents are read at that head and that base's merge base and the listing follows both."""
+    selector = f"{pull.repository}#{pull.number}"
+    listing = github.list_pull_files(pull.repository, pull.number)
+    if listing.moved_from(pull.head):
+        raise moved(selector, "head", pull.head, listing.head)
+    if listing.cut:
+        raise DocumentError(
+            f"GitHub's files API lists {len(listing.files):,} of the {listing.changed:,} files {selector} changes, "
+            "so a document past its cut would go unreviewed; review such a document by its path in a checkout of "
+            "the pull request's head"
         )
-    return changes
+    now = github.get_pull(pull.repository, pull.number)
+    for name, was, key in (("head", pull.head, "headRefOid"), ("base", base_tip, "baseRefOid")):
+        if now[key] != was:
+            raise moved(selector, name, was, now[key])
+    return [Change(file["filename"], file["status"], file["previous_filename"]) for file in listing.files]
+
+
+def moved(selector: str, name: str, was: str, now: str) -> DocumentError:
+    """The refusal of a pull request whose `name`, its head or its base, is now `now`, not the commit `was` the build
+    began with."""
+    return DocumentError(
+        f"{selector} changed while its files were being read ({name} {was[:12]} is now {now[:12]}); run build again"
+    )
 
 
 def pull_blob(github: GitHubClient, repository: str, commit: str, path: str, at: str) -> bytes:
@@ -711,7 +725,7 @@ def build_pull(
     metadata = github.get_pull(repository, number)
     head = metadata["headRefOid"]
     pull = Pull(repository, number, github.get_merge_base(repository, metadata["baseRefOid"], head), head)
-    routed = routed_changes(pull_changes(github, repository, number), selector, wanted)
+    routed = routed_changes(pull_changes(github, pull, metadata["baseRefOid"]), selector, wanted)
     if requested == "committed":
         added = next((change.path for change in routed if change.status == "added"), None)
         if added is not None:

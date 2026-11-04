@@ -185,18 +185,23 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A listing cut at its limit otherwise reads as the whole set, and what lies past the cut is never judged.
 - **Use:** `github_client:GitHubClient.capped_list`, which asks gh for one more item than its limit and says whether
   GitHub held more; `bounded_process:run_bounded`, `pr_status:_list_pulls`, `audit_repository:duplicates`,
-  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`, `deployer.plan:reported_diff`.
+  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`, `deployer.plan:reported_diff`, and
+  `review_github:PullFiles.cut`, which says whether a pull request's file listing holds the files it changes.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_gh_listing_is_capped_outside_the_client`,
   which refuses a limit passed to gh by hand outside the GitHub client unless its module states why,
   `skills/ejryan89-skill-core/scripts/test_github_client.py::CappedListTests`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::DuplicateTests::test_a_search_that_finds_exactly_what_it_lists_is_not_cut`,
   `skills/review-insights/scripts/test_review_guidance.py::ReportTests::test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input`,
   `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`,
+  `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`,
+  `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::ChangeSizeTests::test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers`,
   `tests/deployer/test_plan.py::UnmanagedDiffTests`
-- **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a slice such as
+- **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a pull request's
+  `pulls/<n>/files` pages read outside `review_github:GitHubClient.list_pull_files`, or its `PullFiles` used without
+  comparing `files` with `changed`, since GitHub's files API lists at most 3,000; a slice such as
   `[:MAX_RELATED_TESTS]` or `rg -n "\[:[A-Z_a-z]*(LIMIT|MAX|BUDGET|CAP)[A-Z_a-z]*\]"` with no flag beside it; a
   `break` on a counter in a loop that returns no sign it stopped.
-- **Examples:** #1845, #1857, #1864, #1891, #2213
+- **Examples:** #1845, #1857, #1864, #1891, #2213, #2220
 
 ### One source that cannot be read costs only its own findings
 
@@ -221,12 +226,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** An unbounded `int()` turns a hostile or garbled value into a `ValueError` past the digit limit, a huge
   allocation, or a negative count the code never expected.
 - **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
-  number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
-  refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid`
-  for a PID, bounded by the platform's range so none is truncated to another process's.
+  number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `whole_number:argument`, the argparse type
+  of every option that takes one; `json_reader:loads` for a JSON number, which refuses one past the same cap, and
+  `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid` for a PID, bounded by the
+  platform's range so none is truncated to another process's.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
+  `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_an_option_read_with_int_or_float`,
   `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
+  `skills/ejryan89-skill-core/scripts/test_whole_number.py::ArgumentTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
   `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`,
   `skills/ejryan89-skill-core/scripts/test_process_identity.py::PidRangeTests::test_a_pid_is_read_within_the_platforms_range_and_anything_else_is_refused_by_its_path`
@@ -235,9 +243,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   past any bound; `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
   `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
   bounds no length; a refusal worded "more than N digits" for a `\d` group,
-  which also admits digits that are not ASCII; an integer read from a file and handed to a `ctypes` call, whose
-  declared type holds the kind and truncates the range.
-- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2215
+  which also admits digits that are not ASCII; `type=int` or `type=float` in an `add_argument`, and an argparse type
+  function that returns `int(value)`, which read `1_0` as 10 and an Arabic-Indic three as 3; an integer read from a
+  file and handed to a `ctypes` call, whose declared type holds the kind and truncates the range.
+- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2215, #2217
 
 ### One fact has one owner
 
@@ -783,7 +792,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
   and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the **Search for** of the
   pattern above that the defect is an instance of.
-- **Examples:** #1369, #1521, #2184
+- **Examples:** #1369, #1521, #2184, #2297
 
 ### A foreign function declares its types
 
