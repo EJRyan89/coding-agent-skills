@@ -1410,6 +1410,111 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     "int() of findall's count": _form(
         int_parse_problems, "import re\n\n\ndef f(t):\n    return int(len(re.findall('[0-9]+', t)))\n", refused=False
     ),
+    # "an `add_argument` ... whose `type` is `int` or `float`, by name, through an alias, a `getattr` of a constant
+    # name, or a `functools.partial` of one", read each way the call may run.
+    **{
+        f"an option read with {form}": _form(int_parse_problems, f"{imports}\n\n{body}\n")
+        for form, imports, body in (
+            ("type=int", "import argparse", "argparse.ArgumentParser().add_argument('--pull', type=int)"),
+            ("type=float", "import argparse", "argparse.ArgumentParser().add_argument('--ratio', type=float)"),
+            ("type=builtins.int", "import builtins", "PARSER.add_argument('--pull', type=builtins.int)"),
+            ("an imported alias of int", "from builtins import int as whole", "P.add_argument('--n', type=whole)"),
+            ("a name bound to int", "WHOLE = int", "P.add_argument('--n', type=WHOLE)"),
+            ("a getattr of int", "import builtins", "P.add_argument('--n', type=getattr(builtins, 'int'))"),
+            ("a partial of int", "import functools", "P.add_argument('--n', type=functools.partial(int, base=10))"),
+            ("a ** of a literal", "import argparse", "P.add_argument('--n', **{'type': int})"),
+            ("a dict() of keywords", "import argparse", "P.add_argument('--n', **dict(type=float))"),
+            (
+                "a partial of add_argument",
+                "import functools",
+                "add = functools.partial(P.add_argument, type=int)\nadd('--n')",
+            ),
+            ("getattr of add_argument", "import argparse", "getattr(P, 'add_argument')('--n', type=int)"),
+            (
+                "a subparser's add_argument",
+                "import argparse",
+                "argparse.ArgumentParser().add_subparsers().add_parser('a').add_argument('--n', type=int)",
+            ),
+        )
+    },
+    # "and on an `int()` or `float()` of its own parameter, stripped or not, in a function or a lambda the module
+    # gives an `add_argument` as its `type`".
+    **{
+        f"an option's type function that converts its parameter {form}": _form(
+            int_parse_problems, f"import argparse\n\n{body}\n"
+        )
+        for form, body in (
+            ("with int()", "def count(value):\n    return int(value)\n\n\nP.add_argument('--n', type=count)"),
+            ("stripped", "def count(value):\n    return int(value.strip())\n\n\nP.add_argument('--n', type=count)"),
+            ("with a base", "def count(value):\n    return int(value, 10)\n\n\nP.add_argument('--n', type=count)"),
+            ("with float()", "def ratio(value):\n    return float(value)\n\n\nP.add_argument('--r', type=ratio)"),
+            (
+                "through a method call",
+                "def count(value):\n    return int(value.replace(',', ''))\n\n\nP.add_argument('--n', type=count)",
+            ),
+            ("through an index", "def count(value):\n    return int(value[1:])\n\n\nP.add_argument('--n', type=count)"),
+            (
+                "through a local name",
+                "def count(value):\n    text = value.lower()\n    return int(text)\n\n\n"
+                "P.add_argument('--n', type=count)",
+            ),
+            (
+                "through a local name bound later in the walk",
+                "def count(value):\n    if value:\n        return int(text)\n    text = value.strip()\n\n\n"
+                "P.add_argument('--n', type=count)",
+            ),
+            ("in a lambda", "P.add_argument('--n', type=lambda value: int(value))"),
+            ("in a lambda bound to a name", "COUNT = lambda value: int(value)\nP.add_argument('--n', type=COUNT)"),
+            (
+                "in a function defined in a function",
+                "def build(p):\n    def count(value):\n        return int(value)\n\n"
+                "    p.add_argument('--n', type=count)",
+            ),
+        )
+    },
+    **{
+        f"an option {form}": _form(
+            int_parse_problems, f"import argparse\n\nimport whole_number\n\n{body}\n", refused=False
+        )
+        for form, body in (
+            ("read with whole_number.argument", "P.add_argument('--pull', type=whole_number.argument(1))"),
+            ("read with type=str", "P.add_argument('--name', type=str)"),
+            ("whose default is an int()", "P.add_argument('--n', default=int('3'), type=whole_number.argument())"),
+            ("type keyword of a call that is no add_argument", "P.set_defaults(type=int)"),
+            (
+                "type function that reads through whole_number",
+                "def count(value):\n    return whole_number.read(value, ValueError(value))\n\n\n"
+                "P.add_argument('--n', type=count)",
+            ),
+            (
+                "type function that converts what is not its parameter",
+                "def count(value):\n    return int(len(value))\n\n\nP.add_argument('--n', type=count)",
+            ),
+            # A type built by a call, as a factory's inner function, is read only by what the call resolves to:
+            # the policy's stated limit, so the inner function's int() passes.
+            (
+                "type a factory builds",
+                "def factory():\n    def inner(value):\n        return int(value)\n\n    return inner\n\n\n"
+                "P.add_argument('--n', type=factory())",
+            ),
+            # A type function another module defines is read only by what it resolves to: the policy reads one module
+            # at a time, so an imported function's int() passes here, the policy's stated limit.
+            ("type function another module defines", "from helpers import count\n\nP.add_argument('--n', type=count)"),
+            # A function given the parameter computes something else from it, as len() does, so it is no text of it.
+            (
+                "type function that converts a function's result on its parameter",
+                "def count(value):\n    return int(len(value.strip()))\n\n\nP.add_argument('--n', type=count)",
+            ),
+            # A function the module never gives as a type is held only to the group and digit-test rules.
+            ("function given to no add_argument", "def count(value):\n    return int(value)"),
+            # The parameter is the type function's own, not a name an inner function binds over it.
+            (
+                "type function whose inner function converts its own name",
+                "def count(value):\n    def inner():\n        value = '1'\n        return int(value)\n\n"
+                "    return inner()\n\n\nP.add_argument('--n', type=count)",
+            ),
+        )
+    },
     # "an `add_argument` whose `type` is `float` and whose option string, `dest`, or `metavar` names a time".
     **{
         f"a float time by its {where}": _form(
@@ -2318,6 +2423,10 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
             {
                 "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
                 "skills/ejryan89-skill-core/scripts/unresolved.py": "CONTENT_ERRORS = (missing.Error,)\n",
+                # A tuple that names no reader at all.
+                "skills/ejryan89-skill-core/scripts/empty.py": (
+                    "CONTENT_ERRORS = (ValueError,)\nCONTENT_READERS = ()\n\n\ndef read(text):\n    return text\n"
+                ),
                 "skills/ejryan89-skill-core/scripts/unnamed.py": (
                     "CONTENT_ERRORS = (ValueError,)\nCONTENT_READERS = ('gone',)\n\n\n"
                     "def read(text):\n    return text\n"
@@ -2333,7 +2442,7 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
                 "tools/broken.py": "CONTENT_ERRORS_ALLOWED = {'scope': ''}\n",
             },
         )
-        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
     alpha = "skills/alpha/scripts/alpha.py"
 
     def remedy(missing: str) -> str:
@@ -2346,6 +2455,8 @@ def test_content_errors_policy_refuses_a_handler_that_catches_part_of_a_readers_
     assert found == [
         f"skills/beta/scripts/alpha.py: {alpha} is imported as alpha too, so the content-errors policy, which reads "
         "modules by the name they are imported as, cannot read both; rename one",
+        "skills/ejryan89-skill-core/scripts/empty.py: CONTENT_READERS must be a tuple naming each function the "
+        "module defines that raises its CONTENT_ERRORS on content",
         "skills/ejryan89-skill-core/scripts/unnamed.py: CONTENT_READERS must be a tuple naming each function the "
         "module defines that raises its CONTENT_ERRORS on content",
         "skills/ejryan89-skill-core/scripts/unresolved.py: CONTENT_ERRORS must be a tuple of exception classes its "
@@ -2430,7 +2541,7 @@ def test_content_errors_policy_reads_what_a_module_binds_under_a_top_level_block
                 "skills/alpha/scripts/alpha.py": CONTENT_BLOCK_CALLER_SOURCE,
             },
         )
-        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
     remedy = (
         "catches part of what a reader it calls raises, or its OSError, but not json.decoder.JSONDecodeError; catch "
         "the whole family, reader.CONTENT_ERRORS, or state why in CONTENT_ERRORS_ALLOWED"
@@ -2438,12 +2549,178 @@ def test_content_errors_policy_reads_what_a_module_binds_under_a_top_level_block
     assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (17, 24)]
 
 
+# A core module's reader whose family on content is its own class, or its own tuple of classes, as review_io's
+# read_json raises PersistenceError.
+CONTENT_FAMILY_READER_SOURCE = """\
+class StoreError(RuntimeError):
+    pass
+
+
+class Unreadable(StoreError):
+    pass
+
+
+class Known(ValueError):
+    pass
+
+
+BOTH = (StoreError, KeyError)
+
+
+def load(path):
+    return path
+
+
+def fetch(path):
+    return path
+
+
+class Holder:
+    def get(self, path):
+        return path
+"""
+CONTENT_FAMILY_CALLER_SOURCE = """\
+import kept
+import store
+from elsewhere import load as other
+from store import fetch, load
+
+
+def narrow(path):
+    try:
+        return load(path)
+    except OSError:
+        return None
+
+
+def member(path):
+    try:
+        return store.load(path)
+    except store.Unreadable:
+        return None
+
+
+def whole(path):
+    try:
+        return load(path)
+    except (store.StoreError, OSError):
+        return None
+
+
+def part_of_a_tuple(path):
+    try:
+        return fetch(path)
+    except KeyError:
+        return None
+
+
+def unrelated(path):
+    try:
+        return load(path)
+    except AttributeError:
+        return None
+
+
+def outside_the_cores(path):
+    try:
+        return other(path)
+    except OSError:
+        return None
+
+
+def in_skill_core(path):
+    try:
+        return kept.keep(path)
+    except OSError:
+        return None
+"""
+
+
+def test_content_errors_policy_reads_the_family_named_for_a_core_reader() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/ejryan89-skill-core/scripts/kept.py": (
+                    "class Kept(ValueError):\n    pass\n\n\ndef keep(path):\n    return path\n"
+                ),
+                "skills/ejryan89-code-review-core/scripts/store.py": CONTENT_FAMILY_READER_SOURCE,
+                "skills/beta/scripts/elsewhere.py": (
+                    "class Lost(ValueError):\n    pass\n\n\ndef load(path):\n    return path\n"
+                ),
+                "skills/alpha/scripts/alpha.py": CONTENT_FAMILY_CALLER_SOURCE,
+            },
+        )
+        families = {
+            "store.load": "store.StoreError",
+            "store.fetch": "store.BOTH",
+            "kept.keep": "kept.Kept",
+            # A reader the module does not define, a family that is no class or tuple, a method, a reader outside
+            # both cores, and a module the tree does not hold.
+            "store.read": "store.Known",
+            "store.fetch_all": "store.Missing",
+            "store.Holder.get": "store.Known",
+            "elsewhere.load": "elsewhere.Lost",
+            "gone.load": "gone.Lost",
+        }
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), families)
+
+    def refused(reader: str) -> str:
+        return (
+            f"tests/validation/python_checks.py: core_reader_families names {reader} with {families[reader]}, but "
+            "each must name a module-level function of either core and the class, or the tuple of classes, it raises"
+        )
+
+    def remedy(missing: str, family: str) -> str:
+        return (
+            f"catches part of what a reader it calls raises, or its OSError, but not {missing}; catch the whole "
+            f"family, {family}, or state why in CONTENT_ERRORS_ALLOWED"
+        )
+
+    alpha = "skills/alpha/scripts/alpha.py"
+    assert found == [
+        *(refused(reader) for reader in ("store.read", "store.fetch_all", "store.Holder.get", "elsewhere.load")),
+        refused("gone.load"),
+        f"{alpha}:8 {remedy('store.StoreError', 'store.StoreError')}",
+        f"{alpha}:15 {remedy('store.StoreError', 'store.StoreError')}",
+        f"{alpha}:29 {remedy('store.StoreError', 'store.BOTH')}",
+        f"{alpha}:50 {remedy('kept.Kept', 'kept.Kept')}",
+    ]
+
+
+def test_content_errors_policy_reads_read_json_as_raising_persistence_error() -> None:
+    # The repository's own table, read as validation reads it: review_io's read_json raises PersistenceError.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/ejryan89-code-review-core/scripts/review_io.py": (
+                    "class PersistenceError(RuntimeError):\n    pass\n\n\ndef read_json(path):\n    return path\n"
+                ),
+                "skills/alpha/scripts/alpha.py": (
+                    "from review_io import read_json\n\n\ndef narrow(path):\n    try:\n"
+                    "        return read_json(path)\n    except (OSError, ValueError):\n        return None\n"
+                ),
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py:5 catches part of what a reader it calls raises, or its OSError, but not "
+        "review_io.PersistenceError; catch the whole family, review_io.PersistenceError, or state why in "
+        "CONTENT_ERRORS_ALLOWED"
+    ]
+
+
 def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader() -> None:
     # With no reader every handler would pass, so a tree that lost its readers fails rather than passing empty.
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": CONTENT_CALLER_SOURCE})
-        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")))
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
     assert found[0] == (
         "skills/ejryan89-skill-core/scripts names no reader in a CONTENT_READERS beside its CONTENT_ERRORS, so the "
         "content-errors policy could check no handler"
@@ -2550,6 +2827,81 @@ def test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_
         *(f"{alpha}:34 {group}" for _ in range(2)),
         f"{alpha}:41 converts a value a regular-expression fullmatch() admitted{remedy}",
         f"{alpha}:41 converts a value a regular-expression match() admitted{remedy}",
+        f"{alpha}: INT_PARSE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
+        "tools/broken.py: INT_PARSE_ALLOWED must map each function, class, or assignment to its reason",
+    ]
+
+
+OPTION_SOURCE = """\
+import argparse
+import functools
+
+import whole_number
+
+READ = functools.partial(int, base=10)
+
+
+def count(value):
+    return int(value.strip())
+
+
+def build():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pull", type=int)
+    parser.add_argument("--ratio", type=float)
+    parser.add_argument("--base", type=READ)
+    parser.add_argument("--count", type=count)
+    parser.add_argument("--size", type=lambda text: float(text))
+    parser.add_argument("--version", type=whole_number.argument(1))
+    return parser
+
+
+def sanctioned(parser):
+    parser.add_argument("--exit", type=int)
+
+
+INT_PARSE_ALLOWED = {"sanctioned": "the workflow passes the code it was given", "stale": "a reason"}
+"""
+
+
+def test_a_type_functions_digit_tested_int_is_reported_once() -> None:
+    # The int() converts a value an isdigit() test admitted, which the group and digit-test rule refuses too; the policy
+    # names it once, as the option type function's conversion.
+    source = (
+        "import argparse\n\n\ndef count(value):\n    if value.isdigit():\n        return int(value)\n    return 0\n\n\n"
+        "P = argparse.ArgumentParser()\nP.add_argument('--n', type=count)\n"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.int_parse_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py:6 converts value with int() in count, an option's argparse type, which reads a "
+        "sign, spaces, underscores, and every Unicode decimal digit; call ejryan89-skill-core's whole_number.argument, "
+        "or seconds_option.positive_seconds for a time, as the option's type, or state why in INT_PARSE_ALLOWED"
+    ]
+
+
+def test_int_parse_policy_refuses_an_option_read_with_int_or_float() -> None:
+    alpha = "skills/alpha/scripts/alpha.py"
+    found = run_claim_policy(
+        python_checks.int_parse_problems,
+        "INT_PARSE_ALLOWED",
+        OPTION_SOURCE,
+        "skills/ejryan89-skill-core/scripts/whole_number.py",
+    )
+    use = (
+        "; call ejryan89-skill-core's whole_number.argument, or seconds_option.positive_seconds for a time, as the "
+        "option's type, or state why in INT_PARSE_ALLOWED"
+    )
+    reads_int = "a sign, spaces, underscores, and every Unicode decimal digit"
+    reads_float = "a sign, spaces, underscores, every Unicode decimal digit, nan, and inf"
+    assert found == [
+        f"{alpha}:10 converts value with int() in count, an option's argparse type, which reads {reads_int}{use}",
+        f"{alpha}:15 reads an option with type=int, which reads {reads_int}{use}",
+        f"{alpha}:16 reads an option with type=float, which reads {reads_float}{use}",
+        f"{alpha}:17 reads an option with type=int, which reads {reads_int}{use}",
+        f"{alpha}:19 converts text with float() in a lambda, an option's argparse type, which reads {reads_float}{use}",
         f"{alpha}: INT_PARSE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: INT_PARSE_ALLOWED must map each function, class, or assignment to its reason",
     ]
@@ -3716,25 +4068,30 @@ def test_time_option_policy_refuses_a_float_time_option() -> None:
     ]
 
 
+def content_errors_beside_the_fixture_reader(root: Path, files: list[Path]) -> list[str]:
+    """The content-errors policy over a tree whose cores hold the fixture reader alone, so it names no core family."""
+    return python_checks.content_error_problems(root, files, {})
+
+
 # Each claim policy's forms its paragraph in "Validation" in docs/adding-a-skill.md names, beyond the plain one: a
 # module in a skill's scripts beside ejryan89-skill-core's fixture reader, whose line marked `# read` is refused.
 CLAIM_FORMS: list[tuple[str, Callable[[Path, list[Path]], list[str]], str]] = [
     # "directly or through a repository function that lets the reader's errors escape"
     (
         "a reader bound to a module-level name",
-        python_checks.content_error_problems,
+        content_errors_beside_the_fixture_reader,
         "import reader\n\nREAD = reader.read\n\n\ndef f(text):\n    try:  # read\n        return READ(text)\n"
         "    except OSError:\n        return None\n",
     ),
     (
         "a reader called through a module-level lambda",
-        python_checks.content_error_problems,
+        content_errors_beside_the_fixture_reader,
         "import reader\n\nREAD = lambda text: reader.read(text)\n\n\ndef f(text):\n    try:  # read\n"
         "        return READ(text)\n    except OSError:\n        return None\n",
     ),
     (
         "a reader called through a method of a class in the module",
-        python_checks.content_error_problems,
+        content_errors_beside_the_fixture_reader,
         "import reader\n\n\nclass Loader:\n    def load(self, text):\n        return reader.read(text)\n\n\n"
         "def f(text):\n    try:  # read\n        return Loader().load(text)\n"
         "    except OSError:\n        return None\n",

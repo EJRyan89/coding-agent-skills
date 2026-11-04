@@ -201,6 +201,9 @@ def valid_entry(entry: object, run_id: str) -> TypeGuard[JournalEntry]:
 
 
 BACKUP_PATH_REMEDY = "Replace it with a real directory after verifying its contents, then retry."
+# The step a refusal of a backup destination a journal names ends with. Only a rollback prints a refusal's later lines,
+# so the run it was rolling back is the user's to reconcile.
+RECONCILE_BY_HAND = "Reconcile the run by hand, then rerun with --dry-run."
 
 
 def _reject_backup_links(components: tuple[Path, ...], verb: str) -> None:
@@ -284,9 +287,13 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
     for name, context in ((run_id, "journal run ID"), (item, "backup item")):
         problem = safe_name_problem(name, context)
         if problem is not None:
-            raise DeployError(problem)
+            raise DeployError(problem, RECONCILE_BY_HAND, see_recovery("When recovery fails"))
     if not file_presence.is_directory(base, other_is_absent=True):
-        raise DeployError(f"ERROR: Deployment destination is missing: {platform_support.normalize(base)}")
+        raise DeployError(
+            f"ERROR: Deployment destination is missing: {platform_support.normalize(base)}",
+            "Put the folder back, or reconcile the run by hand, then rerun with --dry-run.",
+            see_recovery("When recovery fails"),
+        )
     check_backup_root(paths, root)
     backups = base / ".backups"
     run_backups = backups / run_id
@@ -305,7 +312,11 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
     base_canonical = platform_support.name_key(platform_support.canonical_directory(base), base)
     parent_canonical = platform_support.canonical_directory(run_backups)
     if not posix_within(platform_support.name_key(parent_canonical, base), base_canonical, strict=True):
-        raise DeployError(f"ERROR: Backup path resolves outside deployment root: {parent_canonical}")
+        raise DeployError(
+            f"ERROR: Backup path resolves outside deployment root: {parent_canonical}",
+            BACKUP_PATH_REMEDY,
+            see_recovery("Backups"),
+        )
     return run_backups / item
 
 
@@ -332,23 +343,41 @@ def _report(error: DeployError) -> None:
     print(*error.lines, sep="\n", file=sys.stderr)
 
 
-def _os_failure(run_id: str, path: Path, error: OSError) -> DeployError:
-    """An OSError during recovery, such as a file another program holds open, named by its run and its path."""
-    where = os.fsdecode(error.filename) if error.filename is not None else path
-    reason = error.strerror or str(error)
-    return DeployError(f"  ERROR: Recovery of run {run_id} failed at {platform_support.normalize(where)}: {reason}")
+# What recovery meets that a retry would meet again, so it fails the step it hit and sends the user to the manual steps:
+# an OSError, such as of a file another program holds open; a DeployError, a refusal of what stands on disk; and a
+# UnicodeError, a name or text on disk the deployer cannot encode or decode. Anything else is a defect, which stops
+# recovery with the report docs/recovery.md gives for an unexpected error.
+RECOVERY_FAILURES = (OSError, DeployError, UnicodeError)
+
+
+def _recovery_failure(run_id: str, path: Path, error: OSError | DeployError | UnicodeError) -> DeployError:
+    """A failure recovery expects, named by its run and its path, an OSError's own path when it names one, and by its
+    reason: a DeployError's first line, with the lines after it below."""
+    more: tuple[str, ...] = ()
+    if isinstance(error, OSError):
+        where = os.fsdecode(error.filename) if error.filename is not None else path
+        reason = error.strerror or str(error)
+    elif isinstance(error, DeployError):
+        first, *rest = error.lines or (str(error),)
+        where, reason = path, first.removeprefix("ERROR: ")
+        more = tuple(f"  {line}" for line in rest)
+    else:
+        where, reason = path, f"{type(error).__name__}: {error}"
+    return DeployError(
+        f"  ERROR: Recovery of run {run_id} failed at {platform_support.normalize(where)}: {reason}", *more
+    )
 
 
 def _guarded(run_id: str, path: Path, step: Callable[[], bool]) -> bool:
-    """Run one recovery step; an OSError fails only that step, so the steps after it still run.
+    """Run one recovery step; a failure RECOVERY_FAILURES names fails only that step, so the steps after it still run.
 
     Each step checks the tree before it changes anything, so replaying a run whose earlier attempt stopped partway
     reaches the same result; the failed step is left for the next run or for the user.
     """
     try:
         return step()
-    except OSError as error:
-        _report(_os_failure(run_id, path, error))
+    except RECOVERY_FAILURES as error:
+        _report(_recovery_failure(run_id, path, error))
         return False
 
 
@@ -834,8 +863,9 @@ def journaled_runs(paths: Paths) -> list[tuple[str, bool]] | None:
 def recover_incomplete(paths: Paths) -> bool:
     """Reconcile every interrupted run; return False when any run needs manual inspection.
 
-    An OSError, such as a file another program holds open, fails the run it hit, and recovery moves on to the next run,
-    so one held file neither hides the state of the others nor prints a traceback in place of the guidance.
+    A failure RECOVERY_FAILURES names, such as a file another program holds open, fails the run it hit, and recovery
+    moves on to the next run, so one held file neither hides the state of the others nor prints a traceback in place of
+    the guidance.
     """
     try:
         # Anything but a folder at the staging root is unexpected state, refused as one it cannot list.
@@ -854,8 +884,8 @@ def recover_incomplete(paths: Paths) -> bool:
     for run_dir in run_dirs:
         try:
             recovered = _recover_run(paths, run_dir)
-        except OSError as error:
-            _report(_os_failure(run_dir.name, run_dir, error))
+        except RECOVERY_FAILURES as error:
+            _report(_recovery_failure(run_dir.name, run_dir, error))
             _print_manual_steps(run_dir, run_dir.name, _committed_run_id(paths) == run_dir.name)
             recovered = False
         succeeded = recovered and succeeded

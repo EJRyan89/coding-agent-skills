@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import process_identity
 from harness import (
     DEPLOY_COMMAND,
     FAILS_PARTWAY,
@@ -468,6 +469,51 @@ class RecoveryRemedyTests(RemedyTestCase):
 
 
 class BackupRemedyTests(RemedyTestCase):
+    def test_each_refusal_of_a_backup_destination_ends_with_its_step(self) -> None:
+        # Pinned against literals: the steps a rollback prints below each refusal.
+        reconcile = (
+            "Reconcile the run by hand, then rerun with --dry-run.",
+            'See "When recovery fails" in docs/recovery.md.',
+        )
+        with self.assertRaises(DeployError) as raised:
+            journal.prepare_backup_destination(self.paths, "run-1", "alpha", "claude")
+        self.assertEqual(
+            (
+                f"ERROR: Deployment destination is missing: {forward(self.skills_dir)}",
+                "Put the folder back, or reconcile the run by hand, then rerun with --dry-run.",
+                'See "When recovery fails" in docs/recovery.md.',
+            ),
+            raised.exception.lines,
+        )
+        self.skills_dir.mkdir(parents=True)
+        for run_id, item, problem in (
+            ("..", "alpha", "ERROR: journal run ID '..' is a dot segment"),
+            ("run-1", "a/b", "ERROR: backup item 'a/b' contains path separator"),
+        ):
+            with self.subTest(run_id=run_id, item=item), self.assertRaises(DeployError) as raised:
+                journal.prepare_backup_destination(self.paths, run_id, item, "claude")
+            self.assertEqual((problem, *reconcile), raised.exception.lines)
+        outside = forward(self.root / "outside")
+        real = platform_support.canonical_directory
+
+        def escaping(path: Path) -> str:
+            # The run's backup folder, and only it, resolves outside the root.
+            return outside if Path(path).name == "run-1" else real(path)
+
+        with (
+            mock.patch("deployer.platform_support.canonical_directory", side_effect=escaping),
+            self.assertRaises(DeployError) as raised,
+        ):
+            journal.prepare_backup_destination(self.paths, "run-1", "alpha", "claude")
+        self.assertEqual(
+            (
+                f"ERROR: Backup path resolves outside deployment root: {outside}",
+                "Replace it with a real directory after verifying its contents, then retry.",
+                SEE_BACKUPS,
+            ),
+            raised.exception.lines,
+        )
+
     def test_leftover_transient_backup_points_at_backups(self) -> None:
         self.fixture()
         self.deploy_ok("--all")
@@ -560,8 +606,40 @@ class LockRemedyTests(RemedyTestCase):
         )
         self.write(self.lock_dir / "info.json", json.dumps({"token": "x"}))
         self.assert_lines(
-            self.deploy_fails("--all", pattern="no PID").output, "ERROR: Lock metadata is malformed (no PID).", *stale
+            self.deploy_fails("--all", pattern="no valid PID").output,
+            "ERROR: Lock metadata is malformed (no valid PID): pid must be an integer from 1 to "
+            f"{process_identity.PID_MAXIMUM}, found null.",
+            *stale,
         )
+        info = self.lock_dir / "info.json"
+        info.unlink()
+        info.mkdir()
+        self.assert_lines(
+            self.deploy_fails("--all", pattern="is not a file").output,
+            f"ERROR: The lock's metadata at {forward(info)} is not a file.",
+            *stale,
+        )
+        info.rmdir()
+        info.write_bytes(b'{"pid": 4242, "token": "\xff"}')
+        self.assert_lines(
+            self.deploy_fails("--all", pattern="not UTF-8").output,
+            f"ERROR: Lock metadata is malformed: {forward(info)} is not UTF-8 text.",
+            *stale,
+        )
+        self.write(info, json.dumps({"pid": 4242}))
+        real_read = Path.read_text
+
+        def read_text(path: Path, *arguments: Any, **options: Any) -> str:
+            if path == info:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real_read(path, *arguments, **options)
+
+        with mock.patch.object(Path, "read_text", read_text):
+            self.assert_lines(
+                self.deploy_fails("--all", pattern="Could not read the lock's metadata").output,
+                f"ERROR: Could not read the lock's metadata at {forward(info)}: Access is denied.",
+                *stale,
+            )
         self.write(self.lock_dir / "info.json", json.dumps({"pid": 4242, "start_time": None}))
         self.assert_lines(
             self.deploy_fails("--all", pattern="cannot be verified", probe=probe_returning(True, 7)).output,

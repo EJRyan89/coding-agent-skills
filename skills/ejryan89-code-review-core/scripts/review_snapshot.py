@@ -156,9 +156,9 @@ def read_pull_diff(
         text, undecodable = _checkout_diff(checkout, repository, number, pull, services, over)
         return PullDiff(text, undecodable, {"source": "checkout", "limit": limit})
     listing = services.github.list_pull_files(repository, number)
-    if listing.head != pull["headRefOid"]:
+    if listing.moved_from(pull["headRefOid"]):
         raise _moved(selector, pull["headRefOid"], listing.head)
-    if len(listing.files) != listing.changed:
+    if listing.cut:
         raise PipelineError(
             f"{over}, and GitHub's files API lists {len(listing.files):,} of its {listing.changed:,} changed files; "
             f"set checkout_path for {repository} so prepare reads its diff from the checkout"

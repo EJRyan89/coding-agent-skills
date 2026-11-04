@@ -312,7 +312,9 @@ class DeploymentDeadlineTests(DeadlineCase):
         self.make_config()
         (self.source / ".git").mkdir()
         commit = "0123456789abcdef0123456789abcdef01234567"
-        for step, resolved in (("resolve", None), ("export", source_ref.Pin("main", commit))):
+        pin = source_ref.Pin("main", commit)
+        # Reading the commit's attributes comes before the export makes its directory; git archive comes after.
+        for step, resolved, exporting in (("resolve", None, False), ("attributes", pin, False), ("export", pin, True)):
             with self.subTest(step=step):
                 stub = self.stubs.hanging("git")
                 self.stubs.pids.unlink(missing_ok=True)
@@ -322,11 +324,17 @@ class DeploymentDeadlineTests(DeadlineCase):
                     if resolved is not None
                     else contextlib.nullcontext()
                 )
+                attributes = (
+                    mock.patch.object(source_ref, "refuse_archive_attributes")
+                    if exporting
+                    else contextlib.nullcontext()
+                )
                 with (
                     self.held_until_started(),
                     found("git", stub),
                     run_with_deadline(stub, SHORT_DEADLINE),
                     resolving,
+                    attributes,
                     recording,
                 ):
                     result = self.deploy_fails("--all", "--at", "main", pattern="did not finish within")
@@ -334,7 +342,7 @@ class DeploymentDeadlineTests(DeadlineCase):
                 self.assert_lines_in_order(timed_out_lines(stub, SHORT_DEADLINE), result)
                 self.assertNotIn("Rendered and validated.", result.output)
                 self.assertNotIn("Traceback", result.output)
-                self.assertEqual(1 if resolved else 0, len(made), "only the export makes a directory")
+                self.assertEqual(1 if exporting else 0, len(made), "only git archive's export makes a directory")
                 self.assertEqual([], [directory for directory in made if directory.exists()], "the export is removed")
                 self.assertFalse(self.lock.exists())
                 self.assertFalse((self.skills_dir / "alpha").exists())

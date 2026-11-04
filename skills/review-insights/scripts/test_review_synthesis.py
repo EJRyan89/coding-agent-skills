@@ -1014,6 +1014,48 @@ class StageTests(unittest.TestCase):
                 rs.previous_period(set_root, date(2026, 1, 1), load)
             self.assertEqual(str(path), raised.exception.filename)
 
+    def test_a_folder_whose_name_is_no_period_the_report_writes_is_passed_over(self) -> None:
+        # The report names a period's folder by its start and end in ASCII ISO dates; a folder named otherwise, by
+        # digits that are not ASCII, a date that does not exist, or an end before its start, is no earlier report.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+
+        def load(path: Path) -> dict[str, Any]:
+            return {
+                "start_date": "2025-12-25",
+                "end_date": path.parent.name.split("--")[1],
+                "category_counts": {},
+                "synthesis": None,
+                "recommendations": [],
+            }
+
+        arabic_indic = "".join(chr(0x0660 + int(digit)) if digit.isdigit() else digit for digit in "2025-12-30")
+        for index, name in enumerate(
+            (
+                "2025-12-25--2025-12-32",
+                "2025-12-25--2025-02-30",
+                "2025-02-30--2025-12-30",
+                "0000-12-25--2025-12-30",
+                f"2025-12-25--{arabic_indic}",
+                f"{arabic_indic}--2025-12-30",
+                "2025-12-31--2025-12-30",
+                "20251225--20251230",
+            )
+        ):
+            # Each name alone in a set of its own, so one case's folder never decides another's.
+            with self.subTest(name=name):
+                set_root = base / str(index)
+                (set_root / name).mkdir(parents=True)
+                (set_root / name / "insights.json").write_text("{}", encoding="utf-8")
+                self.assertIsNone(rs.previous_period(set_root, date(2026, 1, 1), load))
+        # A one-day period is a period.
+        (base / "day" / "2025-12-30--2025-12-30").mkdir(parents=True)
+        day = base / "day" / "2025-12-30--2025-12-30" / "insights.json"
+        day.write_text("{}", encoding="utf-8")
+        found = rs.previous_period(base / "day", date(2026, 1, 1), load)
+        self.assertEqual(day, found[0] if found else None)
+
     def test_a_set_root_that_does_not_exist_has_no_previous_period(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

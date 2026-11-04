@@ -31,6 +31,9 @@ from harness import (
 from deployer import config, journal, manifest, names, platform_support, source
 from deployer.errors import DeployError
 
+# The step a source.json the deployer cannot read names, written out here rather than read from the deployer.
+SOURCE_JSON_REMEDY = "Put back the checkout's source.json, for example with 'git checkout -- source.json', then retry."
+
 
 class ConfigValidationTests(DeployerTestCase):
     def test_spaces_in_configured_path_expand(self) -> None:
@@ -292,6 +295,71 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern=r"SKILL\.md must be directly under skills/<name>: .*/alpha/nested/SKILL\.md")
 
+    def test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform(self) -> None:
+        # Windows opens another case's spelling as the name and Linux passes it over, so each is refused on both, before
+        # rendering, where the staged files are keyed by their own spelling.
+        def entry_file(spelling: str) -> tuple[Path, Path, str]:
+            skill = self.source / "skills" / "alpha"
+            return (
+                skill / "SKILL.md",
+                skill / spelling,
+                f"ERROR: Skill 'alpha' entry file {forward(skill / spelling)} is ",
+            )
+
+        def metadata(spelling: str) -> tuple[Path, Path, str]:
+            meta = self.source / "deploy-meta"
+            return meta / "alpha.json", meta / spelling, f"ERROR: Metadata file {forward(meta / spelling)} is "
+
+        def top_level(name: str, spelling: str, what: str) -> Callable[[], tuple[Path, Path, str]]:
+            return lambda: (
+                self.source / name,
+                self.source / spelling,
+                f"ERROR: {what} {forward(self.source / spelling)} is ",
+            )
+
+        rows: dict[str, tuple[Callable[[], tuple[Path, Path, str]], str]] = {
+            "skill.md": (lambda: entry_file("skill.md"), "SKILL.md"),
+            "Skill.MD": (lambda: entry_file("Skill.MD"), "SKILL.md"),
+            "alpha.JSON": (lambda: metadata("alpha.JSON"), "alpha.json"),
+            "Source.json": (top_level("source.json", "Source.json", "The source file"), "source.json"),
+            "Skills": (top_level("skills", "Skills", "The source folder"), "skills"),
+            "Deploy-Meta": (top_level("deploy-meta", "Deploy-Meta", "The source folder"), "deploy-meta"),
+            "Agents": (top_level("agents", "Agents", "The source folder"), "agents"),
+            "Guide.md": (
+                lambda: (
+                    self.source / "skills" / "guide.md",
+                    self.source / "skills" / "Guide.md",
+                    f"ERROR: Shared asset 'guide.md' file {forward(self.source / 'skills' / 'Guide.md')} is ",
+                ),
+                "guide.md",
+            ),
+        }
+        self.make_source_json(shared_assets={"guide.md": "owner"})
+        self.make_skill("alpha", "Alpha content", shared_deps=["guide.md"])
+        self.make_shared_asset("guide.md", "Guide")
+        (self.source / "agents").mkdir()
+        self.make_config()
+        for case, (where, name) in rows.items():
+            with self.subTest(case=case):
+                spelled, other, refusal = where()
+                # A rename through a third name, which a file system that folds case needs to change only the case.
+                interim = spelled.with_name(spelled.name + ".renaming")
+                spelled.rename(interim)
+                interim.rename(other)
+                try:
+                    for arguments in (("--all", "--dry-run"), ("--all",)):
+                        result = self.deploy_fails(*arguments, pattern=re.escape(refusal))
+                        self.assert_lines(
+                            result.output,
+                            f"{refusal}spelled in another case than {name}.",
+                            f"Rename it {name}, then retry.",
+                        )
+                        self.assertNotIn("Traceback", result.output)
+                finally:
+                    # The next row starts from the source as spelled, whatever this one found.
+                    other.rename(interim)
+                    interim.rename(spelled)
+
     def test_a_flat_skills_directory_deploys_each_skill_beside_a_shared_asset(self) -> None:
         self.make_source_json(shared_assets={"guide.md": "owner"})
         self.make_skill("alpha", "Alpha content")
@@ -327,11 +395,25 @@ class MetadataValidationTests(DeployerTestCase):
                 result = self.deploy_fails("--dry-run", pattern="deploy-meta/alpha.json has an invalid metadata shape")
                 self.assertNotIn("FAILED", result.stdout + result.stderr)
         self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({}))
-        for case, text in unreadable.items():
+        source_json = self.source / "source.json"
+        malformed = (
+            f"ERROR: source.json is malformed: {forward(source_json)} is not a JSON object the deployer reads.",
+            SOURCE_JSON_REMEDY,
+        )
+        for case, text in {**unreadable, "an array": "[]"}.items():
             with self.subTest(case=f"source.json {case}"):
-                self.write(self.source / "source.json", text.replace('"required_vars"', '"id"'))
-                result = self.deploy_fails("--dry-run", pattern="ERROR: Invalid source ID format: null")
+                self.write(source_json, text.replace('"required_vars"', '"id"'))
+                result = self.deploy_fails("--dry-run", pattern="ERROR: source.json is malformed")
+                self.assert_lines(result.output, *malformed)
                 self.assertNotIn("FAILED", result.stdout + result.stderr)
+        source_json.write_bytes(b'{"id": "test/skills", "name": "\xff"}')
+        result = self.deploy_fails("--dry-run", pattern="ERROR: source.json is malformed")
+        self.assert_lines(
+            result.output,
+            f"ERROR: source.json is malformed: {forward(source_json)} is not UTF-8 text.",
+            SOURCE_JSON_REMEDY,
+        )
+        self.assertNotIn("FAILED", result.stdout + result.stderr)
 
     def test_declared_tools_must_be_a_list_of_known_tools(self) -> None:
         self.make_source_json()

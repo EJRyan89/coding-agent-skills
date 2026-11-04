@@ -192,7 +192,31 @@ class FlagCliTests(unittest.TestCase):
                         "Flag category and body are required", "add", "guideline", body
                     )
 
-    def test_add_requires_a_positive_pull_before_reading_the_archive_or_changing_the_store(self) -> None:
+    def assert_usage_preserves_store_and_locks(self, option: str, value: str, *arguments: str) -> None:
+        """A usage error that names the option and the value, exits 2, prints nothing to stdout, and leaves the
+        store's folder as it was."""
+        root = Path(self.store).parent
+
+        def snapshot() -> dict[Path, tuple[bytes | None, int]]:
+            return {
+                path.relative_to(root): (path.read_bytes() if path.is_file() else None, path.stat().st_mtime_ns)
+                for path in (root, *root.rglob("*"))
+            }
+
+        before = snapshot()
+        result = self.store_cli(*arguments)
+        self.assertEqual((2, ""), (result.returncode, result.stdout))
+        self.assertEqual(
+            f"argument {option}: must be a whole number of at least 1 in ASCII digits, not {value!r}",
+            result.stderr.splitlines()[-1].split(" error: ", 1)[1],
+        )
+        self.assertEqual(before, snapshot())
+
+    def test_add_requires_a_positive_pull_in_ascii_digits_before_reading_the_archive_or_changing_the_store(
+        self,
+    ) -> None:
+        # int() reads "1_0" as 10, " 7" and "+7" as 7, and an Arabic-Indic three as 3, each a pull request number.
+        refused = ("0", "-1", "1_0", " 7", "+7", chr(0x0663), chr(0xFF11), "1" * 4301)
         for existing in (False, True):
             if existing:
                 self.assert_result(
@@ -200,13 +224,34 @@ class FlagCliTests(unittest.TestCase):
                     0,
                     "ADDED RF-000001\n",
                 )
-            for pull in ("0", "-1"):
+            for pull in refused:
                 for finding in (False, True):
-                    with self.subTest(existing=existing, pull=pull, finding=finding):
-                        arguments = ["add", "guideline", "Body", "--repository", "example/one", "--pull", pull]
+                    with self.subTest(existing=existing, pull=ascii(pull[:8]), finding=finding):
+                        arguments = ["add", "guideline", "Body", "--repository", "example/one", f"--pull={pull}"]
                         if finding:
                             arguments.extend(["--review-version", "1", "--finding", "F001"])
-                        self.assert_refusal_preserves_store_and_locks("Pull number must be positive", *arguments)
+                        self.assert_usage_preserves_store_and_locks("--pull", pull, *arguments)
+        self.assertEqual([("example/one", 1, None, None)], self.stored_targets())
+
+    def test_a_review_version_and_a_findings_pull_take_ascii_digits_alone(self) -> None:
+        pull = ("--repository", "example/one", "--pull", "12")
+        for value in ("0", "1_0", chr(0x0663)):
+            with self.subTest(value=ascii(value)):
+                self.assert_usage_preserves_store_and_locks(
+                    "--review-version",
+                    value,
+                    "add",
+                    "guideline",
+                    "Body",
+                    *pull,
+                    f"--review-version={value}",
+                    "--finding",
+                    "F001",
+                )
+                self.assert_usage_preserves_store_and_locks(
+                    "--pull", value, "findings", "--repository", "example/one", f"--pull={value}"
+                )
+        self.assertFalse(Path(self.store).exists())
 
     def test_blank_resolution_fails_before_creating_a_store_or_lock(self) -> None:
         for resolution in ("", " \t\n"):

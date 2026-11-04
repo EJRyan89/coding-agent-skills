@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import executable_locator
 import file_presence
 from path_containment import within
 
@@ -121,10 +122,20 @@ COPILOT_HOME = "COPILOT_HOME"
 
 
 def copilot_home(environment: Mapping[str, str] | None = None) -> Path | None:
-    """The directory COPILOT_HOME names, made absolute, or None when it is unset or empty."""
-    environment = os.environ if environment is None else environment
-    value = environment.get(COPILOT_HOME)
-    return Path(value).absolute() if value else None
+    """The directory COPILOT_HOME names, or None when it is unset or empty.
+
+    A value that is not an absolute path is refused: Copilot CLI resolves it against the directory each session starts
+    in, so no one folder is the one it reads skills from, and the deployer's own working directory is not it either.
+    """
+    try:
+        return executable_locator.required_environment_path(COPILOT_HOME, environment)
+    except executable_locator.RelativeEnvironmentPath as error:
+        raise DeployError(
+            f"ERROR: {error}, so GitHub Copilot CLI reads its configuration from a folder that depends on the "
+            "directory it starts in.",
+            f"Set {COPILOT_HOME} to an absolute path, or unset it, and run the command again; see \"Copilot's "
+            'configuration directory" in docs/copilot-support.md.',
+        ) from None
 
 
 CANARY_MARKER = ".deploy-canary-home"
