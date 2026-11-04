@@ -747,16 +747,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_an_install_path_is_refused_under_every_spelling_of_the_home`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
   `tests/tools/test_mutation_gate.py::test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement`,
-  `.claude/skills/audit-repository/scripts/test_audit_repository.py::ReleaseTests::test_every_brief_carries_the_kinds_of_drift_and_the_report_template`
-- **Search for:** a policy whose file list is a hand-kept tuple of directories, such as a `*_ROOTS`, that no
+  `.claude/skills/audit-repository/scripts/test_audit_repository.py::ReleaseTests::test_every_brief_carries_the_kinds_of_drift_and_the_report_template`,
+  `.claude/skills/review-repository/scripts/test_review_repository.py::ManifestTests::test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer`
+- **Search for:** a review route whose `include` patterns name files by hand where a document owns the list, such as
+  the boundaries of the trust model in `docs/design.md`, and a row of that list naming only a suite or a document, not
+  the code that holds it; a policy whose file list is a hand-kept tuple of directories, such as a `*_ROOTS`, that no
   `scope_problems` test holds, or a `glob(`
   narrower than the rule's statement in `CLAUDE.md` or `docs/`; `rg -n "glob\(\"\*\.sh\"\)|suffix == \"\.sh\"" tests/validation/`,
   a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; a
   policy that refuses a sentence as an exact substring, which a capital, a reflowed line, or an optional word walks
   past; an audit brief that asks only for drift; a `scope_problems` call whose modules are filtered by the roots it
   is held to, which compares a list with itself.
-- **Examples:** #1366, #1598, #1678, #1722, #2260, and #1884, which adds the check that holds a policy's scope to its
-  rule
+- **Examples:** #1366, #1598, #1678, #1722, #2260, #2352, and #1884, which adds the check that holds a policy's scope
+  to its rule
 
 ### A check reads its subject through its consumer's reader
 
