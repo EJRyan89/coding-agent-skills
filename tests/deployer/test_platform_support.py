@@ -326,6 +326,27 @@ class BashBesideGitTests(DeployerTestCase):
         self.assertEqual(str(bash), self.bash_beside(warned))
 
 
+class IndexFileTests(DeployerTestCase):
+    """run_tool names a git's index through its index_file keyword alone, never through an environment."""
+
+    PROGRAM = "import os; print(os.environ.get('GIT_INDEX_FILE', 'none'))"
+
+    def test_the_keyword_names_the_index_and_an_environment_cannot(self) -> None:
+        index = self.root / "a throwaway index"
+        rows = {
+            "the keyword": ({}, index, str(index)),
+            "the keyword over a given one": ({"GIT_INDEX_FILE": "another"}, index, str(index)),
+            "a given one alone": ({"GIT_INDEX_FILE": "another"}, None, "none"),
+        }
+        with mock.patch.dict(os.environ, {"GIT_INDEX_FILE": "an inherited index"}):
+            for row, (environment, index_file, expected) in rows.items():
+                with self.subTest(row=row):
+                    result = platform_support.run_tool(
+                        [sys.executable, "-c", self.PROGRAM], environment, index_file=index_file
+                    )
+                    self.assertEqual(expected, result.output.strip())
+
+
 class HiddenWindowTests(unittest.TestCase):
     def test_console_programs_start_without_a_window(self) -> None:
         # CREATE_NO_WINDOW on Windows; elsewhere a program opens no window by starting, so nothing is asked.

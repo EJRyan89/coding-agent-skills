@@ -328,11 +328,11 @@ class DeployAtTests(DeployerTestCase):
             timeout: float | None = None,
             *,
             separate_errors: bool = False,
-            environment: dict[str, str] | None = None,
+            index_file: Path | None = None,
         ) -> platform_support.ToolResult:
             if "for-each-ref" in arguments:
                 return platform_support.ToolResult(128, "", "fatal: refused by the test\n")
-            return real(arguments, timeout, separate_errors=separate_errors, environment=environment)
+            return real(arguments, timeout, separate_errors=separate_errors, index_file=index_file)
 
         return mock.patch.object(source_ref, "_run_git", run_git)
 
@@ -936,36 +936,35 @@ class DeployAtTests(DeployerTestCase):
         self.assert_head_unmoved()
 
     def test_only_the_attribute_reads_are_given_the_throwaway_index_and_it_is_removed_after_an_export(self) -> None:
-        calls: list[tuple[list[str], dict[str, str] | None]] = []
+        calls: list[tuple[list[str], dict[str, str] | None, Path | None]] = []
         real = platform_support.run_tool
 
         def run_tool(
             arguments: list[str], environment: dict[str, str] | None = None, **options: Any
         ) -> platform_support.ToolResult:
-            calls.append((arguments, environment))
+            calls.append((arguments, environment, options.get("index_file")))
             return real(arguments, environment, **options)
 
         patch, made = recorded_temporary_directories()
         with patch, mock.patch.object(platform_support, "run_tool", run_tool):
             export = source_ref.export(self.source, self.release)
         source_ref.remove(export)
+        steps = {"ls-tree", "read-tree", "check-attr", "archive"}
         indexed = {
-            next(argument for argument in arguments if argument in {"ls-tree", "read-tree", "check-attr", "archive"})
-            for arguments, environment in calls
-            if environment and "GIT_INDEX_FILE" in environment
+            next(argument for argument in arguments if argument in steps)
+            for arguments, _, index_file in calls
+            if index_file is not None
         }
         self.assertEqual({"read-tree", "check-attr"}, indexed)
-        commands = {argument for arguments, _ in calls for argument in arguments}
-        self.assertLessEqual({"ls-tree", "archive"}, commands)
+        self.assertLessEqual({"ls-tree", "archive"}, {argument for arguments, _, _ in calls for argument in arguments})
+        # The index is named through run_tool's keyword alone, never through an environment.
+        self.assertEqual([], [environment for _, environment, _ in calls if environment])
         self.assertEqual(2, len(made))
         index, exported = made
         self.assertTrue(index.name.startswith(ATTRIBUTE_INDEX_PREFIX))
         self.assertFalse(index.exists())
         self.assertFalse(exported.exists())
-        self.assertEqual(
-            {str(index / "index")},
-            {environment["GIT_INDEX_FILE"] for _, environment in calls if environment},
-        )
+        self.assertEqual({index / "index"}, {index_file for _, _, index_file in calls if index_file is not None})
 
     def test_an_answer_check_attr_did_not_give_for_each_path_and_attribute_is_refused(self) -> None:
         answers = {

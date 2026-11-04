@@ -75,7 +75,7 @@ def _run_git(
     timeout: float | None = None,
     *,
     separate_errors: bool = False,
-    environment: dict[str, str] | None = None,
+    index_file: Path | None = None,
 ) -> platform_support.ToolResult:
     git = platform_support.find_executable("git")
     if git is None:
@@ -83,23 +83,25 @@ def _run_git(
             "ERROR: --at needs Git, which was not found.",
             'Install it as "Installing the tools" in docs/installation.md says, then retry.',
         )
-    if environment is None:
+    if index_file is None:
         return platform_support.run_tool([git, *arguments], timeout=timeout, separate_errors=separate_errors)
-    return platform_support.run_tool([git, *arguments], environment, timeout=timeout, separate_errors=separate_errors)
+    return platform_support.run_tool(
+        [git, *arguments], timeout=timeout, separate_errors=separate_errors, index_file=index_file
+    )
 
 
 def _git(source_dir: Path, *arguments: str) -> platform_support.ToolResult:
     return _run_git(["-C", str(source_dir), *arguments])
 
 
-def _git_runner(command: Sequence[str], timeout: float, environment: dict[str, str] | None = None) -> GitResult:
+def _git_runner(command: Sequence[str], timeout: float, index_file: Path | None = None) -> GitResult:
     """GitClient's runner over the deployer's own, for resolve and release_tags: the command GitClient builds, git
     first, run by run_tool with stdout and stderr kept apart, so a warning git prints beside an answer is never part of
-    it and a failure's reason is git's stderr. `environment` is added to that call's environment alone."""
-    if environment is None:
+    it and a failure's reason is git's stderr. With `index_file`, that call alone reads and writes that index."""
+    if index_file is None:
         result = _run_git(command[1:], timeout, separate_errors=True)
     else:
-        result = _run_git(command[1:], timeout, separate_errors=True, environment=environment)
+        result = _run_git(command[1:], timeout, separate_errors=True, index_file=index_file)
     return GitResult(result.returncode, result.output, result.errors)
 
 
@@ -108,10 +110,9 @@ def _client(index: Path | None = None) -> GitClient:
     the calls that read a commit's attributes, so no other git call sees the throwaway index."""
     if index is None:
         return GitClient(_git_runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
-    environment = {"GIT_INDEX_FILE": str(index)}
 
     def runner(command: Sequence[str], timeout: float) -> GitResult:
-        return _git_runner(command, timeout, environment)
+        return _git_runner(command, timeout, index)
 
     return GitClient(runner, timeout=platform_support.TOOL_DEADLINE_SECONDS)
 

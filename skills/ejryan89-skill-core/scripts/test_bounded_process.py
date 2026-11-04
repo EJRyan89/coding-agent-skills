@@ -392,42 +392,43 @@ class BoundedProcessTests(unittest.TestCase):
         }
         self.assertEqual({**CONFIGURING, "PATH": "a path"}, bounded_process.without_repository_variables(given))
 
-    def test_a_command_given_an_environment_sees_no_repository_selecting_variable_but_its_index_file(self) -> None:
+    def test_a_command_given_an_environment_sees_no_repository_selecting_variable(self) -> None:
         finished = run_bounded([sys.executable, "-c", GIT_VARIABLES_PROGRAM], 60, env=selecting_environment())
         self.assertEqual(0, finished.returncode, finished.stderr)
         seen = json.loads(finished.stdout)
-        self.assertEqual(
-            {"GIT_INDEX_FILE": "C:/elsewhere/.git"}, {name: seen[name] for name in REPOSITORY_SELECTING if name in seen}
-        )
+        self.assertEqual(set(), set(REPOSITORY_SELECTING) & set(seen))
         self.assertEqual(CONFIGURING, {name: seen.get(name) for name in CONFIGURING})
 
-    def test_each_repository_selecting_variable_a_caller_gives_is_left_out_but_the_index_file(self) -> None:
+    def test_each_repository_selecting_variable_in_a_given_environment_is_left_out_whatever_its_value(self) -> None:
+        # A given environment may be built from another process's, such as a hook's, so a variable in it is never one
+        # the caller chose: each is left out, GIT_INDEX_FILE too, at a value this process did not inherit.
         base = bounded_process.without_repository_variables(os.environ)
         for name in REPOSITORY_SELECTING:
             with self.subTest(variable=name):
-                given = {**base, name: "a value the caller set"}
-                finished = run_bounded([sys.executable, "-c", GIT_VARIABLES_PROGRAM], 60, env=given)
-                seen = json.loads(finished.stdout)
-                expected = "a value the caller set" if name == "GIT_INDEX_FILE" else None
-                self.assertEqual(expected, seen.get(name))
-                self.assertEqual(expected, bounded_process.given_environment(given).get(name))
+                given = {**base, name: "a value another process set"}
+                seen = json.loads(run_bounded([sys.executable, "-c", GIT_VARIABLES_PROGRAM], 60, env=given).stdout)
+                self.assertNotIn(name, seen)
 
-    def test_an_inherited_index_file_is_left_out_even_when_copied_into_a_given_environment(self) -> None:
+    def test_the_index_file_keyword_alone_names_the_commands_index(self) -> None:
+        # index_file is the one way to set GIT_INDEX_FILE: it names the index whatever an environment, given or
+        # inherited, holds, and without it none reaches the command.
         program = [sys.executable, "-c", GIT_VARIABLES_PROGRAM]
+        index = Path(tempfile.gettempdir()) / "a throwaway index"
         with mock.patch.dict(os.environ, {"GIT_INDEX_FILE": "an inherited index"}):
             rows = {
-                "no environment given": (None, None),
-                "a copy of this process's": (dict(os.environ), None),
-                "the caller's own": ({**os.environ, "GIT_INDEX_FILE": "the caller's index"}, "the caller's index"),
+                "no environment given": (None, index, str(index)),
+                "an environment holding another": ({**os.environ, "GIT_INDEX_FILE": "another"}, index, str(index)),
+                "no keyword, an inherited one": (None, None, None),
+                "no keyword, a given one": ({**os.environ, "GIT_INDEX_FILE": "another"}, None, None),
             }
-            for row, (given, expected) in rows.items():
+            for row, (given, index_file, expected) in rows.items():
                 with self.subTest(row=row):
-                    seen = json.loads(run_bounded(program, 60, env=given).stdout)
-                    self.assertEqual(expected, seen.get("GIT_INDEX_FILE"))
+                    finished = run_bounded(program, 60, env=given, index_file=index_file)
+                    self.assertEqual(expected, json.loads(finished.stdout).get("GIT_INDEX_FILE"))
 
-    def test_the_variables_and_the_one_a_caller_may_set_are_pinned(self) -> None:
-        self.assertEqual(frozenset(REPOSITORY_SELECTING), bounded_process.REPOSITORY_VARIABLES)
-        self.assertEqual(frozenset({"GIT_INDEX_FILE"}), bounded_process.CALLER_SET_VARIABLES)
+    def test_the_variable_the_keyword_sets_is_the_index_file(self) -> None:
+        self.assertEqual("GIT_INDEX_FILE", bounded_process.INDEX_FILE_VARIABLE)
+        self.assertIn(bounded_process.INDEX_FILE_VARIABLE, bounded_process.REPOSITORY_VARIABLES)
 
     def test_a_command_started_with_the_default_environment_sees_no_repository_selecting_variable(self) -> None:
         program = "import os; print(sorted(name for name in os.environ if name.upper().startswith('GIT_')))"
@@ -632,15 +633,13 @@ class StreamingTests(unittest.TestCase):
             self.assertEqual(b"first answered a value with spaces None\n", running.readline())
             self.assertEqual(3, running.wait())
 
-    def test_a_command_given_an_environment_sees_no_repository_selecting_variable_but_its_index_file(self) -> None:
+    def test_a_command_given_an_environment_sees_no_repository_selecting_variable(self) -> None:
         command = [sys.executable, "-c", GIT_VARIABLES_PROGRAM]
         with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, env=selecting_environment()) as running:
             running.stdin.close()
             seen = json.loads(running.readline())
             self.assertEqual(0, running.wait())
-        self.assertEqual(
-            {"GIT_INDEX_FILE": "C:/elsewhere/.git"}, {name: seen[name] for name in REPOSITORY_SELECTING if name in seen}
-        )
+        self.assertEqual(set(), set(REPOSITORY_SELECTING) & set(seen))
         self.assertEqual(CONFIGURING, {name: seen.get(name) for name in CONFIGURING})
 
     def test_the_session_timeout_ends_reads_while_output_keeps_arriving(self) -> None:
