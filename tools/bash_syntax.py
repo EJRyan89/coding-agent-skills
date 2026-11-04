@@ -20,7 +20,7 @@ process substitution, and of each one in an unquoted here-document's body, is ke
 subshell Bash runs it in.
 
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
-BashSyntaxError; the guard refuses such a command when it names git.
+BashSyntaxError; the guard refuses such a command while a guarded hub is in view.
 
 tests/tools/test_bash_syntax.py holds the reader to Bash's own syntax check, `bash -n`, on every fixture, as the hub
 guard's suite does on every Bash command it reads and the deployer's rendering suite on every rendered fragment it
@@ -99,7 +99,10 @@ class BashSyntaxError(ValueError):
 @dataclass(frozen=True)
 class Part:
     """A piece of a word: literal text, quoted or not, a `$NAME` to look up, a leading `~`, or what only running
-    settles."""
+    settles. A dynamic part's text names its form, for a reader to decide on: `$(`, `` ` ``, `<(`, or `>(` for a
+    command or process substitution, `$((` for arithmetic, `$` and the character for a special parameter, `${` and
+    the whole of its braces for any other braced expansion, `$'` for an ANSI-C string holding an escape, `~` for
+    `~user`, `~+`, or `~-`, and `(` for an array assignment's value."""
 
     kind: str  # "text", "parameter", "home", or "dynamic"
     text: str = ""
@@ -151,6 +154,8 @@ class HereDocument:
     substitutions: tuple[str, ...] = ()
     # The variables the body's expansions assign, as a word's assigns holds them.
     assigns: tuple[str, ...] = ()
+    # Each expansion in an unquoted body that is not a plain `$NAME`, as a word's dynamic parts hold it.
+    expansions: tuple[Part, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -356,8 +361,9 @@ class Lexer:
                 lines.append(compared)
             document.body = "\n".join(lines)
             if not document.quoted:
-                substitutions, assigns = expansions(document.body)
+                substitutions, assigns, parts = expansions(document.body)
                 document.substitutions, document.assigns = tuple(substitutions), tuple(assigns)
+                document.expansions = tuple(part for part in parts if part.kind == "dynamic")
         self.pending = []
 
     def word(self, subscripts: bool = False) -> Word:
@@ -384,11 +390,11 @@ class Lexer:
             character = self.peek()
             if character == "(" and head is not None and self.index == value_start:
                 self.array_elements(substitutions)
-                parts.append(Part("dynamic"))
+                parts.append(Part("dynamic", "("))
                 array = True
             elif character in "<>" and self.peek(1) == "(":
+                parts.append(Part("dynamic", character + "("))
                 substitutions.append(self.balanced(self.index + 2))
-                parts.append(Part("dynamic"))
             elif character in METACHARACTERS:
                 break
             elif character == "\\":
@@ -402,7 +408,7 @@ class Lexer:
                 self.dollar(parts, substitutions, quoted=False)
             elif character == "`":
                 substitutions.append(self.backquoted())
-                parts.append(Part("dynamic"))
+                parts.append(Part("dynamic", "`"))
             else:
                 add_text(parts, character, quoted=False)
                 self.index += 1
@@ -502,7 +508,7 @@ class Lexer:
         if end == self.index + 1:
             parts.append(Part("home"))
         else:
-            parts.append(Part("dynamic"))  # ~user, ~+, and ~- name what only running settles
+            parts.append(Part("dynamic", "~"))  # ~user, ~+, and ~- name what only running settles
         self.index = end
 
     def escape(self, parts: list[Part]) -> None:
@@ -535,7 +541,7 @@ class Lexer:
                 self.dollar(parts, substitutions, quoted=True)
             elif character == "`":
                 substitutions.append(self.backquoted())
-                parts.append(Part("dynamic", quoted=True))
+                parts.append(Part("dynamic", "`", quoted=True))
             else:
                 add_text(parts, character, quoted=True)
                 self.index += 1
@@ -544,15 +550,15 @@ class Lexer:
         following = self.peek(1)
         if self.text.startswith("$((", self.index):
             substitutions.extend(self.arithmetic(self.index + 3))
-            parts.append(Part("dynamic", quoted=quoted))
+            parts.append(Part("dynamic", "$((", quoted=quoted))
         elif following == "(":
             substitutions.append(self.balanced(self.index + 2))
-            parts.append(Part("dynamic", quoted=quoted))
+            parts.append(Part("dynamic", "$(", quoted=quoted))
         elif following == "{":
             self.braced(parts, substitutions, quoted)
         elif following == "'" and not quoted:
             text = self.ansi_c_quoted(self.index + 2)
-            parts.append(Part("dynamic", quoted=True) if "\\" in text else Part("text", text, quoted=True))
+            parts.append(Part("dynamic", "$'", quoted=True) if "\\" in text else Part("text", text, quoted=True))
         elif following == '"' and not quoted:
             self.index += 2
             self.double_quoted(parts, substitutions)
@@ -567,7 +573,7 @@ class Lexer:
             parts.append(Part("parameter", self.text[self.index + 1 : end], quoted=quoted))
             self.index = end
         elif following and following in SPECIAL_PARAMETERS:
-            parts.append(Part("dynamic", quoted=quoted))
+            parts.append(Part("dynamic", "$" + following, quoted=quoted))
             self.index += 2
         else:
             add_text(parts, "$", quoted=quoted)
@@ -639,7 +645,7 @@ class Lexer:
         if NAME.fullmatch(content):
             parts.append(Part("parameter", content, quoted=quoted))
         else:
-            parts.append(Part("dynamic", quoted=quoted))
+            parts.append(Part("dynamic", "${" + content + "}", quoted=quoted))
 
     def ansi_c_quoted(self, start: int) -> str:
         index = start
@@ -679,23 +685,25 @@ def add_text(parts: list[Part], text: str, quoted: bool) -> None:
         parts.append(Part("text", text, quoted))
 
 
-def expansions(text: str) -> tuple[list[str], list[str]]:
+def expansions(text: str) -> tuple[list[str], list[str], list[Part]]:
     """The command substitutions in text that expands as a double-quoted string does, such as an unquoted
-    here-document's body, where a double quote is an ordinary character, and the variables its expansions assign,
-    as a word's assigns holds them."""
+    here-document's body, where a double quote is an ordinary character, the variables its expansions assign, as a
+    word's assigns holds them, and the parts its expansions make, as a word's parts hold them."""
     lexer = Lexer(text.replace('"', " "))
     found: list[str] = []
+    parts: list[Part] = []
     while lexer.index < len(lexer.text):
         character = lexer.peek()
         if character == "\\":
             lexer.index += 2
         elif character == "$":
-            lexer.dollar([], found, quoted=True)
+            lexer.dollar(parts, found, quoted=True)
         elif character == "`":
             found.append(lexer.backquoted())
+            parts.append(Part("dynamic", "`", quoted=True))
         else:
             lexer.index += 1
-    return found, lexer.assigned
+    return found, lexer.assigned, parts
 
 
 # ---------------------------------------------------------------------------------------------------------------

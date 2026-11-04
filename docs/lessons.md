@@ -274,7 +274,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/validation/workflows.py::WorkflowsPolicies::test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs`,
   `tests/tools/test_hub_guard.py::test_the_refused_subcommands_are_the_writing_subcommands`,
-  `tests/tools/test_hub_guard.py::test_each_prefix_program_the_contract_names_is_read_as_the_command_it_starts`,
+  `tests/tools/test_hub_guard.py::ContractListTests::test_the_programs_the_guard_reads_are_the_ones_its_contract_names`,
   `tests/code-review/test_format_contract.py::test_the_threat_model_rows_name_each_file_the_analyzer_inventory_parses`,
   `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`
 - **Search for:** a module-level `frozenset({` or tuple of strings whose members another module also spells; a
@@ -320,7 +320,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on, and
   `shepherd_pull_requests:reported` and `shepherd_pull_requests:present`, which refuse a member that decides a write
   when the listing leaves it out, so an absent field is never read as the answer that permits the write, and
-  `tools.hub_guard:judge_options`, which refuses a shell option no table of the guard's names.
+  `tools.hub_guard:judge_option`, which refuses a shell option neither table of the guard's names.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
@@ -348,28 +348,24 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A reader of another program's language reads it as that program does
 
 - **Rule:** A reader of another program's language or output reads it as that program does, held by a differential
-  test against the program itself or by output captured from it with its provenance.
+  test against the program itself or by output captured from it with its provenance. At a trust boundary, where
+  reading every construct as the program does has not converged, the reader fails closed instead: it understands an
+  explicit table of constructs, refuses every other one, and holds each table to the catalogue the program lists of
+  itself, so a construct it never met is a refusal rather than a pass.
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
-- **Use:** `tools.hub_guard:powershell_reads_input`, `tools.hub_guard:powershell_arguments`, and
-  `tools.hub_guard:powershell_directory`
+  The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
+  to refuse what it does not understand.
+- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:timeout_start`, and `tools.hub_guard:expansion_form`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
-  `tests/tools/test_hub_guard_shells.py::StartDifferentialTests`,
-  `tests/tools/test_hub_guard.py::test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call`,
+  `tests/tools/test_hub_guard_bash.py::BuiltinTests::test_every_builtin_bash_lists_is_understood_or_not_read_and_never_both`,
+  `tests/tools/test_hub_guard_bash.py::ShellOptionTests::test_each_set_option_is_read_by_its_table_from_every_source`,
+  `tests/tools/test_hub_guard_bash.py::ExpansionTests::test_every_expansion_form_is_understood_or_not_read_and_has_a_sample`,
+  `tests/tools/test_hub_guard_pwsh.py::NodeCatalogueTests::test_every_node_type_powershell_has_is_understood_or_not_read_and_never_both`,
+  `tests/tools/test_prefix_programs.py::PrefixProgramAgreementTests::test_timeout`,
+  `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view`,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
-  `tests/tools/test_hub_guard.py::ContractTests::test_an_alias_or_a_script_block_built_from_a_string_is_refused_while_a_hub_is_guarded`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
-  `tests/tools/test_hub_guard_shells.py::FunctionCallDifferentialTests`,
-  `tests/tools/test_hub_guard_shells.py::BashDefinitionDifferentialTests`,
-  `tests/tools/test_hub_guard_shells.py::PowerShellDefinitionDifferentialTests`,
-  `tests/tools/test_hub_guard.py::ContractTests::test_a_path_a_cmdlet_takes_from_its_pipeline_is_one_the_text_does_not_settle`,
-  `tests/tools/test_hub_guard.py::test_every_field_two_paths_leave_differently_is_joined_by_the_rule`,
-  `tests/tools/test_hub_guard_shells.py::ReaderSourceTests`,
-  `tests/tools/test_hub_guard_shells.py::EnvironmentSetDifferentialTests`,
-  `tests/tools/test_hub_guard_shells.py::UnsetDifferentialTests`,
-  `tests/tools/test_hub_guard_shells.py::ShellOptionsDifferentialTests`,
-  `tests/tools/test_hub_guard_shells.py::ShellOptionSpellingTests`, which runs Bash on each spelling that turns on an
-  option the guard cannot read a shell under, and fails when Bash lists an option its tables do not name,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_the_recorded_rollup_reads_its_newest_validation_run`,
   which reads a check rollup recorded from gh's pull request listing, and
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_no_workflow_reports_neither_satisfies_nor_blocks_the_required_check`,
@@ -380,42 +376,19 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
-  and compares text with .NET's ordinal comparison ignoring case; an option table in `tools/hub_guard.py` with no differential case; an option table that holds
-  only the exact words of an option a bundle can hold, as `-o` in `-euo`, or tests a builtin's option by an exact
-  word's membership, as `"-f" in arguments` misses `unset -fn` and `-a` misses `exec -ca`; each way the shell defines a name a later
-  word runs, an alias, a function, a `hash -p` or `BASH_CMDS` command name, a `command_not_found_handle`, or one
-  handed to a child in its environment, through any shell between them, against the ways the guard reads; each
-  way a child's options or variables reach it from its starter, a `SHELLOPTS` or `BASHOPTS` the starter exported or
-  `env` gives, and a starter the text does not settle, against what a reader takes from the hook's own environment; a
-  shell option read from one source, such as `set`, and not from another that turns it on, such as `shopt -o`, a
-  nested bash's letters, `sh`, or a variable such as `POSIXLY_CORRECT`, rather than through `SET_OPTIONS` and
-  `SHOPT_OPTIONS`; such a variable judged by a search of the command's text rather than by the name an assignment
-  gives it, which refuses a commit message that names it and misses a name built at run time; an arithmetic context
-  read in one place and not another, `(( ))` but not a subscript, a compound assignment's `[k]=`, an offset,
-  `[[ -eq ]]`, a case pattern, or a value Bash evaluates again, rather than through `arithmetic_contexts` and
-  `arithmetic_hazard`; an operand settled by its raw characters rather than as one whole token once quotes and
-  backslash-newlines are gone, which `x"$i"`, `${w}$i`, and `x$((i))` pass; a list of the variables Bash sets that
-  names the dangerous ones rather than a catalogue of all of them held to `compgen -v`; a row for an option table that asserts only a refusal while a guarded hub is in view, which an
-  option read as unknown gives too, where the row could read what the reader returns, as each sudo option's was; each
-  way a variable is assigned, an expansion's `${NAME:=word}` and `${NAME=word}` among them, and each way an
-  attribute is given, allexport and an option's upper-case spelling such as `-F` among them, against the ways the
-  guard reads; an option loop that ends at a word the text does not settle without saying it may be an option;
-  a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample under
-  `tests/fixtures/captured-output/`; each interpreter's form for a script on its standard input, `bash -s`, `pwsh -File -`, `python -`, `node -`, against the
-  forms the guard names; a test whose sample output was typed rather than captured; a start-up option of a shell the
-  guard follows, such as a working directory, read only as taking a value and never for what it changes; a list of
-  member names where the receiver's type, read through parentheses and casts, settles what a member can run, and a
-  `$Node.Member -isnot [StringConstantExpressionAst]` that passes over a member it cannot name rather than refusing
-  it; a decision that matches a node's `Extent.Text` where the syntax tree and the resolver settle what it is; a parameter read from a command's arguments alone, where a cmdlet after the first in its pipeline takes it
-  from there; a join of two paths' state that keeps one path's value, as `{**first.<field>, **second.<field>}` does,
-  where the paths differ; a refusal of an empty or absent member of another program's entries, such as
-  `reported(..., empty=False)`, whose fixture rows give every kind of entry the member typed in, never read from
-  what the program lists for each kind it reports, as gh lists a check run no workflow reports with an empty
-  `workflowName`; a refusal of a git command by its subcommand's name that a `-c alias.<name>`, `-c include.path`, or
-  `-c includeIf.<condition>.path` on the same command line can rename, a `-c help.autocorrect` can turn a misspelled name into, or an
-  `--exec-path=<folder>` can replace; a
-  list of the subcommands that take an option, read against `git <command> -h` for every command git lists, that
-  leaves one out, as `difftool --no-index` was; a git option table that leaves out one git.c reads a value after, as
+  and compares text with .NET's ordinal comparison ignoring case; in `tools/hub_guard.py`, a construct a table neither
+  understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
+  catalogue, a word settled from what an earlier command assigns rather than the assignment refused, a program added
+  to `PROGRAMS` or a cmdlet to `POWERSHELL_COMMANDS` that starts a command its words name, and a refusal that waits
+  for the command to name git; a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample
+  under `tests/fixtures/captured-output/`; a test whose sample output was typed rather than captured; a refusal of an
+  empty or absent member of another program's entries, such as `reported(..., empty=False)`, whose fixture rows give
+  every kind of entry the member typed in, never read from what the program lists for each kind it reports, as gh
+  lists a check run no workflow reports with an empty `workflowName`; a refusal of a git command by its subcommand's
+  name that a `-c alias.<name>`, `-c include.path`, or `-c includeIf.<condition>.path` on the same command line can
+  rename, a `-c help.autocorrect` can turn a misspelled name into, or an `--exec-path=<folder>` can replace; a list
+  of the subcommands that take an option, read against `git <command> -h` for every command git lists, that leaves
+  one out, as `difftool --no-index` was; a git option table that leaves out one git.c reads a value after, as
   `--shallow-file` was; a failure labelled with `arguments[0]` rather than `git_client.command_name`.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276

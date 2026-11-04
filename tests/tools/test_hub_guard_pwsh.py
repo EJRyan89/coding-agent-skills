@@ -1,13 +1,12 @@
-"""Regression suite for tools/hub_guard.py's reading of the pwsh command line: which forms read a script from standard
-input or inline, how pwsh spells a parameter, and which parameters take the next word as their value.
-
-It starts no program and holds no fixture, so it runs in under a second, apart from tests/tools/test_hub_guard.py,
-whose suites start git and pwsh; tests/tools/test_hub_guard_shells.py holds these readings to what pwsh does.
-"""
+"""The hub guard's PowerShell catalogue, held to PowerShell itself: every AST node type reflection finds in
+System.Management.Automation.Language is understood or in NOT_READ, each has a sample that PowerShell's parser makes
+it from, and the reader refuses every sample of a type it does not understand. A type a later PowerShell adds fails
+here until a row decides it."""
 
 from __future__ import annotations
 
-import re
+import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -16,351 +15,185 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from bounded_process import Finished
+
+from deployer import platform_support
 from tools import hub_guard
 
+# Prints, for the JSON list of commands on stdin, each one's node types, or the parser's first error.
+PARSE_SAMPLES = r"""
+$samples = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$out = foreach ($sample in $samples) {
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($sample, [ref] $tokens, [ref] $errors)
+    if ($errors.Count -gt 0) { , @("error: $($errors[0].Message)") }
+    else { , @($ast.FindAll({ $true }, $true) | ForEach-Object { $_.GetType().Name } | Sort-Object -Unique) }
+}
+ConvertTo-Json -InputObject @($out) -Depth 4 -Compress
+"""
+NODE_TYPES = r"""
+$language = [System.Management.Automation.Language.Ast]
+$language.Assembly.GetTypes() |
+    Where-Object { $_.IsPublic -and -not $_.IsAbstract -and $_.IsSubclassOf($language) } |
+    ForEach-Object Name | Sort-Object | ConvertTo-Json -Compress
+"""
+# A command PowerShell's parser makes each node type from.
+NODE_SAMPLES = {
+    "ScriptBlockAst": "Get-Date",
+    "NamedBlockAst": "Get-Date",
+    "PipelineAst": "Get-Date | Out-String",
+    "PipelineChainAst": "Get-Date && Get-Date",
+    "CommandAst": "Get-Date",
+    "CommandParameterAst": "Get-ChildItem -Force",
+    "CommandExpressionAst": "'text'",
+    "StringConstantExpressionAst": "Get-Item 'x'",
+    "ConstantExpressionAst": "Start-Sleep 1",
+    "ExpandableStringExpressionAst": 'Write-Output "x$y"',
+    "FileRedirectionAst": "Get-Date > out.txt",
+    "MergingRedirectionAst": "Get-Date 2>&1",
+    "VariableExpressionAst": "Write-Output $x",
+    "ParenExpressionAst": "Write-Output (1)",
+    "SubExpressionAst": "Write-Output $(1)",
+    "ArrayExpressionAst": "Write-Output @(1)",
+    "ArrayLiteralAst": "Write-Output 1,2",
+    "HashtableAst": "Write-Output @{a=1}",
+    "BinaryExpressionAst": "1 + 1",
+    "UnaryExpressionAst": "-not 1",
+    "TernaryExpressionAst": "$true ? 1 : 2",
+    "IndexExpressionAst": "$a[0]",
+    "ConvertExpressionAst": "[int]'1'",
+    "TypeExpressionAst": "[int]",
+    "AttributedExpressionAst": "[ValidateNotNull()]$x = 1",
+    "UsingExpressionAst": "Write-Output $using:x",
+    "MemberExpressionAst": "$x.Length",
+    "InvokeMemberExpressionAst": "$x.ToString()",
+    "BaseCtorInvokeMemberExpressionAst": "",
+    "ScriptBlockExpressionAst": "Write-Output { 1 }",
+    "AssignmentStatementAst": "$x = 1",
+    "FunctionDefinitionAst": "function f { 1 }",
+    "TypeDefinitionAst": "class C { }",
+    "FunctionMemberAst": "class C { [void] M() { } }",
+    "PropertyMemberAst": "class C { [int] $p }",
+    "ConfigurationDefinitionAst": "Configuration C { }",
+    "DynamicKeywordStatementAst": "",
+    "UsingStatementAst": "using namespace System",
+    "ParamBlockAst": "param($x)",
+    "ParameterAst": "param($x)",
+    "AttributeAst": "param([Parameter()] $x)",
+    "NamedAttributeArgumentAst": "param([Parameter(Mandatory)] $x)",
+    "TypeConstraintAst": "param([int] $x)",
+    "IfStatementAst": "if ($true) { }",
+    "SwitchStatementAst": "switch (1) { 1 { } }",
+    "ForStatementAst": "for (;;) { break }",
+    "ForEachStatementAst": "foreach ($x in 1) { }",
+    "WhileStatementAst": "while ($false) { }",
+    "DoWhileStatementAst": "do { } while ($false)",
+    "DoUntilStatementAst": "do { } until ($true)",
+    "TryStatementAst": "try { } catch { }",
+    "CatchClauseAst": "try { } catch { }",
+    "TrapStatementAst": "trap { }",
+    "DataStatementAst": "data { 'x' }",
+    "BlockStatementAst": "",
+    "StatementBlockAst": "if ($true) { }",
+    "BreakStatementAst": "break",
+    "ContinueStatementAst": "continue",
+    "ReturnStatementAst": "return",
+    "ExitStatementAst": "exit",
+    "ThrowStatementAst": "throw 'x'",
+    "ErrorStatementAst": "",
+    "ErrorExpressionAst": "",
+}
+# The types no sample here makes, and why each is refused all the same: the reader refuses every type
+# POWERSHELL_UNDERSTOOD does not name, which the generic row below holds.
+UNSAMPLED = {
+    "BaseCtorInvokeMemberExpressionAst": "made for a class constructor's call to its base, which a tree search does "
+    "not reach; the class around it is a TypeDefinitionAst, refused",
+    "DynamicKeywordStatementAst": "made only for a keyword a DSC resource module defines",
+    "BlockStatementAst": "made only for a workflow's parallel or sequence block, which PowerShell 7 refuses to parse",
+    "ErrorStatementAst": "made only for text PowerShell cannot parse, which runs nothing",
+    "ErrorExpressionAst": "made only for text PowerShell cannot parse, which runs nothing",
+}
 
-class StandardInputTests(unittest.TestCase):
-    """The pwsh forms that read a script from standard input, judged without starting pwsh."""
 
-    def test_pwsh_reads_its_input_only_without_an_inline_command_a_file_or_an_encoded_command(self) -> None:
-        for arguments, expected in (
-            ([], True),
-            (["-NoProfile", "-NonInteractive"], True),
-            (["-Command", "-"], True),
-            (["-c", "Get-Date"], False),
-            (["-File", "-"], True),
-            (["-fi", "-"], True),
-            # A file named like a switch is still a file, under any spelling of -File.
-            (["-File", "-NoProfile"], False),
-            (["-FILE", "-NoProfile"], False),
-            (["-f", "-NoProfile"], False),
-            (["-cwa", "Get-Date"], False),
-            (["-EncodedCommand"], False),
-            (["-ENCODEDCOMMAND"], False),
-            (["-ec"], False),
-            (["-EC"], False),
-            (["-e"], False),
-            (["-enc"], False),
-            (["build.ps1"], False),
-            # A switch that takes no value is one word, and the word after it is read on its own.
-            (["-NoProfile", "build.ps1"], False),
-            (["-NoProfile", "-Command", "-"], True),
-            (["-NoProfile", "-File", "-"], True),
-            (["-ExecutionPolicy", "Bypass"], True),
-            (["-ex", "Bypass", "build.ps1"], False),
-            ([None], True),
+def pwsh(script: str, stdin: str = "") -> str:
+    found = platform_support.find_pwsh("")
+    if found is None:
+        found = platform_support.find_pwsh(__import__("os").environ.get("PATH", ""))
+    if found is None:
+        raise AssertionError("pwsh is not installed, and PowerShell lists the catalogue the guard is held to")
+    result = subprocess.run(
+        [found, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return result.stdout
+
+
+def understood() -> set[str]:
+    return set(hub_guard.POWERSHELL_UNDERSTOOD)
+
+
+def refused() -> set[str]:
+    return {entry.removeprefix("PowerShell ") for entry in hub_guard.NOT_READ if entry.startswith("PowerShell ")}
+
+
+class NodeCatalogueTests(unittest.TestCase):
+    def test_every_node_type_powershell_has_is_understood_or_not_read_and_never_both(self) -> None:
+        types = set(json.loads(pwsh(NODE_TYPES)))
+        self.assertTrue(types)
+        self.assertEqual(set(), understood() & refused())
+        self.assertEqual(set(), types - understood() - refused())
+        self.assertEqual(understood() | refused(), set(NODE_SAMPLES))
+
+    def test_each_sample_makes_its_type_and_the_reader_decides_it_by_its_table(self) -> None:
+        sampled = {name: sample for name, sample in NODE_SAMPLES.items() if name not in UNSAMPLED}
+        self.assertEqual(set(), {name for name, sample in NODE_SAMPLES.items() if not sample} - set(UNSAMPLED))
+        results = json.loads(pwsh(PARSE_SAMPLES, json.dumps(list(sampled.values()))))
+        for (name, sample), nodes in zip(sampled.items(), results, strict=True):
+            with self.subTest(type=name, sample=sample):
+                self.assertIn(name, nodes)
+                reading = hub_guard.Reading({}, sample)
+                self.read(reading, nodes)
+                if name in refused():
+                    self.assertIn(hub_guard.NOT_READ[f"PowerShell {name}"], " ".join(reading.unread))
+
+    def test_a_node_type_neither_table_names_is_not_read(self) -> None:
+        reading = hub_guard.Reading({}, "x")
+        self.read(reading, ["ScriptBlockAst", "SomeNewAst"])
+        self.assertEqual(["SomeNewAst: a node type the guard does not know"], reading.unread)
+
+    def read(self, reading: hub_guard.Reading, nodes: list[str]) -> None:
+        """The reader's decision on a tree of these node types, with no statement it could place."""
+        output = json.dumps({"nodes": nodes, "commands": [], "statements": None}).encode("utf-8")
+        with (
+            mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+            mock.patch.object(hub_guard, "run_bounded", return_value=Finished(0, output, b"")),
         ):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(expected, hub_guard.powershell_reads_input(list(arguments)))
-
-    def test_pwsh_parameters_that_take_a_value_by_name_shortest_form_and_alias(self) -> None:
-        for word, expected in (
-            ("-ConfigurationFile", True),
-            ("-ConfigurationName", True),
-            ("-config", True),
-            ("-conf", False),
-            ("-CustomPipeName", True),
-            ("-custom", False),
-            ("-ExecutionPolicy", True),
-            ("-ex", True),
-            ("-ep", True),
-            ("-InputFormat", True),
-            ("-inp", True),
-            ("-if", True),
-            ("-in", False),
-            ("-OutputFormat", True),
-            ("-o", True),
-            ("-of", True),
-            ("-SettingsFile", True),
-            ("-settings", True),
-            ("-set", False),
-            ("-WindowStyle", True),
-            ("-w", True),
-            ("-WorkingDirectory", True),
-            ("-wd", True),
-            ("-NoProfile", False),
-        ):
-            with self.subTest(word=word):
-                self.assertEqual(expected, hub_guard.powershell_takes_value(word))
+            hub_guard.read_powershell(reading.text, Path.cwd(), reading)
 
 
-class SpellingTests(unittest.TestCase):
-    """Every spelling pwsh takes for a parameter: a leading hyphen, en dash, em dash, or horizontal bar, that dash
-    doubled, white space around the word, and a leading slash, on every platform."""
-
-    def test_pwsh_inline_script_parameters_in_every_spelling(self) -> None:
-        for word, expected in (
-            ("-c", "command"),
-            ("-Command", "command"),
-            ("-COMMAND", "command"),
-            ("-co", "command"),
-            ("--c", "command"),
-            ("--command", "command"),
-            ("--Command", "command"),
-            ("\u2013c", "command"),
-            ("\u2014command", "command"),
-            ("\u2015co", "command"),
-            ("\u2013\u2013c", "command"),
-            ("\u2014\u2014command", "command"),
-            (" -c ", "command"),
-            ("\t--command\n", "command"),
-            ("\u3000-c", "command"),
-            ("-cwa", "commandwithargs"),
-            ("-commandw", "commandwithargs"),
-            ("--cwa", "commandwithargs"),
-            ("--CommandWithArgs", "commandwithargs"),
-            ("\u2013cwa", "commandwithargs"),
-            ("/c", "command"),
-            ("/Command", "command"),
-            (" /c", "command"),
-            ("/cwa", "commandwithargs"),
-            ("/CommandWithArgs", "commandwithargs"),
-            ("---c", None),
-            ("-\u2013c", None),
-            ("\u2013-c", None),
-            ("//c", None),
-            ("/-c", None),
-            ("-/c", None),
-            ("-commandx", None),
-            ("-cw", None),
-            ("c", None),
-            ("", None),
-            ("-", None),
-            ("--", None),
-            ("/", None),
-            ("Xc", None),
-            (None, None),
-        ):
-            with self.subTest(word=word):
-                self.assertEqual(expected, hub_guard.powershell_inline(word))
-
-    def test_pwsh_script_is_read_after_every_spelling_of_its_parameter(self) -> None:
-        for arguments, expected in (
-            (["--command", "Get-Date", "-Format", "o"], ["Get-Date", "-Format", "o"]),
-            (["\u2014c", "Get-Date"], ["Get-Date"]),
-            (["-NoProfile", "--cwa", "Get-Date", "one"], ["Get-Date"]),
-            (["/Command", "Get-Date"], ["Get-Date"]),
-            (["/cwa", "Get-Date", "one"], ["Get-Date"]),
-            (["---c", "Get-Date"], None),
-            ([None, "-c", "Get-Date"], ["Get-Date"]),
-            (["build.ps1"], None),
-        ):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(expected, hub_guard.powershell_script(list(arguments)))
-
-    def test_pwsh_reads_its_input_by_every_spelling_and_after_a_lone_dash(self) -> None:
-        for arguments, expected in (
-            (["--command", "-"], True),
-            (["--command", "Get-Date"], False),
-            # The inline script is the words after -Command, and the one after -CommandWithArgs, whatever they say.
-            (["-c", "-NoProfile"], False),
-            (["-cwa", "-"], False),
-            (["Xc"], False),
-            (["\u2013\u2013file", "-"], True),
-            (["--file", "build.ps1"], False),
-            (["--ec"], False),
-            (["\u2014cwa", "Get-Date"], False),
-            (["--ex", "Bypass"], True),
-            (["\u2013wd", "C:/", "-c", "-"], True),
-            ([" -c ", "-"], True),
-            (["/c", "-"], True),
-            (["/f", "-"], True),
-            (["/ec"], False),
-            (["/NoProfile"], True),
-            (["/ex", "Bypass", "-c", "Get-Date"], False),
-            # A lone dash reads standard input whatever follows it.
-            (["-"], True),
-            (["-", "-c", "Get-Date"], True),
-            (["-NoProfile", "-", "build.ps1"], True),
-            (["--"], True),
-            # An empty word is a script file's name, which pwsh cannot find.
-            (["", "-c", "-"], False),
-            # A word after a slash that names no parameter, such as an absolute path, is not settled.
-            (["/scripts/build.ps1"], True),
-        ):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(expected, hub_guard.powershell_reads_input(list(arguments)))
-
-    def test_pwsh_parameters_that_take_a_value_in_every_spelling(self) -> None:
-        for word, expected in (
-            ("--ExecutionPolicy", True),
-            ("\u2013ep", True),
-            ("\u2015\u2015wd", True),
-            (" -o ", True),
-            ("/ex", True),
-            ("/WorkingDirectory", True),
-            ("---ex", False),
-            ("ex", False),
-        ):
-            with self.subTest(word=word):
-                self.assertEqual(expected, hub_guard.powershell_takes_value(word))
-
-
-class WorkingDirectoryTests(unittest.TestCase):
-    """pwsh starts in the last -WorkingDirectory it is given, a leading ~ read as home, as Set-Location reads it."""
-
-    def test_the_last_working_directory_counts_and_a_leading_tilde_is_home(self) -> None:
-        start, home = Path("start").absolute(), Path("home").absolute()
-        with mock.patch.object(Path, "home", return_value=home):
-            for arguments, expected in (
-                (["-c", "x"], start),
-                (["-wd", "inner", "-c", "x"], start / "inner"),
-                (["-wd", "~", "-c", "x"], home),
-                (["-wd", "~/hub", "-c", "x"], home / "hub"),
-                (["-wd", "~\\hub", "-c", "x"], home / "hub"),
-                (["-wd", "~hub", "-c", "x"], start / "~hub"),
-                (["-wd", "one", "-wd", "two", "-c", "x"], start / "two"),
-                (["-wd", "~/hub", "-WorkingDirectory", "two", "-c", "x"], start / "two"),
-                (["-wd", "two", "-wd", "~/hub", "-c", "x"], home / "hub"),
-                (["-wd", "one", None, "-wd", "two", "-c", "x"], None),
-                (["-wd", "one", "-c", "x", "-wd", "two"], start / "one"),
-                (["-wd", "one", "-wd"], None),
-            ):
-                with self.subTest(arguments=arguments):
-                    self.assertEqual(expected, hub_guard.powershell_directory(list(arguments), start))
-
-
-class DefinitionTests(unittest.TestCase):
-    """The names a PowerShell command defines for a later word: aliases and functions, at a path on their drive or
-    provider, and functions under a scope."""
-
-    def test_a_path_on_the_alias_or_function_drive_or_provider_is_known_by_each_spelling(self) -> None:
-        for path, expected in (
-            ("alias:g", "alias"),
-            ("Alias:g", "alias"),
-            ("alias:", "alias"),
-            ("Alias::g", "alias"),
-            ("\\Alias::g", "alias"),
-            ("Microsoft.PowerShell.Core\\Alias::g", "alias"),
-            ("function:f", "function"),
-            ("Function::f", "function"),
-            ("microsoft.powershell.core\\function::f", "function"),
-            ("function:global:f", "function"),
-            ("env:GIT_DIR", None),
-            ("variable:x", None),
-            ("aliases:g", None),
-            ("C:\\alias:g", None),
-            ("Other\\Alias::g", None),
-        ):
-            with self.subTest(path=path):
-                self.assertEqual(expected, hub_guard.definition_drive(path))
-
-    def test_each_command_that_writes_a_definition_drive_is_known_by_each_of_its_names(self) -> None:
-        writers: tuple[str, ...] = ("set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi")
-        writers += (
-            "rename-item",
-            "ren",
-            "rni",
-            "set-content",
-            "sc",
-            "add-content",
-            "ac",
-            "move-item",
-            "mi",
-            "move",
-            "mv",
+class CommandNameTests(unittest.TestCase):
+    def test_each_alias_the_table_gives_a_cmdlet_is_the_one_powershell_gives_it(self) -> None:
+        aliases = [name for name, cmdlet in hub_guard.POWERSHELL_COMMANDS.items() if name != cmdlet]
+        script = (
+            "$names = [Console]::In.ReadToEnd() | ConvertFrom-Json; "
+            "ConvertTo-Json -Compress -InputObject @(foreach ($name in $names) { "
+            "$alias = Get-Alias -Name $name -ErrorAction SilentlyContinue; "
+            "if ($null -eq $alias) { '' } else { $alias.Definition } })"
         )
-        for name in writers:
-            for drive, path in (("alias", "Alias::g"), ("function", "function:f")):
-                with self.subTest(name=name, drive=drive):
-                    self.assertTrue(hub_guard.writes_definition_drive(name, [path, "git"], drive))
-                    self.assertFalse(hub_guard.writes_definition_drive(name, [path, "git"], "other"))
-                    self.assertFalse(hub_guard.writes_definition_drive(name, ["a.txt", None], drive))
-                    # A path the cmdlet takes from its pipeline may be on either drive; another piped parameter names
-                    # no item it writes.
-                    for piped in ({"path"}, {"literalpath"}, {"destination"}, {"value", "path"}):
-                        self.assertTrue(hub_guard.writes_definition_drive(name, ["-Value", "x"], drive, piped))
-                    self.assertFalse(hub_guard.writes_definition_drive(name, ["-Value", "x"], drive, {"value"}))
-        self.assertFalse(hub_guard.writes_definition_drive("get-item", ["function:f"], "function"))
-        self.assertFalse(hub_guard.writes_definition_drive("get-item", [], "function", {"path"}))
-        self.assertTrue(hub_guard.defines_powershell_alias("si", [], {"path"}))
-        self.assertTrue(hub_guard.defines_powershell_alias("sc", ["alias:g", "git"]))
-        self.assertFalse(hub_guard.defines_powershell_alias("sc", ["function:g", "git"]))
-
-    def test_a_drive_on_the_alias_or_function_provider_is_known_unless_another_provider_is_named(self) -> None:
-        cases: tuple[tuple[list[hub_guard.Word] | None, bool], ...] = (
-            (["Alias"], True),
-            (["function"], True),
-            (["Microsoft.PowerShell.Core\\Alias"], True),
-            ([None], True),
-            (None, True),
-            (["FileSystem"], False),
-            (["Environment"], False),
-            (["Aliases"], False),
-        )
-        for providers, expected in cases:
-            with self.subTest(providers=providers):
-                self.assertEqual(expected, hub_guard.definition_provider(providers))
-
-    def test_the_reader_pwsh_is_handed_fits_a_windows_command_line_with_every_line_that_runs(self) -> None:
-        source = hub_guard.POWERSHELL_READER.read_text(encoding="utf-8")
-        handed = hub_guard.powershell_reader()
-        # A here-string could hold a line that begins with #, which the comment lines' removal would take out.
-        self.assertNotIn("@'", source)
-        self.assertNotIn('@"', source)
-        code = [line for line in source.splitlines() if line.strip() and not line.lstrip().startswith("#")]
-        self.assertEqual(code, [line for line in handed.splitlines() if line.strip()])
-        # Windows starts no command line longer than 32767 characters; the rest of pwsh's is far under 2048.
-        self.assertLess(len(handed), 32767 - 2048)
-
-    def test_a_function_is_named_without_its_scope(self) -> None:
-        for name, expected in (
-            ("f", "f"),
-            ("F", "f"),
-            ("global:f", "f"),
-            ("Script:F", "f"),
-            ("local:f", "f"),
-            ("private:f", "f"),
-            ("using:f", "using:f"),
-            ("global:global:f", "global:f"),
-        ):
-            with self.subTest(name=name):
-                self.assertEqual(expected, hub_guard.function_name(name))
-
-
-# A call that sets an environment variable beyond the process, in the user's or the machine's environment, which
-# outlives the test: a target named User or Machine, or numbered 1 or 2, in any of the spellings PowerShell converts,
-# in the call or in a table of targets the call takes.
-PERSISTENT_TARGET = re.compile(
-    r"SetEnvironmentVariable\([^()]*,[^()]*,\s*(?:\[[\w.]*EnvironmentVariableTarget\](?:::)?)?['\"]?(?:User|Machine|1|2)\b"
-    r"|EnvironmentVariableTarget\]::(?:User|Machine)\b"
-    # A target a table of targets substitutes into the call, as a Python string holding a PowerShell string.
-    r"|[\"']'(?:User|Machine)'[\"']",
-    re.IGNORECASE,
-)
-# The suites that run PowerShell code, rather than hand it to the guard's reader, which only parses it.
-RUNS_POWERSHELL = (Path(__file__).with_name("test_hub_guard_shells.py"),)
-
-
-def persistent_targets(source: str) -> list[str]:
-    """Each line of a suite's source that may set a variable in the user's or the machine's environment."""
-    return [line.strip() for line in source.splitlines() if PERSISTENT_TARGET.search(line)]
-
-
-class PersistentTargetTests(unittest.TestCase):
-    """A suite that runs PowerShell sets an environment variable only in its own process, never in the user's or the
-    machine's environment, which would outlive the test and reach every later process on the machine."""
-
-    def test_no_suite_that_runs_powershell_sets_a_variable_beyond_its_process(self) -> None:
-        for path in RUNS_POWERSHELL:
-            with self.subTest(path=path.name):
-                self.assertEqual([], persistent_targets(path.read_text(encoding="utf-8")))
-
-    def test_a_persistent_target_is_found_in_each_spelling(self) -> None:
-        for line in (
-            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', 'User')",
-            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', \"machine\")",
-            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', 1)",
-            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', [EnvironmentVariableTarget]'2')",
-            "for target in (\"'0'\", \"'User'\")",
-            "[System.EnvironmentVariableTarget]::Machine",
-        ):
-            with self.subTest(line=line):
-                self.assertEqual([line], persistent_targets(line))
-        for line in (
-            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', 'Process')",
-            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', 'after', '0')",
-            "[Environment]::SetEnvironmentVariable('BASH_FUNC_f%%', '() { BODY; }')",
-        ):
-            with self.subTest(line=line):
-                self.assertEqual([], persistent_targets(line))
+        resolved = json.loads(pwsh(script, json.dumps(aliases)))
+        for name, definition in zip(aliases, resolved, strict=True):
+            with self.subTest(alias=name):
+                if definition:
+                    self.assertEqual(hub_guard.POWERSHELL_COMMANDS[name], definition.lower())
+                else:
+                    # Where PowerShell gives the name no alias, as ls and cat on Linux, it runs the program, one the
+                    # guard reads as harmless either way: mkdir is a function on Windows, and write on Linux is the
+                    # program that writes to another user's terminal.
+                    self.assertIn(name, {*hub_guard.PROGRAMS, "mkdir", "write"})

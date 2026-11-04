@@ -88,6 +88,22 @@ def hub_guard_matcher_problems(settings: dict[str, object]) -> list[str]:
     ]
 
 
+def hub_guard_failure_problems(settings: dict[str, object]) -> list[str]:
+    """Report each hook that runs tools/hub_guard.py without onFailure: block, under which Claude Code would let a
+    command run unseen when the hook times out, cannot start, or fails."""
+    hooks = settings.get("hooks")
+    groups = hooks.get("PreToolUse", []) if isinstance(hooks, dict) else []
+    return [
+        f"the hub guard's hook declares onFailure {hook.get('onFailure')!r}, not 'block'"
+        for group in groups
+        if isinstance(group, dict)
+        for hook in group.get("hooks", [])
+        if isinstance(hook, dict)
+        and re.search(r"tools/hub_guard\.py\"?$", str(hook.get("command", "")))
+        and hook.get("onFailure") != "block"
+    ]
+
+
 class RepositoryHygienePolicies(unittest.TestCase):
     def test_tracked_claude_settings_hold_schema_hooks_and_no_attribution_only(self) -> None:
         # Permissions and every other setting stay in each developer's user or local settings.
@@ -99,6 +115,11 @@ class RepositoryHygienePolicies(unittest.TestCase):
         # A tool missing from the matcher is never shown to the guard, so the hub is open through it.
         settings = json_reader.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual([], hub_guard_matcher_problems(settings))
+
+    def test_hub_guard_hook_blocks_a_command_when_it_fails(self) -> None:
+        # A hook that times out or fails would otherwise let the command run unseen.
+        settings = json_reader.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual([], hub_guard_failure_problems(settings))
 
     def test_repository_has_no_private_machine_or_organization_references(self) -> None:
         self.assertEqual([], private_references(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

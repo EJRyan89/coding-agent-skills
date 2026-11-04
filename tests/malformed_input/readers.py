@@ -93,6 +93,7 @@ PENDING: dict[str, int] = {
     (
         "repository_hygiene.RepositoryHygienePolicies.test_hub_guard_hook_sees_every_tool_that_edits_files_or_runs_git"
     ): 2345,
+    "repository_hygiene.RepositoryHygienePolicies.test_hub_guard_hook_blocks_a_command_when_it_fails": 2345,
     "shell_targets.interpreter_problems": 2345,
     "skill_grants.root_option_problems": 2345,
     "skill_layout.deploy_variable_problems": 2345,
