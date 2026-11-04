@@ -372,7 +372,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   variable the session does not hold is unsettled too. A cmdlet that writes, removes, or renames a variable at a
   path or name the text does not settle may reach any variable, so every one is unsettled after it, as after Bash's
   `export "$v"=x` or `unset "$v"`; a path whose last part is literal text, as in `"$dir\out.txt"`, can name only the
-  variable that part names, so it is passed over when git does not read that one. A command after the programs
+  variable that part names, so it is passed over when git does not read that one, nor a bash it starts takes a
+  setting from (`SHELLOPTS`, `BASHOPTS`, `POSIXLY_CORRECT`, `BASH_COMPAT`, or `PS4`). A command after the programs
   `env`, `nohup`, `nice`, `timeout`, `stdbuf`, `time`, `sudo`, and `doas` is read as in Bash, as the command it
   starts. A location
   set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed
@@ -429,12 +430,19 @@ refused while a guarded hub is in view, and what they do not see at all is named
   turn: an expansion or variable whose value the text does not settle, a substitution's output, or a `${ }` other than
   a plain name. A number the text does not settle is read as a number: a `for` loop's variable over words that are each
   a literal integer, `$#`, `$?`, `$$`, `$!`, a length (`${#NAME}`, `${#NAME[@]}`), and `RANDOM`, `SECONDS`, `LINENO`,
-  `BASHPID`, `PPID`, `UID`, and `EUID` while the text neither assigns nor unsets them. Each stands for itself only as
-  a whole operand: joined to a name, as in `x$i` or `x$#`, it makes a name the text does not settle. A loop's number
-  is its variable's first element alone, so a subscripted read of it, as `i[1]`, is unsettled, and making it a name
-  reference or undoing one ends it. The variables Bash sets itself from what a command is given, reads, or matches,
-  `_`, `OPTARG`, `BASH_REMATCH`, `REPLY`, `MAPFILE`, and the like, are unsettled. A compound array assignment's
-  element subscripts, as in `a=([k]=v)`, are arithmetic too. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
+  `BASHPID`, `PPID`, `UID`, and `EUID` while the text neither assigns nor unsets them. Once Bash has removed quotes
+  and backslash-newlines, an expansion stands for its value only as a whole operand: beside a name or another
+  expansion, as in `x$i`, `x"$#"`, `${w}$i`, or `x$((i))`, it makes a name the text does not settle, and any other
+  backslash is not read. A loop's number is its variable's first element alone, so a subscripted read of it, as
+  `i[1]`, is unsettled, and making it a name reference or undoing one ends it. Every variable Bash sets itself
+  (`BASH_SET_VARIABLES` in `tools/hub_guard.py`, held to what `compgen -v` lists in a bash started with no
+  environment) is unsettled, `SHELLOPTS`, `BASHOPTS`, `DIRSTACK`, `_`, `OPTARG`, `BASH_REMATCH`, and `REPLY` among
+  them, but for those that always hold a number while the text leaves them alone, such as `OPTIND`, `PIPESTATUS`,
+  and `RANDOM`; a name Bash does not set is unset until the text assigns it. A compound array assignment's element
+  subscripts, as in `a=([k]=v)`, are arithmetic too, and so is the subscript of each operand a builtin takes as an
+  array reference, quoted or escaped, as `unset 'a[k]'`, `printf -v 'a[k]'`, or `declare -a "a=([k]=v)"` give it.
+  An associative array's keys are no arithmetic, but the guard reads them as if they were, so `declare -A m=([$k]=v)`
+  with `$k` unsettled is refused all the same. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
   which each assignment to it is arithmetic. A command that only names either variable, as
   `git log -S POSIXLY_CORRECT` does, is read as before. Each table names each option Bash lists and whether a shell
   holding it is one the guard reads: the guard follows allexport, reads a shell under an option that changes nothing

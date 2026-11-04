@@ -256,6 +256,8 @@ BASH_LONG_OPTIONS = {
 # assigned or that its environment hands one: POSIXLY_CORRECT turns on POSIX mode, whatever its value, and BASH_COMPAT
 # an earlier Bash's behavior. Bash reads each by its exact name.
 OPTION_SETTING_VARIABLES = {"POSIXLY_CORRECT": "posix", "BASH_COMPAT": "an earlier Bash's behavior"}
+# Each variable a bash takes a setting from as it starts, by a name in any case where the starter folds names.
+SHELL_SETTING_VARIABLES = {*SHELL_OPTION_VARIABLES, *OPTION_SETTING_VARIABLES, "PS4"}
 # An arithmetic expression's assignment to one of them, by =, an operator before =, ++, or --, as `(( ))`, `$(( ))`,
 # `let`, and an arithmetic for's header write it; arithmetic assigns a number, which turns either on all the same.
 ARITHMETIC_OPTION_ASSIGNMENT = re.compile(
@@ -1668,6 +1670,9 @@ class BashReader:
         # let evaluates each operand, and [[ ]] each operand of an arithmetic comparison.
         if words and words[0].literal == "let":
             self.note_arithmetic((unquoted(word.raw) for word in words[1:]), shell)
+        # A builtin that takes an operand as an array reference evaluates its subscript, whatever quotes it.
+        if words and words[0].literal in ARRAY_REFERENCE_BUILTINS:
+            self.note_arithmetic((each for word in words[1:] for each in array_reference_contexts(word.raw)), shell)
         if words and words[0].literal == "[[":
             operands = [
                 unquoted(words[index + step].raw)
@@ -2491,13 +2496,29 @@ ARITHMETIC_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][
 NUMERIC_EXPANSION = re.compile(r"\$[#?$!]|\$\{[#?$!]\}|\$\{#[A-Za-z_][A-Za-z0-9_]*(?:\[[@*]\])?\}")
 INTEGER = re.compile(r"\s*[-+]?[0-9]+\s*")
 INTEGER_WORD = re.compile(r"[-+]?[0-9]+")
-NAME_CHARACTER = re.compile(r"[A-Za-z0-9_]")
-# The variables Bash sets itself from what a command is given, reads, matches, or runs, whatever the text assigns:
-# the last argument, getopts's value, a [[ =~ ]] match, read's and select's line, mapfile's lines, the command a trap
-# runs, the arguments, the function and file names, a coprocess, and the directories.
+# The variables Bash sets itself, as it starts or as a command runs, which arithmetic reads as the text does not
+# settle them: each `env -i bash -c 'compgen -v'` lists, held to Bash by ShellOptionSpellingTests, and each a command
+# sets as it runs, getopts's, read's, select's, mapfile's, a [[ =~ ]] match's, a coprocess's, cd's, a function's, a
+# trap's, completion's, and an interactive shell's. Arithmetic reads a name Bash does not set as unset until the text
+# assigns it.
 BASH_SET_VARIABLES = {
-    *("_", "OPTARG", "BASH_REMATCH", "REPLY", "MAPFILE", "BASH_COMMAND", "BASH_EXECUTION_STRING"),
-    *("BASH_ARGV", "BASH_ARGV0", "BASH_SOURCE", "FUNCNAME", "COPROC", "PWD", "OLDPWD"),
+    *("_", "BASH", "BASHOPTS", "BASHPID", "BASH_ALIASES", "BASH_ARGC", "BASH_ARGV", "BASH_ARGV0", "BASH_CMDS"),
+    *("BASH_COMMAND", "BASH_EXECUTION_STRING", "BASH_LINENO", "BASH_LOADABLES_PATH", "BASH_MONOSECONDS"),
+    *("BASH_REMATCH", "BASH_SOURCE", "BASH_SUBSHELL", "BASH_TRAPSIG", "BASH_VERSINFO", "BASH_VERSION"),
+    *("COLUMNS", "COMP_CWORD", "COMP_KEY", "COMP_LINE", "COMP_POINT", "COMP_TYPE", "COMP_WORDBREAKS", "COMP_WORDS"),
+    *("COMPREPLY", "COPROC", "COPROC_PID", "DIRSTACK", "EPOCHREALTIME", "EPOCHSECONDS", "EUID", "FUNCNAME"),
+    *("GROUPS", "HISTCMD", "HISTFILE", "HISTFILESIZE", "HISTSIZE", "HOSTNAME", "HOSTTYPE", "IFS", "LINENO", "LINES"),
+    *("MACHTYPE", "MAILCHECK", "MAPFILE", "OLDPWD", "OPTARG", "OPTERR", "OPTIND", "OSTYPE", "PATH", "PIPESTATUS"),
+    *("PPID", "PS1", "PS2", "PS4", "PWD", "RANDOM", "READLINE_ARGUMENT", "READLINE_LINE", "READLINE_MARK"),
+    *("READLINE_POINT", "REPLY", "SECONDS", "SHELL", "SHELLOPTS", "SHLVL", "SRANDOM", "TERM", "UID"),
+    # Git Bash's own, from the MSYS runtime.
+    *("MSYSTEM", "SYSTEMROOT", "WINDIR"),
+}
+# Of them, those that always hold a number while the text leaves them alone.
+BASH_NUMERIC_VARIABLES = {
+    *("OPTIND", "BASH_ARGC", "BASH_LINENO", "HISTCMD", "GROUPS", "PIPESTATUS", "BASH_SUBSHELL", "SECONDS", "LINENO"),
+    *("RANDOM", "SRANDOM", "EPOCHSECONDS", "BASH_MONOSECONDS", "BASHPID", "PPID", "UID", "EUID", "COLUMNS", "LINES"),
+    "COPROC_PID",
 }
 # How deep arithmetic follows a variable whose value is itself an expression, which Bash evaluates in turn.
 ARITHMETIC_DEPTH = 8
@@ -2554,7 +2575,8 @@ def arithmetic_contexts(raw: str) -> list[str | None]:
     """The text of each arithmetic expression a word's raw text holds, where Bash evaluates it as it expands the word:
     each $(( )) and $[ ], each subscript of a ${NAME[...]}, each offset and length of a ${NAME:offset:length}, and the
     subscript of an assignment to an element, NAME[...]=, at the word's start; None for one that does not close.
-    Nothing inside single quotes expands."""
+    Nothing inside single quotes expands, and a backslash-newline is gone before Bash reads the word."""
+    raw = raw.replace("\\\n", "")
     found: list[str | None] = []
     head = re.match(r"[A-Za-z_][A-Za-z0-9_]*\[", raw)
     if head is not None:
@@ -2588,6 +2610,29 @@ def arithmetic_contexts(raw: str) -> list[str | None]:
         else:
             index += 1
     return found
+
+
+def array_reference_contexts(raw: str) -> list[str | None]:
+    """The subscripts of an operand a builtin takes as an array reference, as its text is once Bash removes quotes and
+    backslashes: NAME[...] to unset, read, printf -v, wait -p, mapfile, or a declaration, and a declaration's compound
+    value, NAME=(...), quoted or escaped, as `declare -a "a=([k]=v)"` or `declare -a a=\\([k]=v\\)` give it."""
+    text = re.sub(r"\\(.)", r"\1", raw.replace("\\\n", ""), flags=re.DOTALL).replace('"', "").replace("'", "")
+    found: list[str | None] = []
+    head = re.match(r"[A-Za-z_][A-Za-z0-9_]*\[", text)
+    if head is not None:
+        end = matching(text, head.end() - 1)
+        found.append(None if end is None else text[head.end() : end])
+    compound = re.match(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(", text)
+    if compound is not None:
+        found.extend(compound_subscripts(text[compound.end() :]))
+    return found
+
+
+# The builtins that take an operand as an array reference, NAME[subscript], or a declaration's compound value.
+ARRAY_REFERENCE_BUILTINS = {
+    *("unset", "read", "printf", "wait", "mapfile", "readarray"),
+    *("declare", "typeset", "local", "export", "readonly"),
+}
 
 
 def compound_subscripts(elements: str) -> list[str | None]:
@@ -2627,20 +2672,22 @@ def arithmetic_hazard(expression: str | None, shell: Shell, depth: int = 0) -> s
     a variable whose value is an expression that does, followed to ARITHMETIC_DEPTH."""
     if expression is None or depth > ARITHMETIC_DEPTH:
         return "an arithmetic expression the guard does not read to its end"
-    text = expression.replace("$((", "((").replace("$[", "[")
-    # A number the text does not settle stands for itself only as a whole operand: joined to a name, as in x$#, it
-    # makes a name the text does not settle either.
-    text = NUMERIC_EXPANSION.sub(lambda match: "\0" if joins_name(match) else "0", text)
+    # Quotes and a backslash-newline are gone before Bash evaluates the text; any other backslash is not read.
+    text = expression.replace("\\\n", "").replace('"', "").replace("'", "")
+    if "\\" in text:
+        return "an arithmetic expression that holds a backslash"
+    # An expansion stands for its value only as a whole operand: beside a name or another expansion, as x$i, x"$#",
+    # ${w}$i, or x$((i)) make, it joins them into a name the text does not settle.
+    if any(expansion_joins(text, index) for index, character in enumerate(text) if character == "$"):
+        return "an arithmetic expression whose expansion joins a name or another expansion"
+    text = NUMERIC_EXPANSION.sub("0", text.replace("$((", "((").replace("$[", "["))
     if "`" in text or "$(" in text:
         return "an arithmetic expression that holds a substitution's output"
 
     def expand(match: re.Match[str]) -> str:
-        name = match.group(1) or match.group(2)
-        value = settled_variable(shell, name)
-        if value is None or (unsettled_number(shell, name) and joins_name(match)):
-            return "\0"
+        value = settled_variable(shell, match.group(1) or match.group(2))
         # Bash puts the value in the expression as text, so it may name the variable an operator assigns.
-        return value
+        return "\0" if value is None else value
 
     text = ARITHMETIC_EXPANSION.sub(expand, text)
     if "\0" in text or "$" in text:
@@ -2665,14 +2712,16 @@ def arithmetic_hazard(expression: str | None, shell: Shell, depth: int = 0) -> s
 
 def settled_variable(shell: Shell, name: str) -> str | None:
     """A variable's value as arithmetic reads it, through any name reference: "" when it is unset, as Bash's own
-    numbers, RANDOM, SECONDS, LINENO, BASHPID, PPID, UID, and EUID, are to the reader until the text assigns them;
-    "0" for one that holds a number the text does not settle (Shell.numbers); None when the text does not settle it,
-    and for each variable Bash sets itself from what a command is given, reads, or matches (BASH_SET_VARIABLES)."""
+    numbers (BASH_NUMERIC_VARIABLES) are to the reader until the text assigns them; "0" for one that holds a number
+    the text does not settle (Shell.numbers); None when the text does not settle it, and for every other variable Bash
+    sets itself (BASH_SET_VARIABLES), whatever the text or the environment gives it."""
     target = shell.target(name)
-    if target is None or shell.opaque or target in BASH_SET_VARIABLES:
+    if target is None or shell.opaque:
         return None
     if target in shell.numbers:
         return "0"
+    if target in BASH_SET_VARIABLES and target not in BASH_NUMERIC_VARIABLES:
+        return None
     return shell.variables.get(target, "")
 
 
@@ -2681,12 +2730,28 @@ def unsettled_number(shell: Shell, name: str) -> bool:
     return shell.target(name) in shell.numbers
 
 
-def joins_name(match: re.Match[str]) -> bool:
-    """Whether an expansion stands beside a character a name may hold, so that its value joins that name."""
-    text, start, end = match.string, match.start(), match.end()
-    return bool(start and NAME_CHARACTER.match(text[start - 1])) or bool(
-        end < len(text) and NAME_CHARACTER.match(text[end])
-    )
+def expansion_joins(text: str, start: int) -> bool:
+    """Whether the expansion at start, a $, joins what stands beside it: a name's character before it, or a name's
+    character, another expansion, or a subscript after it, which also catches an expansion after another; an expansion
+    that does not close joins too."""
+    end = expansion_end(text, start)
+    if end is None:
+        return True
+    before = text[start - 1] if start else ""
+    after = text[end] if end < len(text) else ""
+    return bool(re.fullmatch(r"[A-Za-z0-9_]", before) or re.fullmatch(r"[A-Za-z0-9_$\[]", after))
+
+
+def expansion_end(text: str, start: int) -> int | None:
+    """The index just past the expansion whose $ stands at start: a ${ }, $(( )), $( ), or $[ ] to its close, a name,
+    or one special parameter's character; None for one that does not close. A positional parameter ends at the $,
+    so its digits join it, which is unsettled either way."""
+    following = text[start + 1 : start + 2]
+    if following in ("{", "(", "["):
+        end = matching(text, start + 1)
+        return None if end is None else end + 1
+    name = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[#?$!@*-]").match(text, start + 1)
+    return start + 1 if name is None else name.end()
 
 
 def shell_ps4(shell: Shell) -> tuple[Word, ...]:
@@ -3697,7 +3762,8 @@ def may_name_tracked(word: Mapping[str, Any]) -> bool:
     last = re.split(r"[\\/]", text)[-1]
     if not last or re.search(r"[$`*?\[\]:]", last):
         return True
-    return is_tracked(last)
+    # One a bash reads its options from as it starts, or a POSIXLY_CORRECT, BASH_COMPAT, or PS4 it is handed.
+    return is_tracked(last) or last.upper() in SHELL_SETTING_VARIABLES
 
 
 def location_after(cwd: Path | None, named: bool, target: Word) -> Path | None:

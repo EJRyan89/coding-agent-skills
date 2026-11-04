@@ -945,11 +945,86 @@ class ShellOptionTableTests(unittest.TestCase):
             ("a=(x [POSIXLY_CORRECT=1]=y); git status", True),
             # A digit that belongs to a name joins the number to it.
             ("x11='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( x1$i )); done; git status", True),
+            # An expansion is a whole operand or none: joined past quotes, a nested expansion, or another expansion.
+            ("for i in 1 2; do echo $(( x$((i)) )); done; git status", True),
+            ("for i in 1 2; do echo $(( x$[i] )); done; git status", True),
+            ("echo $(( x$((1)) )); git status", True),
+            ("echo $(( x$(( $# )) )); git status", True),
+            ('for i in 1 2; do echo $(( x"$i" )); done; git status', True),
+            ('for i in 1 2; do echo $(( x""$i )); done; git status', True),
+            ("for i in 1 2; do echo $(( x'1' )); done; git status", False),
+            ('for i in 1 2; do a[x"$i"]=5; : ${a[x"$i"]} ${s:x"$i"}; done; git status', True),
+            ('for i in 1 2; do a=([x"$i"]=q); done; git status', True),
+            ('echo $(( x"$#" )); git status', True),
+            ('echo $(( x"${#a}" )); git status', True),
+            ("w=x; for i in 1 2; do echo $(( ${w}$i )); done; git status", True),
+            ('for i in 1 2; do echo $(( "$i""$i" )); done; git status', True),
+            ("for i in 1 2; do echo $(( $i$i )); done; git status", True),
+            ("for i in 1 2; do echo $(( $i[0] )); done; git status", True),
+            ("echo $(( 1\\\n2 )); git status", False),
+            ('let "n=1\\\n2"; git status', False),
+            ("echo $(( $[1] + 1 )); git status", False),
+            ("a\\\n[POSIXLY_CORRECT=1]=x; git status", True),
+            ("unset a\\\n[POSIXLY_CORRECT=1]; git status", True),
+            ('unset "a\\\n[POSIXLY_CORRECT=1]"; git status', True),
+            ("echo $(( 1\\2 )); git status", True),
+            ("echo $(( ${#a} )) $(( ${x}1 )); git status", True),
+            ("echo $(( $# )) $(( ($#) )) $(( -$# )); git status", False),
+            ("echo $(( $( echo 1 ) )); git status", True),
+            ("echo $(( ${x )); git status", True),
+            ("i=(0 'POSIXLY_CORRECT=1'); for i in 1 2; do echo $(( i\\\n[1] )); done; git status", True),
+            # What Bash sets itself: unsettled but for its numbers, and a name it does not set unset.
+            ("echo $(( SHELLOPTS )); git status", True),
+            ("echo $(( BASHOPTS + DIRSTACK[1] )); git status", True),
+            (
+                "echo $(( MACHTYPE )) $(( HOSTTYPE )) $(( OSTYPE )) $(( HOSTNAME )) $(( BASH_VERSINFO )); git status",
+                True,
+            ),
+            (
+                "echo $(( OPTIND + BASH_ARGC + PIPESTATUS + SRANDOM + EPOCHSECONDS + COPROC_PID )); git status",
+                False,
+            ),
+            ("OPTIND='POSIXLY_CORRECT=1'; echo $(( OPTIND )); git status", True),
+            ("echo $(( undefined_name + 1 )); git status", False),
+            # An array reference a builtin takes, quoted or escaped, and a declaration's quoted compound value.
+            ("declare -a 'a=([POSIXLY_CORRECT=1]=x)'; git status", True),
+            ("declare -a a='([POSIXLY_CORRECT=1]=x)'; git status", True),
+            ('declare -a a="([POSIXLY_CORRECT=1]=x)"; git status', True),
+            ('local -a a="([POSIXLY_CORRECT=1]=x)"; git status', True),
+            ('typeset -a a="([BASH_COMPAT=44]=x)"; git status', True),
+            ('readonly -a a="([POSIXLY_CORRECT=1]=x)"; git status', True),
+            ("declare -a b=\\([POSIXLY_CORRECT=1]=x\\); git status", True),
+            ("a=( \\\n[POSIXLY_CORRECT=1]=x ); git status", True),
+            ("unset 'a[POSIXLY_CORRECT=1]'; git status", True),
+            ("read -r 'a[POSIXLY_CORRECT=1]' <<< x; git status", True),
+            ("printf -v 'a[POSIXLY_CORRECT=1]' x; git status", True),
+            ("declare 'a[POSIXLY_CORRECT=1]=v'; git status", True),
+            ("export 'a[POSIXLY_CORRECT=1]=v'; git status", True),
+            ("wait -p 'a[POSIXLY_CORRECT=1]'; git status", True),
+            ("mapfile 'a[POSIXLY_CORRECT=1]' < f; git status", True),
+            ("printf '%s\\n' x; read -r -p \"Enter [y/n]: \" ans; unset 'a[1]'; git status", False),
+            ("declare -A m=([key]=1); echo ok; git status", False),
             # A quoted here-document's body is not expanded.
             ("cat <<'END'\n$(( POSIXLY_CORRECT = 1 ))\nEND\ngit status", False),
         ):
             with self.subTest(command=command):
                 self.assertEqual(refused, bool(bash_reading(command).unread), bash_reading(command).unread)
+        # An expansion that does not close joins whatever follows it.
+        self.assertTrue(hub_guard.expansion_joins("${x", 0))
+        self.assertTrue(hub_guard.expansion_joins("$((x)", 0))
+        self.assertFalse(hub_guard.expansion_joins("$x + 1", 0))
+        # A provider path the PowerShell reader does not settle may name a variable a bash takes a setting from.
+        for last, names in (
+            ("POSIXLY_CORRECT", True),
+            ("bash_compat", True),
+            ("BASHOPTS", True),
+            ("ShellOpts", True),
+            ("PS4", True),
+            ("GIT_DIR", True),
+            ("out.txt", False),
+        ):
+            with self.subTest(last=last):
+                self.assertEqual(names, hub_guard.may_name_tracked({"text": f"$d\\{last}"}))
         # What Bash sets itself is unsettled, whatever the environment the shell starts with hands it.
         for name in ("MAPFILE", "OLDPWD", "OPTARG", "REPLY", "_"):
             with self.subTest(name=name):

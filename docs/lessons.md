@@ -385,8 +385,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   gives it, which refuses a commit message that names it and misses a name built at run time; an arithmetic context
   read in one place and not another, `(( ))` but not a subscript, a compound assignment's `[k]=`, an offset,
   `[[ -eq ]]`, a case pattern, or a value Bash evaluates again, rather than through `arithmetic_contexts` and
-  `arithmetic_hazard`; a number the reader does not settle standing for itself where it joins a name, as `x$i`
-  does; a row for an option table that asserts only a refusal while a guarded hub is in view, which an
+  `arithmetic_hazard`; an operand settled by its raw characters rather than as one whole token once quotes and
+  backslash-newlines are gone, which `x"$i"`, `${w}$i`, and `x$((i))` pass; a list of the variables Bash sets that
+  names the dangerous ones rather than a catalogue of all of them held to `compgen -v`; a row for an option table that asserts only a refusal while a guarded hub is in view, which an
   option read as unknown gives too, where the row could read what the reader returns, as each sudo option's was; each
   way a variable is assigned, an expansion's `${NAME:=word}` and `${NAME=word}` among them, and each way an
   attribute is given, allexport and an option's upper-case spelling such as `-F` among them, against the ways the

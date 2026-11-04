@@ -1027,6 +1027,23 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
             "[[ POSIXLY_CORRECT=1 =~ (.*) ]]; : $(( BASH_REMATCH )); PROBE",
             "a=([POSIXLY_CORRECT=1]=x); PROBE",
             "declare -a a=([POSIXLY_CORRECT=1]=x); PROBE",
+            # An expansion joined to a name past quotes, a nested expansion, or another expansion; a subscript past a
+            # backslash-newline; what Bash sets itself; and an array reference a builtin takes, quoted or escaped.
+            "x1='POSIXLY_CORRECT=1'; for i in 1; do : $(( x$((i)) )); done; PROBE",
+            "x1='POSIXLY_CORRECT=1'; for i in 1; do : $(( x\"$i\" )); done; PROBE",
+            "x1='POSIXLY_CORRECT=1'; w=x; for i in 1; do : $(( ${w}$i )); done; PROBE",
+            "x1='POSIXLY_CORRECT=1'; : $(( x$((1)) )); PROBE",
+            "i=(0 'POSIXLY_CORRECT=1'); for i in 1; do : $(( i\\\n[1] )); done; PROBE",
+            "interactive='POSIXLY_CORRECT=1'; set +B +h; : $(( SHELLOPTS )); PROBE",
+            "pushd -n 'POSIXLY_CORRECT=1' > /dev/null; : $(( DIRSTACK[1] )); PROBE",
+            "declare -a 'a=([POSIXLY_CORRECT=1]=x)'; PROBE",
+            "declare -a a='([POSIXLY_CORRECT=1]=x)'; PROBE",
+            "declare -a b=\\([POSIXLY_CORRECT=1]=x\\); PROBE",
+            "a=( \\\n[POSIXLY_CORRECT=1]=x ); PROBE",
+            "a=(x); unset 'a[POSIXLY_CORRECT=1]'; PROBE",
+            "read -r 'a[POSIXLY_CORRECT=1]' <<< x; PROBE",
+            "printf -v 'a[POSIXLY_CORRECT=1]' x; PROBE",
+            "declare 'a[POSIXLY_CORRECT=1]=v'; PROBE",
         )
     ),
     *(
@@ -1126,6 +1143,13 @@ class ShellOptionSpellingTests(unittest.TestCase):
                         self.assertEqual(verdict == "holds", "ON" in lines)
                     self.assertEqual(verdict != "off", bool(reading.unread), reading.unread)
                     self.assertEqual(["status"], [call.subcommand for call in reading.calls])
+
+    def test_every_variable_bash_sets_itself_is_one_arithmetic_does_not_settle(self) -> None:
+        bash = find_bash()
+        script = 'env -i "$BASH" --norc --noprofile -c "compgen -v"'
+        listed = set(platform_support.run_tool([bash, "--norc", "--noprofile", "-c", script]).output.split())
+        self.assertTrue(listed)
+        self.assertEqual(set(), listed - hub_guard.BASH_SET_VARIABLES)
 
     def test_every_option_bash_lists_is_one_the_guard_reads(self) -> None:
         bash = find_bash()
