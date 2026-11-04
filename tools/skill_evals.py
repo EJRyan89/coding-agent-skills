@@ -118,7 +118,10 @@ Without --records, it runs the scenarios. For each model it makes a fresh home u
 deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model's
 ID in that home's copy of the reviewer agent, whose `model: inherit` would otherwise run every reviewer on the
 session's model: a fixture's reviewers have no MODEL line, since neither the generic reviewer nor a scenario's
-specialist names a model, and `inherit` outranks CLAUDE_CODE_SUBAGENT_MODEL.
+specialist names a model, and `inherit` outranks CLAUDE_CODE_SUBAGENT_MODEL. It sets the line after it to
+`effort: <effort>`, the model's reviewer effort, REVIEWER_EFFORT in tools/skill_evals_records.py, in place
+of any effort the agent states, and starts each session without CLAUDE_CODE_EFFORT_LEVEL, which outranks an
+agent's effort, so a reviewer runs at the stated effort and not at one Claude Code saved for its model.
 The session gets that agent with `--agents`, which outranks the same agent loaded from the home's .claude/agents:
 Claude Code runs a project agent's hooks only in a folder whose workspace trust was accepted, which a `-p` session
 never is, so loaded from the home the reviewer guard would never run. The definition is the home's agent file, its
@@ -229,7 +232,8 @@ judged, as the citation's cells do; a run none of whose judged part ran, reviewe
 is left out of both counts, as a scenario none of whose runs held a judgment is `not run`.
 It exits 1 on any FAIL, FAILED, or DEPLOY_FAILED line, 0 otherwise, and 2 on a usage error.
 
-It records pass or fail, the model identifiers, the runtime version, and the date, and nothing else: no tokens,
+It records pass or fail, the model identifiers, the reviewers' effort, the runtime version, and the date,
+and nothing else: no tokens,
 cost, or timings. It calls models, so it is never part of validation; see .claude/skills/evaluate-skill/SKILL.md.
 """
 

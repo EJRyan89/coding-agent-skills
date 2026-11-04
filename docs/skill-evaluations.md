@@ -88,7 +88,7 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   one place the models are named, and `tests/tools/test_skill_evals.py` covers the tool with a stub Claude Code and no
   model.
 - **What is recorded** is pass or fail per expectation, the model identifiers the reviewers and the session ran
-  on, the Claude Code version, and the date. Nothing else: no tokens, cost, or timings.
+  on, the effort the reviewers ran at, the Claude Code version, and the date. Nothing else: no tokens, cost, or timings.
 
 ## Latest result
 
@@ -102,29 +102,34 @@ name no path of the machine; the run's `FAIL` lines keep the whole reason. A run
 starts, a table between the markers that holds anything but the header, its separator, and rows of its columns. A
 pull request that changes a skill's prompt, description, model guidance, or reviewer instructions cites this run.
 
+"Reviewer effort" is the effort each model's reviewers ran at, which the run sets beside the model in the
+home's reviewer agent from `REVIEWER_EFFORT` in `tools/skill_evals_records.py`; a row recorded before the run
+set it says `unstated`, since its reviewers ran at whatever effort Claude Code gave them, and a skill whose
+scenarios start no reviewer says `none`.
+
 A trigger scenario's result is a row like any other. Its Model ID and Session model are both the judged model, since
 its sessions run on that model, and By scenario gives its expectations passed, one per request and near miss. A skill
 with review scenarios too lists its trigger scenario among them, and its Session model names both the reviews'
 session model and the judged one. A skill with no row has not been run since its scenarios were written.
 
 <!-- skill-evals:begin -->
-| Skill | Model | Model ID | Passed | Runs | By scenario | Session model | Claude Code | Date |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| audit-skill | haiku | claude-haiku-5-5 | 6/8 | 1 | description 6/8 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
-| audit-skill | sonnet | claude-sonnet-5-5 | 8/8 | 1 | description 8/8 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
-| audit-skill | opus | claude-opus-5-5 | 8/8 | 1 | description 8/8 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
-| github-activity-report | haiku | claude-haiku-5-5 | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
-| github-activity-report | sonnet | claude-sonnet-5-5 | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
-| github-activity-report | opus | claude-opus-5-5 | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
-| review-document | haiku | claude-haiku-5-5 | 29/32 | 1 | committed-edit 3/3, description 5/7, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-25 |
-| review-document | sonnet | claude-sonnet-5-5 | 31/32 | 1 | committed-edit 3/3, description 6/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-25 |
-| review-document | opus | claude-opus-5-5 | 32/32 | 1 | committed-edit 3/3, description 7/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.302 | 2026-10-25 |
-| review-prs | haiku | claude-haiku-5-5 | 24/27 | 1 | clean-change 2/2, description 5/6, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-24 |
-| review-prs | sonnet | claude-sonnet-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-24 |
-| review-prs | opus | claude-opus-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-24 |
-| review-repository | haiku | claude-haiku-5-5 | 16/18 | 1 | branch-name-command 0/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 1/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
-| review-repository | sonnet | claude-sonnet-5-5 | 17/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 1/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
-| review-repository | opus | claude-opus-5-5 | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
+| Skill | Model | Model ID | Reviewer effort | Passed | Runs | By scenario | Session model | Claude Code | Date |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| audit-skill | haiku | claude-haiku-5-5 | none | 6/8 | 1 | description 6/8 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
+| audit-skill | sonnet | claude-sonnet-5-5 | none | 8/8 | 1 | description 8/8 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
+| audit-skill | opus | claude-opus-5-5 | none | 8/8 | 1 | description 8/8 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
+| github-activity-report | haiku | claude-haiku-5-5 | none | 7/7 | 1 | description 7/7 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
+| github-activity-report | sonnet | claude-sonnet-5-5 | none | 7/7 | 1 | description 7/7 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
+| github-activity-report | opus | claude-opus-5-5 | none | 7/7 | 1 | description 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
+| review-document | haiku | claude-haiku-5-5 | unstated | 29/32 | 1 | committed-edit 3/3, description 5/7, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-25 |
+| review-document | sonnet | claude-sonnet-5-5 | unstated | 31/32 | 1 | committed-edit 3/3, description 6/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-25 |
+| review-document | opus | claude-opus-5-5 | unstated | 32/32 | 1 | committed-edit 3/3, description 7/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.302 | 2026-10-25 |
+| review-prs | haiku | claude-haiku-5-5 | unstated | 24/27 | 1 | clean-change 2/2, description 5/6, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-24 |
+| review-prs | sonnet | claude-sonnet-5-5 | unstated | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-24 |
+| review-prs | opus | claude-opus-5-5 | unstated | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-24 |
+| review-repository | haiku | claude-haiku-5-5 | unstated | 16/18 | 1 | branch-name-command 0/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 1/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
+| review-repository | sonnet | claude-sonnet-5-5 | unstated | 17/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 1/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
+| review-repository | opus | claude-opus-5-5 | unstated | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-02 |
 <!-- skill-evals:end -->
 
 ### Notes

@@ -21,6 +21,10 @@ from review_records import Finding, LedgerEntry, Review
 # messages. The one place they are named. A run sets the ID, never Claude Code's alias of the same name, since an alias
 # can resolve to another generation of the family, which would then be recorded under this name.
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
+# The effort each model's reviewers run at, set beside the model in the home's reviewer agent and recorded with its
+# results, so a row judges a stated effort rather than whatever effort Claude Code has saved for that model or gives
+# a subagent on a model other than the session's. The one place they are named.
+REVIEWER_EFFORT = {"haiku": "high", "sonnet": "high", "opus": "high"}
 # The dated suffix a model's messages may carry after its ID.
 DATED = re.compile(r"-[0-9]{8}")
 # What a failure is, decided where the failure is made: a judgment the record shows, a run that recorded no review of

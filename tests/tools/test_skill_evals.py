@@ -2325,20 +2325,66 @@ class RunPieceTests(unittest.TestCase):
         self.assertEqual("claude-code", written["runtime"])
         self.assertEqual(["MUST_FIX"], written["verdict_policy"]["request_changes_for"])
 
-    def test_the_reviewer_agent_gets_the_model_and_nothing_else_changes(self) -> None:
+    def test_the_reviewer_agent_gets_the_model_and_its_effort_and_nothing_else_changes(self) -> None:
         fake_deploy(self.root, self.root)
-        # The deployed agent, which names Python as rendered, before and after its model is set.
+        # The deployed agent, which names Python as rendered, before and after its model and effort are set.
         before = (self.root / skill_evals_runs.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
         self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "haiku"))
         after = (self.root / skill_evals_runs.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(before), len(after))
-        self.assertEqual(
-            [("model: inherit", "model: claude-haiku-5-5")],
-            [pair for pair in zip(before, after, strict=True) if pair[0] != pair[1]],
-        )
+        at = before.index("model: inherit")
+        self.assertEqual([*before[:at], "model: claude-haiku-5-5", "effort: high", *before[at + 1 :]], after)
+        self.assertEqual("high", frontmatter.read(self.root / skill_evals_runs.REVIEWER_AGENT).string("effort"))
         self.assertIn(
             "has no frontmatter line `model: inherit`", skill_evals_runs.set_reviewer_model(self.root, "opus") or ""
         )
+
+    def test_each_model_s_reviewers_run_at_one_declared_effort(self) -> None:
+        self.assertEqual({"haiku": "high", "sonnet": "high", "opus": "high"}, skill_evals_records.REVIEWER_EFFORT)
+        self.assertEqual(set(skill_evals_records.MODELS), set(skill_evals_records.REVIEWER_EFFORT))
+
+    def test_an_effort_the_agent_states_is_replaced_by_the_declared_one(self) -> None:
+        fake_deploy(self.root, self.root)
+        agent = self.root / skill_evals_runs.REVIEWER_AGENT
+        stated = agent.read_text(encoding="utf-8").replace(
+            "name: code-review-reviewer", "name: code-review-reviewer\neffort: low"
+        )
+        agent.write_text(stated, encoding="utf-8")
+        self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "opus"))
+        lines = agent.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(["effort: high"], [line for line in lines if line.startswith("effort:")])
+        self.assertEqual(lines.index("model: claude-opus-5-5") + 1, lines.index("effort: high"))
+
+    def test_an_agent_that_does_not_read_back_as_both_the_model_and_the_effort_is_a_reason(self) -> None:
+        fake_deploy(self.root, self.root)
+        agent = self.root / skill_evals_runs.REVIEWER_AGENT
+        deployed = agent.read_bytes()
+        for key, wrong in (("model", "claude-other"), ("effort", "low")):
+
+            def misread(path: Path, key: str = key, wrong: str = wrong) -> frontmatter.Frontmatter:
+                # The reader answers one of the two keys as another value, as a reader that disagreed with the write.
+                text = path.read_text(encoding="utf-8").replace(f"\n{key}: ", f"\n{key}: {wrong}\nignored_{key}: ", 1)
+                return frontmatter.parse(text)
+
+            agent.write_bytes(deployed)
+            with self.subTest(key=key), mock.patch.object(frontmatter, "read", misread):
+                reason = skill_evals_runs.set_reviewer_model(self.root, "opus")
+                self.assertEqual("the reviewer agent does not read as claude-opus-5-5 at high effort", reason)
+
+    def test_the_agent_copy_is_written_as_utf_8_whatever_the_platforms_codec(self) -> None:
+        fake_deploy(self.root, self.root)
+        agent = self.root / skill_evals_runs.REVIEWER_AGENT
+        agent.write_bytes(agent.read_bytes() + "Reviews été — 中.\n".encode())
+        self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "haiku"))
+        written = agent.read_bytes().decode("utf-8").replace("\r\n", "\n")
+        self.assertTrue(written.endswith("Reviews été — 中.\n"), written[-80:])
+
+    def test_the_effort_variable_that_outranks_an_agent_s_effort_is_left_out(self) -> None:
+        run, config = self.root / "run", self.root / "config.json"
+        environment = skill_evals_runs.run_environment(
+            {"PATH": "kept", "CLAUDE_CODE_EFFORT_LEVEL": "low", "CLAUDE_CODE_SUBAGENT_EFFORT": "kept"}, run, config
+        )
+        self.assertNotIn("CLAUDE_CODE_EFFORT_LEVEL", environment)
+        self.assertEqual(("kept", "kept"), (environment["PATH"], environment["CLAUDE_CODE_SUBAGENT_EFFORT"]))
 
     def test_a_missing_reviewer_agent_is_a_reason(self) -> None:
         self.assertIn("has no frontmatter line", skill_evals_runs.set_reviewer_model(self.root, "haiku") or "")
@@ -2349,7 +2395,10 @@ class RunPieceTests(unittest.TestCase):
         agents = skill_evals_runs.reviewer_agents(self.root)
         self.assertEqual(["code-review-reviewer"], list(agents))
         definition = agents["code-review-reviewer"]
-        self.assertEqual({"description", "prompt", "tools", "model", "omitClaudeMd", "hooks"}, set(definition))
+        self.assertEqual(
+            {"description", "prompt", "tools", "model", "effort", "omitClaudeMd", "hooks"}, set(definition)
+        )
+        self.assertEqual("high", definition["effort"])
         self.assertTrue(definition["description"].startswith("Internal to the code-review skills. Started"))
         self.assertTrue(definition["prompt"].startswith("You run one role a code-review script prepared"))
         self.assertTrue(REVIEWER_AGENT_SOURCE.read_text(encoding="utf-8").rstrip("\n").endswith(definition["prompt"]))
@@ -2559,9 +2608,9 @@ RESULTS_TEXT = "\n".join(
         "",
         skill_evals_results.RESULTS_BEGIN,
         *skill_evals_results.RESULTS_HEADER,
-        "| alpha | opus | claude-opus-5-5 | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
-        "| review-prs | opus | old | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |",
-        "| zeta | opus | claude-opus-5-5 | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
+        "| alpha | opus | claude-opus-5-5 | high | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
+        "| review-prs | opus | old | high | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |",
+        "| zeta | opus | claude-opus-5-5 | high | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
         skill_evals_results.RESULTS_END,
         "",
         "Written by hand after the table.",
@@ -2660,9 +2709,10 @@ class ResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "| review-prs | haiku | claude-haiku-4 | 1/2 | 1 | a 1/1, b 0/1 | claude-opus-5-5 | 2.1.291 "
+                "| review-prs | haiku | claude-haiku-4 | high | 1/2 | 1 | a 1/1, b 0/1 | claude-opus-5-5 | 2.1.291 "
                 "| 2026-10-08 |",
-                "| review-prs | sonnet | not run | 0/2 | 1 | no such model \\| here | unknown | 2.1.291 | 2026-10-08 |",
+                "| review-prs | sonnet | not run | high | 0/2 | 1 | no such model \\| here | unknown "
+                "| 2.1.291 | 2026-10-08 |",
             ],
             rows,
         )
@@ -2696,7 +2746,8 @@ class ResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "| review-document | haiku | claude-haiku-5-5 | 1/3 | 1 | a 1/2, b not run, c 0/1 | claude-opus-5-5 "
+                "| review-document | haiku | claude-haiku-5-5 | high | 1/3 | 1 | a 1/2, b not run, c 0/1 "
+                "| claude-opus-5-5 "
                 "| 2.1.291 | 2026-10-08 |"
             ],
             rows,
@@ -2726,14 +2777,14 @@ class ResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "| review-prs | haiku | claude-haiku-5-5 | 7/8 | 3 | a 3/3 (3/3 runs), b 2/3 (2/3 runs), "
+                "| review-prs | haiku | claude-haiku-5-5 | high | 7/8 | 3 | a 3/3 (3/3 runs), b 2/3 (2/3 runs), "
                 "c 2/2 (2/2 runs), d not run | claude-opus-5-5 | 2.1.291 | 2026-10-08 |"
             ],
             rows,
         )
 
     def test_the_skills_rows_are_replaced_and_every_other_kept(self) -> None:
-        rows = ["| review-prs | haiku | h | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
+        rows = ["| review-prs | haiku | h | high | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         original = RESULTS_TEXT.split("\n")
         written = skill_evals_results.replace_results(RESULTS_TEXT, "review-prs", rows).split("\n")
         begin, end = written.index(skill_evals_results.RESULTS_BEGIN), written.index(skill_evals_results.RESULTS_END)
@@ -2747,13 +2798,13 @@ class ResultsTests(unittest.TestCase):
     def test_another_skills_row_and_its_order_are_kept_as_written(self) -> None:
         lines = RESULTS_TEXT.split("\n")
         # A row written by hand without the spaces, an aligned separator, and two rows of one skill out of order.
-        lines[4] = "| :--- | --- | --- | ---: | --- | --- | --- | --- | --- |"
-        lines[5] = "|alpha|sonnet|claude-sonnet-5-5|1/1|1|one 1/1|claude-opus-5-5|2.1.0|2026-01-01|"
+        lines[4] = "| :--- | --- | --- | --- | ---: | --- | --- | --- | --- | --- |"
+        lines[5] = "|alpha|sonnet|claude-sonnet-5-5|high|1/1|1|one 1/1|claude-opus-5-5|2.1.0|2026-01-01|"
         lines.insert(
-            6, "| alpha | haiku | claude-haiku-5-5 | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |"
+            6, "| alpha | haiku | claude-haiku-5-5 | high | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |"
         )
         text = "\n".join(lines)
-        rows = ["| review-prs | haiku | h | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
+        rows = ["| review-prs | haiku | h | high | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         written = skill_evals_results.replace_results(text, "review-prs", rows).split("\n")
         begin, end = written.index(skill_evals_results.RESULTS_BEGIN), written.index(skill_evals_results.RESULTS_END)
         self.assertEqual(
@@ -2993,7 +3044,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(self.homes.exists())
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | claude-haiku-5-5 | 22/22 | 1 | clean-change 2/2, design-clean 2/2, "
+            "| review-prs | haiku | claude-haiku-5-5 | high | 22/22 | 1 | clean-change 2/2, design-clean 2/2, "
             "design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
@@ -3176,7 +3227,7 @@ class EvaluateTests(unittest.TestCase):
         )
         self.assertTrue(self.homes.is_dir())
         written = self.results.read_text(encoding="utf-8")
-        self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | 0/22 |", written)
+        self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | high | 0/22 |", written)
         self.assertEqual(
             ["| alpha | one | opus | 1 | 2026-01-01 | agrees |"], skill_evals_results.samples_table(written)[2]
         )
@@ -3186,7 +3237,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertIn("REVIEWER haiku none", lines)
         self.assertIn(
-            "| review-prs | haiku | not run | 0/22 | 1 | the run recorded no review |",
+            "| review-prs | haiku | not run | high | 0/22 | 1 | the run recorded no review |",
             self.results.read_text(encoding="utf-8"),
         )
 
@@ -3215,7 +3266,8 @@ class EvaluateTests(unittest.TestCase):
         )
         results = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | not run | 0/22 | 1 | the run recorded no review; Claude Code exited with code 1; "
+            "| review-prs | haiku | not run | high | 0/22 | 1 "
+            "| the run recorded no review; Claude Code exited with code 1; "
             "denied 1 command |",
             results,
         )
@@ -3465,7 +3517,7 @@ class EvaluateTests(unittest.TestCase):
             record,
         )
         self.assertIn(
-            "| audit-skill | haiku | claude-haiku-5-5 | 7/9 | 1 | description 7/9 | claude-haiku-5-5 | 2.1.291 "
+            "| audit-skill | haiku | claude-haiku-5-5 | none | 7/9 | 1 | description 7/9 | claude-haiku-5-5 | 2.1.291 "
             "| 2026-10-08 |",
             self.results.read_text(encoding="utf-8"),
         )
@@ -3584,7 +3636,7 @@ def test_a_document_scenario_runs_the_skill_on_its_staged_document(scenario: str
     written = case.results.read_text(encoding="utf-8")
     passed = REVIEW_DOCUMENT_EXPECTATIONS[scenario]
     case.assertIn(
-        f"| review-document | haiku | claude-haiku-5-5 | {passed}/{passed} | 1 | {scenario} {passed}/{passed} | "
+        f"| review-document | haiku | claude-haiku-5-5 | high | {passed}/{passed} | 1 | {scenario} {passed}/{passed} | "
         "claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
         written,
     )
@@ -3670,8 +3722,8 @@ def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_hold
     passed = REVIEW_REPOSITORY_EXPECTATIONS[scenario]
     for model, identifier in skill_evals_records.MODELS.items():
         case.assertIn(
-            f"| review-repository | {model} | {identifier} | {passed}/{passed} | 1 | {scenario} {passed}/{passed} "
-            "| claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            f"| review-repository | {model} | {identifier} | high | {passed}/{passed} | 1 "
+            f"| {scenario} {passed}/{passed} | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
     case.assertIn("| review-prs | opus | old |", written)
@@ -3957,7 +4009,7 @@ RESULTS_LINES = RESULTS_TEXT.split("\n")
         ("line 7 of the results file is not a row", 6, "a hand note"),
         ("line 8 of the results file is not a row", 7, f"{RESULTS_LINES[7]} n |"),
         (
-            "line 6 of the results file is not a row of the table's 9 columns naming a skill",
+            "line 6 of the results file is not a row of the table's 10 columns naming a skill",
             5,
             RESULTS_LINES[5].replace("alpha", " "),
         ),
@@ -4236,10 +4288,15 @@ def notes_problems(text: str) -> list[str]:
     """Each scenario a row of the results table shows `not run` that no note explains, and each note saying a
     scenario was not run that every row of its skill ran, as docs/skill-evaluations.md's notes promise."""
     shown = set()
+    by_scenario = [cell.strip() for cell in skill_evals_results.RESULTS_HEADER[0].strip()[1:-1].split("|")].index(
+        "By scenario"
+    )
     for row in skill_evals_results.results_table(text)[2]:
         cells = [cell.strip() for cell in row.strip()[1:-1].split("|")]
         shown |= {
-            (cells[0], part.removesuffix(" not run")) for part in cells[5].split(", ") if part.endswith(" not run")
+            (cells[0], part.removesuffix(" not run"))
+            for part in cells[by_scenario].split(", ")
+            if part.endswith(" not run")
         }
     notes = text.split("### Notes", 1)[1].split("\n## ", 1)[0]
     noted = {
@@ -4258,7 +4315,8 @@ def test_the_notes_explain_each_scenario_not_run_and_no_other() -> None:
 
 def test_a_note_that_disagrees_with_the_rows_is_found_either_way() -> None:
     row = (
-        "| review-document | haiku | claude-haiku-5-5 | 5/5 | 1 | pdf-gaps 5/5, word-gaps {} | x | 2.1.0 | 2026-01-01 |"
+        "| review-document | haiku | claude-haiku-5-5 | high | 5/5 | 1 | pdf-gaps 5/5, word-gaps {} | x "
+        "| 2.1.0 | 2026-01-01 |"
     )
     note = "- **`review-document`, `pdf-gaps`:** not run on any model, because no `pdftotext` met the floor.\n"
     text = "\n".join(
