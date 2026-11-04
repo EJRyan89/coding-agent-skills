@@ -144,6 +144,7 @@ import frontmatter
 import json_reader
 import json_writer
 import runtime_support
+import whole_number
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 from file_presence import is_present
@@ -1433,7 +1434,7 @@ def main(arguments: list[str]) -> int:
     )
     parser.add_argument(
         "--attempts",
-        type=int,
+        type=whole_number.argument(1),
         default=DEFAULT_ATTEMPTS,
         metavar="RUNS",
         help=f"runs of a skill on a runtime while each starts the installed copy (default: {DEFAULT_ATTEMPTS})",
@@ -1445,8 +1446,6 @@ def main(arguments: list[str]) -> int:
         help=f"Windows sandbox mode Codex runs with (default: {DEFAULT_CODEX_SANDBOX})",
     )
     options = parser.parse_args(arguments)
-    if options.attempts < 1:
-        parser.error(f"--attempts takes at least one run: {options.attempts}")
     if options.remove_home is not None or options.changed_since is not None:
         option = "--remove-home" if options.remove_home is not None else "--changed-since"
         if options.skills:

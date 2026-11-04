@@ -61,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import json_reader
 import json_writer
+import whole_number
 from console import run_main
 
 from deployer import discovery, journal, manifest, platform_support, tools, verify
@@ -495,7 +496,9 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--source", default=str(REPOSITORY_ROOT), help=argparse.SUPPRESS)
     for name in ("verify", "layout"):
         commands.choices[name].add_argument("--label", required=True)
-    commands.choices["verify"].add_argument("--deploy-verify-exit", type=int, required=True)
+    commands.choices["verify"].add_argument(
+        "--deploy-verify-exit", type=whole_number.argument(-(2**31), 2**31 - 1), required=True
+    )
     commands.choices["verify"].add_argument(
         "--deploy-verify-log", required=True, help=f"the saved output of {VERIFY_COMMAND_LINE}"
     )

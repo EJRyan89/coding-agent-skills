@@ -73,17 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("category")
     add.add_argument("body")
     add.add_argument("--repository")
-    add.add_argument("--pull", type=int)
+    add.add_argument("--pull", type=whole_number.argument(1))
     add.add_argument(
         "--review-version",
-        type=int,
+        type=whole_number.argument(1),
         help="the version of the review whose report gave the finding ID; required with a --finding ID",
     )
     add.add_argument("--finding", help="the finding's report label, such as v2 F003, or its ID, such as F003")
     commands.add_parser("list")
     findings = commands.add_parser("findings")
     findings.add_argument("--repository", required=True)
-    findings.add_argument("--pull", type=int, required=True)
+    findings.add_argument("--pull", type=whole_number.argument(1), required=True)
     edit = commands.add_parser("edit")
     edit.add_argument("flag_id")
     edit.add_argument("--category")

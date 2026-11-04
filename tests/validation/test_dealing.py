@@ -25,7 +25,22 @@ class ShardTests(unittest.TestCase):
         self.assertEqual((2, 4), shard_of("2/4"))
         self.assertEqual((4, 4), shard_of("4/4"))
         # The last is a count past the interpreter's digit limit for converting text.
-        for text in ("0/4", "5/4", "2/0", "2", "2/4/8", "-1/4", " 2/4", "a/b", "02/4", f"1/{'9' * 5000}"):
+        # int() read a one and an Arabic-Indic zero as 10, and a regular expression's digit class matches the zero.
+        unicode_digits = (f"1{chr(0x0660)}/2{chr(0x0660)}", f"{chr(0x0661)}/{chr(0x0661)}", f"1/{chr(0xFF12)}")
+        for text in (
+            "0/4",
+            "5/4",
+            "2/0",
+            "2",
+            "2/4/8",
+            "-1/4",
+            " 2/4",
+            "a/b",
+            "02/4",
+            "1_0/20",
+            *unicode_digits,
+            f"1/{'9' * 5000}",
+        ):
             with self.subTest(text=text[:20]), self.assertRaises(ValueError) as raised:
                 shard_of(text)
             self.assertEqual(f"<index>/<count> with 1 <= index <= count, found {text!r}", str(raised.exception))
@@ -35,4 +50,4 @@ class ShardTests(unittest.TestCase):
         tree = ast.parse(Path(dealing.__file__).read_text(encoding="utf-8"))
         imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
         imported |= {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-        self.assertEqual({"__future__", "collections.abc", "re"}, imported)
+        self.assertEqual({"__future__", "collections.abc", "re", "whole_number"}, imported)

@@ -2,8 +2,11 @@
 
 The root conftest.py deals a suite's tests across the shards the runner splits it into, and job_selection.py deals the
 selected policy checks and suite jobs across CI's legs, the same way: the heaviest first onto the lightest. The
-runner's --shard and conftest.py's --suite-shard name one shard alike. Neither needs pytest, so this module imports
-none, and the runner and the policies import it without the root conftest.py.
+runner's --shard and conftest.py's --suite-shard name one shard alike, each number in ASCII digits read through
+ejryan89-skill-core's whole_number, since a regular expression's digit class also matches an Arabic-Indic zero, which
+int() reads as a zero, so a shard written with one would name another.
+Neither needs pytest, so this module imports none, and the runner and the policies import it without the root
+conftest.py.
 """
 
 from __future__ import annotations
@@ -11,7 +14,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-SHARD = re.compile(r"([1-9]\d*)/([1-9]\d*)")
+import whole_number
+
+SHARD = re.compile(r"([1-9][0-9]*)/([1-9][0-9]*)")
 
 
 def deal(names: list[str], count: int, seconds: Mapping[str, float]) -> dict[str, int]:
@@ -26,11 +31,6 @@ def deal(names: list[str], count: int, seconds: Mapping[str, float]) -> dict[str
     return shards
 
 
-INT_PARSE_ALLOWED = {
-    "shard_of": "it turns the ValueError int() raises past the digit limit into its own refusal",
-}
-
-
 def shard_of(text: str) -> tuple[int, int]:
     """A shard's `<index>/<count>`, the index counted from 1. Raises ValueError naming what it expects, which each
     caller turns into its own usage error."""
@@ -38,11 +38,8 @@ def shard_of(text: str) -> tuple[int, int]:
     match = SHARD.fullmatch(text)
     if match is None:
         raise expected
-    try:
-        index, count = int(match.group(1)), int(match.group(2))
-    except ValueError:
-        # A number past the interpreter's digit limit for converting text.
-        raise expected from None
+    # whole_number refuses a number past the digit limit with the same error.
+    index, count = whole_number.read(match.group(1), expected), whole_number.read(match.group(2), expected)
     if index > count:
         raise expected
     return index, count

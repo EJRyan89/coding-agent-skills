@@ -187,6 +187,20 @@ class ReviewerCommandTests(MainCase):
             stub.calls,
         )
 
+    def test_validate_reviewer_refuses_a_pull_number_not_in_ascii_digits(self) -> None:
+        # int() read "1_0" as pull request 10 and an Arabic-Indic three as 3.
+        stub = self.stub("validate_reviewer", ["VALID example/app"])
+        for value in ("0", "-3", "1_0", " 3", chr(0x0663)):
+            with self.subTest(value=ascii(value)):
+                self.assert_usage(
+                    f"argument --pull: must be a whole number of at least 1 in ASCII digits, not {value!r}",
+                    "validate-reviewer",
+                    "--repository",
+                    "example/app",
+                    f"--pull={value}",
+                )
+        self.assertEqual([], stub.calls)
+
     def test_validate_reviewer_with_ref(self) -> None:
         stub = self.stub("validate_reviewer", ["VALID example/app"])
         self.assertEqual(
@@ -320,9 +334,14 @@ class EnumerateTests(MainCase):
         )
 
     def test_batch_size_is_a_positive_integer(self) -> None:
-        for value in ("0", "-1", "two", "2.5"):
-            with self.subTest(value=value):
-                self.assertIn("error: argument --batch-size:", self.usage_error("enumerate", "--batch-size", value))
+        # int() read "1_0" as 10 and an Arabic-Indic three as 3.
+        for value in ("0", "-1", "two", "2.5", "1_0", " 2", chr(0x0663)):
+            with self.subTest(value=ascii(value)):
+                self.assert_usage(
+                    f"argument --batch-size: must be a whole number of at least 1 in ASCII digits, not {value!r}",
+                    "enumerate",
+                    f"--batch-size={value}",
+                )
 
     def test_repository_and_repository_set_exclude_each_other(self) -> None:
         self.assert_usage(
@@ -1044,11 +1063,13 @@ class WaitTests(MainCase):
 
     def test_timeout_bounds(self) -> None:
         for command in (["wait", "--run", "run one"], ["wait-reviewers", "--run", "run one"]):
-            for value in ("0", "301"):
-                with self.subTest(command=command[0], value=value):
-                    self.assert_usage("argument --timeout: must be from 1 to 300 seconds", *command, "--timeout", value)
-            with self.subTest(command=command[0], value="x"):
-                self.assert_usage("argument --timeout: invalid wait_seconds value: 'x'", *command, "--timeout", "x")
+            for value in ("0", "301", "x", "1_0", " 30", chr(0x0663)):
+                with self.subTest(command=command[0], value=ascii(value)):
+                    self.assert_usage(
+                        f"argument --timeout: must be a whole number from 1 to 300 in ASCII digits, not {value!r}",
+                        *command,
+                        f"--timeout={value}",
+                    )
 
 
 class RunListTests(MainCase):
@@ -1614,5 +1635,10 @@ class UsageTests(MainCase):
 
     def test_a_pull_number_must_be_an_integer(self) -> None:
         self.assert_usage(
-            "argument --pull: invalid int value: 'x'", "validate-reviewer", "--repository", "example/app", "--pull", "x"
+            "argument --pull: must be a whole number of at least 1 in ASCII digits, not 'x'",
+            "validate-reviewer",
+            "--repository",
+            "example/app",
+            "--pull",
+            "x",
         )

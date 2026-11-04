@@ -8,6 +8,9 @@ on: a command names its repository by the directory it runs in or names, as `git
 do, and reads that repository, its index, and its objects, never one a variable points at. A program that is not git,
 such as Copilot CLI or an MCP server, may run git or read a repository's files itself, so no command keeps them.
 `without_repository_variables` is the one builder of such an environment, which a start outside this module uses too.
+The one way to set one of them is `run_bounded`'s `index_file`, which names the index a git command reads and writes,
+as `deploy.py --at` does to read a commit's attributes through a throwaway index; no environment, inherited or given,
+sets it.
 `isolated_git_environment` builds a stricter one, for a git that reads content it did not write, that leaves out every
 git variable and switches off the system and global configuration.
 
@@ -75,6 +78,8 @@ REPOSITORY_VARIABLES = frozenset(
         "GIT_WORK_TREE",
     }
 )
+# The repository-selecting variable `run_bounded`'s `index_file` sets, and nothing else can.
+INDEX_FILE_VARIABLE = "GIT_INDEX_FILE"
 # Ends a stream cut at an output limit, so whoever reads it learns that more was written than it holds.
 CUT_NOTE = "\n[output cut: {cut} bytes past the first {limit} not kept]\n"
 
@@ -135,6 +140,7 @@ def run_bounded(
     env: Mapping[str, str] | None = None,
     output_limit: int | None = None,
     tree: ProcessTree | None = None,
+    index_file: Path | None = None,
 ) -> Finished:
     """Run `command` without a shell, and with no stdin but `input_bytes`, and return its exit status and output.
 
@@ -144,18 +150,23 @@ def run_bounded(
     `env`, that is the command's whole environment but git's repository-selecting variables, and no prompt is turned
     off for it; otherwise it is `non_interactive_environment()`. With `output_limit`, at most that many bytes of each
     stream are read back, and a stream that held more ends with CUT_NOTE. With `tree`, the command starts as the tree
-    says, and every process it started that stays in the tree is ended once it has finished or been killed.
+    says, and every process it started that stays in the tree is ended once it has finished or been killed. With
+    `index_file`, the command's GIT_INDEX_FILE names that file, the one repository-selecting variable a caller can set,
+    and only through this keyword: one in `env` or this process's environment is left out as every other is.
     Raises OSError when the command cannot start (FileNotFoundError when it does not exist), and
     subprocess.TimeoutExpired, after killing it, when it does not finish within `timeout` seconds; the exception
     carries the output written by then, read back as a result's would be.
     """
+    environment = non_interactive_environment() if env is None else without_repository_variables(env)
+    if index_file is not None:
+        environment[INDEX_FILE_VARIABLE] = str(index_file)
     with tempfile.TemporaryFile() as errors, tempfile.TemporaryFile() as output, _stdin(input_bytes) as stdin:
         process = subprocess.Popen(
             list(command),
             stdin=stdin,
             stdout=output if stdout is None else stdout,
             stderr=errors if stderr is None else stderr,
-            env=non_interactive_environment() if env is None else without_repository_variables(env),
+            env=environment,
             cwd=cwd,
             **({} if tree is None else tree.start_options()),
         )

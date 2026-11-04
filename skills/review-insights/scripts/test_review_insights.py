@@ -646,6 +646,35 @@ class ReportTests(InsightFixture):
         code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
         self.assertEqual(0, code, out + err)
 
+    def test_a_record_whose_json_cannot_be_read_fails_as_an_invalid_pair_in_each_stage(self) -> None:
+        # review_io.read_json raises PersistenceError for each way its file holds no JSON it reads; each stage that
+        # reads a pair through it names the pair, or the pull request's history, as the skill says.
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        [pair_line] = re.findall(r"`FAILED (Invalid review pair )<path>: <reason>`", skill)
+        [history_line] = re.findall(r"`FAILED (Invalid review history for )<repo>#<number>: <reason>`", skill)
+        self.commit("owner/repo", 7, ["Correctness"], reviewed_at="2025-06-01T12:00:00+00:00")
+        self.commit("owner/repo", 7, ["Correctness"], version=2)
+        earlier = self.archive / "owner" / "repo" / "pulls" / "7" / "review.json"
+        records = ri.collect_records(
+            self.archive, ["owner/repo"], date(2026, 1, 1), date(2026, 1, 31), ri.RecordPairs()
+        )
+        unreadable = {
+            "not JSON": b"{not json",
+            "not UTF-8": b'{"schema_version": "\xff"}',
+            "past the size limit": b" " * (4 * 1024 * 1024 + 1),
+        }
+        for name, content in unreadable.items():
+            with self.subTest(name):
+                earlier.write_bytes(content)
+                self.assertFailed(
+                    self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                    f"FAILED {pair_line}{earlier}: ",
+                )
+                # The ledgers read the history through pairs collection has not validated, as a later stage may.
+                with self.assertRaises(ri.InsightError) as raised:
+                    ri.read_ledgers(self.archive, records, ri.RecordPairs())
+                self.assertTrue(str(raised.exception).startswith(f"{history_line}owner/repo#7: "), raised.exception)
+
     def test_an_invalid_earlier_review_fails_as_a_pair_and_an_unlistable_history_as_the_skill_says(self) -> None:
         # Every pair is validated before the ledgers read a pull request's history, so an invalid earlier review of
         # an analyzed pull request fails as a pair; the history line is a pull request folder that cannot be listed.

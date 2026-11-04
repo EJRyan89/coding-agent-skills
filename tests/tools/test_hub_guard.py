@@ -2991,6 +2991,10 @@ class ContractTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f"export GIT_DIR='{git_directory}'; sudo git switch -c x", self.tree))
         self.assertIn(UNPLACED.format("switch"), self.reason)
         self.assertEqual("deny", self.bash(f"sudo -D '{self.hub}' git switch -c x", self.tree))
+        # -D moves a command started in the hub out of it, and -- after another option starts the command after it.
+        self.assertIsNone(self.bash(f"sudo -D '{self.tree.as_posix()}' git switch -c x", self.hub))
+        self.assertIsNone(self.bash("sudo -u root -- git switch -c x", self.tree))
+        self.assertEqual("deny", self.bash("sudo -u root -- git switch -c x", self.hub))
         self.assertEqual("deny", self.bash("sudo -i git switch -c x", self.tree))
         self.assertIn(UNPLACED.format("switch"), self.reason)
         self.assertEqual("deny", self.bash("sudo -X git switch -c x", self.hub))
@@ -3565,6 +3569,186 @@ class EnvOptionTests(unittest.TestCase):
         ):
             with self.subTest(arguments=arguments):
                 self.assertEqual(expected, hub_guard.first_unread_env_option(list(arguments)))
+
+
+# Each option of sudo and doas by its arity, written out apart from ELEVATING_PROGRAMS so that a renamed, dropped, or
+# added spelling there fails a row: those that take no value, those that take the next word or the rest of a short
+# option's word, and those after which no command starts.
+SUDO_FLAGS = (
+    *("-A", "--askpass", "-B", "--bell", "-b", "--background", "-E", "--preserve-env", "-H", "--set-home"),
+    *("-i", "--login", "-k", "--reset-timestamp", "-N", "--no-update", "-n", "--non-interactive"),
+    *("-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell"),
+    *("--inline", "--new-window", "--disable-input"),
+)
+SUDO_VALUED = (
+    *("-C", "--close-from", "-D", "--chdir", "-g", "--group", "-p", "--prompt", "-R", "--chroot"),
+    *("-r", "--role", "-T", "--command-timeout", "-t", "--type", "-U", "--other-user", "-u", "--user", "--host"),
+)
+SUDO_NO_COMMAND = ("-e", "--edit", "-K", "--remove-timestamp", "-l", "--list", "-V", "--version", "-v", "--validate")
+DOAS_FLAGS = ("-L", "-n", "-s")
+DOAS_VALUED = ("-u",)
+DOAS_NO_COMMAND = ("-C",)
+ELEVATING_OPTIONS = {
+    "sudo": (SUDO_FLAGS, SUDO_VALUED, SUDO_NO_COMMAND),
+    "doas": (DOAS_FLAGS, DOAS_VALUED, DOAS_NO_COMMAND),
+}
+# Each prefix program's options by arity, and how many operands come before its command, written out apart from
+# PREFIX_PROGRAMS.
+PREFIX_OPTIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = {
+    "nohup": ((), (), ()),
+    "nice": ((), ("-n", "--adjustment"), ()),
+    "timeout": (
+        ("-v", "--verbose", "--preserve-status", "--foreground"),
+        ("-s", "--signal", "-k", "--kill-after"),
+        ("5",),
+    ),
+    "stdbuf": ((), ("-i", "-o", "-e", "--input", "--output", "--error"), ()),
+    "time": (
+        ("-p", "--portability", "-v", "--verbose", "-a", "--append", "-q", "--quiet"),
+        ("-f", "--format", "-o", "--output"),
+        (),
+    ),
+}
+
+
+class OptionTableTests(unittest.TestCase):
+    """Each spelling an option table of the guard names, read by its arity: a renamed spelling is read as an unknown
+    option, which a refusal while a guarded hub is in view would hide, so these rows read the command itself."""
+
+    cwd = Path("start")
+
+    def started(self, program: str, arguments: Sequence[str | None]) -> tuple[object, hub_guard.Reading]:
+        reading = hub_guard.Reading({}, "git")
+        return hub_guard.started_command(program, list(arguments), self.cwd, {}, reading), reading
+
+    def assert_starts(
+        self, program: str, arguments: Sequence[str | None], expected: tuple[str | None, list[str | None], Path | None]
+    ) -> hub_guard.Reading:
+        command, reading = self.started(program, arguments)
+        self.assertEqual([], reading.unread)
+        self.assertIsNotNone(command)
+        assert command is not None
+        self.assertEqual(expected, command[:3])  # type: ignore[index]  # started_command's tuple, typed as object here
+        return reading
+
+    def test_the_elevating_tables_hold_exactly_the_spellings_written_out_here(self) -> None:
+        for program, (flags, valued, no_command) in ELEVATING_OPTIONS.items():
+            with self.subTest(program=program):
+                self.assertEqual(
+                    (frozenset(flags), frozenset(valued), frozenset(no_command)), hub_guard.ELEVATING_PROGRAMS[program]
+                )
+        self.assertEqual(set(ELEVATING_OPTIONS), set(hub_guard.ELEVATING_PROGRAMS))
+
+    def test_each_elevating_option_is_read_by_its_arity(self) -> None:
+        for program, (flags, valued, no_command) in ELEVATING_OPTIONS.items():
+            for flag in flags:
+                with self.subTest(program=program, option=flag):
+                    cwd = None if flag in ("-i", "--login") else self.cwd
+                    self.assert_starts(program, [flag, "git", "commit"], ("git", ["commit"], cwd))
+            for option in valued:
+                cwd = self.cwd / "value" if option in ("-D", "--chdir") else self.cwd
+                spellings = [[option, "value"]]
+                spellings.append([f"{option}=value"] if option.startswith("--") else [f"{option}value"])
+                for spelling in spellings:
+                    with self.subTest(program=program, option=spelling):
+                        self.assert_starts(program, [*spelling, "git", "commit"], ("git", ["commit"], cwd))
+            for option in no_command:
+                with self.subTest(program=program, option=option):
+                    command, reading = self.started(program, [option, "git", "commit"])
+                    self.assertIsNone(command)
+                    self.assertEqual([], reading.unread)
+
+    def test_sudo_reads_the_end_of_its_options_and_its_assignments_as_written(self) -> None:
+        # -- ends the options wherever it stands, and a lone - is the command.
+        self.assert_starts("sudo", ["-u", "root", "--", "git", "commit"], ("git", ["commit"], self.cwd))
+        self.assert_starts("sudo", ["--", "-u", "git"], ("-u", ["git"], self.cwd))
+        self.assert_starts("sudo", ["-", "git"], ("-", ["git"], self.cwd))
+        self.assert_starts("sudo", ["-n", "-", "git"], ("-", ["git"], self.cwd))
+        # -D moves the command from where sudo starts.
+        self.assert_starts("sudo", ["-D", "tree", "git", "commit"], ("git", ["commit"], self.cwd / "tree"))
+        self.assert_starts("sudo", ["-Dtree", "-n", "git"], ("git", [], self.cwd / "tree"))
+        self.assert_starts("sudo", ["--chdir", "tree", "git"], ("git", [], self.cwd / "tree"))
+        # An assignment whose value holds = is handed whole.
+        command, reading = self.started("sudo", ["GIT_DIR=a=b", "git", "commit"])
+        self.assertEqual([], reading.unread)
+        self.assertEqual(("git", ["commit"], self.cwd, {"GIT_DIR": "a=b"}), command)
+        # Options or assignments with no command after them start none, and are read without error.
+        for program, arguments in (
+            ("sudo", ["-n"]),
+            ("sudo", ["-u", "root"]),
+            ("sudo", ["--"]),
+            ("sudo", ["A=1"]),
+            ("sudo", ["-n", "A=1", "B=2"]),
+            ("env", ["A=1"]),
+            ("env", ["-i", "A=1"]),
+        ):
+            with self.subTest(program=program, arguments=arguments):
+                command, reading = self.started(program, arguments)
+                self.assertIsNone(command)
+                self.assertEqual([], reading.unread)
+
+    def test_an_option_sudo_or_doas_is_given_that_the_text_does_not_settle_is_named_unread(self) -> None:
+        for program in ELEVATING_OPTIONS:
+            for arguments in ([None, "git"], ["-n", None, "git"]):
+                with self.subTest(program=program, arguments=arguments):
+                    command, reading = self.started(program, arguments)
+                    self.assertIsNone(command)
+                    self.assertEqual([f"could not read the options passed to {program}"], reading.unread)
+            with self.subTest(program=program, option="-X"):
+                command, reading = self.started(program, ["-X", "git"])
+                self.assertIsNone(command)
+                self.assertEqual([f"could not read the option -X passed to {program}"], reading.unread)
+
+    def test_the_prefix_tables_hold_exactly_the_spellings_written_out_here(self) -> None:
+        self.assertEqual(
+            {
+                program: (frozenset(flags), frozenset(valued), len(operands))
+                for program, (flags, valued, operands) in PREFIX_OPTIONS.items()
+            },
+            hub_guard.PREFIX_PROGRAMS,
+        )
+
+    def test_each_prefix_option_is_read_by_its_arity(self) -> None:
+        for program, (flags, valued, operands) in PREFIX_OPTIONS.items():
+            starts: list[list[str]] = [[]]
+            starts.extend([flag] for flag in flags)
+            for option in valued:
+                starts.append([option, "1"])
+                starts.append([f"{option}=1"] if option.startswith("--") else [f"{option}1"])
+            for start in starts:
+                with self.subTest(program=program, start=start):
+                    arguments: list[str | None] = [*start, *operands, "git", "commit"]
+                    self.assertEqual(["git", "commit"], hub_guard.prefixed_command(program, arguments))
+                    self.assert_starts(program, arguments, ("git", ["commit"], self.cwd))
+            with self.subTest(program=program, option="-X"):
+                self.assertIsNone(hub_guard.prefixed_command(program, ["-X", *operands, "git"]))
+
+    def test_each_env_option_is_read_by_its_arity(self) -> None:
+        variables = {"KEPT": "1", "NAME": "2"}
+        # Each option, the environment env gives its command, and where that command starts.
+        for options, given, cwd in (
+            (["-0"], variables, self.cwd),
+            (["--null"], variables, self.cwd),
+            (["-v"], variables, self.cwd),
+            (["--debug"], variables, self.cwd),
+            (["-i"], {}, self.cwd),
+            (["--ignore-environment"], {}, self.cwd),
+            (["-"], {}, self.cwd),
+            (["-u", "NAME"], {"KEPT": "1"}, self.cwd),
+            (["-uNAME"], {"KEPT": "1"}, self.cwd),
+            (["--unset", "NAME"], {"KEPT": "1"}, self.cwd),
+            (["--unset=NAME"], {"KEPT": "1"}, self.cwd),
+            (["-C", "tree"], variables, self.cwd / "tree"),
+            (["-Ctree"], variables, self.cwd / "tree"),
+            (["--chdir", "tree"], variables, self.cwd / "tree"),
+            (["--chdir=tree"], variables, self.cwd / "tree"),
+            (["--"], variables, self.cwd),
+        ):
+            with self.subTest(options=options):
+                reading = hub_guard.Reading({}, "git")
+                command = hub_guard.started_command("env", [*options, "git", "commit"], self.cwd, variables, reading)
+                self.assertEqual([], reading.unread)
+                self.assertEqual(("git", ["commit"], cwd, given), command)
 
 
 class ProviderPathTests(unittest.TestCase):
